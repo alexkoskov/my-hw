@@ -165,7 +165,7 @@ None.
 - **Files to modify:** `news_bot.py` (`job`, `fetch_rss` call site)
 - **Files to read:** `news_bot.py` (existing `job`, `fetch_rss`, `filter_new_entries`, `process_new_articles`)
 
-#### Task 3: Enhanced logging
+- [x] #### Task 3: Enhanced logging
 - **Description:** Add feed source (URL) to log messages when processing entries. Include feed index in logs for clarity.
 - **Skill:** code-writing
 - **Reviewers:** code-reviewer, test-reviewer

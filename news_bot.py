@@ -199,7 +199,8 @@ def process_new_articles(entries, limit=3):
         title = entry.get('title')
         pub_date = entry.get('published', '')
         
-        logger.info(f"Processing: {title}")
+        feed_url = entry.get('feed_url', 'unknown')
+        logger.info(f"Processing: {title} (from {feed_url})")
         article = fetch_article(link)
         if not article:
             continue
@@ -227,8 +228,10 @@ def job():
     feed_urls = load_feeds()
     if not feed_urls:
         feed_urls = [RSS_URL]
+    logger.info(f"Processing {len(feed_urls)} feeds...")
     all_entries = []
-    for url in feed_urls:
+    for i, url in enumerate(feed_urls, 1):
+        logger.info(f"Fetching feed {i}/{len(feed_urls)}: {url}")
         entries = fetch_rss(url)
         for entry in entries:
             entry['feed_url'] = url
