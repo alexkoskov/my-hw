@@ -16,6 +16,8 @@ from datetime import datetime
 from telegram import Bot
 from telegram.error import TelegramError
 import os
+import json
+from urllib.parse import urlparse
 
 # Configuration - set via environment variables
 TELEGRAM_BOT_TOKEN = os.getenv('TELEGRAM_BOT_TOKEN')
@@ -24,6 +26,32 @@ TRANSLATOR_SERVICE = 'google'  # or 'libre'
 RSS_URL = "https://www.autoevolution.com/rss/tag-Hot+Wheels.xml"
 DB_FILE = "news.db"
 LOG_LEVEL = logging.INFO
+
+
+def load_feeds():
+    """Load RSS feed URLs from feeds.json, fall back to hardcoded RSS_URL if missing or invalid."""
+    try:
+        with open('feeds.json', 'r') as f:
+            data = json.load(f)
+    except (FileNotFoundError, json.JSONDecodeError):
+        return [RSS_URL]
+
+    if not isinstance(data, list):
+        return [RSS_URL]
+
+    valid_urls = []
+    for item in data[:5]:  # limit to first 5
+        if not isinstance(item, str):
+            return [RSS_URL]
+        parsed = urlparse(item)
+        if not (parsed.scheme and parsed.netloc) or parsed.scheme not in ('http', 'https'):
+            return [RSS_URL]
+        valid_urls.append(item)
+
+    if not valid_urls:
+        return [RSS_URL]
+    return valid_urls
+
 
 # Setup logging
 logging.basicConfig(
