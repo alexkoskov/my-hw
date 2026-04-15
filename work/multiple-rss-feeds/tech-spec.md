@@ -43,6 +43,7 @@ None.
 ### Decision 1: Configuration format
 **Decision:** Use a simple JSON file `feeds.json` containing a list of feed URLs (strings). No per‑feed settings.
 **Rationale:** User requested a simple configuration file; JSON is easy to read/write with Python’s standard library and allows straightforward validation. Per‑feed settings (enabled, limit) are out of scope for MVP.
+**User‑spec requirement:** Пользователь добавляет до 5 RSS‑URL в конфигурационный файл (или переменные окружения).
 **Alternatives considered:** Environment variable `RSS_FEEDS` (comma‑separated) – less flexible, harder to manage 5 URLs; YAML – more complex parsing without clear benefit.
 
 ### Decision 2: Error isolation
@@ -53,16 +54,19 @@ None.
 ### Decision 3: Backward compatibility
 **Decision:** If `feeds.json` does not exist or is empty, fall back to the hardcoded `RSS_URL` (current single feed).
 **Rationale:** Existing deployments continue to work without configuration changes; migration is optional.
+**User‑spec requirement:** Конфигурация лент может быть изменена без изменения кода (через файл или переменные окружения).
 **Alternatives considered:** Require configuration file – would break existing setups; use environment variable to toggle – adds unnecessary complexity.
 
-### Decision 4: Processing limit
+### Decision 4: Processing limit [TECHNICAL]
 **Decision:** Keep the existing `limit=3` per job (global limit across all feeds), not per feed.
 **Rationale:** Prevents the bot from processing too many articles in a single run, which could exceed timeouts or Telegram rate limits. The limit is small because the bot runs daily; users can adjust it in code if needed.
+**User‑spec requirement:** None (technical optimization to respect performance constraints).
 **Alternatives considered:** Per‑feed limits – adds configuration complexity; no limit – risks processing dozens of articles daily, possibly exceeding external API quotas.
 
-### Decision 5: Deduplication scope
+### Decision 5: Deduplication scope [TECHNICAL]
 **Decision:** Keep global deduplication (same `processed_news` table for all feeds) because article URLs are globally unique.
 **Rationale:** Simplifies database schema and prevents duplicate posts across different feeds that might reference the same article.
+**User‑spec requirement:** None (technical optimization for deduplication).
 **Alternatives considered:** Per‑feed deduplication – would require schema changes and offers no benefit for this use case.
 
 ## Data Models
