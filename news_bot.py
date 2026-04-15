@@ -96,10 +96,10 @@ def fetch_rss(url):
     try:
         feed = feedparser.parse(url)
         if feed.bozo:
-            logger.warning(f"RSS feed parse warning: {feed.bozo_exception}")
+            logger.warning(f"RSS feed parse warning for {url}: {feed.bozo_exception}")
         return feed.entries
     except Exception as e:
-        logger.error(f"Failed to fetch RSS: {e}")
+        logger.error(f"Failed to fetch RSS from {url}: {e}")
         return []
 
 def filter_new_entries(entries):
@@ -224,8 +224,16 @@ def process_new_articles(entries, limit=3):
 def job():
     """Main job to run daily."""
     logger.info("Starting daily news collection...")
-    entries = fetch_rss(RSS_URL)
-    new_entries = filter_new_entries(entries)
+    feed_urls = load_feeds()
+    if not feed_urls:
+        feed_urls = [RSS_URL]
+    all_entries = []
+    for url in feed_urls:
+        entries = fetch_rss(url)
+        for entry in entries:
+            entry['feed_url'] = url
+        all_entries.extend(entries)
+    new_entries = filter_new_entries(all_entries)
     processed = process_new_articles(new_entries, limit=3)
     logger.info(f"Job finished. Processed {processed} new articles.")
 

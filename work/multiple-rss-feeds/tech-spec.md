@@ -135,7 +135,7 @@ None.
 
 Технические критерии приёмки (дополняют пользовательские из user-spec):
 
-- [ ] Бот читает `feeds.json` и использует указанные RSS-ленты (до 5).
+- [x] Бот читает `feeds.json` и использует указанные RSS-ленты (до 5).
 - [ ] Если `feeds.json` отсутствует, бот использует запасной RSS‑URL (текущий).
 - [ ] Ошибка парсинга одной ленты не прерывает обработку остальных лент.
 - [ ] Все новые статьи из всех лент проходят дедупликацию по ссылке (глобально).
@@ -157,7 +157,7 @@ None.
 - **Files to modify:** `news_bot.py` (add `load_feeds` function), `feeds.json` (example)
 - **Files to read:** `news_bot.py` (current RSS_URL), `patterns.md` (configuration conventions)
 
-#### Task 2: Feed iteration and error isolation
+- [x] #### Task 2: Feed iteration and error isolation
 - **Description:** Modify `job()` to iterate over feeds from `load_feeds()`. For each feed, wrap `fetch_rss` in try‑catch, log errors, collect entries. Aggregate entries before duplicate filtering. Keep global limit (`limit=3`) across all feeds.
 - **Skill:** code-writing
 - **Reviewers:** code-reviewer, security-auditor, test-reviewer
