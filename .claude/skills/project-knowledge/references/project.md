@@ -7,53 +7,46 @@ This file provides high-level project overview for AI agents. Helps agents under
 
 ## Project Overview
 
-**Name:** [Project Name]
+**Name:** Hot Wheels News Bot
 
-**Description:** [One-line description of what this project does]
+**Description:** A Python script that automatically collects Hot Wheels news from autoevolution.com, translates them to Russian, summarizes, and posts to a Telegram channel.
 
-[Optional: 1-2 additional sentences with key context]
+This bot runs on a schedule (daily) and handles the entire pipeline from RSS fetching to Telegram posting, eliminating manual work for news aggregation and translation.
 
 ---
 
 ## Target Audience
 
-**Primary users:** [Who uses this - e.g., "Developers building CLI tools", "Small business owners"]
+**Primary users:** Hot Wheels enthusiasts and collectors who want to stay updated with the latest news in Russian.
 
-**Use case:** [Why they need it - e.g., "Need to automate deployment workflows", "Want to track inventory without complex software"]
+**Use case:** Users subscribe to a Telegram channel where they receive automated, translated summaries of Hot Wheels news, saving time and overcoming language barriers.
 
 ---
 
 ## Core Problem
 
-[What pain point are we solving? 2-3 sentences describing the problem this project addresses]
+Manually monitoring Hot Wheels news across websites is time‑consuming, and many enthusiasts are not comfortable reading English content. This results in missed updates and delayed information.
 
-[Example format: "Currently users have to [manual process]. This is slow/error-prone/expensive because [reason]. We solve this by [solution approach]."]
+Currently users have to regularly check multiple sites, translate articles themselves, and manually share them. This is slow and inconsistent because it relies on manual effort. We solve this by automating the entire process: RSS monitoring, article scraping, translation, summarization, and Telegram posting.
 
 ---
 
 ## Key Features
 
-[List 3-5 core capabilities - only the most important ones. Details belong in project backlog.]
-
-- **[Feature 1 name]** - [What it does in 1 sentence]
-- **[Feature 2 name]** - [What it does in 1 sentence]
-- **[Feature 3 name]** - [What it does in 1 sentence]
-- **[Feature 4 name]** - [What it does in 1 sentence]
-- **[Feature 5 name]** - [What it does in 1 sentence]
-
-<!--
-Feature backlog, detailed roadmap, and development phases live in the project backlog
-(see CLAUDE.md for backlog path), not here. This file is a stable overview.
--->
+- **RSS monitoring** – Fetches the latest articles from the Hot Wheels RSS feed.
+- **Duplicate detection** – Uses SQLite to track already processed news and avoid reposting.
+- **Article scraping** – Extracts title, full text, and images from each article.
+- **Translation** – Translates title and text from English to Russian using Google Translate.
+- **Summarization** – Creates a short summary (3–5 sentences) of the translated text.
+- **Telegram posting** – Sends formatted posts with images to a Telegram channel via Bot API.
+- **Scheduling** – Runs daily at 12:00 local time (configurable) using the `schedule` library.
 
 ---
 
 ## Out of Scope
 
-[What we explicitly DON'T do - helps agents avoid scope creep]
-
-- [Thing 1 we don't support - e.g., "No mobile app version"]
-- [Thing 2 we don't support - e.g., "No multi-tenant support"]
-- [Thing 3 we don't support - e.g., "No real-time collaboration features"]
-
-<!-- Add more items as needed -->
+- No mobile app version.
+- No web dashboard or admin panel.
+- No multi‑language support beyond Russian.
+- No real‑time notifications outside scheduled runs.
+- No user authentication or personalization.

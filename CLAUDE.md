@@ -1,6 +1,6 @@
-# Project: [PROJECT NAME]
+# Project: Hot Wheels News Bot
 
-> **[ONE SENTENCE - WHAT THIS PROJECT IS ABOUT]**
+> A Python script that automatically collects Hot Wheels news from autoevolution.com, translates them to Russian, summarizes, and posts to a Telegram channel.
 
 ---
 

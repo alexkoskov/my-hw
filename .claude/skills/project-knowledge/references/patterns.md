@@ -7,97 +7,80 @@ For universal coding standards, see `~/.claude/skills/code-writing/references/un
 
 ## Project-Specific Code Patterns
 
-<!--
-ADD PROJECT-SPECIFIC PATTERNS HERE:
+### SQLite Duplicate Detection
+- The `processed_news` table uses `link` as PRIMARY KEY to guarantee uniqueness.
+- Before processing any RSS entry, `is_processed(link)` checks the database; if present, the entry is skipped.
+- The table also stores `title` and `pub_date` for reference, but only `link` is essential for deduplication.
 
-1. Framework conventions (React hooks, Django patterns, FastAPI dependencies, etc.)
-2. Domain naming (Order/Cart/Product vs Purchase/Basket/Item)
-3. External integration patterns (Stripe webhooks, API retry logic, etc.)
-4. Database patterns (transactions, query optimization, caching)
+### Translation Fallback
+- If Google Translate fails (e.g., network error, quota limit), the original English text is used as a fallback.
+- The translation function `translate_text` catches exceptions and logs the error, returning the input text unchanged.
 
-Only add patterns SPECIFIC to this project. Don't add generic advice.
-Empty section is fine for simple projects.
--->
+### Image Handling
+- Up to three images are extracted from the article HTML, but only the first image is sent to Telegram (due to Telegram's single‑photo‑with‑caption limitation).
+- Images are hot‑linked (original URLs) – no local download or caching is performed.
+
+### Scheduling
+- The `schedule` library is used to run the main job daily at 12:00 local time.
+- The script runs indefinitely (`while True: schedule.run_pending(); time.sleep(60)`) when started interactively.
+- For production, a systemd service or cron job is recommended instead of relying on the in‑process scheduler.
+
+### Logging
+- Logging is configured at INFO level, with timestamps and module names.
+- Critical steps (new entries found, translation, posting) are logged at INFO, errors at ERROR.
 
 ---
 
 ## Git Workflow
 
-<!--
-SCALING HINT: If this section grows beyond ~80 lines, extract to references/git-workflow.md.
--->
-
 ### Branch Structure
 
-- **`main`** - Production-ready code (protected). Only merge from `dev` after full testing. Triggers production deployment.
-- **`dev`** - Active development. All work happens here. Triggers staging deployment.
+- **`main`** – Production‑ready code (protected). Only merge from `dev` after verification. Triggers production deployment (if configured).
+- **`dev`** – Active development. All feature branches are merged here. Triggers staging deployment (if configured).
 
 ### Testing Requirements
 
-- **On commit:** Code changed → Unit + Integration tests. Docs only → Skip tests.
-- **On merge to dev:** Unit + Integration (auto). E2E (optional).
-- **On merge to main:** Unit + Integration (auto). E2E (strongly recommended).
+- **On commit:** No automated tests are currently set up. Manual verification is required.
+- **On merge to dev:** Run the script manually to ensure RSS fetching, translation, and Telegram posting still work.
+- **On merge to main:** Same as dev; additionally verify that environment variables are correctly set for production.
 
 ### Security & Quality Gates
 
-- **Pre-commit:** Gitleaks scans for secrets (API keys, tokens, credentials). Commit blocked if detected.
-- **Pre-push:** Code review agent validates changes. All checks must pass.
+- **Pre‑commit:** No automated secret scanning is configured; developers must ensure no secrets are committed.
+- **Pre‑push:** No automated code review; changes should be manually reviewed.
 
 ---
 
 ## Testing & Verification
 
-<!--
-SCALING HINT: If this section grows beyond ~60 lines, extract to references/testing.md.
-This section stores proven verification approaches discovered during development.
-Generic testing methodology lives in ~/.claude/skills/test-master/.
--->
-
 ### Test Infrastructure
 
-[How to run tests: framework, runner, test DB setup, environment requirements.]
+No test suite is currently implemented. Verification is performed manually by:
+
+1. Setting up a test Telegram bot and channel with appropriate environment variables.
+2. Running the script locally (`python news_bot.py`) and observing logs.
+3. Checking that a test article is fetched, translated, summarized, and posted correctly.
 
 ### Agent Verification Methods
 
-[Proven methods for agent to verify features. Updated as new methods are discovered.]
+**Telegram Bot Posting**
+- **Method:** Use the Telegram MCP (if available) to read the last message in the target channel.
+- **Setup:** Bot must be running, test channel configured.
+- **Verification:** Confirm that the posted message contains the expected title and summary.
 
-<!-- Example:
-### Telegram Bot
-**Method:** Telegram MCP
-**Setup:** Bot must be running, test user configured
-**Discovered:** 2026-01-15, during messaging feature
--->
+**RSS Feed Parsing**
+- **Method:** Manually inspect the RSS feed URL to ensure it returns entries.
+- **Verification:** Compare entries count with script output.
 
 ### User Verification Methods
 
-[Methods that require user involvement.]
-
-<!-- Example:
-### Visual UI Check
-**What to check:** Layout renders correctly on mobile
-**How:** Open on phone, verify responsive layout
-**Why agent can't:** No visual rendering capability
--->
+**Visual Check of Telegram Post**
+- **What to check:** Message formatting, image presence, translation quality.
+- **How:** Open the Telegram channel and inspect the latest post.
+- **Why agent can't:** No visual rendering capability.
 
 ---
 
 ## Business Rules
 
-<!--
-SCALING HINT: If this section grows beyond ~60 lines, extract to references/business-rules.md.
-DELETE THIS SECTION if project has no complex domain logic (simple CRUD, CLI tool, utility).
-
-Use for: multi-step workflows, state machines, calculation formulas, domain constraints.
--->
-
-<!-- Example:
-### Order Lifecycle
-pending → paid → shipped → delivered
-- Cancel: only if pending or paid
-- Refund: full if pending, partial if paid, none after shipped
-
-### Pricing
-final_price = (subtotal - discount) * (1 + tax_rate) + shipping
-- Discount applies BEFORE tax
-- Free shipping if subtotal > $50
--->
+*No complex business rules – this is a straightforward automation script.*

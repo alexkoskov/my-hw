@@ -7,113 +7,109 @@ Technical architecture overview for AI agents. Helps agents understand HOW the s
 
 ## Tech Stack
 
-**Frontend:** [Framework/Library - e.g., "React 18 with Vite"]
-- **Why:** [One reason - e.g., "Fast dev experience with HMR, widely supported"]
+**Frontend:** None (CLI script with no user interface)
 
-**Backend:** [Framework - e.g., "Express.js" / "FastAPI" / "None - static site"]
-- **Why:** [One reason - e.g., "Minimal overhead for REST API, large ecosystem"]
+**Backend:** Standalone Python script (no web framework)
 
-**Database:** [Database type - e.g., "PostgreSQL" / "MongoDB" / "None"]
-- **Why:** [One reason - e.g., "ACID transactions needed for payments" / "N/A"]
+**Database:** SQLite (local file `news.db`)
+- **Why:** Lightweight, file‑based, zero‑configuration; suits the simple duplicate‑tracking requirement.
 
-<!-- Add other stack components if needed: Mobile, Desktop, etc -->
+**Runtime:** Python 3.8+
+- **Why:** Wide library support, ease of scripting, and compatibility with required packages.
 
 ---
 
 ## Project Structure
 
-[Brief map of where things live - helps agents find relevant code quickly]
-
 ```
-/
-├── src/
-│   ├── components/     [UI components]
-│   ├── api/           [API routes/endpoints]
-│   ├── utils/         [Helper functions]
-│   ├── config/        [Configuration files]
-│   └── types/         [TypeScript types/interfaces]
-├── tests/             [Test files]
-└── .claude/           [AI agent context]
+my-hw/
+├── news_bot.py              # Main script
+├── requirements.txt         # Python dependencies
+├── news.db                  # SQLite database (created automatically)
+├── .env.example             # Example environment variables
+├── README.md                # Project documentation
+├── CLAUDE.md                # AI agent context
+├── work/                    # Development tracking
+│   └── checkpoint.md
+└── .claude/                 # AI skill definitions and project knowledge
+    └── skills/project-knowledge/references/
+        ├── project.md
+        ├── architecture.md
+        ├── patterns.md
+        ├── deployment.md
+        └── ux-guidelines.md
 ```
-
-[Adjust structure to match your project - keep it simple]
 
 ---
 
 ## Key Dependencies
 
-[List ONLY critical packages that agents need to know about - not every dependency]
-
 **Critical packages:**
-- `[package-name]` - [Why we use it - e.g., "Authentication - handles JWT tokens"]
-- `[package-name]` - [Why we use it - e.g., "Stripe SDK - payment processing"]
-- `[package-name]` - [Why we use it - e.g., "Zod - runtime validation for API inputs"]
 
-<!-- Add 3-5 most important dependencies. Skip obvious ones like React, Express basics -->
+- `feedparser` – Parses RSS feeds to extract article entries.
+- `requests` – Fetches HTML content of articles.
+- `beautifulsoup4` – Extracts title, text, and images from HTML.
+- `deep-translator` – Translates English text to Russian using Google Translate.
+- `python-telegram-bot` – Sends messages and images to Telegram channels via Bot API.
+- `schedule` – In‑process job scheduling for daily runs.
 
 ---
 
 ## External Integrations
 
-[Third-party services/APIs this project connects to]
+**Google Translate (via deep-translator)**
+- **Purpose:** Translate article titles and text from English to Russian.
+- **Auth method:** No authentication required (public Google Translate API).
 
-**[Service name - e.g., "Stripe"]**
-- **Purpose:** [What we use it for - e.g., "Payment processing for subscriptions"]
-- **Auth method:** [How we authenticate - e.g., "API key in STRIPE_SECRET_KEY env var"]
-
-<!-- If no external integrations, write: "None - no external API dependencies" -->
+**Telegram Bot API**
+- **Purpose:** Post formatted news summaries with images to a Telegram channel.
+- **Auth method:** Bot token (`TELEGRAM_BOT_TOKEN`) and channel ID (`TELEGRAM_CHANNEL_ID`) stored as environment variables.
 
 ---
 
 ## Data Flow
 
-[Describe in 2-4 sentences how data moves through the system. Focus on the main flow, not edge cases.]
+1. **RSS fetch** – The script downloads the Hot Wheels RSS feed and extracts new entries.
+2. **Duplicate filter** – Each entry’s link is checked against the SQLite `processed_news` table.
+3. **Article scraping** – For each new entry, the script downloads the article page and extracts title, text, and up to three images.
+4. **Translation** – Title and text are translated from English to Russian using Google Translate.
+5. **Summarization** – The translated text is shortened to 3–5 sentences (simple extractive method).
+6. **Telegram posting** – A formatted message (with images) is sent to the configured Telegram channel.
+7. **Storage** – The entry is recorded in the SQLite table to avoid future reprocessing.
 
-<!-- Example: "User submits form → Frontend validates with Zod → POST to /api/users → Backend validates again → Save to PostgreSQL → Return user object → Update UI." -->
+The entire pipeline runs once per day (configurable) via the `schedule` library.
 
 ---
 
 ## Data Model
 
-<!--
-This section describes database/storage architecture.
-SCALING HINT: If this section grows beyond ~80 lines, extract to a separate references/database.md and link from here.
--->
-
-**Database:** [Type - e.g., "PostgreSQL 15" / "MongoDB" / "Not applicable"]
+**Database:** SQLite 3 (single file `news.db`)
 
 ### Main Tables/Collections
 
-[List key tables/collections and their relationships - keep it brief]
-
-**[table_name or CollectionName]**
-- Purpose: [What this stores - e.g., "User accounts and profiles"]
-- Key fields: [List 3-5 most important fields]
-- Relationships: [Links to other tables - e.g., "users.id → orders.user_id"]
-
-<!-- Add main tables. Skip junction/helper tables unless critical -->
+**processed_news**
+- Purpose: Stores links of already processed news articles to prevent duplicates.
+- Key fields:
+  - `link` (TEXT, PRIMARY KEY) – Unique article URL.
+  - `title` (TEXT) – Original article title (for reference).
+  - `pub_date` (TEXT) – Publication date from RSS feed.
+  - `processed_at` (TIMESTAMP) – When the article was processed (default CURRENT_TIMESTAMP).
+- Relationships: None (standalone table).
 
 ### Key Constraints
 
-[Only constraints that would cause errors if violated]
-
-- **Unique constraints:** [e.g., "users.email must be unique"]
-- **Foreign keys:** [e.g., "orders.user_id → users.id (ON DELETE CASCADE)"]
-- **Required fields:** [e.g., "users: email, password_hash are NOT NULL"]
+- **Unique constraints:** `link` is PRIMARY KEY (enforced by SQLite).
+- **Foreign keys:** None.
+- **Required fields:** `link` is NOT NULL.
 
 ### Migration Strategy
 
-**Tool:** [e.g., "Prisma Migrate" / "Alembic" / "Django migrations" / "Manual SQL scripts"]
+**Tool:** Not applicable – the database is created automatically on first run via `init_db()`.
 
-**Process:** [Brief - e.g., "Run `npm run migrate` before deploy. Migrations in /prisma/migrations/. Never edit old migrations."]
+**Process:** The script calls `init_db()` at startup, which creates the table if it does not exist. No manual migration steps are needed.
 
 ### Sensitive Data
 
-[Fields containing PII or secrets - important for security]
+**PII fields:** No PII is stored in the database.
 
-**PII fields:**
-- [table.field - e.g., "users.email"]
-- [table.field - e.g., "users.phone_number"]
-
-<!-- If no sensitive data, write "No PII stored" -->
-<!-- If using alternative storage (localStorage, file system, Chrome Storage API), describe it here instead of tables -->
+**Secrets:** The Telegram bot token and channel ID are stored as environment variables (never committed). They are required for the bot to operate but are not persisted in the database.
