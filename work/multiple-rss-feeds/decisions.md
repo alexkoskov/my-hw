@@ -52,3 +52,40 @@ Review details — in JSON files via links. QA report — in logs/working/.
 - `python3 -c "import json; json.load(open('feeds.json'))"` → valid JSON
 - `python3 -c "from news_bot import load_feeds; print(load_feeds())"` → list of URLs
 - `python3 -m unittest tests.test_config_loader` → 8 tests passed
+
+## Task 2: Feed iteration and error isolation
+
+**Status:** Done
+**Commit:** 307254c
+**Agent:** main agent
+**Summary:** Modified `job()` to iterate over feeds from `load_feeds()`, aggregating entries and applying global limit. Added feed URL to each entry for logging. Improved error logging in `fetch_rss`. Error isolation ensures failures in one feed do not affect others.
+**Deviations:** None
+
+**Reviews:**
+
+*Round 1:*
+- code-reviewer: OK → [logs/working/task-2/code-reviewer-1.json]
+- security-auditor: OK → [logs/working/task-2/security-auditor-1.json]
+- test-reviewer: OK → [logs/working/task-2/test-reviewer-1.json]
+
+**Verification:**
+- `python3 -m unittest tests.test_feed_iteration` → 4 tests passed
+- Smoke test with invalid feed shows error isolation in logs
+
+## Task 3: Enhanced logging
+
+**Status:** Done
+**Commit:** a94e8c6
+**Agent:** main agent
+**Summary:** Added feed index and URL logging in `job()` (e.g., "Fetching feed 1/2: ...") and feed source URL in `process_new_articles()` logs. Smoke test confirms logs contain feed identifiers.
+**Deviations:** None
+
+**Reviews:**
+
+*Round 1:*
+- code-reviewer: OK → [logs/working/task-3/code-reviewer-1.json]
+- test-reviewer: OK → [logs/working/task-3/test-reviewer-1.json]
+
+**Verification:**
+- Smoke test with multiple feeds shows feed identifiers in logs
+- All existing unit tests pass
