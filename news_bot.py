@@ -105,10 +105,12 @@ def fetch_rss(url):
 def filter_new_entries(entries):
     """Filter entries that are not already processed."""
     new_entries = []
+    seen = set()
     for entry in entries:
         link = entry.get('link')
-        if link and not is_processed(link):
+        if link and not is_processed(link) and link not in seen:
             new_entries.append(entry)
+            seen.add(link)
     logger.info(f"Found {len(new_entries)} new entries.")
     return new_entries
 
