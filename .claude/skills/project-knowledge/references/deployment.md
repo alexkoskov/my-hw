@@ -18,7 +18,7 @@ Deployment process, infrastructure, and production operations for AI agents.
 ## Access Information
 
 **SSH Access:**
-- Production: `ssh user@server-ip` (server‑specific; no default)
+- Production: `ssh user@example.com` (deploy path: `/home/user/bot`)
 
 > If not configured, agent will request: server address, username, and port.
 

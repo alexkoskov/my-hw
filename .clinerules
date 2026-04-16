@@ -1,0 +1,78 @@
+# Cline AI Rules for Hot Wheels News Bot
+#
+# This file defines rules and conventions for AI-assisted development in this project.
+# It is used by Cline (and similar AI tools) to generate code that aligns with project standards.
+
+## General Principles
+- **Respect existing patterns**: Follow the code style and architecture already present in the project.
+- **Preserve consistency**: When modifying existing files, maintain the same naming conventions, indentation, and formatting.
+- **Prioritize readability**: Write clear, commented code where necessary, especially for complex logic.
+- **Safety first**: Avoid breaking changes; ensure backward compatibility unless explicitly required.
+
+## Project‑Specific Conventions
+### Database & Deduplication
+- Use `link` as the primary key for the `processed_news` table.
+- Always check `is_processed(link)` before processing an RSS entry to avoid duplicates.
+- Store `title` and `pub_date` for reference, but only `link` is mandatory for deduplication.
+
+### Translation & Fallback
+- The `translate_text` function catches exceptions and logs errors.
+- If translation fails (network error, quota limit), use the original English text as a fallback.
+- Do not introduce new translation providers without updating the error‑handling logic.
+
+### Image Handling
+- Extract up to three images from article HTML, but only the first image is sent to Telegram.
+- Images are hot‑linked (original URLs); do not download or cache them locally.
+
+### Scheduling
+- The `schedule` library runs the main job daily at 12:00 local time.
+- The script loops indefinitely (`while True: schedule.run_pending(); time.sleep(60)`) when started interactively.
+- For production deployments, recommend a systemd service or cron job instead of the in‑process scheduler.
+
+### Logging
+- Logging is configured at INFO level with timestamps and module names.
+- Critical steps (new entries found, translation, posting) should be logged at INFO.
+- Errors should be logged at ERROR with enough context for debugging.
+
+## Git & Branching
+- **Default branch**: `dev` – all feature branches merge here.
+- **Production branch**: `main` – only merge from `dev` after verification.
+- **Commit messages**: Use conventional commits (feat, fix, chore, etc.) when possible.
+- **Testing**: No automated test suite is currently set up; manual verification is required for merges.
+
+## Code Style
+- **Indentation**: 4 spaces (no tabs).
+- **Line length**: Keep lines under 100 characters where practical.
+- **Imports**: Group standard library, third‑party, and local imports, each separated by a blank line.
+- **Docstrings**: Use triple‑double quotes for module, class, and function docstrings (Google style).
+- **Naming**:
+  - `snake_case` for variables, functions, and modules.
+  - `CamelCase` for class names.
+  - `UPPER_CASE` for constants.
+
+## Testing & Verification
+- **Manual verification** is the primary method:
+  1. Set up a test Telegram bot and channel with appropriate environment variables.
+  2. Run the script locally (`python news_bot.py`) and observe logs.
+  3. Confirm that a test article is fetched, translated, summarized, and posted correctly.
+- **Agent verification** can use the Telegram MCP to read the last message in the target channel.
+- **Visual check** of Telegram posts is required for final validation (AI cannot perform visual checks).
+
+## Security & Secrets
+- Never commit secrets (API keys, bot tokens) to the repository.
+- Use environment variables (`.env.example` template) for configuration.
+- No automated secret scanning is configured; developers must manually verify.
+
+## Documentation
+- Update `CLAUDE.md` and `.claude/skills/project‑knowledge/` files when adding new features or changing architecture.
+- Keep `README.md` up‑to‑date with setup and usage instructions.
+- Comment non‑obvious code sections, especially around RSS parsing, translation, and Telegram posting.
+
+## AI‑Specific Guidance
+- When generating code, always refer to the existing project knowledge in `.claude/skills/project‑knowledge/`.
+- Use Context7 MCP tools for library documentation and API references.
+- Prefer incremental, reversible changes over large‑scale refactors unless explicitly requested.
+- If unsure about a pattern, examine similar existing code (e.g., `news_bot.py`, `update_interview.py`).
+
+---
+# End of .clinerules

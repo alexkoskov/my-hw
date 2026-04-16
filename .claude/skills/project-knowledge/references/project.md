@@ -42,7 +42,6 @@ Currently users have to regularly check multiple sites, translate articles thems
 - **Scheduling** – Runs daily at 12:00 local time (configurable) using the `schedule` library.
 
 ---
-
 ## Out of Scope
 
 - No mobile app version.
@@ -50,3 +49,26 @@ Currently users have to regularly check multiple sites, translate articles thems
 - No multi‑language support beyond Russian.
 - No real‑time notifications outside scheduled runs.
 - No user authentication or personalization.
+
+---
+
+## Development Roadmap
+
+**MVP (Current)**
+- RSS monitoring of a single feed (autoevolution.com)
+- Duplicate detection via SQLite
+- Translation using Google Translate
+- Simple extractive summarization (first sentences)
+- Telegram posting with images
+- Daily scheduling
+
+**Near-term enhancements (Planned)**
+- Support multiple RSS feeds via configuration file
+- Improve summarization quality (extractive library or LLM-based)
+- Add health monitoring and error reporting
+
+**Future ideas (Backlog)**
+- Web dashboard for configuration and monitoring
+- LLM-powered summarization (OpenAI API or local model)
+- Extended translation options (DeepL, Yandex.Translate)
+- Support for additional news sources beyond Hot Wheels

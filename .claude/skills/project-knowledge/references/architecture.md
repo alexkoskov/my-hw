@@ -107,9 +107,35 @@ The entire pipeline runs once per day (configurable) via the `schedule` library.
 **Tool:** Not applicable – the database is created automatically on first run via `init_db()`.
 
 **Process:** The script calls `init_db()` at startup, which creates the table if it does not exist. No manual migration steps are needed.
-
 ### Sensitive Data
 
 **PII fields:** No PII is stored in the database.
 
 **Secrets:** The Telegram bot token and channel ID are stored as environment variables (never committed). They are required for the bot to operate but are not persisted in the database.
+
+---
+
+## Planned Enhancements
+
+**Multiple RSS Feeds**
+- Support for multiple RSS feed URLs via a configuration file (`feeds.json` or environment variable)
+- Each feed can be individually enabled/disabled
+- Deduplication across all feeds using the same SQLite database
+
+**Improved Summarization**
+- Replace simple extractive summarization with more advanced methods (e.g., `sumy` library for extractive summarization)
+- Future option to integrate LLM-based summarization (OpenAI API, local Ollama) for higher quality
+
+**Health Monitoring & Error Reporting**
+- Add logging of failures with retry mechanisms
+- Optional notification of errors via Telegram (separate admin channel)
+- Basic uptime monitoring via scheduled self‑checks
+
+**Configuration Management**
+- Move hard‑coded settings (RSS URL, schedule time, limit) to a config file or environment variables
+- Support for runtime configuration updates without code changes
+
+**Web Dashboard (Future)**
+- Simple Flask/FastAPI dashboard to view processed articles, monitor status, and manage feeds
+- Authentication via basic auth or token
+- Read‑only view of logs and statistics
