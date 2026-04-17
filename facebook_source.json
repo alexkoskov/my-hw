@@ -1,0 +1,7 @@
+{
+  "page_url": "https://www.facebook.com/hotwheels/",
+  "filter_keywords": ["event", "announcement", "coming soon", "glow‑n‑fire"],
+  "enabled": true,
+  "method_priority": ["rss", "graph_api", "html"],
+  "access_token": null
+}
