@@ -53,47 +53,47 @@ def load_feeds():
         with open('feeds.json', 'r') as f:
             data = json.load(f)
     except (FileNotFoundError, json.JSONDecodeError) as e:
-        logging.warning(f"feeds.json missing or invalid: {e}. No fallback RSS URL.")
+        logging.warning(f"feeds.json missing or invalid: {e}. Falling back to default RSS URL.")
         try:
             send_admin_notification(f"⚠️ feeds.json missing or invalid: {e}. Bot has no RSS feed to process.")
         except Exception as notify_err:
             logging.error(f"Failed to send admin notification: {notify_err}")
-        return []
+        return [RSS_URL]
 
     if not isinstance(data, list):
-        logging.warning("feeds.json does not contain a list.")
+        logging.warning("feeds.json does not contain a list. Falling back to default RSS URL.")
         try:
             send_admin_notification("⚠️ feeds.json does not contain a list. Bot has no RSS feed to process.")
         except Exception as notify_err:
             logging.error(f"Failed to send admin notification: {notify_err}")
-        return []
+        return [RSS_URL]
 
     valid_urls = []
     for item in data[:5]:  # limit to first 5
         if not isinstance(item, str):
-            logging.warning("feeds.json contains non‑string item.")
+            logging.warning("feeds.json contains non‑string item. Falling back to default RSS URL.")
             try:
                 send_admin_notification("⚠️ feeds.json contains non‑string item. Bot has no RSS feed to process.")
             except Exception as notify_err:
                 logging.error(f"Failed to send admin notification: {notify_err}")
-            return []
+            return [RSS_URL]
         parsed = urlparse(item)
         if not (parsed.scheme and parsed.netloc) or parsed.scheme not in ('http', 'https'):
-            logging.warning(f"Invalid URL in feeds.json: {item}.")
+            logging.warning(f"Invalid URL in feeds.json: {item}. Falling back to default RSS URL.")
             try:
                 send_admin_notification(f"⚠️ Invalid URL in feeds.json: {item}. Bot has no RSS feed to process.")
             except Exception as notify_err:
                 logging.error(f"Failed to send admin notification: {notify_err}")
-            return []
+            return [RSS_URL]
         valid_urls.append(item)
 
     if not valid_urls:
-        logging.warning("feeds.json contains no valid URLs.")
+        logging.warning("feeds.json contains no valid URLs. Falling back to default RSS URL.")
         try:
             send_admin_notification("⚠️ feeds.json contains no valid URLs. Bot has no RSS feed to process.")
         except Exception as notify_err:
             logging.error(f"Failed to send admin notification: {notify_err}")
-        return []
+        return [RSS_URL]
     return valid_urls
 
 
@@ -463,14 +463,17 @@ def job():
     logger.info("Starting daily news collection...")
     feed_urls = load_feeds()
     if not feed_urls:
-        logger.warning("No RSS feeds to process. Admin has been notified.")
-        logger.info("Job finished. Processed 0 new articles.")
-        return
+        logger.warning("No RSS feeds to process. Falling back to default RSS URL.")
+        feed_urls = [RSS_URL]
     logger.info(f"Processing {len(feed_urls)} feeds...")
     all_entries = []
     for i, url in enumerate(feed_urls, 1):
         logger.info(f"Fetching feed {i}/{len(feed_urls)}: {url}")
-        entries = fetch_rss(url)
+        try:
+            entries = fetch_rss(url)
+        except Exception as e:
+            logger.error(f"Failed to fetch feed {url}: {e}")
+            entries = []
         for entry in entries:
             entry['feed_url'] = url
         all_entries.extend(entries)

@@ -69,15 +69,16 @@ my-hw/
 
 ## Data Flow
 
-1. **RSS fetch** – The script downloads the Hot Wheels RSS feed and extracts new entries.
-2. **Duplicate filter** – Each entry’s link is checked against the SQLite `processed_news` table.
-3. **Article scraping** – For each new entry, the script downloads the article page and extracts title, text, and up to three images.
-4. **Translation** – Title and text are translated from English to Russian using Google Translate.
-5. **Summarization** – The translated text is shortened to 3–5 sentences (simple extractive method).
-6. **Telegram posting** – A formatted message (with images) is sent to the configured Telegram channel.
-7. **Storage** – The entry is recorded in the SQLite table to avoid future reprocessing.
+1. **Configuration load** – The script reads `feeds.json` (list of up to 5 RSS feed URLs) or falls back to the default Hot Wheels RSS URL.
+2. **RSS fetch** – For each feed URL, the script downloads the RSS feed and extracts new entries. Errors in individual feeds are isolated and logged, allowing processing to continue with other feeds.
+3. **Duplicate filter** – Each entry’s link is checked against the SQLite `processed_news` table (global deduplication across all feeds).
+4. **Article scraping** – For each new entry, the script downloads the article page and extracts title, text, and up to three images.
+5. **Translation** – Title and text are translated from English to Russian using Google Translate (via `transcreate_text` function).
+6. **Summarization** – The translated text is shortened to 3–5 sentences (simple extractive method) with a character limit.
+7. **Telegram posting** – A formatted message (with images) is sent to the configured Telegram channel.
+8. **Storage** – The entry is recorded in the SQLite table to avoid future reprocessing.
 
-The entire pipeline runs once per day (configurable) via the `schedule` library.
+The entire pipeline runs once per day (configurable) via the `schedule` library. A global limit (default 3) restricts the total number of articles processed per run across all feeds.
 
 ---
 
@@ -116,11 +117,6 @@ The entire pipeline runs once per day (configurable) via the `schedule` library.
 ---
 
 ## Planned Enhancements
-
-**Multiple RSS Feeds**
-- Support for multiple RSS feed URLs via a configuration file (`feeds.json` or environment variable)
-- Each feed can be individually enabled/disabled
-- Deduplication across all feeds using the same SQLite database
 
 **Improved Summarization**
 - Replace simple extractive summarization with more advanced methods (e.g., `sumy` library for extractive summarization)

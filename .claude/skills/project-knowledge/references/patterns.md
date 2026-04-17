@@ -14,7 +14,7 @@ For universal coding standards, see `~/.claude/skills/code-writing/references/un
 
 ### Translation Fallback
 - If Google Translate fails (e.g., network error, quota limit), the original English text is used as a fallback.
-- The translation function `translate_text` catches exceptions and logs the error, returning the input text unchanged.
+- The translation function `transcreate_text` catches exceptions and logs the error, returning the input text unchanged.
 
 ### Image Handling
 - Up to three images are extracted from the article HTML, but only the first image is sent to Telegram (due to Telegram's single‑photo‑with‑caption limitation).
@@ -28,6 +28,16 @@ For universal coding standards, see `~/.claude/skills/code-writing/references/un
 ### Logging
 - Logging is configured at INFO level, with timestamps and module names.
 - Critical steps (new entries found, translation, posting) are logged at INFO, errors at ERROR.
+
+### Multiple RSS Feeds Configuration
+- Feed URLs are read from `feeds.json` (JSON array of up to 5 strings) or fall back to the default RSS URL.
+- The `load_feeds()` function validates URLs and ensures the list length does not exceed 5.
+- If the configuration file is missing, malformed, or contains invalid URLs, the script falls back to the default RSS URL and logs a warning.
+
+### Error Isolation
+- Each feed is processed independently inside a try‑catch block; failures in one feed do not stop processing of other feeds.
+- Feed‑specific errors (network timeouts, invalid XML, etc.) are logged with the feed URL for debugging.
+- The global limit (`limit=3`) is applied across all feeds to prevent overloading external services.
 
 ---
 

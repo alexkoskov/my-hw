@@ -48,8 +48,8 @@ class TestIntegration(unittest.TestCase):
         }
 
     @patch('news_bot.send_to_telegram')
-    @patch('news_bot.summarize_text')
-    @patch('news_bot.translate_text')
+    @patch('news_bot.summarize_text_with_limit')
+    @patch('news_bot.transcreate_text')
     @patch('news_bot.fetch_article')
     @patch('news_bot.fetch_rss')
     @patch('news_bot.load_feeds')
@@ -58,8 +58,8 @@ class TestIntegration(unittest.TestCase):
         mock_load_feeds,
         mock_fetch_rss,
         mock_fetch_article,
-        mock_translate_text,
-        mock_summarize_text,
+        mock_transcreate_text,
+        mock_summarize_text_with_limit,
         mock_send_to_telegram,
     ):
         """
@@ -87,8 +87,8 @@ class TestIntegration(unittest.TestCase):
             'text': 'Article content with several sentences. Second sentence.',
             'images': ['http://example.com/image.jpg'],
         }
-        mock_translate_text.return_value = 'Translated text'
-        mock_summarize_text.return_value = 'Summarized content'
+        mock_transcreate_text.return_value = 'Translated text'
+        mock_summarize_text_with_limit.return_value = 'Summarized content'
         mock_send_to_telegram.return_value = True
 
         # Run the job
@@ -106,9 +106,9 @@ class TestIntegration(unittest.TestCase):
 
         # fetch_article should be called for each unique entry (3 articles)
         self.assertEqual(mock_fetch_article.call_count, 3)
-        # translate_text called twice per article (title + text), summarize_text once
-        self.assertEqual(mock_translate_text.call_count, 6)
-        self.assertEqual(mock_summarize_text.call_count, 3)
+        # transcreate_text called twice per article (title + text), summarize_text_with_limit once
+        self.assertEqual(mock_transcreate_text.call_count, 6)
+        self.assertEqual(mock_summarize_text_with_limit.call_count, 3)
 
         # send_to_telegram should be called for each article (global limit is 3, we have 3)
         self.assertEqual(mock_send_to_telegram.call_count, 3)
@@ -116,19 +116,19 @@ class TestIntegration(unittest.TestCase):
         mock_send_to_telegram.assert_has_calls([
             call(
                 'Translated text',
-                'Summarized content',
+                'Translated text',
                 ['http://example.com/image.jpg'],
                 'http://example.com/article1',
             ),
             call(
                 'Translated text',
-                'Summarized content',
+                'Translated text',
                 ['http://example.com/image.jpg'],
                 'http://example.com/article2',
             ),
             call(
                 'Translated text',
-                'Summarized content',
+                'Translated text',
                 ['http://example.com/image.jpg'],
                 'http://example.com/article3',
             ),
@@ -148,8 +148,8 @@ class TestIntegration(unittest.TestCase):
         self.assertEqual(processed_links, expected_links)
 
     @patch('news_bot.send_to_telegram')
-    @patch('news_bot.summarize_text')
-    @patch('news_bot.translate_text')
+    @patch('news_bot.summarize_text_with_limit')
+    @patch('news_bot.transcreate_text')
     @patch('news_bot.fetch_article')
     @patch('news_bot.fetch_rss')
     @patch('news_bot.load_feeds')
@@ -158,8 +158,8 @@ class TestIntegration(unittest.TestCase):
         mock_load_feeds,
         mock_fetch_rss,
         mock_fetch_article,
-        mock_translate_text,
-        mock_summarize_text,
+        mock_transcreate_text,
+        mock_summarize_text_with_limit,
         mock_send_to_telegram,
     ):
         """
@@ -179,8 +179,8 @@ class TestIntegration(unittest.TestCase):
             'text': 'Content',
             'images': []
         }
-        mock_translate_text.return_value = 'Translated text'
-        mock_summarize_text.return_value = 'Summary'
+        mock_transcreate_text.return_value = 'Translated text'
+        mock_summarize_text_with_limit.return_value = 'Summary'
         mock_send_to_telegram.return_value = True
 
         news_bot.job()
@@ -191,8 +191,8 @@ class TestIntegration(unittest.TestCase):
         self.assertEqual(mock_send_to_telegram.call_count, 1)
 
     @patch('news_bot.send_to_telegram')
-    @patch('news_bot.summarize_text')
-    @patch('news_bot.translate_text')
+    @patch('news_bot.summarize_text_with_limit')
+    @patch('news_bot.transcreate_text')
     @patch('news_bot.fetch_article')
     @patch('news_bot.fetch_rss')
     @patch('news_bot.load_feeds')
@@ -201,8 +201,8 @@ class TestIntegration(unittest.TestCase):
         mock_load_feeds,
         mock_fetch_rss,
         mock_fetch_article,
-        mock_translate_text,
-        mock_summarize_text,
+        mock_transcreate_text,
+        mock_summarize_text_with_limit,
         mock_send_to_telegram,
     ):
         """
@@ -222,8 +222,8 @@ class TestIntegration(unittest.TestCase):
             'text': 'Content',
             'images': []
         }
-        mock_translate_text.return_value = 'Translated text'
-        mock_summarize_text.return_value = 'Summary'
+        mock_transcreate_text.return_value = 'Translated text'
+        mock_summarize_text_with_limit.return_value = 'Summary'
         mock_send_to_telegram.return_value = True
 
         # Job should not crash; error should be logged
