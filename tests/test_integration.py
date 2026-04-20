@@ -29,12 +29,16 @@ class TestIntegration(unittest.TestCase):
         self.channel_patcher = patch('news_bot.TELEGRAM_CHANNEL_ID', '@mock_channel')
         self.token_patcher.start()
         self.channel_patcher.start()
+        # Mock Mattel source so tests stay offline
+        self.mattel_patcher = patch('news_bot.fetch_mattel_news', return_value=[])
+        self.mattel_patcher.start()
 
     def tearDown(self):
         # Stop all patches
         self.db_patcher.stop()
         self.token_patcher.stop()
         self.channel_patcher.stop()
+        self.mattel_patcher.stop()
         # Remove temporary database file
         os.unlink(self.db_path)
 

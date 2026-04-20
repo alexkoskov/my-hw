@@ -20,9 +20,13 @@ class TestJobIteration(unittest.TestCase):
         self.logger_mock = MagicMock()
         self.logger_patch = patch('news_bot.logger', self.logger_mock)
         self.logger_patch.start()
+        # Mock Mattel source so tests stay offline
+        self.mattel_patch = patch('news_bot.fetch_mattel_news', return_value=[])
+        self.mattel_patch.start()
 
     def tearDown(self):
         self.logger_patch.stop()
+        self.mattel_patch.stop()
 
     @patch('news_bot.load_feeds')
     @patch('news_bot.fetch_rss')

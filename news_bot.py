@@ -20,6 +20,8 @@ import os
 import json
 from urllib.parse import urlparse
 
+from mattel_news_source import fetch_mattel_news
+
 # Configuration - set via environment variables
 TELEGRAM_BOT_TOKEN = os.getenv('TELEGRAM_BOT_TOKEN')
 TELEGRAM_CHANNEL_ID = os.getenv('TELEGRAM_CHANNEL_ID')
@@ -477,6 +479,11 @@ def job():
         for entry in entries:
             entry['feed_url'] = url
         all_entries.extend(entries)
+
+    mattel_entries = fetch_mattel_news(notifier=send_admin_notification)
+    logger.info(f"Fetched {len(mattel_entries)} entries from Mattel corporate news")
+    all_entries.extend(mattel_entries)
+
     new_entries = filter_new_entries(all_entries)
     processed = process_new_articles(new_entries, limit=3)
     logger.info(f"Job finished. Processed {processed} new articles.")
