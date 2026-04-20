@@ -212,112 +212,116 @@ def translate_text(text, source='auto', target='ru'):
 
 def transcreate_text(text, source='auto', target='ru', is_title=False):
     """
-    Translate and adapt text for lively Russian Telegram style.
-    Applies Google Translate plus post‑processing to make it more engaging.
+    Translate and adapt text for a lively Russian Telegram channel.
+
+    Google Translate + post-processing:
+    - replaces bureaucratic phrasing with plain Russian
+    - fixes common Hot Wheels mistranslations (brand names, jargon)
+    - flips a few passive constructions to active
+    - prepends a single content-aware emoji to titles (deterministic)
     """
-    import random
     import re
-    
-    # Step 1: base translation
+
     try:
-        translator = GoogleTranslator(source=source, target=target)
-        translated = translator.translate(text)
+        translated = GoogleTranslator(source=source, target=target).translate(text)
     except Exception as e:
         logger.error(f"Translation failed in transcreation: {e}")
         translated = text
-    
-    if not translated or translated.strip() == '':
+
+    if not translated or not translated.strip():
         return text
-    
-    # Step 2: post‑processing
+
     result = translated
-    
-    # Common bureaucratic phrases to replace
+
+    # Bureaucratic → plain Russian
     bureaucratic = {
         r'является': 'это',
         r'осуществляется': 'происходит',
         r'представляет собой': 'это',
         r'в рамках': 'в',
         r'в процессе': 'во время',
+        r'в ходе': 'во время',
         r'на сегодняшний день': 'сейчас',
         r'в настоящее время': 'сейчас',
+        r'на данный момент': 'сейчас',
         r'как правило': 'обычно',
-        r'в связи с тем, что': 'так как',
+        r'в связи с тем,?\s+что': 'так как',
         r'в целях': 'чтобы',
-        r'в случае, если': 'если',
+        r'с целью': 'чтобы',
+        r'в случае,?\s+если': 'если',
         r'по итогам': 'после',
+        r'имеет возможность': 'может',
+        r'получат возможность': 'смогут',
+        r'тем не менее': 'но',
+        r'при этом': 'и',
     }
-    for pattern, replacement in bureaucratic.items():
-        result = re.sub(pattern, replacement, result, flags=re.IGNORECASE)
-    
-    # Make sentences shorter and more energetic
-    # Replace passive voice patterns (simplified)
+    for pattern, repl in bureaucratic.items():
+        result = re.sub(pattern, repl, result, flags=re.IGNORECASE)
+
+    # Passive → active
     result = re.sub(r'был выполн[еён]', 'сделали', result, flags=re.IGNORECASE)
     result = re.sub(r'был представлен', 'представили', result, flags=re.IGNORECASE)
-    
-    # Add emoji for titles
+    result = re.sub(r'было объявлено', 'объявили', result, flags=re.IGNORECASE)
+    result = re.sub(r'был запущен', 'запустили', result, flags=re.IGNORECASE)
+
+    # Hot Wheels domain glossary — fix recurring Google Translate mistakes.
+    # Keeps brand names in English (fandom convention) and fixes terms Google
+    # mangles ("garage build" → "гаражный проект", not "сборка гаража").
+    hw_glossary = {
+        r'\bХот[-\s]?[УВв]илс\b': 'Hot Wheels',
+        r'\bхот[-\s]?колёс\b': 'Hot Wheels',
+        r'\bсборка гаража\b': 'гаражный проект',
+        r'\bсборки гаража\b': 'гаражного проекта',
+        r'\bсборке гаража\b': 'гаражному проекту',
+        r'\bсборкой гаража\b': 'гаражным проектом',
+        r'\bлитой автомобиль\b': 'дайкаст-модель',
+        r'\bлитого автомобиля\b': 'дайкаст-модели',
+        r'\bлитому автомобилю\b': 'дайкаст-модели',
+        r'\bлитым автомобилем\b': 'дайкаст-моделью',
+        r'\b[Тт]ур легенд\b': 'Legends Tour',
+        r'\bлегендарный тур\b': 'Legends Tour',
+        r'\bтур\s+(Hot Wheels[™®]?\s+Legends Tour)': r'\1',
+        r'\bтеперь принимает заявки\b': 'открывает приём заявок',
+        r'\bтеперь принимает заявления\b': 'открывает приём заявок',
+    }
+    for pattern, repl in hw_glossary.items():
+        result = re.sub(pattern, repl, result, flags=re.IGNORECASE)
+
+    # Titles get a single emoji prefix chosen by content (deterministic).
     if is_title:
-        emoji_list = ['🔥', '🚀', '📰', '💥', '🎯', '⚡️', '📢', '👀']
-        emoji = random.choice(emoji_list)
-        # Ensure title ends with strong punctuation
-        if not result.endswith(('!', '?', '.')):
-            result = result + '!'
-        # Prepend emoji
-        result = f"{emoji} {result}"
-        # Optionally make it more clickbaity (simplified)
-        clickbait_prefixes = ['Внимание! ', 'Сенсация: ', 'Важное: ']
-        if random.random() < 0.3:  # 30% chance
-            result = random.choice(clickbait_prefixes) + result
-    
-    # For body text, add some structure markers and emojis between paragraphs
-    if not is_title:
-        # Split into sentences
-        sentences = re.split(r'(?<=[.!?])\s+', result)
-        if len(sentences) > 3:
-            # Helper to pick an emoji that fits the sentence topic
-            def choose_emoji(sentence):
-                sentence_lower = sentence.lower()
-                # Topic mapping (Russian keywords)
-                if any(word in sentence_lower for word in ['машин', 'автомобил', 'грузовик', 'hot wheels', 'колёс']):
-                    return ' 🚗'
-                elif any(word in sentence_lower for word in ['скорост', 'гонк', 'ралли', 'гонки', 'быстр']):
-                    return ' 🏎️'
-                elif any(word in sentence_lower for word in ['новост', 'анонс', 'объявлен', 'сообща']):
-                    return ' 📰'
-                elif any(word in sentence_lower for word in ['побед', 'приз', 'наград', 'чемпион']):
-                    return ' 🏆'
-                elif any(word in sentence_lower for word in ['инновац', 'технолог', 'революц', 'новый']):
-                    return ' 🔥'
-                else:
-                    # fallback to a random thematic emoji
-                    thematic = [' 🚀', ' 💥', ' ⚡️', ' 🎯', ' 🏁', ' 🎉']
-                    return random.choice(thematic)
-            
-            # Insert a fitting emoji after every 2‑3 sentences for readability
-            for i in range(2, len(sentences), 3):
-                if i < len(sentences):
-                    emoji = choose_emoji(sentences[i])
-                    sentences[i] = sentences[i] + emoji
-            result = ' '.join(sentences)
-    
-    # Ensure translated text does not exceed 4000 characters (including spaces and emoji)
+        t = result.lower()
+        if re.search(r'легенд|legends|tour|чемпион|приз|победител', t):
+            emoji = '🏆'
+        elif re.search(r'гонк|скорост|race|ралли', t):
+            emoji = '🏎️'
+        elif re.search(r'релиз|выпуск|launch|запуск|вышел|выходит|дебют', t):
+            emoji = '🚀'
+        elif re.search(r'коллекц|серия|series|collection', t):
+            emoji = '💎'
+        elif re.search(r'сотруднич|партнёр|collab|partner', t):
+            emoji = '🤝'
+        elif re.search(r'анонс|объявл|представля|announce', t):
+            emoji = '📢'
+        elif re.search(r'машин|автомобил|модел|\bcar\b', t):
+            emoji = '🚗'
+        else:
+            emoji = '🔥'
+        return f"{emoji} {result}"
+
+    # Body: truncate to 4000 chars on a sentence boundary.
     if len(result) > 4000:
-        # truncate to last sentence boundary within limit
-        import re
         window = result[:4000]
-        # find last punctuation followed by whitespace or end
         match = re.search(r'[.!?][\s\n]', window[::-1])
         if match:
             cut_pos = 4000 - match.start() - 1
             result = result[:cut_pos]
         else:
-            # fallback to last space
             last_space = window.rfind(' ')
             if last_space != -1:
                 result = result[:last_space]
             else:
                 result = result[:4000]
-    
+
     return result
 
 # Summarization (simple extractive)
