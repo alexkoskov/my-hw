@@ -111,17 +111,34 @@ card button).
 
 ---
 
-## Task 5: Source-parser contract alignment (pending)
+## Task 5: Source-parser contract alignment
 
-**Status:** Pending
-**Commit:** —
-**Summary (planned):** Update `fetch_autoevolution_article`,
-`fetch_mattel_article`, and `fetch_lamley_article` to all return
-`{title, subtitle, paragraphs, images}`. Update
-`telegraph_publisher.publish_article` to accept a `subtitle` parameter and
-render the decorated lead + `<hr>` between lead and body. Update
-`news_bot.send_telegraph_teaser` to emit the minimal one-line body.
-Add/adjust tests accordingly.
+**Status:** Done
+**Commit:** 21b616f
+**Agent:** main agent
+**Summary:**
+- `telegraph_publisher.publish_article(..., subtitle='')` now prepends the
+  decorated lead `p(italic("💬 «{subtitle}»"))` + `hr` before the body when
+  a subtitle is provided; empty subtitle skips both.
+- `news_bot.send_telegraph_teaser(telegraph_url, source_url)` emits the
+  minimal one-line body `🔗 [{domain}]({url})` with
+  `LinkPreviewOptions(url=telegraph_url, show_above_text=True)`. Dropped
+  title, teaser, and `📖 Читать полностью` duplication. Removed the
+  `make_teaser` helper — unused after the signature change.
+- All three source parsers now include `subtitle` in their output dict:
+  - Mattel: from `contentArticle.result.excerpt` in `__NEXT_DATA__`.
+  - Autoevolution scrape: from `div.mgtop_10.mgbot_10.fsz19`.
+  - Autoevolution RSS fallback: empty (no subtitle field in RSS).
+  - Lamley: first `<p>` of `.entry-content`, lifted out of the body so it
+    doesn't repeat below the decorated lead.
+- Tests updated for the new signature and shape; new cases cover
+  subtitle rendering and the empty-subtitle skip path.
+
+**Verification:**
+- `pytest tests/` — 96 passed.
+- Smoke test through `news_bot.process_new_articles` on autoevolution
+  Super Treasure Hunt: subtitle extracted + 13 translated paragraphs + 2
+  images, Telegraph posted, channel card in the locked format.
 
 ---
 
