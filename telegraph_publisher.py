@@ -123,23 +123,6 @@ def _build_content_from_blocks(
         lvl = level if level in (3, 4) else 3
         return {"tag": f"h{lvl}", "children": [text]}
 
-    def _inline_children(runs):
-        """Convert run dicts into Telegra.ph inline nodes (plain text or <a>)."""
-        nodes_ = []
-        for run in runs:
-            text = run.get("text", "")
-            if not text:
-                continue
-            if run.get("href"):
-                nodes_.append({
-                    "tag": "a",
-                    "attrs": {"href": run["href"]},
-                    "children": [text],
-                })
-            else:
-                nodes_.append(text)
-        return nodes_
-
     first_image_idx = next(
         (i for i, b in enumerate(blocks) if b.get("type") == "image"),
         None,
@@ -154,36 +137,21 @@ def _build_content_from_blocks(
         nodes.append(p(i_(f"💬 «{subtitle}»")))
         nodes.append({"tag": "hr"})
 
+    # Block-level rendering uses only the flat `text` field for now.
+    # External `<a>` hrefs live in block["runs"] as metadata so Phase 2
+    # (cross-article linking to our own Telegraph pages) can consume them —
+    # we do NOT emit them here, because rendering raw source links ruined
+    # the reading flow in early attempts (commit a984505).
     for i, block in enumerate(blocks):
         if i == first_image_idx:
             continue
         t = block.get("type")
         if t == "paragraph":
-            if block.get("runs"):
-                nodes.append({"tag": "p", "children": _inline_children(block["runs"])})
-            else:
-                nodes.append(p(block["text"]))
+            nodes.append(p(block["text"]))
         elif t == "lead":
-            if block.get("runs"):
-                nodes.append({
-                    "tag": "p",
-                    "children": [{
-                        "tag": "b",
-                        "children": _inline_children(block["runs"]),
-                    }],
-                })
-            else:
-                nodes.append(p(b_(block["text"])))
+            nodes.append(p(b_(block["text"])))
         elif t == "heading":
-            lvl = block.get("level", 3)
-            lvl = lvl if lvl in (3, 4) else 3
-            if block.get("runs"):
-                nodes.append({
-                    "tag": f"h{lvl}",
-                    "children": _inline_children(block["runs"]),
-                })
-            else:
-                nodes.append(heading(lvl, block["text"]))
+            nodes.append(heading(block.get("level", 3), block["text"]))
         elif t == "image":
             nodes.append(figure_img(block["src"], block.get("caption", "")))
         elif t == "video":

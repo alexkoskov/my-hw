@@ -167,7 +167,9 @@ class TestBuildContentFromBlocks:
         assert iframe["tag"] == "iframe"
         assert iframe["attrs"]["src"].startswith("https://telegra.ph/embed/")
 
-    def test_paragraph_runs_emit_inline_links(self):
+    def test_runs_are_metadata_not_rendered_inline(self):
+        """Phase 1 keeps href metadata in runs but does not emit `<a>` nodes.
+        Phase 2 (cross-article linking) will consume the runs."""
         blocks = [
             {
                 "type": "paragraph",
@@ -181,31 +183,7 @@ class TestBuildContentFromBlocks:
         ]
         nodes = tp._build_content_from_blocks("", blocks, None)
         p_node = nodes[0]
-        assert p_node["tag"] == "p"
-        assert p_node["children"] == [
-            "See ",
-            {"tag": "a", "attrs": {"href": "https://mattel.com/rlc"}, "children": ["Red Line Club"]},
-            " for more.",
-        ]
-
-    def test_lead_runs_wrap_inline_children_in_bold(self):
-        blocks = [{
-            "type": "lead",
-            "runs": [
-                {"text": "Visit "},
-                {"text": "Hot Wheels", "href": "https://hotwheels.com/"},
-                {"text": " site."},
-            ],
-        }]
-        nodes = tp._build_content_from_blocks("", blocks, None)
-        assert nodes[0]["tag"] == "p"
-        bold = nodes[0]["children"][0]
-        assert bold["tag"] == "b"
-        assert bold["children"][1] == {
-            "tag": "a",
-            "attrs": {"href": "https://hotwheels.com/"},
-            "children": ["Hot Wheels"],
-        }
+        assert p_node == {"tag": "p", "children": ["See Red Line Club for more."]}
 
     def test_block_order_preserved_except_hero_promotion(self):
         blocks = [

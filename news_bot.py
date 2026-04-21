@@ -388,16 +388,12 @@ def process_new_articles(entries, limit=3):
             translated_blocks = []
             for b in article['blocks']:
                 nb = dict(b)
-                # Blocks with inline external links carry a `runs` list
-                # ([{text}, {text, href}, ...]). Translate each run's text
-                # so the link positions and href values survive.
-                if b.get('runs'):
-                    nb['runs'] = [
-                        {**r, 'text': transcreate_text(r['text'], is_title=False)}
-                        for r in b['runs']
-                    ]
-                    nb['text'] = ' '.join(r['text'] for r in nb['runs'])
-                elif b.get('text'):
+                # Translate the whole block text as one string for quality —
+                # per-run translation splits sentences and degrades Google
+                # output. We keep the original `runs` (with href metadata)
+                # untouched so a future cross-article pass can map them to
+                # Telegraph URLs; rendering currently ignores the anchors.
+                if b.get('text'):
                     nb['text'] = transcreate_text(b['text'], is_title=False)
                 if b.get('caption'):
                     nb['caption'] = transcreate_text(b['caption'], is_title=False)
