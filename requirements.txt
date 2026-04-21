@@ -4,3 +4,4 @@ beautifulsoup4==4.12.3
 deep-translator==1.11.4
 schedule==1.2.1
 python-telegram-bot==21.10
+curl_cffi==0.15.0

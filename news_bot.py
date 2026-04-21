@@ -354,7 +354,7 @@ def fetch_full_article(entry):
         if 'lamleygroup.com' in domain:
             return lamley_source.fetch_lamley_article(link, notifier=send_admin_notification)
         if 'autoevolution.com' in domain:
-            return autoevolution_source.enrich_entry(entry)
+            return autoevolution_source.fetch_autoevolution_article(entry)
     except Exception as exc:
         logger.exception(f"Source fetcher failed for {link}: {exc}")
         return None
