@@ -17,6 +17,7 @@ from mattel_news_source import (
     _build_entry,
     _extract_entries,
     _is_hotwheels,
+    fetch_mattel_article,
     fetch_mattel_news,
 )
 
@@ -218,6 +219,72 @@ class TestFetchMattelNews:
         entries = fetch_mattel_news(session=session)
 
         assert entries == []
+
+
+class TestFetchMattelArticle:
+    def _article_page(self, body_html='<p>A paragraph.</p><p>Second.</p><ul><li>Bullet</li></ul>',
+                       thumb_url='https://images.example/thumb.jpg',
+                       download_media=None):
+        article = {
+            'title': 'Sample Mattel Article',
+            'body': body_html,
+            'download_media': download_media or [],
+        }
+        payload = {
+            'props': {
+                'pageProps': {
+                    'contentArticle': {
+                        'thumbnail': {'url': thumb_url} if thumb_url else {},
+                        'result': article,
+                    }
+                }
+            }
+        }
+        html = (
+            f'<html><body>'
+            f'<script id="__NEXT_DATA__" type="application/json">{json.dumps(payload)}</script>'
+            f'</body></html>'
+        )
+        return html
+
+    def test_parses_paragraphs_and_images(self):
+        session = MagicMock()
+        session.get.return_value = _make_response(
+            text=self._article_page(download_media=[{'url': 'https://images.example/media.png'}]),
+        )
+        out = fetch_mattel_article('https://corporate.mattel.com/news/x', session=session)
+        assert out['title'] == 'Sample Mattel Article'
+        assert out['paragraphs'] == ['A paragraph.', 'Second.', 'Bullet']
+        assert out['images'] == [
+            'https://images.example/thumb.jpg',
+            'https://images.example/media.png',
+        ]
+
+    def test_http_error_returns_none_and_notifies(self):
+        session = MagicMock()
+        session.get.side_effect = requests.ConnectionError('boom')
+        notifier = MagicMock()
+        out = fetch_mattel_article('https://x', session=session, notifier=notifier)
+        assert out is None
+        notifier.assert_called_once()
+
+    def test_missing_next_data_returns_none_and_notifies(self):
+        session = MagicMock()
+        session.get.return_value = _make_response(text='<html></html>')
+        notifier = MagicMock()
+        out = fetch_mattel_article('https://x', session=session, notifier=notifier)
+        assert out is None
+        notifier.assert_called_once()
+
+    def test_oversized_response_returns_none(self):
+        session = MagicMock()
+        resp = _make_response(text='ok')
+        resp.content = b'x' * (MAX_RESPONSE_SIZE + 1)
+        session.get.return_value = resp
+        notifier = MagicMock()
+        out = fetch_mattel_article('https://x', session=session, notifier=notifier)
+        assert out is None
+        notifier.assert_called_once()
 
 
 if __name__ == "__main__":

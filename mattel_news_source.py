@@ -14,6 +14,7 @@ import time
 from typing import Callable, Dict, List, Optional
 
 import requests
+from bs4 import BeautifulSoup
 
 logger = logging.getLogger(__name__)
 
@@ -138,3 +139,65 @@ def _notify(notifier, message: str) -> None:
         notifier(message)
     except Exception:
         logger.exception("Failed to send admin notification")
+
+
+def fetch_mattel_article(
+    link: str,
+    session: Optional[requests.Session] = None,
+    notifier: Optional[Callable[[str], None]] = None,
+) -> Optional[Dict]:
+    """Fetch a single Mattel article page and return {title, paragraphs, images}.
+
+    Parses the article page's ``__NEXT_DATA__`` to get the HTML body (from
+    ``contentArticle.result.body``), converts it to plain-text paragraphs,
+    and collects images from ``contentArticle.thumbnail`` plus the
+    ``download_media`` attachments.
+
+    Returns ``None`` on any failure and notifies the admin via ``notifier``.
+    """
+    http = session or requests
+    try:
+        response = http.get(
+            link,
+            headers={"User-Agent": USER_AGENT},
+            timeout=REQUEST_TIMEOUT,
+        )
+        response.raise_for_status()
+        if len(response.content) > MAX_RESPONSE_SIZE:
+            raise MattelNewsError(
+                f"Article too large: {len(response.content)} > {MAX_RESPONSE_SIZE}"
+            )
+        match = _NEXT_DATA_RE.search(response.text)
+        if not match:
+            raise MattelNewsError("__NEXT_DATA__ not found on article page")
+        data = json.loads(match.group(1))
+        content_article = data["props"]["pageProps"]["contentArticle"]
+        article = content_article["result"]
+    except (requests.RequestException, json.JSONDecodeError, KeyError, TypeError,
+            MattelNewsError) as exc:
+        _notify(notifier, f"Mattel article fetch error ({link}): {exc}")
+        return None
+
+    body_html = article.get("body") or ""
+    paragraphs: List[str] = []
+    if body_html:
+        soup = BeautifulSoup(body_html, "html.parser")
+        for tag in soup.find_all(["p", "li", "h1", "h2", "h3", "h4"]):
+            text = tag.get_text(" ", strip=True)
+            if text:
+                paragraphs.append(text)
+
+    images: List[str] = []
+    thumb_url = (content_article.get("thumbnail") or {}).get("url")
+    if thumb_url:
+        images.append(thumb_url)
+    for media in article.get("download_media") or []:
+        url = media.get("url")
+        if url and url not in images:
+            images.append(url)
+
+    return {
+        "title": article.get("title", ""),
+        "paragraphs": paragraphs,
+        "images": images,
+    }

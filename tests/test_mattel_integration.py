@@ -52,11 +52,12 @@ class TestMattelIntegration(unittest.TestCase):
     @patch("news_bot.telegraph_publisher.publish_article", return_value="https://telegra.ph/m")
     @patch("news_bot.fetch_rss", return_value=[])
     @patch("news_bot.load_feeds", return_value=[])
-    @patch("news_bot.fetch_article", return_value=None)
+    @patch("news_bot.fetch_mattel_article",
+           return_value={"title": "Hot Wheels article", "paragraphs": ["Body."], "images": []})
     @patch("news_bot.transcreate_text", side_effect=lambda t, **k: t)
     @patch("mattel_news_source.requests.get")
     def test_mattel_post_flows_into_telegram_and_db(
-        self, mock_get, mock_transcreate, mock_fetch_article, mock_feeds, mock_fetch_rss, mock_publish, mock_tg
+        self, mock_get, mock_transcreate, mock_article, mock_feeds, mock_fetch_rss, mock_publish, mock_tg
     ):
         """Mattel HW entry reaches Telegram and is persisted in DB."""
         mock_get.return_value = self._make_response(text=self.fixture_html)
@@ -104,7 +105,8 @@ class TestMattelIntegration(unittest.TestCase):
         mock_get.return_value = self._make_response(text=self.fixture_html)
         mock_tg.return_value = True
 
-        with patch("news_bot.fetch_article", return_value=None):
+        article_mock = {"title": "Hot Wheels article", "paragraphs": ["Body."], "images": []}
+        with patch("news_bot.fetch_mattel_article", return_value=article_mock):
             with patch("news_bot.transcreate_text", side_effect=lambda t, **k: t):
                 news_bot.job()
                 self.assertEqual(mock_tg.call_count, 1)

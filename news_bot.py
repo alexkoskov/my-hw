@@ -8,7 +8,6 @@ import sqlite3
 import logging
 import feedparser
 import requests
-from bs4 import BeautifulSoup
 from deep_translator import GoogleTranslator
 import schedule
 import asyncio
@@ -20,7 +19,9 @@ import os
 import json
 from urllib.parse import urlparse
 
-from mattel_news_source import fetch_mattel_news
+from mattel_news_source import fetch_mattel_news, fetch_mattel_article
+import autoevolution_source
+import lamley_source
 import telegraph_publisher
 from telegraph_publisher import TelegraphError
 
@@ -162,45 +163,6 @@ def filter_new_entries(entries):
     logger.info(f"Found {len(new_entries)} new entries.")
     return new_entries
 
-# Article parsing
-def fetch_article(url):
-    """Fetch article HTML and parse title, text, images."""
-    try:
-        headers = {
-            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36',
-            'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8',
-            'Accept-Language': 'en-US,en;q=0.5',
-        }
-        response = requests.get(url, headers=headers, timeout=10)
-        response.raise_for_status()
-        soup = BeautifulSoup(response.text, 'html.parser')
-        
-        # Extract title
-        title = soup.find('h1').get_text(strip=True) if soup.find('h1') else ''
-        
-        # Extract article body - adjust selector based on actual site structure
-        article_body = soup.find('article')
-        if not article_body:
-            article_body = soup.find('div', class_='article-content')
-        text = article_body.get_text(strip=True) if article_body else ''
-        
-        # Extract images (main article images)
-        images = []
-        img_tags = article_body.find_all('img') if article_body else []
-        for img in img_tags:
-            src = img.get('src')
-            if src and src.startswith('http'):
-                images.append(src)
-        
-        return {
-            'title': title,
-            'text': text,
-            'images': images[:3]  # keep up to 3
-        }
-    except Exception as e:
-        logger.error(f"Failed to fetch article {url}: {e}")
-        return None
-
 # Translation
 def translate_text(text, source='auto', target='ru'):
     """Translate text using Google Translate."""
@@ -326,70 +288,6 @@ def transcreate_text(text, source='auto', target='ru', is_title=False):
 
     return result
 
-# Summarization (simple extractive)
-def summarize_text(text, sentences=5):
-    """Extract first N sentences as summary."""
-    import re
-    # naive sentence split
-    sentences_list = re.split(r'(?<=[.!?])\s+', text)
-    summary = ' '.join(sentences_list[:sentences])
-    return summary
-
-def summarize_text_with_limit(text, char_limit=4096):
-    """
-    Create an extractive summary of the text by selecting whole sentences
-    up to the character limit, preserving author style.
-    Returns the summary (may be shorter than char_limit).
-    """
-    import re
-    if len(text) <= char_limit:
-        return text
-    
-    # Split into sentences (naive split at punctuation followed by whitespace)
-    sentences = re.split(r'(?<=[.!?])\s+', text)
-    
-    summary_parts = []
-    current_len = 0
-    
-    for sent in sentences:
-        sent_len = len(sent)
-        # Add a space before if not the first sentence
-        extra = 1 if summary_parts else 0
-        if current_len + sent_len + extra <= char_limit:
-            summary_parts.append(sent)
-            current_len += sent_len + extra
-        else:
-            # Cannot add this sentence without exceeding limit
-            break
-    
-    if summary_parts:
-        summary = ' '.join(summary_parts)
-        # Ensure we didn't exceed limit due to extra spaces (should not happen)
-        if len(summary) > char_limit:
-            # fallback to truncation at last sentence boundary
-            # Find the last sentence boundary before char_limit
-            window = summary[:char_limit]
-            match = re.search(r'[.!?][\s\n]', window[::-1])
-            if match:
-                cut_pos = char_limit - match.start() - 1
-                summary = summary[:cut_pos]
-            else:
-                last_space = window.rfind(' ')
-                if last_space != -1:
-                    summary = summary[:last_space]
-                else:
-                    summary = summary[:char_limit]
-        return summary
-    
-    # If no sentences could be added (first sentence longer than char_limit),
-    # fall back to truncation at the last space before limit.
-    window = text[:char_limit]
-    last_space = window.rfind(' ')
-    if last_space != -1:
-        return text[:last_space]
-    # Otherwise hard cut
-    return text[:char_limit]
-
 TEASER_MAX_CHARS = 300
 
 
@@ -440,46 +338,49 @@ def send_telegraph_teaser(title, teaser, telegraph_url, source_url):
     return asyncio.run(_send())
 
 # Processing pipeline
-def get_article_data(entry):
-    """Extract article title, text, and images from entry, trying fetch first."""
-    link = entry.get('link')
-    # try fetching full article
-    article = fetch_article(link)
-    if article:
-        return article
-    # fallback to RSS summary
-    import re
-    import html
-    summary = entry.get('summary') or entry.get('description') or ''
-    # strip HTML tags
-    text = re.sub(r'<[^>]+>', '', summary)
-    # decode HTML entities
-    text = html.unescape(text)
-    return {
-        'title': entry.get('title', ''),
-        'text': text,
-        'images': []
-    }
+def fetch_full_article(entry):
+    """Dispatch to the source-specific fetcher based on the article domain.
+
+    Returns ``{'title', 'paragraphs', 'images'}`` or ``None`` if no handler
+    matches or the fetch fails. Supported sources: corporate.mattel.com
+    (parses __NEXT_DATA__), lamleygroup.com (HTML scrape),
+    autoevolution.com (RSS-only — Cloudflare blocks scraping).
+    """
+    link = entry.get('link') or ''
+    domain = urlparse(link).netloc.lower()
+    try:
+        if 'corporate.mattel.com' in domain:
+            return fetch_mattel_article(link, notifier=send_admin_notification)
+        if 'lamleygroup.com' in domain:
+            return lamley_source.fetch_lamley_article(link, notifier=send_admin_notification)
+        if 'autoevolution.com' in domain:
+            return autoevolution_source.enrich_entry(entry)
+    except Exception as exc:
+        logger.exception(f"Source fetcher failed for {link}: {exc}")
+        return None
+    logger.warning(f"No source handler for domain: {domain}")
+    return None
+
 
 def process_new_articles(entries, limit=3):
-    """Translate each entry, publish full text to Telegraph, post teaser to channel."""
+    """Translate full body, publish to Telegraph, post teaser — one article at a time."""
     count = 0
     for entry in entries[:limit]:
         link = entry.get('link')
         title = entry.get('title')
         pub_date = entry.get('published', '')
-
         feed_url = entry.get('feed_url', 'unknown')
         logger.info(f"Processing: {title} (from {feed_url})")
-        article = get_article_data(entry)
 
-        # Split the article body into paragraphs; fall back to title if empty.
-        raw_paragraphs = [p.strip() for p in (article.get('text') or '').split('\n') if p.strip()]
-        if not raw_paragraphs:
-            raw_paragraphs = [article.get('title') or title or '']
+        article = fetch_full_article(entry)
+        if not article or not article.get('paragraphs'):
+            logger.warning(f"No article data for {link}, skipping")
+            continue
 
         translated_title = transcreate_text(article.get('title') or title, is_title=True)
-        translated_paragraphs = [transcreate_text(p, is_title=False) for p in raw_paragraphs]
+        translated_paragraphs = [
+            transcreate_text(p, is_title=False) for p in article['paragraphs']
+        ]
 
         try:
             telegraph_url = telegraph_publisher.publish_article(
