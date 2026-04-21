@@ -108,7 +108,13 @@ def _build_content_from_blocks(
     Telegram preview thumbnail; the rest appear in their original positions.
     """
     def p(*children): return {"tag": "p", "children": list(children)}
-    def figure_img(src): return {"tag": "figure", "children": [{"tag": "img", "attrs": {"src": src}}]}
+
+    def figure_img(src, caption=""):
+        children = [{"tag": "img", "attrs": {"src": src}}]
+        if caption:
+            children.append({"tag": "figcaption", "children": [caption]})
+        return {"tag": "figure", "children": children}
+
     def iframe(src): return {"tag": "iframe", "attrs": {"src": src}}
     def a(href, text): return {"tag": "a", "attrs": {"href": href}, "children": [text]}
     def i_(text): return {"tag": "i", "children": [text]}
@@ -124,7 +130,8 @@ def _build_content_from_blocks(
 
     nodes: list = []
     if first_image_idx is not None:
-        nodes.append(figure_img(blocks[first_image_idx]["src"]))
+        hero = blocks[first_image_idx]
+        nodes.append(figure_img(hero["src"], hero.get("caption", "")))
 
     if subtitle:
         nodes.append(p(i_(f"💬 «{subtitle}»")))
@@ -141,7 +148,7 @@ def _build_content_from_blocks(
         elif t == "heading":
             nodes.append(heading(block.get("level", 3), block["text"]))
         elif t == "image":
-            nodes.append(figure_img(block["src"]))
+            nodes.append(figure_img(block["src"], block.get("caption", "")))
         elif t == "video":
             nodes.append(iframe(block["src"]))
 

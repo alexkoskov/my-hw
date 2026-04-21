@@ -134,6 +134,52 @@ class TestBuildContent:
         assert all(n["tag"] != "hr" for n in nodes)
 
 
+class TestBuildContentFromBlocks:
+    def test_image_caption_becomes_figcaption(self):
+        blocks = [
+            {"type": "image", "src": "hero.jpg", "caption": "Photo: Mattel"},
+            {"type": "paragraph", "text": "Body."},
+            {"type": "image", "src": "inline.jpg", "caption": "Photo: Lamley Group"},
+        ]
+        nodes = tp._build_content_from_blocks("", blocks, None)
+        # Hero figure has figcaption
+        hero_children = nodes[0]["children"]
+        assert hero_children[0]["tag"] == "img"
+        assert hero_children[0]["attrs"]["src"] == "hero.jpg"
+        assert hero_children[1] == {"tag": "figcaption", "children": ["Photo: Mattel"]}
+        # Inline figure also has its caption
+        inline_figure = nodes[2]
+        assert inline_figure["tag"] == "figure"
+        assert inline_figure["children"][1] == {"tag": "figcaption", "children": ["Photo: Lamley Group"]}
+
+    def test_image_without_caption_has_no_figcaption(self):
+        blocks = [{"type": "image", "src": "hero.jpg"}]
+        nodes = tp._build_content_from_blocks("", blocks, None)
+        assert nodes[0]["children"] == [{"tag": "img", "attrs": {"src": "hero.jpg"}}]
+
+    def test_video_block_becomes_iframe(self):
+        blocks = [
+            {"type": "paragraph", "text": "text"},
+            {"type": "video", "src": "https://telegra.ph/embed/youtube?url=..."},
+        ]
+        nodes = tp._build_content_from_blocks("", blocks, None)
+        iframe = nodes[-1]
+        assert iframe["tag"] == "iframe"
+        assert iframe["attrs"]["src"].startswith("https://telegra.ph/embed/")
+
+    def test_block_order_preserved_except_hero_promotion(self):
+        blocks = [
+            {"type": "paragraph", "text": "p1"},
+            {"type": "image", "src": "img1.jpg"},
+            {"type": "paragraph", "text": "p2"},
+            {"type": "image", "src": "img2.jpg"},
+        ]
+        nodes = tp._build_content_from_blocks("", blocks, None)
+        # First image promoted to hero; remaining blocks in original order
+        tags = [n["tag"] for n in nodes]
+        assert tags == ["figure", "p", "p", "figure"]
+
+
 class TestPublishArticle:
     def test_success(self, monkeypatch):
         monkeypatch.setenv(tp.ENV_TOKEN_KEY, "tok")

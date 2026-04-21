@@ -114,13 +114,30 @@ def _scrape_article_page(link: str, fetcher=None) -> Optional[Dict]:
     slug_m = ARTICLE_SLUG_RE.search(link)
     slug = slug_m.group(1) if slug_m else ""
 
-    # Hero image — sits outside .newstext in `div.ch_pic.mainpic > a > img`.
-    hero_src = None
-    hero_container = soup.find("div", class_="ch_pic")
+    def _image_from_ch_pic(ch_pic) -> Optional[Dict]:
+        """Extract {src, caption} from a `div.ch_pic` container — or None."""
+        img = ch_pic.find("img")
+        anchor = ch_pic.find("a", class_="fullimg")
+        src = ""
+        if anchor and (anchor.get("href") or "").startswith("http"):
+            href = anchor["href"]
+            if IMAGE_EXT_RE.search(href):
+                src = href
+        if not src and img:
+            candidate = img.get("src") or img.get("data-src") or ""
+            if candidate.startswith("http"):
+                src = candidate
+        if not src:
+            return None
+        cap_div = ch_pic.find("div", class_="ch_pic_crd")
+        caption = cap_div.get_text(" ", strip=True) if cap_div else ""
+        return {"type": "image", "src": src, "caption": caption}
+
+    # Hero image — sits outside .newstext in `div.ch_pic.mainpic`.
+    hero_block = None
+    hero_container = soup.find("div", class_="mainpic")
     if hero_container:
-        img = hero_container.find("img")
-        if img and (img.get("src") or "").startswith("http"):
-            hero_src = img.get("src")
+        hero_block = _image_from_ch_pic(hero_container)
 
     blocks: List[Dict] = []
     seen_media = set()
@@ -141,38 +158,33 @@ def _scrape_article_page(link: str, fetcher=None) -> Optional[Dict]:
                 blocks.append({"type": "lead", "text": text})
             continue
 
-        # Media inside this child: <a> wrappers carry the authoritative URL
-        # (full-size gallery link or YouTube/Vimeo).
-        for anchor in child.find_all("a", href=True):
-            href = anchor["href"]
-            embed = _video_embed_url(href)
-            if embed:
-                if embed not in seen_media:
-                    seen_media.add(embed)
-                    blocks.append({"type": "video", "src": embed})
+        # Inline gallery images — `<div class="ch_pic">` often nested inside
+        # `<p>` tags; each one carries its own `<div class="ch_pic_crd">`
+        # caption (e.g. "Photo: Lamley Group"). We extract them (and detach
+        # from the DOM) so the paragraph's own text reader below doesn't
+        # re-emit the caption as a separate paragraph block.
+        for ch_pic in child.find_all("div", class_="ch_pic"):
+            block = _image_from_ch_pic(ch_pic)
+            ch_pic.extract()
+            if not block:
                 continue
-            if IMAGE_EXT_RE.search(href) and slug and slug in href:
-                base = href.split("?", 1)[0]
-                if base in seen_media:
-                    continue
-                seen_media.add(base)
-                blocks.append({"type": "image", "src": href})
+            base = block["src"].split("?", 1)[0]
+            if base in seen_media:
+                continue
+            seen_media.add(base)
+            blocks.append(block)
 
-        # Direct <img> not wrapped in <a> — rare; skip thumbnails / avatars.
-        for img in child.find_all("img"):
-            if img.find_parent("a"):
+        # Videos: any `<a>` with a YouTube/Vimeo href (usually wrapped around a
+        # preview thumbnail). Detach the anchor too so its link text doesn't
+        # leak into the paragraph below.
+        for anchor in list(child.find_all("a", href=True)):
+            embed = _video_embed_url(anchor["href"])
+            if not embed:
                 continue
-            src = img.get("src") or img.get("data-src") or ""
-            if not src.startswith("http"):
-                continue
-            if "editors/" in src or "_img/" in src or "130x" in src:
-                continue
-            if slug and slug in src:
-                base = src.split("?", 1)[0]
-                if base in seen_media:
-                    continue
-                seen_media.add(base)
-                blocks.append({"type": "image", "src": src})
+            anchor.extract()
+            if embed not in seen_media:
+                seen_media.add(embed)
+                blocks.append({"type": "video", "src": embed})
 
         # Paragraph / heading text
         if child.name == "p":
@@ -189,8 +201,8 @@ def _scrape_article_page(link: str, fetcher=None) -> Optional[Dict]:
                 })
 
     # Prepend the hero image so it becomes the Telegraph preview thumbnail.
-    if hero_src and hero_src.split("?", 1)[0] not in seen_media:
-        blocks.insert(0, {"type": "image", "src": hero_src})
+    if hero_block and hero_block["src"].split("?", 1)[0] not in seen_media:
+        blocks.insert(0, hero_block)
 
     if not blocks:
         return None

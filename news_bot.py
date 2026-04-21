@@ -379,6 +379,8 @@ def process_new_articles(entries, limit=3):
                 nb = dict(b)
                 if b.get('text'):
                     nb['text'] = transcreate_text(b['text'], is_title=False)
+                if b.get('caption'):
+                    nb['caption'] = transcreate_text(b['caption'], is_title=False)
                 translated_blocks.append(nb)
 
         try:

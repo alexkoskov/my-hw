@@ -16,15 +16,19 @@ SAMPLE_ARTICLE_HTML = """
 <html><body>
 <h1>Hot Wheels Chase Car</h1>
 <div class="mgtop_10 mgbot_10 fsz19">Editorial lead about the rare Porsche.</div>
-<div class="ch_pic mainpic"><a class="fullimg" href="#"><picture><img
-  src="https://s1.cdn.example/images/news/hot-wheels-chase-268757-7.jpg" /></picture></a></div>
+<div class="ch_pic mainpic"><a class="fullimg"
+  href="https://s1.cdn.example/images/news/hot-wheels-chase-268757-7.jpg"><picture><img
+  src="https://s1.cdn.example/images/news/hot-wheels-chase-268757-7.jpg" /></picture></a>
+  <div class="ch_pic_crd">Photo: Mattel</div></div>
 <div class="newstext">
 <div class="sanscond mgtop_20 fsz22 bold">Bold intro paragraph from the editor.</div>
 <div class="mgtop_20"><img src="https://s1.cdn.example/_img/g_news.png" /></div>
 <p>The rare Porsche is finally here.</p>
 <p>Production run details follow.</p>
-<p><a href="https://s1.cdn.example/images/news/gallery/hot-wheels-chase-car-to-hunt-for-is-a-rare-porsche_1.jpg"><img
-  src="https://s1.cdn.example/images/news-gallery-860x/hot-wheels-chase-car-to-hunt-for-is-a-rare-porsche-thumbnail_1.jpg" /></a></p>
+<p><div class="ch_pic mgbot_20"><a class="fullimg"
+  href="https://s1.cdn.example/images/news/gallery/hot-wheels-chase-car-to-hunt-for-is-a-rare-porsche_1.jpg"><img
+  src="https://s1.cdn.example/images/news-gallery-860x/hot-wheels-chase-car-to-hunt-for-is-a-rare-porsche-thumbnail_1.jpg" /></a>
+  <div class="ch_pic_crd">Photo: Lamley Group</div></div></p>
 <h2>Why this matters</h2>
 <p>Collectors have waited months.</p>
 <p><a href="https://youtu.be/abc123"><img
@@ -127,15 +131,19 @@ class TestScrapeArticlePage:
             "paragraph",    # "Collectors have waited..."
             "video",        # YouTube embed
         ]
-        # Hero is the first image
-        assert out["blocks"][0]["src"] == (
+        # Hero is the first image + caption from div.ch_pic_crd
+        hero = out["blocks"][0]
+        assert hero["src"] == (
             "https://s1.cdn.example/images/news/hot-wheels-chase-268757-7.jpg"
         )
-        # Inline image uses the <a href> (full-size gallery), not the thumbnail src
-        assert out["blocks"][4]["src"] == (
+        assert hero["caption"] == "Photo: Mattel"
+        # Inline image uses the <a href> (full-size gallery) + its own caption
+        inline = out["blocks"][4]
+        assert inline["src"] == (
             "https://s1.cdn.example/images/news/gallery/"
             "hot-wheels-chase-car-to-hunt-for-is-a-rare-porsche_1.jpg"
         )
+        assert inline["caption"] == "Photo: Lamley Group"
         # YouTube URL wrapped into the Telegra.ph proxy form (raw URLs get
         # stripped by Telegraph, breaking Instant View).
         assert out["blocks"][7]["src"] == (
