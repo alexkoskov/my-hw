@@ -59,6 +59,10 @@ def fetch_lamley_article(
         return None
 
     soup = BeautifulSoup(response.text, "html.parser")
+    # Strip inline scripts/styles so their JS doesn't end up in body text.
+    for junk in soup(["script", "style", "noscript"]):
+        junk.decompose()
+
     title_tag = soup.find("h1", class_="entry-title") or soup.find("h1")
     title = title_tag.get_text(" ", strip=True) if title_tag else ""
 

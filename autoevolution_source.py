@@ -136,6 +136,12 @@ def _scrape_article_page(link: str, fetcher=None) -> Optional[Dict]:
         return None
 
     soup = BeautifulSoup(response.text, "html.parser")
+    # Strip script/style/noscript so their content doesn't leak into
+    # paragraph text (autoevolution embeds `googletag.display(...)` calls
+    # inside article body <script> tags).
+    for junk in soup(["script", "style", "noscript"]):
+        junk.decompose()
+
     title_tag = soup.find("h1")
     title = title_tag.get_text(" ", strip=True) if title_tag else ""
 
