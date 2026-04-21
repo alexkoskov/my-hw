@@ -14,13 +14,15 @@ import schedule
 import asyncio
 import time
 from datetime import datetime
-from telegram import Bot
+from telegram import Bot, LinkPreviewOptions
 from telegram.error import TelegramError
 import os
 import json
 from urllib.parse import urlparse
 
 from mattel_news_source import fetch_mattel_news
+import telegraph_publisher
+from telegraph_publisher import TelegraphError
 
 # Configuration - set via environment variables
 TELEGRAM_BOT_TOKEN = os.getenv('TELEGRAM_BOT_TOKEN')
@@ -388,21 +390,47 @@ def summarize_text_with_limit(text, char_limit=4096):
     # Otherwise hard cut
     return text[:char_limit]
 
-# Telegram posting
-def send_to_telegram(title, summary, images, original_link):
-    """Send formatted post to Telegram channel."""
+TEASER_MAX_CHARS = 300
+
+
+def make_teaser(text, max_chars=TEASER_MAX_CHARS):
+    """Extract the leading sentences from `text` as a short channel teaser."""
+    import re
+    sentences = re.split(r'(?<=[.!?])\s+', text.strip())
+    out = []
+    total = 0
+    for s in sentences:
+        if out and total + len(s) > max_chars:
+            break
+        out.append(s)
+        total += len(s) + 1
+    return ' '.join(out).strip()
+
+
+def send_telegraph_teaser(title, teaser, telegraph_url, source_url):
+    """Post a teaser to the channel with the Telegraph page as Instant View preview."""
     if not TELEGRAM_BOT_TOKEN or not TELEGRAM_CHANNEL_ID:
         logger.error("Telegram credentials not set.")
         return False
 
     async def _send():
         bot = Bot(token=TELEGRAM_BOT_TOKEN)
-        message = f"*{title}*\n\n{summary}\n\nИсточник: [читать оригинал]({original_link})"
+        text = (
+            f"*{title}*\n\n"
+            f"{teaser}\n\n"
+            f"📖 [Читать полностью]({telegraph_url})\n"
+            f"🔗 [Источник]({source_url})"
+        )
         try:
-            if images:
-                await bot.send_photo(chat_id=TELEGRAM_CHANNEL_ID, photo=images[0], caption=message, parse_mode='Markdown')
-            else:
-                await bot.send_message(chat_id=TELEGRAM_CHANNEL_ID, text=message, parse_mode='Markdown')
+            await bot.send_message(
+                chat_id=TELEGRAM_CHANNEL_ID,
+                text=text,
+                parse_mode='Markdown',
+                link_preview_options=LinkPreviewOptions(
+                    url=telegraph_url,
+                    show_above_text=True,
+                ),
+            )
             logger.info(f"Posted to Telegram: {title}")
             return True
         except TelegramError as e:
@@ -434,33 +462,42 @@ def get_article_data(entry):
     }
 
 def process_new_articles(entries, limit=3):
-    """Process up to limit new articles."""
+    """Translate each entry, publish full text to Telegraph, post teaser to channel."""
     count = 0
     for entry in entries[:limit]:
         link = entry.get('link')
         title = entry.get('title')
         pub_date = entry.get('published', '')
-        
+
         feed_url = entry.get('feed_url', 'unknown')
         logger.info(f"Processing: {title} (from {feed_url})")
         article = get_article_data(entry)
-        
-        # Summarize original text first (limit 4096 chars)
-        summarized_raw = summarize_text_with_limit(article['text'], char_limit=4096)
-        # Translate title and summarized text with transcreation
-        translated_title = transcreate_text(article['title'], is_title=True)
-        translated_summary = transcreate_text(summarized_raw, is_title=False)
-        
-        # Use translated summary as final text
-        summary = translated_summary
-        
-        # Post to Telegram
-        success = send_to_telegram(translated_title, summary, article['images'], link)
-        if success:
+
+        # Split the article body into paragraphs; fall back to title if empty.
+        raw_paragraphs = [p.strip() for p in (article.get('text') or '').split('\n') if p.strip()]
+        if not raw_paragraphs:
+            raw_paragraphs = [article.get('title') or title or '']
+
+        translated_title = transcreate_text(article.get('title') or title, is_title=True)
+        translated_paragraphs = [transcreate_text(p, is_title=False) for p in raw_paragraphs]
+
+        try:
+            telegraph_url = telegraph_publisher.publish_article(
+                title=translated_title,
+                paragraphs=translated_paragraphs,
+                images=article.get('images') or [],
+                source_url=link,
+            )
+        except (TelegraphError, requests.RequestException) as exc:
+            logger.error(f"Telegraph publish failed for {link}: {exc}")
+            continue
+
+        teaser = make_teaser(' '.join(translated_paragraphs))
+        if send_telegraph_teaser(translated_title, teaser, telegraph_url, link):
             mark_processed(link, title, pub_date)
             count += 1
         else:
-            logger.warning(f"Failed to post {link}, skipping.")
+            logger.warning(f"Failed to post teaser for {link}")
     return count
 
 # Scheduler
@@ -495,6 +532,7 @@ def job():
 def main():
     """Entry point."""
     init_db()
+    telegraph_publisher.ensure_access_token()
     logger.info("News bot started.")
     
     # Schedule daily at 12:00 local time (adjust as needed)
