@@ -23,7 +23,7 @@ SAMPLE_ARTICLE_HTML = """
 <div class="newstext">
 <div class="sanscond mgtop_20 fsz22 bold">Bold intro paragraph from the editor.</div>
 <div class="mgtop_20"><img src="https://s1.cdn.example/_img/g_news.png" /></div>
-<p>The rare Porsche is finally here.</p>
+<p>The rare Porsche is finally here. See <a href="https://mattel.com/rlc">Red Line Club</a> for details.</p>
 <p>Production run details follow.</p>
 <p><div class="ch_pic mgbot_20"><a class="fullimg"
   href="https://s1.cdn.example/images/news/gallery/hot-wheels-chase-car-to-hunt-for-is-a-rare-porsche_1.jpg"><img
@@ -151,6 +151,16 @@ class TestScrapeArticlePage:
             "https%3A%2F%2Fwww.youtube.com%2Fwatch%3Fv%3Dabc123"
         )
 
+        # Paragraph with an inline external link carries a `runs` list so the
+        # link survives translation and reaches Telegraph as a real <a>.
+        porsche_para = out["blocks"][2]
+        assert porsche_para["type"] == "paragraph"
+        assert porsche_para["runs"] == [
+            {"text": "The rare Porsche is finally here. See "},
+            {"text": "Red Line Club", "href": "https://mattel.com/rlc"},
+            {"text": " for details."},
+        ]
+
         # Back-compat flat lists still populated
         assert "Why this matters" in out["paragraphs"]
         assert "Bold intro paragraph from the editor." in out["paragraphs"]
@@ -180,7 +190,11 @@ class TestFetchAutoevolutionArticle:
                  "title": "RSS title", "summary": "RSS summary"}
         out = fetch_autoevolution_article(entry, fetcher=fetcher)
         assert out["title"] == "Hot Wheels Chase Car"
-        assert "The rare Porsche is finally here." in out["paragraphs"]
+        # Back-compat flat text now includes inline link text
+        assert any(
+            "The rare Porsche is finally here." in p and "Red Line Club" in p
+            for p in out["paragraphs"]
+        )
 
     def test_falls_back_to_rss_when_scrape_fails(self):
         def failing(url):

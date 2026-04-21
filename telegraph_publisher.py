@@ -123,6 +123,23 @@ def _build_content_from_blocks(
         lvl = level if level in (3, 4) else 3
         return {"tag": f"h{lvl}", "children": [text]}
 
+    def _inline_children(runs):
+        """Convert run dicts into Telegra.ph inline nodes (plain text or <a>)."""
+        nodes_ = []
+        for run in runs:
+            text = run.get("text", "")
+            if not text:
+                continue
+            if run.get("href"):
+                nodes_.append({
+                    "tag": "a",
+                    "attrs": {"href": run["href"]},
+                    "children": [text],
+                })
+            else:
+                nodes_.append(text)
+        return nodes_
+
     first_image_idx = next(
         (i for i, b in enumerate(blocks) if b.get("type") == "image"),
         None,
@@ -142,11 +159,31 @@ def _build_content_from_blocks(
             continue
         t = block.get("type")
         if t == "paragraph":
-            nodes.append(p(block["text"]))
+            if block.get("runs"):
+                nodes.append({"tag": "p", "children": _inline_children(block["runs"])})
+            else:
+                nodes.append(p(block["text"]))
         elif t == "lead":
-            nodes.append(p(b_(block["text"])))
+            if block.get("runs"):
+                nodes.append({
+                    "tag": "p",
+                    "children": [{
+                        "tag": "b",
+                        "children": _inline_children(block["runs"]),
+                    }],
+                })
+            else:
+                nodes.append(p(b_(block["text"])))
         elif t == "heading":
-            nodes.append(heading(block.get("level", 3), block["text"]))
+            lvl = block.get("level", 3)
+            lvl = lvl if lvl in (3, 4) else 3
+            if block.get("runs"):
+                nodes.append({
+                    "tag": f"h{lvl}",
+                    "children": _inline_children(block["runs"]),
+                })
+            else:
+                nodes.append(heading(lvl, block["text"]))
         elif t == "image":
             nodes.append(figure_img(block["src"], block.get("caption", "")))
         elif t == "video":

@@ -36,6 +36,48 @@ REQUEST_TIMEOUT = 20
 MAX_IMAGES = 10
 
 
+def _runs_from_tag(tag) -> List[Dict]:
+    """Walk a tag's contents and return an ordered list of text+link runs.
+
+    Each run is ``{'text': str}`` or ``{'text': str, 'href': str}``. Nested
+    formatting (``<strong>``, ``<em>``) is flattened to plain text, but
+    ``<a href="…">`` anchors are preserved so external links survive
+    translation and reach Telegraph as proper ``<a>`` nodes.
+    """
+    runs: List[Dict] = []
+    buf: List[str] = []
+
+    def flush():
+        if not buf:
+            return
+        combined = "".join(buf)
+        if combined:
+            runs.append({"text": combined})
+        buf.clear()
+
+    def walk(element):
+        for child in element.children:
+            if isinstance(child, str):
+                buf.append(str(child))
+            elif getattr(child, "name", None) == "a" and child.get("href"):
+                flush()
+                link_text = child.get_text(" ", strip=False)
+                if link_text:
+                    runs.append({"text": link_text, "href": child["href"]})
+            else:
+                walk(child)
+
+    walk(tag)
+    flush()
+    # Normalize whitespace inside each run; trim leading/trailing on edges.
+    for r in runs:
+        r["text"] = re.sub(r"\s+", " ", r["text"])
+    if runs:
+        runs[0]["text"] = runs[0]["text"].lstrip()
+        runs[-1]["text"] = runs[-1]["text"].rstrip()
+    return [r for r in runs if r["text"]]
+
+
 def _video_embed_url(href: str) -> Optional[str]:
     """Translate a YouTube/Vimeo link into a Telegra.ph-compatible iframe src.
 
@@ -153,9 +195,10 @@ def _scrape_article_page(link: str, fetcher=None) -> Optional[Dict]:
 
         # Bold lead intro — autoevolution uses `div.sanscond.fsz22.bold`
         if child.name == "div" and ("fsz22" in cls or "sanscond" in cls):
-            text = child.get_text(" ", strip=True)
-            if text:
-                blocks.append({"type": "lead", "text": text})
+            runs = _runs_from_tag(child)
+            if runs:
+                text = " ".join(r["text"] for r in runs).strip()
+                blocks.append({"type": "lead", "text": text, "runs": runs})
             continue
 
         # Inline gallery images — `<div class="ch_pic">` often nested inside
@@ -186,18 +229,22 @@ def _scrape_article_page(link: str, fetcher=None) -> Optional[Dict]:
                 seen_media.add(embed)
                 blocks.append({"type": "video", "src": embed})
 
-        # Paragraph / heading text
+        # Paragraph / heading text — extract runs so inline <a href> external
+        # links survive translation and land on Telegraph as real <a> nodes.
         if child.name == "p":
-            text = child.get_text(" ", strip=True)
-            if text:
-                blocks.append({"type": "paragraph", "text": text})
+            runs = _runs_from_tag(child)
+            if runs:
+                text = " ".join(r["text"] for r in runs).strip()
+                blocks.append({"type": "paragraph", "text": text, "runs": runs})
         elif child.name in ("h2", "h3", "h4"):
-            text = child.get_text(" ", strip=True)
-            if text:
+            runs = _runs_from_tag(child)
+            if runs:
+                text = " ".join(r["text"] for r in runs).strip()
                 blocks.append({
                     "type": "heading",
                     "text": text,
                     "level": int(child.name[1]),
+                    "runs": runs,
                 })
 
     # Prepend the hero image so it becomes the Telegraph preview thumbnail.

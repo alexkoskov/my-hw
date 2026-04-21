@@ -167,6 +167,46 @@ class TestBuildContentFromBlocks:
         assert iframe["tag"] == "iframe"
         assert iframe["attrs"]["src"].startswith("https://telegra.ph/embed/")
 
+    def test_paragraph_runs_emit_inline_links(self):
+        blocks = [
+            {
+                "type": "paragraph",
+                "text": "See Red Line Club for more.",
+                "runs": [
+                    {"text": "See "},
+                    {"text": "Red Line Club", "href": "https://mattel.com/rlc"},
+                    {"text": " for more."},
+                ],
+            }
+        ]
+        nodes = tp._build_content_from_blocks("", blocks, None)
+        p_node = nodes[0]
+        assert p_node["tag"] == "p"
+        assert p_node["children"] == [
+            "See ",
+            {"tag": "a", "attrs": {"href": "https://mattel.com/rlc"}, "children": ["Red Line Club"]},
+            " for more.",
+        ]
+
+    def test_lead_runs_wrap_inline_children_in_bold(self):
+        blocks = [{
+            "type": "lead",
+            "runs": [
+                {"text": "Visit "},
+                {"text": "Hot Wheels", "href": "https://hotwheels.com/"},
+                {"text": " site."},
+            ],
+        }]
+        nodes = tp._build_content_from_blocks("", blocks, None)
+        assert nodes[0]["tag"] == "p"
+        bold = nodes[0]["children"][0]
+        assert bold["tag"] == "b"
+        assert bold["children"][1] == {
+            "tag": "a",
+            "attrs": {"href": "https://hotwheels.com/"},
+            "children": ["Hot Wheels"],
+        }
+
     def test_block_order_preserved_except_hero_promotion(self):
         blocks = [
             {"type": "paragraph", "text": "p1"},
