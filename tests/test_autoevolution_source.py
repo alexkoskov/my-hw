@@ -136,8 +136,12 @@ class TestScrapeArticlePage:
             "https://s1.cdn.example/images/news/gallery/"
             "hot-wheels-chase-car-to-hunt-for-is-a-rare-porsche_1.jpg"
         )
-        # YouTube URL converted to embed form
-        assert out["blocks"][7]["src"] == "https://www.youtube.com/embed/abc123"
+        # YouTube URL wrapped into the Telegra.ph proxy form (raw URLs get
+        # stripped by Telegraph, breaking Instant View).
+        assert out["blocks"][7]["src"] == (
+            "https://telegra.ph/embed/youtube?url="
+            "https%3A%2F%2Fwww.youtube.com%2Fwatch%3Fv%3Dabc123"
+        )
 
         # Back-compat flat lists still populated
         assert "Why this matters" in out["paragraphs"]

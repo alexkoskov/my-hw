@@ -37,13 +37,23 @@ MAX_IMAGES = 10
 
 
 def _video_embed_url(href: str) -> Optional[str]:
-    """Translate a YouTube/Vimeo link into a Telegraph-compatible embed URL."""
+    """Translate a YouTube/Vimeo link into a Telegra.ph-compatible iframe src.
+
+    Telegra.ph validates iframe ``src`` at create-page time and accepts only
+    URLs under its own ``/embed/<provider>?url=…`` proxy. Raw YouTube URLs
+    (watch or embed form) are silently stripped to an empty ``/embed/``,
+    which makes the page fail Instant View. We wrap the source URL into the
+    proxy form Telegra.ph actually serves.
+    """
+    import urllib.parse
     m = YOUTUBE_ID_RE.search(href)
     if m:
-        return f"https://www.youtube.com/embed/{m.group(1)}"
+        watch = f"https://www.youtube.com/watch?v={m.group(1)}"
+        return f"https://telegra.ph/embed/youtube?url={urllib.parse.quote(watch, safe='')}"
     m = VIMEO_ID_RE.search(href)
     if m:
-        return f"https://player.vimeo.com/video/{m.group(1)}"
+        page = f"https://vimeo.com/{m.group(1)}"
+        return f"https://telegra.ph/embed/vimeo?url={urllib.parse.quote(page, safe='')}"
     return None
 
 _CONTINUE_READING_RE = re.compile(
