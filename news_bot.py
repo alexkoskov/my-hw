@@ -288,18 +288,29 @@ def transcreate_text(text, source='auto', target='ru', is_title=False):
 
     return result
 
+def _source_hashtag(source_url):
+    """Return a Telegram hashtag for the source: `#{brand}` from the URL's
+    netloc, stripping `www.` and the TLD. Example: `corporate.mattel.com`
+    → `#mattel`, `autoevolution.com` → `#autoevolution`."""
+    netloc = urlparse(source_url).netloc.lower()
+    if netloc.startswith('www.'):
+        netloc = netloc[4:]
+    parts = netloc.split('.')
+    label = parts[-2] if len(parts) >= 2 else netloc
+    return f"#{label}"
+
+
 def send_telegraph_teaser(telegraph_url, source_url):
-    """Publish the locked-format channel post: one source-link line + Telegraph
-    preview card above (via LinkPreviewOptions). See work/telegraph-pipeline/
-    post-format.md for the spec. The preview card carries all visible content
-    (domain, title, excerpt, image, ⚡ INSTANT VIEW button) — the message body
-    is just the source attribution."""
+    """Publish the locked-format channel post: a single source hashtag +
+    Telegraph preview card above (via LinkPreviewOptions). See
+    work/telegraph-pipeline/post-format.md for the spec. The preview card
+    carries all visible content (domain, title, excerpt, image, ⚡ INSTANT
+    VIEW button) — the message body is just the source attribution."""
     if not TELEGRAM_BOT_TOKEN or not TELEGRAM_CHANNEL_ID:
         logger.error("Telegram credentials not set.")
         return False
 
-    source_domain = urlparse(source_url).netloc
-    text = f"🔗 [{source_domain}]({source_url})"
+    text = _source_hashtag(source_url)
 
     async def _send():
         bot = Bot(token=TELEGRAM_BOT_TOKEN)
