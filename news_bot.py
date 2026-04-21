@@ -369,12 +369,25 @@ def process_new_articles(entries, limit=3):
             transcreate_text(p, is_title=False) for p in article['paragraphs']
         ]
 
+        # Sources that preserve media ordering expose `blocks`; translate the
+        # text blocks in-place and pass them through so Telegraph renders
+        # images/videos at their source positions.
+        translated_blocks = None
+        if article.get('blocks'):
+            translated_blocks = []
+            for b in article['blocks']:
+                nb = dict(b)
+                if b.get('text'):
+                    nb['text'] = transcreate_text(b['text'], is_title=False)
+                translated_blocks.append(nb)
+
         try:
             telegraph_url = telegraph_publisher.publish_article(
                 title=translated_title,
                 subtitle=translated_subtitle,
                 paragraphs=translated_paragraphs,
                 images=article.get('images') or [],
+                blocks=translated_blocks,
                 source_url=link,
             )
         except (TelegraphError, requests.RequestException) as exc:

@@ -25,8 +25,26 @@ from bs4 import BeautifulSoup
 logger = logging.getLogger(__name__)
 
 ARTICLE_ID_RE = re.compile(r"-(\d+)\.html")
+ARTICLE_SLUG_RE = re.compile(r"/news/([^/?#]+?)-\d+\.html")
+IMAGE_EXT_RE = re.compile(r"\.(?:jpe?g|png|webp)(?:\?|$)", re.IGNORECASE)
+YOUTUBE_ID_RE = re.compile(
+    r"(?:youtu\.be/|youtube\.com/watch\?v=|youtube\.com/embed/)"
+    r"([A-Za-z0-9_-]+)"
+)
+VIMEO_ID_RE = re.compile(r"vimeo\.com/(\d+)")
 REQUEST_TIMEOUT = 20
 MAX_IMAGES = 10
+
+
+def _video_embed_url(href: str) -> Optional[str]:
+    """Translate a YouTube/Vimeo link into a Telegraph-compatible embed URL."""
+    m = YOUTUBE_ID_RE.search(href)
+    if m:
+        return f"https://www.youtube.com/embed/{m.group(1)}"
+    m = VIMEO_ID_RE.search(href)
+    if m:
+        return f"https://player.vimeo.com/video/{m.group(1)}"
+    return None
 
 _CONTINUE_READING_RE = re.compile(
     r"\s*\(<a[^>]*>\s*continue reading[^<]*</a>\)\s*$",
@@ -81,43 +99,105 @@ def _scrape_article_page(link: str, fetcher=None) -> Optional[Dict]:
         logger.warning("Autoevolution article has no .newstext body: %s", link)
         return None
 
-    paragraphs: List[str] = []
-    for tag in body.find_all(["p", "li", "h2", "h3", "h4", "blockquote"]):
-        text = tag.get_text(" ", strip=True)
-        if text and text != title:
-            paragraphs.append(text)
-    if not paragraphs:
+    # Article slug (everything in the URL path after /news/ but before the
+    # numeric ID). Used to filter inline gallery images to this article only.
+    slug_m = ARTICLE_SLUG_RE.search(link)
+    slug = slug_m.group(1) if slug_m else ""
+
+    # Hero image — sits outside .newstext in `div.ch_pic.mainpic > a > img`.
+    hero_src = None
+    hero_container = soup.find("div", class_="ch_pic")
+    if hero_container:
+        img = hero_container.find("img")
+        if img and (img.get("src") or "").startswith("http"):
+            hero_src = img.get("src")
+
+    blocks: List[Dict] = []
+    seen_media = set()
+
+    # Walk direct children of .newstext in DOM order so images/videos land at
+    # their original positions between paragraphs.
+    for child in body.children:
+        if not getattr(child, "name", None):
+            continue
+        cls = " ".join(child.get("class") or [])
+        if ("ad" in cls and ("intext" in cls or "ad300" in cls)) or "clearfix" in cls:
+            continue
+
+        # Bold lead intro — autoevolution uses `div.sanscond.fsz22.bold`
+        if child.name == "div" and ("fsz22" in cls or "sanscond" in cls):
+            text = child.get_text(" ", strip=True)
+            if text:
+                blocks.append({"type": "lead", "text": text})
+            continue
+
+        # Media inside this child: <a> wrappers carry the authoritative URL
+        # (full-size gallery link or YouTube/Vimeo).
+        for anchor in child.find_all("a", href=True):
+            href = anchor["href"]
+            embed = _video_embed_url(href)
+            if embed:
+                if embed not in seen_media:
+                    seen_media.add(embed)
+                    blocks.append({"type": "video", "src": embed})
+                continue
+            if IMAGE_EXT_RE.search(href) and slug and slug in href:
+                base = href.split("?", 1)[0]
+                if base in seen_media:
+                    continue
+                seen_media.add(base)
+                blocks.append({"type": "image", "src": href})
+
+        # Direct <img> not wrapped in <a> — rare; skip thumbnails / avatars.
+        for img in child.find_all("img"):
+            if img.find_parent("a"):
+                continue
+            src = img.get("src") or img.get("data-src") or ""
+            if not src.startswith("http"):
+                continue
+            if "editors/" in src or "_img/" in src or "130x" in src:
+                continue
+            if slug and slug in src:
+                base = src.split("?", 1)[0]
+                if base in seen_media:
+                    continue
+                seen_media.add(base)
+                blocks.append({"type": "image", "src": src})
+
+        # Paragraph / heading text
+        if child.name == "p":
+            text = child.get_text(" ", strip=True)
+            if text:
+                blocks.append({"type": "paragraph", "text": text})
+        elif child.name in ("h2", "h3", "h4"):
+            text = child.get_text(" ", strip=True)
+            if text:
+                blocks.append({
+                    "type": "heading",
+                    "text": text,
+                    "level": int(child.name[1]),
+                })
+
+    # Prepend the hero image so it becomes the Telegraph preview thumbnail.
+    if hero_src and hero_src.split("?", 1)[0] not in seen_media:
+        blocks.insert(0, {"type": "image", "src": hero_src})
+
+    if not blocks:
         return None
 
-    # Only keep gallery images whose filename contains this article's ID —
-    # everything else is editor avatars or links to sibling articles.
-    m = ARTICLE_ID_RE.search(link)
-    article_id = m.group(1) if m else None
-    images: List[str] = []
-    if article_id:
-        id_re = re.compile(rf"-{article_id}[-_]?\d*\.(?:jpe?g|png|webp)", re.IGNORECASE)
-        seen = set()
-        for img in soup.find_all(["img", "a"]):
-            for attr in ("src", "data-src", "href"):
-                url = (img.get(attr) or "").strip()
-                if not url.startswith("http"):
-                    continue
-                if not id_re.search(url):
-                    continue
-                base = url.split("?", 1)[0]
-                if base in seen:
-                    continue
-                seen.add(base)
-                images.append(url)
-                break
-            if len(images) >= MAX_IMAGES:
-                break
+    # Back-compat flat lists (some callers still expect paragraphs/images).
+    paragraphs = [
+        b["text"] for b in blocks
+        if b["type"] in ("lead", "paragraph", "heading")
+    ]
+    images = [b["src"] for b in blocks if b["type"] == "image"][:MAX_IMAGES]
 
     return {
         "title": title,
         "subtitle": subtitle,
         "paragraphs": paragraphs,
         "images": images,
+        "blocks": blocks,
     }
 
 

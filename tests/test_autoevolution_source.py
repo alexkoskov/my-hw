@@ -16,17 +16,22 @@ SAMPLE_ARTICLE_HTML = """
 <html><body>
 <h1>Hot Wheels Chase Car</h1>
 <div class="mgtop_10 mgbot_10 fsz19">Editorial lead about the rare Porsche.</div>
+<div class="ch_pic mainpic"><a class="fullimg" href="#"><picture><img
+  src="https://s1.cdn.example/images/news/hot-wheels-chase-268757-7.jpg" /></picture></a></div>
 <div class="newstext">
+<div class="sanscond mgtop_20 fsz22 bold">Bold intro paragraph from the editor.</div>
+<div class="mgtop_20"><img src="https://s1.cdn.example/_img/g_news.png" /></div>
 <p>The rare Porsche is finally here.</p>
 <p>Production run details follow.</p>
+<p><a href="https://s1.cdn.example/images/news/gallery/hot-wheels-chase-car-to-hunt-for-is-a-rare-porsche_1.jpg"><img
+  src="https://s1.cdn.example/images/news-gallery-860x/hot-wheels-chase-car-to-hunt-for-is-a-rare-porsche-thumbnail_1.jpg" /></a></p>
 <h2>Why this matters</h2>
 <p>Collectors have waited months.</p>
+<p><a href="https://youtu.be/abc123"><img
+  src="https://img.youtube.com/vi/abc123/hqdefault.jpg" /></a></p>
+<div class="ad ad300x250 ad-intext">ads here, ignore</div>
+<div class="clearfix"></div>
 </div>
-<img src="https://s1.cdn.example/images/news/hot-wheels-chase-268757-7.jpg" />
-<img src="https://s1.cdn.example/images/editors/avatar.jpg" />
-<img src="https://s1.cdn.example/images/news-gallery-130x/hot-wheels-chase-thumbnail_1.jpg" />
-<a href="https://s1.cdn.example/images/news/hot-wheels-chase-268757_1.jpg">gallery</a>
-<a href="https://s1.cdn.example/images/news/different-story-268800-1.jpg">sibling</a>
 </body></html>
 """
 
@@ -99,25 +104,45 @@ class TestEnrichEntry:
 
 
 class TestScrapeArticlePage:
-    def test_parses_title_subtitle_paragraphs_article_images(self):
+    def test_parses_title_subtitle_and_ordered_blocks(self):
         fetcher = lambda url: _fake_response(SAMPLE_ARTICLE_HTML)
         out = _scrape_article_page(
-            "https://www.autoevolution.com/news/hot-wheels-chase-268757.html",
+            "https://www.autoevolution.com/news/hot-wheels-chase-car-to-hunt-for-is-a-rare-porsche-268757.html",
             fetcher=fetcher,
         )
         assert out["title"] == "Hot Wheels Chase Car"
         assert out["subtitle"] == "Editorial lead about the rare Porsche."
-        assert out["paragraphs"] == [
-            "The rare Porsche is finally here.",
-            "Production run details follow.",
-            "Why this matters",
-            "Collectors have waited months.",
+
+        # Blocks preserve DOM order: hero prepended first, lead, then body
+        # with inline image + heading + video in their positions. Sibling
+        # story links and the placeholder spinner are filtered out.
+        types = [b["type"] for b in out["blocks"]]
+        assert types == [
+            "image",        # hero (ch_pic)
+            "lead",         # bold intro
+            "paragraph",    # "The rare Porsche..."
+            "paragraph",    # "Production run..."
+            "image",        # inline gallery image
+            "heading",      # "Why this matters"
+            "paragraph",    # "Collectors have waited..."
+            "video",        # YouTube embed
         ]
-        # Only images matching article ID 268757 should be kept
-        assert out["images"] == [
-            "https://s1.cdn.example/images/news/hot-wheels-chase-268757-7.jpg",
-            "https://s1.cdn.example/images/news/hot-wheels-chase-268757_1.jpg",
-        ]
+        # Hero is the first image
+        assert out["blocks"][0]["src"] == (
+            "https://s1.cdn.example/images/news/hot-wheels-chase-268757-7.jpg"
+        )
+        # Inline image uses the <a href> (full-size gallery), not the thumbnail src
+        assert out["blocks"][4]["src"] == (
+            "https://s1.cdn.example/images/news/gallery/"
+            "hot-wheels-chase-car-to-hunt-for-is-a-rare-porsche_1.jpg"
+        )
+        # YouTube URL converted to embed form
+        assert out["blocks"][7]["src"] == "https://www.youtube.com/embed/abc123"
+
+        # Back-compat flat lists still populated
+        assert "Why this matters" in out["paragraphs"]
+        assert "Bold intro paragraph from the editor." in out["paragraphs"]
+        assert len(out["images"]) == 2
 
     def test_http_error_returns_none(self):
         fetcher = lambda url: _fake_response("", status=403)
