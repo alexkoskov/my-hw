@@ -196,8 +196,14 @@ def fetch_mattel_article(
         if url and url not in images:
             images.append(url)
 
+    excerpt = article.get("excerpt") or ""
+    if isinstance(excerpt, dict):
+        excerpt = excerpt.get("text") or ""
+    subtitle = str(excerpt).strip()
+
     return {
         "title": article.get("title", ""),
+        "subtitle": subtitle,
         "paragraphs": paragraphs,
         "images": images,
     }

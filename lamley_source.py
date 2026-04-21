@@ -76,6 +76,12 @@ def fetch_lamley_article(
         if text and text != title:
             paragraphs.append(text)
 
+    # Lamley RSS has no subtitle field; use the first body paragraph as the
+    # editorial lead on the Telegraph page. Drop it from the body so it
+    # doesn't repeat below the decorated lead.
+    subtitle = paragraphs[0] if paragraphs else ""
+    paragraphs = paragraphs[1:]
+
     images: List[str] = []
     seen_bases = set()
     for img in body.find_all("img"):
@@ -92,6 +98,7 @@ def fetch_lamley_article(
 
     return {
         "title": title,
+        "subtitle": subtitle,
         "paragraphs": paragraphs,
         "images": images,
     }

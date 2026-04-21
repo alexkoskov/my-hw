@@ -224,10 +224,11 @@ class TestFetchMattelNews:
 class TestFetchMattelArticle:
     def _article_page(self, body_html='<p>A paragraph.</p><p>Second.</p><ul><li>Bullet</li></ul>',
                        thumb_url='https://images.example/thumb.jpg',
-                       download_media=None):
+                       download_media=None, excerpt='Editorial lead text'):
         article = {
             'title': 'Sample Mattel Article',
             'body': body_html,
+            'excerpt': excerpt,
             'download_media': download_media or [],
         }
         payload = {
@@ -254,11 +255,18 @@ class TestFetchMattelArticle:
         )
         out = fetch_mattel_article('https://corporate.mattel.com/news/x', session=session)
         assert out['title'] == 'Sample Mattel Article'
+        assert out['subtitle'] == 'Editorial lead text'
         assert out['paragraphs'] == ['A paragraph.', 'Second.', 'Bullet']
         assert out['images'] == [
             'https://images.example/thumb.jpg',
             'https://images.example/media.png',
         ]
+
+    def test_missing_excerpt_yields_empty_subtitle(self):
+        session = MagicMock()
+        session.get.return_value = _make_response(text=self._article_page(excerpt=''))
+        out = fetch_mattel_article('https://corporate.mattel.com/news/x', session=session)
+        assert out['subtitle'] == ''
 
     def test_http_error_returns_none_and_notifies(self):
         session = MagicMock()

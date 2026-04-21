@@ -53,7 +53,7 @@ class TestMattelIntegration(unittest.TestCase):
     @patch("news_bot.fetch_rss", return_value=[])
     @patch("news_bot.load_feeds", return_value=[])
     @patch("news_bot.fetch_mattel_article",
-           return_value={"title": "Hot Wheels article", "paragraphs": ["Body."], "images": []})
+           return_value={"title": "Hot Wheels article", "subtitle": "", "paragraphs": ["Body."], "images": []})
     @patch("news_bot.transcreate_text", side_effect=lambda t, **k: t)
     @patch("mattel_news_source.requests.get")
     def test_mattel_post_flows_into_telegram_and_db(
@@ -66,7 +66,8 @@ class TestMattelIntegration(unittest.TestCase):
         news_bot.job()
 
         mock_tg.assert_called_once()
-        called_link = mock_tg.call_args.args[3]
+        # New signature: send_telegraph_teaser(telegraph_url, source_url)
+        called_link = mock_tg.call_args.args[1]
         self.assertIn("corporate.mattel.com/news/", called_link)
         self.assertIn("hot-wheels", called_link)
 
@@ -105,7 +106,7 @@ class TestMattelIntegration(unittest.TestCase):
         mock_get.return_value = self._make_response(text=self.fixture_html)
         mock_tg.return_value = True
 
-        article_mock = {"title": "Hot Wheels article", "paragraphs": ["Body."], "images": []}
+        article_mock = {"title": "Hot Wheels article", "subtitle": "", "paragraphs": ["Body."], "images": []}
         with patch("news_bot.fetch_mattel_article", return_value=article_mock):
             with patch("news_bot.transcreate_text", side_effect=lambda t, **k: t):
                 news_bot.job()

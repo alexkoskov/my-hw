@@ -68,6 +68,7 @@ class TestIntegration(unittest.TestCase):
         ]
         mock_fetch_article.return_value = {
             'title': 'Article Title',
+            'subtitle': 'Editorial lead',
             'paragraphs': ['First paragraph.', 'Second paragraph.'],
             'images': ['http://example.com/image.jpg'],
         }
@@ -83,17 +84,18 @@ class TestIntegration(unittest.TestCase):
         self.assertEqual(mock_publish.call_count, 3)
         first = mock_publish.call_args_list[0]
         self.assertEqual(first.kwargs['title'], 'RU:Article Title')
+        self.assertEqual(first.kwargs['subtitle'], 'RU:Editorial lead')
         self.assertEqual(first.kwargs['paragraphs'],
                          ['RU:First paragraph.', 'RU:Second paragraph.'])
         self.assertEqual(first.kwargs['images'], ['http://example.com/image.jpg'])
         self.assertEqual(first.kwargs['source_url'], 'http://example.com/article1')
 
+        # New signature: send_telegraph_teaser(telegraph_url, source_url)
         self.assertEqual(mock_send_teaser.call_count, 3)
         for call_args in mock_send_teaser.call_args_list:
             args = call_args.args
-            self.assertEqual(args[0], 'RU:Article Title')
-            self.assertEqual(args[2], 'https://telegra.ph/page')
-            self.assertTrue(args[3].startswith('http://example.com/article'))
+            self.assertEqual(args[0], 'https://telegra.ph/page')
+            self.assertTrue(args[1].startswith('http://example.com/article'))
 
         conn = sqlite3.connect(self.db_path)
         processed = {r[0] for r in conn.execute('SELECT link FROM processed_news').fetchall()}
@@ -123,7 +125,7 @@ class TestIntegration(unittest.TestCase):
             [self._create_mock_entry('http://example.com/article1')],
         ]
         mock_fetch_article.return_value = {
-            'title': 'T', 'paragraphs': ['Body.'], 'images': []
+            'title': 'T', 'subtitle': '', 'paragraphs': ['Body.'], 'images': []
         }
         mock_transcreate.side_effect = lambda t, **k: t
         mock_publish.return_value = 'https://telegra.ph/x'
@@ -154,7 +156,7 @@ class TestIntegration(unittest.TestCase):
             [self._create_mock_entry('http://example.com/article1')],
         ]
         mock_fetch_article.return_value = {
-            'title': 'T', 'paragraphs': ['Body.'], 'images': []
+            'title': 'T', 'subtitle': '', 'paragraphs': ['Body.'], 'images': []
         }
         mock_transcreate.side_effect = lambda t, **k: t
         mock_publish.return_value = 'https://telegra.ph/x'
@@ -181,7 +183,7 @@ class TestIntegration(unittest.TestCase):
         mock_load_feeds.return_value = ['http://example.com/feed1.xml']
         mock_fetch_rss.return_value = [self._create_mock_entry('http://example.com/article1')]
         mock_fetch_article.return_value = {
-            'title': 'T', 'paragraphs': ['Body.'], 'images': []
+            'title': 'T', 'subtitle': '', 'paragraphs': ['Body.'], 'images': []
         }
         mock_transcreate.side_effect = lambda t, **k: t
         mock_publish.side_effect = TelegraphError('API down')

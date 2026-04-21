@@ -15,6 +15,7 @@ from autoevolution_source import (
 SAMPLE_ARTICLE_HTML = """
 <html><body>
 <h1>Hot Wheels Chase Car</h1>
+<div class="mgtop_10 mgbot_10 fsz19">Editorial lead about the rare Porsche.</div>
 <div class="newstext">
 <p>The rare Porsche is finally here.</p>
 <p>Production run details follow.</p>
@@ -91,15 +92,21 @@ class TestEnrichEntry:
     def test_returns_none_for_empty_entry(self):
         assert enrich_entry({}) is None
 
+    def test_rss_output_has_empty_subtitle(self):
+        # RSS has no subtitle — must return '' so publish_article skips the lead.
+        out = enrich_entry({"title": "t", "summary": "Some body."})
+        assert out["subtitle"] == ""
+
 
 class TestScrapeArticlePage:
-    def test_parses_title_paragraphs_article_images(self):
+    def test_parses_title_subtitle_paragraphs_article_images(self):
         fetcher = lambda url: _fake_response(SAMPLE_ARTICLE_HTML)
         out = _scrape_article_page(
             "https://www.autoevolution.com/news/hot-wheels-chase-268757.html",
             fetcher=fetcher,
         )
         assert out["title"] == "Hot Wheels Chase Car"
+        assert out["subtitle"] == "Editorial lead about the rare Porsche."
         assert out["paragraphs"] == [
             "The rare Porsche is finally here.",
             "Production run details follow.",

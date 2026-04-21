@@ -43,12 +43,14 @@ SAMPLE_HTML = """
 
 
 class TestFetchLamleyArticle:
-    def test_parses_title_paragraphs_images(self):
+    def test_parses_title_subtitle_paragraphs_images(self):
         session = MagicMock()
         session.get.return_value = _make_response(text=SAMPLE_HTML)
         out = lamley_source.fetch_lamley_article("http://lamleygroup.com/x", session=session)
         assert out["title"] == "Sample Hot Wheels Post"
-        assert "First paragraph of the post." in out["paragraphs"]
+        # First body paragraph is lifted out as subtitle; no duplicate in body.
+        assert out["subtitle"] == "First paragraph of the post."
+        assert "First paragraph of the post." not in out["paragraphs"]
         assert "Second paragraph with more detail." in out["paragraphs"]
         assert "Bullet one" in out["paragraphs"]
         assert "A heading" in out["paragraphs"]

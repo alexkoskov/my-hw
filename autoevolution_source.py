@@ -69,6 +69,13 @@ def _scrape_article_page(link: str, fetcher=None) -> Optional[Dict]:
     title_tag = soup.find("h1")
     title = title_tag.get_text(" ", strip=True) if title_tag else ""
 
+    subtitle = ""
+    for cand in soup.find_all("div"):
+        cls = set(cand.get("class") or [])
+        if {"mgtop_10", "mgbot_10", "fsz19"}.issubset(cls):
+            subtitle = cand.get_text(" ", strip=True)
+            break
+
     body = soup.find("div", class_="newstext")
     if body is None:
         logger.warning("Autoevolution article has no .newstext body: %s", link)
@@ -106,7 +113,12 @@ def _scrape_article_page(link: str, fetcher=None) -> Optional[Dict]:
             if len(images) >= MAX_IMAGES:
                 break
 
-    return {"title": title, "paragraphs": paragraphs, "images": images}
+    return {
+        "title": title,
+        "subtitle": subtitle,
+        "paragraphs": paragraphs,
+        "images": images,
+    }
 
 
 def fetch_autoevolution_article(entry: dict, fetcher=None) -> Optional[Dict]:
@@ -150,8 +162,11 @@ def enrich_entry(entry: dict) -> Optional[Dict]:
     if not paragraphs:
         paragraphs = [title]
 
+    # RSS doesn't carry a dedicated subtitle; leave it empty so the Telegraph
+    # page skips the decorated lead paragraph + hr for RSS-only articles.
     return {
         "title": title,
+        "subtitle": "",
         "paragraphs": paragraphs,
         "images": _collect_rss_images(entry),
     }

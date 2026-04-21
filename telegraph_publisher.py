@@ -90,12 +90,22 @@ def ensure_access_token(
 
 
 def _build_content(
+    subtitle: str,
     paragraphs: List[str],
     images: List[str],
     source_url: Optional[str],
 ) -> list:
-    """Compose a Telegra.ph node tree: hero image, paragraphs with interleaved
-    images every 3rd paragraph, leftovers at the end, source link footer."""
+    """Compose the Telegra.ph node tree for the locked post format:
+
+    1. hero figure (first image),
+    2. decorated subtitle `p(italic("💬 «{subtitle}»"))` — editorial lead,
+    3. `hr` separator between lead and body,
+    4. body paragraphs with images interleaved every 3rd paragraph,
+    5. any trailing images,
+    6. italic "Источник: <link>" footer.
+
+    If ``subtitle`` is empty, steps 2 and 3 are skipped.
+    """
     def p(*children):
         return {"tag": "p", "children": list(children)}
 
@@ -112,6 +122,10 @@ def _build_content(
     remaining = list(images or [])
     if remaining:
         nodes.append(figure_img(remaining.pop(0)))
+
+    if subtitle:
+        nodes.append(p(i_(f"💬 «{subtitle}»")))
+        nodes.append({"tag": "hr"})
 
     for i, para in enumerate(paragraphs):
         nodes.append(p(para))
@@ -131,15 +145,21 @@ def publish_article(
     paragraphs: List[str],
     images: Optional[List[str]] = None,
     source_url: Optional[str] = None,
+    subtitle: str = "",
     access_token: Optional[str] = None,
     author_name: str = DEFAULT_AUTHOR_NAME,
     session: Optional[requests.Session] = None,
 ) -> str:
-    """Publish a Russian translated article to Telegra.ph; return the page URL."""
+    """Publish a Russian translated article to Telegra.ph; return the page URL.
+
+    ``subtitle`` is the editorial lead from the source site. When non-empty it
+    is rendered as a decorated italic paragraph (💬 «…») followed by `<hr>`
+    before the body — this is the visual convention the bot's posts follow.
+    """
     token = access_token or os.environ.get(ENV_TOKEN_KEY)
     if not token:
         raise TelegraphError(f"{ENV_TOKEN_KEY} is not set; call ensure_access_token first")
-    content = _build_content(paragraphs, images or [], source_url)
+    content = _build_content(subtitle, paragraphs, images or [], source_url)
     result = _api_call(
         "createPage",
         {

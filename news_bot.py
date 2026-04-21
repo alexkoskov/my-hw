@@ -288,37 +288,21 @@ def transcreate_text(text, source='auto', target='ru', is_title=False):
 
     return result
 
-TEASER_MAX_CHARS = 300
-
-
-def make_teaser(text, max_chars=TEASER_MAX_CHARS):
-    """Extract the leading sentences from `text` as a short channel teaser."""
-    import re
-    sentences = re.split(r'(?<=[.!?])\s+', text.strip())
-    out = []
-    total = 0
-    for s in sentences:
-        if out and total + len(s) > max_chars:
-            break
-        out.append(s)
-        total += len(s) + 1
-    return ' '.join(out).strip()
-
-
-def send_telegraph_teaser(title, teaser, telegraph_url, source_url):
-    """Post a teaser to the channel with the Telegraph page as Instant View preview."""
+def send_telegraph_teaser(telegraph_url, source_url):
+    """Publish the locked-format channel post: one source-link line + Telegraph
+    preview card above (via LinkPreviewOptions). See work/telegraph-pipeline/
+    post-format.md for the spec. The preview card carries all visible content
+    (domain, title, excerpt, image, ⚡ INSTANT VIEW button) — the message body
+    is just the source attribution."""
     if not TELEGRAM_BOT_TOKEN or not TELEGRAM_CHANNEL_ID:
         logger.error("Telegram credentials not set.")
         return False
 
+    source_domain = urlparse(source_url).netloc
+    text = f"🔗 [{source_domain}]({source_url})"
+
     async def _send():
         bot = Bot(token=TELEGRAM_BOT_TOKEN)
-        text = (
-            f"*{title}*\n\n"
-            f"{teaser}\n\n"
-            f"📖 [Читать полностью]({telegraph_url})\n"
-            f"🔗 [Источник]({source_url})"
-        )
         try:
             await bot.send_message(
                 chat_id=TELEGRAM_CHANNEL_ID,
@@ -329,7 +313,7 @@ def send_telegraph_teaser(title, teaser, telegraph_url, source_url):
                     show_above_text=True,
                 ),
             )
-            logger.info(f"Posted to Telegram: {title}")
+            logger.info(f"Posted to Telegram: {telegraph_url}")
             return True
         except TelegramError as e:
             logger.error(f"Telegram error: {e}")
@@ -363,7 +347,8 @@ def fetch_full_article(entry):
 
 
 def process_new_articles(entries, limit=3):
-    """Translate full body, publish to Telegraph, post teaser — one article at a time."""
+    """Translate full body + subtitle, publish to Telegraph, post the minimal
+    channel card — one article at a time. See work/telegraph-pipeline/post-format.md."""
     count = 0
     for entry in entries[:limit]:
         link = entry.get('link')
@@ -378,6 +363,8 @@ def process_new_articles(entries, limit=3):
             continue
 
         translated_title = transcreate_text(article.get('title') or title, is_title=True)
+        subtitle = article.get('subtitle') or ''
+        translated_subtitle = transcreate_text(subtitle, is_title=False) if subtitle else ''
         translated_paragraphs = [
             transcreate_text(p, is_title=False) for p in article['paragraphs']
         ]
@@ -385,6 +372,7 @@ def process_new_articles(entries, limit=3):
         try:
             telegraph_url = telegraph_publisher.publish_article(
                 title=translated_title,
+                subtitle=translated_subtitle,
                 paragraphs=translated_paragraphs,
                 images=article.get('images') or [],
                 source_url=link,
@@ -393,8 +381,7 @@ def process_new_articles(entries, limit=3):
             logger.error(f"Telegraph publish failed for {link}: {exc}")
             continue
 
-        teaser = make_teaser(' '.join(translated_paragraphs))
-        if send_telegraph_teaser(translated_title, teaser, telegraph_url, link):
+        if send_telegraph_teaser(telegraph_url, link):
             mark_processed(link, title, pub_date)
             count += 1
         else:

@@ -86,13 +86,13 @@ class TestEnsureAccessToken:
 
 class TestBuildContent:
     def test_hero_image_first(self):
-        nodes = tp._build_content(["para one"], ["img1.jpg"], None)
+        nodes = tp._build_content("", ["para one"], ["img1.jpg"], None)
         assert nodes[0]["tag"] == "figure"
         assert nodes[0]["children"][0]["attrs"]["src"] == "img1.jpg"
         assert nodes[1]["tag"] == "p"
 
     def test_source_link_at_end(self):
-        nodes = tp._build_content(["para"], [], "http://src")
+        nodes = tp._build_content("", ["para"], [], "http://src")
         last = nodes[-1]
         assert last["tag"] == "p"
         # source link paragraph has "Источник: " italic + link
@@ -103,14 +103,35 @@ class TestBuildContent:
     def test_images_interleaved_every_third_paragraph(self):
         paragraphs = [f"p{i}" for i in range(6)]
         images = ["hero.jpg", "mid.jpg", "extra.jpg"]
-        nodes = tp._build_content(paragraphs, images, None)
+        nodes = tp._build_content("", paragraphs, images, None)
         # [figure(hero), p0, p1, p2, figure(mid), p3, p4, p5, figure(extra)]
         tags = [n["tag"] for n in nodes]
         assert tags == ["figure", "p", "p", "p", "figure", "p", "p", "p", "figure"]
 
     def test_no_images(self):
-        nodes = tp._build_content(["a", "b"], [], None)
+        nodes = tp._build_content("", ["a", "b"], [], None)
         assert all(n["tag"] == "p" for n in nodes)
+
+    def test_subtitle_adds_decorated_lead_and_hr(self):
+        nodes = tp._build_content(
+            "Forgive me father",
+            ["body para"],
+            ["hero.jpg"],
+            "http://src",
+        )
+        # [figure(hero), p(italic "💬 «subtitle»"), hr, p(body), p(source)]
+        tags = [n["tag"] for n in nodes]
+        assert tags == ["figure", "p", "hr", "p", "p"]
+        # Decorated subtitle paragraph
+        subtitle_p = nodes[1]
+        italic_child = subtitle_p["children"][0]
+        assert italic_child["tag"] == "i"
+        assert italic_child["children"] == ["💬 «Forgive me father»"]
+
+    def test_empty_subtitle_skips_lead_and_hr(self):
+        nodes = tp._build_content("", ["body"], ["hero.jpg"], None)
+        # No hr when subtitle is empty
+        assert all(n["tag"] != "hr" for n in nodes)
 
 
 class TestPublishArticle:
