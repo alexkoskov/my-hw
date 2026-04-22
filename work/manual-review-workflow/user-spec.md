@@ -1,7 +1,7 @@
 ---
 created: 2026-04-22
 
-status: draft
+status: approved
 
 type: feature
 
