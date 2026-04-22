@@ -27,11 +27,11 @@ Four tables live in `news.db`: the existing `processed_news` (dedup, semantic ex
 ### How it works
 
 **Prep phase (cron, hourly):**
-1. Idle-fallback pass: rows with `fetched_at > 48h ago` AND `notified_at IS NULL` → send heads-up admin ping, stamp `notified_at`. Rows with `notified_at > 2h ago` AND `ru_paragraphs IS NULL` → run `transcreate_text` on EN paragraphs → `publish_article` → `send_telegraph_teaser` → `move_to_published(via_review=False)`. On failure: `increment_attempt`; at 3 strikes → `move_to_failed`.
-2. Fetch all sources via the `SOURCES` registry; each entry gets `source_name` attached based on URL netloc (for RSS) or the fetcher's own tag (Mattel).
+1. Idle-fallback pass in two steps. (a) Collect rows with `fetched_at` older than `IDLE_TIMEOUT_HOURS` AND `notified_at IS NULL`. Send ONE consolidated admin ping (Decision 12): `"Will auto-publish in ~{GRACE_WINDOW_HOURS}h: {title1}, {title2}, …. Intercept via hw_review take N"`. Stamp `notified_at` on each. (b) Collect rows with `notified_at` older than `GRACE_WINDOW_HOURS` AND `ru_paragraphs IS NULL`. For each, call the internal `_fallback_publish(row, via_review=False)` helper that runs `transcreate_text` on EN paragraphs → `publish_article` (reusing `telegraph_url` if already populated, per Decision 9) → `send_telegraph_teaser` → `move_to_published(via_review=False)`. On failure: `increment_attempt(link, sanitized_err)` (Decisions 11, 13); at 3 strikes → `move_to_failed`.
+2. Fetch all sources via the `SOURCES` registry; each entry gets `source_name` by looking up `urlparse(link).netloc.lower()` in `NETLOC_TO_SOURCE` (Decision 4); unknown netlocs get `'other'` plus a warning log.
 3. Filter against `processed_news` AND existing `pending_articles`.
-4. Overflow fast-track: if `count_pending() + len(new) > 10`, run fallback-publish on oldest rows with `ru_paragraphs IS NULL` to free slots; never touch staged rows; any still-unfit new entries are dropped for this tick with an admin ping.
-5. For each accepted new entry: call `fetch_full_article(entry)`, then `insert_pending` (JSON-serialise paragraphs/images/blocks).
+4. Overflow fast-track: if `count_pending() + len(new) > QUEUE_CAP` (default 10). Compute `needed_slots = len(new) - (QUEUE_CAP - count_pending())`. Pull `list_pending_for_eviction()[:needed_slots]` (ru-NULL rows, oldest first — Decision 7 enforces NULL-only). Run `_fallback_publish` on each; same attempt-counter contract as step 1 (Decision 13). Any new entries that still don't fit after the pass are dropped for this tick and an admin ping is sent: `"Queue pressure: auto-published {evicted}, {deferred} new deferred, {staged_protected} staged rows protected"`.
+5. For each accepted new entry: call `fetch_full_article(entry)`, then `insert_pending` (JSON-serialise paragraphs/images/blocks via `ensure_ascii=False`).
 6. Compose admin ping via `build_admin_ping(rows)` — send only if queue non-empty.
 
 **Review + publish (operator, interactive via Claude Code):**
@@ -58,10 +58,10 @@ No long-lived connection pools, no ML models, no browser automation. The design 
 
 ### Decision 1: Telegraph-draft preview dropped in favour of local HTML
 
-**Decision:** `hw_review preview N` renders the Telegraph node tree into a local HTML file (`/tmp/hw-review-{hash}.html`) and opens it via `webbrowser.open`. No Telegra.ph `createPage` during preview; no `editPage` cleanup machinery; the final `publish` is the only Telegraph API call per article.
-**Rationale:** The structural checks the operator does in preview (paragraph order, image positions, subtitle framing, footer) are identical in both renderings. The user-spec explicitly chose local HTML after round 1 of user-spec validation. Removes ~40% of the feature's surface: no `edit_page` wrapper, no `preview_url`/`preview_path` churn during drafts, no `cleanup-drafts` subcommand, no Telegra.ph API-change risk.
+**Decision:** `hw_review preview N` renders the Telegraph node tree into a local HTML file under `~/.cache/hw-review/` (mode `0700`) with filename `hw-{uuid4}.html`, created via `tempfile.NamedTemporaryFile(delete=False, dir=..., suffix='.html')`. `preview_renderer.render_html` applies three hardening layers: (a) tag allowlist inherited from `telegraph_publisher` (`p / figure / img / figcaption / iframe / h3 / h4 / hr / i / b / a`); (b) URL-scheme allowlist — `img src`, `iframe src`, `a href` must match `^(https?://)` otherwise the attribute is dropped (blocks `javascript:`/`data:` from a compromised upstream); (c) `<meta http-equiv="Content-Security-Policy" content="default-src 'none'; img-src https:; frame-src https:; style-src 'unsafe-inline'">` in the rendered `<head>`. `webbrowser.open` receives the `pathlib.Path` resolved inside the cache dir; the CLI asserts `path.parent == CACHE_DIR.resolve()` before calling — any other path aborts with a safety error. No `createPage` during preview; the final `publish` is the only Telegraph API call per article.
+**Rationale:** The structural checks the operator does in preview (paragraph order, image positions, subtitle framing, footer) are identical in both renderings. The user-spec explicitly chose local HTML after round 1 of user-spec validation. Removes ~40% of the feature's surface: no `edit_page` wrapper, no `preview_url`/`preview_path` churn during drafts, no `cleanup-drafts` subcommand, no Telegra.ph API-change risk. Cache-dir + uuid filename + path guard + URL-scheme allowlist + CSP close the TOCTOU/symlink/XSS surfaces flagged by the security review.
 **User-spec anchor:** Supports "Preview — локальный HTML-файл" (Ограничения, user-spec).
-**Alternatives considered:** Telegra.ph draft via `createPage`+`editPage` — rejected for surface cost; browser-headless diff against msg 35 — rejected as out-of-scope.
+**Alternatives considered:** Telegra.ph draft via `createPage`+`editPage` — rejected for surface cost; browser-headless diff against msg 35 — rejected as out-of-scope; predictable `/tmp/hw-review-{md5}.html` — rejected after security review (symlink-plant TOCTOU + argv-injection surface via stable path).
 
 ### Decision 2: Four-table data model (processed_news + pending + published + failed)
 
@@ -75,13 +75,24 @@ No long-lived connection pools, no ML models, no browser automation. The design 
 **Decision:** Preview HTML is generated only when the operator explicitly runs `hw_review preview N`. Not at prep time, not at `stage`. If the operator goes straight from `stage` to `publish`, no preview file is ever created and `publish` skips any cleanup.
 **Rationale:** Preview is an optional review step. Generating it eagerly wastes I/O and leaves more stale files to clean. The local-HTML cost is tiny either way, but lazy creation is simpler code and matches operator intent.
 **User-spec anchor:** Supports "Preview — локальный HTML-файл... создаётся только при явном `hw_review preview N`" (user-spec Ограничения).
+**Alternatives considered:** Generate preview HTML on every `stage` — rejected, not all staged rows get manually reviewed (fallback-published rows skip it entirely); generate at prep time for every new row — rejected, Russian text isn't available yet.
 
-### Decision 4: Source registry with URL-netloc-derived `source_name`
+### Decision 4: Source registry with URL-netloc → `source_name` map
 
-**Decision:** Introduce a `SOURCES` list of fetcher callables in `news_bot.py`. Each entry received from a source gets a `source_name` attribute normalised to `'autoevolution'`, `'mattel'`, or `'lamley'` — inferred from the URL netloc for RSS entries, hardcoded for Mattel. Adding a new source means adding one fetcher function + one list entry.
-**Rationale:** Hardcoded `fetch_mattel_news` inside `job()` is a scalability smell. The admin-ping format requires per-source breakdown; `source_name` must be consistent regardless of whether an entry arrived via `feeds.json` (RSS) or a dedicated fetcher (Mattel). URL netloc is the authoritative signal for RSS entries since both autoevolution and lamley currently come through RSS.
-**User-spec anchor:** Supports "Добавление нового источника — редактирование одного списка" (user-spec AC).
-**Alternatives considered:** Per-source class hierarchy — rejected as overkill at 3 sources; keep hardcoding Mattel — rejected, defeats the admin-ping counting contract.
+**Decision:** Introduce a `SOURCES` list of fetcher callables in `news_bot.py`. Each entry gets an explicit `source_name` set by an explicit `NETLOC_TO_SOURCE` map, not by bare netloc read:
+```python
+NETLOC_TO_SOURCE = {
+    'www.autoevolution.com': 'autoevolution',
+    'autoevolution.com':     'autoevolution',
+    'lamleygroup.com':       'lamley',
+    'www.lamleygroup.com':   'lamley',
+    'corporate.mattel.com':  'mattel',
+}
+```
+`_fetch_rss_entries` reads `urlparse(link).netloc.lower()` and looks it up; on miss, stamps `source_name='other'` and emits a warning log. `_fetch_mattel_entries` hardcodes `'mattel'`. `SOURCE_EMOJI` / `SOURCE_LABEL` dicts use the same three keys (`'autoevolution'` / `'mattel'` / `'lamley'`) — no `'rss'` key, no internal-vs-display split.
+**Rationale:** Bare `urlparse` of `https://lamleygroup.com/...` yields `'lamleygroup.com'`, not `'lamley'`. An explicit map is the only correct way to tie RSS feeds to brand labels. Both the admin-ping counter (via `SOURCE_LABEL`) and the channel hashtag (via `_source_hashtag`, unchanged, which strips TLD) end up consistent. Adding a new source = one map entry + one fetcher + one `SOURCE_EMOJI`/`SOURCE_LABEL` pair.
+**User-spec anchor:** Supports "Добавление нового источника — редактирование одного списка" (user-spec AC) and the exact admin-ping vocabulary "🟠 autoevolution ×K, 🟣 mattel ×M, 🟢 lamley ×L".
+**Alternatives considered:** Per-source class hierarchy — rejected as overkill at 3 sources; bare `netloc` without map — rejected after skeptic flagged `lamleygroup.com` ≠ `lamley`; `'rss'` internal key with `'autoevolution'` display label — rejected because Lamley also arrives via RSS, so the breakdown would collapse the two outlets.
 
 ### Decision 5: Cron frequency bump from daily to hourly
 
@@ -90,11 +101,22 @@ No long-lived connection pools, no ML models, no browser automation. The design 
 **User-spec anchor:** Supports "Grace-окно ... дефолт 2 часа, значение параметризуется" and "Возможный bump до часовой гранулярности — осознанный 1-строчный follow-up" (user-spec Ограничения).
 **Alternatives considered:** Keep daily, redefine grace as "next tick" — rejected, makes grace semantically 24h which the operator may not expect; run an out-of-band 2h-timer — rejected, adds process-management complexity.
 
-### Decision 6: `stage N` reads ru-paragraphs/blocks as JSON on stdin
+### Decision 6: `stage N` reads ru-paragraphs/blocks as JSON on stdin with strict validation
 
-**Decision:** `hw_review stage N` takes `ru_title` and `ru_subtitle` as `argparse` flags, and `ru_paragraphs` + `ru_blocks` from stdin as a JSON object: `echo '{"ru_paragraphs":[...], "ru_blocks":null}' | hw_review stage 3 --ru-title "..."`.
-**Rationale:** Claude Code produces JSON naturally; shell-escaping Russian newlines for flags is fragile; a temp file adds cleanup burden. Repeated flags lose ordering guarantees on paragraphs.
-**User-spec anchor:** `[TECHNICAL]` — user-spec leaves argument-surface open for tech-spec. Justification: simplest working ergonomics for Claude-driven flow.
+**Decision:** `hw_review stage N` takes `ru_title` and `ru_subtitle` as `argparse` flags; `ru_paragraphs` + `ru_blocks` come from stdin as a JSON object. The payload passes through a validator before the repo sees it:
+- Total stdin size ≤ 256 KiB (`sys.stdin.buffer.read(262145)`; if `len == 262145` → reject, stdin too large).
+- `json.loads` happens inside a try/except that returns exit 1 with stderr `"invalid JSON: {err}"`.
+- Parsed value must be a `dict` with exactly the allowed keys `{'ru_paragraphs', 'ru_blocks'}` — unknown keys rejected (prevents `__proto__`/extension drift).
+- `ru_paragraphs` must be a `list[str]`, each element ≤ 10 KiB, list length ≤ 100.
+- `ru_blocks` must be `None` OR a `list[dict]`. Each block dict: `type` in allowed set (`'paragraph'` / `'lead'` / `'heading'` / `'image'` / `'video'`), string fields (`text`, `src`, `caption`) are strings ≤ 10 KiB, `level` (headings) in `{3, 4}`. Unknown block types and unknown dict keys rejected.
+- Maximum nesting depth 3; parser uses `json.loads(..., object_hook=_depth_check)` or equivalent.
+- Cross-check: pending row's `blocks` non-NULL → `ru_blocks` required; pending row's `blocks` NULL → `ru_blocks` must be NULL.
+
+A dedicated `hw_review_validators.py` (or function inside `hw_review.py`) owns this — unit-tested separately from the CLI dispatcher.
+
+**Rationale:** Claude Code produces JSON naturally; shell-escaping Russian newlines for flags is fragile; a temp file adds cleanup burden. Strict validation closes the security review's critical finding on unvalidated JSON — malformed/malicious input is rejected before it reaches the repo or Telegraph renderer.
+**User-spec anchor:** Supports `hw_review stage N` partial-staging rejection (AC L59) and `[TECHNICAL]` for the validation layer — user-spec leaves the CLI argument surface to tech-spec.
+**Alternatives considered:** Repeated `--paragraph` flags — rejected, shell escaping + ordering brittle; YAML on stdin — rejected, adds a dependency; temp file path via flag — rejected, cleanup burden + extra TOCTOU surface; unvalidated `json.loads` — rejected after security review.
 
 ### Decision 7: Overflow fast-track never evicts rows with staged ru
 
@@ -108,18 +130,49 @@ No long-lived connection pools, no ML models, no browser automation. The design 
 **Decision:** `hw_review list` always appends a `⚠️` footer with count + titles + retry hint whenever `failed_articles` is non-empty, regardless of whether the main queue is empty or not.
 **Rationale:** Failed rows are dead-letter state requiring operator intervention; hiding them is a silent backlog growth. The footer is cheap one-line rendering; its presence on `list` is the natural discovery path.
 **User-spec anchor:** Supports AC "Если в таблице failed что-то накопилось — в любом случае показывает футер с количеством и списком" (user-spec Как должно работать + AC).
+**Alternatives considered:** Show only when main queue is also non-empty — rejected, hides backlog exactly when operator might think "nothing to do"; separate `hw_review failed` command — rejected, discoverability falls off a cliff.
 
 ### Decision 9: Telegraph URL stored on the pending row for retry idempotency
 
 **Decision:** `pending_articles` has `telegraph_url` and `telegraph_path` columns (NULL until first successful `createPage`). `hw_review publish N` calls `createPage` only when `telegraph_url` is NULL; on a Telegram-send failure, the stored URL is reused on subsequent retries and no duplicate Telegraph page is created.
 **Rationale:** Partial success (Telegraph OK, Telegram fail) is a real failure mode at this latency. Without URL persistence, the second `publish` creates an orphan Telegraph page on every retry. `telegraph_path` is stored now (one extra column, near-zero cost) to keep a future `editPage` door open without another migration.
 **User-spec anchor:** Supports AC "повторный `hw_review publish N` **переиспользует** существующую Telegraph-страницу (вторая не создаётся)" (user-spec AC).
+**Alternatives considered:** Parse `path` from URL on retry — rejected because Telegraph slugs auto-suffix the publish date (so the slug of today and tomorrow differ); recreate Telegraph page on each retry and accept orphans — rejected, pollutes Telegraph account; introduce a separate `publish_state` table — rejected, adds coordination cost for one column pair.
 
 ### Decision 10: `process_new_articles` deleted; prep-phase does not publish
 
 **Decision:** The existing `process_new_articles` function in `news_bot.py` (the fetch→translate→publish orchestrator, currently limit=3) is removed entirely. Its fetch work merges into the prep path; its publish work moves to `hw_review publish` + the idle-fallback + overflow-fast-track helpers. The `limit=3` concept is replaced by `QUEUE_CAP=10`.
 **Rationale:** Keeping the function as legacy creates dead code + confused semantics ("is `process_new_articles` still called?"). Deleting it forces the test suite to honestly express the new shape.
 **User-spec anchor:** Supports AC "Prep-фаза в `job()` больше не публикует в канал напрямую — ни одного вызова `send_telegraph_teaser` по ходу prep-цикла" (user-spec AC).
+**Alternatives considered:** Keep `process_new_articles` as a behind-a-flag fallback — rejected, violates Decision 8 (dead-letter is explicit in `failed_articles`, not a silent code path); rename it to `_legacy_process_new_articles` and mark deprecated — rejected, tests would still need to be flipped and the name would linger in audit grep noise.
+
+### Decision 11: Error-message sanitisation for `last_error` storage
+
+**Decision:** Every write to `pending_articles.last_error` / `failed_articles.last_error` passes through a `sanitize_error_message(exc)` helper that strips known secrets: `TELEGRAM_BOT_TOKEN`, `TELEGRAM_ADMIN_ID`, `TELEGRAM_CHANNEL_ID`, `TELEGRAPH_ACCESS_TOKEN` are replaced with `[REDACTED]`. Helper lives in `news_bot.py` next to `send_admin_notification`. Also applies before any admin-notification text is sent. `hw_review show N` prints the already-sanitised column verbatim.
+**Rationale:** Security review flagged that `telegraph_publisher._api_call` POSTs `access_token` as form data, and `requests` can embed that token verbatim in network-error strings. Storing `str(exc)` unfiltered would leak the token into `news.db` and stdout (`hw_review show`) and admin chat. Sanitisation is a thin 10-line helper.
+**User-spec anchor:** `[TECHNICAL]` — security hardening, not in user-spec.
+**Alternatives considered:** Encrypt `last_error` column — rejected, overkill for single-file SQLite; drop `last_error` entirely — rejected, forensics value too high; redact only on display — rejected, DB still leaks if someone ships it by mistake.
+
+### Decision 12: Batched idle-fallback heads-up ping
+
+**Decision:** When the idle-fallback pass finds multiple stale rows in one cron tick, send ONE consolidated admin ping: `"Will auto-publish in ~{GRACE_WINDOW_HOURS}h: {title1}, {title2}, {title3}. Intercept via hw_review take N"`. Not one ping per row.
+**Rationale:** User-spec phrases the alert in plural ("{titles}", comma-separated). A per-row loop would spam the operator with 5+ notifications in a stale-heavy tick. Consolidating matches the admin-ping pattern already used by `build_admin_ping` for the queue summary.
+**User-spec anchor:** Supports user-spec Fallback-путь line "Will auto-publish in ~{grace}: [titles]. Intercept via `hw_review take N`" (plural list).
+**Alternatives considered:** Per-row ping — rejected, noisy; only first row of N → rejected, operator may miss newer stale entries.
+
+### Decision 13: Shared `attempt_count` column across idle-fallback and overflow paths
+
+**Decision:** `pending_articles.attempt_count` is a single counter incremented by BOTH the idle-fallback GT failure path AND the overflow fast-track GT failure path. Three failures in any combination → `move_to_failed`. No per-path counter, no reset between paths.
+**Rationale:** User-spec AC L70 explicitly says "3 failures in any combination of idle-fallback and overflow". A split counter would let a row fail twice in each path and survive. `pending_articles_repo.increment_attempt(link, err)` is the single mutator — both call sites use it.
+**User-spec anchor:** Supports AC "Провалы в overflow-пути инкрементируют общий счётчик попыток по строке — после 3 провалов (в любом сочетании idle-fallback и overflow) строка уезжает в failed" (user-spec AC).
+**Alternatives considered:** Separate `idle_attempts` and `overflow_attempts` columns — rejected, contradicts user-spec and doubles the 3-strike threshold in edge cases; reset on path change — rejected, makes a stuck row live forever.
+
+### Decision 14: Channel-post hashtag continues to use `_source_hashtag(source_url)`, not `source_name`
+
+**Decision:** `send_telegraph_teaser(telegraph_url, source_url)` stays unchanged — it still derives the channel-post hashtag via `_source_hashtag(source_url)` which strips TLD from the URL netloc. `source_name` is used only for admin-ping counting, not for the public channel hashtag. Result: `lamleygroup.com` → `#lamleygroup` (unchanged), `autoevolution.com` → `#autoevolution`, `corporate.mattel.com` → `#mattel`.
+**Rationale:** Existing channel posts follow the TLD-stripped form (verified on `@myhwchannel123`); changing to `#lamley` would break the format operator is used to. `source_name` is internal; keeping the two concerns separate means adding a source only touches `NETLOC_TO_SOURCE` + fetchers, not the channel hashtag.
+**User-spec anchor:** Preserves locked post format (`work/telegraph-pipeline/post-format.md`) per user-spec Ограничения.
+**Alternatives considered:** Unify hashtag and source_name — rejected, requires rewriting historic channel URLs the operator reads today.
 
 ## Data Models
 
@@ -146,6 +199,7 @@ No long-lived connection pools, no ML models, no browser automation. The design 
 | `attempt_count` | INTEGER | NOT NULL DEFAULT 0 | fallback/overflow failures |
 | `last_error` | TEXT | | last exception message |
 | `pub_date` | TEXT | | preserved for `move_to_published` |
+| `preview_html_path` | TEXT | | NULL until `hw_review preview` runs; absolute path inside `~/.cache/hw-review/`; cleared on `publish` / `skip` after file removal (Decision 1). |
 
 ### New: `published_articles` (audit)
 
@@ -240,13 +294,20 @@ None. The feature uses only stdlib (`argparse`, `sqlite3`, `json`, `webbrowser`,
 
 ### Integration tests
 
-- Prep phase end-to-end with all source fetchers mocked: `pending_articles` populated, zero Telegraph / Telegram calls.
-- Publish phase end-to-end with Telegraph + Telegram mocked: stage → preview → publish; row moves pending → published; local HTML file deleted; `via_review=True`.
-- Publish-retry: first publish creates Telegraph page and mock-Telegram fails → row stays pending with `telegraph_url` set; second publish reuses the URL and succeeds → moves to published.
-- Idle-fallback: stale `fetched_at` → heads-up ping + `notified_at` stamped; overdue → GT + auto-publish; `take N` in between clears `notified_at`.
-- Overflow: queue pre-loaded to 10 with mix of staged + unstaged; prep-phase with new entries → unstaged evicted via GT, staged protected, deferred count in admin ping.
-- Migration: empty tempfile DB → `init_db()` creates all 4 tables with expected columns (assert via `PRAGMA table_info`).
-- Flipped existing integration tests: `test_integration.py`, `test_mattel_integration.py`, `test_feed_iteration.py` — assert staging-only, zero auto-publish calls after prep.
+- Prep phase end-to-end with all source fetchers mocked: every source's new entries land in `pending_articles` with per-source fields populated — autoevolution row has non-NULL `blocks`, Mattel/Lamley rows have NULL `blocks`, all rows have NULL `ru_*`. Zero Telegraph/Telegram calls.
+- Publish phase end-to-end with `_api_call` and `send_telegraph_teaser` and `transcreate_text` mocked — `preview_renderer` and `preview_nodes` run **real**. Stage → preview → publish; row moves pending → published; local HTML file deleted; `via_review=True`.
+- Publish-retry, two variants: (a) `send_telegraph_teaser` returns False; (b) `send_telegraph_teaser` raises. Both: first publish writes `telegraph_url` on pending row; second publish does **not** call `_api_call('createPage', …)` again (strict mock assertion: `create_call_count == 1` across both runs).
+- Idle-fallback with time simulation: set `fetched_at = datetime('now', '-50 hours')` via SQL update (not Python time-mock — `CURRENT_TIMESTAMP` defaults are SQLite-side). Verify consolidated admin ping lists all stale titles in one message. Overdue path → GT + auto-publish with `via_review=False`. `take N` in between clears `notified_at`, rows skip the overdue step.
+- Overflow: queue pre-loaded to `QUEUE_CAP` with mix of staged + unstaged; prep with new entries → unstaged evicted via GT, staged survive untouched, deferred count and staged-protected count appear in admin ping.
+- Attempt counter mixed-path: one failure via idle-fallback + one failure via overflow → `attempt_count=2`; third failure of any kind → `move_to_failed` (Decision 13). Assert single shared column.
+- Migration via `PRAGMA table_info`: for every expected column, assert name + type + NOT-NULL + default + PK. Dict-literal comparison, no substring matches.
+- Transactional rollback: force `move_to_published` to raise mid-transaction (monkeypatch cursor to raise on the second INSERT); assert no partial state — `pending_articles` row still present, `processed_news` and `published_articles` empty of the link.
+- `take N` after auto-publish elapsed → CLI returns exit 1 with the expected stderr message (AC L67).
+- Skip with staged ru → prompt appears; `y` writes to `processed_news` and deletes pending; anything else aborts with exit 0 and no DB changes.
+- Flipped existing integration tests: `test_integration.py:54,115,146,178,205`, `test_mattel_integration.py:59,104`, `test_feed_iteration.py:35` — each asserts `mock_publish.assert_not_called()` and `pending_repo.count_pending() == expected`.
+- `init_db()` idempotent: call twice on the same DB, second call must not raise and must not change row counts.
+- Unknown netloc in RSS: an entry from an unknown domain → `source_name='other'` with a WARNING log record captured.
+- CLI logger integration: `hw_review show N` emits through the same logger as `news_bot`; capturing the logger stream shows formatted output.
 
 ### E2E tests
 
@@ -283,11 +344,15 @@ No Playwright or headless browser required for agent verification; the user-side
 | JSON serialisation of paragraphs with embedded quotes/newlines | `json.dumps(..., ensure_ascii=False)` handles all Unicode + escaping by spec. `json.loads` on read; unit-tested with Cyrillic fixtures. |
 | Operator leaves preview HTML files accumulating in `/tmp` | Files are overwritten on repeat preview by link-hash; `publish` and `skip` delete. Worst case: ≤10 files × ~50KB at a time; cleared on host reboot. Acceptable. |
 | `fetch_full_article` network failure drops the entry for this tick | Existing behaviour — entry is not marked in `processed_news` or `pending_articles`, so next cron tick retries. Matches `news_bot.py:372-374` current skip rule. |
+| Upstream-compromised image URL from a source fetcher triggers XSS when operator opens local HTML preview (`file://` origin) | `preview_renderer` URL-scheme allowlist (`https?://` only) + CSP meta (`default-src 'none'`, `img-src https:`, `frame-src https:`) block `javascript:` and `data:` URLs (Decision 1). |
+| Malformed / malicious JSON on `stage` stdin corrupts pending row or reaches Telegraph | Strict validation layer (Decision 6): size cap 256 KiB, depth cap 3, key + type allowlists. Rejects before DB write. |
+| Telegraph token leaks into `last_error` via `requests`/`_api_call` network-error string | `sanitize_error_message` replaces all four env-secret values with `[REDACTED]` at the call site (Decision 11). |
+| Symlink attack on predictable `/tmp/hw-review-*.html` filename | Preview files go under `~/.cache/hw-review/` at `0700` with `tempfile.NamedTemporaryFile`-issued `uuid4` name; `webbrowser.open` path is asserted to resolve inside the cache dir (Decision 1). |
 
 ## User-Spec Deviations
 
 - **Hourly cron instead of "default daily with 1-line bump"**: user-spec says "Cron продолжает бежать минимум раз в сутки... Возможный bump до часовой гранулярности — осознанный 1-строчный follow-up, решение отложено до tech-spec". Tech-spec chooses the bump now because the 2h grace window is meaningless at daily cadence. All other timing parameters (48h idle, 2h grace) stay as spec'd. → [PENDING USER APPROVAL]
-- **`source_name` vocabulary: `autoevolution`/`mattel`/`lamley`** instead of the `rss`/`mattel`/`lamley` that code-research §9.4 initially proposed. Reason: lamley articles arrive via RSS (in `feeds.json`) alongside autoevolution, so tagging by URL-netloc gives the operator a clear per-outlet breakdown in the admin ping. User-spec fixes the format `"🟠 autoevolution ×K, 🟣 mattel ×M, 🟢 lamley ×L"` — matching the vocabulary exactly. → [PENDING USER APPROVAL]
+- **`source_name` vocabulary promoted to `autoevolution`/`mattel`/`lamley`** as the internal key (code-research §9.4 had `rss` as the key with `autoevolution` only as a display label). Reason: lamley articles arrive via RSS alongside autoevolution, so keeping both under a single `rss` key would collapse the two outlets in the admin ping. Decision 4 pins the mapping via an explicit `NETLOC_TO_SOURCE` dict — bare netloc inference would yield `lamleygroup`, not `lamley`. Channel-post hashtag keeps the TLD-stripped form via `_source_hashtag` (Decision 14) — unchanged user-visible output. → [PENDING USER APPROVAL]
 - **Added public `telegraph_publisher.preview_nodes(...)`** helper (not in user-spec). Reason: `preview_renderer` needs the same node tree `publish_article` would generate. Adding a public wrapper around `_build_content*` keeps node-building logic inside the publisher module and preserves symmetry. → [PENDING USER APPROVAL]
 - **Added `telegraph_path` column on pending & published tables** (user-spec mentions only `telegraph_url`). Reason: `editPage` requires `path`; parsing it from URL is brittle because slugs auto-suffix dates. Storing it now (one extra cheap column) keeps the editPage door open without a future migration. → [PENDING USER APPROVAL]
 
@@ -305,6 +370,13 @@ Technical criteria additional to user-spec acceptance criteria:
 - [ ] All existing test cases in `tests/` pass unchanged except those that explicitly assert auto-publish — those are rewritten in the same wave as the `job()` refactor.
 - [ ] New migration test runs `init_db()` on an empty tempfile DB and asserts via `PRAGMA table_info` that all expected columns exist with expected types.
 - [ ] No new package appears in `requirements.txt` under this feature.
+- [ ] All repo SQL uses parameterised queries (`?` placeholders) — no string concatenation or f-string interpolation into SQL bodies. Code Audit task explicitly grep-verifies this.
+- [ ] `last_error` is written only through `sanitize_error_message` — a unit test injects an exception containing each of `TELEGRAM_BOT_TOKEN`, `TELEGRAM_ADMIN_ID`, `TELEGRAM_CHANNEL_ID`, `TELEGRAPH_ACCESS_TOKEN` and asserts `[REDACTED]` replaces each in the resulting `last_error` column, in any admin-ping, and in `hw_review show N` stdout.
+- [ ] `preview_renderer.render_html` output passes three invariants: tag allowlist (no unknown tags emitted), URL-scheme allowlist (`img src`/`iframe src`/`a href` only `https?://`), CSP meta tag present with `default-src 'none'` + allowed `img-src`/`frame-src`.
+- [ ] `hw_review preview` never calls `webbrowser.open` with a path outside `~/.cache/hw-review/`; CLI-level assert + unit test verify.
+- [ ] `stage` validator rejects: stdin >256 KiB, depth >3, unknown keys at top level, non-list `ru_paragraphs`, non-dict block entries, unknown block `type`, unknown block keys, string fields >10 KiB each.
+- [ ] Attempt counter is shared across idle-fallback and overflow failures per Decision 13 — integration test above exercises the mixed-path path.
+- [ ] Idle-fallback heads-up ping is sent once per cron tick per Decision 12 — integration test asserts a single admin-notification call even with 3 stale rows.
 
 ## Implementation Tasks
 
@@ -328,11 +400,12 @@ Technical criteria additional to user-spec acceptance criteria:
 - **Files to modify:** `preview_renderer.py` (new), `tests/test_preview_renderer.py` (new)
 - **Files to read:** `telegraph_publisher.py`, `work/telegraph-pipeline/post-format.md`, `work/manual-review-workflow/code-research.md` (§9.6)
 
-#### Task 3: Admin-ping helper + source vocabulary
+#### Task 3: Admin-ping helper + source vocabulary + `sanitize_error_message`
 
-- **Description:** Add `SOURCE_EMOJI`, `SOURCE_LABEL` dicts and `build_admin_ping(rows)` function to `news_bot.py`. Ping returns `None` on empty queue; format matches user-spec exactly, zero-count sources are omitted.
+- **Description:** Add `SOURCE_EMOJI` / `SOURCE_LABEL` dicts (keyed by `autoevolution`/`mattel`/`lamley` per Decision 4), `build_admin_ping(rows)`, and `sanitize_error_message(exc)` helper (Decision 11) to `news_bot.py`. Ping returns `None` on empty queue; format matches user-spec byte-for-byte with zero-count sources omitted. Sanitiser strips all four env-secrets.
 - **Skill:** code-writing
 - **Reviewers:** code-reviewer, security-auditor, test-reviewer
+- **Verify-smoke:** `python -c "import os; os.environ['TELEGRAM_BOT_TOKEN']='abc'; from news_bot import sanitize_error_message; print(sanitize_error_message(Exception('api abc xyz')))"` prints string without `abc`.
 - **Files to modify:** `news_bot.py`, `tests/test_admin_ping.py` (new)
 - **Files to read:** `work/manual-review-workflow/user-spec.md`, `work/manual-review-workflow/code-research.md` (§9.4)
 
@@ -341,6 +414,7 @@ Technical criteria additional to user-spec acceptance criteria:
 - **Description:** Expose a public helper in `telegraph_publisher.py` that returns the node tree the current `publish_article` would send — without calling `createPage`. `preview_renderer` uses it. Existing node-building functions (`_build_content`, `_build_content_from_blocks`) stay private; only the wrapper is public.
 - **Skill:** code-writing
 - **Reviewers:** code-reviewer, test-reviewer
+- **Verify-smoke:** `python -c "import telegraph_publisher; print(telegraph_publisher.preview_nodes(title='t', paragraphs=['p'])[0]['tag'])"` prints a valid tag like `p` or `figure`.
 - **Files to modify:** `telegraph_publisher.py`, `tests/test_telegraph_publisher.py`
 - **Files to read:** `telegraph_publisher.py`, `work/manual-review-workflow/code-research.md` (§9.6)
 
@@ -357,7 +431,7 @@ Technical criteria additional to user-spec acceptance criteria:
 
 #### Task 6: Refactor `job()` into prep-only + cron bump + delete `process_new_articles`
 
-- **Description:** Rewrite `news_bot.job()` into the prep-phase-only pipeline (idle-fallback and overflow passes deferred to Tasks 9–10; this task delivers just the fetch/filter/stage/ping path). Delete `process_new_articles`. Bump cron from `every().day.at("12:00")` to `every().hour`. Add env-overridable constants `IDLE_TIMEOUT_HOURS`, `GRACE_WINDOW_HOURS`, `QUEUE_CAP`. Flip the 8 existing auto-publish integration tests in `test_integration.py`, `test_mattel_integration.py`, `test_feed_iteration.py` to assert staging-only. `init_db()` delegates new-table creation to `pending_articles_repo.init_schema`.
+- **Description:** Replace the current end-to-end `job()` with the prep-only pipeline per Decision 10. Delete `process_new_articles`. Bump cron per Decision 5. Add env-overridable constants. Delegate schema creation to the repo. Flip existing auto-publish integration tests to staging-only.
 - **Skill:** code-writing
 - **Reviewers:** code-reviewer, security-auditor, test-reviewer
 - **Verify-smoke:** `pytest tests/test_integration.py tests/test_mattel_integration.py tests/test_feed_iteration.py tests/test_database.py -q` is green.
@@ -366,13 +440,13 @@ Technical criteria additional to user-spec acceptance criteria:
 
 ### Wave 3 (CLI + publish — depends on Waves 1-2)
 
-#### Task 7: `hw_review` CLI skeleton + `list` / `show` / `stage` / `skip` / `preview`
+#### Task 7: `hw_review` CLI with `list` / `show` / `stage` / `skip` / `preview`
 
-- **Description:** New `hw_review.py` using stdlib `argparse` subparsers. Implement `list` (with failed-footer), `show`, `stage` (JSON on stdin for paragraphs/blocks, argparse flags for title/subtitle), `skip` (y/N confirmation when ru staged), `preview` (builds nodes via `preview_nodes`, renders via `preview_renderer`, writes `/tmp/hw-review-{hash}.html`, `webbrowser.open`, `--no-open` flag). Exit codes 0/1; stdout for human output, stderr for errors.
+- **Description:** Build the `hw_review.py` CLI surface for five subcommands driving the review flow, per Decisions 1, 3, 6 and 8 (local HTML preview, lazy draft, strict stdin-JSON validation for stage, mandatory skip-confirmation when ru is staged, failed-footer always visible).
 - **Skill:** code-writing
 - **Reviewers:** code-reviewer, security-auditor, test-reviewer
-- **Verify-smoke:** `python hw_review.py list` on an empty test DB prints `"queue is empty"`; `python hw_review.py preview --no-open 1` on a staged row prints the HTML file path.
-- **Verify-user:** Run `python hw_review.py preview <N>` on a staged row — local browser opens the preview with hero, subtitle, paragraphs, and source footer in the expected order.
+- **Verify-smoke:** `python hw_review.py list` on an empty test DB prints the empty-queue marker; `python hw_review.py preview --no-open 1` on a staged row prints the HTML file path to stdout with exit 0.
+- **Verify-user:** Run `python hw_review.py preview <N>` on a staged row — browser opens the preview with hero image, subtitle, paragraphs, and source footer in the expected order.
 - **Files to modify:** `hw_review.py` (new), `tests/test_hw_review_cli.py` (new)
 - **Files to read:** `pending_articles_repo.py`, `preview_renderer.py`, `telegraph_publisher.py`, `work/manual-review-workflow/code-research.md` (§9.3, §9.6, §9.13)
 
@@ -386,21 +460,29 @@ Technical criteria additional to user-spec acceptance criteria:
 - **Files to modify:** `hw_review.py`, `tests/test_hw_review_publish_flow.py` (new)
 - **Files to read:** `telegraph_publisher.py`, `news_bot.py` (for `send_telegraph_teaser`), `pending_articles_repo.py`, `work/manual-review-workflow/code-research.md` (§9.9)
 
-### Wave 4 (automation paths — depends on Waves 1-3)
+### Wave 4 (idle-fallback — depends on Waves 1-3)
 
 #### Task 9: Idle-fallback pass + `hw_review take` command
 
-- **Description:** Add idle-fallback pass at the top of `job()`: rows stale >`IDLE_TIMEOUT_HOURS` get heads-up admin ping and `mark_notified`; rows overdue >`GRACE_WINDOW_HOURS` go through `transcreate_text` + publish + `move_to_published(via_review=False)`. On failure, `increment_attempt`; 3 strikes → `move_to_failed`. Implement `hw_review take N` command that calls `clear_notified`; refuses if row has already left pending.
+- **Description:** Add idle-fallback pass at the top of `job()` with batched heads-up (Decision 12) and shared attempt counter (Decision 13); add `hw_review take N` clearing `notified_at` and refusing if the row has already left pending.
 - **Skill:** code-writing
 - **Reviewers:** code-reviewer, security-auditor, test-reviewer
+- **Verify-smoke:** `pytest tests/test_idle_fallback.py -q` green after stubbing `transcreate_text` + `publish_article` + `send_telegraph_teaser`; also assert with a hand-staged row that a single admin-ping message contains all three stale titles.
 - **Files to modify:** `news_bot.py`, `hw_review.py`, `tests/test_idle_fallback.py` (new), `tests/test_hw_review_cli.py`
 - **Files to read:** `news_bot.py`, `pending_articles_repo.py`, `work/manual-review-workflow/code-research.md` (§9.7, §9.10)
 
+### Wave 5 (overflow + retry — depends on Wave 4)
+
+<!-- Split from Wave 4 after template validator flagged Wave 4 file-conflicts on
+     news_bot.py / hw_review.py / test_hw_review_cli.py. Task 10 also depends on
+     the _fallback_publish helper produced by Task 9. -->
+
 #### Task 10: Overflow fast-track pass + `hw_review retry` + failed-footer
 
-- **Description:** Add overflow fast-track pass to `job()`: when `count_pending() + len(new_entries) > QUEUE_CAP`, evict oldest rows from `list_pending_for_eviction()` (NULL ru only) via the fallback-publish helper from Task 9; on fast-track failure, increment attempt and at 3 strikes move to failed. Defer unfit new entries with admin pressure ping. Implement `hw_review retry N` indexing `list_failed()`. Add failed-articles footer to `hw_review list` output (unconditional on non-empty failed table).
+- **Description:** Add overflow fast-track to `job()` using the `_fallback_publish` helper from Task 9 (shared `attempt_count` per Decision 13, staged-row protection per Decision 7); add `hw_review retry N` indexing `list_failed()`; add the always-on failed-articles footer to `hw_review list` output.
 - **Skill:** code-writing
 - **Reviewers:** code-reviewer, security-auditor, test-reviewer
+- **Verify-smoke:** `pytest tests/test_overflow.py -q` green with the queue pre-filled to `QUEUE_CAP` with mixed staged + unstaged rows; assert staged rows survive, unstaged evicted.
 - **Files to modify:** `news_bot.py`, `hw_review.py`, `tests/test_overflow.py` (new), `tests/test_hw_review_cli.py`
 - **Files to read:** `news_bot.py`, `pending_articles_repo.py`, `work/manual-review-workflow/code-research.md` (§9.8)
 
@@ -408,7 +490,7 @@ Technical criteria additional to user-spec acceptance criteria:
 
 #### Task 11: Code Audit
 
-- **Description:** Full-feature code quality audit. Read all source files created/modified in this feature (`pending_articles_repo.py`, `preview_renderer.py`, `hw_review.py`, `news_bot.py`, `telegraph_publisher.py`). Review for cross-component issues: shared resource compliance (single `news.db` path), architectural consistency with existing `*_source.py` style, error-handling uniformity (admin-notifier usage, logger usage, exit codes), dead-code check (confirm `process_new_articles` fully removed). Write audit report.
+- **Description:** Full-feature code quality audit. Read all source files listed in each implementation task's `Files to modify`. Review for cross-component issues: shared-resource compliance with the Architecture table, architectural consistency with existing `*_source.py` style, error-handling uniformity (admin-notifier usage, sanitized `last_error`, logger usage, exit codes), and dead-code check (confirm `process_new_articles` fully removed).
 - **Skill:** code-reviewing
 - **Reviewers:** none
 
