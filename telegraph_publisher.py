@@ -157,9 +157,19 @@ def _build_content_from_blocks(
         elif t == "video":
             nodes.append(iframe(block["src"]))
 
-    if source_url:
-        nodes.append(p(i_("Источник: "), a(source_url, source_url)))
+    nodes.extend(_footer_nodes(source_url))
     return nodes
+
+
+def _footer_nodes(source_url):
+    """Render the "Источник" footer. Plain `<p>` so the link is interactive
+    in both Instant View and the web rendering."""
+    if not source_url:
+        return []
+    return [{"tag": "p", "children": [
+        "Источник: ",
+        {"tag": "a", "attrs": {"href": source_url}, "children": [source_url]},
+    ]}]
 
 
 def _build_content(
@@ -208,8 +218,7 @@ def _build_content(
     for img in remaining:
         nodes.append(figure_img(img))
 
-    if source_url:
-        nodes.append(p(i_("Источник: "), a(source_url, source_url)))
+    nodes.extend(_footer_nodes(source_url))
     return nodes
 
 
@@ -238,6 +247,7 @@ def publish_article(
     token = access_token or os.environ.get(ENV_TOKEN_KEY)
     if not token:
         raise TelegraphError(f"{ENV_TOKEN_KEY} is not set; call ensure_access_token first")
+
     if blocks:
         content = _build_content_from_blocks(subtitle, blocks, source_url)
     else:

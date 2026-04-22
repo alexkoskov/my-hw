@@ -93,9 +93,9 @@ class TestBuildContent:
 
     def test_source_link_at_end(self):
         nodes = tp._build_content("", ["para"], [], "http://src")
+        # Footer is a plain <p> (no <aside> — breaks IV clickability).
         last = nodes[-1]
         assert last["tag"] == "p"
-        # source link paragraph has "Источник: " italic + link
         anchor = last["children"][1]
         assert anchor["tag"] == "a"
         assert anchor["attrs"]["href"] == "http://src"
@@ -119,7 +119,7 @@ class TestBuildContent:
             ["hero.jpg"],
             "http://src",
         )
-        # [figure(hero), p(italic "💬 «subtitle»"), hr, p(body), p(source)]
+        # [figure(hero), p(italic "💬 «subtitle»"), hr, p(body), p(footer)]
         tags = [n["tag"] for n in nodes]
         assert tags == ["figure", "p", "hr", "p", "p"]
         # Decorated subtitle paragraph
@@ -200,11 +200,16 @@ class TestBuildContentFromBlocks:
 
 class TestPublishArticle:
     def test_success(self, monkeypatch):
+        """publish_article does a single createPage call and returns the URL."""
         monkeypatch.setenv(tp.ENV_TOKEN_KEY, "tok")
         session = MagicMock()
-        session.post.return_value = _make_response(
-            {"ok": True, "result": {"url": "https://telegra.ph/Test-04-20"}}
-        )
+        session.post.return_value = _make_response({
+            "ok": True,
+            "result": {
+                "url": "https://telegra.ph/Test-04-20",
+                "path": "Test-04-20",
+            },
+        })
         url = tp.publish_article(
             title="Заголовок",
             paragraphs=["Абзац 1.", "Абзац 2."],
@@ -213,13 +218,14 @@ class TestPublishArticle:
             session=session,
         )
         assert url == "https://telegra.ph/Test-04-20"
-        call_data = session.post.call_args[1]["data"]
-        assert call_data["title"] == "Заголовок"
-        assert call_data["access_token"] == "tok"
-        content = json.loads(call_data["content"])
-        assert content[0]["tag"] == "figure"
-        # Source link appended
-        assert content[-1]["children"][1]["attrs"]["href"] == "http://source"
+        assert session.post.call_count == 1
+        assert session.post.call_args[0][0].endswith("/createPage")
+        # Источник footer is the last <p> with the source link
+        content = json.loads(session.post.call_args[1]["data"]["content"])
+        footer = content[-1]
+        assert footer["tag"] == "p"
+        assert footer["children"][0] == "Источник: "
+        assert footer["children"][1]["attrs"]["href"] == "http://source"
 
     def test_no_token_raises(self, monkeypatch):
         monkeypatch.delenv(tp.ENV_TOKEN_KEY, raising=False)
@@ -229,9 +235,10 @@ class TestPublishArticle:
     def test_explicit_token_overrides_env(self, monkeypatch):
         monkeypatch.delenv(tp.ENV_TOKEN_KEY, raising=False)
         session = MagicMock()
-        session.post.return_value = _make_response(
-            {"ok": True, "result": {"url": "https://telegra.ph/X"}}
-        )
+        session.post.return_value = _make_response({
+            "ok": True,
+            "result": {"url": "https://telegra.ph/X", "path": "X"},
+        })
         tp.publish_article(
             title="T", paragraphs=["p"], images=[],
             access_token="explicit", session=session,

@@ -36,6 +36,19 @@ SAMPLE_ARTICLE_HTML = """
 <div class="ad ad300x250 ad-intext">ads here, ignore</div>
 <div class="clearfix"></div>
 </div>
+<div class="newsgal2 posrel"><div class="vslide">
+  <a href="https://s1.cdn.example/images/news/gallery/hot-wheels-chase-car-to-hunt-for-is-a-rare-porsche_1.jpg"><img
+    src="https://s1.cdn.example/images/news-gallery-130x/hot-wheels-chase-thumb_1.jpg"
+    data-description="Photo credits: Mattel" /></a>
+  <a href="https://s1.cdn.example/images/news/gallery/hot-wheels-chase-car-to-hunt-for-is-a-rare-porsche_2.jpg"><img
+    src="https://s1.cdn.example/images/news-gallery-130x/hot-wheels-chase-thumb_2.jpg"
+    data-description="Photo credits: Mattel" /></a>
+  <a href="https://s1.cdn.example/images/news/gallery/hot-wheels-chase-car-to-hunt-for-is-a-rare-porsche_3.jpg"><img
+    src="https://s1.cdn.example/images/news-gallery-130x/hot-wheels-chase-thumb_3.jpg"
+    data-description="Photo credits: Mattel" /></a>
+  <a href="https://s1.cdn.example/images/news/gallery/different-story_5.jpg"><img
+    src="https://s1.cdn.example/images/news-gallery-130x/different-thumb_5.jpg" /></a>
+</div></div>
 </body></html>
 """
 
@@ -118,19 +131,27 @@ class TestScrapeArticlePage:
         assert out["subtitle"] == "Editorial lead about the rare Porsche."
 
         # Blocks preserve DOM order: hero prepended first, lead, then body
-        # with inline image + heading + video in their positions. Sibling
-        # story links and the placeholder spinner are filtered out.
+        # with inline image + heading + video in their positions. Gallery
+        # photos appended at the end. Sibling story links and placeholders
+        # are filtered out.
         types = [b["type"] for b in out["blocks"]]
         assert types == [
-            "image",        # hero (ch_pic)
+            "image",        # hero (ch_pic.mainpic)
             "lead",         # bold intro
             "paragraph",    # "The rare Porsche..."
             "paragraph",    # "Production run..."
-            "image",        # inline gallery image
+            "image",        # inline gallery image (body _1)
             "heading",      # "Why this matters"
             "paragraph",    # "Collectors have waited..."
             "video",        # YouTube embed
+            # Gallery at page bottom: _1 skipped (same URL as inline),
+            # _2 and _3 appended; sibling-story _5 filtered by slug.
+            "image",        # gallery _2
+            "image",        # gallery _3
         ]
+        # Gallery images carry the data-description as caption
+        assert out["blocks"][-2]["caption"] == "Photo credits: Mattel"
+        assert out["blocks"][-1]["caption"] == "Photo credits: Mattel"
         # Hero is the first image + caption from div.ch_pic_crd
         hero = out["blocks"][0]
         assert hero["src"] == (
@@ -164,7 +185,8 @@ class TestScrapeArticlePage:
         # Back-compat flat lists still populated
         assert "Why this matters" in out["paragraphs"]
         assert "Bold intro paragraph from the editor." in out["paragraphs"]
-        assert len(out["images"]) == 2
+        # Hero + inline body image + 2 gallery images (dedup removed duplicate _1).
+        assert len(out["images"]) == 4
 
     def test_http_error_returns_none(self):
         fetcher = lambda url: _fake_response("", status=403)

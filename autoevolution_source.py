@@ -189,6 +189,10 @@ def _scrape_article_page(link: str, fetcher=None) -> Optional[Dict]:
 
     blocks: List[Dict] = []
     seen_media = set()
+    # Reserve the hero URL up front so the body/gallery walks don't add a
+    # duplicate copy (gallery's item 1 is frequently the same file as hero).
+    if hero_block:
+        seen_media.add(hero_block["src"].split("?", 1)[0])
 
     # Walk direct children of .newstext in DOM order so images/videos land at
     # their original positions between paragraphs.
@@ -253,8 +257,28 @@ def _scrape_article_page(link: str, fetcher=None) -> Optional[Dict]:
                     "runs": runs,
                 })
 
+    # Gallery at the end of the page (`<div class="newsgal2">`) holds the
+    # full photo set — thumbnails link to `/images/news/gallery/<slug>_N.jpg`
+    # and the caption lives in the thumbnail's `data-description` attribute.
+    # Appended after the body so readers see the text first, then the
+    # image set. `seen_media` dedupes against hero/inline images.
+    gallery = soup.find("div", class_="newsgal2")
+    if gallery and slug:
+        gallery_href_re = re.compile(r"/gallery/[^\"']*" + re.escape(slug))
+        for anchor in gallery.find_all("a", href=True):
+            href = anchor["href"]
+            if not gallery_href_re.search(href):
+                continue
+            base = href.split("?", 1)[0]
+            if base in seen_media:
+                continue
+            seen_media.add(base)
+            img = anchor.find("img")
+            caption = (img.get("data-description") or "").strip() if img else ""
+            blocks.append({"type": "image", "src": href, "caption": caption})
+
     # Prepend the hero image so it becomes the Telegraph preview thumbnail.
-    if hero_block and hero_block["src"].split("?", 1)[0] not in seen_media:
+    if hero_block:
         blocks.insert(0, hero_block)
 
     if not blocks:
