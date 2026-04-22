@@ -411,7 +411,7 @@ Stdlib `argparse`, subparser pattern (user-spec L89: no new deps). Exit 0 on suc
 - Exit: 0 on channel post success; 1 on any failure. On partial success (Telegraph OK, Telegram fail), exit 1 with stderr `"telegram send failed: {err}. Telegraph URL saved — rerun publish {n} to retry send."`.
 
 **`hw_review skip N`**
-- Args: positional `n: int`; optional `--yes` to bypass confirmation.
+- Args: positional `n: int`. (UPDATED: `--yes` bypass removed per tech-spec Decision — skip confirmation is always interactive.)
 - If row has `ru_paragraphs IS NOT NULL`, prompt via stdin: `"В записи {n} сохранён русский. Точно скипнуть? [y/N]: "`. Read single line; proceed only on `y`/`Y` (AC L49, L65). Any other input → exit 0 with `"skip cancelled"`.
 - Action: `skip_pending(link)` (writes to `processed_news`, removes from `pending_articles`, no `published_articles` row per AC L74).
 - Exit: 0.
@@ -432,17 +432,19 @@ Format: `"N ждут review: 🟠 autoevolution ×K, 🟣 mattel ×M, 🟢 lamle
 
 Source ID comes from `pending_articles.source_name` (9.1) — no URL parsing. Existing `_source_hashtag` at `news_bot.py:291-300` is unrelated (drives channel post hashtag, not the ping).
 
+**UPDATED 2026-04-22 per tech-spec Decision 4:** keys are now `'autoevolution'` / `'mattel'` / `'lamley'` — no `'rss'` key. Lamley also arrives via RSS, so keying by netloc-derived label keeps the two outlets distinguished.
+
 ```python
-# In news_bot.py (or a new admin_ping.py if news_bot grows too large).
+# In news_bot.py.
 SOURCE_EMOJI = {
-    'rss':    '🟠',   # autoevolution
-    'mattel': '🟣',
-    'lamley': '🟢',
+    'autoevolution': '🟠',
+    'mattel':        '🟣',
+    'lamley':        '🟢',
 }
 SOURCE_LABEL = {
-    'rss':    'autoevolution',
-    'mattel': 'mattel',
-    'lamley': 'lamley',
+    'autoevolution': 'autoevolution',
+    'mattel':        'mattel',
+    'lamley':        'lamley',
 }
 
 def build_admin_ping(rows: list[dict]) -> str | None:
@@ -452,7 +454,7 @@ def build_admin_ping(rows: list[dict]) -> str | None:
     from collections import Counter
     counts = Counter(r['source_name'] for r in rows)
     parts = [f"{SOURCE_EMOJI[k]} {SOURCE_LABEL[k]} ×{counts[k]}"
-             for k in ('rss', 'mattel', 'lamley') if counts.get(k)]
+             for k in ('autoevolution', 'mattel', 'lamley') if counts.get(k)]
     return f"{len(rows)} ждут review: " + ", ".join(parts)
 ```
 
@@ -696,29 +698,35 @@ def cmd_publish(link: str) -> int:
 
 Replaces `news_bot.py:423-449`. Same signature, same placement:
 
+**UPDATED 2026-04-22 per tech-spec Decisions 11 (sanitize_error_message), 12 (batched heads-up ping), 13 (shared attempt_count), 4 (no `'rss'` fallback for source_name).**
+
 ```python
 def job():
     logger.info("Starting prep-phase cron tick...")
     init_db()  # idempotent CREATE TABLE IF NOT EXISTS (9.11)
 
-    # (1) Idle fallback — heads-up + overdue auto-publish.
+    # (1a) Idle heads-up — ONE consolidated ping for all stale rows (Decision 12).
     stale_rows = pending_repo.list_pending_stale(hours=IDLE_TIMEOUT_HOURS)
-    for row in stale_rows:
+    if stale_rows:
+        titles = ", ".join(row['title'] for row in stale_rows)
         send_admin_notification(
-            f"Will auto-publish in ~{GRACE_WINDOW_HOURS}h: {row['title']}. "
+            f"Will auto-publish in ~{GRACE_WINDOW_HOURS}h: {titles}. "
             f"Intercept via hw_review take N"
         )
-        pending_repo.mark_notified(row['link'])
+        for row in stale_rows:
+            pending_repo.mark_notified(row['link'])
 
+    # (1b) Overdue auto-publish — shared attempt_count (Decision 13).
     overdue_rows = pending_repo.list_notified_overdue(grace_hours=GRACE_WINDOW_HOURS)
     for row in overdue_rows:
         try:
             _fallback_publish(row, via_review=False)
         except Exception as exc:
-            new_ct = pending_repo.increment_attempt(row['link'], str(exc))
+            safe = sanitize_error_message(exc)  # Decision 11
+            new_ct = pending_repo.increment_attempt(row['link'], safe)
             if new_ct >= 3:
-                pending_repo.move_to_failed(row['link'], str(exc))
-            logger.error(f"Fallback publish failed for {row['link']}: {exc}")
+                pending_repo.move_to_failed(row['link'], safe)
+            logger.error(f"Fallback publish failed for {row['link']}: {safe}")
 
     # (2) Fetch all sources.
     all_entries = []
@@ -726,13 +734,12 @@ def job():
         try:
             all_entries.extend(fetcher(notifier=send_admin_notification))
         except Exception as exc:
-            logger.error(f"Source fetcher {fetcher.__name__} failed: {exc}")
-            send_admin_notification(f"⚠️ {fetcher.__name__} raised: {exc}")
+            safe = sanitize_error_message(exc)
+            logger.error(f"Source fetcher {fetcher.__name__} failed: {safe}")
+            send_admin_notification(f"⚠️ {fetcher.__name__} raised: {safe}")
 
     # (3) Filter against processed_news + pending_articles.
     new_entries = filter_new_entries_extended(all_entries)
-    # `filter_new_entries_extended` = existing filter_new_entries + skip if link
-    # already in pending_articles. Alternative: single JOIN query in repo.
 
     # (4) Overflow fast-track.
     accepted, _ = _overflow_fast_track(new_entries)  # §9.8
@@ -746,7 +753,8 @@ def job():
             continue
         row = {
             'link': entry['link'],
-            'source_name': entry.get('source_name', 'rss'),
+            # Decision 4: source_name MUST be set by fetcher; no 'rss' fallback.
+            'source_name': entry['source_name'],
             'feed_url': entry.get('feed_url'),
             'title': article.get('title') or entry.get('title') or '',
             'subtitle': article.get('subtitle') or '',

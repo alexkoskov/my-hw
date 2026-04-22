@@ -148,7 +148,7 @@ A dedicated `hw_review_validators.py` (or function inside `hw_review.py`) owns t
 
 ### Decision 11: Error-message sanitisation for `last_error` storage
 
-**Decision:** Every write to `pending_articles.last_error` / `failed_articles.last_error` passes through a `sanitize_error_message(exc)` helper that strips known secrets: `TELEGRAM_BOT_TOKEN`, `TELEGRAM_ADMIN_ID`, `TELEGRAM_CHANNEL_ID`, `TELEGRAPH_ACCESS_TOKEN` are replaced with `[REDACTED]`. Helper lives in `news_bot.py` next to `send_admin_notification`. Also applies before any admin-notification text is sent. `hw_review show N` prints the already-sanitised column verbatim.
+**Decision:** Every write to `pending_articles.last_error` / `failed_articles.last_error` passes through a `sanitize_error_message(exc)` helper that strips known secrets: `TELEGRAM_BOT_TOKEN`, `TELEGRAM_ADMIN_ID`, `TELEGRAM_CHANNEL_ID`, `TELEGRAPH_ACCESS_TOKEN` are replaced with `[REDACTED]`. The helper reads env vars via `os.getenv` and **skips** any value that is empty, None, or whitespace-only (guards against `str.replace('', ...)` which would explode every character). Helper lives in `news_bot.py` next to `send_admin_notification`. Also applies before any admin-notification text is sent. `hw_review show N` prints the already-sanitised column verbatim.
 **Rationale:** Security review flagged that `telegraph_publisher._api_call` POSTs `access_token` as form data, and `requests` can embed that token verbatim in network-error strings. Storing `str(exc)` unfiltered would leak the token into `news.db` and stdout (`hw_review show`) and admin chat. Sanitisation is a thin 10-line helper.
 **User-spec anchor:** `[TECHNICAL]` — security hardening, not in user-spec.
 **Alternatives considered:** Encrypt `last_error` column — rejected, overkill for single-file SQLite; drop `last_error` entirely — rejected, forensics value too high; redact only on display — rejected, DB still leaks if someone ships it by mistake.
@@ -268,7 +268,7 @@ JSON fields are serialised inside the repo; callers pass and receive Python list
 
 ### New packages
 
-None. The feature uses only stdlib (`argparse`, `sqlite3`, `json`, `webbrowser`, `html.escape`, `hashlib.md5`, `tempfile`).
+None. The feature uses only stdlib (`argparse`, `sqlite3`, `json`, `webbrowser`, `html.escape`, `tempfile`, `uuid`, `pathlib`, `os`).
 
 ### Using existing (from project)
 
@@ -286,7 +286,10 @@ None. The feature uses only stdlib (`argparse`, `sqlite3`, `json`, `webbrowser`,
 ### Unit tests
 
 - `pending_articles_repo`: insert serialises JSON; insert on duplicate returns False; get deserialises; list orderings; stale/overdue/eviction filters; transactional moves (`move_to_published` + `processed_news` insert + pending delete happens atomically); `skip_pending` writes processed_news; `retry_from_failed` resets `attempt_count`; `update_staged` rejects rows that already left pending.
-- `preview_renderer`: renders all allowed tags; escapes Cyrillic and HTML special chars; void tags emit self-closing; unknown tags silently dropped.
+- `preview_renderer`: renders all allowed tags; escapes Cyrillic and HTML special chars; void tags emit self-closing; unknown tags silently dropped. URL-scheme filter test: `img src`/`iframe src`/`a href` with `javascript:` or `data:` → attribute dropped in rendered output; `https://` and `http://` → preserved. CSP meta-tag assertion: rendered `<head>` contains `default-src 'none'`, `img-src https:`, `frame-src https:`.
+- `sanitize_error_message`: each of the four env secrets (`TELEGRAM_BOT_TOKEN`, `TELEGRAM_ADMIN_ID`, `TELEGRAM_CHANNEL_ID`, `TELEGRAPH_ACCESS_TOKEN`) individually replaced with `[REDACTED]` when present in the exception string; empty/unset env vars are skipped (no `str.replace('', ...)` pathology); compound exception with all four secrets yields all four replaced.
+- `stage` JSON validator (Decision 6) — eight rejection vectors, each a separate test case: stdin >256 KiB, JSON depth >3, unknown top-level key, non-list `ru_paragraphs`, non-dict block entry, unknown block `type`, unknown block field key, string field >10 KiB. Plus block-parity: pending row's `blocks` non-NULL with `ru_blocks=None` → reject; pending row's `blocks` NULL with `ru_blocks` provided → reject.
+- `hw_review preview` path guard: unit test patches `hw_review`'s resolve step to return a path outside `CACHE_DIR` → CLI aborts with stderr `"preview path escaped cache dir"` + exit 1 + no `webbrowser.open` call.
 - `build_admin_ping`: empty → None; sources with zero count omitted; formatting string matches spec exactly (byte-compared).
 - `hw_review.py` argparse: each subcommand accepts expected args; exit codes 0/1; `stage` rejects partial ru or invalid JSON; `skip` with staged ru requires confirmation; `publish` on vanished link emits clean error.
 - `SOURCES` registry: RSS entries get `source_name` from URL netloc; Mattel entries get `'mattel'`; lamley RSS → `'lamley'`; autoevolution RSS → `'autoevolution'`.
@@ -303,7 +306,8 @@ None. The feature uses only stdlib (`argparse`, `sqlite3`, `json`, `webbrowser`,
 - Migration via `PRAGMA table_info`: for every expected column, assert name + type + NOT-NULL + default + PK. Dict-literal comparison, no substring matches.
 - Transactional rollback: force `move_to_published` to raise mid-transaction (monkeypatch cursor to raise on the second INSERT); assert no partial state — `pending_articles` row still present, `processed_news` and `published_articles` empty of the link.
 - `take N` after auto-publish elapsed → CLI returns exit 1 with the expected stderr message (AC L67).
-- Skip with staged ru → prompt appears; `y` writes to `processed_news` and deletes pending; anything else aborts with exit 0 and no DB changes.
+- Skip with staged ru → prompt appears. Parametrized inputs: `y` / `Y` write to `processed_news` and delete pending; `n` / `N` / empty string / any other input → abort with exit 0 + stderr `"skip cancelled"` + no DB changes.
+- `publish N` on vanished row — three explicit states tested: (a) row in `published_articles` → stderr cites Telegraph URL; (b) row in `failed_articles` → stderr cites `last_error`; (c) row not found anywhere → stderr `"not found"`. All three exit 1 with no traceback.
 - Flipped existing integration tests: `test_integration.py:54,115,146,178,205`, `test_mattel_integration.py:59,104`, `test_feed_iteration.py:35` — each asserts `mock_publish.assert_not_called()` and `pending_repo.count_pending() == expected`.
 - `init_db()` idempotent: call twice on the same DB, second call must not raise and must not change row counts.
 - Unknown netloc in RSS: an entry from an unknown domain → `source_name='other'` with a WARNING log record captured.
@@ -342,7 +346,7 @@ No Playwright or headless browser required for agent verification; the user-side
 | `webbrowser.open` fails on headless Docker | `hw_review preview --no-open` flag always prints the HTML path; CLI exits 0 even if the launch returned False. |
 | Telegraph URL orphaned if publish completes createPage but the pending row is deleted (e.g. concurrent skip from another session) | Only one Claude Code session at a time by convention; if the concern materialises, add a guard: `cmd_publish` re-fetches the pending row after `createPage` and moves it atomically. Not in scope for v1. |
 | JSON serialisation of paragraphs with embedded quotes/newlines | `json.dumps(..., ensure_ascii=False)` handles all Unicode + escaping by spec. `json.loads` on read; unit-tested with Cyrillic fixtures. |
-| Operator leaves preview HTML files accumulating in `/tmp` | Files are overwritten on repeat preview by link-hash; `publish` and `skip` delete. Worst case: ≤10 files × ~50KB at a time; cleared on host reboot. Acceptable. |
+| Operator leaves preview HTML files accumulating in `~/.cache/hw-review/` | `publish` and `skip` delete the file tracked by `preview_html_path` column. Repeat preview on the same row creates a new file and clears the previous one (CLI re-runs "remove old → create new → update column"). Abandoned rows (never published, never skipped, re-previewed many times) leak files only until next `publish`/`skip`; startup cleanup hook removes any files in the cache dir whose paths aren't referenced from `pending_articles.preview_html_path` as a belt-and-suspenders measure. |
 | `fetch_full_article` network failure drops the entry for this tick | Existing behaviour — entry is not marked in `processed_news` or `pending_articles`, so next cron tick retries. Matches `news_bot.py:372-374` current skip rule. |
 | Upstream-compromised image URL from a source fetcher triggers XSS when operator opens local HTML preview (`file://` origin) | `preview_renderer` URL-scheme allowlist (`https?://` only) + CSP meta (`default-src 'none'`, `img-src https:`, `frame-src https:`) block `javascript:` and `data:` URLs (Decision 1). |
 | Malformed / malicious JSON on `stage` stdin corrupts pending row or reaches Telegraph | Strict validation layer (Decision 6): size cap 256 KiB, depth cap 3, key + type allowlists. Rejects before DB write. |
@@ -418,7 +422,7 @@ Technical criteria additional to user-spec acceptance criteria:
 - **Files to modify:** `telegraph_publisher.py`, `tests/test_telegraph_publisher.py`
 - **Files to read:** `telegraph_publisher.py`, `work/manual-review-workflow/code-research.md` (§9.6)
 
-### Wave 2 (prep-phase refactor — depends on Wave 1)
+### Wave 2 (source registry — depends on Wave 1; Task 5 alone to serialize `news_bot.py` edits)
 
 #### Task 5: Source registry + `source_name` tagging
 
@@ -429,16 +433,18 @@ Technical criteria additional to user-spec acceptance criteria:
 - **Files to modify:** `news_bot.py`, `tests/test_sources_registry.py` (new)
 - **Files to read:** `news_bot.py`, `mattel_news_source.py`, `autoevolution_source.py`, `lamley_source.py`, `feeds.json`, `work/manual-review-workflow/code-research.md` (§9.5)
 
+### Wave 3 (prep-phase refactor — depends on Wave 2)
+
 #### Task 6: Refactor `job()` into prep-only + cron bump + delete `process_new_articles`
 
-- **Description:** Replace the current end-to-end `job()` with the prep-only pipeline per Decision 10. Delete `process_new_articles`. Bump cron per Decision 5. Add env-overridable constants. Delegate schema creation to the repo. Flip existing auto-publish integration tests to staging-only.
+- **Description:** Replace the current end-to-end `job()` with the prep-only pipeline per Decision 10. Delete `process_new_articles`, bump cron per Decision 5, add env-overridable constants, delegate schema creation to the repo, and flip existing auto-publish integration tests to staging-only.
 - **Skill:** code-writing
 - **Reviewers:** code-reviewer, security-auditor, test-reviewer
 - **Verify-smoke:** `pytest tests/test_integration.py tests/test_mattel_integration.py tests/test_feed_iteration.py tests/test_database.py -q` is green.
 - **Files to modify:** `news_bot.py`, `tests/test_integration.py`, `tests/test_mattel_integration.py`, `tests/test_feed_iteration.py`, `tests/test_job_prep_phase.py` (new), `tests/test_migration.py` (new)
 - **Files to read:** `news_bot.py`, files from Wave 1, `work/manual-review-workflow/code-research.md` (§9.10, §9.11, §9.12)
 
-### Wave 3 (CLI + publish — depends on Waves 1-2)
+### Wave 4 (CLI skeleton — depends on Waves 1-3; Task 7 creates `hw_review.py`)
 
 #### Task 7: `hw_review` CLI with `list` / `show` / `stage` / `skip` / `preview`
 
@@ -450,6 +456,8 @@ Technical criteria additional to user-spec acceptance criteria:
 - **Files to modify:** `hw_review.py` (new), `tests/test_hw_review_cli.py` (new)
 - **Files to read:** `pending_articles_repo.py`, `preview_renderer.py`, `telegraph_publisher.py`, `work/manual-review-workflow/code-research.md` (§9.3, §9.6, §9.13)
 
+### Wave 5 (publish command — depends on Wave 4; Task 8 extends `hw_review.py`)
+
 #### Task 8: `hw_review publish` with Telegraph-URL reuse
 
 - **Description:** Implement `hw_review publish N`. Flow: `get_pending` → precondition check (staged) → if `telegraph_url` NULL, call `publish_article` and `mark_telegraph_published`; else skip. Then `send_telegraph_teaser`. On success: `move_to_published(via_review=True)` + delete local preview file. On partial failure (Telegraph OK, Telegram fail): pending row retained with `telegraph_url` populated; clean stderr message tells operator to retry. On publish-on-vanished-row: clean error with current state, exit 1.
@@ -460,7 +468,7 @@ Technical criteria additional to user-spec acceptance criteria:
 - **Files to modify:** `hw_review.py`, `tests/test_hw_review_publish_flow.py` (new)
 - **Files to read:** `telegraph_publisher.py`, `news_bot.py` (for `send_telegraph_teaser`), `pending_articles_repo.py`, `work/manual-review-workflow/code-research.md` (§9.9)
 
-### Wave 4 (idle-fallback — depends on Waves 1-3)
+### Wave 6 (idle-fallback — depends on Waves 1-5)
 
 #### Task 9: Idle-fallback pass + `hw_review take` command
 
@@ -468,14 +476,16 @@ Technical criteria additional to user-spec acceptance criteria:
 - **Skill:** code-writing
 - **Reviewers:** code-reviewer, security-auditor, test-reviewer
 - **Verify-smoke:** `pytest tests/test_idle_fallback.py -q` green after stubbing `transcreate_text` + `publish_article` + `send_telegraph_teaser`; also assert with a hand-staged row that a single admin-ping message contains all three stale titles.
-- **Files to modify:** `news_bot.py`, `hw_review.py`, `tests/test_idle_fallback.py` (new), `tests/test_hw_review_cli.py`
+- **Files to modify:** `news_bot.py`, `hw_review.py`, `tests/test_idle_fallback.py` (new), `tests/test_hw_review_take.py` (new)
 - **Files to read:** `news_bot.py`, `pending_articles_repo.py`, `work/manual-review-workflow/code-research.md` (§9.7, §9.10)
 
-### Wave 5 (overflow + retry — depends on Wave 4)
+### Wave 7 (overflow + retry — depends on Wave 6)
 
-<!-- Split from Wave 4 after template validator flagged Wave 4 file-conflicts on
-     news_bot.py / hw_review.py / test_hw_review_cli.py. Task 10 also depends on
-     the _fallback_publish helper produced by Task 9. -->
+<!-- Split from idle-fallback wave after template validator flagged
+     file-conflicts on news_bot.py, hw_review.py. Task 10 also depends on
+     the _fallback_publish helper produced by Task 9. Test file split into
+     test_hw_review_take.py (Task 9) and test_hw_review_retry.py (Task 10)
+     so each task owns its own test file. -->
 
 #### Task 10: Overflow fast-track pass + `hw_review retry` + failed-footer
 
@@ -483,7 +493,7 @@ Technical criteria additional to user-spec acceptance criteria:
 - **Skill:** code-writing
 - **Reviewers:** code-reviewer, security-auditor, test-reviewer
 - **Verify-smoke:** `pytest tests/test_overflow.py -q` green with the queue pre-filled to `QUEUE_CAP` with mixed staged + unstaged rows; assert staged rows survive, unstaged evicted.
-- **Files to modify:** `news_bot.py`, `hw_review.py`, `tests/test_overflow.py` (new), `tests/test_hw_review_cli.py`
+- **Files to modify:** `news_bot.py`, `hw_review.py`, `tests/test_overflow.py` (new), `tests/test_hw_review_retry.py` (new)
 - **Files to read:** `news_bot.py`, `pending_articles_repo.py`, `work/manual-review-workflow/code-research.md` (§9.8)
 
 ### Audit Wave
