@@ -9,9 +9,15 @@ This file provides high-level project overview for AI agents. Helps agents under
 
 **Name:** Hot Wheels News Bot
 
-**Description:** A Python script that automatically collects Hot Wheels news from autoevolution.com, translates them to Russian, summarizes, and posts to a Telegram channel.
+**Description:** A Python script that automatically collects Hot Wheels news
+from multiple sources (autoevolution.com RSS + scrape, corporate.mattel.com,
+lamleygroup.com), translates and adapts each article to Russian, publishes
+the full body to Telegra.ph, and posts a hashtag-attributed channel card
+with an Instant View preview in Telegram.
 
-This bot runs on a schedule (daily) and handles the entire pipeline from RSS fetching to Telegram posting, eliminating manual work for news aggregation and translation.
+This bot runs on a schedule (daily) and handles the entire pipeline from
+source fetching to Telegraph publishing and Telegram posting, eliminating
+manual work for news aggregation and translation.
 
 ---
 
@@ -33,13 +39,25 @@ Currently users have to regularly check multiple sites, translate articles thems
 
 ## Key Features
 
-- **RSS monitoring** – Fetches the latest articles from the Hot Wheels RSS feed.
-- **Duplicate detection** – Uses SQLite to track already processed news and avoid reposting.
-- **Article scraping** – Extracts title, full text, and images from each article.
-- **Translation** – Translates title and text from English to Russian using Google Translate.
-- **Summarization** – Creates a short summary (3–5 sentences) of the translated text.
-- **Telegram posting** – Sends formatted posts with images to a Telegram channel via Bot API.
-- **Scheduling** – Runs daily at 12:00 local time (configurable) using the `schedule` library.
+- **Multi-source aggregation** – Fetches from a list of RSS feeds
+  (`feeds.json`, up to 5) plus `corporate.mattel.com` (via `__NEXT_DATA__`).
+- **Per-source article fetchers** – Each domain owns its parser
+  (autoevolution via Cloudflare-bypass scrape with `curl_cffi`, Mattel via
+  `__NEXT_DATA__`, Lamley via HTML scrape).
+- **Duplicate detection** – Uses SQLite to track processed articles by URL.
+- **Translation + transcreation** – Google Translate + a post-processing
+  pass that replaces bureaucratic Russian, fixes Hot Wheels jargon, flips
+  a few passive constructions, and prepends a content-aware emoji to titles.
+- **Telegraph publishing** – Full Russian translation posted to Telegra.ph
+  with hero image, decorated subtitle, body paragraphs, interleaved images,
+  and a source footer. Autoevolution additionally preserves
+  image/video/heading positions via ordered content blocks.
+- **Telegram channel card** – Minimal one-line post (`#{source_label}`) with
+  `LinkPreviewOptions(show_above_text=True)` so Telegram renders the
+  Telegra.ph page as an Instant View preview card with the ⚡ button.
+- **Admin notifications** – Source failures are delivered to a separate
+  admin chat via the same bot.
+- **Scheduling** – Runs daily at 12:00 local time via the `schedule` library.
 
 ---
 ## Out of Scope
@@ -54,21 +72,26 @@ Currently users have to regularly check multiple sites, translate articles thems
 
 ## Development Roadmap
 
-**MVP (Current)**
-- RSS monitoring of a single feed (autoevolution.com)
-- Duplicate detection via SQLite
-- Translation using Google Translate
-- Simple extractive summarization (first sentences)
-- Telegram posting with images
-- Daily scheduling
+**Delivered**
+- Multiple RSS feeds via `feeds.json` (completed — see
+  `work/completed/multiple-rss-feeds/`)
+- Mattel corporate news source (completed — see
+  `work/mattel-news-source/`)
+- Lamley source (completed as part of telegraph-pipeline)
+- Cloudflare bypass for autoevolution via `curl_cffi`
+- Telegra.ph publishing with Instant View preview + locked channel post
+  format (see `work/telegraph-pipeline/`)
+- Transcreation pass (plain Russian, HW glossary, deterministic emoji
+  prefix for titles)
 
 **Near-term enhancements (Planned)**
-- Support multiple RSS feeds via configuration file
-- Improve summarization quality (extractive library or LLM-based)
-- Add health monitoring and error reporting
+- Cross-article linking: map `runs[].href` in autoevolution blocks to our
+  own Telegra.ph pages when we've already published the target
+  (Phase 2 — placeholder lives in `telegraph_publisher._build_content_from_blocks`)
+- Health monitoring and per-source error reporting beyond admin messages
 
 **Future ideas (Backlog)**
 - Web dashboard for configuration and monitoring
-- LLM-powered summarization (OpenAI API or local model)
+- LLM-powered transcreation (higher-quality Russian than Google + rules)
 - Extended translation options (DeepL, Yandex.Translate)
-- Support for additional news sources beyond Hot Wheels
+- Support for additional news sources beyond the current three

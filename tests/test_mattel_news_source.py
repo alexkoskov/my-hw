@@ -294,6 +294,25 @@ class TestFetchMattelArticle:
         assert out is None
         notifier.assert_called_once()
 
+    def test_null_content_article_returns_none_with_readable_error(self):
+        # Next.js 404 pages return {'contentArticle': null} in __NEXT_DATA__.
+        # The fetcher must surface a readable admin notification, not a
+        # cryptic "'NoneType' object is not subscriptable".
+        session = MagicMock()
+        payload = {'props': {'pageProps': {'contentArticle': None}}}
+        html = (
+            '<html><body>'
+            f'<script id="__NEXT_DATA__" type="application/json">{json.dumps(payload)}</script>'
+            '</body></html>'
+        )
+        session.get.return_value = _make_response(text=html)
+        notifier = MagicMock()
+        out = fetch_mattel_article('https://x', session=session, notifier=notifier)
+        assert out is None
+        notifier.assert_called_once()
+        (msg,), _ = notifier.call_args
+        assert 'contentArticle is null' in msg
+
 
 if __name__ == "__main__":
     pytest.main([__file__, "-v"])

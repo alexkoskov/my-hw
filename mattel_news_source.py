@@ -171,7 +171,9 @@ def fetch_mattel_article(
         if not match:
             raise MattelNewsError("__NEXT_DATA__ not found on article page")
         data = json.loads(match.group(1))
-        content_article = data["props"]["pageProps"]["contentArticle"]
+        content_article = data["props"]["pageProps"].get("contentArticle")
+        if content_article is None:
+            raise MattelNewsError("contentArticle is null (article unavailable or 404)")
         article = content_article["result"]
     except (requests.RequestException, json.JSONDecodeError, KeyError, TypeError,
             MattelNewsError) as exc:
