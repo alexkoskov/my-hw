@@ -253,8 +253,8 @@ Conventions: SQLite + stdlib `sqlite3`, `CREATE TABLE IF NOT EXISTS` only (match
 | Column | Type | Constraints | Notes |
 |---|---|---|---|
 | `link` | TEXT | PRIMARY KEY | dedup / UNIQUE by virtue of PK (acceptance criterion line 56) |
-| `source_name` | TEXT | NOT NULL | one of `'rss'`, `'mattel'`, `'lamley'` — drives admin-ping counting (see 9.4) |
-| `feed_url` | TEXT | | original `entry['feed_url']` if source is RSS; NULL for mattel |
+| `source_name` | TEXT | NOT NULL | one of `'autoevolution'`, `'mattel'`, `'lamley'` — drives admin-ping counting (see 9.4). Set via `NETLOC_TO_SOURCE` lookup per tech-spec Decision 4. |
+| `feed_url` | TEXT | | original `entry['feed_url']` if source is RSS (autoevolution / lamley); NULL for mattel |
 | `title` | TEXT | NOT NULL | English original, from source fetcher |
 | `subtitle` | TEXT | NOT NULL DEFAULT '' | empty string for sources without subtitle (autoevolution RSS fallback) |
 | `paragraphs` | TEXT | NOT NULL | `json.dumps(list[str])` |
@@ -464,7 +464,21 @@ Placement: `news_bot.py` next to `_source_hashtag`. Optional extraction into `ad
 
 Replace hardcoded `fetch_mattel_news(...)` at `news_bot.py:443-445` and RSS loop at `news_bot.py:432-441`:
 
+**UPDATED 2026-04-22 per tech-spec Decision 4:** RSS entries get `source_name` via `NETLOC_TO_SOURCE` lookup on `urlparse(link).netloc.lower()`, not a hardcoded `'rss'`. Lamley and autoevolution both arrive via RSS and must be distinguished.
+
 ```python
+NETLOC_TO_SOURCE = {
+    'www.autoevolution.com': 'autoevolution',
+    'autoevolution.com':     'autoevolution',
+    'lamleygroup.com':       'lamley',
+    'www.lamleygroup.com':   'lamley',
+    'corporate.mattel.com':  'mattel',
+}
+
+def _resolve_source_name(link: str) -> str:
+    netloc = urlparse(link).netloc.lower()
+    return NETLOC_TO_SOURCE.get(netloc, 'other')
+
 def _fetch_rss_entries(notifier) -> list[dict]:
     """Iterate load_feeds() + fetch_rss(); stamp feed_url + source_name."""
     entries = []
@@ -479,7 +493,9 @@ def _fetch_rss_entries(notifier) -> list[dict]:
             # feedparser returns FeedParserDict; normalize to plain dict subset.
             item = dict(entry) if not isinstance(entry, dict) else entry
             item['feed_url'] = url
-            item['source_name'] = 'rss'
+            item['source_name'] = _resolve_source_name(item.get('link') or url)
+            if item['source_name'] == 'other':
+                logger.warning(f"Unknown netloc for RSS entry: {item.get('link')}")
             entries.append(item)
     return entries
 
@@ -490,18 +506,12 @@ def _fetch_mattel_entries(notifier) -> list[dict]:
         # Mattel today sets entry['feed_url'] = NEWS_URL; keep that for the row.
     return items
 
-def _fetch_lamley_entries(notifier) -> list[dict]:
-    # lamley_source currently lacks a list-fetcher — see code-research §3.
-    # If tech-spec scopes lamley-listing in, it lives here. If not, return [].
-    items = lamley_source.fetch_lamley_news(notifier=notifier) if hasattr(lamley_source, 'fetch_lamley_news') else []
-    for item in items:
-        item['source_name'] = 'lamley'
-    return items
+# Lamley's listing comes through RSS (feeds.json), no separate fetcher needed.
+# _resolve_source_name correctly tags lamleygroup.com entries as 'lamley'.
 
 SOURCES = [
     _fetch_rss_entries,
     _fetch_mattel_entries,
-    _fetch_lamley_entries,
 ]
 ```
 
