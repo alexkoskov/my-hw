@@ -1,0 +1,165 @@
+# ============================================================================
+# .claudeignore — aggressive token-saving exclusions for Claude Code.
+# Anything matched here is hidden from Claude's file reads, grep, and globs.
+# Mirror-extended from .gitignore; keeps ONLY what is needed to write code.
+# Rule of thumb: if a human reviewer wouldn't open the file to edit the repo,
+# Claude shouldn't either.
+# ============================================================================
+
+# ---- Version control ------------------------------------------------------
+.git/
+.gitattributes
+
+# ---- Secrets & local config ----------------------------------------------
+.env
+.env.*
+!.env.example
+*.key
+*.pem
+credentials.json
+secrets/
+.secrets/
+*api-key*
+*apikey*
+*secret*
+.claude/settings.local.json
+
+# ---- Python caches & build artefacts -------------------------------------
+__pycache__/
+**/__pycache__/
+*.pyc
+*.pyo
+*.pyd
+*.so
+*.egg
+*.egg-info/
+.eggs/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.pyre/
+.pytype/
+.tox/
+.nox/
+.hypothesis/
+.coverage
+.coverage.*
+coverage.xml
+htmlcov/
+.cache/
+pip-log.txt
+pip-delete-this-directory.txt
+
+# ---- Virtual environments -------------------------------------------------
+venv/
+.venv/
+env/
+.env-*/
+ENV/
+virtualenv/
+
+# ---- Node / JS (future-proofing) -----------------------------------------
+node_modules/
+dist/
+build/
+.next/
+out/
+.pnpm-store/
+.yarn/
+.parcel-cache/
+*.tsbuildinfo
+
+# ---- Databases & local data ---------------------------------------------
+*.db
+*.db-journal
+*.db-shm
+*.db-wal
+*.sqlite
+*.sqlite3
+*.sqlite3-journal
+news.db
+
+# ---- Logs & temp ---------------------------------------------------------
+*.log
+logs/
+tmp/
+temp/
+temp_test/
+*.tmp
+*.bak
+*.swp
+*.swo
+*~
+.DS_Store
+Thumbs.db
+
+# ---- Archives & binaries (rarely useful for coding) ---------------------
+*.zip
+*.tar
+*.tar.gz
+*.tgz
+*.gz
+*.bz2
+*.7z
+*.rar
+*.exe
+*.dll
+*.dylib
+*.o
+*.a
+
+# ---- Media (big, non-code) ----------------------------------------------
+*.png
+*.jpg
+*.jpeg
+*.gif
+*.ico
+*.webp
+*.svg
+*.mp4
+*.mov
+*.webm
+*.mp3
+*.wav
+*.pdf
+*.psd
+*.ai
+
+# ---- IDE / editor --------------------------------------------------------
+.vscode/
+.idea/
+*.iml
+.project
+.classpath
+
+# ---- Project-specific: legacy + external framework copies ---------------
+archive/                      # legacy Facebook source snapshot
+molyanov-ai-dev-main/         # vendored external framework docs (~800K) — never edited by us
+debug_feed.py                 # ad-hoc debugging script, not production code
+update_interview.py           # one-off migration script from project init
+update_interview_phase1.py    # one-off migration script from project init
+
+# ---- Large HTML fixtures -------------------------------------------------
+tests/fixtures/*.html         # 1.2MB mattel_news.html — only loaded by tests, Claude never edits
+
+# ---- Work/spec artefacts we don't actively edit -------------------------
+# Keep currently-active feature dirs (tech-spec, user-spec, tasks, decisions).
+# Hide completed/archived features and per-feature log transcripts that are
+# just history, not code-writing inputs.
+work/completed/
+work/archived/
+work/*/logs/tasks/            # interview transcripts — reference only, huge
+work/*/logs/techspec/         # validator round-trips — done
+work/*/logs/userspec/         # validator round-trips — done
+work/*/logs/working/          # review JSON reports — consumed, not re-read
+work/*/code-research.md       # 50K+ research doc — only the tech-spec matters for coding
+
+# ---- Claude framework internals we don't edit ----------------------------
+# .claude/skills/ stays visible — it's project-knowledge the agent loads.
+# But hide the backup/history/session caches that live elsewhere.
+.claude/backups/
+.claude/file-history/
+.claude/sessions/
+.claude/session-env/
+.claude/telemetry/
+.claude/shell-snapshots/
