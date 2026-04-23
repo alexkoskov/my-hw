@@ -252,6 +252,7 @@ mark_notified(link) -> None
 clear_notified(link) -> None
 increment_attempt(link, error) -> int
 mark_telegraph_published(link, telegraph_url, telegraph_path) -> None
+set_preview_path(link, path) -> None   # stores ~/.cache/hw-review/…html path on the row
 move_to_published(link, telegraph_url, telegraph_path, via_review) -> None
 move_to_failed(link, last_error) -> None
 skip_pending(link) -> None
