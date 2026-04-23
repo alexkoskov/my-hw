@@ -593,20 +593,13 @@ def _fallback_publish(row, via_review=False):
                 new_block['caption'] = transcreate_text(new_block['caption'])
             ru_blocks.append(new_block)
 
-    # Persist the RU fields on the pending row BEFORE the Telegraph
-    # step so ``move_to_published`` (which reads ``ru_title`` from the
-    # pending row into a NOT NULL column) has something to copy, and so
-    # a partial failure that retries on the next tick doesn't re-run
-    # transcreation redundantly.
-    pending_repo.update_staged(
-        link,
-        ru_title or '',
-        ru_subtitle or '',
-        ru_paragraphs,
-        ru_blocks,
-    )
-
     # Step 2: Telegraph — reuse saved URL per Decision 9 idempotency.
+    # Done BEFORE persisting RU so a Telegraph failure keeps
+    # ``ru_paragraphs IS NULL`` on the pending row — next tick's
+    # ``list_notified_overdue`` will re-match it and the attempt loop
+    # can retry. Once Telegraph succeeds the URL is written via
+    # ``mark_telegraph_published`` (a dedicated txn) so a Telegram
+    # teaser failure still preserves the URL for operator retry.
     telegraph_url = row.get('telegraph_url')
     telegraph_path = row.get('telegraph_path')
     if telegraph_url:
@@ -628,10 +621,28 @@ def _fallback_publish(row, via_review=False):
                 f"[fallback] telegraph URL yielded empty path: {telegraph_url!r}"
             )
         # Persist BEFORE Telegram so a teaser failure leaves the row
-        # retry-idempotent (Decision 9).
+        # retry-idempotent (Decision 9). ``move_to_published`` below
+        # reads ``telegraph_url`` from its own explicit argument, not
+        # from the row — so the pending-row copy is the idempotency
+        # anchor, not an input to the move.
         pending_repo.mark_telegraph_published(link, telegraph_url, telegraph_path)
 
-    # Step 3: Telegram teaser. False-return → raise so caller bumps
+    # Step 3: persist RU fields. Required for the ``published_articles``
+    # NOT NULL ``ru_title`` copy inside ``move_to_published``. Writes
+    # here (rather than before Telegraph) keep ``list_notified_overdue``
+    # eligible on a pure Telegraph failure. On a Telegram-teaser
+    # failure the RU fields ARE persisted — that's the correct end
+    # state: the operator-driven ``hw_review publish`` retry skips
+    # Telegraph (URL cached) and skips transcreation (RU cached).
+    pending_repo.update_staged(
+        link,
+        ru_title or '',
+        ru_subtitle or '',
+        ru_paragraphs,
+        ru_blocks,
+    )
+
+    # Step 4: Telegram teaser. False-return → raise so caller bumps
     # attempt_count. (Exceptions from ``send_telegraph_teaser`` propagate
     # naturally — the helper already catches TelegramError internally and
     # returns False, so this raise path covers that "soft" failure mode.)
@@ -641,7 +652,7 @@ def _fallback_publish(row, via_review=False):
             f"send_telegraph_teaser returned False for {link}"
         )
 
-    # Step 4: atomic move (single repo txn).
+    # Step 5: atomic move (single repo txn).
     pending_repo.move_to_published(
         link, telegraph_url, telegraph_path, via_review=via_review,
     )
