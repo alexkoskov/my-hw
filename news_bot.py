@@ -351,6 +351,45 @@ def _source_hashtag(source_url):
     return f"#{label}"
 
 
+# Explicit netloc → internal source_name map (Decision 4 of
+# manual-review-workflow tech-spec). Used by the SOURCES registry to stamp
+# every fetched entry with a brand label that drives admin-ping counting
+# (`SOURCE_LABEL` / `SOURCE_EMOJI`) and `pending_articles.source_name`.
+#
+# Why an explicit map instead of bare-netloc inference: `urlparse(...).netloc`
+# of `https://lamleygroup.com/...` is `'lamleygroup.com'`, which would label
+# Lamley entries as `'lamleygroup'` — mismatching the `'lamley'` vocabulary
+# the admin-ping dicts expect. Kept intentionally separate from
+# `_source_hashtag` (Decision 14): the channel-post hashtag keeps the
+# TLD-stripped form (`#lamleygroup`, not `#lamley`) for continuity with the
+# existing channel format.
+NETLOC_TO_SOURCE = {
+    'www.autoevolution.com': 'autoevolution',
+    'autoevolution.com':     'autoevolution',
+    'lamleygroup.com':       'lamley',
+    'www.lamleygroup.com':   'lamley',
+    'corporate.mattel.com':  'mattel',
+}
+
+
+def _resolve_source_name(link):
+    """Map a URL to its internal `source_name` via `NETLOC_TO_SOURCE`.
+
+    Reads the URL's netloc, lowercases it (so `WWW.Autoevolution.COM` and
+    `www.autoevolution.com` collapse to the same key), and looks it up in
+    `NETLOC_TO_SOURCE`. Returns `'other'` on miss — never raises, even for
+    empty or malformed URLs (`urlparse('')` yields an empty netloc, which
+    misses the map and falls through to `'other'`). The caller
+    (`_fetch_rss_entries`) is responsible for logging a WARNING on `'other'`.
+    """
+    try:
+        netloc = urlparse(link or '').netloc.lower()
+    except Exception:
+        # urlparse is very forgiving — this branch is defensive only.
+        return 'other'
+    return NETLOC_TO_SOURCE.get(netloc, 'other')
+
+
 # Source vocabulary for the manual-review-workflow admin-ping (Decision 4).
 # Keys match `pending_articles.source_name` exactly — no 'rss' key, because
 # lamley also arrives via RSS and the two outlets must remain distinguishable
@@ -517,6 +556,90 @@ def process_new_articles(entries, limit=3):
         else:
             logger.warning(f"Failed to post teaser for {link}")
     return count
+
+# ---------------------------------------------------------------------------
+# SOURCES registry (Decision 4 of manual-review-workflow tech-spec).
+# Task 5 lays the groundwork; Task 6 will refactor `job()` to iterate this.
+# Each fetcher accepts a ``notifier`` callable for uniform error-surfacing
+# (passed through to per-source fetchers that support admin notifications).
+# Every returned entry must carry a ``source_name`` string — one of
+# ``'autoevolution'`` / ``'lamley'`` / ``'mattel'`` / ``'other'`` — so the
+# prep phase can count them per `SOURCE_LABEL` / `SOURCE_EMOJI`.
+# ---------------------------------------------------------------------------
+
+
+# Fields copied verbatim from each feedparser entry into the output dict.
+# Explicit field selection avoids leaking feedparser internal attrs
+# (`summary_detail`, `title_detail`, `links`, etc.) into downstream code —
+# those are not JSON-serialisable by `pending_articles.paragraphs` in Task 6.
+_RSS_ENTRY_FIELDS = ('link', 'title', 'published', 'summary')
+
+
+def _fetch_rss_entries(notifier=None):
+    """Fetch all RSS feeds and return a `list[dict]` with `source_name` set.
+
+    Iterates `load_feeds()` (falls back to `[RSS_URL]` when the JSON config
+    yields an empty list), calls `fetch_rss(url)` per feed with per-URL
+    try/except so one broken feed doesn't abort the rest, and normalises each
+    `feedparser.FeedParserDict` entry into a plain `dict` with only the
+    fields we actually consume (`link`, `title`, `published`, `summary`).
+    Every item is stamped with `feed_url` (the originating feed URL) and
+    `source_name` (via `_resolve_source_name`, a WARNING log is emitted on
+    `'other'`).
+
+    `notifier` is accepted for API parity with `_fetch_mattel_entries`; RSS
+    errors currently go to the local logger only.
+    """
+    entries = []
+    feed_urls = load_feeds() or [RSS_URL]
+    for url in feed_urls:
+        try:
+            raw = fetch_rss(url)
+        except Exception as exc:
+            logger.error(f"Failed to fetch feed {url}: {exc}")
+            continue
+        for entry in raw or []:
+            # `entry` is typically a FeedParserDict — pull out just the
+            # stable string fields. `entry.get(...)` works on both dicts
+            # and FeedParserDicts.
+            link = entry.get('link')
+            item = {
+                'link': link,
+                'title': entry.get('title'),
+                'published': entry.get('published', ''),
+                'summary': entry.get('summary', ''),
+                'feed_url': url,
+            }
+            # Fall back to the feed URL's netloc when an entry lacks a link
+            # — for RSS, the feed netloc equals the entry netloc.
+            item['source_name'] = _resolve_source_name(link or url)
+            if item['source_name'] == 'other':
+                logger.warning(f"Unknown netloc for RSS entry: link={link!r} feed={url!r}")
+            entries.append(item)
+    return entries
+
+
+def _fetch_mattel_entries(notifier=None):
+    """Fetch Mattel corporate-news entries and stamp `source_name='mattel'`.
+
+    Thin wrapper around `fetch_mattel_news(notifier=...)` that guarantees a
+    non-None list and tags every entry. `fetch_mattel_news` already sets
+    `feed_url=NEWS_URL`, so that field is left untouched.
+    """
+    items = fetch_mattel_news(notifier=notifier) or []
+    for item in items:
+        item['source_name'] = 'mattel'
+    return items
+
+
+# Module-level registry the prep phase (Task 6) will iterate. Order matters
+# only for log readability — RSS first (fastest, cheapest), Mattel second
+# (single HTTP fetch + HTML parse).
+SOURCES = [
+    _fetch_rss_entries,
+    _fetch_mattel_entries,
+]
+
 
 # Scheduler
 def job():
