@@ -26,6 +26,15 @@ import lamley_source
 import telegraph_publisher
 from telegraph_publisher import TelegraphError
 
+# Late-binding DAO for the manual-review-workflow queue tables
+# (``pending_articles``, ``published_articles``, ``failed_articles``).
+# Imported under a short alias so the prep-phase ``job()`` body reads
+# cleanly and matches the vocabulary used in tech-spec §Architecture.
+# ``pending_articles_repo`` itself imports ``news_bot`` at module level
+# for ``DB_FILE`` access — the cycle resolves because this import runs
+# after all our module-level names have been bound.
+import pending_articles_repo as pending_repo
+
 # Configuration - set via environment variables
 TELEGRAM_BOT_TOKEN = os.getenv('TELEGRAM_BOT_TOKEN')
 TELEGRAM_CHANNEL_ID = os.getenv('TELEGRAM_CHANNEL_ID')
@@ -162,11 +171,24 @@ logger = logging.getLogger(__name__)
 
 # Database functions
 def init_db():
-    """Create SQLite table for processed news if not exists."""
+    """Create all four SQLite tables used by the bot if missing.
+
+    Owns the DDL for ``processed_news`` directly and delegates the three
+    manual-review-workflow tables (``pending_articles`` /
+    ``published_articles`` / ``failed_articles``) to
+    ``pending_articles_repo.init_schema``. One ``conn.commit`` covers both
+    steps — DDL is idempotent (``CREATE TABLE IF NOT EXISTS``), so
+    repeated calls on a populated DB are a no-op.
+    """
     conn = sqlite3.connect(DB_FILE)
     c = conn.cursor()
     c.execute('''CREATE TABLE IF NOT EXISTS processed_news
                  (link TEXT PRIMARY KEY, title TEXT, pub_date TEXT, processed_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP)''')
+    # Delegate the three new tables to the repo — single source of truth
+    # for their DDL (Task 1). ``init_schema`` is idempotent and commits
+    # internally, but we commit once more below so the caller sees a single
+    # transactional boundary at ``init_db`` granularity.
+    pending_repo.init_schema(conn)
     conn.commit()
     conn.close()
     logger.info("Database initialized.")
@@ -495,68 +517,6 @@ def fetch_full_article(entry):
     return None
 
 
-def process_new_articles(entries, limit=3):
-    """Translate full body + subtitle, publish to Telegraph, post the minimal
-    channel card — one article at a time. See work/telegraph-pipeline/post-format.md."""
-    count = 0
-    for entry in entries[:limit]:
-        link = entry.get('link')
-        title = entry.get('title')
-        pub_date = entry.get('published', '')
-        feed_url = entry.get('feed_url', 'unknown')
-        logger.info(f"Processing: {title} (from {feed_url})")
-
-        article = fetch_full_article(entry)
-        if not article or not article.get('paragraphs'):
-            logger.warning(f"No article data for {link}, skipping")
-            continue
-
-        translated_title = transcreate_text(article.get('title') or title, is_title=True)
-        subtitle = article.get('subtitle') or ''
-        translated_subtitle = transcreate_text(subtitle, is_title=False) if subtitle else ''
-        translated_paragraphs = [
-            transcreate_text(p, is_title=False) for p in article['paragraphs']
-        ]
-
-        # Sources that preserve media ordering expose `blocks`; translate the
-        # text blocks in-place and pass them through so Telegraph renders
-        # images/videos at their source positions.
-        translated_blocks = None
-        if article.get('blocks'):
-            translated_blocks = []
-            for b in article['blocks']:
-                nb = dict(b)
-                # Translate the whole block text as one string for quality —
-                # per-run translation splits sentences and degrades Google
-                # output. We keep the original `runs` (with href metadata)
-                # untouched so a future cross-article pass can map them to
-                # Telegraph URLs; rendering currently ignores the anchors.
-                if b.get('text'):
-                    nb['text'] = transcreate_text(b['text'], is_title=False)
-                if b.get('caption'):
-                    nb['caption'] = transcreate_text(b['caption'], is_title=False)
-                translated_blocks.append(nb)
-
-        try:
-            telegraph_url = telegraph_publisher.publish_article(
-                title=translated_title,
-                subtitle=translated_subtitle,
-                paragraphs=translated_paragraphs,
-                images=article.get('images') or [],
-                blocks=translated_blocks,
-                source_url=link,
-            )
-        except (TelegraphError, requests.RequestException) as exc:
-            logger.error(f"Telegraph publish failed for {link}: {exc}")
-            continue
-
-        if send_telegraph_teaser(telegraph_url, link):
-            mark_processed(link, title, pub_date)
-            count += 1
-        else:
-            logger.warning(f"Failed to post teaser for {link}")
-    return count
-
 # ---------------------------------------------------------------------------
 # SOURCES registry (Decision 4 of manual-review-workflow tech-spec).
 # Task 5 lays the groundwork; Task 6 will refactor `job()` to iterate this.
@@ -639,45 +599,184 @@ SOURCES = [
 
 # Scheduler
 def job():
-    """Main job to run daily."""
-    logger.info("Starting daily news collection...")
-    feed_urls = load_feeds()
-    if not feed_urls:
-        logger.warning("No RSS feeds to process. Falling back to default RSS URL.")
-        feed_urls = [RSS_URL]
-    logger.info(f"Processing {len(feed_urls)} feeds...")
+    """Prep-phase cron tick (manual-review-workflow Decision 10).
+
+    The tick now STAGES articles into ``pending_articles`` and pings the
+    admin — it no longer publishes to Telegraph or Telegram. Publishing
+    is driven by the operator via ``hw_review publish`` (Task 8) or the
+    idle-fallback / overflow-fast-track helpers (Tasks 9 & 10) which own
+    steps (1) and (4) below.
+
+    Pass layout mirrors tech-spec §How-it-works "Prep phase":
+      (1a) idle heads-up        — Task 9 placeholder (no-op).
+      (1b) overdue auto-publish — Task 9 placeholder (no-op).
+      (2)  fetch all sources    — iterates ``SOURCES`` registry.
+      (3)  filter against processed_news + pending_articles.
+      (4)  overflow fast-track  — Task 10 placeholder (accepts all).
+      (5)  INSERT into pending  — per-entry fetch_full_article + insert.
+      (6)  admin ping           — single consolidated notification.
+    """
+    logger.info("Starting prep-phase tick...")
+    init_db()  # idempotent — guard against missing tables on first run.
+
+    # ------------------------------------------------------------------
+    # Step (1a): idle heads-up — staged for Task 9.
+    # The repo call is real (returns [] when nothing is stale) so the
+    # scaffolding stays exercised; Task 9 will add the admin-ping loop.
+    # ------------------------------------------------------------------
+    try:
+        _stale = pending_repo.list_pending_stale(IDLE_TIMEOUT_HOURS)
+    except Exception as exc:
+        logger.error(f"list_pending_stale failed: {exc}")
+        _stale = []
+    if _stale:
+        # TODO(Task 9): send one consolidated heads-up ping and
+        # `mark_notified` each row (Decision 12).
+        logger.debug(f"[Task 9 placeholder] {len(_stale)} stale rows awaiting heads-up.")
+
+    # ------------------------------------------------------------------
+    # Step (1b): overdue auto-publish — staged for Task 9.
+    # ------------------------------------------------------------------
+    try:
+        _overdue = pending_repo.list_notified_overdue(GRACE_WINDOW_HOURS)
+    except Exception as exc:
+        logger.error(f"list_notified_overdue failed: {exc}")
+        _overdue = []
+    if _overdue:
+        # TODO(Task 9): call `_fallback_publish(row, via_review=False)` for
+        # each overdue row; on success `move_to_published(via_review=False)`,
+        # on 3 strikes `move_to_failed` (Decision 13).
+        logger.debug(f"[Task 9 placeholder] {len(_overdue)} overdue rows awaiting fallback publish.")
+
+    # ------------------------------------------------------------------
+    # Step (2): fetch all sources via the SOURCES registry.
+    # One source failing must not abort the tick — sanitise the error
+    # string and surface it to the admin, then carry on.
+    # ------------------------------------------------------------------
     all_entries = []
-    for i, url in enumerate(feed_urls, 1):
-        logger.info(f"Fetching feed {i}/{len(feed_urls)}: {url}")
+    for fetcher in SOURCES:
+        fetcher_name = getattr(fetcher, '__name__', repr(fetcher))
         try:
-            entries = fetch_rss(url)
-        except Exception as e:
-            logger.error(f"Failed to fetch feed {url}: {e}")
-            entries = []
-        for entry in entries:
-            entry['feed_url'] = url
-        all_entries.extend(entries)
+            items = fetcher(notifier=send_admin_notification) or []
+        except Exception as exc:
+            safe = sanitize_error_message(exc)
+            logger.error(f"Source fetcher {fetcher_name} failed: {safe}")
+            try:
+                send_admin_notification(
+                    f"⚠️ Source {fetcher_name} failed: {safe}"
+                )
+            except Exception as notify_err:
+                logger.error(f"Failed to send admin notification: {notify_err}")
+            continue
+        all_entries.extend(items)
+    logger.info(f"Fetched {len(all_entries)} entries across {len(SOURCES)} sources.")
 
-    mattel_entries = fetch_mattel_news(notifier=send_admin_notification)
-    logger.info(f"Fetched {len(mattel_entries)} entries from Mattel corporate news")
-    all_entries.extend(mattel_entries)
-
+    # ------------------------------------------------------------------
+    # Step (3): filter against processed_news (existing helper) AND
+    # pending_articles (inline guard — we check each candidate against
+    # the repo). ``filter_new_entries_extended`` is deliberately NOT
+    # introduced here; the inline form keeps the existing unit tests
+    # that exercise ``filter_new_entries`` in isolation valid.
+    # ------------------------------------------------------------------
     new_entries = filter_new_entries(all_entries)
-    processed = process_new_articles(new_entries, limit=3)
-    logger.info(f"Job finished. Processed {processed} new articles.")
+    before_pending_filter = len(new_entries)
+    new_entries = [
+        e for e in new_entries
+        if pending_repo.get_pending(e.get('link')) is None
+    ]
+    if before_pending_filter != len(new_entries):
+        logger.info(
+            f"Filtered out {before_pending_filter - len(new_entries)} "
+            f"entries already in pending_articles."
+        )
+
+    # ------------------------------------------------------------------
+    # Step (4): overflow fast-track — staged for Task 10.
+    # Current behaviour: accept every new entry; Task 10 will implement
+    # the QUEUE_CAP / eviction logic (Decision 7).
+    # ------------------------------------------------------------------
+    # TODO(Task 10): if `pending_repo.count_pending() + len(new_entries) >
+    # QUEUE_CAP`, evict ru-NULL pending rows via `_fallback_publish`
+    # before inserting the overflow; drop leftover new entries with a
+    # consolidated admin ping.
+    accepted = new_entries
+
+    # ------------------------------------------------------------------
+    # Step (5): stage each accepted entry into pending_articles.
+    # ``fetch_full_article`` network-failure → skip (existing behaviour
+    # from the former ``process_new_articles`` guard). The repo owns all
+    # JSON serialisation — we pass Python lists/dicts verbatim.
+    # ------------------------------------------------------------------
+    inserted = 0
+    for entry in accepted:
+        link = entry.get('link')
+        if not link:
+            logger.warning("Entry has no link, skipping.")
+            continue
+
+        article = fetch_full_article(entry)
+        if not article or not article.get('paragraphs'):
+            logger.warning(f"No article data for {link}, skipping")
+            continue
+
+        row = {
+            'link': link,
+            'source_name': entry.get('source_name') or _resolve_source_name(link),
+            'feed_url': entry.get('feed_url'),
+            'title': article.get('title') or entry.get('title') or '',
+            'subtitle': article.get('subtitle') or '',
+            'paragraphs': article.get('paragraphs') or [],
+            'images': article.get('images') or [],
+            'blocks': article.get('blocks'),
+            'pub_date': entry.get('published') or entry.get('pub_date') or '',
+        }
+        try:
+            if pending_repo.insert_pending(row):
+                inserted += 1
+            else:
+                # UNIQUE conflict — another prep tick raced us; expected.
+                logger.info(f"Pending row already exists for {link} — skipped.")
+        except Exception as exc:
+            safe = sanitize_error_message(exc)
+            logger.error(f"insert_pending failed for {link}: {safe}")
+
+    # ------------------------------------------------------------------
+    # Step (6): admin-ping — exactly one consolidated notification,
+    # suppressed on an empty queue (user-spec AC L57).
+    # ------------------------------------------------------------------
+    try:
+        rows = pending_repo.list_pending()
+    except Exception as exc:
+        logger.error(f"list_pending failed: {exc}")
+        rows = []
+
+    ping = build_admin_ping(rows)
+    if ping:
+        try:
+            send_admin_notification(ping)
+        except Exception as notify_err:
+            # Admin chat being unreachable must not fail the tick.
+            logger.error(f"Failed to send admin ping: {notify_err}")
+
+    logger.info(
+        f"Prep-phase done. Inserted {inserted}, queue size {len(rows)}."
+    )
 
 def main():
     """Entry point."""
     init_db()
     telegraph_publisher.ensure_access_token()
     logger.info("News bot started.")
-    
-    # Schedule daily at 12:00 local time (adjust as needed)
-    schedule.every().day.at("12:00").do(job)
-    
-    # Run immediately for testing (comment out in production)
+
+    # Hourly cron (manual-review-workflow Decision 5). The 2h grace
+    # window after an idle-timeout heads-up is only meaningful if the
+    # scheduler ticks at least once within that window.
+    schedule.every().hour.do(job)
+
+    # Run immediately for testing / first-boot population. The cron loop
+    # below starts the hourly cadence after this first tick completes.
     job()
-    
+
     # Keep the script alive
     while True:
         schedule.run_pending()

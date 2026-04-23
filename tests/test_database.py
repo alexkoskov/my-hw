@@ -17,7 +17,15 @@ class TestDatabaseFunctions(unittest.TestCase):
 
     @patch('news_bot.sqlite3.connect')
     def test_init_db_creates_table(self, mock_connect):
-        """init_db creates processed_news table if not exists."""
+        """init_db still owns the processed_news DDL.
+
+        After manual-review-workflow Task 6, ``init_db`` also delegates the
+        three new tables (``pending_articles`` / ``published_articles`` /
+        ``failed_articles``) to ``pending_articles_repo.init_schema``, which
+        issues further DDL on the same connection. Hence this test asserts
+        the ``processed_news`` DDL appears *among* the execute calls rather
+        than being the single/last one.
+        """
         mock_conn = MagicMock()
         mock_cursor = MagicMock()
         mock_connect.return_value = mock_conn
@@ -26,17 +34,53 @@ class TestDatabaseFunctions(unittest.TestCase):
         init_db()
 
         mock_connect.assert_called_once_with(DB_FILE)
-        # Check that execute was called with the correct SQL (ignore whitespace differences)
-        args, kwargs = mock_cursor.execute.call_args
-        self.assertEqual(len(args), 1)
-        sql = args[0]
-        # Normalize whitespace: replace newlines with space, collapse multiple spaces
-        import re
-        normalized = re.sub(r'\s+', ' ', sql.strip())
-        expected = 'CREATE TABLE IF NOT EXISTS processed_news (link TEXT PRIMARY KEY, title TEXT, pub_date TEXT, processed_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP)'
-        self.assertEqual(normalized, expected)
-        mock_conn.commit.assert_called_once()
+
+        # Collect every execute-call across both the cursor and the raw
+        # connection (``pending_articles_repo.init_schema`` uses
+        # ``conn.execute(...)``).
+        all_sql_calls = list(mock_cursor.execute.call_args_list)
+        all_sql_calls += list(mock_conn.execute.call_args_list)
+        sqls = [c.args[0] for c in all_sql_calls if c.args]
+
+        def _norm(sql):
+            import re
+            return re.sub(r'\s+', ' ', sql.strip())
+
+        self.assertTrue(
+            any(_norm(s).startswith(
+                'CREATE TABLE IF NOT EXISTS processed_news') for s in sqls),
+            msg=f"processed_news DDL not found in execute calls: {sqls}",
+        )
+        # Commit happens at least once (may be twice: once inside
+        # ``init_schema``, once at the end of ``init_db``).
+        self.assertTrue(mock_conn.commit.called)
         mock_conn.close.assert_called_once()
+
+    @patch('news_bot.sqlite3.connect')
+    def test_init_db_also_creates_pending_tables(self, mock_connect):
+        """init_db delegates DDL for the three new tables to the repo."""
+        mock_conn = MagicMock()
+        mock_cursor = MagicMock()
+        mock_connect.return_value = mock_conn
+        mock_conn.cursor.return_value = mock_cursor
+
+        init_db()
+
+        all_sql_calls = list(mock_cursor.execute.call_args_list)
+        all_sql_calls += list(mock_conn.execute.call_args_list)
+        sqls = [c.args[0] for c in all_sql_calls if c.args]
+
+        def _has(name):
+            return any(
+                f'CREATE TABLE IF NOT EXISTS {name}' in sql for sql in sqls
+            )
+
+        self.assertTrue(_has('pending_articles'),
+                        msg=f"pending_articles DDL missing: {sqls}")
+        self.assertTrue(_has('published_articles'),
+                        msg=f"published_articles DDL missing: {sqls}")
+        self.assertTrue(_has('failed_articles'),
+                        msg=f"failed_articles DDL missing: {sqls}")
 
     @patch('news_bot.sqlite3.connect')
     def test_is_processed_true(self, mock_connect):
