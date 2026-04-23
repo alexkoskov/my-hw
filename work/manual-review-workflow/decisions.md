@@ -33,6 +33,35 @@ Review details — in JSON files via links. QA report — in logs/working/.
 
 -->
 
+## Task 6: Refactor `job()` into prep-only + cron bump + delete `process_new_articles`
+
+**Status:** Done
+**Commit:** 0140a98
+**Agent:** teammate (task-6)
+**Summary:** Rewrote `news_bot.job()` into a prep-only 6-step pipeline (fetch via SOURCES → filter against processed_news + pending_articles → stage into pending_articles → single `build_admin_ping` notification) per Decision 10. Fully deleted `process_new_articles` (no deprecation, no feature flag). Bumped the cron cadence from daily to hourly via `schedule.every().hour.do(job)` per Decision 5 so the 2h grace window is enforceable. `init_db` now delegates DDL for `pending_articles` / `published_articles` / `failed_articles` to `pending_articles_repo.init_schema` while retaining its own `processed_news` DDL. Idle-fallback (Task 9) and overflow fast-track (Task 10) are explicit TODO-tagged placeholders: the repo queries (`list_pending_stale`, `list_notified_overdue`) are real so the scaffolding stays exercised; only the admin-ping and publish bodies are deferred. Added 16 new tests (3 in `test_migration.py`, 13 in `test_job_prep_phase.py`); flipped 17 existing integration assertions to staging-only semantics.
+**Deviations:**
+- The old `test_integration.py::test_telegraph_failure_skips_teaser_and_db` case was REMOVED rather than flipped — in the prep phase there is no Telegraph call to fail, so that behaviour has naturally moved into Task 8's `hw_review publish` (and will be covered by `test_hw_review_publish_flow.py`).
+- `tests/test_feed_iteration.py::test_global_limit` was renamed to `test_no_global_limit` — the `limit=3` cap is gone with `process_new_articles`; hard-cap enforcement is Task 10's overflow pass.
+- Reviews were performed inline (loaded each methodology mentally, analysed against its dimensions, wrote JSON reports manually). The Task tool for spawning subagents was not available in this session; the teammate brief explicitly authorised this fallback.
+- Tests patch `news_bot.SOURCES` as a list rather than patching the individual fetcher names, because `SOURCES = [_fetch_rss_entries, _fetch_mattel_entries]` is bound at module load time — patching the attribute `news_bot._fetch_rss_entries` does NOT change what the stored list references. A `_patch_sources` helper in `test_job_prep_phase.py` encapsulates this.
+
+**Reviews:**
+
+*Round 1:*
+- code-reviewer: ok-with-nits, 4 findings (all low/info, recommend "no action"; unused `requests` / `TelegraphError` imports flagged for Task 11 audit) → [logs/working/task-6/code-reviewer-round1.json](logs/working/task-6/code-reviewer-round1.json)
+- security-auditor: ok, 0 HIGH/CRITICAL, 4 info findings (Markdown disruption via exception messages already sanitised, fetcher payload validation owned by downstream layers, double-commit on init_db is harmless, N+1 filter query cost negligible at QUEUE_CAP scale) → [logs/working/task-6/security-auditor-round1.json](logs/working/task-6/security-auditor-round1.json)
+- test-reviewer: ok-with-nits, 5 findings (all low/info, "no action"; 4 litmus mutations traced mentally), full AC coverage matrix → [logs/working/task-6/test-reviewer-round1.json](logs/working/task-6/test-reviewer-round1.json)
+
+*Round 2:* Skipped. All 13 findings across three reviewers are low/info with "no action" recommendations; no HIGH/CRITICAL/MEDIUM requiring a fix. Per the task runbook's Step 5 ("if only nits → break round loop and defer"), round 1 is final.
+
+**Verification:**
+- `pytest tests/test_migration.py tests/test_job_prep_phase.py -v` → 16 passed (0.65s)
+- `pytest tests/test_integration.py tests/test_mattel_integration.py tests/test_feed_iteration.py tests/test_database.py -q` → 17 passed (Verify-smoke green)
+- `pytest tests/ -q` → 276 passed (260 baseline + 16 new, zero regression)
+- Smoke 1 (all 4 tables created): `python3 -c "...init_db()...SELECT name FROM sqlite_master..."` → `['failed_articles', 'pending_articles', 'processed_news', 'published_articles']`, exit 0
+- Smoke 2 (process_new_articles absent): `python3 -c "import news_bot; assert not hasattr(news_bot, 'process_new_articles')"` → exit 0
+- Smoke 3 (hourly cron): `python3 -c "...assert 'every().hour' in inspect.getsource(news_bot.main)"` → exit 0
+
 ## Task 4: Public `preview_nodes` wrapper in `telegraph_publisher`
 
 **Status:** Done
