@@ -306,7 +306,7 @@ Nits deferred (all from round 1, judged not worth fixing): frozenset vs set (saf
 ## Task 12: Security Audit
 
 **Status:** Done
-**Commit:** _pending_
+**Commit:** 2653e7a
 **Agent:** security-audit
 **Summary:** clean (PASS-WITH-FINDINGS). Zero CRITICAL / zero HIGH / zero MEDIUM / 3 LOW / 4 INFO findings. All five tech-spec invariants (a–e) PASS with code evidence: parameterised SQL, `last_error` routed through `sanitize_error_message` on every write, CSP+URL-scheme+attribute-name allowlists in `preview_renderer`, `path.parent == CACHE_DIR` guard before `webbrowser.open`, and the 8-vector `stage` validator (256 KiB cap, depth, key allowlist, size cap, block-type/key allowlist). Safe to proceed to Pre-deploy QA (Task 14); the LOW findings are defense-in-depth / hygiene follow-ups, none block deploy.
 **Deviations:** None.
