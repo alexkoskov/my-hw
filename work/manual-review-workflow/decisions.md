@@ -287,7 +287,7 @@ Nits deferred (all from round 1, judged not worth fixing): frozenset vs set (saf
 ## Task 14: Pre-deploy QA
 
 **Status:** Done
-**Commit:** 43e91ad
+**Commit:** ec97d88
 **Agent:** qa-runner
 **Summary:** PASS — ready to deploy. 383/383 tests green in 14.79s. All 22 user-spec ACs + all 17 tech-spec ACs (Decisions 1–14) verified `pass`; 4 criteria (channel-post visual, local HTML preview visual, live Telegraph render fidelity, live admin-ping format) deferred to Task 15 post-deploy. Full end-to-end smoke on tempfile DB (prep → stage → preview --no-open → publish with Telegraph/Telegram mocked) confirmed byte-exact admin ping `"3 ждут review: 🟠 autoevolution ×1, 🟣 mattel ×1, 🟢 lamley ×1"`, row migration to `published_articles` with `via_review=1`, dedup-table write, and preview-file cleanup. Schema sanity: 4 tables present (`processed_news`, `pending_articles`, `published_articles`, `failed_articles`) with `preview_html_path` column; `init_db()` idempotent. Inherited zero blockers from Task 11 (code audit — clean) and Task 12 (security audit — clean); Task 13 test-audit MEDIUM gaps (mixed-path 3-strike test, overflow Decision 9 transitive coverage) are test-coverage only, code implements invariants correctly via shared `_fallback_publish`. Static checks: no `ruff`/`mypy`/`flake8`/`pyproject.toml` configured — CI runs only `pytest`. CLI smoke: 9 subcommand `--help` invocations + `list` on empty ephemeral DB all exit 0.
 
