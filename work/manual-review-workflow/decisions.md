@@ -376,3 +376,23 @@ Nits deferred (all from round 1, judged not worth fixing): frozenset vs set (saf
 **Deviations:** None.
 **Reviews:** [deploy-fix-round1.json](logs/working/adhoc/deploy-fix-round1.json) — 1 round, verdict APPROVE, 0 HIGH / 0 MEDIUM / 1 LOW (pre-existing `pip install --user` without venv, out of scope). Reviewer fell back to inline — no `deploy-reviewer` subagent type is registered in this environment.
 **Verification:** `bash -n deploy.sh` → `syntax OK`. No scp/ssh executed (target is the placeholder `user@example.com`; actual deploy is the operator's call).
+
+
+---
+
+## Ad-hoc: `_overflow_fast_track.staged_protected` empty-queue bug
+
+**Status:** Done
+**Commit:** 0669419
+**Agent:** adhoc-staged-protected
+**Summary:** Local QA Variant B (single `job()` on empty queue + 36 fetched entries) surfaced a classification bug: `staged_protected = needed - len(candidates)` reported 26 phantom "protected" rows on empty queue. Fixed to `max(0, min(gap, pre_count - len(candidates)))` — now reports 0 on empty queue, N on partial protection. 3 new tests pin the three semantic regimes (empty / partial / full). Captured `pre_count` once at function start and reused it for `slots_free` to avoid an extra DB query.
+**Deviations:** None.
+
+**Reviews:**
+- code-reviewer: PASS (0 critical / 0 major / 2 minor — both out-of-scope: repo-outage mislabelled-as-protection is a pre-existing concern, and expression density is a stylistic preference). Reviewer ran inline — no `code-reviewer` subagent type is registered in this environment. Report: [staged_protected_fix-code-review.json](../../logs/working/adhoc/staged_protected_fix-code-review.json).
+- test-reviewer: PASS (0 critical / 0 major / 2 minor — kept: three-regime symmetry is self-documenting, and ping-string assertion matches existing file conventions). Reviewer ran inline. Report: [staged_protected_fix-test-review.json](../../logs/working/adhoc/staged_protected_fix-test-review.json).
+
+**Verification:**
+- New tests: `test_overflow_empty_queue_protected_is_zero` (red→green: pre-fix asserted `'protected 26'` got `'protected 0'`), `test_overflow_partial_protection` (4 ru-NULL + 6 ru-staged, needed=6 → protected=2), `test_overflow_full_protection` (10 ru-staged, needed=6 → protected=6).
+- Full suite: `python3 -m pytest tests/ -q` → 386 passed (383 baseline + 3 new), 0 existing tests broken.
+- Local smoke re-run of `python3 -c "from news_bot import job; job()"` on empty queue — **needs live verification after fix** (expected log: `[overflow] evicted=0, deferred=26, protected=0, errors=0`).
