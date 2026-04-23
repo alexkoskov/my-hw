@@ -283,3 +283,23 @@ Nits deferred (all from round 1, judged not worth fixing): frozenset vs set (saf
 - `pytest tests/test_hw_review_retry.py -v` → 14 passed — all 6 TDD anchors + 8 bonus (print-on-success, index-2 selection, negative-index, already-in-pending defensive, count+order, exact-format, retry→list integration)
 - `pytest tests/ -q` → 383 passed (359 baseline + 24 new, no regression)
 - Smoke (`pytest tests/test_overflow.py::TestOverflowInJob::test_job_overflow_smoke_mixed_queue -q`) → queue pre-filled 10/10 (4 staged + 6 unstaged), 2 new RSS entries → staged rows untouched, oldest 2 unstaged evicted to `published_articles` with `via_review=0`, both new entries inserted; queue size remains at cap (10), exit 0
+
+## Task 13: Test Audit
+
+**Status:** Done
+**Commit:** pending
+**Agent:** test-audit
+**Summary:** needs_fixes (non-blocking) — 368 distinct `def test_` functions across 23 test files, 383 green per Task 10 baseline. Findings: 0 critical / 0 high / 2 medium / 5 low / 2 nit. Medium findings: (a) no mixed-path 3-strike test pinning user-spec L70 "3 failures in any combination of idle-fallback and overflow" (shared counter is pinned at repo level, cross-path invariant is not); (b) Decision 9 Telegraph-URL reuse independently pinned at 2 of 3 call-sites (hw_review publish + idle fallback) — overflow site inherits transitively via `_fallback_publish`. Litmus-sampled 15 tests, all fail when the SUT's core logic is hollowed. All tech-spec Testing-Strategy checklist items are covered except the two gaps above.
+**Deviations:** None.
+
+**Audit report:** [logs/working/audit/test-audit.json](logs/working/audit/test-audit.json)
+
+**Verification:**
+- Holistic read of 17 test files (all new + modified from Tasks 1–10).
+- Litmus-sampled 15 tests across the suite — each would fail if the SUT's core logic were removed.
+- Cross-checked user-spec ACs + tech-spec Decisions 1–14 against suite coverage; 25 coverage-matrix rows recorded in JSON (23 OK, 1 partial, 1 missing).
+- Verified Decision 9 (Telegraph URL reuse idempotency) pinned at 2 of 3 call-sites (hw_review publish + idle fallback); overflow site inherits via `_fallback_publish` helper (transitive only) — logged as medium gap.
+- Verified Decision 13 (shared counter, 3-strike → failed) pinned at every increment boundary in same-path tests (idle 1st/3rd, overflow 1st/3rd); mixed-path (idle+overflow combined) is the missing case — logged as medium gap.
+- Weak-assertion scan: 1 bare `assertTrue(mock_admin.called)` in test_job_prep_phase.py:341, 1 bare `assertRaises(Exception)` without match in test_idle_fallback.py:450 — logged as low findings.
+- Neither medium gap blocks Pre-deploy QA; both are strong candidates for a P1 follow-up wave before post-deploy verification.
+
