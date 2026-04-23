@@ -322,7 +322,7 @@ Nits deferred (all from round 1, judged not worth fixing): frozenset vs set (saf
 ## Task 11: Code Audit
 
 **Status:** Done
-**Commit:** 0547c73
+**Commit:** bccb584
 **Agent:** code-audit
 **Summary:** clean — zero CRITICAL / zero HIGH / zero MEDIUM; 6 LOW + 5 NIT findings across 11 dimensions. Decision 9 (Telegraph-URL reuse idempotency) verified consistent at 3 call-sites (`hw_review.cmd_publish`, `news_bot._fallback_publish`, `news_bot._overflow_fast_track` via shared helper). Decision 13 (3-strike shared `attempt_count` → `failed_articles`) verified consistent at 2 auto-publish call-sites (`job()` step 1b + `_overflow_fast_track`) — manual `hw_review publish` intentionally excluded per user-spec L70. `process_new_articles` fully removed (grep confirms only backward-pointing comments). Findings are defense-in-depth hygiene: 3 unused imports in `news_bot.py`, 4 non-uniform `sanitize_error_message` sites, 1 stale docstring on `hw_review._cleanup_preview_html`, 2 mixed import-style sites, 1 unused logger in repo, 2 misnumbered step comments, 1 semantic-naming nit on `evicted_count` (counts 3-strike-failed rows as "auto-published"), 1 import-ordering nit on `pending_articles_repo` vs `DB_FILE`, 1 --ru-title length validation gap (also flagged by security-audit as P3). None block Pre-deploy QA.
 **Deviations:** None.
