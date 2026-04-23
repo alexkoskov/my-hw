@@ -129,3 +129,26 @@ Nits deferred (all from round 1, judged not worth fixing): frozenset vs set (saf
 - Smoke 1 (`python3 -c "import pending_articles_repo; pending_articles_repo.init_schema(__import__('sqlite3').connect(':memory:'))"`) → exit 0
 - Smoke 2 (tempfile DB → `init_schema` → `insert_pending({link, source_name, title, paragraphs=['p'], images=[], blocks=None, pub_date=None})` → `count_pending()`) → prints `1`, exit 0
 
+## Task 5: Source registry + source_name tagging
+
+**Status:** Done
+**Commits:** 93b8004 (impl), 349fd4f (round-1 fix)
+**Agent:** teammate (task-5)
+**Summary:** Added Decision 4's source-dispatch groundwork to `news_bot.py`: `NETLOC_TO_SOURCE` dict with the five explicit netloc keys → three `source_name` values (`autoevolution`/`lamley`/`mattel`); `_resolve_source_name(link)` helper (case-insensitive, exception-safe, returns `'other'` on miss); `_fetch_rss_entries(notifier)` with per-feed try/except error isolation, explicit field-selection normalisation of FeedParserDict entries to plain dicts (only `link`/`title`/`published`/`summary` survive, so feedparser internals never leak into Task 6's `pending_articles` JSON columns), `feed_url` stamping, and a WARNING log on `'other'`; `_fetch_mattel_entries(notifier)` thin wrapper that None-guards `fetch_mattel_news` and stamps `source_name='mattel'`; and the module-level `SOURCES = [_fetch_rss_entries, _fetch_mattel_entries]` list. `job()`, `process_new_articles`, `_source_hashtag`, and Task 3's `SOURCE_EMOJI`/`SOURCE_LABEL`/`build_admin_ping` are untouched — Task 6 owns the `job()` refactor. 23 new pytest cases covering all 11 TDD anchors plus 12 additional edge cases (empty string, no scheme, missing link, empty list fallback, notifier passthrough, real `feedparser.parse()` round-trip for the normalisation check).
+**Deviations:** Reviews were performed inline (loaded each methodology skill, analysed against its dimensions, wrote JSON reports manually) because the Task tool for spawning subagents was not available in this session. The teammate brief explicitly authorised this fallback.
+
+**Reviews:**
+
+*Round 1:*
+- code-reviewer: pass-with-minor, 1 minor (unused `_RSS_ENTRY_FIELDS` tuple) → [logs/working/task-5/code-reviewer-round1.json](logs/working/task-5/code-reviewer-round1.json)
+- security-auditor: pass, 0 findings — `@`-userinfo / IDN / percent-encoded-dot / subdomain-suffix / port-injection spoofing vectors all fail-closed to `'other'` via exact-match dict lookup; warning log only prints public URL strings → [logs/working/task-5/security-auditor-round1.json](logs/working/task-5/security-auditor-round1.json)
+- test-reviewer: pass, 2 minors (optional callable-redundancy test, comment-clarity nit — both deferred) → [logs/working/task-5/test-reviewer-round1.json](logs/working/task-5/test-reviewer-round1.json)
+
+*Round 2:* Skipped. The single valid minor (dead `_RSS_ENTRY_FIELDS` tuple) was fixed in 349fd4f and its rationale was inlined where the code lives. No HIGH/CRITICAL / no behavioural change from the fix, so a second review round would only re-confirm what round 1 already approved. The two test-reviewer nits are documented above as deferred.
+
+**Verification:**
+- `pytest tests/test_sources_registry.py -v` → 23 passed (0.25s) — all 11 TDD anchors + 12 edge cases
+- `pytest tests/ -q` → 260 passed (237 baseline + 23 new, no regression)
+- Smoke 1 (`python3 -c "from news_bot import SOURCES, _fetch_rss_entries; print([f.__name__ for f in SOURCES])"`) → `['_fetch_rss_entries', '_fetch_mattel_entries']`, exit 0
+- Smoke 2 (`python3 -c "from news_bot import _resolve_source_name; print(_resolve_source_name('https://lamleygroup.com/post/x'), ..., _resolve_source_name('https://unknown.example/z'))"`) → `lamley autoevolution mattel other`, exit 0
+
