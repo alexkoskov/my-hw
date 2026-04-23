@@ -492,6 +492,169 @@ def send_telegraph_teaser(telegraph_url, source_url):
 
     return asyncio.run(_send())
 
+
+# ---------------------------------------------------------------------------
+# Preview-file cleanup (shared with ``hw_review.cmd_publish``).
+#
+# ``hw_review.py`` re-exports its own ``_cleanup_preview_html`` — we keep a
+# local implementation here (rather than importing from ``hw_review``) so
+# ``news_bot`` has no runtime dependency on the CLI module. The two helpers
+# share the same contract: delete the file at ``preview_path`` if it still
+# exists, swallow ``FileNotFoundError`` silently, log + swallow any other
+# ``OSError``. Never raises.
+# ---------------------------------------------------------------------------
+def _cleanup_preview_html(preview_path):
+    """Remove the cached HTML preview file (best-effort). Parity with
+    ``hw_review._cleanup_preview_html``."""
+    if not preview_path:
+        return
+    try:
+        os.unlink(preview_path)
+    except FileNotFoundError:
+        logger.debug(f"preview file already gone: {preview_path}")
+    except OSError as exc:
+        logger.warning(
+            f"could not delete preview file {preview_path}: {exc}"
+        )
+
+
+# ---------------------------------------------------------------------------
+# Idle-fallback publisher (Task 9 / Decisions 9, 11, 12, 13).
+#
+# Called from ``job()`` step (1b) for rows whose ``notified_at`` is older
+# than ``GRACE_WINDOW_HOURS`` and whose ``ru_paragraphs`` is still NULL —
+# i.e., stale rows the operator never reviewed. Runs Gemini-adjacent
+# ``transcreate_text`` against each EN paragraph, then composes the same
+# Telegraph → Telegram pipeline used by ``hw_review publish``:
+#
+#   (1) EN → RU transcreation (title / subtitle / paragraphs).
+#   (2) Telegraph publish — SKIPPED if ``row['telegraph_url']`` already
+#       populated (Decision 9 idempotency); else ``publish_article`` →
+#       ``mark_telegraph_published`` (separate txn, survives Telegram
+#       failure so the URL is reused on the next tick).
+#   (3) Telegram teaser via ``send_telegraph_teaser``. False-return raises
+#       — the caller's ``increment_attempt`` path must treat teaser failure
+#       like any other failure (Decision 13 shared counter).
+#   (4) ``move_to_published(via_review=False)`` — single atomic repo txn.
+#   (5) Best-effort cleanup of the cached preview HTML.
+#
+# Contract: returns ``True`` on full success, raises on any step's failure.
+# Callers in ``job()`` wrap each row in try/except, sanitise the exception,
+# and bump ``attempt_count`` via ``pending_repo.increment_attempt``.
+# ---------------------------------------------------------------------------
+def _fallback_publish(row, via_review=False):
+    """Auto-publish a pending row using GoogleTranslate. Used by both the
+    idle-fallback pass (Task 9) and the overflow fast-track (Task 10).
+
+    Parameters
+    ----------
+    row : dict
+        A pending-articles row as returned by
+        ``pending_articles_repo.get_pending`` / ``list_notified_overdue``.
+    via_review : bool, default False
+        Marker persisted into ``published_articles.via_review`` — False for
+        auto-publish paths, True reserved for operator-driven publishes.
+
+    Returns
+    -------
+    bool
+        ``True`` on success. Exceptions propagate to the caller so
+        ``attempt_count`` can be bumped.
+    """
+    link = row['link']
+
+    # Step 1: EN → RU. Translate title, subtitle, and each paragraph
+    # individually — symmetric to the removed ``process_new_articles``
+    # pre-refactor behaviour. ``transcreate_text`` is allowed to raise;
+    # we do NOT swallow translation failures (they count as a strike).
+    en_title = row.get('title') or ''
+    en_subtitle = row.get('subtitle') or ''
+    en_paragraphs = row.get('paragraphs') or []
+
+    ru_title = transcreate_text(en_title, is_title=True) if en_title else ''
+    ru_subtitle = transcreate_text(en_subtitle) if en_subtitle else ''
+    ru_paragraphs = [transcreate_text(p) for p in en_paragraphs]
+
+    # Translate ``blocks.text``/``caption`` fields if present — the
+    # prep-path sometimes carries a structured ``blocks`` list from the
+    # source fetcher. Leave unknown/empty shapes untouched.
+    ru_blocks = None
+    en_blocks = row.get('blocks')
+    if en_blocks:
+        ru_blocks = []
+        for block in en_blocks:
+            if not isinstance(block, dict):
+                ru_blocks.append(block)
+                continue
+            new_block = dict(block)
+            if 'text' in new_block and new_block.get('text'):
+                new_block['text'] = transcreate_text(new_block['text'])
+            if 'caption' in new_block and new_block.get('caption'):
+                new_block['caption'] = transcreate_text(new_block['caption'])
+            ru_blocks.append(new_block)
+
+    # Persist the RU fields on the pending row BEFORE the Telegraph
+    # step so ``move_to_published`` (which reads ``ru_title`` from the
+    # pending row into a NOT NULL column) has something to copy, and so
+    # a partial failure that retries on the next tick doesn't re-run
+    # transcreation redundantly.
+    pending_repo.update_staged(
+        link,
+        ru_title or '',
+        ru_subtitle or '',
+        ru_paragraphs,
+        ru_blocks,
+    )
+
+    # Step 2: Telegraph — reuse saved URL per Decision 9 idempotency.
+    telegraph_url = row.get('telegraph_url')
+    telegraph_path = row.get('telegraph_path')
+    if telegraph_url:
+        logger.info(
+            f"[fallback] reusing stored telegraph_url for {link}: {telegraph_url}"
+        )
+    else:
+        telegraph_url = telegraph_publisher.publish_article(
+            title=ru_title,
+            paragraphs=ru_paragraphs,
+            images=row.get('images') or [],
+            source_url=link,
+            subtitle=ru_subtitle,
+            blocks=ru_blocks,
+        )
+        telegraph_path = urlparse(telegraph_url).path.lstrip('/')
+        if not telegraph_path:
+            logger.warning(
+                f"[fallback] telegraph URL yielded empty path: {telegraph_url!r}"
+            )
+        # Persist BEFORE Telegram so a teaser failure leaves the row
+        # retry-idempotent (Decision 9).
+        pending_repo.mark_telegraph_published(link, telegraph_url, telegraph_path)
+
+    # Step 3: Telegram teaser. False-return → raise so caller bumps
+    # attempt_count. (Exceptions from ``send_telegraph_teaser`` propagate
+    # naturally — the helper already catches TelegramError internally and
+    # returns False, so this raise path covers that "soft" failure mode.)
+    ok = send_telegraph_teaser(telegraph_url, link)
+    if not ok:
+        raise RuntimeError(
+            f"send_telegraph_teaser returned False for {link}"
+        )
+
+    # Step 4: atomic move (single repo txn).
+    pending_repo.move_to_published(
+        link, telegraph_url, telegraph_path, via_review=via_review,
+    )
+
+    # Step 5: best-effort preview cleanup (noop on None / missing file).
+    _cleanup_preview_html(row.get('preview_html_path'))
+
+    logger.info(
+        f"[fallback] Published {link} via_review={via_review} url={telegraph_url}"
+    )
+    return True
+
+
 # Processing pipeline
 def fetch_full_article(entry):
     """Dispatch to the source-specific fetcher based on the article domain.
@@ -620,33 +783,81 @@ def job():
     init_db()  # idempotent — guard against missing tables on first run.
 
     # ------------------------------------------------------------------
-    # Step (1a): idle heads-up — staged for Task 9.
-    # The repo call is real (returns [] when nothing is stale) so the
-    # scaffolding stays exercised; Task 9 will add the admin-ping loop.
+    # Step (1a): idle heads-up (Decision 12) — one consolidated admin
+    # ping per tick, then stamp ``notified_at`` on every included row.
+    # The whole block is wrapped so a repo or notifier failure cannot
+    # abort the prep tick; errors log and continue.
     # ------------------------------------------------------------------
     try:
         _stale = pending_repo.list_pending_stale(IDLE_TIMEOUT_HOURS)
     except Exception as exc:
-        logger.error(f"list_pending_stale failed: {exc}")
+        logger.error(f"list_pending_stale failed: {sanitize_error_message(exc)}")
         _stale = []
     if _stale:
-        # TODO(Task 9): send one consolidated heads-up ping and
-        # `mark_notified` each row (Decision 12).
-        logger.debug(f"[Task 9 placeholder] {len(_stale)} stale rows awaiting heads-up.")
+        titles = ", ".join((r.get('title') or '(no title)') for r in _stale)
+        ping = (
+            f"Will auto-publish in ~{GRACE_WINDOW_HOURS}h: {titles}. "
+            f"Intercept via hw_review take N"
+        )
+        try:
+            send_admin_notification(ping)
+        except Exception as notify_err:
+            logger.error(
+                f"Failed to send idle heads-up ping: "
+                f"{sanitize_error_message(notify_err)}"
+            )
+        for _row in _stale:
+            try:
+                pending_repo.mark_notified(_row['link'])
+            except Exception as exc:
+                logger.error(
+                    f"mark_notified failed for {_row.get('link')!r}: "
+                    f"{sanitize_error_message(exc)}"
+                )
 
     # ------------------------------------------------------------------
-    # Step (1b): overdue auto-publish — staged for Task 9.
+    # Step (1b): overdue auto-publish — call ``_fallback_publish`` on
+    # each row whose grace window has elapsed without operator action.
+    # Per-row try/except so one failure cannot abort the whole pass
+    # (Decision 13 shared attempt counter, Decision 11 sanitised
+    # ``last_error``). Third strike → ``move_to_failed``.
     # ------------------------------------------------------------------
     try:
         _overdue = pending_repo.list_notified_overdue(GRACE_WINDOW_HOURS)
     except Exception as exc:
-        logger.error(f"list_notified_overdue failed: {exc}")
+        logger.error(
+            f"list_notified_overdue failed: {sanitize_error_message(exc)}"
+        )
         _overdue = []
-    if _overdue:
-        # TODO(Task 9): call `_fallback_publish(row, via_review=False)` for
-        # each overdue row; on success `move_to_published(via_review=False)`,
-        # on 3 strikes `move_to_failed` (Decision 13).
-        logger.debug(f"[Task 9 placeholder] {len(_overdue)} overdue rows awaiting fallback publish.")
+    for _row in _overdue:
+        _link = _row.get('link')
+        try:
+            _fallback_publish(_row, via_review=False)
+        except Exception as exc:
+            safe = sanitize_error_message(exc)
+            logger.error(
+                f"[fallback] publish failed for {_link}: {safe}"
+            )
+            try:
+                new_count = pending_repo.increment_attempt(_link, safe)
+            except Exception as repo_err:
+                logger.error(
+                    f"increment_attempt failed for {_link}: "
+                    f"{sanitize_error_message(repo_err)}"
+                )
+                continue
+            if new_count >= 3:
+                try:
+                    pending_repo.move_to_failed(_link, safe)
+                    logger.warning(
+                        f"[fallback] moved {_link} to failed after "
+                        f"{new_count} strikes"
+                    )
+                except Exception as repo_err:
+                    logger.error(
+                        f"move_to_failed failed for {_link}: "
+                        f"{sanitize_error_message(repo_err)}"
+                    )
 
     # ------------------------------------------------------------------
     # Step (2): fetch all sources via the SOURCES registry.

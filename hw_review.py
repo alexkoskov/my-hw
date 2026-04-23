@@ -41,8 +41,13 @@ succeeded the resulting Telegraph URL is persisted on the pending row, so any
 retry after a Telegram-send failure reuses that URL instead of creating a
 second Telegraph page.
 
-``take`` and ``retry`` subcommands belong to Tasks 9 and 10 and are NOT
-implemented here.
+* ``take N`` (Task 9) — clear ``notified_at`` on a pending row so the
+  idle-fallback grace window is reset and the operator can resume normal
+  review. Refuses (exit 1, clean stderr) if the row has already left
+  pending — the auto-publish path has already fired and Telegraph/channel
+  state is no longer reversible from the CLI.
+
+``retry`` subcommand belongs to Task 10 and is NOT implemented here.
 """
 from __future__ import annotations
 
@@ -622,6 +627,58 @@ def cmd_publish(args: argparse.Namespace) -> int:
 
 
 # ---------------------------------------------------------------------------
+# take (Task 9)
+# ---------------------------------------------------------------------------
+
+
+def cmd_take(args: argparse.Namespace) -> int:
+    """Clear ``notified_at`` on pending row ``N`` so the operator intercepts
+    an idle-fallback grace window before auto-publish fires.
+
+    Exit codes:
+      * 0 — notification cleared, row back in normal review cycle.
+      * 1 — index out of range, row has left pending (already
+        auto-published or moved to failed), or any repo error.
+
+    User-spec anchor: AC L66–L67. Tech-spec: §Review+publish.
+    """
+    peek = _resolve_pending(args.n)
+    if peek is None:
+        return 1
+    link = peek['link']
+
+    # Re-read via get_pending to catch the race where the row was
+    # auto-published between ``list_pending`` (inside _resolve_pending)
+    # and this call. If vanished, report the terminal state cleanly
+    # without mutating anything.
+    row = repo.get_pending(link)
+    if row is None:
+        if (pub := repo.get_published(link)) is not None:
+            _err(f"{args.n} already auto-published: {pub.get('telegraph_url') or ''}")
+        elif (fail := repo.get_failed(link)) is not None:
+            _err(
+                f"{args.n} already auto-published (now in failed): "
+                f"{fail.get('last_error') or ''}"
+            )
+        else:
+            # Extremely narrow window: row deleted without landing in
+            # either archive table. Still a "can't take" state for the
+            # operator — exit 1 with a terse message.
+            _err(f"{args.n} already auto-published")
+        return 1
+
+    # Row still pending. ``clear_notified`` is idempotent (writes NULL
+    # regardless of prior value) — safe to call even if notified_at was
+    # already NULL, so we don't need a pre-check branch. Write either
+    # way: the message reads naturally in both cases.
+    repo.clear_notified(link)
+    title = row.get('title') or '(no title)'
+    _out(f"notification cleared — row returned to normal review cycle: {title}")
+    logger.info('hw_review take %s -> %s', args.n, link)
+    return 0
+
+
+# ---------------------------------------------------------------------------
 # argparse wiring
 # ---------------------------------------------------------------------------
 
@@ -657,6 +714,12 @@ def _build_parser() -> argparse.ArgumentParser:
                            help='publish staged row N to Telegraph + Telegram')
     p_pub.add_argument('n', type=int, help='1-based pending index')
 
+    p_take = sub.add_parser(
+        'take',
+        help='clear notified_at on pending row N — intercept auto-publish'
+    )
+    p_take.add_argument('n', type=int, help='1-based pending index')
+
     return parser
 
 
@@ -667,6 +730,7 @@ _DISPATCH = {
     'skip':    cmd_skip,
     'preview': cmd_preview,
     'publish': cmd_publish,
+    'take':    cmd_take,
 }
 
 
