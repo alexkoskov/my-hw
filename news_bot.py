@@ -12,6 +12,7 @@ from deep_translator import GoogleTranslator
 import schedule
 import asyncio
 import time
+from collections import Counter
 from datetime import datetime
 from telegram import Bot, LinkPreviewOptions
 from telegram.error import TelegramError
@@ -33,6 +34,56 @@ TRANSLATOR_SERVICE = 'google'  # or 'libre'
 RSS_URL = "https://www.autoevolution.com/rss/tag-Hot+Wheels.xml"
 DB_FILE = "news.db"
 LOG_LEVEL = logging.INFO
+
+# Manual-review-workflow knobs (Decision 5). Env-overridable so operators
+# can tune timing without a code change. Parsed at import-time — tests that
+# need different values reload the module or patch the constant directly.
+IDLE_TIMEOUT_HOURS = int(os.getenv('IDLE_TIMEOUT_HOURS', '48'))
+GRACE_WINDOW_HOURS = int(os.getenv('GRACE_WINDOW_HOURS', '2'))
+QUEUE_CAP = int(os.getenv('QUEUE_CAP', '10'))
+
+# Env-var names whose values must never leak into stored error strings or
+# admin-chat messages (Decision 11). Kept as a module-level tuple so new
+# secrets can be added without touching the function body.
+_SECRET_ENV_NAMES = (
+    'TELEGRAM_BOT_TOKEN',
+    'TELEGRAM_CHANNEL_ID',
+    'TELEGRAM_ADMIN_ID',
+    'TELEGRAPH_ACCESS_TOKEN',
+)
+
+
+def sanitize_error_message(exc):
+    """Return str(exc) with every known env-secret value replaced by
+    ``[REDACTED]``. Decision 11 of manual-review-workflow tech-spec:
+    protects ``pending_articles.last_error`` / ``failed_articles.last_error``
+    and admin-chat messages from accidentally leaking ``TELEGRAM_BOT_TOKEN``
+    / ``TELEGRAM_CHANNEL_ID`` / ``TELEGRAM_ADMIN_ID`` /
+    ``TELEGRAPH_ACCESS_TOKEN`` via ``requests`` / ``_api_call`` network-error
+    strings.
+
+    Empty / None / whitespace-only env values are skipped: ``str.replace('',
+    '[REDACTED]')`` would interleave the marker between every character.
+    Any internal error is swallowed — the sanitiser must never break the
+    caller's error-reporting path.
+    """
+    try:
+        message = str(exc)
+    except Exception:
+        # Exception's __str__ itself raised — fall back to a safe
+        # placeholder so the caller's error path keeps working.
+        return '<unrepresentable exception>'
+
+    for name in _SECRET_ENV_NAMES:
+        value = os.getenv(name)
+        if not value or not value.strip():
+            continue
+        try:
+            message = message.replace(value, '[REDACTED]')
+        except Exception:
+            # Defensive: never let sanitisation break the caller.
+            continue
+    return message
 
 
 def send_admin_notification(message):
@@ -298,6 +349,54 @@ def _source_hashtag(source_url):
     parts = netloc.split('.')
     label = parts[-2] if len(parts) >= 2 else netloc
     return f"#{label}"
+
+
+# Source vocabulary for the manual-review-workflow admin-ping (Decision 4).
+# Keys match `pending_articles.source_name` exactly — no 'rss' key, because
+# lamley also arrives via RSS and the two outlets must remain distinguishable
+# in the ping. `'other'` is a netloc-fallback (Task 5) and intentionally has
+# no emoji/label: those entries simply don't appear in the ping.
+SOURCE_EMOJI = {
+    'autoevolution': '\U0001F7E0',  # orange circle
+    'mattel':        '\U0001F7E3',  # purple circle
+    'lamley':        '\U0001F7E2',  # green circle
+}
+SOURCE_LABEL = {
+    'autoevolution': 'autoevolution',
+    'mattel':        'mattel',
+    'lamley':        'lamley',
+}
+
+# Canonical iteration order for the admin-ping fragments. Literal, not
+# derived from dict insertion order or sort — pinned so future refactors
+# don't silently change the operator-visible format.
+_ADMIN_PING_ORDER = ('autoevolution', 'mattel', 'lamley')
+
+
+def build_admin_ping(rows):
+    """Compose the consolidated admin-ping line for the pending-review
+    queue. Decision 12 (single ping per tick) + user-spec L25/L57.
+
+    Format (byte-for-byte): ``"N ждут review: 🟠 autoevolution ×K, 🟣 mattel
+    ×M, 🟢 lamley ×L"``. Sources with a zero count are omitted; ``N`` is the
+    total row count including entries whose ``source_name`` is outside the
+    known vocabulary (e.g. ``'other'``).
+
+    Returns ``None`` on an empty ``rows`` list — user-spec AC L57 forbids
+    pinging about an empty queue.
+    """
+    if not rows:
+        return None
+
+    counts = Counter(r['source_name'] for r in rows)
+    parts = []
+    for key in _ADMIN_PING_ORDER:
+        count = counts.get(key, 0)
+        if count == 0:
+            continue
+        parts.append(f"{SOURCE_EMOJI[key]} {SOURCE_LABEL[key]} ×{count}")
+
+    return f"{len(rows)} ждут review: " + ", ".join(parts)
 
 
 def send_telegraph_teaser(telegraph_url, source_url):
