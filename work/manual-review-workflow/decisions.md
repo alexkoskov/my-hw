@@ -235,3 +235,28 @@ Nits deferred (all from round 1, judged not worth fixing): frozenset vs set (saf
 - Smoke 1 (`python3 -c "from news_bot import SOURCES, _fetch_rss_entries; print([f.__name__ for f in SOURCES])"`) → `['_fetch_rss_entries', '_fetch_mattel_entries']`, exit 0
 - Smoke 2 (`python3 -c "from news_bot import _resolve_source_name; print(_resolve_source_name('https://lamleygroup.com/post/x'), ..., _resolve_source_name('https://unknown.example/z'))"`) → `lamley autoevolution mattel other`, exit 0
 
+## Task 9: Idle-fallback pass + hw_review take
+
+**Status:** Done
+**Commits:** 0d1ad98 (impl), a4daeb4 (round-1 CR-1 mitigation)
+**Agent:** teammate (task-9)
+**Summary:** Wired the idle-fallback pass (tech-spec §Prep phase 1a/1b) into `news_bot.job()`: step (1a) sends ONE consolidated admin ping (Decision 12) summarising every stale row and `mark_notified`'s each; step (1b) calls the new module-level helper `_fallback_publish(row, via_review=False)` per overdue row with per-row try/except so one failure can't abort the pass. `_fallback_publish` reuses Task 8's Decision-9 idempotency pattern (reuse stored `telegraph_url` if non-NULL, else `publish_article` → `mark_telegraph_published`), the Decision-11 `sanitize_error_message` helper on every error path, the Decision-13 shared `increment_attempt` counter (3 strikes → `move_to_failed`), and the same `_cleanup_preview_html` contract that Task 8 introduced (parallel helper in `news_bot.py` to avoid a news_bot→hw_review reverse import). Also added `hw_review take N` subcommand: `clear_notified` on pending rows, clean `exit 1` + "already auto-published" stderr when the row has already left pending (AC L67), `exit 1` + "index out of range" on bad N. 20 new tests across `test_idle_fallback.py` (12) and `test_hw_review_take.py` (8); 339 → 359 total, no regressions.
+
+**Deviations:** Reviews were performed inline (loaded each methodology skill and scored the diff against its dimensions, wrote JSON reports manually to `logs/working/task-9/`) because the Task tool for spawning subagents was not available in this session. The teammate brief explicitly authorised this fallback.
+
+**Reviews:**
+
+*Round 1:*
+- code-reviewer: ok-with-nits, 5 findings (1 low CR-1 ordering fix APPLIED in a4daeb4, 1 low CR-2 deliberate parallel helper, 3 info no-action) → [logs/working/task-9/code-reviewer-round1.json](logs/working/task-9/code-reviewer-round1.json)
+- security-auditor: ok, 5 findings (all info/low, zero HIGH/MEDIUM) — confirmed no secret leakage in `_fallback_publish` paths (all exceptions pass through `sanitize_error_message`), attempt-counter race benign under single-threaded cron, admin-ping title concatenation safe under Telegram's 4096-char limit → [logs/working/task-9/security-auditor-round1.json](logs/working/task-9/security-auditor-round1.json)
+- test-reviewer: ok-with-nits, 6 findings (all info/low) — all 7 TDD anchors for idle_fallback + 5 for take covered, SQL-based time manipulation per Testing Strategy, two-layer unit+integration split for `_fallback_publish` → [logs/working/task-9/test-reviewer-round1.json](logs/working/task-9/test-reviewer-round1.json)
+
+*Round 2:* Skipped. Only CR-1 required action; applied in a4daeb4 (reordered `update_staged` after `mark_telegraph_published`) — preserves `ru_paragraphs IS NULL` on Telegraph failure so `list_notified_overdue` re-matches the row on the next tick, keeping auto-retry viable. All other findings are explicit accept-as-is / no-action per the reviewer's own recommendation. Per the task runbook (status ok/ok-with-nits + no HIGH/CRITICAL → round 1 final).
+
+**Verification:**
+- `pytest tests/test_idle_fallback.py -v` → 12 passed — all 7 TDD anchors + 5 bonus (helper unit tests, per-row isolation, teaser-False persists URL)
+- `pytest tests/test_hw_review_take.py -v` → 8 passed — all 5 TDD anchors + 3 bonus (zero-index, empty queue, never-notified)
+- `pytest tests/ -q` → 359 passed (339 baseline + 20 new, no regression)
+- Smoke 1 (3 pending rows with `fetched_at = datetime('now', '-50 hours')` → mock `send_admin_notification` → call `job()` with `SOURCES=[]`) → exactly ONE heads-up call: `"Will auto-publish in ~2h: First, Second, Third. Intercept via hw_review take N"`, exit 0
+- Smoke 2 (`python3 -c "import hw_review; hw_review.main(['take', '--help'])"`) → usage printed, exit 0
+
