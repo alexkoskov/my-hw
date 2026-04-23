@@ -260,3 +260,26 @@ Nits deferred (all from round 1, judged not worth fixing): frozenset vs set (saf
 - Smoke 1 (3 pending rows with `fetched_at = datetime('now', '-50 hours')` → mock `send_admin_notification` → call `job()` with `SOURCES=[]`) → exactly ONE heads-up call: `"Will auto-publish in ~2h: First, Second, Third. Intercept via hw_review take N"`, exit 0
 - Smoke 2 (`python3 -c "import hw_review; hw_review.main(['take', '--help'])"`) → usage printed, exit 0
 
+## Task 10: Overflow fast-track + hw_review retry + failed-footer
+
+**Status:** Done
+**Commits:** e6e4b95 (impl + tests)
+**Agent:** teammate (task-10)
+**Summary:** Wired the overflow fast-track pass (tech-spec §Prep phase step 4) into `news_bot.job()`: the new module-level `_overflow_fast_track(new_entries)` helper runs when `count_pending() + len(new) > QUEUE_CAP`, calls `pending_articles_repo.list_pending_for_eviction()[:needed]` (repo enforces `ru_paragraphs IS NULL` + `fetched_at ASC` per Decision 7 — staged rows never evicted), and runs `_fallback_publish(row, via_review=False)` per candidate — **reusing** Task 9's helper so overflow and idle-fallback share the exact same Decision-9 Telegraph-URL idempotency contract. Failures sanitise via `sanitize_error_message` (Decision 11) and bump the shared Decision-13 `attempt_count`; the third strike in any combination moves the row to `failed_articles`. Admin ping `"Queue pressure: auto-published {E}, {D} new deferred, {S} staged rows protected"` + optional suffix `", fast-track failed for {F}"` fires only when there's pressure to report (deferred, protected, or errors). Added `hw_review retry N` — 1-based index into `list_failed()` (ORDER BY `failed_at DESC`, matching the Decision-8 footer's rendering order so operator indices line up), calls `retry_from_failed(link)` which resets `attempt_count=0` and stamps a fresh `fetched_at` per Decision 10. The failed-footer in `hw_review list` was already landed by Task 7 (byte-for-byte format `"⚠️ {K} неопубликованных в failed: [t1, t2, ...]. hw_review retry N чтобы переподнять."`); Task 10's new tests pin that format byte-exact and assert the index-ordering contract between footer and `retry N`. 24 new tests across `test_overflow.py` (10) and `test_hw_review_retry.py` (14); 359 → 383 total, no regressions.
+
+**Deviations:** Reviews were performed inline (loaded each methodology skill's dimensions and scored the diff against them, wrote JSON reports manually to `logs/working/task-10/`) because the Task tool for spawning subagents was not available in this session. The teammate brief explicitly authorised this fallback.
+
+**Reviews:**
+
+*Round 1:*
+- code-reviewer: approved, 4 low findings (all no-action: intentional _fallback_publish reuse per Decision 13, defensive accepted=[] on overflow-pass exception, evicted_count +1 on move_to_failed is semantically "slot freed", retry-False exit-1 is safer than silent success) → [logs/working/task-10/code-reviewer-round1.json](logs/working/task-10/code-reviewer-round1.json)
+- security-auditor: approved, 5 low findings — admin-ping uses only integer counts (no Telegram 4096-limit risk, no secret-leak surface); all `last_error` writes go through `sanitize_error_message` (Decision 11); staged-row protection delegated to repo-level SQL filter (Decision 7); `retry N` uses `argparse type=int` + DB-originated link (no injection surface); `retry_from_failed` transactional (verified in pending_articles_repo.py:652–657) → [logs/working/task-10/security-auditor-round1.json](logs/working/task-10/security-auditor-round1.json)
+- test-reviewer: approved, 6 low findings — all 13 TDD anchors covered, byte-exact format pinning on admin-ping and failed-footer strings, tempfile-DB integration matches project pattern, SQL-based `failed_at` pinning makes DESC-ordering deterministic (no timing flake) → [logs/working/task-10/test-reviewer-round1.json](logs/working/task-10/test-reviewer-round1.json)
+
+*Round 2:* Skipped. Zero HIGH/CRITICAL findings across all three reviewers; all low findings are explicit accept-as-is / no-action per each reviewer's own recommendation.
+
+**Verification:**
+- `pytest tests/test_overflow.py -v` → 10 passed — all 7 TDD anchors + 3 bonus (empty-entries no-op, happy-path-no-ping, job() integration smoke)
+- `pytest tests/test_hw_review_retry.py -v` → 14 passed — all 6 TDD anchors + 8 bonus (print-on-success, index-2 selection, negative-index, already-in-pending defensive, count+order, exact-format, retry→list integration)
+- `pytest tests/ -q` → 383 passed (359 baseline + 24 new, no regression)
+- Smoke (`pytest tests/test_overflow.py::TestOverflowInJob::test_job_overflow_smoke_mixed_queue -q`) → queue pre-filled 10/10 (4 staged + 6 unstaged), 2 new RSS entries → staged rows untouched, oldest 2 unstaged evicted to `published_articles` with `via_review=0`, both new entries inserted; queue size remains at cap (10), exit 0
