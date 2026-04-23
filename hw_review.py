@@ -111,6 +111,24 @@ _BLOCK_KEYS_BY_TYPE = {
 }
 
 
+# Workflow-enforcement reminder: the translator for the manual-review pipeline
+# is the operator's Claude Code session — there is no LLM API call. Discovered
+# during live QA: a test publish shipped without the transcreation system
+# prompt because nothing in the CLI referenced the guide. Surfaced here in the
+# two operator-facing chokepoints:
+#   * `list` (only when the pending queue is non-empty — no `stage` follows
+#     from an empty queue, so the reminder would just be noise).
+#   * `stage` (first line of stderr — the gate where translation output is
+#     actually being persisted).
+# Keep it short: the guide path is the load-bearing token; the role line is a
+# one-glance sanity-check of what persona the translator should adopt.
+_STAGE_GUIDE_REMINDER = (
+    "💡 Before `stage N`: load "
+    ".claude/skills/project-knowledge/references/ux-guidelines.md\n"
+    "   Role: ведущий редактор/локализатор · транскреация · 2-3 alt titles."
+)
+
+
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
@@ -190,6 +208,14 @@ def cmd_list(_args: argparse.Namespace) -> int:
             f"⚠️ {len(failed)} неопубликованных в failed: [{titles}]. "
             f"hw_review retry N чтобы переподнять."
         )
+
+    # Workflow-enforcement (ad-hoc, post-QA): nudge the operator to load the
+    # transcreation guide before any `stage N` call. Only when `rows` is
+    # non-empty — `stage` doesn't follow from empty pending (or from a
+    # failed-only queue, where `retry` is the next move, not `stage`).
+    if rows:
+        _out('')
+        _out(_STAGE_GUIDE_REMINDER)
     return 0
 
 
@@ -330,6 +356,12 @@ def _validate_stage_payload(parsed) -> None:
 
 
 def cmd_stage(args: argparse.Namespace) -> int:
+    # Step 0: workflow-enforcement reminder — emit BEFORE stdin read so the
+    # operator (Claude Code session in live QA) sees the guide path even if
+    # stage aborts on a validation error. Stderr keeps stdout clean for any
+    # scripted consumer that pipes through `stage`.
+    _err(_STAGE_GUIDE_REMINDER)
+
     # Step 1: slurp stdin up to the cap + 1 byte. If we got cap+1 bytes back,
     # the producer had more — reject without parsing.
     try:
