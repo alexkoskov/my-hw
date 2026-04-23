@@ -423,3 +423,15 @@ Nits deferred (all from round 1, judged not worth fixing): frozenset vs set (saf
 - Full suite: `python3 -m pytest tests/ -q` → 397 passed (386 baseline + 11 new), 0 existing tests broken.
 - Litmus check: `git stash` the fix → all 11 new tests fail with `AttributeError: module 'news_bot' has no attribute '_BOT_TOKEN_RE'` and level assertions. `git stash pop` → 397 green.
 - **Did NOT run `python3 hw_review.py publish <N>` on real data** — would incur another real Telegram/Telegraph call and compound the existing token exposure. Verification via mock/caplog only (per security instruction: never print or re-emit the real token).
+
+---
+
+## Ad-hoc: ux-guidelines reminder in hw_review CLI
+
+**Status:** Done
+**Commit:** f12037d
+**Agent:** adhoc-ux-guidelines-reminder
+**Summary:** `hw_review list` (when queue non-empty) and `hw_review stage` print a reminder pointing at `.claude/skills/project-knowledge/references/ux-guidelines.md` so the translator (Claude Code session) loads the transcreation system prompt before every staging call. Closes a workflow gap discovered during live QA, where a test publish was done without the prompt loaded.
+**Deviations:** None. (Reviews done inline — Task tool unavailable, same fallback as tasks 1/5/6/7/8.)
+**Reviews:** code-reviewer ok (0 findings) → [logs/working/adhoc/style-reminder-code-review-round1.json](logs/working/adhoc/style-reminder-code-review-round1.json), test-reviewer ok (0 findings) → [logs/working/adhoc/style-reminder-test-review-round1.json](logs/working/adhoc/style-reminder-test-review-round1.json).
+**Verification:** 9 new tests assert reminder appears/hidden per scenario (list non-empty shows, empty hides, failed-only hides, ordering after ⚠️ footer; stage happy/invalid-JSON/out-of-range all emit reminder as first stderr line; constant contains exact guide path + word `ux-guidelines`); full suite `python3 -m pytest tests/ -q` → 406 passed (397 baseline + 9 new), 0 regressions.
