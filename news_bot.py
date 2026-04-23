@@ -6,6 +6,7 @@ Fetches RSS feed, parses articles, translates, summarizes, and posts to Telegram
 
 import sqlite3
 import logging
+import re
 import feedparser
 import requests
 from deep_translator import GoogleTranslator
@@ -167,6 +168,65 @@ logging.basicConfig(
     level=LOG_LEVEL,
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
 )
+
+# ---------------------------------------------------------------------------
+# Security hardening — suppress third-party HTTP INFO logs + token scrubber
+# ---------------------------------------------------------------------------
+# The Telegram Bot API embeds the bot token in the URL path
+# (``https://api.telegram.org/bot<TOKEN>/<method>``).  ``python-telegram-bot``
+# uses ``httpx``/``httpcore`` under the hood, both of which log every outbound
+# request at INFO level.  With our root logger at INFO that meant the bot
+# token was being written to stdout / the systemd journal on every HTTP
+# round-trip — a HIGH-severity secret leak discovered during live-publish QA
+# of manual-review-workflow.  The triple defence below (explicit level bumps
+# on the noisy loggers + a root-level regex filter) ensures no log record —
+# ours or a dependency's — emits a raw bot token.
+for _noisy in ("httpx", "httpcore", "urllib3", "requests"):
+    logging.getLogger(_noisy).setLevel(logging.WARNING)
+
+
+# Telegram bot tokens use the shape ``<bot_id>:<35-char-secret>`` where
+# ``bot_id`` is 8-10 digits and the secret is drawn from [A-Za-z0-9_-]{35}.
+# We keep the pattern slightly loose (``{30,}`` on the secret tail) so a
+# future token-format tweak from BotFather still gets caught.
+_BOT_TOKEN_RE = re.compile(r"\d{6,12}:[A-Za-z0-9_-]{30,}")
+
+
+class _TokenRedactingFilter(logging.Filter):
+    """Defence-in-depth: scrub Telegram-bot-token-shaped substrings from any
+    LogRecord before it reaches a handler.  Installed on the root logger so
+    it covers every library we import, including ones we haven't audited.
+
+    Rewriting ``record.msg`` / ``record.args`` is safe because ``filter`` is
+    invoked after ``getMessage`` caching — handlers re-render from the
+    scrubbed fields.  We always return ``True`` (the record is kept, just
+    sanitised).  Any internal error is swallowed so a broken filter can
+    never break the caller's logging path.
+    """
+
+    def filter(self, record):  # noqa: D401 — stdlib signature
+        try:
+            # Pre-render, scrub, then drop args so the handler doesn't
+            # re-format and reintroduce a raw token from ``record.args``.
+            rendered = record.getMessage()
+            if _BOT_TOKEN_RE.search(rendered):
+                record.msg = _BOT_TOKEN_RE.sub("***", rendered)
+                record.args = None
+        except Exception:
+            # Never let the filter break logging.
+            pass
+        return True
+
+
+_TOKEN_FILTER = _TokenRedactingFilter()
+# Attach to the root logger so records routed to root's handlers get
+# scrubbed, and to the named noisy loggers so any handler attached
+# directly to one of them (e.g. pytest ``caplog``, third-party test
+# harnesses, operator-added per-library handlers) also benefits.
+logging.getLogger().addFilter(_TOKEN_FILTER)
+for _noisy in ("httpx", "httpcore", "urllib3", "requests"):
+    logging.getLogger(_noisy).addFilter(_TOKEN_FILTER)
+
 logger = logging.getLogger(__name__)
 
 # Database functions
