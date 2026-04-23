@@ -246,5 +246,209 @@ class TestPublishArticle:
         assert session.post.call_args[1]["data"]["access_token"] == "explicit"
 
 
+class TestPreviewNodes:
+    """Tests for the public preview_nodes wrapper.
+
+    preview_nodes is the offline mirror of the node tree that
+    publish_article would upload to Telegraph's createPage. It must never
+    touch the network and must not require TELEGRAPH_ACCESS_TOKEN.
+    """
+
+    def test_returns_list_of_dicts(self):
+        nodes = tp.preview_nodes(title="t", paragraphs=["p1"])
+        assert isinstance(nodes, list)
+        assert len(nodes) > 0
+        for node in nodes:
+            assert isinstance(node, dict)
+            assert "tag" in node
+
+    def test_flat_path_matches_build_content(self):
+        paragraphs = ["p1", "p2"]
+        images = ["https://x/1.jpg"]
+        source_url = "https://src"
+        subtitle = "sub"
+        preview = tp.preview_nodes(
+            title="t",
+            paragraphs=paragraphs,
+            images=images,
+            source_url=source_url,
+            subtitle=subtitle,
+        )
+        direct = tp._build_content(subtitle, paragraphs, images, source_url)
+        assert preview == direct
+
+    def test_blocks_path_matches_build_content_from_blocks(self):
+        blocks = [
+            {"type": "image", "src": "hero.jpg", "caption": "cap"},
+            {"type": "paragraph", "text": "body"},
+        ]
+        subtitle = "sub"
+        source_url = "https://src"
+        preview = tp.preview_nodes(
+            title="t",
+            paragraphs=["ignored"],
+            images=["ignored.jpg"],
+            source_url=source_url,
+            subtitle=subtitle,
+            blocks=blocks,
+        )
+        direct = tp._build_content_from_blocks(subtitle, blocks, source_url)
+        assert preview == direct
+
+    def test_no_network_call(self, monkeypatch):
+        def _boom(*args, **kwargs):
+            raise AssertionError("no network allowed in preview_nodes")
+
+        monkeypatch.setattr(tp, "_api_call", _boom)
+        # Also guard requests.post in case someone bypasses _api_call.
+        monkeypatch.setattr(tp.requests, "post", _boom)
+        nodes = tp.preview_nodes(
+            title="t",
+            paragraphs=["p1", "p2"],
+            images=["https://x/1.jpg"],
+            source_url="https://src",
+            subtitle="sub",
+        )
+        assert isinstance(nodes, list)
+
+    def test_no_token_required(self, monkeypatch):
+        monkeypatch.delenv(tp.ENV_TOKEN_KEY, raising=False)
+        nodes = tp.preview_nodes(title="t", paragraphs=["p"])
+        assert isinstance(nodes, list)
+        assert len(nodes) > 0
+
+    def test_hero_image_figure_first(self):
+        nodes = tp.preview_nodes(
+            title="t",
+            paragraphs=["body"],
+            images=["https://cdn/1.jpg"],
+        )
+        assert nodes[0]["tag"] == "figure"
+        # Nested <img> with the hero src
+        inner = nodes[0]["children"][0]
+        assert inner["tag"] == "img"
+        assert inner["attrs"]["src"] == "https://cdn/1.jpg"
+
+    def test_empty_paragraphs_and_no_blocks(self):
+        # No source_url → _build_content returns [] for empty paragraphs; no exception.
+        nodes = tp.preview_nodes(title="t")
+        assert isinstance(nodes, list)
+
+        # With source_url, only the footer is emitted.
+        nodes_with_footer = tp.preview_nodes(title="t", source_url="https://src")
+        assert isinstance(nodes_with_footer, list)
+        assert len(nodes_with_footer) == 1
+        assert nodes_with_footer[0]["tag"] == "p"
+
+    def test_title_not_in_nodes(self):
+        title = "UniqueTitleMarker12345"
+        nodes = tp.preview_nodes(
+            title=title,
+            paragraphs=["body paragraph"],
+            images=["https://x/1.jpg"],
+            source_url="https://src",
+            subtitle="subtitle text",
+        )
+
+        def _walk(node):
+            """Yield every string found inside any node's children or attrs."""
+            if isinstance(node, str):
+                yield node
+                return
+            if isinstance(node, dict):
+                for v in node.values():
+                    yield from _walk(v)
+                return
+            if isinstance(node, list):
+                for item in node:
+                    yield from _walk(item)
+
+        for text in _walk(nodes):
+            assert title not in text, f"title leaked into node tree: {text!r}"
+
+    def test_empty_blocks_falls_back_to_flat(self):
+        """Empty blocks list is falsy; preview_nodes must take the flat path,
+        matching publish_article's `if blocks:` branch."""
+        preview = tp.preview_nodes(
+            title="t",
+            paragraphs=["p1"],
+            images=["https://x/1.jpg"],
+            source_url="https://src",
+            subtitle="",
+            blocks=[],
+        )
+        direct = tp._build_content("", ["p1"], ["https://x/1.jpg"], "https://src")
+        assert preview == direct
+
+    def test_parity_with_publish_article_payload(self, monkeypatch):
+        """The node list uploaded by publish_article equals preview_nodes output
+        for the same inputs — the whole point of exposing the wrapper."""
+        monkeypatch.setenv(tp.ENV_TOKEN_KEY, "tok")
+        session = MagicMock()
+        session.post.return_value = _make_response(
+            {"ok": True, "result": {"url": "https://telegra.ph/X", "path": "X"}}
+        )
+        kwargs = dict(
+            title="Заголовок",
+            paragraphs=["Абзац 1.", "Абзац 2."],
+            images=["https://x/hero.jpg"],
+            source_url="https://src",
+            subtitle="Лид",
+        )
+        tp.publish_article(session=session, **kwargs)
+        uploaded = json.loads(session.post.call_args[1]["data"]["content"])
+        preview = tp.preview_nodes(**kwargs)
+        assert preview == uploaded
+
+    def test_parity_with_publish_article_blocks_path(self, monkeypatch):
+        monkeypatch.setenv(tp.ENV_TOKEN_KEY, "tok")
+        session = MagicMock()
+        session.post.return_value = _make_response(
+            {"ok": True, "result": {"url": "https://telegra.ph/Y", "path": "Y"}}
+        )
+        kwargs = dict(
+            title="T",
+            paragraphs=None,
+            images=None,
+            source_url="https://src",
+            subtitle="Sub",
+            blocks=[
+                {"type": "image", "src": "hero.jpg", "caption": "cap"},
+                {"type": "paragraph", "text": "body"},
+                {"type": "heading", "text": "Header", "level": 3},
+            ],
+        )
+        tp.publish_article(session=session, **kwargs)
+        uploaded = json.loads(session.post.call_args[1]["data"]["content"])
+        preview = tp.preview_nodes(**kwargs)
+        assert preview == uploaded
+
+    def test_unicode_and_html_entity_passthrough(self):
+        """Cyrillic, emoji and HTML-entity-like text pass through without mangling."""
+        paragraphs = ["Привет 🚗 <b>&amp;</b>", "Второй абзац 💬"]
+        nodes = tp.preview_nodes(
+            title="Заголовок",
+            paragraphs=paragraphs,
+            subtitle="Лид 🎉",
+        )
+        # Collect every string in the tree
+        collected: list[str] = []
+
+        def _walk(node):
+            if isinstance(node, str):
+                collected.append(node)
+            elif isinstance(node, dict):
+                for v in node.values():
+                    _walk(v)
+            elif isinstance(node, list):
+                for item in node:
+                    _walk(item)
+
+        _walk(nodes)
+        assert "Привет 🚗 <b>&amp;</b>" in collected
+        assert "Второй абзац 💬" in collected
+        assert "💬 «Лид 🎉»" in collected
+
+
 if __name__ == "__main__":
     pytest.main([__file__, "-v"])

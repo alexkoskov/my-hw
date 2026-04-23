@@ -1,10 +1,17 @@
 #!/usr/bin/env python3
 """Publish articles to Telegra.ph.
 
-Exposes `publish_article(title, paragraphs, images, source_url)` that returns
-a Telegra.ph URL. Access token is created on first call via
-`ensure_access_token()` and cached in the `.env` file so subsequent runs
-reuse it.
+Public surface:
+
+* ``publish_article(title, paragraphs, images, source_url, ...)`` — builds the
+  Telegra.ph node tree and uploads it via ``createPage``; returns the page URL.
+* ``ensure_access_token()`` — returns a cached Telegra.ph access token,
+  creating and persisting one on first call.
+* ``preview_nodes(title, paragraphs, images, source_url, subtitle, blocks)`` —
+  offline mirror of the node tree ``publish_article`` would upload. No network
+  calls, no ``TELEGRAPH_ACCESS_TOKEN`` required. Used by the local HTML preview
+  renderer in ``hw_review preview N`` so the preview and the real publication
+  share a single source of truth for node-tree construction.
 """
 
 import json
@@ -222,6 +229,39 @@ def _build_content(
     return nodes
 
 
+def preview_nodes(
+    title: str,
+    paragraphs: Optional[List[str]] = None,
+    images: Optional[List[str]] = None,
+    source_url: Optional[str] = None,
+    subtitle: str = "",
+    blocks: Optional[List[dict]] = None,
+) -> list:
+    """Return the Telegra.ph node tree that ``publish_article`` would upload,
+    without making any network call.
+
+    This is the offline mirror consumed by ``preview_renderer.render_html``
+    for the local HTML preview in ``hw_review preview N``. The branching
+    (``_build_content_from_blocks`` when ``blocks`` is non-empty, otherwise
+    ``_build_content``) mirrors ``publish_article`` exactly so the preview
+    matches what will actually be sent to ``createPage``.
+
+    The function is pure and deterministic:
+
+    * no HTTP calls (``_api_call`` / ``requests`` are never invoked),
+    * no ``TELEGRAPH_ACCESS_TOKEN`` lookup,
+    * no reads from ``os.environ``.
+
+    ``title`` is accepted for symmetry with ``publish_article`` (and so the
+    caller's code reads naturally) but is **not** included in the returned
+    tree — Telegra.ph's ``createPage`` passes ``title`` as a separate field
+    and the ``content`` array holds only body nodes.
+    """
+    if blocks:
+        return _build_content_from_blocks(subtitle, blocks, source_url)
+    return _build_content(subtitle, paragraphs or [], images or [], source_url)
+
+
 def publish_article(
     title: str,
     paragraphs: Optional[List[str]] = None,
@@ -248,10 +288,14 @@ def publish_article(
     if not token:
         raise TelegraphError(f"{ENV_TOKEN_KEY} is not set; call ensure_access_token first")
 
-    if blocks:
-        content = _build_content_from_blocks(subtitle, blocks, source_url)
-    else:
-        content = _build_content(subtitle, paragraphs or [], images or [], source_url)
+    content = preview_nodes(
+        title=title,
+        paragraphs=paragraphs,
+        images=images,
+        source_url=source_url,
+        subtitle=subtitle,
+        blocks=blocks,
+    )
     result = _api_call(
         "createPage",
         {
