@@ -568,13 +568,6 @@ def process_new_articles(entries, limit=3):
 # ---------------------------------------------------------------------------
 
 
-# Fields copied verbatim from each feedparser entry into the output dict.
-# Explicit field selection avoids leaking feedparser internal attrs
-# (`summary_detail`, `title_detail`, `links`, etc.) into downstream code —
-# those are not JSON-serialisable by `pending_articles.paragraphs` in Task 6.
-_RSS_ENTRY_FIELDS = ('link', 'title', 'published', 'summary')
-
-
 def _fetch_rss_entries(notifier=None):
     """Fetch all RSS feeds and return a `list[dict]` with `source_name` set.
 
@@ -599,9 +592,12 @@ def _fetch_rss_entries(notifier=None):
             logger.error(f"Failed to fetch feed {url}: {exc}")
             continue
         for entry in raw or []:
-            # `entry` is typically a FeedParserDict — pull out just the
-            # stable string fields. `entry.get(...)` works on both dicts
-            # and FeedParserDicts.
+            # `entry` is typically a FeedParserDict. Build the output as a
+            # plain dict with explicit field selection — `dict(entry)` would
+            # leak feedparser internals (`summary_detail`, `title_detail`,
+            # `links`, ...) which are not JSON-serialisable for the Task 6
+            # `pending_articles.paragraphs` column. `entry.get(...)` works
+            # on both plain dicts and FeedParserDicts.
             link = entry.get('link')
             item = {
                 'link': link,
