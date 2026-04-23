@@ -396,3 +396,30 @@ Nits deferred (all from round 1, judged not worth fixing): frozenset vs set (saf
 - New tests: `test_overflow_empty_queue_protected_is_zero` (red→green: pre-fix asserted `'protected 26'` got `'protected 0'`), `test_overflow_partial_protection` (4 ru-NULL + 6 ru-staged, needed=6 → protected=2), `test_overflow_full_protection` (10 ru-staged, needed=6 → protected=6).
 - Full suite: `python3 -m pytest tests/ -q` → 386 passed (383 baseline + 3 new), 0 existing tests broken.
 - Local smoke re-run of `python3 -c "from news_bot import job; job()"` on empty queue — **needs live verification after fix** (expected log: `[overflow] evicted=0, deferred=26, protected=0, errors=0`).
+
+
+---
+
+## Ad-hoc: httpx logger token-leak fix (post-deploy QA finding)
+
+**Status:** Done
+**Commit:** 83b17a5 (fix + tests), decisions entry commit below.
+**Agent:** adhoc-httpx-leak-fix
+
+**Summary:** Live end-to-end QA of manual-review-workflow surfaced a HIGH-severity secret leak — `TELEGRAM_BOT_TOKEN` was being written to stdout / systemd journal on every outbound Telegram API request. Root cause: `python-telegram-bot` uses `httpx` underneath, `httpx` logs each request at INFO level, and the Telegram Bot API embeds the token in the URL path (`/bot<TOKEN>/sendMessage`). With the project's root logger at INFO (`LOG_LEVEL = logging.INFO` in news_bot.py:45) the log line appeared on every run. Fix applied in `news_bot.py`'s logging-config block (post-`basicConfig`): (1) explicit level bump to WARNING for `httpx`, `httpcore`, `urllib3`, `requests`; (2) defence-in-depth `_TokenRedactingFilter` (regex `\d{6,12}:[A-Za-z0-9_-]{30,}` → `***`) installed on root plus each noisy logger so propagation-bypassing handlers (pytest caplog, operator per-library handlers, future third-party loggers) also get scrubbed. 11 new tests in `tests/test_no_token_leak_in_logs.py` pin the three defence layers (level, filter unit behaviour, end-to-end capture). Synthetic token used in every fixture — no real secret ever materialised in the test process.
+
+**Severity note:** HIGH security finding surfaced during live-publish QA, after the Task 12 security audit wave. The prior audit scope covered exception paths (`logger.error`, `send_admin_notification`, `sanitize_error_message` application sites) but not routine third-party INFO logs from dependencies. Recommend **adding "check third-party logger levels and URL-in-path secret exposure" to the security-auditor skill's checklist** for future audits — the same class of leak applies to any HTTP client whose logger is at INFO when the API embeds credentials in the URL (Telegram Bot API, some webhook patterns, legacy basic-auth URLs).
+
+**User must rotate TELEGRAM_BOT_TOKEN:** The previous token was emitted to logs by every bot run since deployment (systemd journal retention applies). Code fix does not address historical leak. Rotation via [@BotFather](https://t.me/BotFather) `/revoke` → `/token` → update `.env` on server is required **regardless of the code fix**. Telegraph access token is unaffected (Telegraph API does not embed the token in URL path).
+
+**Deviations:** None.
+
+**Reviews:**
+- security-auditor: APPROVE (0 critical / 0 high / 0 medium / 2 low / 2 info — all advisory: `curl_cffi` not in muted list but does not touch Telegram URLs; unanchored regex could theoretically over-match but redaction bias is safer than leak bias). Reviewer ran inline via the `security-auditor` skill. Report: [httpx-leak-fix-security-auditor-round1.json](../../logs/working/adhoc/httpx-leak-fix-security-auditor-round1.json).
+- test-reviewer: APPROVE (0 critical / 0 high / 0 medium / 2 low — both optional: clarifying comment on level-vs-filter differentiation, regex false-positive suite expansion). Litmus-valid (all 11 tests fail when fix is reverted via `git stash`). Reviewer ran inline via the `test-master` skill. Report: [httpx-leak-fix-test-reviewer-round1.json](../../logs/working/adhoc/httpx-leak-fix-test-reviewer-round1.json).
+
+**Verification:**
+- New tests (11): parametrised level-bump x4 libs, `test_httpx_info_record_is_not_emitted`, filter unit tests (msg path, args path, noop, installation site), end-to-end capture, regex shape + 4 false-positive guards.
+- Full suite: `python3 -m pytest tests/ -q` → 397 passed (386 baseline + 11 new), 0 existing tests broken.
+- Litmus check: `git stash` the fix → all 11 new tests fail with `AttributeError: module 'news_bot' has no attribute '_BOT_TOKEN_RE'` and level assertions. `git stash pop` → 397 green.
+- **Did NOT run `python3 hw_review.py publish <N>` on real data** — would incur another real Telegram/Telegraph call and compound the existing token exposure. Verification via mock/caplog only (per security instruction: never print or re-emit the real token).
