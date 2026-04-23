@@ -287,7 +287,7 @@ Nits deferred (all from round 1, judged not worth fixing): frozenset vs set (saf
 ## Task 13: Test Audit
 
 **Status:** Done
-**Commit:** pending
+**Commit:** a187071
 **Agent:** test-audit
 **Summary:** needs_fixes (non-blocking) — 368 distinct `def test_` functions across 23 test files, 383 green per Task 10 baseline. Findings: 0 critical / 0 high / 2 medium / 5 low / 2 nit. Medium findings: (a) no mixed-path 3-strike test pinning user-spec L70 "3 failures in any combination of idle-fallback and overflow" (shared counter is pinned at repo level, cross-path invariant is not); (b) Decision 9 Telegraph-URL reuse independently pinned at 2 of 3 call-sites (hw_review publish + idle fallback) — overflow site inherits transitively via `_fallback_publish`. Litmus-sampled 15 tests, all fail when the SUT's core logic is hollowed. All tech-spec Testing-Strategy checklist items are covered except the two gaps above.
 **Deviations:** None.
