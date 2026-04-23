@@ -64,6 +64,14 @@ _URL_ATTR_TAGS = {"img": "src", "iframe": "src", "a": "href"}
 # simply isn't in the allowlist.
 _SAFE_URL_RE = re.compile(r"^https?://", re.IGNORECASE)
 
+# Attribute names are restricted to simple ASCII identifiers to close the
+# injection surface where a crafted key like `'x" onerror="alert(1)'` could
+# break out of the tag — `html.escape` on the VALUE would not help if the
+# KEY itself already contains `"`, `>` or whitespace. The Telegra.ph node
+# tree only ever uses `src`, `href`, `alt`, `caption`, `level`, etc., so a
+# conservative ASCII-letter pattern is sufficient and blocks everything else.
+_SAFE_ATTR_NAME_RE = re.compile(r"^[A-Za-z][A-Za-z0-9_-]*$")
+
 # Exact CSP meta tag — tests byte-compare against this string. Do NOT edit
 # without updating `tests/test_preview_renderer.py::CSP_META_EXPECTED`.
 _CSP_META = (
@@ -102,6 +110,12 @@ def _render_attrs(tag: str, attrs: dict) -> str:
     parts = []
     for key, value in attrs.items():
         if value is None:
+            continue
+        # Reject malformed attribute NAMES. A crafted key containing `"`,
+        # `>`, whitespace or any non-identifier character could break out
+        # of the tag even when the VALUE is properly escaped. The real
+        # Telegra.ph tree only ever uses plain ASCII identifiers.
+        if not isinstance(key, str) or not _SAFE_ATTR_NAME_RE.match(key):
             continue
         value_str = value if isinstance(value, str) else str(value)
         if key == url_attr:

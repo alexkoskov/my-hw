@@ -296,6 +296,40 @@ def test_attribute_value_escaped_in_href():
     assert 'href="https://example.com/?q=&lt;script&gt;"' in out
 
 
+def test_malicious_attribute_name_dropped():
+    # A crafted attribute name that would otherwise break out of the tag
+    # must be dropped entirely — html.escape on the value cannot save us
+    # if the key itself contains `"`, `>` or whitespace.
+    out = pr.render_html(
+        [{"tag": "p",
+          "attrs": {'x" onerror="alert(1)': "y",
+                    "normal": "ok"},
+          "children": ["t"]}],
+        "t",
+    )
+    assert "onerror" not in out
+    assert "alert(1)" not in out
+    # Legitimate attribute on same element still comes through.
+    assert 'normal="ok"' in out
+
+
+@pytest.mark.parametrize("bad_key", [
+    'x onerror="y"',
+    'src>',
+    'data-\nkey',
+    '',
+    '123-starts-with-digit',
+    'with space',
+])
+def test_non_identifier_attribute_name_dropped(bad_key):
+    out = pr.render_html(
+        [{"tag": "p", "attrs": {bad_key: "payload"}, "children": ["t"]}],
+        "t",
+    )
+    # Attribute value must never appear in output under a bogus key.
+    assert "payload" not in out
+
+
 def test_non_url_attribute_escaped_and_preserved():
     out = pr.render_html(
         [{"tag": "img", "attrs": {
@@ -481,3 +515,43 @@ def test_render_html_is_pure_returns_str():
     nodes = [{"tag": "p", "children": ["x"]}]
     assert pr.render_html(nodes, "t") == pr.render_html(nodes, "t")
     assert isinstance(pr.render_html([], ""), str)
+
+
+def test_output_parses_as_html_without_error():
+    # The rendered document must be well-formed enough that stdlib's
+    # html.parser walks it start-to-end without raising. This catches
+    # broken tag boundaries or attribute-quoting bugs that substring
+    # assertions might miss.
+    from html.parser import HTMLParser
+
+    class _Walker(HTMLParser):
+        def __init__(self):
+            super().__init__(convert_charrefs=True)
+            self.saw_h1 = False
+            self.depth = 0
+
+        def handle_starttag(self, tag, attrs):
+            self.depth += 1
+            if tag == "h1":
+                self.saw_h1 = True
+
+        def handle_endtag(self, tag):
+            self.depth -= 1
+
+    nodes = [
+        {"tag": "figure", "children": [
+            {"tag": "img", "attrs": {"src": "https://example.com/x.jpg",
+                                       "alt": 'tricky "quoted" & <angle>'}},
+            {"tag": "figcaption", "children": ["caption"]},
+        ]},
+        {"tag": "p", "children": [
+            "Lead ",
+            {"tag": "b", "children": ["bold"]},
+            " end",
+        ]},
+    ]
+    out = pr.render_html(nodes, 'Title with "quotes" & <angles>')
+    walker = _Walker()
+    walker.feed(out)
+    walker.close()
+    assert walker.saw_h1 is True
