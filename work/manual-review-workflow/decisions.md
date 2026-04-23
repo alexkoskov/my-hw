@@ -33,6 +33,32 @@ Review details — in JSON files via links. QA report — in logs/working/.
 
 -->
 
+## Task 8: `hw_review publish` with Telegraph-URL reuse
+
+**Status:** Done
+**Commit:** 8d8e755
+**Agent:** teammate (task-8)
+**Summary:** Added the 6th subcommand `publish N` to `hw_review.py`, composing `telegraph_publisher.publish_article` + `pending_articles_repo.mark_telegraph_published` + `news_bot.send_telegraph_teaser` + `pending_articles_repo.move_to_published(via_review=True)` with the Decision 9 retry-idempotency contract: once `createPage` has succeeded, the resulting `telegraph_url` + derived `telegraph_path` are persisted on the pending row BEFORE the Telegram step, so a teaser failure (False-return OR bubbled exception) leaves the row retry-ready with `publish_article` guaranteed NOT to be called a second time. Decision 14 wiring verified via mock-arg assertion: `send_telegraph_teaser(telegraph_url, row['link'])` — source URL, not `source_name`. Added named module-level `_cleanup_preview_html(path)` helper (Task 9's `_fallback_publish` will reuse verbatim) that tolerates `FileNotFoundError` / `OSError` on the `os.unlink`. Three-state vanished-row matrix (already published / in failed / not found) surfaces single-line stderr diagnostics with zero Python traceback and zero external calls. All exception paths route through `news_bot.sanitize_error_message` (Decision 11) before logging or stderr.
+
+**Deviations:**
+- Reviews done inline. Real subagents (`code-reviewer`, `security-auditor`, `test-reviewer`) were not spawnable — the Task tool is not exposed in this environment. Each review was performed by re-reading the diff against its methodology dimensions and written as JSON under `logs/working/task-8/`. Same fallback as Tasks 1 / 5 / 6 / 7.
+
+**Reviews:**
+
+*Round 1:*
+- code-reviewer: ok-with-nits, 6 findings (0 critical/major/minor, 2 low, 4 info — all "no action", intentional documentation or spec-aligned decisions) → [logs/working/task-8/code-reviewer-round1.json](logs/working/task-8/code-reviewer-round1.json)
+- security-auditor: ok, 0 HIGH/CRITICAL/MEDIUM, 6 findings (1 low, 5 info — sanitiser applied at both sinks, stored-URL reuse trusted because self-written, path-guard already enforced at persist time, all SQL parameterised, `last_error` read-back safe because sanitised at write per Decision 11) → [logs/working/task-8/security-auditor-round1.json](logs/working/task-8/security-auditor-round1.json)
+- test-reviewer: ok-with-nits, 8 findings (0 critical/major/minor, 1 low, 7 info — 15 tests cover all 10 TDD anchors plus 5 extras; gating smoke `test_publish_retry_reuses_telegraph_url` asserts `mock_publish.call_count == 1` across two runs) → [logs/working/task-8/test-reviewer-round1.json](logs/working/task-8/test-reviewer-round1.json)
+
+*Round 2:* Skipped. Zero actionable findings across all three reviewers. No HIGH/CRITICAL / no MEDIUM / no MINOR. Every low/info item is explicitly flagged with "no action" (intentional, documented, or spec-aligned). Per Step 5 of the task runbook, round 1 is final.
+
+**Verification:**
+- `pytest tests/test_hw_review_publish_flow.py -v` → 15 passed (0.57s)
+- `pytest tests/ -q` → 339 passed (324 baseline + 15 new, no regression)
+- Smoke (gating): `pytest tests/test_hw_review_publish_flow.py::TestPublishRetryIdempotency::test_publish_retry_reuses_telegraph_url -v` → 1 passed, `mock_publish.call_count == 1` across both publish runs (Decision 9 verified end-to-end against tempfile SQLite with Telegraph+Telegram mocked)
+- CLI smoke: `python3 hw_review.py --help` shows `{list,show,stage,skip,preview,publish}`; `python3 hw_review.py publish --help` shows `usage: hw_review publish [-h] n`
+- **User verification pending** (Task 8 has `verify: [smoke, user]`): user must stage and publish a single article against the live Telegram channel (`@myhwchannel123`) + live Telegra.ph API and visually confirm (a) the channel post carries the correct source hashtag (`#autoevolution` / `#mattel` / `#lamleygroup`), (b) the Instant View preview card renders above the hashtag pointing at the freshly-created Telegraph URL, (c) tapping the card opens the Telegra.ph page with hero image + decorated subtitle + body + source footer. Can be bundled with the Task 7 user verification since both live on the same deployed `dev` branch.
+
 ## Task 7: `hw_review` CLI with `list` / `show` / `stage` / `skip` / `preview`
 
 **Status:** Done
