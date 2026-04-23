@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Operator-facing CLI for the manual-review workflow.
 
-Five subcommands are implemented here (Task 7):
+Six subcommands are implemented here (Tasks 7 & 8):
 
 * ``list``    — show the pending queue as numbered rows; append a ``⚠️``
   footer summarising ``failed_articles`` whenever that table is non-empty
@@ -33,27 +33,41 @@ path (unknown bug) would bubble up with its usual traceback; we never
 catch ``Exception`` at the top level. ``argparse`` handles usage errors
 with its own exit-code 2.
 
-``publish``, ``take`` and ``retry`` subcommands belong to Tasks 8, 9 and 10
-respectively and are NOT implemented here.
+The ``publish N`` subcommand (Task 8) is the final operator-driven step: it
+composes ``telegraph_publisher.publish_article`` + ``mark_telegraph_published``
++ ``send_telegraph_teaser`` + ``move_to_published(via_review=True)`` with the
+retry-idempotency contract from tech-spec Decision 9 — once ``createPage`` has
+succeeded the resulting Telegraph URL is persisted on the pending row, so any
+retry after a Telegram-send failure reuses that URL instead of creating a
+second Telegraph page.
+
+``take`` and ``retry`` subcommands belong to Tasks 9 and 10 and are NOT
+implemented here.
 """
 from __future__ import annotations
 
 import argparse
 import json
+import os
 import sys
 import tempfile
 import webbrowser
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Optional
+from urllib.parse import urlparse
+
+import requests
 
 # news_bot has module-level env reads (``TELEGRAM_BOT_TOKEN`` etc.) and calls
 # ``logging.basicConfig``; importing it configures the CLI's logging too. In
 # tests these env-reads return ``None`` without side effects.
 import news_bot
+from news_bot import send_telegraph_teaser
 import pending_articles_repo as repo
 import preview_renderer
 import telegraph_publisher
+from telegraph_publisher import publish_article, TelegraphError
 
 
 # Re-use the already-configured project logger instead of creating a fresh
@@ -488,6 +502,126 @@ def cmd_preview(args: argparse.Namespace) -> int:
 
 
 # ---------------------------------------------------------------------------
+# publish (Task 8)
+# ---------------------------------------------------------------------------
+
+
+def _cleanup_preview_html(preview_path: Optional[str]) -> None:
+    """Delete the local HTML preview file (if any) after a successful publish.
+
+    Named module-level helper — Task 9's ``_fallback_publish`` reuses this
+    verbatim. Failures are logged but never raise: the preview file may have
+    already been removed by a re-preview (Decision 1's "remove old → create
+    new" pattern), and a missing file is not a publish-flow error.
+    """
+    if not preview_path:
+        return
+    try:
+        os.unlink(preview_path)
+    except FileNotFoundError:
+        logger.debug('preview file already gone: %s', preview_path)
+    except OSError as exc:
+        logger.warning('could not delete preview file %s: %s',
+                       preview_path, exc)
+
+
+def cmd_publish(args: argparse.Namespace) -> int:
+    # Step 1: resolve the 1-based index. Use _resolve_pending so out-of-range
+    # emits the same ``index out of range`` message as the other subcommands.
+    peek = _resolve_pending(args.n)
+    if peek is None:
+        return 1
+    link = peek['link']
+
+    # Step 2: re-read via ``get_pending`` to pick up the latest ``telegraph_url``
+    # / ``preview_html_path`` state (list_pending snapshot may be stale if
+    # another CLI invocation mutated the row in between). If the row vanished
+    # between list and publish, surface the current terminal state cleanly.
+    row = repo.get_pending(link)
+    if row is None:
+        if (pub := repo.get_published(link)) is not None:
+            _err(f"{link} already published at {pub['telegraph_url']}")
+        elif (fail := repo.get_failed(link)) is not None:
+            _err(f"{link} in failed: {fail.get('last_error') or ''}")
+        else:
+            _err(f"{link} not found")
+        return 1
+
+    # Step 3: precondition — Russian body must be staged.
+    if row.get('ru_paragraphs') is None:
+        _err('nothing to publish — stage Russian text first')
+        return 1
+
+    # Step 4: Telegraph (idempotent per Decision 9).
+    telegraph_url = row.get('telegraph_url')
+    telegraph_path = row.get('telegraph_path')
+    if telegraph_url:
+        logger.info('reusing stored telegraph_url for %s: %s', link, telegraph_url)
+    else:
+        try:
+            telegraph_url = publish_article(
+                title=row['ru_title'],
+                paragraphs=row.get('ru_paragraphs') or [],
+                images=row.get('images') or [],
+                source_url=row['link'],
+                subtitle=row.get('ru_subtitle') or '',
+                blocks=row.get('ru_blocks'),
+            )
+        except (TelegraphError, requests.RequestException) as exc:
+            sanitised = news_bot.sanitize_error_message(exc)
+            logger.error('telegraph publish failed for %s: %s', link, sanitised)
+            _err(f'telegraph publish failed: {sanitised}')
+            return 1
+
+        # Derive the canonical path from the URL. Edge case: a malformed URL
+        # may yield an empty string — we store it anyway so the non-NULL
+        # column still signals "createPage succeeded" and retry logic skips
+        # the second call.
+        telegraph_path = urlparse(telegraph_url).path.lstrip('/')
+        if not telegraph_path:
+            logger.warning('telegraph URL yielded empty path: %r', telegraph_url)
+
+        # Persist BEFORE the Telegram step so a teaser failure leaves the
+        # row retry-idempotent (Decision 9).
+        repo.mark_telegraph_published(link, telegraph_url, telegraph_path)
+
+    # Step 5: Telegram teaser. On False-return or exception → keep the pending
+    # row with its populated telegraph_url so a retry skips createPage.
+    # Catch ``Exception`` (NOT ``BaseException``) so ``KeyboardInterrupt`` /
+    # ``SystemExit`` continue to propagate — never swallow operator-initiated
+    # abort. ``send_telegraph_teaser`` itself already catches ``TelegramError``
+    # internally and returns False, but we still guard for ``TelegramError``
+    # explicitly in case it ever bubbles (defence in depth).
+    try:
+        ok = send_telegraph_teaser(telegraph_url, row['link'])
+    except Exception as exc:  # noqa: BLE001 — intentional broad catch
+        sanitised = news_bot.sanitize_error_message(exc)
+        logger.error('telegram teaser raised for %s: %s', link, sanitised)
+        _err(
+            f'telegram send failed. Telegraph URL saved — rerun publish '
+            f'{args.n} to retry send.'
+        )
+        return 1
+    if not ok:
+        logger.error('telegram teaser returned False for %s', link)
+        _err(
+            f'telegram send failed. Telegraph URL saved — rerun publish '
+            f'{args.n} to retry send.'
+        )
+        return 1
+
+    # Step 6: atomic move — single transaction inside the repo.
+    repo.move_to_published(link, telegraph_url, telegraph_path, via_review=True)
+
+    # Step 7: clean up local preview file. Non-fatal on failure.
+    _cleanup_preview_html(row.get('preview_html_path'))
+
+    logger.info('Published %s via_review=True url=%s', link, telegraph_url)
+    _out(f'Published: {telegraph_url}')
+    return 0
+
+
+# ---------------------------------------------------------------------------
 # argparse wiring
 # ---------------------------------------------------------------------------
 
@@ -519,6 +653,10 @@ def _build_parser() -> argparse.ArgumentParser:
     p_prev.add_argument('--no-open', action='store_true',
                         help='print path and exit; do not open browser')
 
+    p_pub = sub.add_parser('publish',
+                           help='publish staged row N to Telegraph + Telegram')
+    p_pub.add_argument('n', type=int, help='1-based pending index')
+
     return parser
 
 
@@ -528,6 +666,7 @@ _DISPATCH = {
     'stage':   cmd_stage,
     'skip':    cmd_skip,
     'preview': cmd_preview,
+    'publish': cmd_publish,
 }
 
 
