@@ -710,7 +710,8 @@ def _overflow_fast_track(new_entries):
     if not new_entries:
         return [], []
 
-    slots_free = QUEUE_CAP - pending_repo.count_pending()
+    pre_count = pending_repo.count_pending()
+    slots_free = QUEUE_CAP - pre_count
     if len(new_entries) <= slots_free:
         # Within cap — no eviction required, no ping, done.
         return list(new_entries), []
@@ -732,11 +733,20 @@ def _overflow_fast_track(new_entries):
         )
         candidates = []
 
-    # Rows we WANTED to evict minus rows the repo returned ==
-    # rows blocked by staged ru (Decision 7). Pre-clipping against
-    # ``needed`` keeps the staged_protected count meaningful even when
-    # ``list_pending_for_eviction`` returns more than ``needed`` rows.
-    staged_protected = needed - len(candidates)
+    # staged_protected = evict slots we couldn't fill BECAUSE the rows
+    # still present in pending were ru-staged (Decision 7 blocks them).
+    # Two bounds:
+    #   gap                   = needed - len(candidates)
+    #                          (how many evict slots went unfilled)
+    #   non_evictable_present = pre_count - len(candidates)
+    #                          (rows that exist but repo didn't return)
+    # Take the min so we don't over-count — an empty queue has zero
+    # rows to protect, so an unfilled gap there is NOT protection
+    # (regression fix: pre-fix code reported `gap` alone and produced
+    # phantom "26 protected" on an empty queue + 36 new arrivals).
+    staged_protected = max(
+        0, min(needed - len(candidates), pre_count - len(candidates))
+    )
 
     # ------------------------------------------------------------------
     # Per-row eviction via the shared ``_fallback_publish`` helper.

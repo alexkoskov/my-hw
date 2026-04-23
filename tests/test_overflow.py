@@ -489,6 +489,131 @@ class TestOverflowHelper(_OverflowCase):
         )
         self.assertEqual(len(errors), 1)
 
+    def test_overflow_empty_queue_protected_is_zero(self):
+        """Empty queue + flood of new entries: ``staged_protected`` must be
+        0, not ``needed - 0``. Regression for the Variant-B QA finding —
+        an empty queue means nothing to protect, even if the repo returned
+        zero eviction candidates."""
+        # Queue EMPTY. 36 new entries arrive; QUEUE_CAP=10 → slots_free=10,
+        # needed=26, list_pending_for_eviction() returns []. The pre-fix
+        # code reported staged_protected = 26 - 0 = 26 (phantom).
+        self.assertEqual(repo.count_pending(), 0)
+
+        new_entries = [
+            _rss_entry(f'http://new/{i}', f'N{i}') for i in range(36)
+        ]
+
+        notify = MagicMock(return_value=True)
+        mock_fallback = MagicMock()
+        with patch('news_bot._fallback_publish', mock_fallback), \
+             patch('news_bot.send_admin_notification', notify):
+            accepted, errors = news_bot._overflow_fast_track(new_entries)
+
+        mock_fallback.assert_not_called()
+        # 10 slots accepted, 26 deferred.
+        self.assertEqual(len(accepted), 10)
+        self.assertEqual(errors, [])
+
+        overflow_calls = [
+            c for c in notify.call_args_list
+            if c.args and 'Queue pressure' in c.args[0]
+        ]
+        self.assertEqual(len(overflow_calls), 1)
+        text = overflow_calls[0].args[0]
+        # Protected MUST be 0 — no rows existed to be protected.
+        self.assertEqual(
+            text,
+            'Queue pressure: auto-published 0, 26 new deferred, '
+            '0 staged rows protected',
+        )
+
+    def test_overflow_partial_protection(self):
+        """Queue has 10 rows: 4 ru-NULL + 6 ru-staged; needed=6. Repo
+        returns 4 candidates → gap of 2 that IS due to protection.
+        ``staged_protected`` = 2 (the gap), not 6 (total staged)."""
+        # 6 staged rows (older) and 4 unstaged rows (newer).
+        for i in range(6):
+            self._insert_staged(link=f'http://s/{i}', title=f'S{i}')
+        for i in range(4):
+            link = f'http://o/{i}'
+            self._insert(link=link, title=f'O{i}')
+            self._age_fetched(link, 40 - i)
+
+        self.assertEqual(repo.count_pending(), 10)
+
+        # needed = 6 new entries - 0 slots_free = 6; candidates caps at 4.
+        new_entries = [
+            _rss_entry(f'http://new/{i}', f'N{i}') for i in range(6)
+        ]
+
+        def fallback_side(row, via_review=False):
+            repo.update_staged(
+                row['link'],
+                'ru-' + (row.get('title') or ''),
+                '',
+                ['ru-auto'],
+                None,
+            )
+            repo.move_to_published(
+                row['link'],
+                'https://telegra.ph/fake-01-01',
+                'fake-01-01',
+                via_review=via_review,
+            )
+            return True
+
+        notify = MagicMock(return_value=True)
+        with patch('news_bot._fallback_publish', side_effect=fallback_side), \
+             patch('news_bot.send_admin_notification', notify):
+            accepted, errors = news_bot._overflow_fast_track(new_entries)
+
+        overflow_calls = [
+            c for c in notify.call_args_list
+            if c.args and 'Queue pressure' in c.args[0]
+        ]
+        self.assertEqual(len(overflow_calls), 1)
+        text = overflow_calls[0].args[0]
+        # 4 evicted, 2 new deferred (6 - 4 slots freed), protected = gap = 2.
+        self.assertEqual(
+            text,
+            'Queue pressure: auto-published 4, 2 new deferred, '
+            '2 staged rows protected',
+        )
+        self.assertEqual(len(accepted), 4)
+
+    def test_overflow_full_protection(self):
+        """Queue has 10 rows, all ru-staged; needed=6. Repo returns 0
+        candidates → gap of 6, all caused by protection. ``staged_protected``
+        = 6."""
+        for i in range(10):
+            self._insert_staged(link=f'http://s/{i}', title=f'S{i}')
+
+        new_entries = [
+            _rss_entry(f'http://new/{i}', f'N{i}') for i in range(6)
+        ]
+
+        notify = MagicMock(return_value=True)
+        mock_fallback = MagicMock()
+        with patch('news_bot._fallback_publish', mock_fallback), \
+             patch('news_bot.send_admin_notification', notify):
+            accepted, errors = news_bot._overflow_fast_track(new_entries)
+
+        mock_fallback.assert_not_called()
+        self.assertEqual(accepted, [])
+        self.assertEqual(errors, [])
+
+        overflow_calls = [
+            c for c in notify.call_args_list
+            if c.args and 'Queue pressure' in c.args[0]
+        ]
+        self.assertEqual(len(overflow_calls), 1)
+        text = overflow_calls[0].args[0]
+        self.assertEqual(
+            text,
+            'Queue pressure: auto-published 0, 6 new deferred, '
+            '6 staged rows protected',
+        )
+
     def test_overflow_happy_path_no_ping_when_all_fits(self):
         """When within cap and no eviction needed, the ping is NOT sent
         (AC L97 equivalent — no pressure, no ping)."""
