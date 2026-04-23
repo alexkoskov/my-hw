@@ -364,3 +364,15 @@ Nits deferred (all from round 1, judged not worth fixing): frozenset vs set (saf
 - Grep invariants: `process_new_articles` only in 2 comments (news_bot.py:567, :1099); `sanitize_error_message` applied at 19 feature-introduced sites, missing at 4 (flagged as findings #2, #3); `_cleanup_preview_html` has 2 copies (flagged as finding #4).
 - Cross-reviewed against security-audit.json (0 CRITICAL/HIGH/MEDIUM, 3 LOW, 4 INFO) and test-audit.json (0 CRITICAL/HIGH, 2 MEDIUM coverage-gaps, 5 LOW, 2 NIT) — two MEDIUM test-audit gaps (mixed-path 3-strike + overflow Decision 9) are test-coverage issues, not code-quality issues; the code itself implements both invariants correctly via the shared `_fallback_publish` helper.
 
+
+---
+
+## Ad-hoc: deploy.sh FILES update
+
+**Status:** Done
+**Commit:** e341480
+**Agent:** ad-hoc teammate (deploy-pipeline skill)
+**Summary:** Feature delivered 10 coding tasks but `deploy.sh` FILES list was never updated — it only shipped `news_bot.py`, `feeds.json`, `requirements.txt`, `.env.example`, so the cron path would `ImportError` on the first run after deploy. Added the five first-party modules the hourly `job()` actually reaches: `autoevolution_source.py`, `mattel_news_source.py`, `lamley_source.py` (all in `news_bot.SOURCES`), `telegraph_publisher.py` (used by `_fallback_publish` / `_overflow_fast_track`), and `pending_articles_repo.py` (heavily used by `job()` for DB ops). Added a comment above FILES documenting the split: server-deployed modules vs operator-only CLI modules (`hw_review.py`, `preview_renderer.py`) vs never-deployed user data (`news.db`). Kept the existing SCP + `pip install --user` shape — no migration to git-based deploy, no CI pipeline, no venv hardening (out of scope; LOW nit logged in review JSON for a future ticket).
+**Deviations:** None.
+**Reviews:** [deploy-fix-round1.json](logs/working/adhoc/deploy-fix-round1.json) — 1 round, verdict APPROVE, 0 HIGH / 0 MEDIUM / 1 LOW (pre-existing `pip install --user` without venv, out of scope). Reviewer fell back to inline — no `deploy-reviewer` subagent type is registered in this environment.
+**Verification:** `bash -n deploy.sh` → `syntax OK`. No scp/ssh executed (target is the placeholder `user@example.com`; actual deploy is the operator's call).
