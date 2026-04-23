@@ -82,3 +82,28 @@ Nits deferred (all from round 1, judged not worth fixing): frozenset vs set (saf
 - Smoke 2 (URL-scheme filter drops `javascript:` from `img src`) → OK, exit 0
 - Smoke 3 (CSP meta contains `default-src 'none'`, `img-src https:`, `frame-src https:`) → OK, exit 0
 
+## Task 3: admin-ping + source vocabulary + sanitize_error_message
+
+**Status:** Done
+**Commit:** c3858cc
+**Agent:** teammate (task-3), resumed by main agent after rate-limit
+**Summary:** Added three foundational helpers to `news_bot.py` consumed by later waves (Decisions 4/11/12): `SOURCE_EMOJI` / `SOURCE_LABEL` dicts keyed by `autoevolution`/`mattel`/`lamley` (no `rss`, no `other`), `build_admin_ping(rows)` emitting byte-exact `"N ждут review: 🟠 autoevolution ×K, 🟣 mattel ×M, 🟢 lamley ×L"` with stable literal-tuple ordering and `None` on empty queue, and `sanitize_error_message(exc)` that redacts the four env-secrets (`TELEGRAM_BOT_TOKEN`, `TELEGRAM_CHANNEL_ID`, `TELEGRAM_ADMIN_ID`, `TELEGRAPH_ACCESS_TOKEN`) with an explicit `if value and value.strip()` guard against the `str.replace('', ...)` character-interleaving pathology, plus an outer try/except so sanitizer bugs can never break the caller's error path. Also introduced env-overridable knobs `IDLE_TIMEOUT_HOURS` / `GRACE_WINDOW_HOURS` / `QUEUE_CAP` (consumed by Task 6). 25 new pytest cases, stdlib-only.
+**Deviations:** None.
+
+**Reviews:**
+
+*Round 1:*
+- code-reviewer: ok-with-nits, 4 minor findings, all recommend "no action" → [logs/working/task-3/code-reviewer-round1.json](logs/working/task-3/code-reviewer-round1.json)
+- security-auditor: ok, 5 findings (1 low, 1 low, 3 info), all recommend "no action" → [logs/working/task-3/security-auditor-round1.json](logs/working/task-3/security-auditor-round1.json)
+- test-reviewer: ok-with-nits, 5 minor findings, all recommend "no action" → [logs/working/task-3/test-reviewer-round1.json](logs/working/task-3/test-reviewer-round1.json)
+
+*Round 2:* Skipped. All 14 findings are minor/low/info with the reviewers themselves recommending "no action" — either matches spec explicitly (CR-1 graceful-degradation wrapper, CR-3 literal-tuple ordering, CR-4 strict `Counter` subscript per task-3 Edge Cases, SEC-2/3/4 secret-redaction guards, TR-2/TR-3/TR-5 coverage confirmations) or is explicitly out of scope for task 3 (CR-2 / SEC-5 env-knob parsing — Task 6 job loop owns those; SEC-1 secret substring overlap — 30-50 char opaque tokens make overlap astronomically unlikely, documented as accept-as-is; TR-1 pre-existing `[REDACTED]` marker — optional test, not in acceptance criteria). No HIGH/CRITICAL / no MEDIUM requiring action. Per Step 5 of the task runbook, round 1 is final.
+
+**Verification:**
+- `pytest tests/test_admin_ping.py -v` → 25 passed (0.77s)
+- `pytest tests/ -q` → 237 passed (full suite, no regression from parallel tasks 1/2/4)
+- Smoke 1 (`sanitize_error_message(Exception('api abc xyz'))` with `TELEGRAM_BOT_TOKEN='abc'`) → `api [REDACTED] xyz`, exit 0
+- Smoke 2 (`build_admin_ping([])`) → `None`, exit 0
+- Smoke 3 (`build_admin_ping([...2×autoevolution, 1×mattel])`) → `3 ждут review: 🟠 autoevolution ×2, 🟣 mattel ×1`, exit 0
+- Smoke 4 (`set(SOURCE_EMOJI) == set(SOURCE_LABEL) == {'autoevolution', 'mattel', 'lamley'}`) → `ok`, exit 0
+
