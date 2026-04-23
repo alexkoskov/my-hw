@@ -44,25 +44,26 @@ logger = logging.getLogger(__name__)
 
 _PENDING_DDL = """
 CREATE TABLE IF NOT EXISTS pending_articles (
-    link           TEXT PRIMARY KEY,
-    source_name    TEXT NOT NULL,
-    feed_url       TEXT,
-    title          TEXT NOT NULL,
-    subtitle       TEXT NOT NULL DEFAULT '',
-    paragraphs     TEXT NOT NULL,
-    images         TEXT NOT NULL DEFAULT '[]',
-    blocks         TEXT,
-    ru_title       TEXT,
-    ru_subtitle    TEXT,
-    ru_paragraphs  TEXT,
-    ru_blocks      TEXT,
-    telegraph_url  TEXT,
-    telegraph_path TEXT,
-    fetched_at     TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
-    notified_at    TIMESTAMP,
-    attempt_count  INTEGER NOT NULL DEFAULT 0,
-    last_error     TEXT,
-    pub_date       TEXT
+    link              TEXT PRIMARY KEY,
+    source_name       TEXT NOT NULL,
+    feed_url          TEXT,
+    title             TEXT NOT NULL,
+    subtitle          TEXT NOT NULL DEFAULT '',
+    paragraphs        TEXT NOT NULL,
+    images            TEXT NOT NULL DEFAULT '[]',
+    blocks            TEXT,
+    ru_title          TEXT,
+    ru_subtitle       TEXT,
+    ru_paragraphs     TEXT,
+    ru_blocks         TEXT,
+    telegraph_url     TEXT,
+    telegraph_path    TEXT,
+    preview_html_path TEXT,
+    fetched_at        TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    notified_at       TIMESTAMP,
+    attempt_count     INTEGER NOT NULL DEFAULT 0,
+    last_error        TEXT,
+    pub_date          TEXT
 )
 """
 
@@ -273,6 +274,26 @@ def increment_attempt(link: str, error: Optional[str]) -> int:
         ).fetchone()
         conn.commit()
         return int(row[0]) if row is not None else 0
+    finally:
+        conn.close()
+
+
+def set_preview_path(link: str, preview_html_path: Optional[str]) -> None:
+    """Record the absolute path of the local HTML preview file on the pending
+    row. Called by ``hw_review preview N`` after writing the file inside
+    ``~/.cache/hw-review/`` (tech-spec Decision 1). ``publish`` / ``skip``
+    (Task 8) read this column to delete the stale file on queue exit.
+
+    Passing ``None`` clears the column. No-op if the row is missing — the
+    caller already validated the row through ``_resolve_pending``.
+    """
+    conn = _connect()
+    try:
+        conn.execute(
+            "UPDATE pending_articles SET preview_html_path=? WHERE link=?",
+            (preview_html_path, link),
+        )
+        conn.commit()
     finally:
         conn.close()
 

@@ -42,6 +42,7 @@ EXPECTED_PENDING = {
     'ru_blocks':     {'type': 'TEXT',      'notnull': 0, 'dflt_value': None,                    'pk': 0},
     'telegraph_url': {'type': 'TEXT',      'notnull': 0, 'dflt_value': None,                    'pk': 0},
     'telegraph_path':{'type': 'TEXT',      'notnull': 0, 'dflt_value': None,                    'pk': 0},
+    'preview_html_path': {'type': 'TEXT',  'notnull': 0, 'dflt_value': None,                    'pk': 0},
     'fetched_at':    {'type': 'TIMESTAMP', 'notnull': 1, 'dflt_value': 'CURRENT_TIMESTAMP',     'pk': 0},
     'notified_at':   {'type': 'TIMESTAMP', 'notnull': 0, 'dflt_value': None,                    'pk': 0},
     'attempt_count': {'type': 'INTEGER',   'notnull': 1, 'dflt_value': '0',                     'pk': 0},
@@ -492,6 +493,28 @@ class TestMutations(_TmpDbCase):
         row = repo.get_pending(entry['link'])
         self.assertEqual(row['telegraph_url'], 'https://telegra.ph/Test-01-01')
         self.assertEqual(row['telegraph_path'], 'Test-01-01')
+
+    def test_set_preview_path_writes_and_clears_column(self):
+        entry = _sample_entry()
+        repo.insert_pending(entry)
+
+        # Initial value is NULL.
+        row = repo.get_pending(entry['link'])
+        self.assertIsNone(row['preview_html_path'])
+
+        # Write an absolute path.
+        repo.set_preview_path(entry['link'], '/home/vscode/.cache/hw-review/hw-abc.html')
+        row = repo.get_pending(entry['link'])
+        self.assertEqual(row['preview_html_path'], '/home/vscode/.cache/hw-review/hw-abc.html')
+
+        # Clear it (publish/skip flow will use this).
+        repo.set_preview_path(entry['link'], None)
+        row = repo.get_pending(entry['link'])
+        self.assertIsNone(row['preview_html_path'])
+
+    def test_set_preview_path_on_missing_link_is_noop(self):
+        # No row — must not raise.
+        repo.set_preview_path('http://no.such/link', '/tmp/whatever.html')
 
 
 # ---------------- transactional move tests ----------------

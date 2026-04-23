@@ -46,6 +46,7 @@ EXPECTED_PENDING_COLUMNS = {
     'ru_blocks':     {'type': 'TEXT',      'notnull': 0, 'dflt_value': None,                'pk': 0},
     'telegraph_url': {'type': 'TEXT',      'notnull': 0, 'dflt_value': None,                'pk': 0},
     'telegraph_path':{'type': 'TEXT',      'notnull': 0, 'dflt_value': None,                'pk': 0},
+    'preview_html_path': {'type': 'TEXT',  'notnull': 0, 'dflt_value': None,                'pk': 0},
     'fetched_at':    {'type': 'TIMESTAMP', 'notnull': 1, 'dflt_value': 'CURRENT_TIMESTAMP', 'pk': 0},
     'notified_at':   {'type': 'TIMESTAMP', 'notnull': 0, 'dflt_value': None,                'pk': 0},
     'attempt_count': {'type': 'INTEGER',   'notnull': 1, 'dflt_value': '0',                 'pk': 0},
