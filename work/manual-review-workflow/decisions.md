@@ -303,3 +303,19 @@ Nits deferred (all from round 1, judged not worth fixing): frozenset vs set (saf
 - Weak-assertion scan: 1 bare `assertTrue(mock_admin.called)` in test_job_prep_phase.py:341, 1 bare `assertRaises(Exception)` without match in test_idle_fallback.py:450 — logged as low findings.
 - Neither medium gap blocks Pre-deploy QA; both are strong candidates for a P1 follow-up wave before post-deploy verification.
 
+## Task 12: Security Audit
+
+**Status:** Done
+**Commit:** _pending_
+**Agent:** security-audit
+**Summary:** clean (PASS-WITH-FINDINGS). Zero CRITICAL / zero HIGH / zero MEDIUM / 3 LOW / 4 INFO findings. All five tech-spec invariants (a–e) PASS with code evidence: parameterised SQL, `last_error` routed through `sanitize_error_message` on every write, CSP+URL-scheme+attribute-name allowlists in `preview_renderer`, `path.parent == CACHE_DIR` guard before `webbrowser.open`, and the 8-vector `stage` validator (256 KiB cap, depth, key allowlist, size cap, block-type/key allowlist). Safe to proceed to Pre-deploy QA (Task 14); the LOW findings are defense-in-depth / hygiene follow-ups, none block deploy.
+**Deviations:** None.
+
+**Audit report:** [logs/working/audit/security-audit.json](logs/working/audit/security-audit.json)
+
+**Verification:**
+- OWASP coverage: A01 PASS · A02 PASS · A03 PASS · A04 PASS · A05 PASS · A06 PASS · A07 N/A · A08 PASS · A09 PASS with info-level uniformity nit · A10 PASS.
+- Grep invariants: `execute(f|%|.format)` in pending_articles_repo.py → 0 hits. `last_error=` writes → 1 (UPDATE ? placeholder). `webbrowser.open` → 1 call-site, guarded. `default-src 'none'` in preview_renderer.py → present. `ensure_ascii=False` → present in `_dumps`.
+- Feature-specific checks: secret-exposure in `hw_review show` (PASS, last_error sanitised at write), Cyrillic encoding (PASS, ensure_ascii=False round-trip), symlink/TOCTOU on preview cache (PASS via resolved path-guard), Telegraph token in network errors (PASS, token is in POST body not URL), empty-env-var sanitise pathology (PASS, guarded at news_bot.py:88), overflow eviction race (PASS, `ru_paragraphs IS NULL` applied in SQL WHERE, not Python).
+- LOW findings queued as P3 follow-ups: (1) mirror path-guard on `preview_html_path` cleanup unlinks, (2) validate `--ru-title`/`--ru-subtitle` arg length, (3) detect symlink-replaced CACHE_DIR before `mkdir(exist_ok=True)`.
+
