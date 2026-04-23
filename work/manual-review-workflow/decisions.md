@@ -33,6 +33,34 @@ Review details — in JSON files via links. QA report — in logs/working/.
 
 -->
 
+## Task 7: `hw_review` CLI with `list` / `show` / `stage` / `skip` / `preview`
+
+**Status:** Done
+**Commits:** 5450d53 (feature), 38b2766 (round-1 fix)
+**Agent:** teammate (task-7)
+**Summary:** New stdlib-only `hw_review.py` in the repo root — argparse dispatcher for five operator subcommands (`list`, `show`, `stage`, `skip`, `preview`). Each subcommand returns an `int` exit code via `cmd_*`, routed through `main()` → `sys.exit`. `stage` reads JSON on `sys.stdin.buffer` with a 256 KiB byte-cap BEFORE `json.loads`, then runs a hardened validator (depth ≤ 3, top-key allowlist `{ru_paragraphs, ru_blocks}`, per-block-type key allowlist, per-string 10 KiB cap, ≤ 100 paragraphs) and cross-checks block parity against the pending row. `preview` lazily renders `telegraph_publisher.preview_nodes(...)` → `preview_renderer.render_html(...)` → `tempfile.NamedTemporaryFile` inside `~/.cache/hw-review/` (mode 0o700, chmod'd defensively), asserts `path.parent == CACHE_DIR.resolve()` BEFORE any `webbrowser.open`, and persists the path via the newly-added `pending_articles_repo.set_preview_path` helper so Task 8's publish/skip cleanup can unlink it.
+
+**Deviations:**
+- Added `preview_html_path` column to `pending_articles.DDL` and `set_preview_path(link, path|None)` helper to `pending_articles_repo.py` — explicitly deferred from Task 1 per that teammate's deviation note ("Task 7 extends pending_articles_repo.py with the column and helper at the time the preview CLI needs them"). Updated `EXPECTED_PENDING` in both `tests/test_pending_articles_repo.py` and `tests/test_migration.py` so schema-drift tests stay honest. Added two unit tests for `set_preview_path` (write + clear; no-op on missing link).
+- Reviews done inline. Real subagents (`code-reviewer`, `security-auditor`, `test-reviewer`) were not spawnable: the Task tool is not exposed in this environment (only `ToolSearch` / `TaskStop`). Each review was performed by re-reading the diff against its methodology dimensions and written as JSON under `logs/working/task-7/`. Same fallback as Tasks 1 / 5 / 6.
+
+**Reviews:**
+
+*Round 1:*
+- code-reviewer: ok-with-nits, 4 findings (1 low/ux fixed — skip prompt now uses `sys.stderr.write` + flush so the `[y/N]:` cursor stays inline; 3 info-level "no action") → [logs/working/task-7/code-reviewer-round1.json](logs/working/task-7/code-reviewer-round1.json)
+- security-auditor: clean, 0 HIGH/CRITICAL, 6 info-level confirmations (stdin cap pre-parse, validator allowlists, `0o700` cache dir, path-guard via resolved `Path` equality, no shell-injection in `webbrowser.open`, no secret logging) → [logs/working/task-7/security-auditor-round1.json](logs/working/task-7/security-auditor-round1.json)
+- test-reviewer: clean, 0 findings, full TDD-anchor coverage matrix plus 4 extras (EOF-on-skip, headless webbrowser, idempotent re-preview, empty `ru_paragraphs` accepted) → [logs/working/task-7/test-reviewer-round1.json](logs/working/task-7/test-reviewer-round1.json)
+
+*Round 2:* Skipped. Only one actionable finding across all three reviewers (cr-1, low/UX) — fixed in 38b2766. No HIGH/CRITICAL/MEDIUM open.
+
+**Verification:**
+- `pytest tests/test_hw_review_cli.py -v` → 46 passed
+- `pytest tests/ -q` → 324 passed (276 baseline + 48 new; 46 CLI + 2 repo `set_preview_path`)
+- Smoke 1 (empty-queue `list`): seeded tempfile DB → `python3 hw_review.py list` → stdout `queue is empty`, exit 0
+- Smoke 1b (list with failed footer): inserted one `failed_articles` row → stdout includes `⚠️ 1 неопубликованных в failed: [...]`, exit 0 (Decision 8 verified)
+- Smoke 2 (preview --no-open on staged row): stdout printed `/home/vscode/.cache/hw-review/hw-XXXXXXXX.html`; file exists with `-rw-------`, directory is `drwx------`, body starts with `<!DOCTYPE html>` + CSP meta + Cyrillic `<h1>РУ заголовок</h1>`; exit 0.
+- **User verification pending** (Task 7 has `verify: [smoke, user]`): user must run `python3 hw_review.py preview <N>` on a staged row without `--no-open` and visually confirm hero image + `💬 «…»` subtitle + body + `Источник:` footer in the opened browser page.
+
 ## Task 6: Refactor `job()` into prep-only + cron bump + delete `process_new_articles`
 
 **Status:** Done
