@@ -9,8 +9,23 @@ SSH_HOST="${SSH_HOST:-user@example.com}"
 DEPLOY_PATH="${DEPLOY_PATH:-/home/user/bot}"
 
 # Files to deploy
+# What lives where:
+#   - Server (this list): everything the hourly cron path in news_bot.job()
+#     needs. That's news_bot.py + its first-party imports (sources, Telegraph
+#     publisher, pending-articles repo) + feeds.json (still loaded by
+#     load_feed_urls() at top of job()) + requirements.txt + .env.example.
+#   - Operator's Claude Code session only (NOT deployed): hw_review.py and
+#     preview_renderer.py — the manual-review-workflow CLI tools the operator
+#     runs locally to approve/publish queued articles. They don't run on the
+#     server.
+#   - Not deployed, ever: news.db (user data, must never be overwritten).
 FILES=(
     "news_bot.py"
+    "autoevolution_source.py"
+    "mattel_news_source.py"
+    "lamley_source.py"
+    "telegraph_publisher.py"
+    "pending_articles_repo.py"
     "feeds.json"
     "requirements.txt"
     ".env.example"
