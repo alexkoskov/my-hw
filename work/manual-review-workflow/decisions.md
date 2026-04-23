@@ -284,6 +284,34 @@ Nits deferred (all from round 1, judged not worth fixing): frozenset vs set (saf
 - `pytest tests/ -q` → 383 passed (359 baseline + 24 new, no regression)
 - Smoke (`pytest tests/test_overflow.py::TestOverflowInJob::test_job_overflow_smoke_mixed_queue -q`) → queue pre-filled 10/10 (4 staged + 6 unstaged), 2 new RSS entries → staged rows untouched, oldest 2 unstaged evicted to `published_articles` with `via_review=0`, both new entries inserted; queue size remains at cap (10), exit 0
 
+## Task 14: Pre-deploy QA
+
+**Status:** Done
+**Commit:** 43e91ad
+**Agent:** qa-runner
+**Summary:** PASS — ready to deploy. 383/383 tests green in 14.79s. All 22 user-spec ACs + all 17 tech-spec ACs (Decisions 1–14) verified `pass`; 4 criteria (channel-post visual, local HTML preview visual, live Telegraph render fidelity, live admin-ping format) deferred to Task 15 post-deploy. Full end-to-end smoke on tempfile DB (prep → stage → preview --no-open → publish with Telegraph/Telegram mocked) confirmed byte-exact admin ping `"3 ждут review: 🟠 autoevolution ×1, 🟣 mattel ×1, 🟢 lamley ×1"`, row migration to `published_articles` with `via_review=1`, dedup-table write, and preview-file cleanup. Schema sanity: 4 tables present (`processed_news`, `pending_articles`, `published_articles`, `failed_articles`) with `preview_html_path` column; `init_db()` idempotent. Inherited zero blockers from Task 11 (code audit — clean) and Task 12 (security audit — clean); Task 13 test-audit MEDIUM gaps (mixed-path 3-strike test, overflow Decision 9 transitive coverage) are test-coverage only, code implements invariants correctly via shared `_fallback_publish`. Static checks: no `ruff`/`mypy`/`flake8`/`pyproject.toml` configured — CI runs only `pytest`. CLI smoke: 9 subcommand `--help` invocations + `list` on empty ephemeral DB all exit 0.
+
+**Deviations:** None. Pre-deploy QA is read-only by contract; any code changes would be escalations.
+
+**Deferred to post-deploy (4):** US-User-01 (channel post visual), US-User-02 (local HTML preview visual), Tech-AVP-01 (Telegraph page render fidelity via curl), Tech-AVP-02 (live admin-ping format via Telegram MCP). Full handoff contract in JSON `deferred_to_post_deploy` block.
+
+**QA reports:**
+- [logs/working/qa/pre-deploy-qa.json](logs/working/qa/pre-deploy-qa.json) — machine-readable (orchestrator reads `status`)
+- [logs/working/qa/pre-deploy-qa.md](logs/working/qa/pre-deploy-qa.md) — human-readable summary + AC matrix
+- [logs/working/task-14/qa-report.json](logs/working/task-14/qa-report.json) — task-scoped copy (identical)
+
+**Verification:**
+- `python3 -m pytest tests/ -q` → `383 passed in 14.79s`
+- `python3 -c "import news_bot; import hw_review; import pending_articles_repo; import preview_renderer; import telegraph_publisher; print('ok')"` → `ok`
+- `grep -nP "f['\"].*(SELECT|INSERT|UPDATE|DELETE)|\+.*(SELECT|INSERT|UPDATE|DELETE)" pending_articles_repo.py hw_review.py` → empty (exit 1) — parametrised SQL invariant
+- `python3 -c "from news_bot import build_admin_ping; assert build_admin_ping([]) is None"` → exit 0
+- sanitize_error_message smoke with all 4 env-secrets → `[REDACTED]` present, no secret leak
+- preview_renderer smoke: `javascript:` dropped, `default-src 'none'` present
+- Schema smoke: `init_db()` twice → 4 tables (`failed_articles`, `pending_articles`, `processed_news`, `published_articles`), `preview_html_path` column present on `pending_articles`
+- Cron smoke: `inspect.getsource(main)` contains `every().hour.do(job)` → True
+- End-to-end smoke (tempfile DB, patched SOURCES + fetch_full_article + send_admin_notification + telegraph_publisher._api_call + hw_review.send_telegraph_teaser): prep 3 rows → ping byte-match → stage 1 → preview --no-open prints cache path → publish → `published_articles.via_review=1`, `processed_news` dedup written, `pending_articles` count 3→2, preview HTML unlinked → `SMOKE OK`
+- CLI smoke: 9 `--help` subcommand calls + `list` on empty ephemeral DB → all exit 0
+
 ## Task 13: Test Audit
 
 **Status:** Done
