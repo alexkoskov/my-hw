@@ -666,6 +666,169 @@ def _fallback_publish(row, via_review=False):
     return True
 
 
+# ---------------------------------------------------------------------------
+# Overflow fast-track (Task 10 / Decisions 6, 7, 9, 11, 13).
+#
+# Called from ``job()`` step (4), between filtering and INSERT. When the
+# queue would blow past ``QUEUE_CAP`` after inserting the freshly-fetched
+# ``new_entries``, we fast-track the OLDEST ``ru_paragraphs IS NULL``
+# pending rows through ``_fallback_publish`` (same helper as idle-fallback,
+# same 3-strike contract via the shared ``attempt_count`` column). Rows
+# with staged Russian text are NEVER evicted (Decision 7): that's the
+# exact CLI-cron race the feature defends against.
+#
+# Contract: returns ``(accepted, fast_track_errors)``.
+# * ``accepted``: slice of ``new_entries`` that fits after the pass.
+# * ``fast_track_errors``: titles of evicted rows whose ``_fallback_publish``
+#   raised — surfaced in the admin ping suffix for operator triage.
+#
+# Admin-ping format (byte-exact per task-10 spec):
+#   "Queue pressure: auto-published {E}, {D} new deferred, {S} staged rows
+#    protected"  (+ optional ", fast-track failed for {F}" on errors)
+#
+# Ping fires ONLY when there's something operator-actionable: deferred > 0,
+# staged_protected > 0, or fast_track_errors non-empty. Happy within-cap
+# paths are silent.
+# ---------------------------------------------------------------------------
+def _overflow_fast_track(new_entries):
+    """Fast-track-evict ru-NULL pending rows to make room for ``new_entries``
+    when the queue would otherwise blow past ``QUEUE_CAP``.
+
+    Parameters
+    ----------
+    new_entries : list[dict]
+        The post-filter list of entries the prep phase wants to INSERT.
+
+    Returns
+    -------
+    tuple[list[dict], list[str]]
+        ``(accepted, fast_track_errors)`` — ``accepted`` is the subset of
+        ``new_entries`` that fits after the pass (possibly all of them,
+        possibly none). ``fast_track_errors`` is the titles of rows
+        whose ``_fallback_publish`` raised during eviction.
+    """
+    if not new_entries:
+        return [], []
+
+    slots_free = QUEUE_CAP - pending_repo.count_pending()
+    if len(new_entries) <= slots_free:
+        # Within cap — no eviction required, no ping, done.
+        return list(new_entries), []
+
+    # ------------------------------------------------------------------
+    # Compute what we NEED to evict vs. what we CAN evict. ``slots_free``
+    # may be negative if the cap was already breached (e.g. operator
+    # decreased QUEUE_CAP between ticks); ``max(0, ...)`` guards against
+    # a negative ``needed`` that would silently skip the loop.
+    # ------------------------------------------------------------------
+    needed = len(new_entries) - max(0, slots_free)
+    try:
+        candidates = pending_repo.list_pending_for_eviction()[:needed]
+    except Exception as exc:
+        # Repo failure on the eviction query is a soft-fail: log, skip the
+        # pass, defer all new entries. We don't crash the prep tick.
+        logger.error(
+            f"list_pending_for_eviction failed: {sanitize_error_message(exc)}"
+        )
+        candidates = []
+
+    # Rows we WANTED to evict minus rows the repo returned ==
+    # rows blocked by staged ru (Decision 7). Pre-clipping against
+    # ``needed`` keeps the staged_protected count meaningful even when
+    # ``list_pending_for_eviction`` returns more than ``needed`` rows.
+    staged_protected = needed - len(candidates)
+
+    # ------------------------------------------------------------------
+    # Per-row eviction via the shared ``_fallback_publish`` helper.
+    # Isolation: one row's raise must not abort the others. On raise we
+    # sanitise the exception (Decision 11), bump the shared counter
+    # (Decision 13), and at 3 strikes move the row to ``failed_articles``.
+    # ------------------------------------------------------------------
+    evicted_count = 0
+    fast_track_errors = []
+    for row in candidates:
+        link = row.get('link')
+        title = row.get('title') or '(no title)'
+        try:
+            _fallback_publish(row, via_review=False)
+            evicted_count += 1
+        except Exception as exc:
+            safe = sanitize_error_message(exc)
+            logger.error(
+                f"[overflow] fallback publish failed for {link}: {safe}"
+            )
+            fast_track_errors.append(title)
+            try:
+                new_count = pending_repo.increment_attempt(link, safe)
+            except Exception as repo_err:
+                logger.error(
+                    f"[overflow] increment_attempt failed for {link}: "
+                    f"{sanitize_error_message(repo_err)}"
+                )
+                continue
+            if new_count >= 3:
+                try:
+                    pending_repo.move_to_failed(link, safe)
+                    logger.warning(
+                        f"[overflow] moved {link} to failed after "
+                        f"{new_count} strikes"
+                    )
+                    # Slot is freed once the row leaves pending, even
+                    # though the content didn't publish. Count toward
+                    # evicted_count so ``accepted`` gets the seat.
+                    evicted_count += 1
+                except Exception as repo_err:
+                    logger.error(
+                        f"[overflow] move_to_failed failed for {link}: "
+                        f"{sanitize_error_message(repo_err)}"
+                    )
+
+    # ------------------------------------------------------------------
+    # Recompute free slots after the pass and split ``new_entries``.
+    # Re-querying ``count_pending`` (rather than trusting ``evicted_count``)
+    # survives edge cases where ``_fallback_publish`` succeeded partially
+    # or a concurrent writer changed the count under us.
+    # ------------------------------------------------------------------
+    try:
+        slots_free_after = QUEUE_CAP - pending_repo.count_pending()
+    except Exception as exc:
+        logger.error(
+            f"[overflow] count_pending failed: {sanitize_error_message(exc)}"
+        )
+        slots_free_after = 0
+    slots_free_after = max(0, slots_free_after)
+
+    accepted = list(new_entries[:slots_free_after])
+    deferred = list(new_entries[slots_free_after:])
+
+    # ------------------------------------------------------------------
+    # Admin ping — only when there's pressure to report (deferred,
+    # protected staged rows, or fast-track errors). A happy "cap lifted
+    # and everything fit" path is silent.
+    # ------------------------------------------------------------------
+    if deferred or staged_protected > 0 or fast_track_errors:
+        msg = (
+            f"Queue pressure: auto-published {evicted_count}, "
+            f"{len(deferred)} new deferred, "
+            f"{staged_protected} staged rows protected"
+        )
+        if fast_track_errors:
+            msg += f", fast-track failed for {len(fast_track_errors)}"
+        try:
+            send_admin_notification(msg)
+        except Exception as notify_err:
+            logger.error(
+                f"[overflow] admin-ping send failed: "
+                f"{sanitize_error_message(notify_err)}"
+            )
+
+    logger.info(
+        f"[overflow] evicted={evicted_count}, deferred={len(deferred)}, "
+        f"protected={staged_protected}, errors={len(fast_track_errors)}"
+    )
+    return accepted, fast_track_errors
+
+
 # Processing pipeline
 def fetch_full_article(entry):
     """Dispatch to the source-specific fetcher based on the article domain.
@@ -913,15 +1076,22 @@ def job():
         )
 
     # ------------------------------------------------------------------
-    # Step (4): overflow fast-track — staged for Task 10.
-    # Current behaviour: accept every new entry; Task 10 will implement
-    # the QUEUE_CAP / eviction logic (Decision 7).
+    # Step (4): overflow fast-track (Decision 7 — staged rows never
+    # evicted). ``_overflow_fast_track`` runs ``_fallback_publish`` on
+    # the oldest ``ru_paragraphs IS NULL`` rows to make room; any new
+    # entries that still don't fit after the pass are dropped for this
+    # tick and surfaced via a consolidated admin ping.
     # ------------------------------------------------------------------
-    # TODO(Task 10): if `pending_repo.count_pending() + len(new_entries) >
-    # QUEUE_CAP`, evict ru-NULL pending rows via `_fallback_publish`
-    # before inserting the overflow; drop leftover new entries with a
-    # consolidated admin ping.
-    accepted = new_entries
+    try:
+        accepted, _overflow_errors = _overflow_fast_track(new_entries)
+    except Exception as exc:
+        # Overflow-pass failure must not abort the tick — log + accept
+        # zero entries so we don't blow past cap accidentally. The admin
+        # has visibility via the log trail.
+        logger.error(
+            f"[overflow] pass failed: {sanitize_error_message(exc)}"
+        )
+        accepted = []
 
     # ------------------------------------------------------------------
     # Step (5): stage each accepted entry into pending_articles.

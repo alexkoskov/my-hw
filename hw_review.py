@@ -47,7 +47,11 @@ second Telegraph page.
   pending — the auto-publish path has already fired and Telegraph/channel
   state is no longer reversible from the CLI.
 
-``retry`` subcommand belongs to Task 10 and is NOT implemented here.
+* ``retry N`` (Task 10) — re-queue a failed row back into pending. ``N``
+  is a 1-based index into ``pending_articles_repo.list_failed()`` (ORDER
+  BY ``failed_at DESC``, matching the ``list`` footer's rendering order
+  so operator-visible indices line up). ``retry_from_failed`` resets
+  ``attempt_count=0`` and stamps a fresh ``fetched_at`` per Decision 10.
 """
 from __future__ import annotations
 
@@ -679,6 +683,47 @@ def cmd_take(args: argparse.Namespace) -> int:
 
 
 # ---------------------------------------------------------------------------
+# retry (Task 10)
+# ---------------------------------------------------------------------------
+
+
+def cmd_retry(args: argparse.Namespace) -> int:
+    """Re-queue a failed row back into ``pending_articles``.
+
+    ``N`` is a 1-based index into ``pending_articles_repo.list_failed()``
+    — the same ORDER BY ``failed_at DESC`` projection rendered in the
+    ``hw_review list`` footer (Decision 8), so operator indices match.
+
+    Exit codes:
+      * 0 — row restored, now visible via ``list``.
+      * 1 — index out of range, or ``retry_from_failed`` returned False
+        (defensive race with a concurrent writer — row already left
+        failed or clashed with pending). No traceback either way.
+
+    User-spec anchor: AC L72. Tech-spec: §Review+publish, Decision 10.
+    """
+    failed = repo.list_failed()
+    if args.n < 1 or args.n > len(failed):
+        _err(f"retry N out of range (failed queue has {len(failed)} items)")
+        return 1
+
+    target = failed[args.n - 1]
+    link = target['link']
+    title = target.get('title') or '(no title)'
+
+    ok = repo.retry_from_failed(link)
+    if not ok:
+        # Defensive: repo returned False — row already moved back or a
+        # pending clash. Tell the operator cleanly without a traceback.
+        _err(f"retry skipped: {link} no longer in failed or already pending")
+        return 1
+
+    logger.info('hw_review retry %s -> %s', args.n, link)
+    _out(f"Restored: {title}")
+    return 0
+
+
+# ---------------------------------------------------------------------------
 # argparse wiring
 # ---------------------------------------------------------------------------
 
@@ -720,6 +765,12 @@ def _build_parser() -> argparse.ArgumentParser:
     )
     p_take.add_argument('n', type=int, help='1-based pending index')
 
+    p_retry = sub.add_parser(
+        'retry',
+        help='re-queue failed row N back into pending',
+    )
+    p_retry.add_argument('n', type=int, help='1-based failed-queue index')
+
     return parser
 
 
@@ -731,6 +782,7 @@ _DISPATCH = {
     'preview': cmd_preview,
     'publish': cmd_publish,
     'take':    cmd_take,
+    'retry':   cmd_retry,
 }
 
 
