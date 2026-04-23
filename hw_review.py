@@ -376,8 +376,14 @@ def cmd_skip(args: argparse.Namespace) -> int:
     has_ru = row.get('ru_paragraphs') is not None
     if has_ru:
         # ``ru_paragraphs IS NOT NULL`` is the staged-marker per §9.13 п.1.
-        # Prompt must go to stderr so stdout stays scriptable.
-        _err(f"В записи {args.n} сохранён русский. Точно скипнуть? [y/N]: ")
+        # Prompt must go to stderr so stdout stays scriptable. No trailing
+        # newline — keep the cursor next to the `[y/N]:` so a TTY user can
+        # type inline. ``flush`` guarantees the prompt appears even if the
+        # stream is line-buffered.
+        sys.stderr.write(
+            f"В записи {args.n} сохранён русский. Точно скипнуть? [y/N]: "
+        )
+        sys.stderr.flush()
         try:
             answer = input()
         except EOFError:
