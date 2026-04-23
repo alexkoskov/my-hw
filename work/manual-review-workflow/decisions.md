@@ -319,3 +319,20 @@ Nits deferred (all from round 1, judged not worth fixing): frozenset vs set (saf
 - Feature-specific checks: secret-exposure in `hw_review show` (PASS, last_error sanitised at write), Cyrillic encoding (PASS, ensure_ascii=False round-trip), symlink/TOCTOU on preview cache (PASS via resolved path-guard), Telegraph token in network errors (PASS, token is in POST body not URL), empty-env-var sanitise pathology (PASS, guarded at news_bot.py:88), overflow eviction race (PASS, `ru_paragraphs IS NULL` applied in SQL WHERE, not Python).
 - LOW findings queued as P3 follow-ups: (1) mirror path-guard on `preview_html_path` cleanup unlinks, (2) validate `--ru-title`/`--ru-subtitle` arg length, (3) detect symlink-replaced CACHE_DIR before `mkdir(exist_ok=True)`.
 
+## Task 11: Code Audit
+
+**Status:** Done
+**Commit:** 0547c73
+**Agent:** code-audit
+**Summary:** clean — zero CRITICAL / zero HIGH / zero MEDIUM; 6 LOW + 5 NIT findings across 11 dimensions. Decision 9 (Telegraph-URL reuse idempotency) verified consistent at 3 call-sites (`hw_review.cmd_publish`, `news_bot._fallback_publish`, `news_bot._overflow_fast_track` via shared helper). Decision 13 (3-strike shared `attempt_count` → `failed_articles`) verified consistent at 2 auto-publish call-sites (`job()` step 1b + `_overflow_fast_track`) — manual `hw_review publish` intentionally excluded per user-spec L70. `process_new_articles` fully removed (grep confirms only backward-pointing comments). Findings are defense-in-depth hygiene: 3 unused imports in `news_bot.py`, 4 non-uniform `sanitize_error_message` sites, 1 stale docstring on `hw_review._cleanup_preview_html`, 2 mixed import-style sites, 1 unused logger in repo, 2 misnumbered step comments, 1 semantic-naming nit on `evicted_count` (counts 3-strike-failed rows as "auto-published"), 1 import-ordering nit on `pending_articles_repo` vs `DB_FILE`, 1 --ru-title length validation gap (also flagged by security-audit as P3). None block Pre-deploy QA.
+**Deviations:** None.
+
+**Audit report:** [logs/working/audit/code-audit.json](logs/working/audit/code-audit.json)
+
+**Verification:**
+- Holistic read of 5 feature source files (pending_articles_repo.py 657 LOC, preview_renderer.py 192 LOC, news_bot.py 1177 LOC, telegraph_publisher.py 310 LOC, hw_review.py 797 LOC — 3133 total).
+- Contract verification — Decision 9: walked all 3 call-sites, confirmed each persists `telegraph_url` via `mark_telegraph_published` BEFORE Telegram step so a teaser failure leaves retry-ready state. CR-1 fix from Task 9 (reorder `update_staged` AFTER `mark_telegraph_published`) verified at news_bot.py:628 then :637.
+- Contract verification — Decision 13: walked both auto-publish call-sites, confirmed each calls `pending_repo.increment_attempt(link, safe)` on `_fallback_publish` raise and `pending_repo.move_to_failed(link, safe)` at `new_count >= 3`. Shared SQL counter via `UPDATE pending_articles SET attempt_count = attempt_count + 1, last_error = ? WHERE link=?` (pending_articles_repo.py:266-269) — no per-path counters.
+- Grep invariants: `process_new_articles` only in 2 comments (news_bot.py:567, :1099); `sanitize_error_message` applied at 19 feature-introduced sites, missing at 4 (flagged as findings #2, #3); `_cleanup_preview_html` has 2 copies (flagged as finding #4).
+- Cross-reviewed against security-audit.json (0 CRITICAL/HIGH/MEDIUM, 3 LOW, 4 INFO) and test-audit.json (0 CRITICAL/HIGH, 2 MEDIUM coverage-gaps, 5 LOW, 2 NIT) — two MEDIUM test-audit gaps (mixed-path 3-strike + overflow Decision 9) are test-coverage issues, not code-quality issues; the code itself implements both invariants correctly via the shared `_fallback_publish` helper.
+
