@@ -107,3 +107,25 @@ Nits deferred (all from round 1, judged not worth fixing): frozenset vs set (saf
 - Smoke 3 (`build_admin_ping([...2×autoevolution, 1×mattel])`) → `3 ждут review: 🟠 autoevolution ×2, 🟣 mattel ×1`, exit 0
 - Smoke 4 (`set(SOURCE_EMOJI) == set(SOURCE_LABEL) == {'autoevolution', 'mattel', 'lamley'}`) → `ok`, exit 0
 
+## Task 1: `pending_articles_repo` DAO
+
+**Status:** Done
+**Commit:** 553710f
+**Agent:** teammate (task-1), reviews resumed by main agent after rate-limit
+**Summary:** New stdlib-only `pending_articles_repo.py` implementing `init_schema` plus the 19 CRUD / list / transactional-move functions prescribed by Task 1 scope. DDL uses `CREATE TABLE IF NOT EXISTS` for all three new tables (`pending_articles`, `published_articles`, `failed_articles`) with columns matching tech-spec §Data Models via `PRAGMA table_info` dict-literal assertions. JSON fields (`paragraphs`, `images`, `blocks`, `ru_paragraphs`, `ru_blocks`) round-trip through `json.dumps(..., ensure_ascii=False)` / `json.loads`, distinguishing NULL from `'[]'`. Transactional moves (`move_to_published`, `move_to_failed`, `skip_pending`, `retry_from_failed`) hold one connection with explicit `try` / `commit()` / `except: rollback(); raise` / `finally: close()`. All SQL uses `?` placeholders (grep-style audit test enforces this). 31 pytest cases, all green.
+**Deviations:** `preview_html_path` column and `set_preview_path` helper — listed in tech-spec §Data Models and §Repo module interface — are intentionally NOT in this commit. Per Task 7 scope (tasks/7.md §Details and §What-to-do step linking `set_preview_path`), Task 7 extends `pending_articles_repo.py` with the column and helper at the time the preview CLI needs them. Task 1's task-file What-to-do lists exactly 19 functions; the implementation matches that list.
+
+**Reviews:**
+
+*Round 1:*
+- code-reviewer: ok-with-nits, 5 findings (3 low, 2 info; all "no action" or docs-only nits — unused module-level logger, undocumented `increment_attempt` missing-row return, `news_bot` cyclic-import awareness, SQLite TOCTOU theoretical window) → [logs/working/task-1/code-reviewer-round1.json](logs/working/task-1/code-reviewer-round1.json)
+- security-auditor: ok, 5 findings (all info, no action) — confirmed parameterised SQL, safe `int()`-coerced datetime modifier, intentional raw-`last_error` storage per Decision 11 / AC L103, empirical rollback verification, no JSON-deserialisation attack surface → [logs/working/task-1/security-auditor-round1.json](logs/working/task-1/security-auditor-round1.json)
+- test-reviewer: ok-with-nits, 6 findings (3 low, 3 info — all optional: missing-link no-op tests for `increment_attempt` / `move_to_failed`, entry-dict key-omission coverage, WrappingConn execute-count coupling note, stubbed `processed_news` DDL drift awareness, regex-audit scope) → [logs/working/task-1/test-reviewer-round1.json](logs/working/task-1/test-reviewer-round1.json)
+
+*Round 2:* Skipped. All 16 findings across three reviewers are low/info with explicit "no action" or docs-only recommendations; no HIGH/CRITICAL, no correctness defect, no security vulnerability. Per Step 4 of the task runbook (all status `ok`/`ok-with-nits` and no HIGH/CRITICAL → break out), round 1 is final.
+
+**Verification:**
+- `pytest tests/test_pending_articles_repo.py -v` → 31 passed (2.08s)
+- Smoke 1 (`python3 -c "import pending_articles_repo; pending_articles_repo.init_schema(__import__('sqlite3').connect(':memory:'))"`) → exit 0
+- Smoke 2 (tempfile DB → `init_schema` → `insert_pending({link, source_name, title, paragraphs=['p'], images=[], blocks=None, pub_date=None})` → `count_pending()`) → prints `1`, exit 0
+
