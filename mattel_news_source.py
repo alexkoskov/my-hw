@@ -190,13 +190,31 @@ def fetch_mattel_article(
                 paragraphs.append(text)
 
     images: List[str] = []
+    seen_stems: set = set()
+
+    def _stem(url: str) -> str:
+        # Collapse the URL to its filename without extension, so a jpg+png
+        # pair of the same image counts as one. Mattel's Contentstack CDN
+        # often exposes a thumbnail (`…/LEG25_Primary_Logo_white.jpg`) plus
+        # a download_media entry (`…/LEG25_Primary_Logo_white.png`) that
+        # render as two hero figures on the Telegraph page when kept as
+        # separate images — ugly and redundant.
+        path = url.split("?", 1)[0].rsplit("/", 1)[-1]
+        return path.rsplit(".", 1)[0].lower()
+
     thumb_url = (content_article.get("thumbnail") or {}).get("url")
     if thumb_url:
         images.append(thumb_url)
+        seen_stems.add(_stem(thumb_url))
     for media in article.get("download_media") or []:
         url = media.get("url")
-        if url and url not in images:
-            images.append(url)
+        if not url:
+            continue
+        stem = _stem(url)
+        if url in images or stem in seen_stems:
+            continue
+        images.append(url)
+        seen_stems.add(stem)
 
     excerpt = article.get("excerpt") or ""
     if isinstance(excerpt, dict):

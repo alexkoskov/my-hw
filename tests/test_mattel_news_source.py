@@ -262,6 +262,28 @@ class TestFetchMattelArticle:
             'https://images.example/media.png',
         ]
 
+    def test_dedups_download_media_that_is_thumbnail_in_another_format(self):
+        # Mattel's Contentstack CDN often exposes the same asset as both a
+        # thumbnail (.jpg) and a download_media (.png). Keeping both makes
+        # the Telegraph page render two hero figures for one image — ugly
+        # and redundant. Parser must dedup by filename-without-extension.
+        session = MagicMock()
+        session.get.return_value = _make_response(
+            text=self._article_page(
+                thumb_url='https://images.example/assets/LEG25_Primary_Logo_white.jpg',
+                download_media=[
+                    {'url': 'https://images.example/assets/LEG25_Primary_Logo_white.png'},
+                    {'url': 'https://images.example/assets/hero_banner.jpg'},
+                ],
+            ),
+        )
+        out = fetch_mattel_article('https://corporate.mattel.com/news/x', session=session)
+        # The .png duplicate of the logo is dropped; hero_banner (different stem) survives.
+        assert out['images'] == [
+            'https://images.example/assets/LEG25_Primary_Logo_white.jpg',
+            'https://images.example/assets/hero_banner.jpg',
+        ]
+
     def test_missing_excerpt_yields_empty_subtitle(self):
         session = MagicMock()
         session.get.return_value = _make_response(text=self._article_page(excerpt=''))
