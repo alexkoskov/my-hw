@@ -29,9 +29,12 @@ All documentation is in the `references/` folder:
 - **[patterns.md](references/patterns.md)** - Project-specific coding conventions, git workflow (branching, testing, security gates), testing & verification methods, business rules
 - **[deployment.md](references/deployment.md)** - Deployment platform, environment variables, CI/CD triggers, rollback, monitoring & observability (logging, error tracking, health checks)
 
+## Required references (project-specific)
+
+- **[ux-guidelines.md](references/ux-guidelines.md)** — **MANDATORY** before any `hw_review stage` / translation work. Contains the full transcreation system prompt (role: ведущий редактор/локализатор) and the tone-of-voice rules for `@myhwchannel123`. Every Russian text that reaches the channel must be produced under this prompt.
+
 ## Optional references
 
-- **[ux-guidelines.md](references/ux-guidelines.md)** - Interface language, tone of voice, domain glossary, text patterns, design system (only for projects with significant UI)
 - **{custom}.md** - Domain-specific files added per project (e.g., vault.md, bot.md, mcp.md)
 
 ## How to use
@@ -40,6 +43,7 @@ Read specific guides as needed for your task:
 
 - Starting feature development - read [project.md](references/project.md), [architecture.md](references/architecture.md), [patterns.md](references/patterns.md)
 - Implementing database changes - read [architecture.md](references/architecture.md) (Data Model section)
+- Translating news for Telegram channel (any `hw_review stage` call) - **MUST read [ux-guidelines.md](references/ux-guidelines.md) first**
 - Working on UI/UX - read [ux-guidelines.md](references/ux-guidelines.md)
 - Setting up deployment - read [deployment.md](references/deployment.md)
 - Creating branches or PRs - read [patterns.md](references/patterns.md) (Git Workflow section)
