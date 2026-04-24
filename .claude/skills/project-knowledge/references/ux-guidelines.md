@@ -68,6 +68,36 @@ This is a hard rule, not a judgment call. Violating it produces inconsistency be
 - **Всё остальное транслируется.** Включая длинные списки дат, перечисления городов, таблицы времени выпуска, блок-цитаты, подзаголовки (h3/h4).
 - Если возник соблазн «это же очевидный boilerplate, свернём» — остановись и задай вопрос оператору явно: «Дропаем параграф X?». Автомат-сворачивание без согласования — запрещено.
 
+## Per-source style notes
+
+Different sources come with different "native voice" and different structural quirks. The transcreation prompt applies to all three, but calibrate the register according to the source.
+
+### 🟠 Autoevolution
+
+- **Voice:** blog-style editorial, often first-person, with personal asides and inside-industry humour. The operator actually reads these.
+- **Tone dial:** lean into the *«другу в баре»* end — matches source voice 1:1. Sarcasm, exasperation, self-deprecation all welcome.
+- **Length:** usually 8–50 paragraphs. Keep 1:1.
+- **Structure quirks:** author frequently opens with unrelated personal tangent (collection-purging, "I keep thinking about…") — translate as-is, it's part of the voice.
+- **Good title example (2026-04-24):** EN `"New Hot Wheels Chase Car to Hunt for Is a Rare Porsche"` → RU `"💎 RLC теперь с Chase — и это провал для коллекционеров"`. Drops calque, asserts position, punchy.
+- **Bad title example (2026-04-23, pre-prompt):** EN `"New Hot Wheels Mercedes-Benz 300 SL Is No Garage Queen"` → RU `"Новый Hot Wheels Mercedes-Benz 300 SL — не гаражная королева"`. Starts with `"Новый"` (banned lead-in), direct calque of "garage queen", no emoji.
+
+### 🔵 Lamley
+
+- **Voice:** more expert / editorial — interviews with designers, deep-dive reviews. Author is usually an industry insider (Alex Winson et al.).
+- **Tone dial:** slightly dialled-back bar-tone — more «expert collector at a meet» than «drunk friend». Still active voice, no canceляриз, but allow technical precision.
+- **Length:** 10–30 paragraphs of real content; parser often appends 10–15 social/share-button paragraphs at the tail (`Instagram: @...`, `Share on X`, `Related`) — drop per the allowed-drops rule.
+- **Structure quirks:** designers quoted extensively — preserve direct speech markers («…»). Custom-scene jargon (wide-body, part breaks, decal team, mainline, RLC) stays untranslated.
+- **Good example (2026-04-24):** Toyota Prius interview — 35 EN paragraphs → 20 RU (P21–P35 dropped as `Instagram:`/`Share on X`/`Related` noise).
+
+### 🟡 Mattel
+
+- **Voice:** corporate press release. Formal, full company name on every mention, `®`/`™` sprinkled everywhere, EL SEGUNDO dateline.
+- **Tone dial:** *DO NOT* apply pure «другу в баре» tone here — it clashes with the press-release context and comes across as uneven. Aim for «крутая новость от пресс-службы, но живым русским, без канцелярита». Retain company/product/partner names verbatim.
+- **Length:** 10–35 paragraphs. About half is boilerplate in press releases (About Mattel + Press Contact) — drop per allowed-drops rule. Body paragraphs are long, often dense with facts (partners, dates, cities) — preserve every fact, split long paragraphs only if the source itself did.
+- **Structure quirks:** parser returns thumbnail-only (see `patterns.md § Image extraction per source`) — 1 hero image, which matches the source page.
+- **Good title example (2026-04-24):** Legends Tour 2026 → `"🏆 Legends Tour 2026: 20 стран, 5 месяцев, одна дайкаст-модель"` — punchy, numbered, ends on a hook.
+- **Good title example (2026-04-24):** Brick Shop × HW → `"🏁 Brick Shop × Hot Wheels: Lamborghini, Aston Martin и Toyota теперь в пластиковых кирпичах"` — lists the three brands the reader actually wants to know about.
+
 ## Red flags to self-check before stage
 
 If any of these are true, **stop and rework** — you're breaking the prompt:

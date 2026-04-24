@@ -55,6 +55,23 @@ For universal coding standards, see `~/.claude/skills/code-writing/references/un
   proxy form; raw URLs fail Telegra.ph's iframe validator and break
   Instant View. See `autoevolution_source._video_embed_url`.
 
+### Image extraction per source
+
+Different source parsers take different paths to image URLs. Each is tuned to match what the *source page actually displays*, not everything the source's CMS exposes. The rule of thumb: a Telegraph figure should correspond to a visible figure on the source page.
+
+- **🟠 `autoevolution_source`** — parses `<img>` tags out of the article body DOM (via `curl_cffi` + BeautifulSoup). Extracts hero image + gallery (10–30 images typical). Telegraph renders them in original order. See the `blocks` handling for image placement between paragraphs.
+- **🔵 `lamley_source`** — parses `<img>` in body content. Typically 5–20 images per article.
+- **🟡 `mattel_news_source`** — **thumbnail only**. The `download_media` field on Mattel's Contentstack CMS is a *press-kit* downloadable-assets field (logo in multiple formats, hi-res variants for journalists), NOT in-page visuals. Surfacing `download_media` on Telegraph produces figures that don't exist on the source article page and wastes mobile screen. Only `contentArticle.thumbnail.url` is used. If a future Mattel article relies on true inline imagery, the correct fix is to parse `<img>` out of `body_html` — don't be tempted to re-add `download_media`. Regression test: `tests/test_mattel_news_source.py::TestFetchMattelArticle::test_parses_paragraphs_and_uses_thumbnail_only`.
+
+### Known issue — Mattel live parser broken (2026-04-24)
+
+`mattel_news_source` relies on extracting `<script id="__NEXT_DATA__">` inline JSON from the HTML. On the current live corporate.mattel.com this script is absent — Mattel migrated to Next.js App Router with RSC-streaming, so data hydrates client-side instead of server-side. Result: `fetch_mattel_news()` silently returns `[]` in production (looks like "no Hot Wheels today" in logs), `fetch_mattel_article(url)` raises `__NEXT_DATA__ not found`.
+
+- **Impact:** no Hot Wheels Mattel items reach the pending queue until this is fixed. Autoevolution + Lamley continue working normally. The manual-review-workflow feature is unaffected for its primary sources.
+- **Tests are green** because fixtures still use the old `__NEXT_DATA__` structure; unit tests pass, live site doesn't.
+- **Temporary workaround for demo / testing:** Wayback Machine snapshots (`https://web.archive.org/web/YYYY/<mattel-url>`) retain the old `__NEXT_DATA__` payload — curl the snapshot, feed the HTML into the parser via a mocked session. Not a production path.
+- **Proper fix (future feature):** rewrite the parser to consume Next.js RSC flight-payload, or call an undocumented API endpoint if one exists, or fall back to `playwright`/`curl_cffi` with JS execution. See `work/` for a potential new user-spec.
+
 ### Cloudflare bypass
 - `autoevolution_source` uses `curl_cffi` with `impersonate="chrome"` for
   article-page fetches. Plain `requests` returns HTTP 403.
