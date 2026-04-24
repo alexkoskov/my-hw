@@ -55,6 +55,19 @@ Treat the text below as your role for the duration of any translation work in th
 7. Build `ru_blocks` by cloning the EN `blocks` structure and replacing `text` fields with the transcreated Russian. Keep `image` / `video` blocks intact; translate their `caption` fields (`"Photo: Mattel" → "Фото: Mattel"`).
 8. Stage via `python3 hw_review.py stage N --ru-title '…' --ru-subtitle '…' < /tmp/ru_stage.json`.
 
+## Length + structure — "translate everything, drop only noise"
+
+This is a hard rule, not a judgment call. Violating it produces inconsistency between sources (an autoevolution post reads full-length, a mattel post reads as an abstract — same channel, same reader, different experience).
+
+- **Транскреация каждого параграфа оригинала. 1-к-1 структурное соответствие.**
+- Не мёрджить параграфы. Не сворачивать списки в один параграф. Не сжимать «для читабельности». Структура оригинала сохраняется как есть — автор уже решил, где абзац, а где список.
+- **Единственные разрешённые дропы:**
+  - (a) *Author social links* в конце статьи — `Instagram: @...`, `Facebook: facebook.com/...`, `YouTube: @...`, `Reddit: u/...` и аналогичные.
+  - (b) *Share-кнопки / UI bleed* из парсера — `Share on X`, `Share on Facebook`, `Email a link...`, `Like this:`, `Related`, `More` — всё это артефакты WordPress/CMS-шаблонов, не авторский контент.
+  - (c) *Corporate boilerplate* в пресс-релизах — секция «About {Company}», `Press Contact: ...`, юридические дисклеймеры. Дропать целиком, не переводить.
+- **Всё остальное транслируется.** Включая длинные списки дат, перечисления городов, таблицы времени выпуска, блок-цитаты, подзаголовки (h3/h4).
+- Если возник соблазн «это же очевидный boilerplate, свернём» — остановись и задай вопрос оператору явно: «Дропаем параграф X?». Автомат-сворачивание без согласования — запрещено.
+
 ## Red flags to self-check before stage
 
 If any of these are true, **stop and rework** — you're breaking the prompt:
