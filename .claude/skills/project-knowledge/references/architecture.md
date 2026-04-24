@@ -23,31 +23,30 @@ Technical architecture overview for AI agents. Helps agents understand HOW the s
 
 ```
 my-hw/
-├── news_bot.py              # Entry point: scheduler, pipeline, Telegram posting
-├── telegraph_publisher.py   # Telegra.ph API client + page builder
+├── news_bot.py              # Cron entry point: job() prep-phase (fetch + stage + admin ping),
+│                              _fallback_publish for idle/overflow, SOURCES registry,
+│                              build_admin_ping, sanitize_error_message, transcreate_text
+├── pending_articles_repo.py # DAO owning all 4 SQLite tables (DDL + CRUD + transactional moves)
+├── preview_renderer.py      # Local HTML preview builder (CSP + tag/URL allowlists)
+├── hw_review.py             # Operator-facing CLI (list/show/stage/skip/preview/publish/take/retry).
+│                              Runs in Claude Code session, NOT on production cron server.
+├── telegraph_publisher.py   # Telegra.ph API client + public preview_nodes() node-tree builder
 ├── autoevolution_source.py  # RSS + Cloudflare-bypass scrape (curl_cffi)
-├── mattel_news_source.py    # corporate.mattel.com via __NEXT_DATA__
+├── mattel_news_source.py    # corporate.mattel.com via __NEXT_DATA__ ⚠️ see patterns.md Known Issues
 ├── lamley_source.py         # lamleygroup.com HTML scrape
-├── feeds.json               # List of up to 5 RSS URLs (optional)
-├── requirements.txt         # Python dependencies
-├── news.db                  # SQLite database (created automatically)
-├── .env.example             # Example environment variables
-├── README.md                # Project documentation
-├── CLAUDE.md                # AI agent context
-├── tests/                   # pytest suite + fixtures
-├── work/                    # Development tracking (feature folders)
-│   ├── mattel-news-source/
-│   ├── telegraph-pipeline/
-│   ├── completed/
-│   └── archived/
-└── .claude/                 # AI skill definitions and project knowledge
-    └── skills/project-knowledge/references/
-        ├── project.md
-        ├── architecture.md
-        ├── patterns.md
-        ├── deployment.md
-        └── ux-guidelines.md
+├── feeds.json               # List of RSS URLs (3 entries: 2 autoevolution + 1 lamley)
+├── deploy.sh                # SCP-based deploy to VPS; FILES list excludes operator-only modules
+├── requirements.txt
+├── news.db                  # SQLite: processed_news + pending_articles + published_articles + failed_articles
+├── .env / .env.example
+├── tests/                   # pytest suite (407 tests)
+├── work/
+│   ├── completed/           # Finalized features (manual-review-workflow lands here)
+│   └── archived/            # Deferred features (llm-transcreation)
+└── .claude/skills/project-knowledge/references/  # This doc tree
 ```
+
+**Operator-side vs cron-side split:** `hw_review.py` + `preview_renderer.py` run in the operator's Claude Code session only (local machine). `news_bot.py` + sources + `telegraph_publisher.py` + `pending_articles_repo.py` run on the VPS cron.
 
 ---
 
@@ -111,74 +110,68 @@ my-hw/
 
 ## Data Flow
 
-1. **Configuration load** – `news_bot.load_feeds()` reads `feeds.json`
-   (list of up to 5 RSS feed URLs) or falls back to the default
-   autoevolution Hot Wheels RSS URL. Invalid config triggers an admin
-   notification and the fallback.
-2. **Telegraph account** – `telegraph_publisher.ensure_access_token()`
-   loads `TELEGRAPH_ACCESS_TOKEN` from env, or calls `createAccount` and
-   persists the result to `.env`.
-3. **RSS fetch** – For each feed URL, `fetch_rss` downloads and parses
-   the feed. Errors in individual feeds are isolated and logged.
-4. **Mattel fetch** – `fetch_mattel_news` pulls `corporate.mattel.com/news`
-   and filters `__NEXT_DATA__` entries by Hot Wheels mention. Failures
-   notify the admin but don't stop other sources.
-5. **Duplicate filter** – Each entry's `link` is checked against the
-   SQLite `processed_news` table (global deduplication across sources).
-6. **Article fetch (per source)** – `news_bot.fetch_full_article` dispatches
-   by domain: Mattel → `fetch_mattel_article`, Lamley →
-   `fetch_lamley_article`, autoevolution →
-   `fetch_autoevolution_article` (Cloudflare-bypass scrape with RSS-only
-   fallback). Each returns `{title, subtitle, paragraphs, images}` plus
-   an optional ordered `blocks` list when the source preserves media
-   positions.
-7. **Transcreation** – Title (with content-aware emoji prefix), subtitle,
-   and every body paragraph are translated + adapted by
-   `transcreate_text` (Google Translate + plain-Russian rewrites + HW
-   glossary). Body is truncated at 4000 chars on a sentence boundary.
-8. **Telegraph publish** – `telegraph_publisher.publish_article` renders
-   hero figure + decorated subtitle lead + `<hr>` + body paragraphs with
-   interleaved images + source footer. When `blocks` is provided, the
-   block renderer preserves image/video/heading positions and emits
-   `figcaption` for captioned images.
-9. **Telegram channel post** – `send_telegraph_teaser` sends one line
-   `#{source_label}` with `LinkPreviewOptions(url=telegraph_url,
-   show_above_text=True)`. Telegram renders the Telegra.ph page as an
-   Instant View preview card.
-10. **Storage** – The entry is recorded in SQLite to avoid reprocessing.
+The pipeline is split into a **cron prep phase** (no operator, 12h interval) and a **manual review loop** (operator in Claude Code session). Both paths converge on the same `publish_article` + `send_telegraph_teaser` output. An auto-fallback via Gemini activates if the operator is absent too long or the queue overflows.
 
-The pipeline runs once per day (12:00 local time, configurable) via the
-`schedule` library. A global limit (default 3) restricts the total
-number of articles processed per run across all sources.
+### Cron prep phase — `news_bot.job()` every 12h
+
+1. **Idle-fallback pass** (two steps, both against `pending_articles`):
+   (a) Find rows with `fetched_at` older than `IDLE_TIMEOUT_HOURS` AND `notified_at IS NULL` → send ONE consolidated admin ping to `TELEGRAM_ADMIN_ID` + stamp `notified_at`.
+   (b) Find rows with `notified_at` older than `GRACE_WINDOW_HOURS` AND `ru_paragraphs IS NULL` → call `_fallback_publish(row, via_review=False)` on each (Gemini pipeline).
+2. **Fetch** all sources via `SOURCES` registry; each entry gets `source_name` via `_resolve_source_name(link)` → netloc → `autoevolution` / `mattel` / `lamley` / `other`.
+3. **Dedup** against `processed_news` AND `pending_articles` (no re-fetch of seen links).
+4. **Overflow fast-track** (newest-10 window rule — see patterns.md): if `count_pending() + len(new) > QUEUE_CAP` (10), publish `excess` oldest rows via Gemini. Old pending ru-NULL first, then oldest-indexed new entries. Staged rows always protected.
+5. **Insert** accepted entries into `pending_articles` via `pending_articles_repo.insert_pending` (JSON-serialised paragraphs/images/blocks).
+6. **Admin ping** via `build_admin_ping(rows)` to `TELEGRAM_ADMIN_ID` — only when queue non-empty.
+
+### Manual review loop — `hw_review.py` (operator + Claude Code session)
+
+1. Operator opens Claude Code → `hw_review list` shows the queue + `⚠️` failed-footer.
+2. Claude loads `ux-guidelines.md` (mandatory), reads `hw_review show N`.
+3. Claude proposes title + alts + subtitle + paragraphs to operator; operator signs off.
+4. `hw_review stage N --ru-title ... --ru-subtitle ... < translation.json` — RU fields persisted to the pending row.
+5. `hw_review preview N` — `telegraph_publisher.preview_nodes` → `preview_renderer.render_html` → file in `~/.cache/hw-review/` (mode `0700`, path guard). `webbrowser.open` on the resolved path.
+6. `hw_review publish N` — idempotent per Decision 9:
+   - If `telegraph_url` already set (retry after prior Telegram-send fail), skip `createPage`.
+   - Else: `publish_article` → `mark_telegraph_published(link, url, path)` (persist BEFORE Telegram).
+   - `send_telegraph_teaser(telegraph_url, row['link'])` — hashtag derived from source URL via `_source_hashtag` (Decision 14).
+   - On both success: `move_to_published(link, via_review=True)` (single repo transaction: INSERT published + INSERT OR IGNORE processed + DELETE pending) + `_cleanup_preview_html`.
+7. `hw_review skip N` (with y/N prompt if staged) / `hw_review take N` (clear_notified) / `hw_review retry N` (re-queue from failed).
+
+### Channel post output (identical for manual and fallback paths)
+
+- Message body: `#{source_hashtag}` — `autoevolution` / `mattel` / `lamleygroup` per `_source_hashtag`.
+- `LinkPreviewOptions(url=telegraph_url, show_above_text=True)` triggers Instant View card.
+- Telegra.ph page: hero figure + italic subtitle with `💬 «…»` + bold lead + body blocks (paragraphs, images, iframes) + `Источник:` footer.
 
 ---
 
 ## Data Model
 
-**Database:** SQLite 3 (single file `news.db`)
+**Database:** SQLite 3 (single file `news.db`). DDL owned by `pending_articles_repo.init_schema(conn)` (called from `news_bot.init_db()`); `processed_news` remains owned by `news_bot` itself.
 
-### Main Tables/Collections
+### Tables
 
-**processed_news**
-- Purpose: Stores links of already processed news articles to prevent duplicates.
-- Key fields:
-  - `link` (TEXT, PRIMARY KEY) – Unique article URL.
-  - `title` (TEXT) – Original article title (for reference).
-  - `pub_date` (TEXT) – Publication date from RSS feed.
-  - `processed_at` (TIMESTAMP) – When the article was processed (default CURRENT_TIMESTAMP).
-- Relationships: None (standalone table).
+**processed_news** — dedup
+- `link` (TEXT PRIMARY KEY), `title`, `pub_date`, `processed_at`
+- Written whenever a link is published (manual OR fallback) or skipped. Acts as the "seen" blacklist for future fetches.
 
-### Key Constraints
+**pending_articles** — WIP review queue (cap `QUEUE_CAP`, default 10)
+- `link` PRIMARY KEY, `source_name`, `feed_url`, `title`, `subtitle`
+- EN content: `paragraphs`, `images`, `blocks` (JSON, `ensure_ascii=False`)
+- RU content (NULL until staged): `ru_title`, `ru_subtitle`, `ru_paragraphs`, `ru_blocks`
+- Publish state: `telegraph_url`, `telegraph_path`, `preview_html_path`
+- Bookkeeping: `fetched_at`, `notified_at`, `attempt_count`, `last_error`, `pub_date`
 
-- **Unique constraints:** `link` is PRIMARY KEY (enforced by SQLite).
-- **Foreign keys:** None.
-- **Required fields:** `link` is NOT NULL.
+**published_articles** — audit of real publishes
+- `link` PK, `title`, `telegraph_url`, `telegraph_path`, `via_review` (1=manual, 0=fallback), `published_at`
 
-### Migration Strategy
+**failed_articles** — dead letter after 3 GT attempts
+- `link` PK, `title`, `last_error`, `attempt_count`, `failed_at`
 
-**Tool:** Not applicable – the database is created automatically on first run via `init_db()`.
+### Transactions owned by repo
 
-**Process:** The script calls `init_db()` at startup, which creates the table if it does not exist. No manual migration steps are needed.
+`pending → published` (on successful publish), `pending → failed` (on 3rd strike), `failed → pending` (retry), `pending → skipped` (operator skip). Each transition is a single SQLite transaction; `processed_news` written as part of published/skipped moves.
+
 ### Sensitive Data
 
 **PII fields:** No PII is stored in the database.
@@ -193,22 +186,14 @@ git-ignored. None of these are persisted to the database.
 
 ## Planned Enhancements
 
-**Cross-article linking (Phase 2 of the block pipeline)**
-- Autoevolution parser already records external `<a href>` anchors in
-  `block["runs"]` as metadata. A future pass will map those hrefs to our
-  own Telegra.ph URLs when we've already published the linked target, and
-  emit them as `<a>` nodes on the page (currently stripped — see
-  `telegraph_publisher._build_content_from_blocks` comment from commit
-  a984505).
+**Mattel parser rewrite** (known issue — see patterns.md)
+- Mattel moved to Next.js App Router; `__NEXT_DATA__` is gone from live HTML. Parser silently returns `[]`. Fix direction: parse RSC flight-payload, or undocumented API, or headless browser.
 
-**LLM-powered transcreation**
-- Replace the regex-based post-processing pass with an LLM that produces
-  higher-quality Russian (preserves Hot Wheels jargon, tone, brand names).
+**LLM-powered transcreation fallback** (closes style drift between manual path and auto-fallback)
+- Current `_fallback_publish` uses `transcreate_text` (Google Translate + regex). Manual path uses Claude via `ux-guidelines.md`. Styles diverge visibly. Future: route auto-fallback through an LLM call with the same prompt.
 
-**Health Monitoring & Error Reporting**
-- Beyond the current per-source admin notifications, add uptime checks
-  and a failure digest.
+**Cross-article linking** (Phase 2 of blocks pipeline)
+- `block["runs"]` already carries external `<a href>` metadata. Future pass maps them to our own Telegra.ph URLs when the linked target is already published.
 
-**Web Dashboard (Future)**
-- Flask/FastAPI dashboard to view processed articles, monitor status, and
-  manage feeds — read-only view of logs and statistics.
+**Observability**
+- Beyond per-row admin pings: uptime checks, failure digest, maybe a read-only dashboard.

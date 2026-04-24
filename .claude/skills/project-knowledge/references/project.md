@@ -9,15 +9,7 @@ This file provides high-level project overview for AI agents. Helps agents under
 
 **Name:** Hot Wheels News Bot
 
-**Description:** A Python script that automatically collects Hot Wheels news
-from multiple sources (autoevolution.com RSS + scrape, corporate.mattel.com,
-lamleygroup.com), translates and adapts each article to Russian, publishes
-the full body to Telegra.ph, and posts a hashtag-attributed channel card
-with an Instant View preview in Telegram.
-
-This bot runs on a schedule (daily) and handles the entire pipeline from
-source fetching to Telegraph publishing and Telegram posting, eliminating
-manual work for news aggregation and translation.
+**Description:** A Hot Wheels news pipeline split into two halves. A **cron prep phase** (every 12h on a VPS) fetches from autoevolution.com, lamleygroup.com, and corporate.mattel.com, dedups, and stages articles into a SQLite review queue. A **manual review loop** (operator in Claude Code session) then translates articles via a style-pinned prompt and publishes them to Telegra.ph + Telegram. A **Gemini auto-fallback** covers idle-timeout and queue-overflow cases so the channel never blocks on operator absence.
 
 ---
 
@@ -39,25 +31,15 @@ Currently users have to regularly check multiple sites, translate articles thems
 
 ## Key Features
 
-- **Multi-source aggregation** – Fetches from a list of RSS feeds
-  (`feeds.json`, up to 5) plus `corporate.mattel.com` (via `__NEXT_DATA__`).
-- **Per-source article fetchers** – Each domain owns its parser
-  (autoevolution via Cloudflare-bypass scrape with `curl_cffi`, Mattel via
-  `__NEXT_DATA__`, Lamley via HTML scrape).
-- **Duplicate detection** – Uses SQLite to track processed articles by URL.
-- **Translation + transcreation** – Google Translate + a post-processing
-  pass that replaces bureaucratic Russian, fixes Hot Wheels jargon, flips
-  a few passive constructions, and prepends a content-aware emoji to titles.
-- **Telegraph publishing** – Full Russian translation posted to Telegra.ph
-  with hero image, decorated subtitle, body paragraphs, interleaved images,
-  and a source footer. Autoevolution additionally preserves
-  image/video/heading positions via ordered content blocks.
-- **Telegram channel card** – Minimal one-line post (`#{source_label}`) with
-  `LinkPreviewOptions(show_above_text=True)` so Telegram renders the
-  Telegra.ph page as an Instant View preview card with the ⚡ button.
-- **Admin notifications** – Source failures are delivered to a separate
-  admin chat via the same bot.
-- **Scheduling** – Runs daily at 12:00 local time via the `schedule` library.
+- **Manual-review workflow** — operator in a Claude Code session uses `hw_review.py` CLI (`list / show / stage / skip / preview / publish / take / retry`) to translate articles style-pinned to `ux-guidelines.md` (role: ведущий редактор/локализатор). Strict 1:1 transcreation; 2-3 alt titles per article.
+- **Local HTML preview** — `preview_renderer` renders the proposed Telegraph node tree into a sandboxed HTML file under `~/.cache/hw-review/` (CSP meta, tag/URL allowlists, path guard). Operator opens in browser before publish.
+- **Multi-source aggregation** — 3 sources via `SOURCES` registry: autoevolution (RSS + Cloudflare-bypass scrape), lamley (RSS + HTML scrape), mattel (via `__NEXT_DATA__` — ⚠️ currently broken, see patterns.md Known Issues).
+- **4-table state model** — `processed_news` (dedup), `pending_articles` (WIP queue ≤10, cap configurable), `published_articles` (audit with `via_review` flag), `failed_articles` (dead letter after 3 GT attempts).
+- **Idempotent publishing** — Decision 9: Telegraph URL persisted before Telegram send, so retries after teaser failure reuse the same Telegraph page (no orphan pages on the account).
+- **Two safety nets** — idle-fallback (auto-publish via Gemini after ~24h operator absence) and overflow fast-track (newest-10 window rule: anything exceeding queue cap goes through Gemini).
+- **Telegram channel card** — one-line `#{source_hashtag}` with `LinkPreviewOptions(show_above_text=True)` triggers Instant View preview card with ⚡ button. Hashtag unchanged across manual/fallback paths (Decision 14 — uses `_source_hashtag`, TLD-stripped form).
+- **Admin pings** — queue-pressure notifications, idle-fallback heads-ups, error digests go to `TELEGRAM_ADMIN_ID` (operator's personal chat), NOT the public channel.
+- **Scheduling** — cron every 12h via `schedule.every(12).hours.do(job)`.
 
 ---
 ## Out of Scope
@@ -73,25 +55,19 @@ Currently users have to regularly check multiple sites, translate articles thems
 ## Development Roadmap
 
 **Delivered**
-- Multiple RSS feeds via `feeds.json` (completed — see
-  `work/completed/multiple-rss-feeds/`)
-- Mattel corporate news source (completed — see
-  `work/mattel-news-source/`)
-- Lamley source (completed as part of telegraph-pipeline)
-- Cloudflare bypass for autoevolution via `curl_cffi`
-- Telegra.ph publishing with Instant View preview + locked channel post
-  format (see `work/telegraph-pipeline/`)
-- Transcreation pass (plain Russian, HW glossary, deterministic emoji
-  prefix for titles)
+- Multiple RSS feeds via `feeds.json` — see `work/completed/multiple-rss-feeds/`
+- Mattel corporate news source — see `work/mattel-news-source/` (⚠️ live parser now broken by Next.js migration, see patterns.md)
+- Lamley source, Cloudflare bypass for autoevolution, locked channel-post format — see `work/telegraph-pipeline/`
+- Legacy Gemini-based transcreation (now used only by `_fallback_publish`)
+- **Manual-review-workflow** — see `work/completed/manual-review-workflow/`. Split pipeline into cron prep + operator-driven review CLI. 10 coding tasks + 3 audits + pre/post-deploy QA + ~5 ad-hoc fixes landed during live QA. 407 pytest tests.
 
 **Near-term enhancements (Planned)**
-- Cross-article linking: map `runs[].href` in autoevolution blocks to our
-  own Telegra.ph pages when we've already published the target
-  (Phase 2 — placeholder lives in `telegraph_publisher._build_content_from_blocks`)
-- Health monitoring and per-source error reporting beyond admin messages
+- Mattel parser rewrite (live HTML no longer has `__NEXT_DATA__`)
+- LLM-powered transcreation for the auto-fallback path — closes the style drift vs manual path (archived in `work/archived/llm-transcreation-deferred/`)
+- Cross-article linking (`runs[].href` → our own Telegraph URLs when already published)
+- Production observability beyond admin pings (uptime, failure digest)
 
 **Future ideas (Backlog)**
 - Web dashboard for configuration and monitoring
-- LLM-powered transcreation (higher-quality Russian than Google + rules)
 - Extended translation options (DeepL, Yandex.Translate)
 - Support for additional news sources beyond the current three
