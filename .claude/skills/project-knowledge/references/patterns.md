@@ -80,9 +80,16 @@ Different source parsers take different paths to image URLs. Each is tuned to ma
   something — truncated is better than silent.
 
 ### Scheduling
-- The `schedule` library is used to run the main job daily at 12:00 local time.
+- The `schedule` library runs `job()` **every 12 hours** via `schedule.every(12).hours.do(job)` in `news_bot.main()` (operator rule 2026-04-24; was hourly originally). Pick: 12h is slow enough that articles rarely reach the idle-fallback window before the operator can review, and queue pressure doesn't accumulate across many ticks.
 - The script runs indefinitely (`while True: schedule.run_pending(); time.sleep(60)`) when started interactively.
 - For production, a systemd service or cron job is recommended instead of relying on the in‑process scheduler.
+
+### Overflow fast-track — 1:1 eviction ONLY at cap (operator rule 2026-04-24)
+
+- **Eviction triggers only when `pending_articles` is already at `QUEUE_CAP` (10).** Below cap, the pass fills available slots with new entries and defers the rest to the next tick. It does NOT auto-translate older rows just because many new ones arrived.
+- At cap: each new arrival evicts exactly ONE oldest `ru_paragraphs IS NULL` row via `_fallback_publish` (Gemini). 1:1 exchange — 2 new = 2 oldest evicted, 5 new = 5 evicted, etc.
+- Rationale: earlier behavior (`needed = len(new) - slots_free`) could evict 28 older rows in one go if the queue was under-cap but a large fetch arrived. Operator flagged the incident 2026-04-24 after 4 stagnant rows got silently auto-published through the drift-pipeline.
+- Regression test: `tests/test_overflow.py::TestOverflowHelper::test_overflow_below_cap_no_eviction`.
 
 ### Logging
 - Logging is configured at INFO level, with timestamps and module names.

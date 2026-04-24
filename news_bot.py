@@ -777,12 +777,33 @@ def _overflow_fast_track(new_entries):
         return list(new_entries), []
 
     # ------------------------------------------------------------------
-    # Compute what we NEED to evict vs. what we CAN evict. ``slots_free``
-    # may be negative if the cap was already breached (e.g. operator
-    # decreased QUEUE_CAP between ticks); ``max(0, ...)`` guards against
-    # a negative ``needed`` that would silently skip the loop.
+    # Operator rule (2026-04-24): eviction only when the queue is ALREADY
+    # at ``QUEUE_CAP``. Below cap, we fill the free slots and DEFER the
+    # rest for the next tick — we do NOT auto-publish older rows just
+    # because many new ones arrived. This prevents the incident where 8
+    # stagnant rows got auto-translated when a large fetch showed up.
+    #
+    # When the queue IS at cap, each new arrival evicts exactly ONE
+    # oldest ru-NULL row (1:1 exchange). ``needed`` is capped by the
+    # number of new entries — never more.
     # ------------------------------------------------------------------
-    needed = len(new_entries) - max(0, slots_free)
+    if pre_count < QUEUE_CAP:
+        # Below cap: no eviction. Fill what fits, defer the rest.
+        accepted = list(new_entries[:slots_free])
+        deferred_count = len(new_entries) - slots_free
+        admin_msg = (
+            f"Queue pressure: {deferred_count} new deferred "
+            f"(queue at {pre_count}/{QUEUE_CAP}, no eviction under cap)"
+        )
+        send_admin_notification(admin_msg)
+        logger.info(
+            f"[overflow] below cap ({pre_count}/{QUEUE_CAP}): "
+            f"accepted={len(accepted)}, deferred={deferred_count}, evicted=0"
+        )
+        return accepted, []
+
+    # At cap — evict exactly len(new_entries) oldest ru-NULL rows.
+    needed = len(new_entries)
     try:
         candidates = pending_repo.list_pending_for_eviction()[:needed]
     except Exception as exc:
@@ -1233,7 +1254,7 @@ def main():
     # Hourly cron (manual-review-workflow Decision 5). The 2h grace
     # window after an idle-timeout heads-up is only meaningful if the
     # scheduler ticks at least once within that window.
-    schedule.every().hour.do(job)
+    schedule.every(12).hours.do(job)
 
     # Run immediately for testing / first-boot population. The cron loop
     # below starts the hourly cadence after this first tick completes.

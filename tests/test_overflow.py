@@ -489,14 +489,15 @@ class TestOverflowHelper(_OverflowCase):
         )
         self.assertEqual(len(errors), 1)
 
-    def test_overflow_empty_queue_protected_is_zero(self):
-        """Empty queue + flood of new entries: ``staged_protected`` must be
-        0, not ``needed - 0``. Regression for the Variant-B QA finding —
-        an empty queue means nothing to protect, even if the repo returned
-        zero eviction candidates."""
-        # Queue EMPTY. 36 new entries arrive; QUEUE_CAP=10 → slots_free=10,
-        # needed=26, list_pending_for_eviction() returns []. The pre-fix
-        # code reported staged_protected = 26 - 0 = 26 (phantom).
+    def test_overflow_below_cap_no_eviction(self):
+        """Operator rule (2026-04-24): eviction happens ONLY when the
+        queue is already at QUEUE_CAP. Below cap, fill what fits, defer
+        the rest — never auto-publish older rows just because many new
+        ones arrived. Regression for the incident where 8 stagnant rows
+        got auto-translated when a large fetch arrived on an under-cap
+        queue."""
+        # Queue EMPTY. 36 new entries arrive; QUEUE_CAP=10. Under new rule:
+        # below cap → accept 10, defer 26, NO eviction, NO fallback publish.
         self.assertEqual(repo.count_pending(), 0)
 
         new_entries = [
@@ -509,8 +510,8 @@ class TestOverflowHelper(_OverflowCase):
              patch('news_bot.send_admin_notification', notify):
             accepted, errors = news_bot._overflow_fast_track(new_entries)
 
+        # NOTHING auto-published — queue was below cap.
         mock_fallback.assert_not_called()
-        # 10 slots accepted, 26 deferred.
         self.assertEqual(len(accepted), 10)
         self.assertEqual(errors, [])
 
@@ -520,11 +521,10 @@ class TestOverflowHelper(_OverflowCase):
         ]
         self.assertEqual(len(overflow_calls), 1)
         text = overflow_calls[0].args[0]
-        # Protected MUST be 0 — no rows existed to be protected.
         self.assertEqual(
             text,
-            'Queue pressure: auto-published 0, 26 new deferred, '
-            '0 staged rows protected',
+            'Queue pressure: 26 new deferred '
+            '(queue at 0/10, no eviction under cap)',
         )
 
     def test_overflow_partial_protection(self):

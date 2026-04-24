@@ -399,17 +399,21 @@ class TestProcessNewArticlesRemoved(unittest.TestCase):
         )
 
 
-class TestCronScheduleHourly(unittest.TestCase):
-    """AC: cron bumped from daily to hourly (Decision 5). The bump lives
-    in ``main()``; we assert the source text to avoid actually running
-    ``schedule.every().hour.do(job)`` during the test."""
+class TestCronScheduleTwelveHourly(unittest.TestCase):
+    """AC (operator rule 2026-04-24): cron runs every 12 hours. Originally
+    Decision 5 set it hourly, but the operator dropped it to 12h after
+    live ops showed hourly fetches produce queue-pressure incidents on
+    the manual-review workflow. The schedule lives in ``main()``; we
+    assert the source text to avoid actually running the scheduler."""
 
-    def test_main_uses_hourly_schedule(self):
+    def test_main_uses_twelve_hour_schedule(self):
         import inspect
         src = inspect.getsource(news_bot.main)
-        self.assertIn('every().hour', src,
-                      msg="main() must register an hourly cron per Decision 5")
-        # And the old daily cadence must be gone.
+        self.assertIn('every(12).hours', src,
+                      msg="main() must register a 12-hour cron per operator rule")
+        # And the old hourly/daily cadences must be gone.
+        self.assertNotIn('every().hour.do', src,
+                         msg="hourly cron line must be removed")
         self.assertNotIn('every().day.at', src,
                          msg="daily cron line must be removed")
 
