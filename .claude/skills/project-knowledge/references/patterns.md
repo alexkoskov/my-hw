@@ -84,12 +84,16 @@ Different source parsers take different paths to image URLs. Each is tuned to ma
 - The script runs indefinitely (`while True: schedule.run_pending(); time.sleep(60)`) when started interactively.
 - For production, a systemd service or cron job is recommended instead of relying on the in‑process scheduler.
 
-### Overflow fast-track — 1:1 eviction ONLY at cap (operator rule 2026-04-24)
+### Overflow fast-track — "newest-10 window" rule (operator rule 2026-04-24 refined)
 
-- **Eviction triggers only when `pending_articles` is already at `QUEUE_CAP` (10).** Below cap, the pass fills available slots with new entries and defers the rest to the next tick. It does NOT auto-translate older rows just because many new ones arrived.
-- At cap: each new arrival evicts exactly ONE oldest `ru_paragraphs IS NULL` row via `_fallback_publish` (Gemini). 1:1 exchange — 2 new = 2 oldest evicted, 5 new = 5 evicted, etc.
-- Rationale: earlier behavior (`needed = len(new) - slots_free`) could evict 28 older rows in one go if the queue was under-cap but a large fetch arrived. Operator flagged the incident 2026-04-24 after 4 stagnant rows got silently auto-published through the drift-pipeline.
-- Regression test: `tests/test_overflow.py::TestOverflowHelper::test_overflow_below_cap_no_eviction`.
+- **Queue is a sliding window of the newest `QUEUE_CAP` (10) rows across the combined pool of pending + incoming new entries.** Everything that doesn't fit goes to Gemini auto-publish, oldest first.
+- Formula: `excess = count_pending() + len(new_entries) - QUEUE_CAP`. If `excess ≤ 0`, all new enter queue, no eviction. If `excess > 0`, publish `excess` oldest rows (old pending ru-NULL first, then oldest-indexed new entries) via `_fallback_publish` (Gemini).
+- **Staged rows always protected** — rows with `ru_paragraphs IS NOT NULL` never evict, regardless of age. The queue-window size for non-staged content effectively shrinks by the staged count.
+- **Under-cap still triggers eviction** if the pool exceeds cap. Example: 8 pending + 28 new = 36 pool, excess 26 → 8 old + 18 new auto-publish; 10 newest new stay in queue.
+- New-entry auto-publish flow: `fetch_full_article(entry)` → `insert_pending(row)` → `_fallback_publish(full_row)` (which moves it to `published_articles`). Brief transit through pending preserves the `_fallback_publish` invariant of DB-resident rows.
+- Admin ping format: `"Queue pressure: auto-published {total} ({old} old + {new} new)"` + optional `", {N} staged rows protected"` + `", fast-track failed for {K}"` suffixes.
+- Rationale: 1:1-at-cap rule (interim) under-fired on large fetches — after 12h cron interval a 30-item burst wouldn't fit until multiple ticks. Newest-window rule matches the operator's mental model: queue always holds the freshest 10 items; the rest goes to Gemini automatically so nothing blocks.
+- Key tests: `test_overflow_users_example_8_old_plus_28_new` (the canonical scenario), `test_overflow_partial_protection`, `test_overflow_full_protection`, `test_overflow_staged_protected_forces_new_autopub`.
 
 ### Logging
 - Logging is configured at INFO level, with timestamps and module names.

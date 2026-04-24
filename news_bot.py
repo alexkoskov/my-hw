@@ -770,79 +770,56 @@ def _overflow_fast_track(new_entries):
     if not new_entries:
         return [], []
 
+    # ------------------------------------------------------------------
+    # Operator rule (2026-04-24, refined): queue is a sliding window of
+    # the NEWEST ``QUEUE_CAP`` rows across the combined pool of current
+    # pending rows + incoming new entries. Anything that doesn't fit the
+    # window gets auto-published via Gemini (``_fallback_publish``),
+    # with oldest rows evicted first. Staged pending rows (ru filled)
+    # are always protected — they never evict, they stay in the queue
+    # regardless of age.
+    #
+    # Concrete example: pending=8 (all ru-NULL), new=28. Pool=36,
+    # excess=26. Evict 8 oldest pending + 18 oldest-ordered new →
+    # 26 auto-publish. Remaining 10 new enter the queue.
+    # ------------------------------------------------------------------
     pre_count = pending_repo.count_pending()
-    slots_free = QUEUE_CAP - pre_count
-    if len(new_entries) <= slots_free:
-        # Within cap — no eviction required, no ping, done.
+    pool_size = pre_count + len(new_entries)
+
+    if pool_size <= QUEUE_CAP:
+        # Entire pool fits in the queue — no pressure, no eviction.
         return list(new_entries), []
 
-    # ------------------------------------------------------------------
-    # Operator rule (2026-04-24): eviction only when the queue is ALREADY
-    # at ``QUEUE_CAP``. Below cap, we fill the free slots and DEFER the
-    # rest for the next tick — we do NOT auto-publish older rows just
-    # because many new ones arrived. This prevents the incident where 8
-    # stagnant rows got auto-translated when a large fetch showed up.
-    #
-    # When the queue IS at cap, each new arrival evicts exactly ONE
-    # oldest ru-NULL row (1:1 exchange). ``needed`` is capped by the
-    # number of new entries — never more.
-    # ------------------------------------------------------------------
-    if pre_count < QUEUE_CAP:
-        # Below cap: no eviction. Fill what fits, defer the rest.
-        accepted = list(new_entries[:slots_free])
-        deferred_count = len(new_entries) - slots_free
-        admin_msg = (
-            f"Queue pressure: {deferred_count} new deferred "
-            f"(queue at {pre_count}/{QUEUE_CAP}, no eviction under cap)"
-        )
-        send_admin_notification(admin_msg)
-        logger.info(
-            f"[overflow] below cap ({pre_count}/{QUEUE_CAP}): "
-            f"accepted={len(accepted)}, deferred={deferred_count}, evicted=0"
-        )
-        return accepted, []
+    excess = pool_size - QUEUE_CAP
 
-    # At cap — evict exactly len(new_entries) oldest ru-NULL rows.
-    needed = len(new_entries)
+    # ---- Step A: evict oldest ru-NULL pending rows (they're older than
+    # any just-fetched new entry). Bounded by ``excess``; each old-evict
+    # decrements the remaining budget. Staged pending rows are filtered
+    # out at the repo level (``list_pending_for_eviction``).
     try:
-        candidates = pending_repo.list_pending_for_eviction()[:needed]
+        old_candidates = pending_repo.list_pending_for_eviction()[:excess]
     except Exception as exc:
-        # Repo failure on the eviction query is a soft-fail: log, skip the
-        # pass, defer all new entries. We don't crash the prep tick.
         logger.error(
-            f"list_pending_for_eviction failed: {sanitize_error_message(exc)}"
+            f"[overflow] list_pending_for_eviction failed: "
+            f"{sanitize_error_message(exc)}"
         )
-        candidates = []
+        old_candidates = []
 
-    # staged_protected = evict slots we couldn't fill BECAUSE the rows
-    # still present in pending were ru-staged (Decision 7 blocks them).
-    # Two bounds:
-    #   gap                   = needed - len(candidates)
-    #                          (how many evict slots went unfilled)
-    #   non_evictable_present = pre_count - len(candidates)
-    #                          (rows that exist but repo didn't return)
-    # Take the min so we don't over-count — an empty queue has zero
-    # rows to protect, so an unfilled gap there is NOT protection
-    # (regression fix: pre-fix code reported `gap` alone and produced
-    # phantom "26 protected" on an empty queue + 36 new arrivals).
+    # Rows physically present in pending but blocked from eviction because
+    # they're staged. Bounded by ``excess`` and by how many pending rows
+    # actually exist.
     staged_protected = max(
-        0, min(needed - len(candidates), pre_count - len(candidates))
+        0, min(excess - len(old_candidates), pre_count - len(old_candidates))
     )
 
-    # ------------------------------------------------------------------
-    # Per-row eviction via the shared ``_fallback_publish`` helper.
-    # Isolation: one row's raise must not abort the others. On raise we
-    # sanitise the exception (Decision 11), bump the shared counter
-    # (Decision 13), and at 3 strikes move the row to ``failed_articles``.
-    # ------------------------------------------------------------------
-    evicted_count = 0
+    evicted_old = 0
     fast_track_errors = []
-    for row in candidates:
+    for row in old_candidates:
         link = row.get('link')
         title = row.get('title') or '(no title)'
         try:
             _fallback_publish(row, via_review=False)
-            evicted_count += 1
+            evicted_old += 1
         except Exception as exc:
             safe = sanitize_error_message(exc)
             logger.error(
@@ -864,58 +841,112 @@ def _overflow_fast_track(new_entries):
                         f"[overflow] moved {link} to failed after "
                         f"{new_count} strikes"
                     )
-                    # Slot is freed once the row leaves pending, even
-                    # though the content didn't publish. Count toward
-                    # evicted_count so ``accepted`` gets the seat.
-                    evicted_count += 1
+                    evicted_old += 1
                 except Exception as repo_err:
                     logger.error(
                         f"[overflow] move_to_failed failed for {link}: "
                         f"{sanitize_error_message(repo_err)}"
                     )
 
-    # ------------------------------------------------------------------
-    # Recompute free slots after the pass and split ``new_entries``.
-    # Re-querying ``count_pending`` (rather than trusting ``evicted_count``)
-    # survives edge cases where ``_fallback_publish`` succeeded partially
-    # or a concurrent writer changed the count under us.
-    # ------------------------------------------------------------------
-    try:
-        slots_free_after = QUEUE_CAP - pending_repo.count_pending()
-    except Exception as exc:
-        logger.error(
-            f"[overflow] count_pending failed: {sanitize_error_message(exc)}"
-        )
-        slots_free_after = 0
-    slots_free_after = max(0, slots_free_after)
+    # ---- Step B: if excess remains, evict the OLDEST-ordered new
+    # entries. "Oldest" within a freshly-fetched batch is first-indexed
+    # (earliest place in ``new_entries``). These entries bypass the
+    # queue: we fetch-full-article, insert briefly as pending, then
+    # immediately ``_fallback_publish`` them (which moves to published).
+    # The short stay in pending preserves ``_fallback_publish``'s
+    # invariant of operating on a DB-resident row.
+    remaining = excess - evicted_old
+    if remaining > 0:
+        new_to_autopublish = list(new_entries[:remaining])
+        accepted = list(new_entries[remaining:])
+    else:
+        new_to_autopublish = []
+        accepted = list(new_entries)
 
-    accepted = list(new_entries[:slots_free_after])
-    deferred = list(new_entries[slots_free_after:])
-
-    # ------------------------------------------------------------------
-    # Admin ping — only when there's pressure to report (deferred,
-    # protected staged rows, or fast-track errors). A happy "cap lifted
-    # and everything fit" path is silent.
-    # ------------------------------------------------------------------
-    if deferred or staged_protected > 0 or fast_track_errors:
-        msg = (
-            f"Queue pressure: auto-published {evicted_count}, "
-            f"{len(deferred)} new deferred, "
-            f"{staged_protected} staged rows protected"
-        )
-        if fast_track_errors:
-            msg += f", fast-track failed for {len(fast_track_errors)}"
+    evicted_new = 0
+    for entry in new_to_autopublish:
+        link = entry.get('link')
+        title = entry.get('title') or '(no title)'
+        if not link:
+            fast_track_errors.append(title)
+            continue
         try:
-            send_admin_notification(msg)
-        except Exception as notify_err:
+            article = fetch_full_article(entry)
+            if not article or not article.get('paragraphs'):
+                logger.warning(
+                    f"[overflow-new] no article data for {link}, skipping autopub"
+                )
+                fast_track_errors.append(title)
+                continue
+            row = {
+                'link': link,
+                'source_name': entry.get('source_name') or _resolve_source_name(link),
+                'feed_url': entry.get('feed_url'),
+                'title': article.get('title') or entry.get('title') or '',
+                'subtitle': article.get('subtitle') or '',
+                'paragraphs': article.get('paragraphs') or [],
+                'images': article.get('images') or [],
+                'blocks': article.get('blocks'),
+                'pub_date': entry.get('published') or entry.get('pub_date') or '',
+            }
+            try:
+                pending_repo.insert_pending(row)
+            except Exception as ins_err:
+                logger.error(
+                    f"[overflow-new] insert failed for {link}: "
+                    f"{sanitize_error_message(ins_err)}"
+                )
+                fast_track_errors.append(title)
+                continue
+            full_row = pending_repo.get_pending(link)
+            if full_row is None:
+                logger.error(f"[overflow-new] row vanished after insert: {link}")
+                fast_track_errors.append(title)
+                continue
+            _fallback_publish(full_row, via_review=False)
+            evicted_new += 1
+        except Exception as exc:
+            safe = sanitize_error_message(exc)
             logger.error(
-                f"[overflow] admin-ping send failed: "
-                f"{sanitize_error_message(notify_err)}"
+                f"[overflow-new] autopub failed for {link}: {safe}"
             )
+            fast_track_errors.append(title)
+            try:
+                new_count = pending_repo.increment_attempt(link, safe)
+                if new_count >= 3:
+                    pending_repo.move_to_failed(link, safe)
+            except Exception as repo_err:
+                logger.error(
+                    f"[overflow-new] attempt-tracking failed for {link}: "
+                    f"{sanitize_error_message(repo_err)}"
+                )
+
+    # ------------------------------------------------------------------
+    # Admin ping — always sent when overflow ran (pool exceeded cap).
+    # Format conveys the split between old and new auto-publishes.
+    # ------------------------------------------------------------------
+    total_evicted = evicted_old + evicted_new
+    msg_parts = [
+        f"Queue pressure: auto-published {total_evicted} "
+        f"({evicted_old} old + {evicted_new} new)"
+    ]
+    if staged_protected > 0:
+        msg_parts.append(f"{staged_protected} staged rows protected")
+    if fast_track_errors:
+        msg_parts.append(f"fast-track failed for {len(fast_track_errors)}")
+    msg = ", ".join(msg_parts)
+    try:
+        send_admin_notification(msg)
+    except Exception as notify_err:
+        logger.error(
+            f"[overflow] admin-ping send failed: "
+            f"{sanitize_error_message(notify_err)}"
+        )
 
     logger.info(
-        f"[overflow] evicted={evicted_count}, deferred={len(deferred)}, "
-        f"protected={staged_protected}, errors={len(fast_track_errors)}"
+        f"[overflow] evicted_old={evicted_old}, evicted_new={evicted_new}, "
+        f"accepted={len(accepted)}, protected={staged_protected}, "
+        f"errors={len(fast_track_errors)}"
     )
     return accepted, fast_track_errors
 

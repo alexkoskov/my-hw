@@ -282,9 +282,12 @@ class TestOverflowHelper(_OverflowCase):
         self.assertEqual(len(accepted), 3)
         self.assertEqual(errors, [])
 
-    def test_overflow_staged_protected_count_in_admin_ping(self):
-        """Queue full of staged rows + 3 new → eviction returns 0 rows;
-        ``staged_protected=3``, ``deferred=3``, admin ping byte-exact."""
+    def test_overflow_staged_protected_forces_new_autopub(self):
+        """Queue full of staged rows (10 protected) + 3 new → 0 old-row
+        evictions possible, so all 3 NEW entries get auto-published via
+        Gemini. Queue stays at 10 staged. Under the newest-10 rule this
+        is the correct behaviour: staged rows never evict, and excess
+        must leave somehow."""
         for i in range(10):
             self._insert_staged(link=f'http://s/{i}', title=f'S{i}')
 
@@ -295,59 +298,81 @@ class TestOverflowHelper(_OverflowCase):
         ]
 
         notify = MagicMock(return_value=True)
-        mock_fallback = MagicMock()
-        with patch('news_bot._fallback_publish', mock_fallback), \
+
+        # Mock fetch_full_article so autopub can enrich new entries.
+        def fake_fetch(entry):
+            return {
+                'title': entry.get('title', ''),
+                'subtitle': 'lead',
+                'paragraphs': ['para'],
+                'images': [],
+                'blocks': None,
+            }
+
+        def fallback_side(row, via_review=False):
+            repo.update_staged(row['link'], 'ru-' + (row.get('title') or ''),
+                               '', ['ru-auto'], None)
+            repo.move_to_published(row['link'],
+                                   'https://telegra.ph/fake-01-01',
+                                   'fake-01-01', via_review=via_review)
+            return True
+
+        with patch('news_bot.fetch_full_article', side_effect=fake_fetch), \
+             patch('news_bot._fallback_publish', side_effect=fallback_side), \
              patch('news_bot.send_admin_notification', notify):
             accepted, errors = news_bot._overflow_fast_track(new_entries)
 
-        mock_fallback.assert_not_called()
+        # All 3 new went to autopub, none stay in queue.
         self.assertEqual(accepted, [])
         self.assertEqual(errors, [])
 
-        # Find the overflow ping string. Should carry the Queue-pressure
-        # format exactly (Task 10 spec).
-        overflow_calls = [
-            c for c in notify.call_args_list
-            if c.args and 'Queue pressure' in c.args[0]
-        ]
-        self.assertEqual(len(overflow_calls), 1,
-                         f"Expected exactly one overflow ping, got: {notify.call_args_list}")
+        # Staged rows still present (untouched).
+        for i in range(10):
+            self.assertIsNotNone(repo.get_pending(f'http://s/{i}'))
+
+        overflow_calls = [c for c in notify.call_args_list
+                          if c.args and 'Queue pressure' in c.args[0]]
+        self.assertEqual(len(overflow_calls), 1)
         text = overflow_calls[0].args[0]
         self.assertEqual(
             text,
-            'Queue pressure: auto-published 0, 3 new deferred, '
+            'Queue pressure: auto-published 3 (0 old + 3 new), '
             '3 staged rows protected',
         )
 
     def test_overflow_failure_increments_shared_attempt(self):
-        """``_fallback_publish`` raises on an evicted row → ``attempt_count``
-        bumped via ``increment_attempt`` (Decision 13 shared counter);
-        row stays pending."""
-        # Fill to cap with unstaged rows.
+        """``_fallback_publish`` raises on an OLD evicted row →
+        ``attempt_count`` bumped via ``increment_attempt`` (Decision 13
+        shared counter); row stays pending. Under newest-10 rule, the
+        unfulfilled excess slot falls through to the new-entry autopub
+        path — so the new entry still leaves ``accepted`` empty."""
         for i in range(10):
             self._insert(link=f'http://o/{i}', title=f'O{i}')
-            self._age_fetched(f'http://o/{i}', 40 - i)  # oldest first: o/0
+            self._age_fetched(f'http://o/{i}', 40 - i)
 
         new_entries = [_rss_entry('http://new/1', 'N1')]
 
         mock_fallback = MagicMock(side_effect=RuntimeError('boom'))
+        # Mock fetch_full_article to return None so the new-entry autopub
+        # path short-circuits (title -> errors list) without touching
+        # _fallback_publish again.
         with patch('news_bot._fallback_publish', mock_fallback), \
+             patch('news_bot.fetch_full_article', return_value=None), \
              patch('news_bot.send_admin_notification', return_value=True):
             accepted, errors = news_bot._overflow_fast_track(new_entries)
 
-        # One eviction attempt; the RuntimeError leaves the row pending
-        # with attempt_count bumped to 1.
+        # One old-row eviction attempt raised; attempt_count bumped.
         self.assertEqual(mock_fallback.call_count, 1)
         row = repo.get_pending('http://o/0')
         self.assertIsNotNone(row)
         self.assertEqual(row['attempt_count'], 1)
-        self.assertIsNotNone(row['last_error'])
         self.assertIn('boom', row['last_error'])
 
-        # Slot was NOT freed → the new entry is deferred.
+        # accepted is empty: excess=1, old-eviction failed (evicted_old=0),
+        # so the new entry went to autopub path.
         self.assertEqual(accepted, [])
-        # fast_track_errors list carries the row's title for the ping.
-        self.assertEqual(len(errors), 1)
+        # Two errors: old-row boom + new-entry fetch returned None.
+        self.assertEqual(len(errors), 2)
 
     def test_overflow_three_strikes_moves_to_failed(self):
         """Row with ``attempt_count=2`` and a failing ``_fallback_publish``
@@ -376,12 +401,11 @@ class TestOverflowHelper(_OverflowCase):
         self.assertEqual(len(accepted), 1)
         self.assertEqual(accepted[0]['link'], 'http://new/1')
 
-    def test_overflow_deferred_admin_ping_format(self):
-        """Admin ping on deferred-only path (no errors, some eviction
-        slots couldn't be freed). Byte-exact match."""
-        # Seed: 7 staged + 3 unstaged → cap=10. Five new entries arrive.
-        # needed = 5 - 0 = 5; to_evict returns 3 unstaged; staged_protected
-        # = 2; after pass queue=7 (staged) + 3 new = 10; deferred = 2.
+    def test_overflow_admin_ping_mixed_old_and_new_autopub(self):
+        """Seed: 7 staged + 3 unstaged = 10 pending. Five new arrive,
+        pool=15, excess=5. Old-eviction finds 3 unstaged; remaining 2
+        come from oldest-ordered NEW entries (new[0], new[1]). Accepted
+        = new[2:] = 3. Admin ping shows the split."""
         for i in range(7):
             self._insert_staged(link=f'http://s/{i}', title=f'S{i}')
         for i in range(3):
@@ -395,47 +419,51 @@ class TestOverflowHelper(_OverflowCase):
 
         notify = MagicMock(return_value=True)
 
+        def fake_fetch(entry):
+            return {
+                'title': entry.get('title', ''), 'subtitle': 'lead',
+                'paragraphs': ['para'], 'images': [], 'blocks': None,
+            }
+
         def fallback_side(row, via_review=False):
-            # Populate ru_title so the NOT NULL constraint on
-            # published_articles is satisfied, then move the row.
-            repo.update_staged(
-                row['link'],
-                'ru-' + (row.get('title') or ''),
-                '',
-                ['ru-auto'],
-                None,
-            )
-            repo.move_to_published(
-                row['link'],
-                'https://telegra.ph/fake-01-01',
-                'fake-01-01',
-                via_review=via_review,
-            )
+            repo.update_staged(row['link'], 'ru-' + (row.get('title') or ''),
+                               '', ['ru-auto'], None)
+            repo.move_to_published(row['link'],
+                                   'https://telegra.ph/fake-01-01',
+                                   'fake-01-01', via_review=via_review)
             return True
 
-        with patch('news_bot._fallback_publish', side_effect=fallback_side), \
+        with patch('news_bot.fetch_full_article', side_effect=fake_fetch), \
+             patch('news_bot._fallback_publish', side_effect=fallback_side), \
              patch('news_bot.send_admin_notification', notify):
             accepted, errors = news_bot._overflow_fast_track(new_entries)
 
+        # 3 old evicted (O0, O1, O2) + 2 new autopub (N0, N1). Accepted
+        # = N2, N3, N4 → queue = 7 staged + 3 new = 10. No staged_protected
+        # because the old-row-eviction candidates sufficed for excess.
         self.assertEqual(len(accepted), 3)
+        accepted_links = [e['link'] for e in accepted]
+        self.assertEqual(accepted_links, ['http://new/2', 'http://new/3', 'http://new/4'])
 
-        overflow_calls = [
-            c for c in notify.call_args_list
-            if c.args and 'Queue pressure' in c.args[0]
-        ]
+        overflow_calls = [c for c in notify.call_args_list
+                          if c.args and 'Queue pressure' in c.args[0]]
         self.assertEqual(len(overflow_calls), 1)
         text = overflow_calls[0].args[0]
+        # staged_protected = max(0, min(5-3, 10-3)) = 2 (2 staged rows
+        # would be needed to cover the gap if protection existed).
         self.assertEqual(
             text,
-            'Queue pressure: auto-published 3, 2 new deferred, '
+            'Queue pressure: auto-published 5 (3 old + 2 new), '
             '2 staged rows protected',
         )
 
     def test_overflow_fast_track_error_in_ping_suffix(self):
         """When ``fast_track_errors`` is non-empty, the ping gets
         ``", fast-track failed for {F}"`` suffix."""
-        # Queue full of unstaged, 3 new. First fallback call raises,
-        # others succeed.
+        # Queue full of unstaged, 3 new. Pool=13, excess=3.
+        # First old fallback call raises (attempt_count=1, stays pending).
+        # Evicted_old = 2. remaining = 1 → one new goes to autopub (fails
+        # via fetch_full_article = None). Accepted = new[1:] = 2.
         for i in range(10):
             link = f'http://o/{i}'
             self._insert(link=link, title=f'O{i}')
@@ -451,87 +479,93 @@ class TestOverflowHelper(_OverflowCase):
             call_count['n'] += 1
             if call_count['n'] == 1:
                 raise RuntimeError('first fail')
-            # Populate ru_title so the NOT NULL constraint on
-            # published_articles is satisfied, then move the row.
-            repo.update_staged(
-                row['link'],
-                'ru-' + (row.get('title') or ''),
-                '',
-                ['ru-auto'],
-                None,
-            )
-            repo.move_to_published(
-                row['link'],
-                'https://telegra.ph/fake-01-01',
-                'fake-01-01',
-                via_review=via_review,
-            )
+            repo.update_staged(row['link'], 'ru-' + (row.get('title') or ''),
+                               '', ['ru-auto'], None)
+            repo.move_to_published(row['link'],
+                                   'https://telegra.ph/fake-01-01',
+                                   'fake-01-01', via_review=via_review)
             return True
 
         notify = MagicMock(return_value=True)
         with patch('news_bot._fallback_publish', side_effect=fallback_side), \
+             patch('news_bot.fetch_full_article', return_value=None), \
              patch('news_bot.send_admin_notification', notify):
             accepted, errors = news_bot._overflow_fast_track(new_entries)
 
-        overflow_calls = [
-            c for c in notify.call_args_list
-            if c.args and 'Queue pressure' in c.args[0]
-        ]
+        overflow_calls = [c for c in notify.call_args_list
+                          if c.args and 'Queue pressure' in c.args[0]]
         self.assertEqual(len(overflow_calls), 1)
         text = overflow_calls[0].args[0]
-        # One failed, two evicted successfully. needed=3 - 0 = 3;
-        # staged_protected=0; 2 slots freed → 2 new accepted; 1 deferred;
-        # fast-track errors = 1.
+        # evicted_old=2 (1 fail + 2 success among first 3 candidates),
+        # remaining = 3 - 2 = 1 → new[0] attempts autopub, fetch returns
+        # None → errors.append. evicted_new=0. Accepted = new[1:] = 2.
         self.assertEqual(
             text,
-            'Queue pressure: auto-published 2, 1 new deferred, '
-            '0 staged rows protected, fast-track failed for 1',
+            'Queue pressure: auto-published 2 (2 old + 0 new), '
+            'fast-track failed for 2',
         )
-        self.assertEqual(len(errors), 1)
+        self.assertEqual(len(errors), 2)
 
-    def test_overflow_below_cap_no_eviction(self):
-        """Operator rule (2026-04-24): eviction happens ONLY when the
-        queue is already at QUEUE_CAP. Below cap, fill what fits, defer
-        the rest — never auto-publish older rows just because many new
-        ones arrived. Regression for the incident where 8 stagnant rows
-        got auto-translated when a large fetch arrived on an under-cap
-        queue."""
-        # Queue EMPTY. 36 new entries arrive; QUEUE_CAP=10. Under new rule:
-        # below cap → accept 10, defer 26, NO eviction, NO fallback publish.
-        self.assertEqual(repo.count_pending(), 0)
+    def test_overflow_users_example_8_old_plus_28_new(self):
+        """Operator's explicit example (2026-04-24): queue has 8 old
+        ru-NULL rows, 28 new arrive. Under newest-10 rule: pool=36,
+        excess=26 → publish 8 old + 18 new via Gemini, queue ends with
+        10 newest new entries."""
+        for i in range(8):
+            link = f'http://o/{i}'
+            self._insert(link=link, title=f'O{i}')
+            self._age_fetched(link, 40 - i)  # O/0 oldest, O/7 newest
 
         new_entries = [
-            _rss_entry(f'http://new/{i}', f'N{i}') for i in range(36)
+            _rss_entry(f'http://new/{i}', f'N{i}') for i in range(28)
         ]
 
         notify = MagicMock(return_value=True)
-        mock_fallback = MagicMock()
-        with patch('news_bot._fallback_publish', mock_fallback), \
+
+        def fake_fetch(entry):
+            return {
+                'title': entry.get('title', ''), 'subtitle': 'lead',
+                'paragraphs': ['para'], 'images': [], 'blocks': None,
+            }
+
+        def fallback_side(row, via_review=False):
+            repo.update_staged(row['link'], 'ru-' + (row.get('title') or ''),
+                               '', ['ru-auto'], None)
+            repo.move_to_published(row['link'],
+                                   'https://telegra.ph/fake-01-01',
+                                   'fake-01-01', via_review=via_review)
+            return True
+
+        with patch('news_bot.fetch_full_article', side_effect=fake_fetch), \
+             patch('news_bot._fallback_publish', side_effect=fallback_side), \
              patch('news_bot.send_admin_notification', notify):
             accepted, errors = news_bot._overflow_fast_track(new_entries)
 
-        # NOTHING auto-published — queue was below cap.
-        mock_fallback.assert_not_called()
-        self.assertEqual(len(accepted), 10)
+        # 8 old evicted + 18 new autopub. Accepted = 10 newest new entries
+        # (new[18:] → N18..N27).
         self.assertEqual(errors, [])
+        self.assertEqual(len(accepted), 10)
+        accepted_titles = [e['title'] for e in accepted]
+        self.assertEqual(accepted_titles, [f'N{i}' for i in range(18, 28)])
 
-        overflow_calls = [
-            c for c in notify.call_args_list
-            if c.args and 'Queue pressure' in c.args[0]
-        ]
+        # All 8 old pending rows should have moved to published.
+        for i in range(8):
+            self.assertIsNone(repo.get_pending(f'http://o/{i}'))
+
+        overflow_calls = [c for c in notify.call_args_list
+                          if c.args and 'Queue pressure' in c.args[0]]
         self.assertEqual(len(overflow_calls), 1)
         text = overflow_calls[0].args[0]
         self.assertEqual(
             text,
-            'Queue pressure: 26 new deferred '
-            '(queue at 0/10, no eviction under cap)',
+            'Queue pressure: auto-published 26 (8 old + 18 new)',
         )
 
     def test_overflow_partial_protection(self):
-        """Queue has 10 rows: 4 ru-NULL + 6 ru-staged; needed=6. Repo
-        returns 4 candidates → gap of 2 that IS due to protection.
-        ``staged_protected`` = 2 (the gap), not 6 (total staged)."""
-        # 6 staged rows (older) and 4 unstaged rows (newer).
+        """Queue 10 = 6 staged + 4 ru-NULL; 6 new arrive. Pool=16,
+        excess=6. Old-eviction finds 4 ru-NULL → 2 more must evict from
+        new (new[0], new[1]). Accepted = new[2:] = 4. Admin ping:
+        auto-published 6 (4 old + 2 new)."""
         for i in range(6):
             self._insert_staged(link=f'http://s/{i}', title=f'S{i}')
         for i in range(4):
@@ -541,50 +575,46 @@ class TestOverflowHelper(_OverflowCase):
 
         self.assertEqual(repo.count_pending(), 10)
 
-        # needed = 6 new entries - 0 slots_free = 6; candidates caps at 4.
         new_entries = [
             _rss_entry(f'http://new/{i}', f'N{i}') for i in range(6)
         ]
 
+        def fake_fetch(entry):
+            return {
+                'title': entry.get('title', ''), 'subtitle': 'lead',
+                'paragraphs': ['para'], 'images': [], 'blocks': None,
+            }
+
         def fallback_side(row, via_review=False):
-            repo.update_staged(
-                row['link'],
-                'ru-' + (row.get('title') or ''),
-                '',
-                ['ru-auto'],
-                None,
-            )
-            repo.move_to_published(
-                row['link'],
-                'https://telegra.ph/fake-01-01',
-                'fake-01-01',
-                via_review=via_review,
-            )
+            repo.update_staged(row['link'], 'ru-' + (row.get('title') or ''),
+                               '', ['ru-auto'], None)
+            repo.move_to_published(row['link'],
+                                   'https://telegra.ph/fake-01-01',
+                                   'fake-01-01', via_review=via_review)
             return True
 
         notify = MagicMock(return_value=True)
-        with patch('news_bot._fallback_publish', side_effect=fallback_side), \
+        with patch('news_bot.fetch_full_article', side_effect=fake_fetch), \
+             patch('news_bot._fallback_publish', side_effect=fallback_side), \
              patch('news_bot.send_admin_notification', notify):
             accepted, errors = news_bot._overflow_fast_track(new_entries)
 
-        overflow_calls = [
-            c for c in notify.call_args_list
-            if c.args and 'Queue pressure' in c.args[0]
-        ]
+        overflow_calls = [c for c in notify.call_args_list
+                          if c.args and 'Queue pressure' in c.args[0]]
         self.assertEqual(len(overflow_calls), 1)
         text = overflow_calls[0].args[0]
-        # 4 evicted, 2 new deferred (6 - 4 slots freed), protected = gap = 2.
         self.assertEqual(
             text,
-            'Queue pressure: auto-published 4, 2 new deferred, '
+            'Queue pressure: auto-published 6 (4 old + 2 new), '
             '2 staged rows protected',
         )
         self.assertEqual(len(accepted), 4)
 
     def test_overflow_full_protection(self):
-        """Queue has 10 rows, all ru-staged; needed=6. Repo returns 0
-        candidates → gap of 6, all caused by protection. ``staged_protected``
-        = 6."""
+        """Queue 10 rows, all ru-staged (never evicted); 6 new arrive.
+        Pool=16, excess=6. Old-eviction finds 0 candidates (all staged).
+        Under newest-10 rule, all 6 excess comes from NEW entries going
+        to autopub via Gemini. Queue stays at 10 staged. Accepted = []."""
         for i in range(10):
             self._insert_staged(link=f'http://s/{i}', title=f'S{i}')
 
@@ -592,25 +622,40 @@ class TestOverflowHelper(_OverflowCase):
             _rss_entry(f'http://new/{i}', f'N{i}') for i in range(6)
         ]
 
+        def fake_fetch(entry):
+            return {
+                'title': entry.get('title', ''), 'subtitle': 'lead',
+                'paragraphs': ['para'], 'images': [], 'blocks': None,
+            }
+
+        def fallback_side(row, via_review=False):
+            repo.update_staged(row['link'], 'ru-' + (row.get('title') or ''),
+                               '', ['ru-auto'], None)
+            repo.move_to_published(row['link'],
+                                   'https://telegra.ph/fake-01-01',
+                                   'fake-01-01', via_review=via_review)
+            return True
+
         notify = MagicMock(return_value=True)
-        mock_fallback = MagicMock()
-        with patch('news_bot._fallback_publish', mock_fallback), \
+        with patch('news_bot.fetch_full_article', side_effect=fake_fetch), \
+             patch('news_bot._fallback_publish', side_effect=fallback_side), \
              patch('news_bot.send_admin_notification', notify):
             accepted, errors = news_bot._overflow_fast_track(new_entries)
 
-        mock_fallback.assert_not_called()
         self.assertEqual(accepted, [])
         self.assertEqual(errors, [])
 
-        overflow_calls = [
-            c for c in notify.call_args_list
-            if c.args and 'Queue pressure' in c.args[0]
-        ]
+        # All 10 staged rows still in pending.
+        for i in range(10):
+            self.assertIsNotNone(repo.get_pending(f'http://s/{i}'))
+
+        overflow_calls = [c for c in notify.call_args_list
+                          if c.args and 'Queue pressure' in c.args[0]]
         self.assertEqual(len(overflow_calls), 1)
         text = overflow_calls[0].args[0]
         self.assertEqual(
             text,
-            'Queue pressure: auto-published 0, 6 new deferred, '
+            'Queue pressure: auto-published 6 (0 old + 6 new), '
             '6 staged rows protected',
         )
 
