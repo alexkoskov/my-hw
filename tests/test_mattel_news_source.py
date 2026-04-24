@@ -248,41 +248,37 @@ class TestFetchMattelArticle:
         )
         return html
 
-    def test_parses_paragraphs_and_images(self):
+    def test_parses_paragraphs_and_uses_thumbnail_only(self):
+        # Parser keeps only the thumbnail (the hero image on the source
+        # page). ``download_media`` is a press-kit field and its contents
+        # are not in-article visuals — keeping them inflates the Telegraph
+        # page with figures that aren't on corporate.mattel.com.
         session = MagicMock()
         session.get.return_value = _make_response(
-            text=self._article_page(download_media=[{'url': 'https://images.example/media.png'}]),
+            text=self._article_page(
+                download_media=[
+                    {'url': 'https://images.example/media.png'},
+                    {'url': 'https://images.example/hi-res-press.jpg'},
+                ],
+            ),
         )
         out = fetch_mattel_article('https://corporate.mattel.com/news/x', session=session)
         assert out['title'] == 'Sample Mattel Article'
         assert out['subtitle'] == 'Editorial lead text'
         assert out['paragraphs'] == ['A paragraph.', 'Second.', 'Bullet']
-        assert out['images'] == [
-            'https://images.example/thumb.jpg',
-            'https://images.example/media.png',
-        ]
+        # Only thumbnail survives; neither press-kit entry is included.
+        assert out['images'] == ['https://images.example/thumb.jpg']
 
-    def test_dedups_download_media_that_is_thumbnail_in_another_format(self):
-        # Mattel's Contentstack CDN often exposes the same asset as both a
-        # thumbnail (.jpg) and a download_media (.png). Keeping both makes
-        # the Telegraph page render two hero figures for one image — ugly
-        # and redundant. Parser must dedup by filename-without-extension.
+    def test_no_thumbnail_yields_empty_images_regardless_of_download_media(self):
         session = MagicMock()
         session.get.return_value = _make_response(
             text=self._article_page(
-                thumb_url='https://images.example/assets/LEG25_Primary_Logo_white.jpg',
-                download_media=[
-                    {'url': 'https://images.example/assets/LEG25_Primary_Logo_white.png'},
-                    {'url': 'https://images.example/assets/hero_banner.jpg'},
-                ],
+                thumb_url=None,
+                download_media=[{'url': 'https://images.example/press.jpg'}],
             ),
         )
         out = fetch_mattel_article('https://corporate.mattel.com/news/x', session=session)
-        # The .png duplicate of the logo is dropped; hero_banner (different stem) survives.
-        assert out['images'] == [
-            'https://images.example/assets/LEG25_Primary_Logo_white.jpg',
-            'https://images.example/assets/hero_banner.jpg',
-        ]
+        assert out['images'] == []
 
     def test_missing_excerpt_yields_empty_subtitle(self):
         session = MagicMock()

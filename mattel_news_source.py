@@ -189,32 +189,19 @@ def fetch_mattel_article(
             if text:
                 paragraphs.append(text)
 
+    # Images: thumbnail only. ``download_media`` is a press-kit "downloadable
+    # assets" field, not an in-page gallery — Mattel CMS frequently exposes
+    # the thumbnail logo in multiple formats there (e.g. jpg + png of the
+    # same file), plus high-res variants for journalists. Surfacing those
+    # on the Telegraph page produces figures that aren't on the source
+    # article, wasting mobile screen space. Keeping just ``thumbnail``
+    # matches the source page's visible layout 1:1. If a future Mattel
+    # article genuinely uses inline imagery, the right move is to parse
+    # <img> tags out of ``body_html`` — not to trust ``download_media``.
     images: List[str] = []
-    seen_stems: set = set()
-
-    def _stem(url: str) -> str:
-        # Collapse the URL to its filename without extension, so a jpg+png
-        # pair of the same image counts as one. Mattel's Contentstack CDN
-        # often exposes a thumbnail (`…/LEG25_Primary_Logo_white.jpg`) plus
-        # a download_media entry (`…/LEG25_Primary_Logo_white.png`) that
-        # render as two hero figures on the Telegraph page when kept as
-        # separate images — ugly and redundant.
-        path = url.split("?", 1)[0].rsplit("/", 1)[-1]
-        return path.rsplit(".", 1)[0].lower()
-
     thumb_url = (content_article.get("thumbnail") or {}).get("url")
     if thumb_url:
         images.append(thumb_url)
-        seen_stems.add(_stem(thumb_url))
-    for media in article.get("download_media") or []:
-        url = media.get("url")
-        if not url:
-            continue
-        stem = _stem(url)
-        if url in images or stem in seen_stems:
-            continue
-        images.append(url)
-        seen_stems.add(stem)
 
     excerpt = article.get("excerpt") or ""
     if isinstance(excerpt, dict):
