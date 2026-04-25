@@ -183,7 +183,7 @@ None.
 
 ### Unit tests
 
-`tests/test_mattel_news_source.py` — 29 tests after the rewrite (15 keep + 11 update + 3 new):
+`tests/test_mattel_news_source.py` — 32 tests after the rewrite (15 keep + 11 update + 6 new + 1 SSRF guard):
 
 - **`TestIsHotwheels`** (5 keep): substring match on `title` and `handle`, case-insensitive, missing-fields. Parser-agnostic.
 - **`TestBuildEntry`** (5 keep): 5-key dict assembly, excerpt-fallback to title, missing-handle → None, missing-title → None, invalid date → entry kept with `published_parsed=None`. Parser-agnostic.
@@ -284,6 +284,11 @@ The user-spec covers behavior and contract; the items below extend or refine the
 - [ ] Notifier messages format only exception **type** and safe scalars (sizes, slugs, anchor names) — raw `str(exc)` is NOT included.
 - [ ] Both `requests.get` calls pass `allow_redirects=False`.
 - [ ] `httpx`/`urllib3`/`httpcore` log-suppression (set in `news_bot._configure_third_party_logging`) is NOT touched by this module.
+- [ ] `tests/fixtures/mattel_flight_builder.py` defaults use placeholder values only (`example.com`, `placeholder.invalid` thumbnail URLs, deterministic strings) — no real `corporate.mattel.com` / Contentstack CDN URLs in builder defaults so live-traffic surrogates can't accidentally fire from a test run. Real URLs only when callers pass them explicitly.
+
+Notes on rejected validator findings (kept for audit trail):
+- ES6/ES7/ES9/ES9b notifier messages echo `<link>` to admin chat — kept verbatim. Reasoning: SSRF guard (ES10) runs FIRST, so any `link` reaching the article-fetch path has already passed `link.startswith(ARTICLE_URL_PREFIX)` and is therefore a Mattel URL. Echoing the path-only article slug is acceptable hygiene (matches existing autoevolution / lamley notifier patterns) and helps the operator diagnose which article failed.
+- Optional defensive test "both handle and url fail" — not added. Coverage is logically complete via the existing `article entry not found` test (the function falls through both checks and lands on the same error path).
 
 **Verification:**
 
