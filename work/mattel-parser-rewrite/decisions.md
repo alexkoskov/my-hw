@@ -83,6 +83,29 @@ Agent reports on completed tasks. Each entry is written by the agent that execut
 
 ---
 
+## Task 05: pre-deploy-qa
+
+**Status:** Done
+**Commit:** (QA-only — no code changes)
+**Agent:** mattel-pre-deploy-qa
+**Summary:** Pre-deploy QA passed. All 3 audit gates `approved` with zero criticals (code/security/test from Wave 2). Verification steps: Step 1 targeted Mattel suite 44/44 green; Step 3 full repo 417/418 (1 pre-existing unrelated fail in `test_hw_review_retry::TestListFooter::test_list_footer_format_exact`, out-of-scope per Task 01 decisions); Step 4 import smoke `ok`; Step 5 live listing smoke `[]` baseline (0 HW today, STDERR clean); Step 6 not-applicable (no HW link from Step 5); Step 7 anti-drift snapshot smokes ran live within Step 1 (both `/tmp/mattel_*.html` present, 1.27 MB + 1.03 MB) and passed. AC coverage: 13/13 user-spec ACs verified, 8/8 tech-spec security ACs verified (Decision 8 SSRF/regex/depth/hex/bracket/notifier/redirect/logger), 3/3 tech-spec verification ACs verified. Status: **pass**. Feature ready for operator-side `bash deploy.sh` per project_post_mrw_pending.
+**Deviations:** None.
+
+**Deferred to post-deploy:**
+- 7-day operator observation window — verify live HW-release end-to-end (admin chat absence of «Mattel news parsing error» after first cron-tick + HW post landing in `pending_articles` at next Mattel HW release).
+- Live article fetch smoke — Step 5 returned `[]` (baseline: 0 HW today). When next Mattel HW release appears, operator runs `python3 -c "from mattel_news_source import fetch_mattel_article; print(fetch_mattel_article('<HW link>'))"` on VPS; expected dict with non-empty `paragraphs`, STDERR clean.
+
+**Reviews:** N/A (QA task; no reviewers per task frontmatter).
+
+**Verification:**
+- QA report → [logs/tasks/qa-report.json](logs/tasks/qa-report.json)
+- `PYTHONPATH=. pytest tests/test_mattel_news_source.py tests/test_mattel_integration.py -v` → 44 passed in 0.58s
+- `PYTHONPATH=. pytest tests/ -q` → 417 passed, 1 pre-existing unrelated fail (out-of-scope)
+- `PYTHONPATH=. python3 -c "from mattel_news_source import fetch_mattel_news, fetch_mattel_article, MattelNewsError, NEWS_URL, ARTICLE_URL_PREFIX, MAX_RESPONSE_SIZE; print('ok')"` → `ok`
+- `PYTHONPATH=. python3 -c "from mattel_news_source import fetch_mattel_news; print(fetch_mattel_news())"` → `[]`, STDERR clean
+
+---
+
 <!-- Entries are added by agents as tasks are completed.
 
 Format is strict — use only these sections, do not add others.
