@@ -439,3 +439,365 @@ Empty (template comment only). No prior rewrite-specific decisions to honor.
 - `tests/test_mattel_news_source.py`: ~40% of tests likely need updates (all of `TestExtractEntries` + ~half of `TestFetchMattelNews` error paths + all of `TestFetchMattelArticle`). The other ~60% (`TestIsHotwheels`, `TestBuildEntry`, success paths) survive unchanged if we keep the helper signatures.
 - `tests/test_mattel_integration.py`: 2 of 3 tests need a new fixture; all 3 pass with minimal mocking changes.
 - `tests/test_sources_registry.py`, `tests/test_feed_iteration.py`, `tests/test_integration.py`: zero changes expected.
+
+---
+
+## 11. Implementation-level details (added for tech-spec)
+
+### 11.1 Concrete file change inventory
+
+**Production code:**
+- `/workspaces/debian-2/my-hw/mattel_news_source.py` — full rewrite. Public surface preserved verbatim:
+  - Functions: `fetch_mattel_news(url=NEWS_URL, session=None, notifier=None) -> List[Dict]`, `fetch_mattel_article(link, session=None, notifier=None) -> Optional[Dict]`.
+  - Class: `MattelNewsError(Exception)`.
+  - Constants: `NEWS_URL`, `ARTICLE_URL_PREFIX`, `MAX_RESPONSE_SIZE`, `USER_AGENT`, `REQUEST_TIMEOUT`.
+  - Internal helpers preserved by name+signature so existing unit tests can keep working: `_is_hotwheels(entry: dict) -> bool`, `_build_entry(raw: dict) -> Optional[dict]`, `_notify(notifier, message: str) -> None`. (See 11.7 for which TestIsHotwheels/TestBuildEntry tests this protects.)
+  - Internal helper REMOVED: `_NEXT_DATA_RE` regex constant. There is no `__NEXT_DATA__` to match in the new payload.
+  - Internal helper REPLACED: `_extract_entries(html) -> List[dict]` keeps name + signature but its body is rewritten to walk the flight payload. By keeping the name, `tests/test_mattel_news_source.py:18` import keeps working; the test bodies inside `TestExtractEntries` are rewritten (see 11.7).
+
+**Tests:**
+- `/workspaces/debian-2/my-hw/tests/test_mattel_news_source.py` — full rewrite of test infra:
+  - DELETE module-level `FIXTURE_PATH` (lines 24-26) and `fixture_html` fixture (lines 29-32). Replace with synthetic-HTML builder helpers (see 11.4).
+  - DELETE `TestExtractEntries` test bodies that key on `__NEXT_DATA__` literal strings (lines 103-116 — the regex `match="__NEXT_DATA__"` and `match="not found"` and the inline `<script id="__NEXT_DATA__">` HTML strings). Replace with flight-shaped HTML inputs.
+  - DELETE inline `_article_page` helper at lines 225-249 (builds `__NEXT_DATA__` page). Replace with `_make_flight_article` builder.
+  - REWRITE `TestFetchMattelArticle` body of test_null_content_article (line 315-332) — the assertion `'contentArticle is null' in msg` is obsolete; replace with the new "article entry not found in flight payload" wording.
+  - REPLACE the `_NEXT_DATA_RE` import at line 18 — actually, there is no `_NEXT_DATA_RE` import currently (the test imports `_extract_entries`, `_build_entry`, `_is_hotwheels` only); just confirm no test imports `_NEXT_DATA_RE` directly. **Verified by grep: zero callers outside the module itself.** Safe to drop.
+- `/workspaces/debian-2/my-hw/tests/test_mattel_integration.py` — fixture swap only:
+  - REPLACE module-level `FIXTURE_PATH` (lines 23-25) and `setUp` line 32-33 — instead of reading `mattel_news.html` from disk, build the fixture HTML inline via the new `_make_flight_listing` helper (imported from `tests/test_mattel_news_source.py` OR moved into a shared `tests/fixtures/mattel_flight_builder.py` module — recommend the latter for ergonomics; see 11.8).
+  - Test method bodies stay structurally identical: same patches, same assertions on `len(rows) == 1`, same `'hot-wheels' in row['link']`. The only change is the fixture source.
+
+**Fixtures:**
+- `/workspaces/debian-2/my-hw/tests/fixtures/mattel_news.html` — DELETE. 1.16 MB file, no longer needed once builder helpers replace it.
+- Optional add: `/workspaces/debian-2/my-hw/tests/fixtures/mattel_flight_builder.py` — module containing `_make_flight_listing` and `_make_flight_article` (see 11.4). Single source of truth, importable from both test files.
+
+**Cross-repo greps (verified):**
+- `grep -rn "_NEXT_DATA_RE"` — only matches inside `mattel_news_source.py` itself. No external callers. Safe to delete.
+- `grep -rn "_extract_entries"` — only matches inside `mattel_news_source.py` and `tests/test_mattel_news_source.py`. Safe to keep name as internal API; tests update accordingly.
+- `grep -rn "_is_hotwheels"` and `grep -rn "_build_entry"` — same shape: internal + unit-test only. Keep names.
+- `grep -rn "mattel_news.html"` — only matches in `tests/test_mattel_integration.py:24`, `tests/test_mattel_news_source.py:25`, plus `.claudeignore` and historical `work/` markdown. **Two test-file callers, both updated above. No stray references.**
+
+### 11.2 Public-symbol preservation
+
+**External imports of `mattel_news_source.*`:**
+- `/workspaces/debian-2/my-hw/news_bot.py:24`: `from mattel_news_source import fetch_mattel_news, fetch_mattel_article` — the only production import. Both names preserved by the rewrite.
+- `/workspaces/debian-2/my-hw/tests/test_mattel_news_source.py:12-22`: imports `ARTICLE_URL_PREFIX`, `MAX_RESPONSE_SIZE`, `NEWS_URL`, `MattelNewsError`, `_build_entry`, `_extract_entries`, `_is_hotwheels`, `fetch_mattel_article`, `fetch_mattel_news` — all preserved.
+- `/workspaces/debian-2/my-hw/tests/test_mattel_integration.py:72,110,129`: patches `mattel_news_source.requests.get` — module-level `requests` import must stay (no change to import style needed; `import requests` at top of module is the keep-it-simple way).
+- `/workspaces/debian-2/my-hw/tests/test_feed_iteration.py`, `tests/test_integration.py`, `tests/test_sources_registry.py`: patch `news_bot.fetch_mattel_news` — they don't import the source module directly. No constraint on rewrite.
+
+**No aliases needed.** The rewrite preserves every external name. AC11 verifier (the one-liner `python3 -c "from mattel_news_source import ..."`) is satisfied without any compatibility shim.
+
+### 11.3 Internal helper inventory (new private API)
+
+| Helper | Signature | Purpose |
+|---|---|---|
+| `_iter_flight_payloads(html: str) -> Iterator[str]` | str → iterator of unescaped flight chunks | Compile the push-regex once at module level; `findall` over `html`; for each match, `json.loads('"' + raw + '"')` to turn the JS string literal into the inner row content. Yields strings like `"6:[[\"$\",\"div\"..."`. Caller decides whether to take the biggest, all, or filter by row prefix. |
+| `_concat_flight(html: str) -> str` | str → single concatenated unescaped string | Wraps `_iter_flight_payloads`; concatenates all yielded chunks in document order. Needed for body-row reconstruction across boundaries (AC8). |
+| `_extract_listing_entries(html: str) -> List[dict]` | str → list[dict] | Full pipeline for the listing page: pick the largest payload via `_iter_flight_payloads`, find `"article2":{"entries":[`, bracket-match the array, `json.loads` the slice, return the list. Raises `MattelNewsError("flight payload not found")` if zero pushes, `MattelNewsError("article2.entries not found")` if anchor missing, `MattelNewsError("invalid JSON in entries array")` if slice fails to decode. |
+| `_extract_article_entry(html: str, link: str) -> Tuple[dict, str]` | str, str → (entry, unescaped_concat) | Article-page pipeline up to the body-row reference: concat all flight, locate the `article2.entries` array (same anchor as listing), find the entry whose `handle` matches the link's slug or whose `url` matches `link`. Raises `MattelNewsError("flight payload not found")`, `MattelNewsError("article2.entries not found")`, or `MattelNewsError("article entry not found for handle: <slug>")` accordingly. Returns `(entry_dict, unescaped_concat)` so the caller can reuse the concat for body resolution. |
+| `_find_entry_by_handle_or_url(entries: List[dict], link: str) -> Optional[dict]` | list, link → dict-or-None | Slug fallback: extract `slug = link.rsplit('/', 1)[-1].split('?')[0]`. First scan for `entry["handle"] == slug`; if no hit, scan for `entry.get("url") == link` or `entry.get("url", "").endswith("/" + slug)`. Returns first match or `None`. |
+| `_resolve_body_html(unescaped_concat: str, body_ref: str) -> str` | concat, "$54" → body HTML | Reconstruct the RSC text-row referenced by `body_ref`. Strip the `$` prefix to get row id (e.g. `"54"`). Find `<row_id>:T<hex_len>,` in the concat; parse `<hex_len>` as `int(..., 16)`; read exactly that many chars after the comma. Returns the HTML string, or empty string if the row-marker is not found / declared length exceeds available content (treated as content-empty per AC9, NOT an error). Raises nothing. |
+| `_paragraphs_from_body(body_html: str) -> List[str]` | HTML → list[str] | Wrap the existing BeautifulSoup logic (`html.parser`, walk `["p", "li", "h1", "h2", "h3", "h4"]`, `get_text(" ", strip=True)`, drop empty strings). Same shape as the current inline block at `mattel_news_source.py:182-191`. Extracted into a helper for readability and to mirror the lamley_source.py organization. |
+| `_excerpt_to_str(excerpt) -> str` | dict-or-str-or-None → str | Already conceptually present at lines 207-209. Keep a named helper: if dict, return `excerpt.get("text", "")`; if str, return as-is; else `""`. Used by both `_build_entry` (for `summary`) and `fetch_mattel_article` (for `subtitle`). |
+
+**Preserved (kept as today, body unchanged):**
+- `_is_hotwheels(entry: dict) -> bool` — substring match on `title`/`handle`. Unit tests in `TestIsHotwheels` are parser-agnostic; unchanged.
+- `_build_entry(raw: dict) -> Optional[dict]` — same 5-key dict assembly. May internally call `_excerpt_to_str` instead of repeating the dict-or-str logic. Tests in `TestBuildEntry` remain.
+- `_notify(notifier, message: str) -> None` — same swallow-exception logic at lines 134-141.
+
+### 11.4 Test-fixture builder API
+
+Helpers live in either `tests/test_mattel_news_source.py` (alongside tests) or `tests/fixtures/mattel_flight_builder.py` (shared module). Recommendation: shared module to keep `test_mattel_integration.py` clean.
+
+```python
+# tests/fixtures/mattel_flight_builder.py
+import json
+from typing import List, Optional
+
+def _encode_as_js_string_literal(s: str) -> str:
+    """Return s wrapped as a JSON-string-encoded JS string literal body
+    (no surrounding quotes — exactly what self.__next_f.push wants
+    between the outer quotes)."""
+    return json.dumps(s)[1:-1]  # json.dumps adds quotes; we strip them
+
+def _make_flight_listing(entries: List[dict]) -> str:
+    """
+    Assemble a synthetic listing HTML containing a self.__next_f.push
+    chunk that carries the supplied entries in article2.entries.
+
+    Each entry dict is plain Python (no JS escaping); the builder applies
+    the json.dumps + js-string-literal escaping itself.
+
+    Required keys per entry: "handle" (str), "title" (str), "date" (str),
+    "excerpt" (str | dict | ""), "seo_description" (str), "thumbnail"
+    (dict with "url" key) — others are optional and forwarded as-is.
+
+    The output HTML has shape:
+        <html><body>
+        <script>self.__next_f=self.__next_f||[]</script>
+        <script>self.__next_f.push([1,"<encoded-row-6>"])</script>
+        </body></html>
+
+    where <encoded-row-6> is JS-string-escaped form of:
+        6:[{"props":{"pageProps":{"page":{"data":{"state":{
+          "article2":{"entries":[<json.dumps(entries)>]}
+        }}}}}}]
+    (i.e., a wrapping JSON envelope that contains article2.entries —
+    the parser only anchors on 'article2":{"entries":[' so the rest of
+    the envelope is filler.)
+    """
+
+def _make_flight_article(
+    entry: dict,
+    body_html: Optional[str] = None,
+    body_chunks: int = 1,
+) -> str:
+    """
+    Assemble a synthetic article-page HTML.
+
+    The returned HTML has the article's listing-shaped entry inside an
+    article2.entries array (just like the listing fixture, but with one
+    entry — the article itself).
+
+    If body_html is supplied:
+      - The entry's 'body' field is set to "$54" (or another row id).
+      - A T-marker row is emitted: 54:T<hexlen>,<body_html>
+      - body_chunks controls how many self.__next_f.push() calls split
+        the body content. Setting body_chunks > 1 emits the T-marker
+        push, then continues the body across additional pushes that each
+        contribute a slice of the remaining content. This exercises AC8.
+      - The hex-length advertised matches len(body_html); the test
+        validates that reconstruction reads exactly that many chars.
+
+    If body_html is None:
+      - The entry's 'body' field is omitted.
+      - No T-marker row emitted.
+      - Use to exercise AC9 (empty/missing body).
+
+    Special inputs for AC9 negative cases (caller chooses):
+      - body_html='<p>x</p>', body_chunks=1, but the helper accepts a
+        truncate=True kwarg that emits a hex-length larger than the
+        actually-streamed content (simulates an unresolvable reference).
+        Implementation note: add this only if the AC9 test asserts the
+        truncated branch — otherwise leave as-is.
+
+    Output high-level structure for body_chunks=2:
+        <html><body>
+        <script>self.__next_f=self.__next_f||[]</script>
+        <script>self.__next_f.push([1,"6:[{...envelope with entry that has body:'$54'...}]"])</script>
+        <script>self.__next_f.push([1,"54:T<hexlen>,<first half of body>"])</script>
+        <script>self.__next_f.push([1,"<second half of body>"])</script>
+        </body></html>
+    """
+```
+
+**Why this is critical (review feedback):** the round-1 adequacy review flagged "fixture/live divergence" as a top risk. The builder anchors on the same semantic markers the parser uses (`"article2":{"entries":[`, `<row>:T<hex>,<content>`, the `self.__next_f.push([1, "..."])` shape). If the live site changes, both the parser and the builder break together — AND the builder's output format is verified-by-construction against `/tmp/mattel_news.html` and `/tmp/mattel_article.html` snapshots, which are the same shape captured 2026-04-24. To cement the anti-drift guarantee, see 11.9 (smoke test against a real /tmp snapshot).
+
+### 11.5 Live-HTML invariants (semantic anchors)
+
+These exact strings/patterns become "Decisions" in tech-spec:
+
+1. **Push extraction regex (compiled once, module level):**
+   ```python
+   _FLIGHT_PUSH_RE = re.compile(
+       r'self\.__next_f\.push\(\[\s*1\s*,\s*"(.+?)"\s*\]\)',
+       re.DOTALL,
+   )
+   ```
+   The `[1,"..."]` form is the data-push variant. There is also a `[0,...]` bootstrap variant we explicitly do NOT match. `re.DOTALL` is required because the JS string body contains literal newline escapes.
+
+2. **JS string unescape:** `json.loads('"' + raw + '"')` — interprets `\n`, `\"`, `\\`, `\u00xx`, `\xNN`, exactly as Next.js emits them. No alternative needed (no curl_cffi-style trickery, no manual replace).
+
+3. **Listing entries anchor (in unescaped concat):** `"article2":{"entries":[`
+   - Bracket-match starting from the `[` to find the array end (handles nested arrays inside entry dicts — verified that `download_media`, `tags`, `publish_details.environments` all contain nested arrays in live data).
+
+4. **Body row marker pattern (in unescaped concat):**
+   ```
+   <decimal-row-id>:T<lowercase-hex-length>,<content>
+   ```
+   - Row id is decimal integer (verified: live row was `54`).
+   - `T` is uppercase ASCII (RSC marker for text rows; other markers exist like `M` for module rows but we don't read those).
+   - Hex length is lowercase (`1c2a`, not `1C2A`) per RSC encoder convention. Use `int(hex_str, 16)` — case-insensitive parse anyway.
+   - Content immediately follows the comma; its length in chars is exactly the hex value (verified live: `1c2a = 7210`, body was 7210 chars).
+   - Content MAY span across the boundary into the next push — that's why we concat first, then read.
+
+5. **Body reference shape:** entry's `body` field is a string `"$<row-id>"` (verified: `"$54"` on live HALO article). Strip the `$` to get the row-id used in the row-marker scan above.
+
+**Invariants that must hold for parsing to succeed:**
+- Every news listing page has at least one push and the largest push contains `"article2":{"entries":[`. (If site refactor moves data into a smaller push, "biggest push" heuristic breaks; switching to "first push containing the anchor" is the planned hedge — implement as the production approach, since the cost is one substring-search per push.)
+- Article page contains `article2.entries` AND the entry referenced by `link` has a `body: "$<id>"` reference.
+- The referenced row eventually appears as `<id>:T<hex>,<content...>` somewhere in the concatenated flight stream.
+
+**Hedge against future drift (recommended):** Anchor on the substring `"article2":{"entries":[` (semantic) rather than "row 6" (positional). Document this explicitly in tech-spec §Decisions.
+
+### 11.6 Error classification matrix
+
+ES code numbering matches user-spec ACs. Each row: scenario → exception → log level → notifier message → return value.
+
+| ES | Scenario | Exception class | log level | notifier message format | return |
+|---|---|---|---|---|---|
+| ES1 | HTTP error on listing GET (`requests.RequestException`) | swallowed (caught at boundary) | logger.error | `f"Mattel news HTTP error: {exc}"` | `[]` |
+| ES2 | Listing response > 5 MB | `MattelNewsError` raised then caught | logger.error | `f"Mattel news response too large: {len(content)} bytes"` | `[]` |
+| ES3 | Listing has no flight pushes | `MattelNewsError("flight payload not found")` | logger.error | `f"Mattel news parsing error: flight payload not found"` | `[]` |
+| ES4 | Listing flight present but no `article2.entries` anchor | `MattelNewsError("article2.entries not found")` | logger.error | `f"Mattel news parsing error: article2.entries not found"` | `[]` |
+| ES5 | Listing entries array fails to JSON-decode | `MattelNewsError("invalid JSON in entries array: {e}")` | logger.error | `f"Mattel news parsing error: invalid JSON in entries array: {e}"` | `[]` |
+| ES6 | Article HTTP 404 (`raise_for_status` → `HTTPError`) | swallowed | logger.error | `f"Mattel article fetch error ({link}): {exc}"` | `None` |
+| ES7 | Article HTTP non-404 error (timeout, ConnectionError, 5xx) | swallowed | logger.error | `f"Mattel article fetch error ({link}): {exc}"` | `None` |
+| ES8 | Article > 5 MB | `MattelNewsError` | logger.error | `f"Mattel article response too large: {len(content)} bytes"` | `None` |
+| ES9 | Article flight present but no `article2.entries` (rare; live 404 alternative) | `MattelNewsError("article2.entries not found")` | logger.error | `f"Mattel article fetch error ({link}): article2.entries not found"` | `None` |
+| ES9b | Article entry not found by handle/url within entries | `MattelNewsError("article entry not found for handle: <slug>")` | logger.error | `f"Mattel article fetch error ({link}): article entry not found for handle: {slug}"` | `None` |
+| ES9c | Body resolution: row marker missing or length > available (per AC9) | NOT raised — content-empty path | logger.debug only (no notifier) | none | dict with `paragraphs=[]` |
+
+Note ES9c: AC9 explicitly says empty/unresolvable body is content-empty, not a parse error. `news_bot.job()` then skips the row at line 1232 (`if not article or not article.get('paragraphs'): continue`) — this is the existing skip path and remains correct.
+
+`_notify` swallows notifier exceptions (current behavior, lines 134-141). Preserve.
+
+### 11.7 Test inventory delta
+
+**`tests/test_mattel_news_source.py`:**
+
+| Test (class.method) | Action | Notes |
+|---|---|---|
+| TestIsHotwheels.test_matches_title | KEEP | `_is_hotwheels` unchanged |
+| TestIsHotwheels.test_matches_handle | KEEP | |
+| TestIsHotwheels.test_case_insensitive | KEEP | |
+| TestIsHotwheels.test_does_not_match_unrelated | KEEP | |
+| TestIsHotwheels.test_missing_fields | KEEP | |
+| TestBuildEntry.test_builds_all_fields | KEEP | `_build_entry` unchanged |
+| TestBuildEntry.test_empty_excerpt_falls_back_to_title | KEEP | |
+| TestBuildEntry.test_missing_handle_returns_none | KEEP | |
+| TestBuildEntry.test_missing_title_returns_none | KEEP | |
+| TestBuildEntry.test_invalid_date_keeps_entry | KEEP | |
+| TestExtractEntries.test_extracts_from_fixture | UPDATE | Replace fixture-file load with `_make_flight_listing([...])`. Assert `len(entries) == N` where N is the synthetic count. |
+| TestExtractEntries.test_missing_next_data_raises | UPDATE | Rename to `test_missing_flight_payload_raises`; input is `<html><body>no data</body></html>` (still empty); assert `MattelNewsError` with `match="flight payload not found"`. |
+| TestExtractEntries.test_invalid_json_raises | UPDATE | Build a flight push that decodes to invalid JSON inside `article2.entries`. Assert `match="invalid JSON"`. |
+| TestExtractEntries.test_missing_entries_path_raises | UPDATE | Build a flight push without the `article2.entries` anchor (e.g., empty payload object). Assert `match="article2.entries not found"`. |
+| TestFetchMattelNews.test_success_filters_hotwheels_only | UPDATE | Swap fixture for `_make_flight_listing([HW, non-HW, non-HW])`; expect `len == 1`. |
+| TestFetchMattelNews.test_http_error_returns_empty_and_notifies | KEEP | parser-agnostic |
+| TestFetchMattelNews.test_connection_error_returns_empty_and_notifies | KEEP | parser-agnostic |
+| TestFetchMattelNews.test_missing_next_data_returns_empty_and_notifies | UPDATE | Rename to `test_missing_flight_payload_returns_empty_and_notifies`; assertion `"parsing error"` and `"flight payload not found"` in message. |
+| TestFetchMattelNews.test_invalid_json_returns_empty_and_notifies | UPDATE | Build flight HTML with invalid JSON in entries; same assertion shape. |
+| TestFetchMattelNews.test_missing_entries_path_returns_empty_and_notifies | UPDATE | Build flight HTML without `article2.entries`; same. |
+| TestFetchMattelNews.test_notifier_failure_does_not_raise | KEEP | mechanism-only |
+| TestFetchMattelNews.test_oversized_response_returns_empty_and_notifies | KEEP | uses `MAX_RESPONSE_SIZE` only, no payload format involved |
+| TestFetchMattelNews.test_no_notifier_is_ok | KEEP | mechanism-only |
+| TestFetchMattelArticle.test_parses_paragraphs_and_uses_thumbnail_only | UPDATE | Build via `_make_flight_article(entry={...thumb..., download_media:[2 items]}, body_html='<p>...</p>...')`; assertions unchanged. |
+| TestFetchMattelArticle.test_no_thumbnail_yields_empty_images_regardless_of_download_media | UPDATE | Builder, entry without thumbnail. |
+| TestFetchMattelArticle.test_missing_excerpt_yields_empty_subtitle | UPDATE | Builder, excerpt=''. |
+| TestFetchMattelArticle.test_http_error_returns_none_and_notifies | KEEP | mechanism-only |
+| TestFetchMattelArticle.test_missing_next_data_returns_none_and_notifies | UPDATE | Rename → `test_missing_flight_payload_returns_none_and_notifies`. |
+| TestFetchMattelArticle.test_oversized_response_returns_none | KEEP | mechanism-only |
+| TestFetchMattelArticle.test_null_content_article_returns_none_with_readable_error | UPDATE | Rename → `test_article_entry_not_found_returns_none_with_readable_error`; build flight without the requested handle in `article2.entries`; assert message contains `'article entry not found'` (not `'contentArticle is null'`). |
+| **NEW** TestFetchMattelArticle.test_body_split_across_multiple_chunks | NEW | AC8: build via `_make_flight_article(body_html='<p>A</p><p>B</p><p>C</p>', body_chunks=3)`; assert `paragraphs == ['A', 'B', 'C']`. |
+| **NEW** TestFetchMattelArticle.test_empty_body_returns_paragraphs_empty | NEW | AC9 first half: build via `_make_flight_article(body_html=None)`; assert `out['paragraphs'] == []`, `notifier.assert_not_called()`. |
+| **NEW** TestFetchMattelArticle.test_truncated_body_returns_paragraphs_empty | NEW | AC9 second half: build with `truncate=True` (advertised hex-length > actual chars); same assertion. |
+
+Net delta: **15 KEEP**, **11 UPDATE**, **0 DELETE**, **3 NEW** = 29 tests in the new file (vs. 26 in current).
+
+**`tests/test_mattel_integration.py`:**
+
+| Test | Action | Notes |
+|---|---|---|
+| test_mattel_post_flows_into_pending_queue | UPDATE | Replace `self.fixture_html = open(FIXTURE_PATH).read()` with `self.fixture_html = _make_flight_listing([HW_entry, ...non-HW filler])`. Assertions unchanged. |
+| test_mattel_http_failure_does_not_crash_job | KEEP | No fixture used (forces ConnectionError). |
+| test_mattel_duplicate_is_not_restaged | UPDATE | Same fixture swap as test 1. |
+
+Net delta: **1 KEEP**, **2 UPDATE**, **0 DELETE**, **0 NEW** = 3 tests.
+
+### 11.8 Wave/task decomposition feasibility
+
+**Two viable shapes:**
+
+**Shape A — atomic single-wave rewrite (RECOMMENDED).**
+- One implementation task: rewrite `mattel_news_source.py` AND `tests/test_mattel_news_source.py` AND `tests/test_mattel_integration.py` AND delete `tests/fixtures/mattel_news.html` AND add `tests/fixtures/mattel_flight_builder.py` — all in one PR, one commit boundary.
+- One test-validation task: run `pytest tests/ -v` and `pytest tests/test_mattel_news_source.py tests/test_mattel_integration.py -v`; verify 0 failures.
+- These two tasks can run sequentially (test task validates the implementation), or the implementation task can self-verify and the test task is skipped — the codebase practice (per CLAUDE.md and existing feature workflow) is for the implementation task to include test execution.
+
+**Shape B — staged waves (NOT recommended for this rewrite).**
+- Wave A: add `tests/fixtures/mattel_flight_builder.py` + write builder + write a single round-tripping unit test that reads `/tmp/mattel_news.html` (if present) and asserts the builder output parses identically to the live snapshot.
+- Wave B: rewrite parser; rewrite `test_mattel_news_source.py` to use the builder; rewrite `test_mattel_integration.py` to use the builder.
+- Wave C: full pytest run + live smoke.
+
+**Reasoning for A:** the rewrite is a tightly-coupled refactor — parser and tests must change together because the contract from parser-to-test runs through both directions: the parser reads the builder's output, AND the tests assert what the parser returns. Splitting them creates an intermediate state where either (a) tests reference `__NEXT_DATA__` but parser doesn't read it (whole test file red), or (b) parser reads flight format but fixture file is the old format (extract_entries breaks). Single PR avoids ever-broken intermediate states. The work is small (parser ≈ 150 lines, builder ≈ 100 lines, tests delta ≈ 200 lines); single-wave is reasonable.
+
+**Recommendation: Shape A.** Single implementation task in `tasks/01-rewrite-parser.md`, no separate test task. Validate via `pytest` step inside the same task.
+
+### 11.9 Risks to retest (anti-drift safety net)
+
+**Recommendation: YES, add a smoke test guarded on `/tmp/mattel_news.html` existence.**
+
+```python
+# tests/test_mattel_news_source.py — NEW test, end of TestFetchMattelNews class
+def test_live_snapshot_parses_without_notifier_if_present(self, tmp_path):
+    """
+    Anti-drift guard: if /tmp/mattel_news.html exists (operator placed it
+    during research), assert that the rewritten parser yields a list
+    (possibly empty) with no notifier calls. Skipped in CI where the
+    snapshot is absent. This catches builder/live divergence that pure
+    synthetic-fixture tests miss.
+    """
+    snapshot = "/tmp/mattel_news.html"
+    if not os.path.exists(snapshot):
+        pytest.skip("live snapshot not available")
+    with open(snapshot, encoding="utf-8") as f:
+        html = f.read()
+    session = MagicMock()
+    session.get.return_value = _make_response(text=html)
+    notifier = MagicMock()
+    entries = fetch_mattel_news(session=session, notifier=notifier)
+    assert isinstance(entries, list)
+    notifier.assert_not_called()
+```
+
+Pros: catches the exact failure mode round-1 review flagged (R2 in user-spec) — synthetic fixtures pass while live format breaks. Cost is zero in CI (pytest.skip when file absent). Cost when present is one parse of the 1.27 MB file (< 50 ms).
+
+Cons: relies on `/tmp` snapshot which is operator-managed; can drift out of date. **Mitigation:** document in tech-spec §Verification that the operator runs `curl -A "Mozilla/5.0 ..." https://corporate.mattel.com/news -o /tmp/mattel_news.html` before running the test suite locally for high-confidence verification. CI doesn't need this — CI exercises only the synthetic builder.
+
+Same idea applies to `/tmp/mattel_article.html` for `fetch_mattel_article` — second smoke test, same shape, same skip-when-absent guard.
+
+### 11.10 Verification plan for tech-spec
+
+Concrete command list for the AVP (Agent Verification Plan) section of tech-spec:
+
+```bash
+# 1. Targeted Mattel test pass
+cd /workspaces/debian-2/my-hw && pytest tests/test_mattel_news_source.py tests/test_mattel_integration.py -v
+# Expect: all green, 32 tests passing (29 unit + 3 integration), 0 skipped (or 2 skipped if /tmp snapshots absent)
+
+# 2. Full repo test pass
+cd /workspaces/debian-2/my-hw && pytest tests/ -q
+# Expect: all green; no Mattel-related regressions in test_sources_registry / test_feed_iteration / test_integration
+
+# 3. Import smoke (AC11)
+cd /workspaces/debian-2/my-hw && python3 -c "from mattel_news_source import fetch_mattel_news, fetch_mattel_article, MattelNewsError, NEWS_URL, ARTICLE_URL_PREFIX, MAX_RESPONSE_SIZE; print('ok')"
+# Expect: prints 'ok'
+
+# 4. Live listing smoke (AC13)
+cd /workspaces/debian-2/my-hw && python3 -c "from mattel_news_source import fetch_mattel_news; print(fetch_mattel_news())"
+# Expect: '[]' (typical — no HW today) OR a valid list of dicts with 5 keys each. STDERR empty.
+
+# 5. Live article smoke (only if a HW link is currently in the listing)
+cd /workspaces/debian-2/my-hw && python3 -c "from mattel_news_source import fetch_mattel_article; import json; print(json.dumps(fetch_mattel_article('<HW link>'), indent=2)[:500])"
+# Expect: dict with 4 keys, paragraphs non-empty, images = [thumbnail-url] or []
+
+# 6. Optional structural-shape regression: parse current /tmp snapshots end-to-end
+cd /workspaces/debian-2/my-hw && python3 -c "
+from mattel_news_source import _extract_entries, fetch_mattel_news
+import os
+if os.path.exists('/tmp/mattel_news.html'):
+    with open('/tmp/mattel_news.html') as f: html = f.read()
+    entries = _extract_entries(html)
+    print(f'parsed {len(entries)} entries')
+    assert len(entries) == 7, f'expected 7 entries on 2026-04-24 snapshot, got {len(entries)}'
+    print('shape ok')
+else:
+    print('no /tmp snapshot, skipping')
+"
+
+# 7. lint / mypy — N/A for this repo (no current type-check infra in CI). Skip.
+```
+
+The 7 commands fully cover AC1–AC13. Command 4 covers AC13 directly. Command 1 covers AC1, AC3, AC6, AC7, AC8, AC9, AC10, AC12. Command 3 covers AC11. Command 6 is the anti-drift cross-check (R2 mitigation, 11.9 logic).
+
+**Operator-side verification** (per user-spec §Пользователь проверяет):
+- 12+h after deploy, eyeball Telegram admin chat — expect zero `Mattel news parsing error` messages.
+- 7-day window or until next HW press release: monitor `pending_articles` for a `source_name='mattel'` entry to confirm production end-to-end.
