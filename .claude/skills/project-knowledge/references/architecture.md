@@ -32,7 +32,7 @@ my-hw/
 │                              Runs in Claude Code session, NOT on production cron server.
 ├── telegraph_publisher.py   # Telegra.ph API client + public preview_nodes() node-tree builder
 ├── autoevolution_source.py  # RSS + Cloudflare-bypass scrape (curl_cffi)
-├── mattel_news_source.py    # corporate.mattel.com via __NEXT_DATA__ ⚠️ see patterns.md Known Issues
+├── mattel_news_source.py    # corporate.mattel.com via RSC flight payload (Next.js App Router)
 ├── lamley_source.py         # lamleygroup.com HTML scrape
 ├── feeds.json               # List of RSS URLs (3 entries: 2 autoevolution + 1 lamley)
 ├── deploy.sh                # SCP-based deploy to VPS; FILES list excludes operator-only modules
@@ -93,8 +93,13 @@ my-hw/
 
 **corporate.mattel.com**
 - **Purpose:** Source for Mattel PR / announcement articles.
-- **Auth method:** None. Parsed via the `__NEXT_DATA__` JSON embedded in
-  the HTML.
+- **Auth method:** None. Parsed via the embedded RSC flight payload
+  (`self.__next_f.push([1, "..."])`) — Mattel migrated to Next.js App
+  Router in 2026-04, so the legacy `__NEXT_DATA__` script tag is gone.
+  Listing entries are extracted from the largest push under the anchor
+  `"article2":{"entries":[`; article bodies are reconstructed from a
+  separate text-row marker `<row-id>:T<hex-len>,<content>` referenced
+  by `body: "$<row-id>"`.
 
 **autoevolution.com (behind Cloudflare)**
 - **Purpose:** Primary RSS source + full article scrape.
@@ -185,9 +190,6 @@ git-ignored. None of these are persisted to the database.
 ---
 
 ## Planned Enhancements
-
-**Mattel parser rewrite** (known issue — see patterns.md)
-- Mattel moved to Next.js App Router; `__NEXT_DATA__` is gone from live HTML. Parser silently returns `[]`. Fix direction: parse RSC flight-payload, or undocumented API, or headless browser.
 
 **LLM-powered transcreation fallback** (closes style drift between manual path and auto-fallback)
 - Current `_fallback_publish` uses `transcreate_text` (Google Translate + regex). Manual path uses Claude via `ux-guidelines.md`. Styles diverge visibly. Future: route auto-fallback through an LLM call with the same prompt.

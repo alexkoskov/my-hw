@@ -33,7 +33,7 @@ Currently users have to regularly check multiple sites, translate articles thems
 
 - **Manual-review workflow** — operator in a Claude Code session uses `hw_review.py` CLI (`list / show / stage / skip / preview / publish / take / retry`) to translate articles style-pinned to `ux-guidelines.md` (role: ведущий редактор/локализатор). Strict 1:1 transcreation; 2-3 alt titles per article.
 - **Local HTML preview** — `preview_renderer` renders the proposed Telegraph node tree into a sandboxed HTML file under `~/.cache/hw-review/` (CSP meta, tag/URL allowlists, path guard). Operator opens in browser before publish.
-- **Multi-source aggregation** — 3 sources via `SOURCES` registry: autoevolution (RSS + Cloudflare-bypass scrape), lamley (RSS + HTML scrape), mattel (via `__NEXT_DATA__` — ⚠️ currently broken, see patterns.md Known Issues).
+- **Multi-source aggregation** — 3 sources via `SOURCES` registry: autoevolution (RSS + Cloudflare-bypass scrape), lamley (RSS + HTML scrape), mattel (RSC flight-payload parser, see patterns.md "Mattel RSC flight-payload parser").
 - **4-table state model** — `processed_news` (dedup), `pending_articles` (WIP queue ≤10, cap configurable), `published_articles` (audit with `via_review` flag), `failed_articles` (dead letter after 3 GT attempts).
 - **Idempotent publishing** — Decision 9: Telegraph URL persisted before Telegram send, so retries after teaser failure reuse the same Telegraph page (no orphan pages on the account).
 - **Two safety nets** — idle-fallback (auto-publish via Gemini after ~24h operator absence) and overflow fast-track (newest-10 window rule: anything exceeding queue cap goes through Gemini).
@@ -56,16 +56,17 @@ Currently users have to regularly check multiple sites, translate articles thems
 
 **Delivered**
 - Multiple RSS feeds via `feeds.json` — see `work/completed/multiple-rss-feeds/`
-- Mattel corporate news source — see `work/mattel-news-source/` (⚠️ live parser now broken by Next.js migration, see patterns.md)
+- Mattel corporate news source — see `work/mattel-news-source/` (original) + `work/completed/mattel-parser-rewrite/` (RSC flight-payload rewrite, 2026-04-25)
 - Lamley source, Cloudflare bypass for autoevolution, locked channel-post format — see `work/telegraph-pipeline/`
 - Legacy Gemini-based transcreation (now used only by `_fallback_publish`)
 - **Manual-review-workflow** — see `work/completed/manual-review-workflow/`. Split pipeline into cron prep + operator-driven review CLI. 10 coding tasks + 3 audits + pre/post-deploy QA + ~5 ad-hoc fixes landed during live QA. 407 pytest tests.
+- **Mattel-parser-rewrite** — see `work/completed/mattel-parser-rewrite/`. Replaced `__NEXT_DATA__` extraction with RSC flight-payload parser after Mattel migrated to Next.js App Router. 1 atomic implementation task + 3 audits + pre-deploy QA. 44 Mattel tests, 0 critical findings, 0 new dependencies.
 
 **Near-term enhancements (Planned)**
-- Mattel parser rewrite (live HTML no longer has `__NEXT_DATA__`)
 - LLM-powered transcreation for the auto-fallback path — closes the style drift vs manual path (archived in `work/archived/llm-transcreation-deferred/`)
 - Cross-article linking (`runs[].href` → our own Telegraph URLs when already published)
 - Production observability beyond admin pings (uptime, failure digest)
+- Bug-fix for `tests/test_hw_review_retry.py::TestListFooter::test_list_footer_format_exact` — pre-existing list-footer order issue, not blocking
 
 **Future ideas (Backlog)**
 - Web dashboard for configuration and monitoring
