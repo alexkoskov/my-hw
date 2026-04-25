@@ -21,7 +21,7 @@ The migration is shipped as a single atomic wave: parser, tests, and fixture-bui
 
 - **`mattel_news_source.py`** — full body rewrite. Public exports preserved verbatim. Adds private helpers `_iter_flight_payloads`, `_concat_flight`, `_extract_listing_entries` (replaces `_extract_entries` body), `_extract_article_entry`, `_find_entry_by_handle_or_url`, `_resolve_body_html`, `_paragraphs_from_body`, `_excerpt_to_str`. Internal helpers `_is_hotwheels`, `_build_entry`, `_notify` keep names + signatures so existing unit tests in `TestIsHotwheels` / `TestBuildEntry` continue to pass without changes.
 - **`tests/fixtures/mattel_flight_builder.py`** — new shared module exporting `_make_flight_listing(entries)` and `_make_flight_article(entry, body_html=None, body_chunks=1, truncate=False)`. Builds synthetic HTML whose RSC-flight obramlenie matches the live 2026-04-24 snapshots, so the parser sees the same anchors in synthetic and live HTML.
-- **`tests/test_mattel_news_source.py`** — test infrastructure rewritten: drops file-fixture loader and `_article_page` helper, imports builders. Test-class structure preserved. 10 keep + 11 update + 3 new.
+- **`tests/test_mattel_news_source.py`** — test infrastructure rewritten: drops file-fixture loader and `_article_page` helper, imports builders. Test-class structure preserved. 15 keep + 11 update + 6 new (3 from code-research §11.7 plus 3 added in round-2 to close coverage gaps for AC3, AC6 dict-form, AC7 url-fallback).
 - **`tests/test_mattel_integration.py`** — fixture source swap; test bodies and assertions unchanged. 1 keep + 2 update.
 - **`tests/fixtures/mattel_news.html`** — deleted (1.16 MB, no longer needed).
 
@@ -29,29 +29,46 @@ The migration is shipped as a single atomic wave: parser, tests, and fixture-bui
 
 **Listing path (`fetch_mattel_news`):**
 
-1. HTTP GET on `https://corporate.mattel.com/news` — Chrome UA, 15 s timeout, 5 MB guard.
-2. `_extract_listing_entries(html)` runs the pipeline: regex-find all `self.__next_f.push([1, "..."])` payloads → JS-string-unescape each via `json.loads('"' + raw + '"')` → pick the chunk containing the listing anchor `"article2":{"entries":[` → bracket-match the array → `json.loads` the slice → return the list of entry dicts.
-3. Filter via `_is_hotwheels` (substring match on `title` / `handle`) — unchanged.
-4. Build feedparser-shaped dicts via `_build_entry` — unchanged 5-key shape (`link`, `title`, `summary`, `published_parsed`, `feed_url`).
+1. HTTP GET on `https://corporate.mattel.com/news` — Chrome UA, 15 s timeout, 5 MB guard, `allow_redirects=False` (Decision 8).
+2. `MAX_RESPONSE_SIZE` enforced BEFORE any regex/JSON parsing.
+3. `_extract_listing_entries(html)` runs the pipeline: regex-find all `self.__next_f.push([1, "..."])` payloads (linear-time pattern with character-class body, no `(.+?)` — Decision 8) → JS-string-unescape each via `json.loads('"' + raw + '"')` → pick the chunk containing the listing anchor `"article2":{"entries":[` → bracket-match the array (max-iter cap, hex-length sanity bound — Decision 8) → `json.loads` the slice → return the list of entry dicts.
+4. Filter via `_is_hotwheels` (substring match on `title` / `handle`) — unchanged.
+5. Build feedparser-shaped dicts via `_build_entry` — unchanged 5-key shape (`link`, `title`, `summary`, `published_parsed`, `feed_url`).
 
 **Article path (`fetch_mattel_article`):**
 
-1. HTTP GET on the article URL — same headers/guards.
-2. `_extract_article_entry(html, link)` concatenates ALL flight pushes into a single unescaped string (boundary-blind for body resolution), locates `"article2":{"entries":[`, finds the entry whose `handle` matches the URL slug (fallback: scan for entry `url == link`). Raises `MattelNewsError("article entry not found ...")` if neither hits.
-3. Read entry's `body` field (`"$<row-id>"`); if absent → returns dict with `paragraphs=[]`, no notifier (AC9).
-4. `_resolve_body_html(concat, body_ref)` finds `<row-id>:T<hex-len>,` in the concat and reads exactly `<hex-len>` chars of content (length parsed `int(hex, 16)`). If the marker is missing or the advertised length exceeds the stream → returns `""`, treated as content-empty (AC9).
-5. `_paragraphs_from_body(body_html)` walks the BeautifulSoup tree (`p`, `li`, `h1`–`h4`) and emits text — same logic the current code has inline.
-6. Thumbnail-only image policy preserved: `images = [entry["thumbnail"]["url"]]` if present, else `[]`. `download_media` ignored.
+1. **SSRF guard:** before any HTTP call, validate `link.startswith(ARTICLE_URL_PREFIX)`; on mismatch raise `MattelNewsError("invalid article link prefix")` → notifier → `None` (Decision 8 / ES10).
+2. HTTP GET on the article URL — same headers/guards as listing, `allow_redirects=False`.
+3. `_extract_article_entry(html, link)` concatenates ALL flight pushes into a single unescaped string (boundary-blind for body resolution), locates `"article2":{"entries":[`, finds the entry whose `handle` matches the URL slug (fallback: scan for entry `url == link`). Raises `MattelNewsError("article entry not found ...")` if neither hits.
+4. Read entry's `body` field (`"$<row-id>"`); if absent → returns dict with `paragraphs=[]`, no notifier (AC9).
+5. `_resolve_body_html(concat, body_ref)` finds `<row-id>:T<hex-len>,` in the concat and reads exactly `<hex-len>` chars of content. Hex length is parsed `int(hex, 16)` and capped at `MAX_RESPONSE_SIZE` (Decision 8) — anything above the cap is treated as content-empty. If the marker is missing or the advertised length exceeds the available stream → returns `""`, treated as content-empty (AC9).
+6. `_paragraphs_from_body(body_html)` walks the BeautifulSoup tree (`p`, `li`, `h1`–`h4`) and emits text — same logic the current code has inline.
+7. Thumbnail-only image policy preserved: `images = [entry["thumbnail"]["url"]]` if present, else `[]`. `download_media` ignored.
 
-**Error handling:** every error path goes through `_notify(notifier, message)` (preserves swallow-exception behavior) and returns `[]` / `None`. See Decision 6 + the error matrix in `code-research.md` §11.6 for exact messages.
+**Error handling — error matrix (inline; preserves fail-soft contract from Decision 6):**
+
+| ES | Scenario | Exception class | log level | notifier message format | return |
+|---|---|---|---|---|---|
+| ES1 | Listing HTTP error (`requests.RequestException`) | swallowed at boundary | `logger.error` | `"Mattel news HTTP error: <type>"` (sanitised — see Decision 8) | `[]` |
+| ES2 | Listing response > 5 MB | `MattelNewsError` raised + caught | `logger.error` | `"Mattel news response too large: <bytes> bytes"` | `[]` |
+| ES3 | Listing has no flight pushes (incl. old `__NEXT_DATA__` rollback HTML) | `MattelNewsError("flight payload not found")` | `logger.error` | `"Mattel news parsing error: flight payload not found"` | `[]` |
+| ES4 | Listing flight present but no `article2.entries` anchor | `MattelNewsError("article2.entries not found")` | `logger.error` | `"Mattel news parsing error: article2.entries not found"` | `[]` |
+| ES5 | Listing entries fail to JSON-decode (incl. `RecursionError` on deep nesting) | `MattelNewsError("invalid JSON in entries array: <type>")` | `logger.error` | `"Mattel news parsing error: invalid JSON in entries array: <type>"` | `[]` |
+| ES6 | Article HTTP 4xx/5xx (`raise_for_status` → `HTTPError`) | swallowed | `logger.error` | `"Mattel article fetch error (<link>): <type>"` (sanitised) | `None` |
+| ES7 | Article HTTP non-status error (timeout, connection) | swallowed | `logger.error` | same shape as ES6 | `None` |
+| ES8 | Article > 5 MB | `MattelNewsError` | `logger.error` | `"Mattel article response too large: <bytes> bytes"` | `None` |
+| ES9 | Article flight has no `article2.entries` | `MattelNewsError("article2.entries not found")` | `logger.error` | `"Mattel article fetch error (<link>): article2.entries not found"` | `None` |
+| ES9b | Article entry not found by handle/url | `MattelNewsError("article entry not found for handle: <slug>")` | `logger.error` | `"Mattel article fetch error (<link>): article entry not found for handle: <slug>"` | `None` |
+| ES9c | Body resolution: row marker missing OR length > available OR length > MAX_RESPONSE_SIZE (per AC9) | NOT raised — content-empty path | `logger.debug` only (no notifier) | none | dict with `paragraphs=[]` |
+| ES10 | SSRF guard: link does not start with `ARTICLE_URL_PREFIX` | `MattelNewsError("invalid article link prefix")` | `logger.error` | `"Mattel article fetch error: invalid article link prefix"` (link itself NOT echoed to avoid amplifying the malicious URL into admin chat) | `None` |
+
+`_notify` swallows notifier exceptions (current behavior at `mattel_news_source.py:134-141`). Preserved.
+
+**Backward-rollback handling:** if Mattel rolls back to old `__NEXT_DATA__` HTML, the listing path returns `[]` via ES3 ("flight payload not found"). Operator gets a single notifier ping per cron tick — same fail-soft surface as today's silent regression, just with a different message. No automatic dual-format support; rollback recovery is a separate feature per Decision 5.
 
 ### Shared resources
 
-| Resource | Owner (creates) | Consumers | Instance count |
-|----------|-----------------|-----------|----------------|
-| `_FLIGHT_PUSH_RE` (compiled regex) | `mattel_news_source` (module level) | `_iter_flight_payloads` | 1 (module-level constant, lazy-shared by all callers) |
-
-No DB pools, no LLM clients, no browser instances introduced. Single `requests.Session` is optional and passed in by callers (existing pattern).
+None. No DB pools, no LLM clients, no browser instances. Module-level compiled regex is standard Python practice, not a heavy shared resource. Single `requests.Session` remains an optional caller-passed parameter (existing pattern).
 
 ## Decisions
 
@@ -93,7 +110,7 @@ No DB pools, no LLM clients, no browser instances introduced. Single `requests.S
 
 ### Decision 6: error matrix — preserve fail-soft contract
 
-**Decision:** Every error path calls `_notify(notifier, message)` and returns `[]` / `None`. See `code-research.md` §11.6 for the 12-row matrix mapping each scenario (HTTP failures, oversized response, missing flight, missing anchor, JSON-decode error, missing entry by handle/url, body row not found / advertised length exceeds stream) to its exception class, log level, notifier message, and return value.
+**Decision:** Every error path calls `_notify(notifier, message)` and returns `[]` / `None`. The full 12-row matrix (ES1–ES10) is reproduced inline in Architecture → "How it works" → "Error handling" — single source of truth for reviewers and implementers.
 **Rationale:** Supports user-spec Constraint "Fail-soft с админ-уведомлением" and AC4 / AC5 / AC7. The current module's contract — `news_bot.job()` keeps running on per-source failure — is preserved verbatim. ES9c (body-row missing or advertised length > available) is intentionally NOT a notifier-trigger, per AC9 (content-empty path).
 
 ### Decision 7: anti-drift snapshot smoke test
@@ -103,6 +120,22 @@ No DB pools, no LLM clients, no browser instances introduced. Single `requests.S
 **Alternatives considered:**
 - Live HTTP hit in CI — rejected: flaky, Mattel may block, HW gaps are normal (user-spec testing strategy).
 - No anti-drift check — rejected: adequacy round-1 explicitly flagged this gap and it's the highest-impact remaining failure mode.
+
+### Decision 8: security hardening for the HTTP scraper boundary
+
+**Decision:** [TECHNICAL] Apply six security controls absent from the current module and not explicit in user-spec:
+
+1. **SSRF guard.** `fetch_mattel_article(link)` validates `link.startswith(ARTICLE_URL_PREFIX)` before any HTTP call; mismatch → `MattelNewsError` (ES10) → notifier (link itself NOT echoed) → `None`.
+2. **Linear-time push regex.** Replace catastrophic-backtracking-prone `r'self\.__next_f\.push\(\[\s*1\s*,\s*"(.+?)"\s*\]\)'` with a JS-string-literal-correct character-class form: `r'self\.__next_f\.push\(\[\s*1\s*,\s*"((?:[^"\\\\]|\\\\.)*)"\s*\]\)'`. Eliminates `.+?` lazy backtracking and correctly handles JS-escaped `\"` inside push bodies.
+3. **JSON depth/recursion guard.** Wrap `json.loads` calls (both unescape and entries-array decode) in `try / except (json.JSONDecodeError, RecursionError, ValueError)` → ES5. Mattel HTML is bounded by `MAX_RESPONSE_SIZE = 5 MB`, so memory is bounded; the only remaining risk is `RecursionError` on deeply nested adversarial JSON.
+4. **Bracket-match safety.** `_extract_listing_entries` bracket-match runs with an explicit max-iteration cap (`len(unescaped)` — depth and string-literal aware: skip over `"..."` runs and `\\` escapes); if depth never returns to zero by EOF → ES4. `_resolve_body_html` parses hex length, but rejects any value > `MAX_RESPONSE_SIZE` (treated as content-empty per ES9c) so an attacker-supplied `int("ffffffff", 16)` cannot trigger an OOM slice.
+5. **Notifier sanitisation.** Notifier messages format only the exception **type** + safe scalars (sizes, anchor names, slugs). Raw `str(exc)` is NOT included — prevents URL/header/cookie leakage from `requests` exceptions into the admin chat.
+6. **Redirect & log hygiene.** `requests.get(..., allow_redirects=False)` for both fetches — Mattel's URLs are stable and a redirect would only mask CDN-edge surprises. The existing `httpx`/`urllib3`/`httpcore` INFO suppression in `news_bot._configure_third_party_logging` is preserved unchanged (Mattel module never touches logger config).
+
+**Rationale:** Round-1 security review (`security-review.json`) flagged 1 critical (SSRF) and 3 major (ReDoS, JSON depth, bracket-match safety) findings; these controls close all of them at trivial code cost. None of these were called out in user-spec, so the decision is `[TECHNICAL]` and recorded in `User-Spec Deviations`.
+
+**Alternatives considered:**
+- Skip these and accept residual risk — rejected: `fetch_mattel_article(link)` is reachable from a hypothetical future entry source whose URLs aren't sanity-checked, and CDN edge changes can produce malformed responses that crash the cron tick. Cost of these controls is ~30 lines of code.
 
 ## Data Models
 
@@ -155,8 +188,8 @@ None.
 - **`TestIsHotwheels`** (5 keep): substring match on `title` and `handle`, case-insensitive, missing-fields. Parser-agnostic.
 - **`TestBuildEntry`** (5 keep): 5-key dict assembly, excerpt-fallback to title, missing-handle → None, missing-title → None, invalid date → entry kept with `published_parsed=None`. Parser-agnostic.
 - **`TestExtractEntries`** (4 update): synthetic HTML via `_make_flight_listing`. Cases: extracts N entries, missing flight payload raises with clear message, invalid JSON raises with clear message, missing `article2.entries` anchor raises with clear message.
-- **`TestFetchMattelNews`** (5 keep + 4 update): success path filters HW only (1 of 3 → 1 returned); HTTP error / connection error / oversized response / no-notifier / notifier-failure paths preserved; missing-payload / invalid-JSON / missing-anchor paths assert new error messages.
-- **`TestFetchMattelArticle`** (1 keep + 5 update + 3 new):
+- **`TestFetchMattelNews`** (5 keep + 4 update + **1 NEW for AC3**): success path filters HW only (1 of 3 → 1 returned); HTTP error / connection error / oversized response / no-notifier / notifier-failure paths preserved; missing-payload / invalid-JSON / missing-anchor paths assert new error messages. **NEW `test_listing_with_no_hotwheels_returns_empty_without_notifier`** (AC3): build flight HTML with 3 non-HW entries; assert `fetch_mattel_news()` returns `[]` AND `notifier.assert_not_called()` — closes the silent-zero contract that motivated this feature.
+- **`TestFetchMattelArticle`** (1 keep + 5 update + 3 new + **2 NEW for AC6/AC7**):
   - paragraphs + thumbnail-only image policy (regression test, locked by patterns.md);
   - thumbnail absent → `images=[]` even if `download_media` non-empty;
   - empty excerpt → empty subtitle;
@@ -164,7 +197,10 @@ None.
   - missing payload / article-entry-not-found → None + notifier (renamed from `null_content_article`);
   - **NEW** body split across multiple chunks → paragraphs come out in order, no gaps/dupes (AC8);
   - **NEW** body absent → `paragraphs=[]`, notifier NOT called (AC9 first half);
-  - **NEW** truncated body (advertised length > available) → `paragraphs=[]`, notifier NOT called (AC9 second half).
+  - **NEW** truncated body (advertised length > available) → `paragraphs=[]`, notifier NOT called (AC9 second half);
+  - **NEW `test_article_falls_back_to_url_field_when_handle_mismatch`** (AC7): build flight where the entry's `handle` doesn't match the URL slug but `url` field equals the link — assert article is returned correctly;
+  - **NEW `test_dict_form_excerpt_extracts_text_field`** (AC6): build flight with `excerpt: {"text": "<actual>"}` — assert returned `subtitle == "<actual>"`.
+- **`TestSsrfGuard`** (1 NEW for ES10): pass `link="https://evil.example.com/news/foo"` to `fetch_mattel_article` — assert `None` returned, notifier called with sanitised message that does NOT echo the malicious URL.
 - **Anti-drift smoke** (2 NEW, skip-guarded): parse `/tmp/mattel_news.html` if present and assert listing returns a list with no notifier call; parse `/tmp/mattel_article.html` if present and assert article returns a dict with no notifier call.
 
 ### Integration tests
@@ -211,12 +247,18 @@ Operator-side post-deploy verification (from user-spec):
 | Future RSC layout drift (Mattel/Next.js shuffles row ids, renames `article2`, changes chunk split) | Anchor on semantic markers (`"article2":{"entries":[`, field names) — not positional. Notifier fires on structural break, operator opens follow-up feature. |
 | Synthetic fixture diverges from live format (the exact failure mode that produced this outage) | Builder anchors on the same markers the parser reads (Decision 4); anti-drift smoke tests guarded on `/tmp/mattel_*.html` (Decision 7) catch it locally. Operator captures live snapshots pre-deploy. |
 | Body content spans many chunks or has nontrivial JS-string escapes | `_concat_flight` joins all pushes before scanning; AC8 / AC9 explicitly tested via `_make_flight_article(body_chunks=N, truncate=...)`. |
-| Cloudflare interstitial appears on Mattel (as on autoevolution) | Not addressed in this rewrite — sliable when 200 OK turns into 403; future feature switches to `curl_cffi` (already in stack). |
+| Cloudflare interstitial appears on Mattel (as on autoevolution) | Not addressed in this rewrite — visible when 200 OK turns into 403; future feature switches to `curl_cffi` (already in stack). |
 | Wayback doesn't carry the new format | Operator pre-deploy snapshots `/tmp/mattel_news.html` locally as a one-shot debug aid. Documented in user-spec, accepted residual. |
+| Adversarial / malformed HTML (deeply nested JSON, oversized hex length, ReDoS-bait push, malicious link to `fetch_mattel_article`) | Decision 8: SSRF link-prefix guard, linear-time string-aware regex, `RecursionError` catch, hex-length cap at `MAX_RESPONSE_SIZE`, depth-and-string-aware bracket-match, sanitised notifier (no raw `str(exc)`). All round-1 security findings (1 critical + 3 major) closed. |
 
 ## User-Spec Deviations
 
-None. Tech-spec exactly implements user-spec ACs and constraints. Decision 3 (preserving internal helper names) is marked `[TECHNICAL]` rather than a deviation — it goes beyond the user-spec's stated public-symbol requirement (AC11) but doesn't contradict it; it's a test-stability optimisation that the user-spec is silent on.
+The user-spec covers behavior and contract; the items below extend or refine the implementation surface beyond what the user-spec explicitly states. Each is `[TECHNICAL]` (not contradicting any AC) — listed so the user can review the deltas.
+
+- **Decision 3: preserve internal helper names (`_is_hotwheels`, `_build_entry`, `_notify`, `_extract_entries`).** User-spec AC11 only requires preserving public exports + `MattelNewsError`. Tech-spec extends preservation to four internal helpers used by the test suite (`tests/test_mattel_news_source.py:12-22` imports them). **Why:** test-stability optimisation — cuts test changes from ~26 to ~14 by keeping `TestIsHotwheels` and `TestBuildEntry` (10 tests) green by construction. → [PENDING USER APPROVAL]
+- **Decision 4: shared `tests/fixtures/mattel_flight_builder.py` module.** User-spec testing section says "helper-функции в тестовом файле." Tech-spec extracts them to a shared module under `tests/fixtures/` so both `test_mattel_news_source.py` and `test_mattel_integration.py` can import without cross-test-file fragility. **Why:** integration tests stay focused on integration concerns; single source of truth for the synthetic-HTML format. → [PENDING USER APPROVAL]
+- **Decision 7: anti-drift snapshot smoke tests** (`/tmp/mattel_*.html` skip-guarded). User-spec lists "Manual smoke (AC13)" as the operator-side check; it does not specify an in-suite test. Tech-spec adds two `pytest.skip`-guarded tests that exercise live snapshots when the operator captures them locally. **Why:** mitigates user-spec Risk 2 (synthetic-fixture / live-format divergence — the exact failure mode that produced this outage); CI pays zero cost (skipped); local validation gains real-format coverage. → [PENDING USER APPROVAL]
+- **Decision 8: security hardening (SSRF, regex, JSON depth, bracket-match, notifier sanitisation, redirect off).** User-spec is silent on security controls — it focuses on behavior. Tech-spec adds six controls absent from the current module after a security-review round-1 finding flagged 1 critical (SSRF) + 3 major issues. **Why:** zero behavioral change; closes adversarial-input failure modes at trivial cost; preserves admin-chat hygiene. → [PENDING USER APPROVAL]
 
 ## Acceptance Criteria
 
@@ -228,10 +270,25 @@ None. Tech-spec exactly implements user-spec ACs and constraints. Decision 3 (pr
 - [ ] `tests/fixtures/mattel_news.html` deleted from the working tree and from git history (`git rm`).
 - [ ] `tests/fixtures/mattel_flight_builder.py` exports `_make_flight_listing(entries)` and `_make_flight_article(entry, body_html=None, body_chunks=1, truncate=False)` matching code-research §11.4 signatures.
 - [ ] Anti-drift smoke tests use `pytest.skip(...)` when `/tmp/mattel_*.html` is missing — never fail CI.
-- [ ] Test count after rewrite: 29 in `test_mattel_news_source.py`, 3 in `test_mattel_integration.py` (Wide-net pytest collection target documented in code-research §11.7).
+- [ ] Test count after rewrite: 32 in `test_mattel_news_source.py` (15 keep + 11 update + 6 new), 3 in `test_mattel_integration.py` (1 keep + 2 update).
 - [ ] `pytest tests/ -q` green; no other test files (`test_sources_registry.py`, `test_feed_iteration.py`, `test_integration.py`) require any change.
 - [ ] No new entries in `requirements.txt`.
+
+**Security ACs (Decision 8):**
+
+- [ ] `fetch_mattel_article(link)` rejects `link` that does not start with `ARTICLE_URL_PREFIX` — returns `None`, notifier called once with a sanitised message that does NOT echo `link`.
+- [ ] `_FLIGHT_PUSH_RE` uses character-class form `(?:[^"\\\\]|\\\\.)*` (no `(.+?)` lazy quantifier); regex is JS-string-literal-correct against escaped `\"`.
+- [ ] All `json.loads` calls in the module are wrapped to catch `(json.JSONDecodeError, RecursionError, ValueError)` → ES5.
+- [ ] `_resolve_body_html` rejects advertised hex lengths above `MAX_RESPONSE_SIZE` (returns `""`, ES9c content-empty path).
+- [ ] `_extract_listing_entries` bracket-match is depth-aware AND string-literal-aware (skips inside `"..."` runs and `\\` escapes); on EOF without depth-zero → ES4.
+- [ ] Notifier messages format only exception **type** and safe scalars (sizes, slugs, anchor names) — raw `str(exc)` is NOT included.
+- [ ] Both `requests.get` calls pass `allow_redirects=False`.
+- [ ] `httpx`/`urllib3`/`httpcore` log-suppression (set in `news_bot._configure_third_party_logging`) is NOT touched by this module.
+
+**Verification:**
+
 - [ ] All AC1–AC13 from user-spec verifiable via the verification plan commands above.
+- [ ] All ES1–ES10 from the inline error matrix have a corresponding test.
 
 ## Implementation Tasks
 
@@ -239,7 +296,7 @@ None. Tech-spec exactly implements user-spec ACs and constraints. Decision 3 (pr
 
 #### Task 1: Rewrite mattel_news_source + tests + fixture builder
 
-- **Description:** Replace `__NEXT_DATA__` regex extraction in `mattel_news_source.py` with a parser that walks the RSC flight payload, anchored on `"article2":{"entries":[` for the listing and on `body: "$<row-id>"` + the row-marker `<row-id>:T<hex-len>,<content>` for article bodies. Public surface (`fetch_mattel_news`, `fetch_mattel_article`, `MattelNewsError`, constants, internal helpers `_is_hotwheels` / `_build_entry` / `_notify` / `_extract_entries`) preserved 1:1 per Decisions 1, 2, 3. Add new fixture-builder module `tests/fixtures/mattel_flight_builder.py` per Decision 4. Update `tests/test_mattel_news_source.py` and `tests/test_mattel_integration.py` per the inventory delta in code-research §11.7. Delete `tests/fixtures/mattel_news.html`. Result: `pytest tests/ -q` green; live smoke does not call notifier.
+- **Description:** Replace `__NEXT_DATA__` extraction in `mattel_news_source.py` with RSC-flight-payload parsing while preserving the public surface 1:1. Update both Mattel test files and add `tests/fixtures/mattel_flight_builder.py`; delete the old HTML fixture. Result: `pytest tests/ -q` green; live smoke does not call notifier. See Decisions 1–8 for rationale and the inline error matrix for behavior.
 - **Skill:** code-writing
 - **Reviewers:** code-reviewer, security-auditor, test-reviewer
 - **Verify-smoke:**
