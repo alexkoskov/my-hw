@@ -49,11 +49,21 @@ These must be present on the production server (systemd EnvironmentFile or `sour
 
 ## Deployment Triggers
 
-**Production:** `bash deploy.sh` with `SSH_HOST` + `DEPLOY_PATH` env overrides. SCP-based — see `FILES` list in [deploy.sh](../../../../deploy.sh). Server-side `pip install -r requirements.txt` runs after copy.
+**Production (default — GitHub Actions CI):** `git push origin main` → `.github/workflows/ci.yml` runs pytest → on green, `.github/workflows/deploy.yml` triggers via `workflow_run`, SCPs the FILES list to the VPS, runs `pip install --user -r requirements.txt` on the server. One concurrent deploy at a time; queued runs replace pending. Manual override: `Actions → Deploy → Run workflow` (UI button only appears once `deploy.yml` lives on `main`, so the first deploy MUST go through merge-and-push).
 
-**Files deployed** (cron-path only; operator-side modules excluded): `news_bot.py`, `pending_articles_repo.py`, `telegraph_publisher.py`, source parsers (`autoevolution_source.py`, `mattel_news_source.py`, `lamley_source.py`), `feeds.json`, `requirements.txt`, `.env.example`.
+**GitHub Secrets required** (Settings → Secrets and variables → Actions → New repository secret):
+- `SSH_HOST` — VPS hostname or IP (e.g. `bot.example.com`).
+- `SSH_USER` — SSH login user on the VPS.
+- `DEPLOY_PATH` — absolute path on the VPS where files land (e.g. `/home/user/bot`).
+- `SSH_PRIVATE_KEY` — full PEM-encoded private key (including `-----BEGIN…END-----` lines) for the deploy account. Generate a dedicated key for CI: `ssh-keygen -t ed25519 -f ~/.ssh/hwbot_deploy -C "github-actions-hwbot"`; append the `.pub` half to the VPS account's `~/.ssh/authorized_keys`; paste the private half into the secret.
+
+**Production (fallback — manual SCP):** `bash deploy.sh` with `SSH_HOST` + `DEPLOY_PATH` env overrides. Same FILES list as the workflow. Use when GitHub Actions is unavailable or for emergency hotfixes that can't go through `main`.
+
+**Files deployed** (cron-path only; operator-side modules excluded): `news_bot.py`, `pending_articles_repo.py`, `telegraph_publisher.py`, source parsers (`autoevolution_source.py`, `mattel_news_source.py`, `lamley_source.py`), `feeds.json`, `requirements.txt`, `.env.example`. The list lives in two places — `.github/workflows/deploy.yml` and `deploy.sh` — keep both in sync if a new cron-path module is added.
 
 **Files NOT deployed**: `hw_review.py`, `preview_renderer.py` — operator runs these locally in Claude Code session, not on the VPS.
+
+**Rollback:** `git revert HEAD && git push origin main` — the deploy workflow redeploys the parent commit. ~2-3 min total. For schema rollback, restore `news.db` backup separately (the workflow never touches the DB).
 
 **Staging:** Not configured. For test publishes without touching the prod channel, operator temporarily swaps `TELEGRAM_CHANNEL_ID` in `.env` to a personal chat ID.
 

@@ -1,0 +1,116 @@
+name: Deploy
+
+# Triggers ONLY after the CI workflow on `main` finishes successfully.
+# Manual run is also available via "Run workflow" in the Actions UI ─
+# but ONLY after this file has reached the default branch (main). On the
+# very first deploy you must merge dev → main and push; the manual button
+# does not appear in the Actions UI until the workflow lives on main.
+on:
+  workflow_run:
+    workflows: ["CI"]
+    types: [completed]
+    branches: [main]
+  workflow_dispatch:
+
+# One deploy at a time. If a second push lands while a deploy is running,
+# the newer one waits and replaces the queued one (we always ship the freshest).
+concurrency:
+  group: deploy-prod
+  cancel-in-progress: false
+
+jobs:
+  deploy:
+    # Skip when CI failed (workflow_run fires regardless of conclusion).
+    # Also skip when the originating event was a PR (workflow_run fires for
+    # PR-triggered CI runs too, and we don't want PR-CI green to deploy).
+    # Manual workflow_dispatch always proceeds.
+    if: >
+      github.event_name == 'workflow_dispatch' ||
+      (github.event.workflow_run.conclusion == 'success' &&
+       github.event.workflow_run.event == 'push')
+
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Verify required secrets
+        env:
+          SSH_HOST: ${{ secrets.SSH_HOST }}
+          SSH_USER: ${{ secrets.SSH_USER }}
+          DEPLOY_PATH: ${{ secrets.DEPLOY_PATH }}
+          SSH_PRIVATE_KEY: ${{ secrets.SSH_PRIVATE_KEY }}
+        run: |
+          for var in SSH_HOST SSH_USER DEPLOY_PATH SSH_PRIVATE_KEY; do
+            if [[ -z "${!var}" ]]; then
+              echo "::error::Missing required secret: $var"
+              echo "::error::Configure all four secrets in repo Settings → Secrets and variables → Actions."
+              exit 1
+            fi
+          done
+          echo "All required secrets present."
+
+      - name: Set up SSH agent
+        uses: webfactory/ssh-agent@v0.9.0
+        with:
+          ssh-private-key: ${{ secrets.SSH_PRIVATE_KEY }}
+
+      - name: Add host to known_hosts
+        env:
+          SSH_HOST: ${{ secrets.SSH_HOST }}
+        run: |
+          mkdir -p ~/.ssh
+          chmod 700 ~/.ssh
+          ssh-keyscan -H "$SSH_HOST" > /tmp/known_hosts.new
+          if [[ ! -s /tmp/known_hosts.new ]]; then
+            echo "::error::ssh-keyscan produced no host keys for $SSH_HOST — check DNS, network reachability, or the SSH_HOST secret value."
+            exit 1
+          fi
+          cat /tmp/known_hosts.new >> ~/.ssh/known_hosts
+          chmod 644 ~/.ssh/known_hosts
+
+      - name: Copy files to server
+        env:
+          SSH_HOST: ${{ secrets.SSH_HOST }}
+          SSH_USER: ${{ secrets.SSH_USER }}
+          DEPLOY_PATH: ${{ secrets.DEPLOY_PATH }}
+        # FILES list mirrors deploy.sh — keep both in sync if you add a
+        # new cron-path module. Operator-side files (hw_review.py,
+        # preview_renderer.py) are intentionally excluded.
+        run: |
+          FILES=(
+            "news_bot.py"
+            "autoevolution_source.py"
+            "mattel_news_source.py"
+            "lamley_source.py"
+            "telegraph_publisher.py"
+            "pending_articles_repo.py"
+            "feeds.json"
+            "requirements.txt"
+            ".env.example"
+          )
+          for file in "${FILES[@]}"; do
+            if [[ ! -f "$file" ]]; then
+              echo "::error::$file not found in repo root"
+              exit 1
+            fi
+          done
+          echo "Copying ${#FILES[@]} files to $SSH_USER@$SSH_HOST:$DEPLOY_PATH/"
+          scp -o StrictHostKeyChecking=yes "${FILES[@]}" "$SSH_USER@$SSH_HOST:$DEPLOY_PATH/"
+
+      - name: Install Python dependencies on server
+        env:
+          SSH_HOST: ${{ secrets.SSH_HOST }}
+          SSH_USER: ${{ secrets.SSH_USER }}
+          DEPLOY_PATH: ${{ secrets.DEPLOY_PATH }}
+        run: |
+          ssh -o StrictHostKeyChecking=yes "$SSH_USER@$SSH_HOST" \
+            "set -e; cd '$DEPLOY_PATH' && pip install --user -r requirements.txt" \
+            || { echo "::error::pip install failed on server — SSH into $SSH_USER@$SSH_HOST to inspect ~/.local and ~/.cache/pip/log."; exit 1; }
+
+      - name: Deploy summary
+        run: |
+          echo "::notice::Deploy complete. news_bot cron will pick up changes on next 12h tick."
+          echo "::notice::To kick a tick immediately: ssh into the server and run: python3 -c 'from news_bot import job; job()'"
+          echo "::notice::Rollback: locally run 'git revert HEAD && git push origin main' — this workflow will redeploy the parent commit."
