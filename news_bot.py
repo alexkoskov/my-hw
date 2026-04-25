@@ -7,19 +7,29 @@ Fetches RSS feed, parses articles, translates, summarizes, and posts to Telegram
 import sqlite3
 import logging
 import re
-import feedparser
-import requests
-from deep_translator import GoogleTranslator
-import schedule
+import os
+import json
 import asyncio
 import time
 from collections import Counter
 from datetime import datetime
+from urllib.parse import urlparse
+
+from dotenv import load_dotenv
+
+# Load .env at import-time so any code path that reaches news_bot — cron
+# job(), overflow auto-publish, manual CLI invocation — sees TELEGRAM_*/
+# TELEGRAPH_* credentials. Other entrypoints (hw_review.py, send_post.py,
+# ensure_access_token) call load_dotenv() independently; this is the
+# news_bot-specific guarantee, not a global one.
+load_dotenv()
+
+import feedparser
+import requests
+from deep_translator import GoogleTranslator
+import schedule
 from telegram import Bot, LinkPreviewOptions
 from telegram.error import TelegramError
-import os
-import json
-from urllib.parse import urlparse
 
 from mattel_news_source import fetch_mattel_news, fetch_mattel_article
 import autoevolution_source
