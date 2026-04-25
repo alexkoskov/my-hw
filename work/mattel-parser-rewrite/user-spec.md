@@ -32,8 +32,8 @@ size: S
 - [ ] AC5. `fetch_mattel_news()` при ответе сервера > `MAX_RESPONSE_SIZE` (5 MB) возвращает `[]` и вызывает notifier один раз.
 - [ ] AC6. `fetch_mattel_article(link)` против HTML-фикстура HW-статьи возвращает dict с 4 ключами: `title`, `subtitle` (из `excerpt` — поддерживается строковая и dict-form `{text: ...}`; пустая строка если поле отсутствует), `paragraphs` (`List[str]` — текст параграфов и заголовков из body), `images` (`List[str]` длины 0 или 1 — только thumbnail).
 - [ ] AC7. `fetch_mattel_article(link)` возвращает `None` и вызывает notifier один раз в трёх случаях: HTTP 404; payload без news-entries-секции; entry с заданным handle/url не найден внутри секции.
-- [ ] AC8. `fetch_mattel_article(link)` корректно реконструирует HTML тела даже когда контент тела перекрывает несколько streaming-чанков payload'а.
-- [ ] AC9. `fetch_mattel_article(link)` для статьи с пустым/отсутствующим body возвращает dict с `paragraphs=[]` без вызова notifier (это контентная пустота, downstream сам пропустит row).
+- [ ] AC8. Когда HTML тела статьи разбит на несколько streaming-чанков payload'а, `paragraphs` содержит ровно те же текстовые блоки и в том же порядке, что и для эквивалентного тела, помещающегося в один чанк (без пропусков и без дубликатов).
+- [ ] AC9. `fetch_mattel_article(link)` для статьи с пустым/отсутствующим body, либо с обрезанным/неразрешимым body-референсом (заявленная длина > доступного контента, или ссылочный row не объявлен), возвращает dict с `paragraphs=[]` без вызова notifier — это контентная пустота, не парс-ошибка; downstream сам пропустит row.
 - [ ] AC10. Image policy «thumbnail only» сохранена: `images` содержит максимум один URL (thumbnail); `download_media` в выходе отсутствует, даже если непуст в payload.
 - [ ] AC11. Импорт `from mattel_news_source import fetch_mattel_news, fetch_mattel_article` продолжает работать в `news_bot.py`; экспорты `MattelNewsError`, `NEWS_URL`, `ARTICLE_URL_PREFIX`, `MAX_RESPONSE_SIZE` сохранены.
 - [ ] AC12. `pytest tests/` — все тесты зелёные, включая обновлённые `tests/test_mattel_news_source.py` и `tests/test_mattel_integration.py`.
@@ -48,6 +48,7 @@ size: S
 - **Backward-compat для `__NEXT_DATA__` не держим.** Live сайт мигрирован, ретроспективная поддержка не требуется. Если откатят — отдельная мини-фича.
 - **HTTP guards.** `REQUEST_TIMEOUT=15s`, `MAX_RESPONSE_SIZE=5 MB`, hardcoded Chrome UA — без изменений.
 - **Без миграций.** `news.db` schema, существующие `pending_articles`/`published_articles` — не трогаем.
+- **Silent-zero не алармим.** Возврат `[]` от `fetch_mattel_news()` не различает «листинг распарсен, но 0 HW» (нормально) и «парсер сломался, но фейлим без ошибки» (плохо) — различие пойдёт по линии notifier'а. Дополнительный automatic alert при N тиках подряд с пустым результатом не делаем; покрываем 7-дневным операторским наблюдением (см. «Пользователь проверяет»). Если в будущем потребуется — заведём отдельную фичу.
 
 ## Риски
 
@@ -71,7 +72,7 @@ size: S
 
 ## Тестирование
 
-**Unit-тесты:** делаются всегда, не обсуждаются. Расширяем `tests/test_mattel_news_source.py`. Сохраняем тесты на `_is_hotwheels` и `_build_entry` (helper-сигнатуры не меняются). Переписываем тесты, проверявшие старое извлечение entries, под новый payload и его сообщения ошибок. Полностью обновляем тесты `fetch_mattel_article` — синтетические HTML-фикстуры теперь имитируют новый формат. Старый файл-фикстуру `tests/fixtures/mattel_news.html` удаляем; вместо этого добавляем helper-функции в тестовый файл, которые программно собирают синтетический HTML для разных сценариев (1+ HW entry, 0 HW entries, отсутствие нужной секции, тело статьи через несколько чанков, пустое тело). Покрытие: AC1–AC10 + регрессионный `test_parses_paragraphs_and_uses_thumbnail_only`.
+**Unit-тесты:** делаются всегда, не обсуждаются. Расширяем `tests/test_mattel_news_source.py`. Тесты на внутреннюю фильтрацию HW и сборку entry-словаря из сырых данных сохраняются в текущем виде (их сигнатуры не меняются). Переписываем тесты, проверявшие старое извлечение entries, под новый payload и его сообщения ошибок. Полностью обновляем тесты `fetch_mattel_article` — синтетические HTML-фикстуры теперь имитируют новый формат. Старый файл-фикстуру `tests/fixtures/mattel_news.html` удаляем; вместо этого добавляем в тестовый файл helper-функции, которые программно собирают синтетический HTML для разных сценариев (1+ HW entry, 0 HW entries, отсутствие нужной секции, тело статьи через несколько чанков, пустое тело, оборванный body-референс). Покрытие: AC1–AC10 + регрессионный тест на «thumbnail-only» image policy.
 
 **Интеграционные тесты:** делаем — обновляем `tests/test_mattel_integration.py`. 3 существующих теста (`test_mattel_post_flows_into_pending_queue`, `test_mattel_http_failure_does_not_crash_job`, `test_mattel_duplicate_is_not_restaged`) остаются; меняем фикстуру на сборку с инжектированной HW-записью, чтобы `len(pending_articles) == 1` ассерт оставался валиден. Это границы интеграции source→registry→repo, важные для гарантий AC11–AC12.
 
