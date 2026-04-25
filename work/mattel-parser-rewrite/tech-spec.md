@@ -1,6 +1,6 @@
 ---
 created: 2026-04-25
-status: draft
+status: approved
 branch: dev
 size: S
 ---
@@ -255,10 +255,10 @@ Operator-side post-deploy verification (from user-spec):
 
 The user-spec covers behavior and contract; the items below extend or refine the implementation surface beyond what the user-spec explicitly states. Each is `[TECHNICAL]` (not contradicting any AC) — listed so the user can review the deltas.
 
-- **Decision 3: preserve internal helper names (`_is_hotwheels`, `_build_entry`, `_notify`, `_extract_entries`).** User-spec AC11 only requires preserving public exports + `MattelNewsError`. Tech-spec extends preservation to four internal helpers used by the test suite (`tests/test_mattel_news_source.py:12-22` imports them). **Why:** test-stability optimisation — cuts test changes from ~26 to ~14 by keeping `TestIsHotwheels` and `TestBuildEntry` (10 tests) green by construction. → [PENDING USER APPROVAL]
-- **Decision 4: shared `tests/fixtures/mattel_flight_builder.py` module.** User-spec testing section says "helper-функции в тестовом файле." Tech-spec extracts them to a shared module under `tests/fixtures/` so both `test_mattel_news_source.py` and `test_mattel_integration.py` can import without cross-test-file fragility. **Why:** integration tests stay focused on integration concerns; single source of truth for the synthetic-HTML format. → [PENDING USER APPROVAL]
-- **Decision 7: anti-drift snapshot smoke tests** (`/tmp/mattel_*.html` skip-guarded). User-spec lists "Manual smoke (AC13)" as the operator-side check; it does not specify an in-suite test. Tech-spec adds two `pytest.skip`-guarded tests that exercise live snapshots when the operator captures them locally. **Why:** mitigates user-spec Risk 2 (synthetic-fixture / live-format divergence — the exact failure mode that produced this outage); CI pays zero cost (skipped); local validation gains real-format coverage. → [PENDING USER APPROVAL]
-- **Decision 8: security hardening (SSRF, regex, JSON depth, bracket-match, notifier sanitisation, redirect off).** User-spec is silent on security controls — it focuses on behavior. Tech-spec adds six controls absent from the current module after a security-review round-1 finding flagged 1 critical (SSRF) + 3 major issues. **Why:** zero behavioral change; closes adversarial-input failure modes at trivial cost; preserves admin-chat hygiene. → [PENDING USER APPROVAL]
+- **Decision 3: preserve internal helper names (`_is_hotwheels`, `_build_entry`, `_notify`, `_extract_entries`).** User-spec AC11 only requires preserving public exports + `MattelNewsError`. Tech-spec extends preservation to four internal helpers used by the test suite (`tests/test_mattel_news_source.py:12-22` imports them). **Why:** test-stability optimisation — cuts test changes from ~26 to ~14 by keeping `TestIsHotwheels` and `TestBuildEntry` (10 tests) green by construction. → [APPROVED 2026-04-25]
+- **Decision 4: shared `tests/fixtures/mattel_flight_builder.py` module.** User-spec testing section says "helper-функции в тестовом файле." Tech-spec extracts them to a shared module under `tests/fixtures/` so both `test_mattel_news_source.py` and `test_mattel_integration.py` can import without cross-test-file fragility. **Why:** integration tests stay focused on integration concerns; single source of truth for the synthetic-HTML format. → [APPROVED 2026-04-25]
+- **Decision 7: anti-drift snapshot smoke tests** (`/tmp/mattel_*.html` skip-guarded). User-spec lists "Manual smoke (AC13)" as the operator-side check; it does not specify an in-suite test. Tech-spec adds two `pytest.skip`-guarded tests that exercise live snapshots when the operator captures them locally. **Why:** mitigates user-spec Risk 2 (synthetic-fixture / live-format divergence — the exact failure mode that produced this outage); CI pays zero cost (skipped); local validation gains real-format coverage. → [APPROVED 2026-04-25]
+- **Decision 8: security hardening (SSRF, regex, JSON depth, bracket-match, notifier sanitisation, redirect off).** User-spec is silent on security controls — it focuses on behavior. Tech-spec adds six controls absent from the current module after a security-review round-1 finding flagged 1 critical (SSRF) + 3 major issues. **Why:** zero behavioral change; closes adversarial-input failure modes at trivial cost; preserves admin-chat hygiene. → [APPROVED 2026-04-25]
 
 ## Acceptance Criteria
 
