@@ -183,7 +183,7 @@ None.
 
 ### Unit tests
 
-`tests/test_mattel_news_source.py` — 32 tests after the rewrite (15 keep + 11 update + 6 new + 1 SSRF guard):
+`tests/test_mattel_news_source.py` — ≥32 tests after the rewrite (15 keep + 11 update + 6 new where the "6 new" splits as 3 base-inventory + 1 SSRF guard + 2 anti-drift smoke). Implementation may legitimately deliver 32–38 depending on AC8/AC9 sub-test split:
 
 - **`TestIsHotwheels`** (5 keep): substring match on `title` and `handle`, case-insensitive, missing-fields. Parser-agnostic.
 - **`TestBuildEntry`** (5 keep): 5-key dict assembly, excerpt-fallback to title, missing-handle → None, missing-title → None, invalid date → entry kept with `published_parsed=None`. Parser-agnostic.
