@@ -298,7 +298,12 @@ class TestListFooter(_RetryCase):
 
     def test_list_footer_format_exact(self):
         """Pin the footer format byte-for-byte (Decision 8)."""
-        self._seed_failed('http://f/1', 'Alpha')
+        # Both timestamps explicit — relying on the default
+        # CURRENT_TIMESTAMP for Alpha is non-deterministic vs. Beta's
+        # explicit value (UTC "now" can be later than a fixed past date),
+        # which would flip the DESC ordering.
+        self._seed_failed('http://f/1', 'Alpha',
+                          failed_at='2026-04-24 10:00:00')
         self._seed_failed('http://f/2', 'Beta',
                           failed_at='2026-04-25 10:00:00')
 
