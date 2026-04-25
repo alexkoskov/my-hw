@@ -66,7 +66,6 @@ Currently users have to regularly check multiple sites, translate articles thems
 - LLM-powered transcreation for the auto-fallback path — closes the style drift vs manual path (archived in `work/archived/llm-transcreation-deferred/`)
 - Cross-article linking (`runs[].href` → our own Telegraph URLs when already published)
 - Production observability beyond admin pings (uptime, failure digest)
-- Bug-fix for `tests/test_hw_review_retry.py::TestListFooter::test_list_footer_format_exact` — pre-existing list-footer order issue, not blocking
 
 **Future ideas (Backlog)**
 - Web dashboard for configuration and monitoring
