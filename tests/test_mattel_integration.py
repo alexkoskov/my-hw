@@ -19,18 +19,45 @@ import requests
 
 import news_bot
 import pending_articles_repo
+from tests.fixtures.mattel_flight_builder import _make_flight_listing
 
-FIXTURE_PATH = os.path.join(
-    os.path.dirname(__file__), "fixtures", "mattel_news.html"
-)
+
+def _hw_listing_html():
+    """Build a synthetic flight-listing HTML with one HW entry plus filler.
+
+    The HW entry's link must contain ``hot-wheels`` (asserted by tests) and
+    sit under ``corporate.mattel.com/news/``. Filler entries protect the
+    "filter to HW only" assertion (``len(rows) == 1``).
+    """
+    return _make_flight_listing([
+        {
+            "handle": "hot-wheels-legends-tour-2026",
+            "title": "Hot Wheels Legends Tour Returns",
+            "date": "2026-04-13",
+            "excerpt": "",
+            "seo_description": "",
+            "thumbnail": {"url": "https://example.com/thumb.jpg"},
+            "url": "https://corporate.mattel.com/news/hot-wheels-legends-tour-2026",
+            "download_media": [],
+        },
+        {
+            "handle": "masters-of-the-universe-promo",
+            "title": "MOTU Promo",
+            "date": "2026-04-09",
+            "excerpt": "",
+            "seo_description": "",
+            "thumbnail": {"url": "https://example.com/x.jpg"},
+            "url": "https://corporate.mattel.com/news/masters-of-the-universe-promo",
+            "download_media": [],
+        },
+    ])
 
 
 class TestMattelIntegration(unittest.TestCase):
     """Full pipeline: HTTP fixture → job() → SQLite (pending_articles)."""
 
     def setUp(self):
-        with open(FIXTURE_PATH, encoding="utf-8") as f:
-            self.fixture_html = f.read()
+        self.fixture_html = _hw_listing_html()
 
         self.db_fd, self.db_path = tempfile.mkstemp(suffix=".db")
         os.close(self.db_fd)

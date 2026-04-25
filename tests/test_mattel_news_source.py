@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Unit tests for mattel_news_source."""
+"""Unit tests for mattel_news_source (RSC flight-payload parser)."""
 
 import json
 import os
@@ -20,16 +20,10 @@ from mattel_news_source import (
     fetch_mattel_article,
     fetch_mattel_news,
 )
-
-FIXTURE_PATH = os.path.join(
-    os.path.dirname(__file__), "fixtures", "mattel_news.html"
+from tests.fixtures.mattel_flight_builder import (
+    _make_flight_article,
+    _make_flight_listing,
 )
-
-
-@pytest.fixture(scope="module")
-def fixture_html():
-    with open(FIXTURE_PATH, encoding="utf-8") as f:
-        return f.read()
 
 
 def _make_response(text="", status_code=200, raise_exc=None):
@@ -42,6 +36,40 @@ def _make_response(text="", status_code=200, raise_exc=None):
     else:
         resp.raise_for_status.return_value = None
     return resp
+
+
+def _hw_entry(**overrides):
+    """Default HW listing-shape entry; overrides win."""
+    base = {
+        "handle": "hot-wheels-legends-tour-2026",
+        "title": "Hot Wheels Legends Tour Returns",
+        "date": "2026-04-13",
+        "excerpt": "Editorial lead text",
+        "seo_description": "SEO desc",
+        "thumbnail": {"url": "https://example.com/thumb.jpg"},
+        "url": "https://corporate.mattel.com/news/hot-wheels-legends-tour-2026",
+        "download_media": [],
+    }
+    base.update(overrides)
+    return base
+
+
+def _non_hw_entry(handle="masters-of-the-universe-promo", title="MOTU Promo"):
+    return {
+        "handle": handle,
+        "title": title,
+        "date": "2026-04-09",
+        "excerpt": "",
+        "seo_description": "",
+        "thumbnail": {"url": "https://example.com/x.jpg"},
+        "url": f"https://corporate.mattel.com/news/{handle}",
+        "download_media": [],
+    }
+
+
+# ---------------------------------------------------------------------------
+# Pure-helper tests (parser-agnostic; bodies preserved 1:1)
+# ---------------------------------------------------------------------------
 
 
 class TestIsHotwheels:
@@ -92,43 +120,102 @@ class TestBuildEntry:
         assert entry["published_parsed"] is None
 
 
-class TestExtractEntries:
-    def test_extracts_from_fixture(self, fixture_html):
-        entries = _extract_entries(fixture_html)
-        assert isinstance(entries, list)
-        assert len(entries) >= 1
-        # At least one real entry should have the key fields
-        assert any("title" in e and "handle" in e for e in entries)
+# ---------------------------------------------------------------------------
+# _extract_entries — operates on the listing flight payload
+# ---------------------------------------------------------------------------
 
-    def test_missing_next_data_raises(self):
-        with pytest.raises(MattelNewsError, match="__NEXT_DATA__"):
+
+class TestExtractEntries:
+    def test_extracts_entries_from_synthetic_flight(self):
+        e1 = _hw_entry(handle="hot-wheels-a", title="HW A")
+        e2 = _non_hw_entry(handle="other-b", title="B")
+        e3 = _non_hw_entry(handle="other-c", title="C")
+        html = _make_flight_listing([e1, e2, e3])
+        entries = _extract_entries(html)
+        assert isinstance(entries, list)
+        assert len(entries) == 3
+        # Field-level shape preserved end-to-end
+        for raw in entries:
+            assert "handle" in raw
+            assert "title" in raw
+            assert "date" in raw
+
+    def test_missing_flight_payload_raises(self):
+        with pytest.raises(MattelNewsError, match="flight payload not found"):
             _extract_entries("<html><body>no data</body></html>")
 
     def test_invalid_json_raises(self):
-        bad = '<script id="__NEXT_DATA__" type="application/json">{ invalid }</script>'
-        with pytest.raises(MattelNewsError, match="Invalid"):
-            _extract_entries(bad)
+        # Build a flight push whose envelope contains malformed JSON inside
+        # article2.entries.
+        broken_payload = '{"props":{"pageProps":{"page":{"data":{"state":{"article2":{"entries":[{ broken json }]}}}}}}}'
+        from tests.fixtures.mattel_flight_builder import _push
+        html = (
+            "<html><body>"
+            + _push("6:" + broken_payload)
+            + "</body></html>"
+        )
+        with pytest.raises(MattelNewsError, match="invalid JSON in entries array"):
+            _extract_entries(html)
 
-    def test_missing_entries_path_raises(self):
-        payload = json.dumps({"props": {"pageProps": {"page": {}}}})
-        html = f'<script id="__NEXT_DATA__" type="application/json">{payload}</script>'
-        with pytest.raises(MattelNewsError, match="not found"):
+    def test_missing_article2_anchor_raises(self):
+        # Push exists but contains no article2.entries anchor at all.
+        from tests.fixtures.mattel_flight_builder import _push
+        html = (
+            "<html><body>"
+            + _push('6:{"props":{"pageProps":{"page":{}}}}')
+            + "</body></html>"
+        )
+        with pytest.raises(MattelNewsError, match="article2.entries not found"):
             _extract_entries(html)
 
 
+# ---------------------------------------------------------------------------
+# fetch_mattel_news
+# ---------------------------------------------------------------------------
+
+
 class TestFetchMattelNews:
-    def test_success_filters_hotwheels_only(self, fixture_html):
+    def test_success_filters_hotwheels_only(self):
+        html = _make_flight_listing(
+            [
+                _hw_entry(),
+                _non_hw_entry(handle="motu-x", title="MOTU x"),
+                _non_hw_entry(handle="barbie-y", title="Barbie y"),
+            ]
+        )
         session = MagicMock()
-        session.get.return_value = _make_response(text=fixture_html)
+        session.get.return_value = _make_response(text=html)
 
         entries = fetch_mattel_news(session=session)
 
         assert len(entries) == 1
         entry = entries[0]
-        assert "hot wheels" in entry["title"].lower() or "hot-wheels" in entry["link"].lower()
+        assert "hot-wheels" in entry["link"].lower()
         assert entry["link"].startswith(ARTICLE_URL_PREFIX)
         assert entry["feed_url"] == NEWS_URL
         assert entry["published_parsed"] is not None
+        # AC2: exactly 5 keys
+        assert set(entry.keys()) == {
+            "link", "title", "summary", "published_parsed", "feed_url"
+        }
+
+    def test_listing_with_no_hotwheels_returns_empty_without_notifier(self):
+        # AC3: 3 non-HW entries → [] AND notifier NOT called.
+        html = _make_flight_listing(
+            [
+                _non_hw_entry(handle="motu-a", title="MOTU A"),
+                _non_hw_entry(handle="barbie-b", title="Barbie B"),
+                _non_hw_entry(handle="masters-c", title="Masters C"),
+            ]
+        )
+        session = MagicMock()
+        session.get.return_value = _make_response(text=html)
+        notifier = MagicMock()
+
+        entries = fetch_mattel_news(session=session, notifier=notifier)
+
+        assert entries == []
+        notifier.assert_not_called()
 
     def test_http_error_returns_empty_and_notifies(self):
         session = MagicMock()
@@ -141,7 +228,10 @@ class TestFetchMattelNews:
 
         assert entries == []
         notifier.assert_called_once()
-        assert "HTTP error" in notifier.call_args[0][0]
+        msg = notifier.call_args[0][0]
+        assert "Mattel news HTTP error" in msg
+        # Sanitised: no raw exception string
+        assert "500 server error" not in msg
 
     def test_connection_error_returns_empty_and_notifies(self):
         session = MagicMock()
@@ -153,7 +243,7 @@ class TestFetchMattelNews:
         assert entries == []
         notifier.assert_called_once()
 
-    def test_missing_next_data_returns_empty_and_notifies(self):
+    def test_missing_flight_payload_returns_empty_and_notifies(self):
         session = MagicMock()
         session.get.return_value = _make_response(text="<html></html>")
         notifier = MagicMock()
@@ -162,12 +252,12 @@ class TestFetchMattelNews:
 
         assert entries == []
         notifier.assert_called_once()
-        assert "parsing error" in notifier.call_args[0][0]
+        assert "flight payload not found" in notifier.call_args[0][0]
 
     def test_invalid_json_returns_empty_and_notifies(self):
-        bad_html = (
-            '<script id="__NEXT_DATA__" type="application/json">{bad json}</script>'
-        )
+        from tests.fixtures.mattel_flight_builder import _push
+        broken = '{"props":{"pageProps":{"page":{"data":{"state":{"article2":{"entries":[{bad}]}}}}}}}'
+        bad_html = "<html><body>" + _push("6:" + broken) + "</body></html>"
         session = MagicMock()
         session.get.return_value = _make_response(text=bad_html)
         notifier = MagicMock()
@@ -176,10 +266,15 @@ class TestFetchMattelNews:
 
         assert entries == []
         notifier.assert_called_once()
+        assert "invalid JSON in entries array" in notifier.call_args[0][0]
 
-    def test_missing_entries_path_returns_empty_and_notifies(self):
-        payload = json.dumps({"props": {"pageProps": {"page": {}}}})
-        html = f'<script id="__NEXT_DATA__" type="application/json">{payload}</script>'
+    def test_missing_article2_anchor_returns_empty_and_notifies(self):
+        from tests.fixtures.mattel_flight_builder import _push
+        html = (
+            "<html><body>"
+            + _push('6:{"props":{"pageProps":{"page":{}}}}')
+            + "</body></html>"
+        )
         session = MagicMock()
         session.get.return_value = _make_response(text=html)
         notifier = MagicMock()
@@ -188,6 +283,7 @@ class TestFetchMattelNews:
 
         assert entries == []
         notifier.assert_called_once()
+        assert "article2.entries not found" in notifier.call_args[0][0]
 
     def test_notifier_failure_does_not_raise(self):
         session = MagicMock()
@@ -220,116 +316,321 @@ class TestFetchMattelNews:
 
         assert entries == []
 
+    def test_uses_allow_redirects_false(self):
+        # Decision 8: redirects must be disabled to avoid CDN-edge surprises.
+        html = _make_flight_listing([_hw_entry()])
+        session = MagicMock()
+        session.get.return_value = _make_response(text=html)
+
+        fetch_mattel_news(session=session)
+
+        _, kwargs = session.get.call_args
+        assert kwargs.get("allow_redirects") is False
+
+
+# ---------------------------------------------------------------------------
+# fetch_mattel_article
+# ---------------------------------------------------------------------------
+
 
 class TestFetchMattelArticle:
-    def _article_page(self, body_html='<p>A paragraph.</p><p>Second.</p><ul><li>Bullet</li></ul>',
-                       thumb_url='https://images.example/thumb.jpg',
-                       download_media=None, excerpt='Editorial lead text'):
-        article = {
-            'title': 'Sample Mattel Article',
-            'body': body_html,
-            'excerpt': excerpt,
-            'download_media': download_media or [],
-        }
-        payload = {
-            'props': {
-                'pageProps': {
-                    'contentArticle': {
-                        'thumbnail': {'url': thumb_url} if thumb_url else {},
-                        'result': article,
-                    }
-                }
-            }
-        }
-        html = (
-            f'<html><body>'
-            f'<script id="__NEXT_DATA__" type="application/json">{json.dumps(payload)}</script>'
-            f'</body></html>'
-        )
-        return html
-
     def test_parses_paragraphs_and_uses_thumbnail_only(self):
-        # Parser keeps only the thumbnail (the hero image on the source
-        # page). ``download_media`` is a press-kit field and its contents
-        # are not in-article visuals — keeping them inflates the Telegraph
-        # page with figures that aren't on corporate.mattel.com.
-        session = MagicMock()
-        session.get.return_value = _make_response(
-            text=self._article_page(
-                download_media=[
-                    {'url': 'https://images.example/media.png'},
-                    {'url': 'https://images.example/hi-res-press.jpg'},
-                ],
-            ),
+        # Image policy lock from patterns.md: only thumbnail surfaces;
+        # ``download_media`` press-kit assets are dropped.
+        entry = _hw_entry(
+            handle="hw-x",
+            title="Sample Mattel Article",
+            excerpt="Editorial lead text",
+            thumbnail={"url": "https://example.com/thumb.jpg"},
+            download_media=[
+                {"url": "https://example.com/media.png"},
+                {"url": "https://example.com/hi-res.jpg"},
+            ],
         )
-        out = fetch_mattel_article('https://corporate.mattel.com/news/x', session=session)
-        assert out['title'] == 'Sample Mattel Article'
-        assert out['subtitle'] == 'Editorial lead text'
-        assert out['paragraphs'] == ['A paragraph.', 'Second.', 'Bullet']
-        # Only thumbnail survives; neither press-kit entry is included.
-        assert out['images'] == ['https://images.example/thumb.jpg']
+        body = "<p>A paragraph.</p><p>Second.</p><ul><li>Bullet</li></ul>"
+        html = _make_flight_article(entry, body_html=body)
+        session = MagicMock()
+        session.get.return_value = _make_response(text=html)
+
+        out = fetch_mattel_article(
+            "https://corporate.mattel.com/news/hw-x", session=session
+        )
+
+        assert out["title"] == "Sample Mattel Article"
+        assert out["subtitle"] == "Editorial lead text"
+        assert out["paragraphs"] == ["A paragraph.", "Second.", "Bullet"]
+        assert out["images"] == ["https://example.com/thumb.jpg"]
 
     def test_no_thumbnail_yields_empty_images_regardless_of_download_media(self):
-        session = MagicMock()
-        session.get.return_value = _make_response(
-            text=self._article_page(
-                thumb_url=None,
-                download_media=[{'url': 'https://images.example/press.jpg'}],
-            ),
+        entry = _hw_entry(
+            handle="hw-x",
+            thumbnail=None,
+            download_media=[{"url": "https://example.com/press.jpg"}],
         )
-        out = fetch_mattel_article('https://corporate.mattel.com/news/x', session=session)
-        assert out['images'] == []
+        # Strip thumbnail entirely to exercise the absent-thumbnail branch.
+        del entry["thumbnail"]
+        html = _make_flight_article(entry, body_html="<p>x</p>")
+        session = MagicMock()
+        session.get.return_value = _make_response(text=html)
+
+        out = fetch_mattel_article(
+            "https://corporate.mattel.com/news/hw-x", session=session
+        )
+
+        assert out["images"] == []
 
     def test_missing_excerpt_yields_empty_subtitle(self):
+        entry = _hw_entry(handle="hw-x", excerpt="")
+        html = _make_flight_article(entry, body_html="<p>x</p>")
         session = MagicMock()
-        session.get.return_value = _make_response(text=self._article_page(excerpt=''))
-        out = fetch_mattel_article('https://corporate.mattel.com/news/x', session=session)
-        assert out['subtitle'] == ''
+        session.get.return_value = _make_response(text=html)
+
+        out = fetch_mattel_article(
+            "https://corporate.mattel.com/news/hw-x", session=session
+        )
+
+        assert out["subtitle"] == ""
+
+    def test_dict_form_excerpt_extracts_text_field(self):
+        # AC6: excerpt may be a dict {"text": "..."} on some entries.
+        entry = _hw_entry(handle="hw-x", excerpt={"text": "Dict-form lead"})
+        html = _make_flight_article(entry, body_html="<p>x</p>")
+        session = MagicMock()
+        session.get.return_value = _make_response(text=html)
+
+        out = fetch_mattel_article(
+            "https://corporate.mattel.com/news/hw-x", session=session
+        )
+
+        assert out["subtitle"] == "Dict-form lead"
 
     def test_http_error_returns_none_and_notifies(self):
         session = MagicMock()
-        session.get.side_effect = requests.ConnectionError('boom')
+        session.get.side_effect = requests.ConnectionError("boom")
         notifier = MagicMock()
-        out = fetch_mattel_article('https://x', session=session, notifier=notifier)
-        assert out is None
-        notifier.assert_called_once()
 
-    def test_missing_next_data_returns_none_and_notifies(self):
-        session = MagicMock()
-        session.get.return_value = _make_response(text='<html></html>')
-        notifier = MagicMock()
-        out = fetch_mattel_article('https://x', session=session, notifier=notifier)
+        out = fetch_mattel_article(
+            "https://corporate.mattel.com/news/hw-x",
+            session=session,
+            notifier=notifier,
+        )
+
         assert out is None
         notifier.assert_called_once()
+        # Sanitised: no raw exception text
+        assert "boom" not in notifier.call_args[0][0]
 
     def test_oversized_response_returns_none(self):
         session = MagicMock()
-        resp = _make_response(text='ok')
-        resp.content = b'x' * (MAX_RESPONSE_SIZE + 1)
+        resp = _make_response(text="ok")
+        resp.content = b"x" * (MAX_RESPONSE_SIZE + 1)
         session.get.return_value = resp
         notifier = MagicMock()
-        out = fetch_mattel_article('https://x', session=session, notifier=notifier)
+
+        out = fetch_mattel_article(
+            "https://corporate.mattel.com/news/hw-x",
+            session=session,
+            notifier=notifier,
+        )
+
+        assert out is None
+        notifier.assert_called_once()
+        assert "too large" in notifier.call_args[0][0].lower()
+
+    def test_missing_payload_returns_none_and_notifies(self):
+        session = MagicMock()
+        session.get.return_value = _make_response(text="<html></html>")
+        notifier = MagicMock()
+
+        out = fetch_mattel_article(
+            "https://corporate.mattel.com/news/hw-x",
+            session=session,
+            notifier=notifier,
+        )
+
         assert out is None
         notifier.assert_called_once()
 
-    def test_null_content_article_returns_none_with_readable_error(self):
-        # Next.js 404 pages return {'contentArticle': null} in __NEXT_DATA__.
-        # The fetcher must surface a readable admin notification, not a
-        # cryptic "'NoneType' object is not subscriptable".
+    def test_article_entry_not_found_returns_none_with_readable_error(self):
+        # The flight has an article2.entries section but the requested handle
+        # is not in it (e.g., 200-with-no-data CDN edge condition).
+        entry = _hw_entry(handle="some-other-handle")
+        html = _make_flight_article(entry, body_html="<p>x</p>")
         session = MagicMock()
-        payload = {'props': {'pageProps': {'contentArticle': None}}}
-        html = (
-            '<html><body>'
-            f'<script id="__NEXT_DATA__" type="application/json">{json.dumps(payload)}</script>'
-            '</body></html>'
-        )
         session.get.return_value = _make_response(text=html)
         notifier = MagicMock()
-        out = fetch_mattel_article('https://x', session=session, notifier=notifier)
+
+        out = fetch_mattel_article(
+            "https://corporate.mattel.com/news/missing-handle",
+            session=session,
+            notifier=notifier,
+        )
+
         assert out is None
         notifier.assert_called_once()
-        (msg,), _ = notifier.call_args
-        assert 'contentArticle is null' in msg
+        msg = notifier.call_args[0][0]
+        assert "article entry not found" in msg
+
+    def test_body_split_across_multiple_flight_chunks(self):
+        # AC8: body content split across N pushes should reconstruct in
+        # order with no gaps or duplicates.
+        entry = _hw_entry(handle="hw-x")
+        body = "<p>Alpha.</p><p>Beta.</p><p>Gamma.</p>"
+        html = _make_flight_article(entry, body_html=body, body_chunks=3)
+        session = MagicMock()
+        session.get.return_value = _make_response(text=html)
+        notifier = MagicMock()
+
+        out = fetch_mattel_article(
+            "https://corporate.mattel.com/news/hw-x",
+            session=session,
+            notifier=notifier,
+        )
+
+        assert out is not None
+        assert out["paragraphs"] == ["Alpha.", "Beta.", "Gamma."]
+        notifier.assert_not_called()
+
+    def test_body_absent_returns_dict_no_notifier(self):
+        # AC9 part 1: entry without body field → paragraphs=[] without notifier.
+        entry = _hw_entry(handle="hw-x")
+        html = _make_flight_article(entry, body_html=None)
+        session = MagicMock()
+        session.get.return_value = _make_response(text=html)
+        notifier = MagicMock()
+
+        out = fetch_mattel_article(
+            "https://corporate.mattel.com/news/hw-x",
+            session=session,
+            notifier=notifier,
+        )
+
+        assert out is not None
+        assert out["paragraphs"] == []
+        notifier.assert_not_called()
+
+    def test_body_truncated_returns_empty_paragraphs_no_notifier(self):
+        # AC9 part 2: advertised hex-length > available content → empty
+        # paragraphs (content-empty path), no notifier.
+        entry = _hw_entry(handle="hw-x")
+        html = _make_flight_article(
+            entry, body_html="<p>x</p>", truncate=True
+        )
+        session = MagicMock()
+        session.get.return_value = _make_response(text=html)
+        notifier = MagicMock()
+
+        out = fetch_mattel_article(
+            "https://corporate.mattel.com/news/hw-x",
+            session=session,
+            notifier=notifier,
+        )
+
+        assert out is not None
+        assert out["paragraphs"] == []
+        notifier.assert_not_called()
+
+    def test_article_falls_back_to_url_field_when_handle_mismatch(self):
+        # AC7: if handle ≠ URL slug but the entry's url field equals link, lookup wins.
+        entry = _hw_entry(
+            handle="some-internal-slug-that-doesnt-match",
+            url="https://corporate.mattel.com/news/canonical-link",
+        )
+        html = _make_flight_article(entry, body_html="<p>x</p>")
+        session = MagicMock()
+        session.get.return_value = _make_response(text=html)
+
+        out = fetch_mattel_article(
+            "https://corporate.mattel.com/news/canonical-link", session=session
+        )
+
+        assert out is not None
+        assert out["paragraphs"] == ["x"]
+
+    def test_uses_allow_redirects_false(self):
+        entry = _hw_entry(handle="hw-x")
+        html = _make_flight_article(entry, body_html="<p>x</p>")
+        session = MagicMock()
+        session.get.return_value = _make_response(text=html)
+
+        fetch_mattel_article(
+            "https://corporate.mattel.com/news/hw-x", session=session
+        )
+
+        _, kwargs = session.get.call_args
+        assert kwargs.get("allow_redirects") is False
+
+
+# ---------------------------------------------------------------------------
+# SSRF guard (Decision 8 / ES10)
+# ---------------------------------------------------------------------------
+
+
+class TestSsrfGuard:
+    def test_rejects_link_outside_article_url_prefix(self):
+        # Decision 8 / ES10: any link not matching ARTICLE_URL_PREFIX is
+        # rejected BEFORE any HTTP call. The notifier message must NOT
+        # echo the malicious URL.
+        session = MagicMock()
+        notifier = MagicMock()
+
+        out = fetch_mattel_article(
+            "https://evil.example.com/news/foo",
+            session=session,
+            notifier=notifier,
+        )
+
+        assert out is None
+        # No HTTP call was issued.
+        session.get.assert_not_called()
+        notifier.assert_called_once()
+        msg = notifier.call_args[0][0]
+        assert "invalid article link prefix" in msg
+        assert "evil.example.com" not in msg
+
+
+# ---------------------------------------------------------------------------
+# Anti-drift snapshot smokes (Decision 7) — guarded on /tmp snapshots
+# ---------------------------------------------------------------------------
+
+
+def test_live_listing_snapshot_parses_without_notifier():
+    snapshot = "/tmp/mattel_news.html"
+    if not os.path.exists(snapshot):
+        pytest.skip("live listing snapshot not available")
+    with open(snapshot, encoding="utf-8") as f:
+        html = f.read()
+    session = MagicMock()
+    session.get.return_value = _make_response(text=html)
+    notifier = MagicMock()
+
+    result = fetch_mattel_news(session=session, notifier=notifier)
+
+    assert isinstance(result, list)
+    notifier.assert_not_called()
+
+
+def test_live_article_snapshot_parses_without_notifier():
+    snapshot = "/tmp/mattel_article.html"
+    if not os.path.exists(snapshot):
+        pytest.skip("live article snapshot not available")
+    with open(snapshot, encoding="utf-8") as f:
+        html = f.read()
+    session = MagicMock()
+    session.get.return_value = _make_response(text=html)
+    notifier = MagicMock()
+
+    # The live HALO snapshot is the canonical link.
+    link = (
+        "https://corporate.mattel.com/news/"
+        "engage-for-good-names-mattel-2026-halo-corporation-of-the-year"
+    )
+    result = fetch_mattel_article(link, session=session, notifier=notifier)
+
+    assert result is not None
+    assert isinstance(result, dict)
+    assert isinstance(result.get("paragraphs"), list)
+    notifier.assert_not_called()
 
 
 if __name__ == "__main__":
