@@ -115,6 +115,20 @@ class TestPublishHappyPath(_PublishCase):
         self.assertEqual(mock_publish.call_count, 1)
         self.assertEqual(mock_teaser.call_count, 1)
 
+        # Manual-review path must NOT pass ``auto_marker`` to either
+        # call: defaults to False on publish_article (no marker in
+        # Telegraph body), absent on the teaser (single-line hashtag).
+        self.assertNotIn(
+            'auto_marker', mock_publish.call_args.kwargs,
+            'manual-review publish_article must not pass auto_marker '
+            '— defaults to False (no marker on operator-curated posts)',
+        )
+        self.assertNotIn(
+            'auto_marker', mock_teaser.call_args.kwargs,
+            'manual-review teaser must not receive auto_marker '
+            '— teaser is single-line for both paths',
+        )
+
         # Row removed from pending, present in published with via_review=1.
         self.assertIsNone(repo.get_pending(entry['link']))
         pub = repo.get_published(entry['link'])

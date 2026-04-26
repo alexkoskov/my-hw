@@ -36,11 +36,12 @@ For universal coding standards, see `~/.claude/skills/code-writing/references/un
 - On translator failure, the original English text is returned so the
   pipeline keeps going.
 
-### Channel post format (locked 2026-04-21, auto-marker added 2026-04-26)
-- Manual-review path (`hw_review publish`): single-line hashtag (`#autoevolution`, `#mattel`, `#lamleygroup`). Derived from source URL's second-level domain by `news_bot._source_hashtag`.
-- Auto-fallback path (`_fallback_publish` / overflow / idle-fallback, `via_review=False`): TWO-line message — same hashtag on first line, then `↳ автоперевод` (U+21B3 + label) on second line. Marker is operator-facing visual cue to distinguish Gemini-translated posts from Claude-curated ones; subscribers see it too but it's intentionally low-key.
+### Channel post format (locked 2026-04-21, auto-marker relocated 2026-04-27)
+- **Channel teaser is byte-identical for both paths** — single-line hashtag (`#autoevolution`, `#mattel`, `#lamleygroup`), derived from source URL's second-level domain by `news_bot._source_hashtag`. Decision 14 (manual-review-workflow tech-spec) holds at the visible-feed level: subscribers see no difference between manual and auto posts.
+- **Telegra.ph article body** carries the path differentiator: auto-fallback (`_fallback_publish` with `via_review=False` — overflow / idle-fallback) injects a plain `<p>` paragraph node `↳ автоперевод` (U+21B3 + label) IMMEDIATELY BEFORE the `Источник:` footer. Manual `hw_review publish` (`via_review=True`) doesn't add it.
 - The Telegra.ph page is surfaced via `LinkPreviewOptions(url=telegraph_url, show_above_text=True)` — Telegram renders the Instant View card above the hashtag, carrying domain label, title, excerpt, hero image, and ⚡ INSTANT VIEW button.
-- Hashtag itself is BYTE-IDENTICAL across both paths (Decision 14 from manual-review-workflow tech-spec). Only the optional second line distinguishes auto-fallback. Full spec: `work/telegraph-pipeline/post-format.md`.
+- **Rationale for the relocation (2026-04-27):** the original two-line teaser (commit `cc4cc8c`) added subscriber-facing noise to the channel feed. Moving the marker INTO the article keeps the feed clean (Decision 14 byte-equality preserved) while still letting operators and curious readers diagnose path inside the article — the marker sits right above the source link where attribution context naturally lives.
+- Wiring: `telegraph_publisher.publish_article(..., auto_marker: bool = False)` controls the node insertion. `_fallback_publish` calls it with `auto_marker=not via_review`. `hw_review.cmd_publish` never passes the flag → defaults False. `send_telegraph_teaser` no longer accepts `auto_marker` (single-line only). Full spec: `work/telegraph-pipeline/post-format.md`.
 
 ### Auto-fallback throttle (added 2026-04-26)
 - `_overflow_fast_track` and the idle-fallback loop sleep `FALLBACK_THROTTLE_SECONDS` (default 3600 = 1h) BETWEEN consecutive `_fallback_publish` calls — skip-first pattern, so 1 publish = no wait, N publishes = (N-1) waits.

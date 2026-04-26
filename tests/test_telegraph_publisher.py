@@ -246,6 +246,183 @@ class TestPublishArticle:
         assert session.post.call_args[1]["data"]["access_token"] == "explicit"
 
 
+class TestAutoMarkerInArticleBody:
+    """Auto-fallback marker is rendered as a plain `<p>` paragraph node
+    inside the Telegra.ph article, IMMEDIATELY before the `Источник:`
+    footer, only when ``publish_article`` is called with
+    ``auto_marker=True``. The manual-review path defaults to False and
+    produces a tree with no marker — the channel teaser stays a clean
+    single-line hashtag for both paths.
+
+    Marker text is byte-pinned to ``↳ автоперевод`` (U+21B3 + space +
+    Russian "autotranslation"). Plain `<p>`, no `<i>`/`<b>` wrap —
+    unobtrusive but visible.
+    """
+
+    MARKER_TEXT = "↳ автоперевод"
+
+    def _publish_capture(self, monkeypatch, **kwargs):
+        """Helper: invoke publish_article with a mocked session and return
+        the parsed `content` array sent to createPage."""
+        monkeypatch.setenv(tp.ENV_TOKEN_KEY, "tok")
+        session = MagicMock()
+        session.post.return_value = _make_response({
+            "ok": True,
+            "result": {"url": "https://telegra.ph/X", "path": "X"},
+        })
+        tp.publish_article(session=session, **kwargs)
+        return json.loads(session.post.call_args[1]["data"]["content"])
+
+    def test_auto_fallback_telegraph_includes_marker_before_source_footer(
+        self, monkeypatch,
+    ):
+        """``auto_marker=True`` (auto-fallback path) → the marker `<p>` is
+        the second-to-last node, immediately before the `Источник:`
+        footer."""
+        content = self._publish_capture(
+            monkeypatch,
+            title="T",
+            paragraphs=["body para 1", "body para 2"],
+            images=["hero.jpg"],
+            source_url="https://example.com/src",
+            subtitle="Лид",
+            auto_marker=True,
+        )
+
+        # Footer is last; marker is the node directly before it.
+        footer = content[-1]
+        assert footer["tag"] == "p"
+        assert footer["children"][0] == "Источник: "
+        marker = content[-2]
+        assert marker == {"tag": "p", "children": [self.MARKER_TEXT]}
+
+    def test_manual_review_telegraph_does_not_include_marker(
+        self, monkeypatch,
+    ):
+        """``auto_marker`` defaults to False (manual-review path) → no
+        ``автоперевод`` substring anywhere in the node tree."""
+        content = self._publish_capture(
+            monkeypatch,
+            title="T",
+            paragraphs=["body"],
+            images=["hero.jpg"],
+            source_url="https://example.com/src",
+            subtitle="Лид",
+        )
+
+        # Walk the tree, collect every string, assert no marker text.
+        collected: list[str] = []
+
+        def _walk(node):
+            if isinstance(node, str):
+                collected.append(node)
+            elif isinstance(node, dict):
+                for v in node.values():
+                    _walk(v)
+            elif isinstance(node, list):
+                for item in node:
+                    _walk(item)
+
+        _walk(content)
+        joined = "".join(collected)
+        assert "автоперевод" not in joined
+        assert "↳" not in joined
+
+    def test_marker_codepoint_is_u21b3(self, monkeypatch):
+        """Pin the arrow byte-for-byte to U+21B3 ('↳'). Pinning the
+        codepoint protects against editor-driven character drift
+        (e.g. someone replaces it with U+2192 '→'). Asserted on the
+        Telegraph node tree (not the channel teaser — see
+        Decision 14: teaser is single-line hashtag for both paths)."""
+        content = self._publish_capture(
+            monkeypatch,
+            title="T",
+            paragraphs=["p"],
+            images=[],
+            source_url="https://example.com/src",
+            auto_marker=True,
+        )
+        marker = content[-2]
+        text = marker["children"][0]
+        assert text == self.MARKER_TEXT
+        assert "↳" in text  # U+21B3 LOWERWARDS ARROW WITH TIP RIGHTWARDS
+        # Reject look-alike arrows.
+        for bad in ("→", "↪", "↱", "->"):
+            assert bad not in text
+
+    def test_auto_marker_default_is_false(self, monkeypatch):
+        """publish_article without ``auto_marker`` (manual-review path
+        ``hw_review.cmd_publish`` style) yields no marker."""
+        content = self._publish_capture(
+            monkeypatch,
+            title="T",
+            paragraphs=["p"],
+            images=[],
+            source_url="https://example.com/src",
+        )
+        # Footer is the last node; node before it must NOT be the marker.
+        if len(content) >= 2:
+            prev = content[-2]
+            assert prev != {"tag": "p", "children": [self.MARKER_TEXT]}
+
+    def test_marker_renders_as_plain_paragraph_no_decoration(
+        self, monkeypatch,
+    ):
+        """No italic/bold wrap — children is a flat ``[str]``."""
+        content = self._publish_capture(
+            monkeypatch,
+            title="T",
+            paragraphs=["p"],
+            images=[],
+            source_url="https://example.com/src",
+            auto_marker=True,
+        )
+        marker = content[-2]
+        assert marker["tag"] == "p"
+        # Single string child, no nested tags (i, b, etc.).
+        assert len(marker["children"]) == 1
+        assert isinstance(marker["children"][0], str)
+
+    def test_auto_marker_works_on_blocks_path(self, monkeypatch):
+        """``auto_marker=True`` injects the marker on the blocks path too
+        (Mattel/Lamley/RSS use blocks). Position must remain immediately
+        before the `Источник:` footer."""
+        content = self._publish_capture(
+            monkeypatch,
+            title="T",
+            paragraphs=None,
+            images=None,
+            source_url="https://example.com/src",
+            blocks=[
+                {"type": "image", "src": "hero.jpg"},
+                {"type": "paragraph", "text": "body"},
+            ],
+            auto_marker=True,
+        )
+        footer = content[-1]
+        assert footer["children"][0] == "Источник: "
+        marker = content[-2]
+        assert marker == {"tag": "p", "children": ["↳ автоперевод"]}
+
+    def test_auto_marker_without_source_url_appends_at_end(
+        self, monkeypatch,
+    ):
+        """If the article has no source_url (no footer node), the marker
+        still appears — at the end of the node tree. Defensive — current
+        code paths always pass source_url, but the function shouldn't
+        crash if a future caller skips it."""
+        content = self._publish_capture(
+            monkeypatch,
+            title="T",
+            paragraphs=["p"],
+            images=[],
+            source_url=None,
+            auto_marker=True,
+        )
+        # Last node should be the marker since there's no footer.
+        assert content[-1] == {"tag": "p", "children": ["↳ автоперевод"]}
+
+
 class TestPreviewNodes:
     """Tests for the public preview_nodes wrapper.
 

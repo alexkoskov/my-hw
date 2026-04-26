@@ -96,10 +96,26 @@ def ensure_access_token(
     return token
 
 
+# Auto-fallback differentiator. Rendered as a plain ``<p>`` paragraph
+# node immediately before the ``Источник:`` footer when ``auto_marker``
+# is True. The arrow is U+21B3 ('↳ DOWNWARDS ARROW WITH TIP RIGHTWARDS')
+# — pinned byte-for-byte by the test suite to guard against editor-
+# driven character drift. Style: plain text, no italic/bold wrap —
+# unobtrusive but visible to anyone who opens the article.
+AUTO_MARKER_TEXT = "↳ автоперевод"
+
+
+def _auto_marker_node() -> dict:
+    """Return the ``<p>`` node for the auto-fallback marker. Plain text
+    child, no decoration."""
+    return {"tag": "p", "children": [AUTO_MARKER_TEXT]}
+
+
 def _build_content_from_blocks(
     subtitle: str,
     blocks: List[dict],
     source_url: Optional[str],
+    auto_marker: bool = False,
 ) -> list:
     """Render ordered content blocks into Telegra.ph nodes, preserving
     image/video positions from the source article.
@@ -164,6 +180,8 @@ def _build_content_from_blocks(
         elif t == "video":
             nodes.append(iframe(block["src"]))
 
+    if auto_marker:
+        nodes.append(_auto_marker_node())
     nodes.extend(_footer_nodes(source_url))
     return nodes
 
@@ -184,6 +202,7 @@ def _build_content(
     paragraphs: List[str],
     images: List[str],
     source_url: Optional[str],
+    auto_marker: bool = False,
 ) -> list:
     """Compose the Telegra.ph node tree for the locked post format:
 
@@ -225,6 +244,8 @@ def _build_content(
     for img in remaining:
         nodes.append(figure_img(img))
 
+    if auto_marker:
+        nodes.append(_auto_marker_node())
     nodes.extend(_footer_nodes(source_url))
     return nodes
 
@@ -236,6 +257,7 @@ def preview_nodes(
     source_url: Optional[str] = None,
     subtitle: str = "",
     blocks: Optional[List[dict]] = None,
+    auto_marker: bool = False,
 ) -> list:
     """Return the Telegra.ph node tree that ``publish_article`` would upload,
     without making any network call.
@@ -256,10 +278,21 @@ def preview_nodes(
     caller's code reads naturally) but is **not** included in the returned
     tree — Telegra.ph's ``createPage`` passes ``title`` as a separate field
     and the ``content`` array holds only body nodes.
+
+    ``auto_marker`` (default False) injects a plain ``<p>`` node carrying
+    ``↳ автоперевод`` immediately before the ``Источник:`` footer.
+    Used by the auto-fallback path (``via_review=False``) to flag
+    Gemini-translated posts to operators and curious readers without
+    polluting the channel teaser.
     """
     if blocks:
-        return _build_content_from_blocks(subtitle, blocks, source_url)
-    return _build_content(subtitle, paragraphs or [], images or [], source_url)
+        return _build_content_from_blocks(
+            subtitle, blocks, source_url, auto_marker=auto_marker,
+        )
+    return _build_content(
+        subtitle, paragraphs or [], images or [], source_url,
+        auto_marker=auto_marker,
+    )
 
 
 def publish_article(
@@ -272,6 +305,7 @@ def publish_article(
     access_token: Optional[str] = None,
     author_name: str = DEFAULT_AUTHOR_NAME,
     session: Optional[requests.Session] = None,
+    auto_marker: bool = False,
 ) -> str:
     """Publish a Russian translated article to Telegra.ph; return the page URL.
 
@@ -283,6 +317,15 @@ def publish_article(
     image/video positions in the source article. When provided, ``paragraphs``
     and ``images`` are ignored. Sources that don't expose block structure
     (Mattel, Lamley, RSS fallback) still pass the flat lists.
+
+    ``auto_marker`` (default False) — when True, a plain ``<p>`` paragraph
+    carrying ``↳ автоперевод`` is inserted immediately before the
+    ``Источник:`` footer. Set by the auto-fallback path
+    (``news_bot._fallback_publish`` with ``via_review=False``) so
+    operators and curious readers can tell Gemini-translated posts apart
+    from operator-curated ones. Manual ``hw_review.cmd_publish`` does
+    NOT pass this flag → no marker on operator-curated posts. The
+    channel teaser is byte-identical for both paths (Decision 14).
     """
     token = access_token or os.environ.get(ENV_TOKEN_KEY)
     if not token:
@@ -295,6 +338,7 @@ def publish_article(
         source_url=source_url,
         subtitle=subtitle,
         blocks=blocks,
+        auto_marker=auto_marker,
     )
     result = _api_call(
         "createPage",

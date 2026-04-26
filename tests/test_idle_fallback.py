@@ -249,11 +249,11 @@ class TestOverdueAutopublish(_IdleFallbackCase):
         self.assertEqual(pub['via_review'], 0)
         self.assertEqual(pub['telegraph_url'], tg_url)
         # Teaser was called with stored URL + source link (Decision 14).
-        # ``auto_marker=True`` (Part B): auto-fallback path renders the
-        # ``↳ автоперевод`` second line below the source hashtag.
-        mock_teaser.assert_called_once_with(
-            tg_url, entry['link'], auto_marker=True,
-        )
+        # Decision 14 byte-equality: teaser is single-line hashtag for
+        # both manual and auto paths. The auto-marker now lives in the
+        # Telegra.ph article body (see test_telegraph_publisher
+        # TestAutoMarkerInArticleBody) — NOT in the teaser kwargs.
+        mock_teaser.assert_called_once_with(tg_url, entry['link'])
 
     def test_fallback_failure_increments_attempt_count(self):
         """``publish_article`` raises → attempt_count bumped to 1; last_error
@@ -322,9 +322,8 @@ class TestOverdueAutopublish(_IdleFallbackCase):
             news_bot.job()
 
         mock_publish.assert_not_called()
-        mock_teaser.assert_called_once_with(
-            saved_url, entry['link'], auto_marker=True,
-        )
+        # Teaser is single-line for both paths — no auto_marker kwarg.
+        mock_teaser.assert_called_once_with(saved_url, entry['link'])
         self.assertIsNone(repo.get_pending(entry['link']))
         pub = repo.get_published(entry['link'])
         self.assertIsNotNone(pub)

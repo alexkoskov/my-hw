@@ -537,38 +537,26 @@ def build_admin_ping(rows):
     return f"{len(rows)} ждут review: " + ", ".join(parts)
 
 
-def send_telegraph_teaser(telegraph_url, source_url, auto_marker=False):
+def send_telegraph_teaser(telegraph_url, source_url):
     """Publish the locked-format channel post: a single source hashtag +
     Telegraph preview card above (via LinkPreviewOptions). See
     work/telegraph-pipeline/post-format.md for the spec. The preview card
     carries all visible content (domain, title, excerpt, image, ⚡ INSTANT
     VIEW button) — the message body is just the source attribution.
 
-    Parameters
-    ----------
-    telegraph_url : str
-        Target of the Instant View preview card.
-    source_url : str
-        Original article URL — used to derive the source hashtag (Decision
-        14 of manual-review-workflow tech-spec).
-    auto_marker : bool, default False
-        Auto-fallback differentiator. When True, a second line ``↳
-        автоперевод`` (U+21B3 + space + Russian "autotranslation") is
-        appended below the hashtag so subscribers can tell auto-published
-        posts apart from operator-reviewed ones. Manual-review path
-        (``hw_review publish``) calls this without the flag → single-
-        line teaser unchanged.
+    The teaser body is byte-identical for the manual-review path
+    (``hw_review publish``) and the auto-fallback path
+    (``_fallback_publish``) — Decision 14 of the manual-review-workflow
+    tech-spec. Path differentiation lives INSIDE the Telegra.ph article
+    body as a ``↳ автоперевод`` paragraph node before the ``Источник:``
+    footer (auto-fallback only) — see ``telegraph_publisher.publish_article``
+    ``auto_marker`` parameter.
     """
     if not TELEGRAM_BOT_TOKEN or not TELEGRAM_CHANNEL_ID:
         logger.error("Telegram credentials not set.")
         return False
 
     text = _source_hashtag(source_url)
-    if auto_marker:
-        # Two lines: hashtag, then marker. Telegram renders this as plain
-        # text below the Instant View preview card. The arrow is U+21B3
-        # ('↳') — pinned byte-for-byte by the test suite.
-        text = f"{text}\n↳ автоперевод"
 
     async def _send():
         bot = Bot(token=TELEGRAM_BOT_TOKEN)
@@ -705,6 +693,13 @@ def _fallback_publish(row, via_review=False):
             f"[fallback] reusing stored telegraph_url for {link}: {telegraph_url}"
         )
     else:
+        # Auto-fallback path injects the ``↳ автоперевод`` paragraph
+        # inside the Telegra.ph article body (immediately before the
+        # Источник footer) so operators and curious readers can tell
+        # auto-fallback posts apart from operator-curated ones. The
+        # marker mirrors ``via_review`` inverted: ``via_review=False`` →
+        # ``auto_marker=True``. Manual hw_review.cmd_publish never sets
+        # the flag, so its node tree carries no marker.
         telegraph_url = telegraph_publisher.publish_article(
             title=ru_title,
             paragraphs=ru_paragraphs,
@@ -712,6 +707,7 @@ def _fallback_publish(row, via_review=False):
             source_url=link,
             subtitle=ru_subtitle,
             blocks=ru_blocks,
+            auto_marker=not via_review,
         )
         telegraph_path = urlparse(telegraph_url).path.lstrip('/')
         if not telegraph_path:
@@ -744,13 +740,11 @@ def _fallback_publish(row, via_review=False):
     # attempt_count. (Exceptions from ``send_telegraph_teaser`` propagate
     # naturally — the helper already catches TelegramError internally and
     # returns False, so this raise path covers that "soft" failure mode.)
-    # ``auto_marker`` mirrors ``via_review`` inverted: auto-fallback paths
-    # (via_review=False) get the ``↳ автоперевод`` second line; manual
-    # paths route through ``hw_review.cmd_publish`` which doesn't pass
-    # the flag (default False = single-line, unchanged).
-    ok = send_telegraph_teaser(
-        telegraph_url, link, auto_marker=not via_review,
-    )
+    # Teaser is single-line for both paths (Decision 14 byte-equality
+    # at the visible-feed level). The auto-marker lives in the
+    # Telegra.ph article body — see the ``auto_marker`` kwarg passed
+    # to ``publish_article`` above.
+    ok = send_telegraph_teaser(telegraph_url, link)
     if not ok:
         raise RuntimeError(
             f"send_telegraph_teaser returned False for {link}"

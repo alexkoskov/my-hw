@@ -9,11 +9,16 @@ Two-part feature:
   fallback loop (job() step 1b). Skip-first: 1 publish in a batch = no
   wait; N publishes = (N-1) waits.
 
-* Part B — auto-marker line ``↳ автоперевод`` (U+21B3 + space +
-  Russian "autotranslation") appears as a SECOND line under the source
-  hashtag in ``send_telegraph_teaser`` when ``auto_marker=True``. The
-  manual-review path (``hw_review publish``) calls the function
-  without the flag → single-line teaser unchanged.
+* Part B — auto-marker. The ``↳ автоперевод`` paragraph node lives
+  inside the Telegra.ph article body (immediately before the
+  ``Источник:`` footer), NOT in the channel teaser — see
+  ``test_telegraph_publisher.TestAutoMarkerInArticleBody``. The
+  channel teaser is single-line for both manual and auto paths
+  (Decision 14 byte-equality at the visible-feed level). The wiring
+  contract verified here: ``_fallback_publish`` forwards
+  ``auto_marker=True`` through to ``publish_article`` for the
+  auto-fallback path (``via_review=False``); ``hw_review.cmd_publish``
+  must NOT pass the flag (defaults False, no marker).
 """
 from __future__ import annotations
 
@@ -289,14 +294,16 @@ class TestIdleFallbackThrottle(_ThrottleCase):
 
 
 # ---------------------------------------------------------------------------
-# Part B: auto-marker in teaser
+# Part B: channel teaser is single-line for BOTH paths
 # ---------------------------------------------------------------------------
 
 
-class TestAutoMarkerTeaser(unittest.TestCase):
-    """``send_telegraph_teaser(..., auto_marker=True)`` adds a second
-    line ``↳ автоперевод``; the manual path (no flag / False) is
-    unchanged single-line."""
+class TestTeaserAlwaysSingleLine(unittest.TestCase):
+    """Decision 14 (manual-review-workflow tech-spec) is preserved at
+    the visible-channel-feed level: the teaser body is byte-identical
+    for manual and auto paths — a single hashtag line. The auto-marker
+    moved INTO the Telegra.ph article body (see
+    ``test_telegraph_publisher.TestAutoMarkerInArticleBody``)."""
 
     @patch('news_bot.TELEGRAM_BOT_TOKEN', 'tok')
     @patch('news_bot.TELEGRAM_CHANNEL_ID', '@ch')
@@ -313,86 +320,42 @@ class TestAutoMarkerTeaser(unittest.TestCase):
         self.assertTrue(ok)
 
         text = mock_bot.send_message.await_args.kwargs['text']
-        self.assertEqual(text, '#autoevolution',
-                         'manual path: single-line teaser unchanged')
+        self.assertEqual(text, '#autoevolution')
         self.assertNotIn('\n', text)
         self.assertNotIn('автоперевод', text)
 
     @patch('news_bot.TELEGRAM_BOT_TOKEN', 'tok')
     @patch('news_bot.TELEGRAM_CHANNEL_ID', '@ch')
     @patch('news_bot.Bot')
-    def test_auto_marker_appends_second_line(self, mock_bot_class):
+    def test_teaser_does_not_accept_auto_marker_kwarg(self, mock_bot_class):
+        """``send_telegraph_teaser`` no longer takes ``auto_marker`` —
+        the marker moved to the Telegra.ph body. Passing it is a TypeError
+        (or accepted but ignored — pin the contract: rejected)."""
         mock_bot = MagicMock()
         mock_bot.send_message = AsyncMock()
         mock_bot_class.return_value = mock_bot
 
-        ok = news_bot.send_telegraph_teaser(
-            telegraph_url='https://telegra.ph/X',
-            source_url='https://autoevolution.com/news/x.html',
-            auto_marker=True,
-        )
-        self.assertTrue(ok)
-
-        text = mock_bot.send_message.await_args.kwargs['text']
-        # Two lines exactly: hashtag, then marker.
-        self.assertEqual(text, '#autoevolution\n↳ автоперевод')
-
-    @patch('news_bot.TELEGRAM_BOT_TOKEN', 'tok')
-    @patch('news_bot.TELEGRAM_CHANNEL_ID', '@ch')
-    @patch('news_bot.Bot')
-    def test_marker_codepoint_is_u21b3(self, mock_bot_class):
-        """Pin the arrow byte-for-byte to U+21B3 ('↳'). Pinning the
-        codepoint protects against editor-driven character drift
-        (e.g. someone replaces it with U+2192 '→')."""
-        mock_bot = MagicMock()
-        mock_bot.send_message = AsyncMock()
-        mock_bot_class.return_value = mock_bot
-
-        news_bot.send_telegraph_teaser(
-            telegraph_url='https://telegra.ph/X',
-            source_url='https://corporate.mattel.com/news/x',
-            auto_marker=True,
-        )
-        text = mock_bot.send_message.await_args.kwargs['text']
-        # Expected exact bytes (UTF-8): '#mattel\n↳ автоперевод'.
-        self.assertIn('↳', text)
-        # Reject look-alike arrows.
-        for bad in ('→', '↪', '↱', '->'):
-            self.assertNotIn(bad, text)
-        # Marker line is the SECOND line.
-        lines = text.split('\n')
-        self.assertEqual(len(lines), 2)
-        self.assertEqual(lines[0], '#mattel')
-        self.assertEqual(lines[1], '↳ автоперевод')
-
-    @patch('news_bot.TELEGRAM_BOT_TOKEN', 'tok')
-    @patch('news_bot.TELEGRAM_CHANNEL_ID', '@ch')
-    @patch('news_bot.Bot')
-    def test_auto_marker_default_false(self, mock_bot_class):
-        """Calling ``send_telegraph_teaser`` without ``auto_marker`` (as
-        ``hw_review.cmd_publish`` does) defaults to single-line."""
-        mock_bot = MagicMock()
-        mock_bot.send_message = AsyncMock()
-        mock_bot_class.return_value = mock_bot
-
-        news_bot.send_telegraph_teaser(
-            telegraph_url='https://telegra.ph/X',
-            source_url='https://lamleygroup.com/post/',
-        )
-        text = mock_bot.send_message.await_args.kwargs['text']
-        self.assertEqual(text, '#lamleygroup')
+        with self.assertRaises(TypeError):
+            news_bot.send_telegraph_teaser(
+                telegraph_url='https://telegra.ph/X',
+                source_url='https://autoevolution.com/news/x.html',
+                auto_marker=True,
+            )
 
 
 # ---------------------------------------------------------------------------
 # Part B: integration — _fallback_publish forwards auto_marker=True
+# to publish_article (NOT to the teaser)
 # ---------------------------------------------------------------------------
 
 
-class TestFallbackPublishPassesAutoMarker(_ThrottleCase):
+class TestFallbackPublishPassesAutoMarkerToPublishArticle(_ThrottleCase):
 
-    def test_fallback_calls_teaser_with_auto_marker_true(self):
-        """Inside ``_fallback_publish`` (via_review=False) the teaser
-        invocation must propagate ``auto_marker=True``."""
+    def test_fallback_publish_passes_auto_marker_true_to_publish_article(self):
+        """Inside ``_fallback_publish`` (via_review=False) the
+        ``publish_article`` call must propagate ``auto_marker=True`` so
+        the Telegra.ph node tree gets the marker paragraph before the
+        Источник footer."""
         entry = self._insert(link='http://idle/a', title='Idle A')
         self._age_notified(entry['link'], 5)
 
@@ -406,15 +369,21 @@ class TestFallbackPublishPassesAutoMarker(_ThrottleCase):
              patch('news_bot.SOURCES', []):
             news_bot.job()
 
-        # send_telegraph_teaser must have been called with auto_marker=True
+        # publish_article must have been called with auto_marker=True
         # for the auto-fallback path.
-        self.assertEqual(mock_teaser.call_count, 1)
-        kwargs = mock_teaser.call_args.kwargs
+        self.assertEqual(mock_publish.call_count, 1)
+        kwargs = mock_publish.call_args.kwargs
         self.assertTrue(
             kwargs.get('auto_marker') is True,
-            f'expected auto_marker=True, got kwargs={kwargs!r} '
-            f'args={mock_teaser.call_args.args!r}',
+            f'expected auto_marker=True forwarded to publish_article, '
+            f'got kwargs={kwargs!r}',
         )
+
+        # Teaser was called WITHOUT the marker kwarg (single-line).
+        teaser_kwargs = mock_teaser.call_args.kwargs
+        self.assertNotIn('auto_marker', teaser_kwargs,
+                         'teaser must NOT receive auto_marker — '
+                         'the marker lives in the Telegraph body now')
 
 
 if __name__ == '__main__':

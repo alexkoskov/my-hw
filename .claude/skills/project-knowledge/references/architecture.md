@@ -144,9 +144,10 @@ The pipeline is split into a **cron prep phase** (no operator, 12h interval) and
 
 ### Channel post output (identical for manual and fallback paths)
 
-- Message body: `#{source_hashtag}` — `autoevolution` / `mattel` / `lamleygroup` per `_source_hashtag`.
+- Message body: `#{source_hashtag}` — `autoevolution` / `mattel` / `lamleygroup` per `_source_hashtag`. Single-line, byte-identical for manual and auto paths (Decision 14).
 - `LinkPreviewOptions(url=telegraph_url, show_above_text=True)` triggers Instant View card.
 - Telegra.ph page: hero figure + italic subtitle with `💬 «…»` + bold lead + body blocks (paragraphs, images, iframes) + `Источник:` footer.
+- Auto-fallback (`via_review=False`) additionally injects a plain `<p>` paragraph `↳ автоперевод` IMMEDIATELY BEFORE the `Источник:` footer — a path differentiator visible only to readers who open the article. See `patterns.md` § "Channel post format" for rationale and wiring.
 
 ---
 
