@@ -42,6 +42,7 @@ Deployment process, infrastructure, and production operations for AI agents.
 - `QUEUE_CAP` (default `10`) — max size of `pending_articles`.
 - `IDLE_TIMEOUT_HOURS` (default `2`) — age threshold before first admin ping on a stale row.
 - `GRACE_WINDOW_HOURS` (default `2`) — delay after ping before auto-fallback publishes.
+- `FALLBACK_THROTTLE_SECONDS` (default `3600` = 1h) — pause between consecutive `_fallback_publish` calls in overflow / idle-fallback batches. Skip-first pattern (no wait before the first publish; wait between subsequent ones), so 1 publish = no throttle, N publishes = (N-1) × throttle. Set to `0` to disable. Manual `hw_review publish` is never throttled.
 
 These must be present on the production server (systemd EnvironmentFile or `source .env` in the cron wrapper). Operator-side `hw_review.py` also reads them locally from `.env` when publishing manually.
 

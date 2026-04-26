@@ -36,15 +36,17 @@ For universal coding standards, see `~/.claude/skills/code-writing/references/un
 - On translator failure, the original English text is returned so the
   pipeline keeps going.
 
-### Channel post format (locked 2026-04-21)
-- Message body is a single source hashtag (`#autoevolution`, `#mattel`,
-  `#lamleygroup`). Derived from the source URL's second-level domain by
-  `news_bot._source_hashtag`.
-- The Telegra.ph page is surfaced via
-  `LinkPreviewOptions(url=telegraph_url, show_above_text=True)` — Telegram
-  renders the Instant View card above the hashtag line, carrying the
-  domain label, title, excerpt, hero image, and ⚡ INSTANT VIEW button.
-- Full spec: `work/telegraph-pipeline/post-format.md`.
+### Channel post format (locked 2026-04-21, auto-marker added 2026-04-26)
+- Manual-review path (`hw_review publish`): single-line hashtag (`#autoevolution`, `#mattel`, `#lamleygroup`). Derived from source URL's second-level domain by `news_bot._source_hashtag`.
+- Auto-fallback path (`_fallback_publish` / overflow / idle-fallback, `via_review=False`): TWO-line message — same hashtag on first line, then `↳ автоперевод` (U+21B3 + label) on second line. Marker is operator-facing visual cue to distinguish Gemini-translated posts from Claude-curated ones; subscribers see it too but it's intentionally low-key.
+- The Telegra.ph page is surfaced via `LinkPreviewOptions(url=telegraph_url, show_above_text=True)` — Telegram renders the Instant View card above the hashtag, carrying domain label, title, excerpt, hero image, and ⚡ INSTANT VIEW button.
+- Hashtag itself is BYTE-IDENTICAL across both paths (Decision 14 from manual-review-workflow tech-spec). Only the optional second line distinguishes auto-fallback. Full spec: `work/telegraph-pipeline/post-format.md`.
+
+### Auto-fallback throttle (added 2026-04-26)
+- `_overflow_fast_track` and the idle-fallback loop sleep `FALLBACK_THROTTLE_SECONDS` (default 3600 = 1h) BETWEEN consecutive `_fallback_publish` calls — skip-first pattern, so 1 publish = no wait, N publishes = (N-1) waits.
+- Rationale: prevents burst-spam in the channel when overflow evicts many articles or many idle rows fire fallback in one tick. 5 articles → 4 hours of cron-tick instead of ~2 minutes of back-to-back posts.
+- Cron-tick can therefore exceed 12h in pathological cases; `schedule` library queues the next tick (sequential by default), no overlap concern.
+- Set `FALLBACK_THROTTLE_SECONDS=0` to disable (used by tests and for manual emergency-publish scenarios).
 
 ### Image/Media Handling
 - All images from the source are carried through to the Telegra.ph page
