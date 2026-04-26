@@ -30,7 +30,7 @@ Outage state persists in a new tiny SQLite table (`bot_state`, key/value) so adm
 
 - **`news_bot.py`** — `job()` refactor: removes inline idle-fallback and overflow logic; adds crash-loop guard + distributed-publish loop. `_fallback_publish` refactor: tries Claude first (via new module), falls back to Google for per-article problems, raises `OutageError` for API-level. `main()`: cron switches to `schedule.every().day.at("12:00", tz="Europe/Moscow")`. `_TokenRedactingFilter`: extends with `sk-ant-...` pattern for `ANTHROPIC_API_KEY` redaction. `transcreate_text`: bureaucratic regex (19 patterns) and 4000-char truncation removed; HW-glossary (14 patterns) preserved as safety net.
 - **`pending_articles_repo.py`** — `init_schema()` adds idempotent `CREATE TABLE IF NOT EXISTS bot_state (key TEXT PRIMARY KEY, value TEXT)`.
-- **`requirements.txt`** — adds `anthropic>=0.45.0,<1.0` and `pytz>=2024.1`.
+- **`requirements.txt`** — adds `anthropic>=0.45.0,<0.46.0` and `pytz>=2024.1`.
 - **`.env.example`** — removes `QUEUE_CAP`, `IDLE_TIMEOUT_HOURS`, `GRACE_WINDOW_HOURS`, `FALLBACK_THROTTLE_SECONDS`. Adds `ANTHROPIC_API_KEY`, `ANTHROPIC_MODEL` (optional, default `claude-haiku-4-5`), `TZ=Europe/Moscow`.
 - **`deploy.sh`** — adds `ux-guidelines.md` to FILES list (flat path on server).
 - **`.github/workflows/deploy.yml`** — same FILES addition + `ANTHROPIC_API_KEY` / `ANTHROPIC_MODEL` / `TZ` secrets pass-through.
@@ -202,18 +202,21 @@ No new heavy resources introduced. The Anthropic client is lightweight (single H
 - Keep bureaucratic regex as a Google-fallback-only safety net — rejected (Google fallback path is rare and brief; the regex's false-positive rate on already-good text isn't worth the maintenance).
 - Move 4000-char check to Telegraph publisher as a defensive cap — rejected (Telegraph genuinely has no practical limit; defense in depth here would just confuse).
 
-### Decision 12: Anthropic API key redaction — broadened regex + attached to SDK loggers
+### Decision 12: Anthropic API key redaction — broadened regex + attached to SDK loggers + admin-notify scrub
 
-**Decision:** Add to `_TokenRedactingFilter`:
-- Pattern `sk-ant-[A-Za-z0-9_=.-]{16,}` (broader than `[A-Za-z0-9_-]{20,}` to cover sandbox/test/admin keys with `=` or `.` characters).
-- `'ANTHROPIC_API_KEY'` to `_SECRET_ENV_NAMES` (env-var-name verbatim replace path).
-- Attach the filter to `anthropic`, `anthropic._client`, `anthropic._base_client` loggers — Anthropic SDK error strings on auth/permission failures may include the API key inline; if those loggers don't have the redactor, the key leaks via Decision 5's outage admin ping path.
+**Decision:** Three layers of defense:
+1. **Broader regex.** Pattern `sk-ant-[A-Za-z0-9_=.-]{16,}` (was `[A-Za-z0-9_-]{20,}`) — covers sandbox/test/admin keys with `=` or `.` characters.
+2. **Env-name list.** Add `'ANTHROPIC_API_KEY'` to `_SECRET_ENV_NAMES` for the env-var-name verbatim replace path.
+3. **Two-call-site coverage.**
+   - **Logging path:** attach `_TokenRedactingFilter` to `anthropic`, `anthropic._client`, `anthropic._base_client` loggers at import time.
+   - **Admin-notify path:** extract the redaction core into a pure helper `_redact_text(text: str) -> str` that both the logging filter AND `send_admin_notification` call. The notify path runs OUTSIDE Python's logging machinery; without explicit redaction here, an exception text containing the API key would land in operator's Telegram chat as plain text. Fixed admin-ping template uses `type(exc).__name__` only — never `str(exc)` — for the user-visible message; full exception text goes to logs (which are now redacted).
 
-**Rationale:** Security-validator critical findings #1 + #2. Without broader regex + SDK logger attachment, an `AuthenticationError` could surface the raw API key in Telegram admin chat (operator's personal chat — but log records also go to journald which has its own retention).
+**Rationale:** Security-validator R1 critical #1 + #2 + R2 critical (M5 was not actually closed by R1's logger-only fix). The admin-notify code path is logically distinct from logging — `send_admin_notification(message)` builds the Telegram payload via Python string formatting, not through the logging.LogRecord pipeline. Attaching the filter to anthropic loggers helps when the SDK calls `logger.exception(...)`, but does nothing for code that does `send_admin_notification(f"Error: {exc}")`. The new `_redact_text` helper plus the strict admin-ping template (`type(exc).__name__` not `str(exc)`) closes the gap.
 
 **Alternatives considered:**
-- Pin only `sk-ant-` prefix without character class — rejected (false positives on unrelated text, and we need to redact the FULL key not just the prefix).
-- Redact at `send_admin_notification` boundary instead of logging filter — rejected (the redactor IS the filter; covering both paths means attaching the filter to all loggers that could see the key, which includes the SDK).
+- Logger-only redaction (R1 attempt) — rejected (M5 still leaks via send_admin_notification).
+- Block all admin pings during outage — rejected (operator must be alerted to misconfiguration).
+- Whitelist exception classes in admin pings — rejected (brittle; new exception types would silently bypass).
 
 ### Decision 13: Output validation + max_tokens cap in claude_transcreation
 
@@ -285,7 +288,7 @@ Reading a missing key returns Python `None`. Setters use `INSERT OR REPLACE`. St
 
 ### New packages
 
-- `anthropic>=0.45.0,<1.0` — Anthropic Python SDK. Used by `claude_transcreation`. Version pinned to lock the exception class hierarchy referenced in Decision 5.
+- `anthropic>=0.45.0,<0.46.0` — Anthropic Python SDK. Used by `claude_transcreation`. Version pinned to lock the exception class hierarchy referenced in Decision 5.
 - `pytz>=2024.1` — IANA timezone library. Required by `schedule==1.2.1` for `Job.at(tz=...)`. Cannot use stdlib `zoneinfo` (verified — TypeError).
 
 ### Using existing (from project)
@@ -387,7 +390,7 @@ Pre-deploy / dev: `bash`, `pytest`, `python3`. Post-deploy verification (Task 19
 | `scp file1 file2 .claude/skills/.../ux-guidelines.md host:dest/` flattens subdirs — file ends up at `dest/ux-guidelines.md`, not at expected path | Decision 8: `_load_prompt` tries subdir path first, falls back to flat path. Document in `deployment.md`. |
 | Operator inattention to outage pings → bot silently runs Google Translate for hours/days | Switch-back ping when Claude API recovers gives operator visible signal. 24-hour cron cycle guarantees Claude is probed at least once per day. Acceptable per user-spec story 3. |
 | Cost spike if a source loops and produces 100+ articles/day | Algorithm caps at 11 publishes/day; pending grows. AC20 admin warning at `len(pending) > 50` flags the problem. Operator can manually purge or fix the source. |
-| Anthropic SDK exception class hierarchy changes between minor versions | Pin `anthropic>=0.45.0,<1.0`. Tests in `test_claude_transcreation.py` cover each exception branch — version bump that breaks classification will be caught by CI. |
+| Anthropic SDK exception class hierarchy changes between minor versions | Pin `anthropic>=0.45.0,<0.46.0`. Tests in `test_claude_transcreation.py` cover each exception branch — version bump that breaks classification will be caught by CI. |
 | `pytz` deprecation (long-term) — Python community moving to stdlib `zoneinfo` | Acceptable now (`schedule==1.2.1` requires it). When `schedule` adds zoneinfo support, swap. Track in roadmap. |
 | `BEGIN IMMEDIATE` deadlock between `news_bot` cron and `hw_review` CLI under heavy concurrent load | Both writers are short-lived (sub-50ms typical). 5-second `busy_timeout` absorbs contention. `outage_state` writes touch a different table from `pending_articles` writes — null logical conflict. |
 
@@ -397,7 +400,7 @@ None of the technical decisions contradict user-spec requirements. All Decisions
 
 - **Decision 4 (pytz):** [TECHNICAL] — user-spec only mandates "TZ-aware schedule library OR UTC-equivalent" (Constraints); pytz is the implementation choice forced by the existing `schedule==1.2.1` dependency.
 - **Decision 8 (flat-path fallback):** [TECHNICAL] — addresses a deploy-mechanism quirk; user-spec doesn't constrain how `ux-guidelines.md` is shipped, only that it must be present at runtime.
-- **Decision 10 (13 tasks across 6 waves):** [TECHNICAL] — user-spec doesn't specify decomposition granularity; tech-spec optimizes for parallelism + clean PR boundaries.
+- **Decision 10 (13 tasks across 8 waves):** [TECHNICAL] — user-spec doesn't specify decomposition granularity; tech-spec optimizes for parallelism + clean PR boundaries.
 
 All other decisions trace to specific user-spec ACs.
 
@@ -413,11 +416,14 @@ All other decisions trace to specific user-spec ACs.
 - [ ] `pending_articles_repo.init_schema()` creates `bot_state` table idempotently with `(key TEXT PRIMARY KEY, value TEXT)`. Migration test asserts the table+columns+PK shape.
 - [ ] `outage_state` SQLite connections set `PRAGMA busy_timeout = 5000;` per Decision 16.
 - [ ] `bot_state` value reads tolerate corrupted/unexpected text (return None or default; never crash startup).
+- [ ] `init_schema()` exception path: if migration fails (rare — disk full, locked DB, etc.), the failure is caught at `news_bot.main()` startup → admin-ping with the failure type → process exits cleanly (instead of silent crash). Per user-spec Risk 5 mitigation. Test simulates a forced migration failure and asserts admin-ping is dispatched.
 
 **Token redaction & SDK loggers (Decision 12):**
 - [ ] `news_bot._TokenRedactingFilter` redacts the broadened pattern `sk-ant-[A-Za-z0-9_=.-]{16,}`. Regression test covers prod-shape (`sk-ant-api03-...`) and sandbox-shape (with `=` chars) keys.
 - [ ] `_TokenRedactingFilter` is attached to anthropic SDK loggers (`anthropic`, `anthropic._client`, `anthropic._base_client`) at import time. Regression test confirms a synthetic anthropic exception text is redacted in log records.
 - [ ] `'ANTHROPIC_API_KEY'` in `_SECRET_ENV_NAMES`.
+- [ ] `_redact_text(text)` helper extracted; used by both logging filter AND `send_admin_notification` so admin-ping payloads are redacted on the non-logging code path. Test: admin-notify call with text containing sample anthropic key → outgoing Telegram payload contains no plain key.
+- [ ] Admin-ping template uses `type(exc).__name__` (not `str(exc)`) for user-visible messages on outage paths.
 
 **Translation layer (Decisions 1, 5, 6, 13):**
 - [ ] `claude_transcreation.transcreate_via_claude` produces valid RU dict for sample article in <30s with all required keys.
@@ -483,13 +489,13 @@ All other decisions trace to specific user-spec ACs.
 - **Files to modify:** `claude_transcreation.py` (new), `tests/test_claude_transcreation.py` (new)
 - **Files to read:** `.claude/skills/project-knowledge/references/ux-guidelines.md`, `news_bot.py` `transcreate_text` (legacy reference), code-research.md §14.3
 
-#### Task 4: Extend `_TokenRedactingFilter` for ANTHROPIC_API_KEY
-- **Description:** Per Decision 12: broaden anthropic-key regex pattern (covers sandbox/admin keys with `=`/`.`), add to `_SECRET_ENV_NAMES`, AND attach the filter to anthropic SDK loggers (`anthropic`, `anthropic._client`, `anthropic._base_client`) so SDK error strings on auth failures don't leak the key. Extend tests with anthropic-key fixtures including sandbox-shaped keys.
+#### Task 4: Extend `_TokenRedactingFilter` for ANTHROPIC_API_KEY (3-layer)
+- **Description:** Per Decision 12, three layers of defense for `sk-ant-*` keys: (1) broaden anthropic-key regex pattern (covers sandbox/admin keys with `=`/`.`); (2) add to `_SECRET_ENV_NAMES`; (3) attach the filter to anthropic SDK loggers AND extract redaction core into `_redact_text(text)` helper used by both the logging filter and `send_admin_notification`. Update admin-ping template to use `type(exc).__name__` not `str(exc)`. Extend tests with anthropic-key fixtures including sandbox-shaped keys + an admin-notify path test asserting the key is redacted before reaching the Telegram send call.
 - **Skill:** code-writing
 - **Reviewers:** code-reviewer, security-auditor
-- **Verify-smoke:** synthetic log line containing a sample anthropic key passes through filter — output redacted; same for a synthetic anthropic SDK exception text containing the key.
-- **Files to modify:** `news_bot.py` (`_TokenRedactingFilter`, `_SECRET_ENV_NAMES`, logger attachment block), `tests/test_no_token_leak_in_logs.py`
-- **Files to read:** `news_bot.py` (token redaction section), Decision 12
+- **Verify-smoke:** synthetic log line with sample anthropic key → output redacted; synthetic anthropic SDK exception text → output redacted; admin-notify call with text containing sample key → outgoing Telegram payload redacted.
+- **Files to modify:** `news_bot.py` (`_TokenRedactingFilter`, `_redact_text` helper, `_SECRET_ENV_NAMES`, logger attachment block, `send_admin_notification`), `tests/test_no_token_leak_in_logs.py`
+- **Files to read:** `news_bot.py` (token redaction section + `send_admin_notification`), Decision 12
 
 ### Wave 2 (parallel — depend on Wave 1)
 
@@ -501,7 +507,7 @@ All other decisions trace to specific user-spec ACs.
 - **Files to read:** `pending_articles_repo.py` (connection pattern), code-research.md §14.4 (state machine)
 
 #### Task 6: Update `requirements.txt` + `.env.example`
-- **Description:** Pin new dependencies: `anthropic>=0.45.0,<1.0` and `pytz>=2024.1`. Update `.env.example`: remove `QUEUE_CAP`, `IDLE_TIMEOUT_HOURS`, `GRACE_WINDOW_HOURS`, `FALLBACK_THROTTLE_SECONDS`. Add `ANTHROPIC_API_KEY`, `ANTHROPIC_MODEL` (optional, commented as default `claude-haiku-4-5`), `TZ=Europe/Moscow`. Document each new var inline.
+- **Description:** Pin new dependencies: `anthropic>=0.45.0,<0.46.0` and `pytz>=2024.1`. Update `.env.example`: remove `QUEUE_CAP`, `IDLE_TIMEOUT_HOURS`, `GRACE_WINDOW_HOURS`, `FALLBACK_THROTTLE_SECONDS`. Add `ANTHROPIC_API_KEY`, `ANTHROPIC_MODEL` (optional, commented as default `claude-haiku-4-5`), `TZ=Europe/Moscow`. Document each new var inline.
 - **Skill:** code-writing
 - **Reviewers:** code-reviewer
 - **Files to modify:** `requirements.txt`, `.env.example`
