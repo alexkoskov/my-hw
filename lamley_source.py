@@ -13,6 +13,8 @@ from typing import Callable, Dict, List, Optional
 import requests
 from bs4 import BeautifulSoup
 
+from boilerplate_filter import filter_boilerplate
+
 logger = logging.getLogger(__name__)
 
 USER_AGENT = (
@@ -79,6 +81,10 @@ def fetch_lamley_article(
         text = tag.get_text(" ", strip=True)
         if text and text != title:
             paragraphs.append(text)
+
+    # Strip UI-boilerplate (social-share, "Subscribe", "Read more", etc.)
+    # BEFORE picking the subtitle so the editorial lead is real prose.
+    paragraphs = filter_boilerplate(paragraphs)
 
     # Lamley RSS has no subtitle field; use the first body paragraph as the
     # editorial lead on the Telegraph page. Drop it from the body so it

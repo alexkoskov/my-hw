@@ -1,0 +1,89 @@
+#!/usr/bin/env python3
+"""UI-boilerplate filter for source-parser paragraph lists.
+
+Source pages from autoevolution / lamley / Mattel embed social-share
+widgets ("Share on Facebook", "Tweet", "Subscribe", ...) that bleed
+through to the article body when we walk ``<p>`` / ``<li>`` tags. These
+short labels:
+
+- waste Google Translate calls in the auto-fallback path,
+- pollute the manual-review screen so Claude/operator must mentally skip
+  them, and
+- end up on the published Telegraph page as broken UI leftovers.
+
+This module exposes two helpers each parser calls just before returning:
+
+- ``is_boilerplate(text)`` — single-paragraph predicate.
+- ``filter_boilerplate(paragraphs)`` — drop boilerplate, preserve order.
+
+Patterns are length-bounded (<= ``_MAX_BOILERPLATE_LEN`` chars) so a long
+sentence that happens to mention "Share on Facebook" inline is kept as
+real content. English patterns are primary (sources are English);
+Russian patterns are a belt-and-suspenders safety net in case translated
+text ever flows through this filter.
+"""
+
+from __future__ import annotations
+
+import re
+from typing import Iterable, List
+
+# Length threshold: only filter "short" paragraphs (boilerplate is usually a
+# label / button text). A long paragraph that happens to mention "Share on
+# Facebook" inline is real content — keep it.
+_MAX_BOILERPLATE_LEN = 80
+
+# Each pattern is matched against the WHOLE stripped paragraph,
+# case-insensitive. Match → drop the paragraph.
+_BOILERPLATE_PATTERNS = [
+    # English — primary, since all three source sites are English-language.
+    re.compile(
+        r'^share\s+(on|via|to)\s+'
+        r'(facebook|twitter|x|linkedin|pinterest|whatsapp|telegram|email|reddit)\b',
+        re.I,
+    ),
+    re.compile(r'^(tweet|pin it|pin on pinterest)$', re.I),
+    re.compile(r'^email this( article)?$', re.I),
+    re.compile(r'^copy (link|url|article url)$', re.I),
+    re.compile(r'^subscribe( to (our )?newsletter)?$', re.I),
+    re.compile(r'^follow us on \w+', re.I),
+    re.compile(r'^(related (articles?|posts?)|see also|you may also like)$', re.I),
+    re.compile(r'^read more[:\s]*$', re.I),
+    re.compile(r'^(tags?|filed under|categories?):', re.I),
+    re.compile(r'^comments?$', re.I),
+    # Russian — defence in depth in case translated text ever reaches us.
+    re.compile(
+        r'^поделит(ь(ся)?|есь)\s+(на|в|через)\s+'
+        r'(facebook|twitter|x|вконтакте|whatsapp|telegram|email)\b',
+        re.I,
+    ),
+    re.compile(r'^твитнуть$', re.I),
+    re.compile(r'^подписать(ся|есь)( на (нашу )?рассылку)?$', re.I),
+    re.compile(r'^(читайте|смотрите) (также|далее)$', re.I),
+    re.compile(r'^(тэги|теги|категории|метки):', re.I),
+    re.compile(r'^комментари(и|й)$', re.I),
+]
+
+
+def is_boilerplate(text: str) -> bool:
+    """Return True if *text* is a short standalone UI label that should be stripped.
+
+    Empty / whitespace-only strings return False — they are not boilerplate
+    in the UI-leftover sense; callers usually drop or keep them by their
+    own logic. Anything longer than ``_MAX_BOILERPLATE_LEN`` is treated as
+    real prose even if a trigger phrase appears at the start.
+    """
+    if not isinstance(text, str):
+        return False
+    s = text.strip()
+    if not s or len(s) > _MAX_BOILERPLATE_LEN:
+        return False
+    for pat in _BOILERPLATE_PATTERNS:
+        if pat.search(s):
+            return True
+    return False
+
+
+def filter_boilerplate(paragraphs: Iterable[str]) -> List[str]:
+    """Drop paragraphs identified as boilerplate. Preserve order of the rest."""
+    return [p for p in paragraphs if not is_boilerplate(p)]

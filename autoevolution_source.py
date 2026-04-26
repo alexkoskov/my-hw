@@ -22,6 +22,8 @@ except ImportError:
 
 from bs4 import BeautifulSoup
 
+from boilerplate_filter import filter_boilerplate, is_boilerplate
+
 logger = logging.getLogger(__name__)
 
 ARTICLE_ID_RE = re.compile(r"-(\d+)\.html")
@@ -281,6 +283,15 @@ def _scrape_article_page(link: str, fetcher=None) -> Optional[Dict]:
     if hero_block:
         blocks.insert(0, hero_block)
 
+    # Strip UI-boilerplate (social-share, "Subscribe", "Read more", etc.) from
+    # text blocks — applies before the flat ``paragraphs`` list is built so the
+    # structured ``blocks`` list and the back-compat flat list agree.
+    blocks = [
+        b for b in blocks
+        if b["type"] not in ("lead", "paragraph", "heading")
+        or not is_boilerplate(b.get("text", ""))
+    ]
+
     if not blocks:
         return None
 
@@ -338,6 +349,11 @@ def enrich_entry(entry: dict) -> Optional[Dict]:
     paragraphs: List[str] = [p.strip() for p in _PARAGRAPH_SPLIT_RE.split(body) if p.strip()]
     if not paragraphs and body:
         paragraphs = [body]
+    if not paragraphs:
+        paragraphs = [title]
+    # Strip UI-boilerplate before returning. RSS-only fallback rarely contains
+    # share widgets, but keeping the filter consistent across all parser exits.
+    paragraphs = filter_boilerplate(paragraphs)
     if not paragraphs:
         paragraphs = [title]
 

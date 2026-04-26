@@ -33,6 +33,8 @@ from typing import Callable, Dict, Iterator, List, Optional, Tuple
 import requests
 from bs4 import BeautifulSoup
 
+from boilerplate_filter import filter_boilerplate
+
 logger = logging.getLogger(__name__)
 
 NEWS_URL = "https://corporate.mattel.com/news"
@@ -483,7 +485,7 @@ def fetch_mattel_article(
         body_html = _resolve_body_html(concat, body_ref)
     else:
         body_html = ""
-    paragraphs = _paragraphs_from_body(body_html)
+    paragraphs = filter_boilerplate(_paragraphs_from_body(body_html))
 
     # Image policy: thumbnail only. ``download_media`` is a press-kit field
     # (logos in multiple formats + hi-res press photos); surfacing those on
