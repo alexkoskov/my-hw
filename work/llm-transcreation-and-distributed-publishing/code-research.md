@@ -507,3 +507,569 @@ Verdict: NEW feature does NOT touch this. Same teaser for ALL auto-published pos
 | `tests/test_distributed_schedule.py` | NEW | Integration (~5). |
 | `tests/test_job_prep_phase.py` | Modify | Drop assertions on idle-fallback + overdue passes. |
 | `tests/test_integration.py` | Modify | Update patch targets if `transcreate_text` is renamed. |
+
+---
+
+## Updated: 2026-04-24
+
+## 14. Tech-spec implementation details (added for tech-spec phase)
+
+This section builds on §1–§13 with implementation-level detail. Subsections track the tech-spec phase's questions: exact files / API surfaces / state machines / sequencing.
+
+### 14.1 Concrete file change inventory
+
+| Path | Change | Description | LoC delta |
+|---|---|---|---|
+| `/workspaces/debian-2/my-hw/news_bot.py` | MODIFY | Replace `_fallback_publish` body to call Claude wrapper; remove `_overflow_fast_track` (lines 799-1009 ≈ 210 LoC); inline-delete idle-fallback in `job()` (lines 1145-1220 ≈ 80 LoC); delete bureaucratic + passive + glossary regex blocks in `transcreate_text` (lines 351-403 ≈ 53 LoC); delete 4000-char truncation block (lines 425-437 ≈ 13 LoC); delete env-var loads `IDLE_TIMEOUT_HOURS`, `GRACE_WINDOW_HOURS`, `QUEUE_CAP`, `FALLBACK_THROTTLE_SECONDS` (lines 61-70); add TZ check on startup; add distributed-publish loop in `job()`; add crash-loop guard reading `MAX(published_at)`; extend `_SECRET_ENV_NAMES` and `_TokenRedactingFilter` for Anthropic key. | -350 / +180 |
+| `/workspaces/debian-2/my-hw/pending_articles_repo.py` | MODIFY | Add `_BOT_STATE_DDL` constant; call `conn.execute(_BOT_STATE_DDL)` inside `init_schema` (line 156-159 area). Optionally expose `bot_state_get(key)` / `bot_state_set(key, value)` (or leave to `outage_state.py` which owns its own connection). | +25 |
+| `/workspaces/debian-2/my-hw/requirements.txt` | MODIFY | Add `anthropic>=0.45.0,<1.0` and `pytz>=2024.1` (the latter required by `schedule==1.2.1.at(..., tz=...)` — see §14.6). | +2 |
+| `/workspaces/debian-2/my-hw/.env.example` | MODIFY | Remove the `FALLBACK_THROTTLE_SECONDS` block (lines 17-23). Add `ANTHROPIC_API_KEY=sk-ant-…` (mandatory) + `ANTHROPIC_MODEL=claude-haiku-4-5` (optional default) + `TZ=Europe/Moscow` blocks. | -7 / +12 |
+| `/workspaces/debian-2/my-hw/deploy.sh` | MODIFY | Add `.claude/skills/project-knowledge/references/ux-guidelines.md` to FILES list (after line 31). Note: scp source is a path-with-dirs; switch to `scp -r` or to a tarball if subdir creation matters. Recommend tar pre-step (see §14.8). | +1 file entry |
+| `/workspaces/debian-2/my-hw/.github/workflows/deploy.yml` | MODIFY | Mirror `deploy.sh` FILES change. Add `ANTHROPIC_API_KEY`, `ANTHROPIC_MODEL`, `TZ` to "Verify required secrets" step + new step that writes them into `.env` on the server (or appends to existing `.env`). | +30 |
+| `/workspaces/debian-2/my-hw/tests/test_overflow.py` | DELETE | 13 tests, whole feature gone. | -772 |
+| `/workspaces/debian-2/my-hw/tests/test_idle_fallback.py` | DELETE | 12 tests; the 3 helper-only tests get rewritten into `tests/test_fallback_publish.py` (see new files). | -473 |
+| `/workspaces/debian-2/my-hw/tests/test_fallback_throttle.py` | DELETE | 11 tests; the 3 keepers (teaser-single-line, auto-marker plumbing) move to `tests/test_telegram.py` and `tests/test_telegraph_publisher.py` respectively (or stay in a renamed `tests/test_fallback_publish.py`). | -390 |
+| `/workspaces/debian-2/my-hw/tests/test_integration.py` | MODIFY | Update `@patch('news_bot.transcreate_text')` → `@patch('news_bot.transcreate_via_claude')` (or `@patch('claude_transcreation.transcreate_via_claude')`). Update `test_full_pipeline_with_multiple_feeds` to assert articles flow through the new auto-publish path (not heads-up + grace). | +20 / -10 |
+| `/workspaces/debian-2/my-hw/tests/test_job_prep_phase.py` | MODIFY | Drop assertions on `list_pending_stale` / `list_notified_overdue`. Add assertions: schedule computed for the day, admin ping shows N planned slots. | +15 / -25 |
+| `/workspaces/debian-2/my-hw/tests/test_no_token_leak_in_logs.py` | MODIFY | Add `TestAnthropicKeyRedactingFilter` (4 tests parallel to `TestTokenRedactingFilter`). | +60 |
+| `/workspaces/debian-2/my-hw/tests/test_migration.py` | MODIFY | Add `test_bot_state_table_exists` + assertions on its columns (`key TEXT PRIMARY KEY, value TEXT`). | +20 |
+| `/workspaces/debian-2/my-hw/claude_transcreation.py` | CREATE | Anthropic SDK wrapper. Public API in §14.2. | +220 |
+| `/workspaces/debian-2/my-hw/compute_publish_slots.py` | CREATE | Pure scheduling algorithm. Public API in §14.2. | +90 |
+| `/workspaces/debian-2/my-hw/outage_state.py` | CREATE | Persisted outage flag + ping counters. Public API in §14.2. | +120 |
+| `/workspaces/debian-2/my-hw/tests/test_compute_publish_slots.py` | CREATE | 12 tests for the pure algorithm. | +180 |
+| `/workspaces/debian-2/my-hw/tests/test_claude_transcreation.py` | CREATE | 8 tests, mocked `anthropic.Anthropic`. | +220 |
+| `/workspaces/debian-2/my-hw/tests/test_outage_state.py` | CREATE | 6 tests for state machine + persistence. | +160 |
+| `/workspaces/debian-2/my-hw/tests/test_distributed_schedule_integration.py` | CREATE | 4 tests for full flow (12:00 fetch → schedule → publish-loop). | +200 |
+| `/workspaces/debian-2/my-hw/tests/test_fallback_publish.py` | CREATE | 3 keeper tests rewritten for Claude-backed `_fallback_publish` + auto-marker plumbing. | +120 |
+
+Net: ~+1500 LoC of new code/tests, ~-1700 LoC of removed legacy. Net negative on LoC.
+
+### 14.2 Module API contracts
+
+#### `claude_transcreation.py`
+
+```python
+# Module-level state
+_PROMPT_PATH = os.path.join(
+    os.path.dirname(__file__),
+    '.claude', 'skills', 'project-knowledge', 'references', 'ux-guidelines.md'
+)
+_PROMPT_CACHE: dict = {'mtime': None, 'body': None}  # mtime-keyed cache
+
+class ClaudeTranscreationError(Exception):
+    """Raised on any per-article Claude failure that should not classify as
+    an API-level outage. Examples: BadRequestError (refusal), schema-mismatch
+    parse failure, token-budget overrun. Caller treats this as a per-article
+    strike — falls back to Google for THIS article only."""
+
+class ClaudeOutageError(Exception):
+    """Raised on API-level errors (5xx, connection refused, auth failure).
+    Caller increments the outage counter; on threshold, switches to Google
+    fallback globally."""
+
+def _load_prompt(path: str = _PROMPT_PATH) -> str:
+    """Read ux-guidelines.md, cache by mtime. Reload on file change."""
+
+def transcreate_via_claude(
+    article: dict,
+    *,
+    prompt_path: str = _PROMPT_PATH,
+    model: str = None,        # default from ANTHROPIC_MODEL env, fallback claude-haiku-4-5
+    max_tokens: int = 4096,
+    timeout_s: int = 60,
+    client: 'anthropic.Anthropic' = None,  # injectable for tests
+) -> dict:
+    """Translate one article via Claude.
+
+    article: {
+        'source_name': str,         # 'autoevolution' | 'lamley' | 'mattel'
+        'title': str,
+        'subtitle': str,
+        'paragraphs': list[str],
+        'blocks': list[dict] | None  # each block: {type, text?, caption?, ...}
+    }
+
+    Returns: {
+        'title': str,                # RU title, emoji-prefixed
+        'alts': list[str],           # 2-3 alternate RU titles
+        'subtitle': str,             # RU subtitle
+        'paragraphs': list[str],     # RU paragraphs, same order/length as input
+        'blocks': list[dict] | None, # cloned, with text/caption translated
+    }
+
+    Raises:
+        ClaudeOutageError    — on anthropic.APIConnectionError / APITimeoutError
+                               / InternalServerError / RateLimitError (5xx).
+        ClaudeTranscreationError — on BadRequestError, response parse failure,
+                                   schema mismatch (e.g. paragraph-count drift),
+                                   PermissionDeniedError, NotFoundError(model).
+    """
+
+def is_outage_error(exc: Exception) -> bool:
+    """Classify exception. True for API-level outages (caller increments
+    outage counter)."""
+    # anthropic.APIConnectionError, APITimeoutError, InternalServerError,
+    # RateLimitError, APIStatusError(status>=500) → True
+
+def is_per_article_error(exc: Exception) -> bool:
+    """True for per-article failures (caller falls back to Google ONLY for
+    this article, doesn't increment outage counter)."""
+    # anthropic.BadRequestError, schema mismatches, ClaudeTranscreationError → True
+
+def health_check(client: 'anthropic.Anthropic' = None) -> bool:
+    """10-token probe call to test recovery after outage. Returns True on
+    a successful response. Used by job() to decide when to re-enable Claude."""
+```
+
+#### `compute_publish_slots.py`
+
+```python
+from datetime import datetime, time, timedelta
+from typing import List, Tuple
+
+WINDOW_START = time(13, 0)
+WINDOW_END = time(20, 0)
+MIN_INTERVAL_MINUTES = 40
+
+def compute_publish_slots(
+    n: int,
+    now: datetime,                     # MUST be tz-aware (Europe/Moscow)
+    window_start: time = WINDOW_START,
+    window_end: time = WINDOW_END,
+    min_interval_min: int = MIN_INTERVAL_MINUTES,
+) -> Tuple[List[datetime], int]:
+    """Compute publish timestamps for n pending articles within today's window.
+
+    Returns (slots_today, carry_over_count).
+
+    Algorithm (from §8 + operator examples):
+      1. window_minutes = (window_end - window_start).total_minutes  # 420 for 13-20
+      2. raw_interval = window_minutes / n  if n > 0 else 0
+      3. interval = max(raw_interval, min_interval_min)
+      4. effective_start = max(combine(now.date(), window_start), now)
+      5. remaining_min = (combine(now.date(), window_end) - effective_start).total_minutes
+      6. max_publishable_now = floor(remaining_min / interval) + 1 if remaining_min >= 0 else 0
+      7. slots = [effective_start + i*interval for i in range(min(n, max_publishable_now))]
+      8. carry_over = n - len(slots)
+
+    Edge cases:
+      - n == 0 → ([], 0)
+      - n == 1, now < window_start → ([combine(now.date(), window_start)], 0)
+      - now > window_end → ([], n) (all carry to tomorrow)
+      - container restart at 16:00 with n=5 → 5 slots starting 16:00, interval=48 min
+      - container restart at 19:50 with n=5 → 1 slot at 19:50, carry=4
+      - now naive (no tzinfo) → raise ValueError (tz-required invariant)
+
+    All returned datetimes carry the same tzinfo as `now`.
+    """
+```
+
+#### `outage_state.py`
+
+```python
+import sqlite3
+from datetime import datetime
+from typing import Optional
+
+# All functions open their own short-lived sqlite3.connect(news_bot.DB_FILE)
+# connection — same pattern as pending_articles_repo. Reads `bot_state` table
+# created by pending_articles_repo.init_schema (extended in this feature).
+
+# Keys used in bot_state table:
+#   'outage_started_at'   — ISO timestamp when outage was first detected
+#   'last_ping_sent_at'   — ISO timestamp of most recent admin warning ping
+#   'ping_count'          — '0' / '1' / '2' (string) — number of warnings sent
+#   'fallback_active'     — '0' / '1' — whether Google fallback is the active engine
+#   'last_health_check_at'— ISO timestamp of most recent health probe
+
+def get_outage_started_at() -> Optional[datetime]:
+    """Read 'outage_started_at' as tz-aware MSK datetime, or None."""
+
+def set_outage_started_at(dt: datetime) -> None:
+    """Set; UPSERT semantics."""
+
+def clear_outage_state() -> None:
+    """Delete all outage-related keys atomically (single txn).
+    Called on successful health_check after recovery."""
+
+def get_last_ping_sent_at() -> Optional[datetime]: ...
+def set_last_ping_sent_at(dt: datetime) -> None: ...
+
+def get_ping_count() -> int: ...
+def increment_ping_count() -> int: ...
+
+def is_fallback_active() -> bool: ...
+def set_fallback_active(active: bool) -> None: ...
+
+def get_last_health_check_at() -> Optional[datetime]: ...
+def set_last_health_check_at(dt: datetime) -> None: ...
+
+# Higher-level state machine helper:
+def record_outage_event(now: datetime) -> dict:
+    """Called from _fallback_publish after a Claude outage error. Implements
+    the state machine in §14.4. Returns:
+        {
+            'state': str,          # 'no_outage' | 'ping_1_sent' | ...
+            'pings_to_send': list[str],  # admin messages to post
+            'fallback_now': bool,  # caller switches to Google for THIS article
+        }
+    Atomic: opens connection, BEGIN IMMEDIATE, reads + writes, commits.
+    """
+
+def record_recovery_event(now: datetime) -> dict:
+    """Called from health_check on success. Returns:
+        {
+            'was_active': bool,
+            'pings_to_send': list[str],  # ['Claude API recovered, switching back']
+        }
+    Clears outage state in single txn.
+    """
+```
+
+Transaction semantics: each setter wraps `BEGIN IMMEDIATE` + `UPDATE/INSERT` + `COMMIT`. The two state-machine functions (`record_outage_event`, `record_recovery_event`) use `BEGIN IMMEDIATE` to lock the database for the read-then-write sequence so two concurrent fallback-publish calls can't double-increment the ping_count. The `pending_articles` writers in `pending_articles_repo` use the default `DEFERRED` mode — `BEGIN IMMEDIATE` here will queue them until the state-machine txn commits (typically <50ms).
+
+### 14.3 Prompt construction for Claude
+
+#### System prompt
+
+The full ux-guidelines.md body, loaded once at module import, cached by mtime. Per §7, the file is 122 lines / ~3000 tokens — well within prompt-cache break-even.
+
+System prompt = `_load_prompt()` output verbatim. Do not truncate, do not paraphrase. Per the file (line 17): "Treat the text below as your role for the duration of any translation work in this project."
+
+A small _technical envelope_ is added to system prompt to enforce JSON output (the prompt body itself targets a human-readable Telegram-paste format). The envelope is appended AFTER the ux-guidelines body, separated by a horizontal rule:
+
+```
+---
+
+## Output format (technical envelope)
+
+Output a single JSON object — no markdown fence, no commentary. Schema:
+
+{
+  "title": "<RU title with emoji prefix from {🏆,🏎️,🚀,💎,🤝,📢,🚗,🔥}>",
+  "alts": ["<alt RU title 1>", "<alt RU title 2>", "<alt RU title 3>"],
+  "subtitle": "<RU subtitle>",
+  "paragraphs": ["<RU paragraph 1>", "<RU paragraph 2>", ...],
+  "blocks": [{"type": "...", "text": "<RU>", "caption": "<RU>"}, ...] | null
+}
+
+The output JSON MUST contain `paragraphs` of EXACTLY the same length as
+the input EN paragraphs, in the same order. Do not merge or split. If a
+block was provided, the `blocks` array must mirror its length and types.
+```
+
+#### User message format
+
+The article is passed as a structured JSON in the user message:
+
+```
+{
+  "source_name": "autoevolution",
+  "title": "New Hot Wheels Chase Car ...",
+  "subtitle": "...",
+  "paragraphs": ["P1 EN text", "P2 EN text", ...],
+  "blocks": [{"type": "image", "url": "...", "caption": "Photo: Mattel"}, ...]
+}
+```
+
+This is preferred over a markdown rendering because:
+- The model already sees structure → easier 1:1 mapping enforcement.
+- We can inject metadata (`source_name`) so per-source tone calibration (§7) fires correctly.
+- Keeps the user message ~500-3000 tokens.
+
+#### Response parsing strategy
+
+```python
+def _parse_response(text: str, expected_paragraph_count: int,
+                    expected_block_count: int) -> dict:
+    """Strip leading/trailing whitespace + optional ```json fences.
+    json.loads. Validate keys: title, alts (list of 2-3), subtitle,
+    paragraphs (list, len == expected). On any mismatch raise
+    ClaudeTranscreationError.
+
+    Belt-and-suspenders: if title doesn't start with one of the 8 emojis,
+    apply the legacy emoji-prefix regex from old transcreate_text(is_title=True)
+    as post-pass.
+    """
+```
+
+Strategy: JSON. Markdown fenced JSON (```json ...```) is tolerated and stripped. If the response is plain prose (model ignored the envelope), raise `ClaudeTranscreationError` and let caller fall back to Google for this article.
+
+#### Token budget per call
+
+Per §10:
+- Cached system prompt (ux-guidelines + envelope): ~3200 tokens. With prompt caching (5-min TTL), ~$0.30/MTok on hits.
+- Per-article user message: ~500-3000 tokens. Average ~1500.
+- Output: ~600-3500 tokens. Average ~1500.
+
+Average cost per Haiku 4.5 article: ~$0.01 (per §10). Daily budget at 30 articles: $0.30. Sonnet 4.6 worst-case: $1.50/day.
+
+### 14.4 Outage state machine
+
+#### States
+
+| State | Persisted shape | Meaning |
+|---|---|---|
+| `no_outage` | (no rows in bot_state OR `outage_started_at IS NULL`) | Healthy. Claude is the engine. |
+| `ping_1_sent` | `outage_started_at=t0`, `ping_count=1`, `last_ping_sent_at=t0` | First failure detected. Admin notified. Still trying Claude per slot. |
+| `ping_2_sent` | `ping_count=2`, `last_ping_sent_at=t0+1h` | Outage continues for 1h+. Second admin warning. Still on Claude. |
+| `google_fallback_active` | `fallback_active=1`, `ping_count=2` (or 3 if a switch-ping is sent) | 2h elapsed; Google is the engine. Periodic health checks. |
+| `recovery_pending` | (transient only — no separate persistence; identical to `google_fallback_active` between health-check trigger and result) | Health probe in flight. |
+
+#### Transition table
+
+| Current state | Trigger | Next state | Side effects |
+|---|---|---|---|
+| `no_outage` | Claude call raises outage error | `ping_1_sent` | Set outage_started_at=now; ping_count=1; send admin ping #1 ("Claude API недоступна, через 1ч переключусь на Google если не восстановится"); for THIS article: try Claude once more (retry) — if fails, fall back to Google for THIS article only. |
+| `no_outage` | Claude call succeeds | `no_outage` | nothing. |
+| `ping_1_sent` | Claude call raises outage error AND now - outage_started_at >= 1h | `ping_2_sent` | ping_count=2; last_ping_sent_at=now; send admin ping #2 ("Claude всё ещё недоступна, через 1ч переключусь на Google"); fall back to Google for THIS article. |
+| `ping_1_sent` | Claude call raises outage error AND now - outage_started_at < 1h | `ping_1_sent` | (no extra ping); fall back to Google for THIS article. |
+| `ping_1_sent` | Claude call succeeds | `no_outage` | clear_outage_state(); send admin ping ("Claude API восстановлена"). |
+| `ping_2_sent` | Claude call raises outage error AND now - outage_started_at >= 2h | `google_fallback_active` | fallback_active=1; send admin ping #3 ("Переключился на Google"); fall back to Google for THIS article. |
+| `ping_2_sent` | Claude call raises outage error AND now - outage_started_at < 2h | `ping_2_sent` | (no extra ping); fall back to Google for THIS article. |
+| `ping_2_sent` | Claude call succeeds | `no_outage` | clear_outage_state(); send admin ping ("Claude API восстановлена"). |
+| `google_fallback_active` | (next slot or scheduled probe) | `recovery_pending` (in-process) | call health_check(). |
+| `recovery_pending` | health_check returns True | `no_outage` | clear_outage_state(); send admin ping ("Claude API восстановлена, возвращаюсь на нормальный режим"). |
+| `recovery_pending` | health_check raises | `google_fallback_active` | last_health_check_at=now (rate-limit probes). |
+| any | per-article error (BadRequestError) | (state unchanged) | fall back to Google for THIS article only. |
+
+Note: per-article errors do NOT advance the state machine. Only API-level outages do.
+
+#### Storage
+
+`bot_state` table:
+```sql
+CREATE TABLE IF NOT EXISTS bot_state (
+    key   TEXT PRIMARY KEY,
+    value TEXT
+);
+```
+
+Active keys: `outage_started_at`, `last_ping_sent_at`, `ping_count`, `fallback_active`, `last_health_check_at`. Values stored as ISO-8601 strings (timestamps) or `'0'`/`'1'`/`'2'` (counters/flags). Reading a missing key returns Python `None`.
+
+### 14.5 Distributed-publish loop in job()
+
+Pseudocode for the new `job()` function. Replaces the prep+heads-up+overdue model with prep+schedule+publish-loop.
+
+```python
+def job():
+    """Fetch + schedule + distributed-publish tick.
+
+    Fires at 12:00 MSK daily. Steps:
+      1. Init DB; load env (already done at import).
+      2. Crash-loop guard: read MAX(published_at) FROM published_articles.
+         If now - last_published < MIN_INTERVAL_MINUTES, log + skip publish
+         until that gap elapses. Prevents bunched-publishes after a crash-loop.
+      3. Fetch all sources (existing SOURCES registry).
+      4. Filter (existing).
+      5. fetch_full_article + insert_pending for each (existing).
+      6. Compute schedule:
+            now_msk = datetime.now(zoneinfo.ZoneInfo('Europe/Moscow'))
+            n = pending_repo.count_pending()
+            slots, carry = compute_publish_slots(n, now_msk)
+      7. Send admin ping with the day's plan ("12 articles fetched, 11 scheduled
+         today at 13:00, 13:40, ..., 19:40, 1 carries to tomorrow"). Suppress
+         on n=0.
+      8. Distributed-publish loop:
+            for slot_at in slots:
+                wait_until(slot_at)        # time.sleep((slot_at - now).total_seconds())
+                row = pending_repo.list_pending()[0]   # oldest pending
+                if row is None: break       # all published or moved to failed
+                try:
+                    if outage_state.is_fallback_active():
+                        _fallback_publish_via_google(row, via_review=False)
+                    else:
+                        _fallback_publish(row, via_review=False)
+                                         # _fallback_publish internally tries
+                                         # Claude; on per-article error, falls
+                                         # back to Google for THIS article.
+                except OutageError as exc:
+                    # State machine kicks in (record_outage_event); we
+                    # already fell back to Google for this article.
+                    ...
+                except Exception as exc:
+                    safe = sanitize_error_message(exc)
+                    new_count = pending_repo.increment_attempt(row['link'], safe)
+                    if new_count >= 3:
+                        pending_repo.move_to_failed(row['link'], safe)
+            # On startup mid-window: same loop, but slots are computed from
+            # `now` not from window_start.
+      9. (Optional) carry-over admin ping if carry > 0.
+    """
+```
+
+Key design points:
+- The loop uses `time.sleep()` not `schedule` library between slots — `schedule` is only used for the daily 12:00 trigger.
+- A SIGTERM during sleep is interpreted as container restart → on next startup, recompute slots from `now`.
+- `_fallback_publish` is renamed/refactored: still handles one row, but now (a) tries Claude first, (b) on per-article error falls back to Google, (c) on outage error raises `ClaudeOutageError` for the loop to handle. The existing `via_review=False` plumbing is preserved (`auto_marker=True` still applied).
+- Crash-loop guard at step 2: `SELECT MAX(published_at) FROM published_articles`. If `now - last_published < 40min`, sleep until `last_published + 40min` before the loop starts. Protects against systemd/cron rapid-restart loops.
+
+### 14.6 TZ handling
+
+#### Library API confirmed
+
+`schedule==1.2.1` `Job.at(time_str, tz=None)` accepts:
+- `tz: str` — IANA zone name parsed via `pytz.timezone(...)`.
+- `tz: pytz.BaseTzInfo` — direct pytz timezone object.
+- NOT supported: stdlib `zoneinfo.ZoneInfo` (TypeError). Verified by reading `inspect.getsource(schedule.Job.at)`.
+
+This means option (a) "use stdlib `zoneinfo`" from the prompt is moot for the cron-trigger path: `schedule` requires `pytz`. Two viable approaches remain:
+
+#### Option (a): `pytz` + schedule.at(tz=...)
+
+```python
+import pytz
+schedule.every().day.at("12:00", tz="Europe/Moscow").do(job)
+```
+
+Add `pytz>=2024.1` to requirements.txt. Inside `job()` and `compute_publish_slots`, also use `pytz.timezone('Europe/Moscow')` to keep types consistent. Container TZ irrelevant.
+
+#### Option (b): UTC offset in code
+
+```python
+schedule.every().day.at("09:00").do(job)   # 09:00 UTC == 12:00 MSK (standard time)
+```
+
+Brittle: MSK is UTC+3 year-round (Russia abolished DST in 2014), but if Russia ever re-introduces DST, this breaks. Skip.
+
+#### Option (c): apscheduler
+
+More control + native zoneinfo support, but adds a heavier dep + we'd lose `schedule`'s simplicity. Reject for this feature.
+
+#### Recommendation: Option (a)
+
+Add `pytz` to `requirements.txt`. Use `pytz.timezone('Europe/Moscow')` end-to-end. Set `TZ=Europe/Moscow` in the server's `.env` for log readability and so any `datetime.now()` (without tz arg) is also MSK. Add a startup assertion:
+
+```python
+def main():
+    tz_env = os.environ.get('TZ')
+    if tz_env != 'Europe/Moscow':
+        logger.warning(
+            f"TZ env var is {tz_env!r}, expected 'Europe/Moscow'. "
+            f"Cron will still fire correctly (explicit pytz), but logs may "
+            f"show non-MSK timestamps."
+        )
+```
+
+### 14.7 Anthropic SDK call patterns
+
+#### Prompt caching
+
+The ux-guidelines.md system prompt is ~3200 tokens. Anthropic prompt-caching break-even is at 2 calls within a 5-minute TTL. In our distributed schedule, slots are 40+ minutes apart — TTL expires between calls. **Verdict: prompt caching does NOT pay off** for our workload (one call per 40+ minutes). Skip caching for now.
+
+Exception: on an initial 12:00 fetch, if the schedule packs 11 slots into 7h, the first 5 slots are 40 min apart — still outside TTL. Caching only helps if we batched all transcreations at fetch time; we deliberately don't (we want to delay translation cost until publish to avoid wasted work on rows the operator might intercept). **Final: no caching.**
+
+#### Streaming vs block
+
+Block. Output is ~1500 tokens; streaming complicates parsing of the JSON envelope (need to buffer until JSON closes). Block lets us call `response.content[0].text` and parse atomically.
+
+#### Retry
+
+Use SDK default `max_retries=2` on the `anthropic.Anthropic()` client. SDK retries on `429` (RateLimitError) + `5xx` + connection errors with exponential backoff. Our outer retry is the state machine (next slot 40 min later). No custom retry layer needed.
+
+#### Error class hierarchy
+
+| Anthropic class | Our classification | Notes |
+|---|---|---|
+| `anthropic.APIConnectionError` | outage | network unreachable |
+| `anthropic.APITimeoutError` | outage | response timeout |
+| `anthropic.RateLimitError` (429) | outage | sustained rate-limit = effective outage |
+| `anthropic.InternalServerError` (5xx) | outage | server problem |
+| `anthropic.AuthenticationError` (401) | outage | misconfigured key — admin must intervene; treat as outage so admin sees ping |
+| `anthropic.PermissionDeniedError` (403) | outage | same — admin issue |
+| `anthropic.NotFoundError` (404) | outage | model name wrong → admin issue |
+| `anthropic.BadRequestError` (400) | per-article | content refused / malformed prompt — fall back to Google for THIS article |
+| `anthropic.UnprocessableEntityError` (422) | per-article | rare, usually content issue |
+| `anthropic.APIStatusError` (other) | per-article | conservative default — don't escalate to outage on novel codes |
+| `ClaudeTranscreationError` (parse failure) | per-article | malformed JSON from model |
+
+Implementation in `is_outage_error` / `is_per_article_error`. Tests in `test_claude_transcreation.py` cover each branch.
+
+### 14.8 SQLite migration safety
+
+#### Idempotency
+
+`pending_articles_repo.init_schema` (line 150-159) uses `CREATE TABLE IF NOT EXISTS`. Adding the `_BOT_STATE_DDL` line follows the same pattern — idempotent. `init_db` in news_bot.py calls `init_schema` on every cron tick (line 1137 — `init_db()` at top of `job()`); the no-op is sub-millisecond.
+
+#### Concurrent access
+
+The codebase uses two writers against `news.db`:
+1. `news_bot.py` cron (`pending_articles`, `published_articles`, `failed_articles`, `processed_news`).
+2. `hw_review.py` operator CLI (same tables).
+
+Both use short-lived `sqlite3.connect()` per call. SQLite default `journal_mode=delete` + serial-write semantics — `BEGIN IMMEDIATE` blocks concurrent writers (5s default lock timeout, configurable). Our `bot_state` operations are sub-50ms. Risk: low. The `outage_state` writes touch a different table from `pending_articles_repo`, so even within a single SQLite-level lock window, the logical conflict is null.
+
+Recommendation: don't change journal mode. Add `PRAGMA busy_timeout = 5000;` to `_connect()` if not already present (verify in `pending_articles_repo._connect`). If present, no change.
+
+#### Migration test
+
+Update `tests/test_migration.py`:
+```python
+def test_bot_state_table_exists(self):
+    """bot_state table is created by init_db with key/value columns."""
+    self.assertIn('bot_state', self._get_tables())
+    cols = self._get_columns('bot_state')
+    self.assertEqual({c['name'] for c in cols}, {'key', 'value'})
+    pk_cols = [c['name'] for c in cols if c['pk']]
+    self.assertEqual(pk_cols, ['key'])
+```
+
+### 14.9 Implementation task breakdown estimate
+
+12 atomic tasks proposed. Dependencies expressed as task numbers.
+
+| # | Name | Scope | Deps | Skill | Reviewers |
+|---|---|---|---|---|---|
+| 1 | Add `bot_state` migration | Add `_BOT_STATE_DDL` to `pending_articles_repo`; extend `init_schema`; add migration test | (none) | code-writing | code-reviewing, test-master |
+| 2 | Create `outage_state.py` + tests | KV wrapper around bot_state; state-machine helpers | 1 | code-writing | code-reviewing, test-master |
+| 3 | Create `compute_publish_slots.py` + tests | Pure scheduling algorithm (12 tests) | (none — parallel with 1) | code-writing | code-reviewing, test-master |
+| 4 | Create `claude_transcreation.py` + tests | Anthropic SDK wrapper, mocked tests (8 tests) | (none — parallel) | code-writing, claude-api | code-reviewing, security-auditor |
+| 5 | Add `ANTHROPIC_API_KEY` redaction to `_TokenRedactingFilter` + tests | Update `_SECRET_ENV_NAMES`, add `_ANTHROPIC_KEY_RE`, extend `test_no_token_leak_in_logs` | (none — parallel) | code-writing | security-auditor |
+| 6 | Refactor `_fallback_publish` for Claude primary + Google fallback | Replace transcreate_text calls with `transcreate_via_claude`; per-article fallback path | 4 | code-writing | code-reviewing, test-master |
+| 7 | Refactor `job()` for distributed-publish loop | Replace `schedule.every(12).hours` with `schedule.every().day.at("12:00", tz="Europe/Moscow")`; add publish-loop; add crash-loop guard | 2, 3, 6 | code-writing | code-reviewing |
+| 8 | Delete legacy: `_overflow_fast_track`, idle-fallback inline, throttle, env vars | Pure deletion + companion test deletes | 7 | code-writing | code-reviewing |
+| 9 | Update `transcreate_text` — strip bureaucratic regex + 4000-char cap | Keep function for translate_text-style fallback only; minimal HW glossary post-pass | 8 | code-writing | code-reviewing |
+| 10 | Update integration tests (`test_integration.py`, `test_job_prep_phase.py`) | New patch targets, new assertions on schedule | 7, 8 | code-writing, test-master | code-reviewing |
+| 11 | Create `test_distributed_schedule_integration.py` | 4 end-to-end flow tests with mocked anthropic + telegraph + telegram | 7 | code-writing, test-master | code-reviewing |
+| 12 | Update deploy: `deploy.sh`, `.github/workflows/deploy.yml`, `.env.example`, `requirements.txt` | Add ux-guidelines.md to FILES, add ANTHROPIC_* secrets, pin anthropic + pytz | (none — but ship LAST) | deploy-pipeline | code-reviewing |
+
+#### Alternative decomposition (cleaner sequencing)
+
+The proposed 12 → consider merging 8 + 9 (both pure deletes) into one task. And split 7 into 7a (cron trigger TZ change) + 7b (publish-loop scaffold) + 7c (per-slot publish + crash-loop guard) for tighter PR review. That's still 12 tasks — net similar burden, better PR-reviewability.
+
+Recommendation: **stick with the 12 above** — boundaries are clean and parallel work is maximized. Tasks 1, 3, 4, 5 are independent and can run in wave 1 (4 parallel). Tasks 2 + 12 are wave 2. Task 6 is wave 3. Tasks 7, 8, 9 are wave 4 (sequential because they all touch news_bot.py). Tasks 10, 11 are wave 5 (parallel).
+
+### 14.10 Risks per implementation phase
+
+| Task # | Risk | Severity | Mitigation |
+|---|---|---|---|
+| 1 | Schema-migration test must lock new column shape; if ordering of CREATE TABLE statements matters for tests, init_schema callers may break | Low | `_BOT_STATE_DDL` added at end of init_schema, after the existing 3. Test asserts presence not order. |
+| 2 | `BEGIN IMMEDIATE` could deadlock with hw_review CLI under heavy concurrent load | Low | hw_review is operator-paced (one txn / few seconds); 5s busy_timeout absorbs contention. Test with simulated concurrent writer. |
+| 3 | Pure algorithm — easy. Risk: TZ-naive datetime input slips through to caller | Low | Function asserts `now.tzinfo is not None`, raises ValueError. |
+| 4 | Mocked anthropic tests may drift from real SDK API; SDK's exception classes change between versions | Medium | Pin `anthropic>=0.45.0,<1.0`. Use Context7 MCP at impl-time to verify exception class names for the pinned version. |
+| 5 | Regex for `sk-ant-` keys may not match all key shapes Anthropic uses (e.g. test keys vs prod keys) | Low | Liberal regex `sk-ant-[A-Za-z0-9_-]{20,}`. Tests cover both shapes. |
+| 6 | `_fallback_publish` is heavy, called from multiple sites; refactor risk of breaking idempotency invariants (Decision 9 of mrw) | **High** | Keep step 2-5 (Telegraph + persist + Telegram + move) untouched; only step 1 (transcreate) changes. Add a dedicated `test_fallback_publish_claude_path` + `test_fallback_publish_google_fallback_path` to lock both branches. |
+| 7 | news_bot.py refactor is the largest single touch; risk of breaking 100+ existing tests via `schedule.every(12).hours` removal alone (operators may still patch it) | **High — dependency-heavy** | Sequence after Tasks 2, 3, 6 are complete. Run full test suite incrementally — fix red, commit, advance. Don't combine with task 8 in same PR (separate the refactor from the deletes). |
+| 8 | Pure deletes — but: deletes affect `test_overflow.py`, `test_idle_fallback.py`, `test_fallback_throttle.py`. If task 7 left any reference to the deleted symbols, the tests break before task 8 runs | Medium | Run task 8 in a single PR with the deletes; tests deleted same commit as functions. CI green = sequencing correct. |
+| 9 | `transcreate_text` is also used by `post_latest_news.py` (legacy CLI) and 5 tests in `test_translation.py` (which target `translate_text`, not `transcreate_text` — but worth re-checking). Stripping it might break post_latest_news | Low | post_latest_news.py is undeployed (see §1, deploy.sh FILES list). Keep `translate_text` unchanged (it's a separate function). Verify no `transcreate_text` tests rely on the regex output. |
+| 10 | Integration tests reference `news_bot.transcreate_text` via `@patch`. Renaming the symbol breaks patches | Medium | Either keep `transcreate_text` as a thin shim → `transcreate_via_claude` (one-line, deprecation note), OR update the patches in the same PR as the rename. Recommend latter. |
+| 11 | New integration tests need to mock anthropic, telegraph, telegram, time.sleep, and schedule simultaneously — heavy mock setup | Medium | Use a `@pytest.fixture` (or unittest setUp) that builds a "fake distributed schedule env" once and reuses across tests. |
+| 12 | Deploy step: ux-guidelines.md is at a path with subdirs (`.claude/skills/...`). `scp file1 file2 file3 host:dest/` flattens by default — the file lands at `dest/ux-guidelines.md`, not preserving the `.claude/...` subdir | **High** | Either: (a) tar the .claude/skills/project-knowledge/references subtree on the deployer, scp the tarball, untar on the server (preserves subdirs); OR (b) hardcode `_PROMPT_PATH` to the flat filename `<DEPLOY_PATH>/ux-guidelines.md` (operator simplicity wins). Recommendation: (b) — add a `_FLAT_PROMPT_PATH` fallback in `claude_transcreation._load_prompt`, try the subdir path first then the flat path. Document in deployment.md. |
+
+#### Dependency-heavy tasks (need careful sequencing)
+
+- **Task 7** (job() refactor) depends on 2, 3, 6 — must wait. Schedule it as wave 4.
+- **Task 6** (_fallback_publish refactor) depends on 4 — wait for the wrapper to exist.
+- **Task 11** (integration tests) depends on 7 — wait for the new flow.
+- **Task 12** (deploy) ships LAST, after all tests green and all code merged.
+
+#### Wave plan
+
+- Wave 1 (parallel): 1, 3, 4, 5
+- Wave 2 (parallel): 2, 12-prep (just `requirements.txt` + `.env.example` updates)
+- Wave 3: 6
+- Wave 4 (sequential, same touch point): 7, then 8, then 9
+- Wave 5 (parallel): 10, 11
+- Wave 6: 12 (final deploy YAML/script + ux-guidelines.md shipping)
+
+End of section 14.
