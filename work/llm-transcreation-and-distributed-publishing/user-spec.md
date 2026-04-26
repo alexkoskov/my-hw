@@ -33,7 +33,7 @@ Manual-review путь (`hw_review`) не меняется — оператор 
 
 1. **12:00 МСК — cron tick.** Бот фетчит autoevolution + lamley + mattel, дедупит против `processed_news` и `pending_articles`, инсертит новые в `pending`. Шлёт оператору admin-пинг: «Зафетчил N новых статей, в очереди M, расписание: 13:00, 13:40, ..., 19:40».
 
-2. **13:00 МСК — окно открывается.** Бот рассчитывает `compute_publish_slots(N, now=13:00, window_end=20:00, min_interval=40)` где N = текущая длина `pending_articles`. Возвращает список из max(N, 11) datetime-слотов.
+2. **13:00 МСК — окно открывается.** Бот рассчитывает `compute_publish_slots(N, now=13:00, window_end=20:00, min_interval=40)` где N = текущая длина `pending_articles`. Возвращает список из min(N, 11) datetime-слотов (excess carry over).
 
 3. **13:00, 13:40, 14:20, ... — каждый scheduled слот:** бот берёт самый старый pending row без `ru_paragraphs` → переводит через Claude API по `ux-guidelines.md` → публикует на Telegraph + шлёт teaser в канал. Telegraph-страница содержит маркер `↳ автоперевод` непосредственно перед футером «Источник:».
 
@@ -88,7 +88,7 @@ Manual-review путь (`hw_review`) не меняется — оператор 
 **Outage protocol (распознаём API-level vs per-article):**
 
 - [ ] AC14. **API-level outage** (auth error, rate-limit, network timeout, server error от Claude API) запускает 2-ping protocol: Ping #1 сразу + Ping #2 через 1 час + переключение на Google Translate через 2 часа от первой ошибки. Все события сохраняют timestamps в state БД.
-- [ ] AC15. **Per-article problem** (Claude refuse'ит конкретный article — safety filter; malformed JSON; нерелевантный output) — fallback'ит ТОЛЬКО эту статью на Google Translate. Не запускает outage protocol. Бот продолжает следующие публикации через Claude.
+- [ ] AC15. **Per-article problem** (Claude refuse'ит конкретный article — safety filter; malformed JSON; нерелевантный output) — fallback'ит ТОЛЬКО эту статью на Google Translate. Бот делает ровно 1 retry через Claude перед фоллбэком (не запускает outage protocol). После Google-fallback'а статьи бот продолжает следующие публикации обычным путём через Claude. attempt_count в pending_articles увеличивается только при полной неудаче (Google тоже упал) — стандартный 3-strikes-then-failed_articles flow.
 - [ ] AC16. Auto-recovery: на каждой следующей попытке публикации после API-level outage бот сначала пробует Claude. Success → switch-back ping оператору («✓ Claude API recovered») + clear outage state.
 - [ ] AC17. Edge case (outage clears + queue empty в этот момент): бот остаётся в Google fallback mode до следующего cron tick'а. Recovery probe выполняется на первой публикации после 12:00 МСК.
 
@@ -164,14 +164,14 @@ Manual-review путь (`hw_review`) не меняется — оператор 
 
 ## Тестирование
 
-**Unit-тесты:** делаются всегда, не обсуждаются. Размер фичи M, тестов планируется ~30:
+**Unit-тесты:** делаются всегда, не обсуждаются. Размер фичи L, тестов планируется ~30:
 
 - `tests/test_compute_publish_slots.py` — 12 тестов: N=0, N=1, N=4, N=7, N=10, N=11, N=15, N=20, N=30; container restart at 14:00/16:00/19:50 with various pending counts.
 - `tests/test_claude_transcreation.py` — 8 тестов: success path, anthropic.RateLimitError, AuthenticationError, APIConnectionError, malformed JSON output, refusal, network timeout, ux-guidelines.md missing.
 - `tests/test_outage_state.py` — 6 тестов: state machine transitions (no_outage → ping_1 → ping_2 → fallback → recovery → no_outage), persistence across restart, edge case "empty queue at recovery".
 - `tests/test_distributed_schedule_integration.py` — 4 тестов: full cron tick → mocked fetch → schedule → mocked Claude publish → DB delta. Outage end-to-end. Container restart end-to-end. Manual operator publish mid-window.
 
-**Интеграционные тесты:** делаем — обновляем `tests/test_integration.py` с новой `_fallback_publish` логикой. Тесты `tests/test_overflow.py` (~13) и `tests/test_idle_fallback.py` (~9) удаляются (legacy code они тестируют). `tests/test_fallback_throttle.py` (~6 of 11) удаляется (throttle-related), остальные 5 — общие invariants о fallback path — остаются с обновлёнными ассертами.
+**Интеграционные тесты:** делаем — обновляются текущие integration tests под новый auto-publish path. Удаляются тесты, покрывающие legacy auto-publish логику (overflow/idle/throttle). Конкретный mapping тест-файлов и их количество — детали реализации, в tech-spec.
 
 **E2E тесты:** не делаем. Live Anthropic API call из CI burn'ил бы токены без пользы. Manual smoke pre/post-deploy покрывает.
 
@@ -183,13 +183,13 @@ Manual-review путь (`hw_review`) не меняется — оператор 
 
 | Шаг | Инструмент | Ожидаемый результат |
 |-----|-----------|---------------------|
-| 1. Полный тестовый набор | `pytest tests/ -q` | ~500 тестов зелёные (470 untouched + 30 новых − 28 deleted = ~472). |
-| 2. Manual translate smoke | `python3 -c "from claude_transcreation import transcreate_via_claude; print(transcreate_via_claude({'title': '...', 'subtitle': '...', 'paragraphs': [...]}))"` | Возвращает dict с `ru_title` (с emoji prefix), `ru_alts` (2-3), `ru_subtitle`, `ru_paragraphs` (transcreation, не дословно). За < 30 секунд. |
-| 3. Outage protocol drill | Запустить `_fallback_publish` с моками, где anthropic SDK всегда raise'ит RateLimitError. Проверить через 2 часа симулированного времени state transitions: ping#1 → ping#2 → fallback. | `bot_state.claude_api_outage_started_at` set; admin notifications mock получил 2 вызова с правильными текстами; 3-я попытка translate ушла через `transcreate_text` Google. |
-| 4. Schedule recompute drill | Запустить `compute_publish_slots(N=5, now=16:00, window_end=20:00, min_interval=40)` | Возвращает 5 datetime слотов: 16:00, 16:48, 17:36, 18:24, 19:12. carry_over=0. |
-| 5. Crash-loop guard test | Запустить distributed-schedule loop где `MAX(published_at)` = 5 минут назад. | Loop пропускает первую scheduled публикацию, ждёт до `last_published_at + 40 min` перед следующей попыткой. |
-| 6. Token redaction test | Лог-сообщение содержит `sk-ant-abc123def456...` (mock key). Проверить что после фильтра в записанных логах ключ редактирован (например, `sk-ant-***REDACTED***`). | Filter работает на `_TokenRedactingFilter`. |
-| 7. Smoke на live test channel post-deploy | После первого 12:00 МСК cron-тика на production: дождаться 13:00 → открыть Telegraph URL первой публикации. | Title с emoji, body без boilerplate (никаких `Share on Facebook` etc), маркер `↳ автоперевод` непосредственно перед футером `Источник:`. |
+| 1. Полный тестовый набор | `pytest tests/ -q` | Все тесты зелёные (legacy-tests заменены новыми, существующие нерелевантные unaffected). |
+| 2. Manual translate smoke | вызов нового claude-transcreation модуля с sample article | Возвращает dict с RU title (emoji prefix), 2-3 alt titles, RU subtitle, RU paragraphs (transcreation style). За < 30 секунд. |
+| 3. Outage protocol drill | mock anthropic SDK с rate-limit error при каждом вызове + simulated time advance | После 2 часов: 2 admin pings отправлены, outage state установлен в БД, последующие публикации идут через Google Translate fallback. |
+| 4. Schedule recompute drill | вызов scheduler-функции с N=5, now=16:00, window=13:00–20:00, floor=40 | Возвращает 5 datetime слотов с интервалом 48 минут (16:00, 16:48, 17:36, 18:24, 19:12), carry_over=0. |
+| 5. Crash-loop guard test | startup сценарий с last published_at = 5 минут назад | Бот пропускает первую scheduled публикацию, ждёт до last_published_at + 40 min перед следующей попыткой. |
+| 6. Token redaction test | лог-сообщение содержит sk-ant-... mock key | После прохождения через лог-фильтр ключ редактирован, в записанных логах его plain-text значения нет. |
+| 7. Smoke на live test channel post-deploy | После первого 12:00 МСК cron-тика на production: дождаться 13:00 → открыть Telegraph URL первой публикации. | Title с emoji, body без boilerplate (никаких "Share on Facebook" etc), маркер `↳ автоперевод` непосредственно перед футером "Источник:". |
 
 ### Пользователь проверяет
 
