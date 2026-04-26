@@ -48,7 +48,13 @@ class PrepPhaseBase(unittest.TestCase):
         self.channel_patcher.start()
         self.admin_patcher.start()
 
+        # Disable the auto-fallback throttle to keep multi-row prep flows
+        # snappy; the throttle is exercised in ``test_fallback_throttle``.
+        self.throttle_patcher = patch('news_bot.FALLBACK_THROTTLE_SECONDS', 0)
+        self.throttle_patcher.start()
+
     def tearDown(self):
+        self.throttle_patcher.stop()
         self.db_patcher.stop()
         self.token_patcher.stop()
         self.channel_patcher.stop()

@@ -61,6 +61,13 @@ LOG_LEVEL = logging.INFO
 IDLE_TIMEOUT_HOURS = int(os.getenv('IDLE_TIMEOUT_HOURS', '48'))
 GRACE_WINDOW_HOURS = int(os.getenv('GRACE_WINDOW_HOURS', '2'))
 QUEUE_CAP = int(os.getenv('QUEUE_CAP', '10'))
+# Throttle between consecutive ``_fallback_publish`` calls in the overflow
+# fast-track and idle-fallback batches — reduces channel burst-spam when a
+# large eviction or idle-timeout pass fires multiple auto-publishes in one
+# tick. Skip-first pattern: 1 publish in a batch does NOT wait; N publishes
+# in a batch wait (N-1) × ``FALLBACK_THROTTLE_SECONDS``. Manual-review
+# (``hw_review publish``) is operator-paced and never throttled.
+FALLBACK_THROTTLE_SECONDS = int(os.getenv('FALLBACK_THROTTLE_SECONDS', '3600'))
 
 # Env-var names whose values must never leak into stored error strings or
 # admin-chat messages (Decision 11). Kept as a module-level tuple so new
@@ -530,17 +537,38 @@ def build_admin_ping(rows):
     return f"{len(rows)} ждут review: " + ", ".join(parts)
 
 
-def send_telegraph_teaser(telegraph_url, source_url):
+def send_telegraph_teaser(telegraph_url, source_url, auto_marker=False):
     """Publish the locked-format channel post: a single source hashtag +
     Telegraph preview card above (via LinkPreviewOptions). See
     work/telegraph-pipeline/post-format.md for the spec. The preview card
     carries all visible content (domain, title, excerpt, image, ⚡ INSTANT
-    VIEW button) — the message body is just the source attribution."""
+    VIEW button) — the message body is just the source attribution.
+
+    Parameters
+    ----------
+    telegraph_url : str
+        Target of the Instant View preview card.
+    source_url : str
+        Original article URL — used to derive the source hashtag (Decision
+        14 of manual-review-workflow tech-spec).
+    auto_marker : bool, default False
+        Auto-fallback differentiator. When True, a second line ``↳
+        автоперевод`` (U+21B3 + space + Russian "autotranslation") is
+        appended below the hashtag so subscribers can tell auto-published
+        posts apart from operator-reviewed ones. Manual-review path
+        (``hw_review publish``) calls this without the flag → single-
+        line teaser unchanged.
+    """
     if not TELEGRAM_BOT_TOKEN or not TELEGRAM_CHANNEL_ID:
         logger.error("Telegram credentials not set.")
         return False
 
     text = _source_hashtag(source_url)
+    if auto_marker:
+        # Two lines: hashtag, then marker. Telegram renders this as plain
+        # text below the Instant View preview card. The arrow is U+21B3
+        # ('↳') — pinned byte-for-byte by the test suite.
+        text = f"{text}\n↳ автоперевод"
 
     async def _send():
         bot = Bot(token=TELEGRAM_BOT_TOKEN)
@@ -716,7 +744,13 @@ def _fallback_publish(row, via_review=False):
     # attempt_count. (Exceptions from ``send_telegraph_teaser`` propagate
     # naturally — the helper already catches TelegramError internally and
     # returns False, so this raise path covers that "soft" failure mode.)
-    ok = send_telegraph_teaser(telegraph_url, link)
+    # ``auto_marker`` mirrors ``via_review`` inverted: auto-fallback paths
+    # (via_review=False) get the ``↳ автоперевод`` second line; manual
+    # paths route through ``hw_review.cmd_publish`` which doesn't pass
+    # the flag (default False = single-line, unchanged).
+    ok = send_telegraph_teaser(
+        telegraph_url, link, auto_marker=not via_review,
+    )
     if not ok:
         raise RuntimeError(
             f"send_telegraph_teaser returned False for {link}"
@@ -824,10 +858,19 @@ def _overflow_fast_track(new_entries):
 
     evicted_old = 0
     fast_track_errors = []
+    # ``publish_attempts`` tracks ``_fallback_publish`` invocations across
+    # this overflow batch (both old-evict and new-autopub loops) so the
+    # throttle skip-first applies once per batch, not once per loop.
+    # Sleep BEFORE every call except the first — counts attempts (not
+    # successes) so a failed publish still spaces out the next attempt.
+    publish_attempts = 0
     for row in old_candidates:
         link = row.get('link')
         title = row.get('title') or '(no title)'
         try:
+            if publish_attempts > 0:
+                time.sleep(FALLBACK_THROTTLE_SECONDS)
+            publish_attempts += 1
             _fallback_publish(row, via_review=False)
             evicted_old += 1
         except Exception as exc:
@@ -913,6 +956,9 @@ def _overflow_fast_track(new_entries):
                 logger.error(f"[overflow-new] row vanished after insert: {link}")
                 fast_track_errors.append(title)
                 continue
+            if publish_attempts > 0:
+                time.sleep(FALLBACK_THROTTLE_SECONDS)
+            publish_attempts += 1
             _fallback_publish(full_row, via_review=False)
             evicted_new += 1
         except Exception as exc:
@@ -1135,9 +1181,15 @@ def job():
             f"list_notified_overdue failed: {sanitize_error_message(exc)}"
         )
         _overdue = []
-    for _row in _overdue:
+    # Skip-first throttle (Decision: ``FALLBACK_THROTTLE_SECONDS``) —
+    # 1 overdue row publishes immediately; subsequent rows wait. Counts
+    # call attempts (not successes) so a failure still spaces out the
+    # next attempt — matches the overflow-loop semantics.
+    for _idx, _row in enumerate(_overdue):
         _link = _row.get('link')
         try:
+            if _idx > 0:
+                time.sleep(FALLBACK_THROTTLE_SECONDS)
             _fallback_publish(_row, via_review=False)
         except Exception as exc:
             safe = sanitize_error_message(exc)

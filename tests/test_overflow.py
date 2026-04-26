@@ -104,7 +104,15 @@ class _OverflowCase(unittest.TestCase):
         self.cap_patcher = patch('news_bot.QUEUE_CAP', 10)
         self.cap_patcher.start()
 
+        # Disable the fallback throttle — these tests publish multiple rows
+        # back-to-back and would otherwise block on the real
+        # ``time.sleep(FALLBACK_THROTTLE_SECONDS)``. Throttle behaviour is
+        # asserted in ``test_fallback_throttle``.
+        self.throttle_patcher = patch('news_bot.FALLBACK_THROTTLE_SECONDS', 0)
+        self.throttle_patcher.start()
+
     def tearDown(self):
+        self.throttle_patcher.stop()
         self.cap_patcher.stop()
         self.db_patcher.stop()
         self.token_patcher.stop()

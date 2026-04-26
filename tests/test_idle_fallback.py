@@ -75,7 +75,15 @@ class _IdleFallbackCase(unittest.TestCase):
         self.channel_patcher.start()
         self.admin_patcher.start()
 
+        # Disable the fallback throttle for the existing test suite — these
+        # tests exercise multi-row idle fallback flows and would otherwise
+        # block on the real ``time.sleep(FALLBACK_THROTTLE_SECONDS)`` call.
+        # The dedicated throttle assertions live in ``test_fallback_throttle``.
+        self.throttle_patcher = patch('news_bot.FALLBACK_THROTTLE_SECONDS', 0)
+        self.throttle_patcher.start()
+
     def tearDown(self):
+        self.throttle_patcher.stop()
         self.db_patcher.stop()
         self.token_patcher.stop()
         self.channel_patcher.stop()
@@ -241,7 +249,11 @@ class TestOverdueAutopublish(_IdleFallbackCase):
         self.assertEqual(pub['via_review'], 0)
         self.assertEqual(pub['telegraph_url'], tg_url)
         # Teaser was called with stored URL + source link (Decision 14).
-        mock_teaser.assert_called_once_with(tg_url, entry['link'])
+        # ``auto_marker=True`` (Part B): auto-fallback path renders the
+        # ``↳ автоперевод`` second line below the source hashtag.
+        mock_teaser.assert_called_once_with(
+            tg_url, entry['link'], auto_marker=True,
+        )
 
     def test_fallback_failure_increments_attempt_count(self):
         """``publish_article`` raises → attempt_count bumped to 1; last_error
@@ -310,7 +322,9 @@ class TestOverdueAutopublish(_IdleFallbackCase):
             news_bot.job()
 
         mock_publish.assert_not_called()
-        mock_teaser.assert_called_once_with(saved_url, entry['link'])
+        mock_teaser.assert_called_once_with(
+            saved_url, entry['link'], auto_marker=True,
+        )
         self.assertIsNone(repo.get_pending(entry['link']))
         pub = repo.get_published(entry['link'])
         self.assertIsNotNone(pub)
