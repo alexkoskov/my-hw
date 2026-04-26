@@ -21,8 +21,16 @@ class TestLoadFeeds(unittest.TestCase):
         self.temp_dir = tempfile.mkdtemp()
         self.original_cwd = os.getcwd()
         os.chdir(self.temp_dir)
+        # Bug fix: the load_feeds() error paths call send_admin_notification,
+        # which (after commit 74c96df enabled .env loading on news_bot import)
+        # was sending real Telegram messages to the operator's admin chat
+        # during pytest. Patch at setUp so all 8 test methods are covered
+        # without changing their signatures.
+        self.notify_patcher = patch('news_bot.send_admin_notification')
+        self.mock_notify = self.notify_patcher.start()
 
     def tearDown(self):
+        self.notify_patcher.stop()
         os.chdir(self.original_cwd)
         import shutil
         shutil.rmtree(self.temp_dir)
