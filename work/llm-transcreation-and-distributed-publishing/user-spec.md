@@ -2,7 +2,7 @@
 created: 2026-04-26
 status: draft
 type: feature
-size: M
+size: L
 ---
 
 # User Spec: llm-transcreation-and-distributed-publishing
@@ -61,49 +61,78 @@ Manual-review путь (`hw_review`) не меняется — оператор 
 Если контейнер перезапустился в 16:00 МСК (deploy / VPS reboot) с 5 unpublished:
 1. Бот startup → читает `pending_articles`.
 2. Crash-loop guard: читает `MAX(published_at)` из `published_articles`. Если < 40 минут назад → ждёт до `last_published_at + 40min` перед первой публикацией.
-3. Recompute schedule: `compute_publish_slots(N=5, now=16:00, window_end=20:00, min_interval=40)` → 4 слота (interval 60 мин: 16:00, 17:00, 18:00, 19:00) + 1 carry-over.
+3. Recompute schedule: `compute_publish_slots(N=5, now=16:00, window_end=20:00, min_interval=40)` → interval = max(240/5, 40) = max(48, 40) = 48 мин → 5 слотов: 16:00, 16:48, 17:36, 18:24, 19:12. carry_over=0.
 4. Уже опубликованные сегодня в `published_articles` не трогаются (Decision 9 idempotency: `telegraph_url` already set → skip republish).
 
 ## Критерии приёмки
 
-- [ ] AC1. Cron в `news_bot.main()` использует `schedule.every().day.at("12:00")` + `TZ=Europe/Moscow` env var вместо `every(12).hours`.
-- [ ] AC2. После 12:00 МСК фетча отправляется admin-ping с числом новых статей, размером очереди, и timestamps расписания публикаций.
-- [ ] AC3. Алгоритм `compute_publish_slots(N, now, window_start, window_end, min_interval=40)` возвращает список datetime слотов: `interval = max((window_end - max(now, window_start)) / N, min_interval)`, `posts_today = min(N, floor(remaining_minutes / interval) + 1)`, `carry_over = N - posts_today`.
-- [ ] AC4. Публикации происходят строго в окне 13:00–20:00 МСК. Никаких публикаций до 13:00 или после 20:00.
-- [ ] AC5. Минимальный интервал между постами = 40 минут.
-- [ ] AC6. Max 11 публикаций в день (floor=40, 7 часов = 420 мин). Excess carry over в pending.
-- [ ] AC7. Translation primary path: Claude API через `ux-guidelines.md` prompt. Возвращает RU-словарь с title (с emoji prefix), 2-3 alt titles, subtitle (если есть EN), paragraphs (или blocks для autoevolution).
-- [ ] AC8. Title emoji prefix: эмитится через Claude prompt. Если Claude не вставил emoji — regex wrapper добавляет (belt-and-suspenders).
-- [ ] AC9. HW-глоссарий (14 терминов из текущего `transcreate_text`) применяется как post-pass safety net на ru-выходе Claude. Bureaucratic regex (19 правил) удалён.
-- [ ] AC10. 4000-char body truncation удалена везде (Claude path и Google Translate fallback). Body на Telegraph без ограничений.
-- [ ] AC11. Claude API outage detection: при exception от anthropic SDK (auth, rate-limit, network, server, timeout) бот пишет `claude_api_outage_started_at` в `bot_state`.
-- [ ] AC12. Outage protocol: Ping #1 при первой ошибке + Ping #2 через 1 час + переключение на Google Translate через 2 часа от начала outage. Все три события сохраняют timestamps в `bot_state`.
-- [ ] AC13. Auto-recovery: на каждой следующей попытке публикации бот сначала пробует Claude. Success → switch-back ping + clear outage state. Edge case (empty queue at recovery): wait until next cron tick.
-- [ ] AC14. Все auto-published Telegraph-страницы получают одинаковый маркер `↳ автоперевод` независимо от engine (Claude или Google fallback).
-- [ ] AC15. Manual-review путь (`hw_review`) untouched. Если оператор публикует статью локально, бот пропускает на следующем тике (filter `ru_paragraphs IS NOT NULL`).
-- [ ] AC16. Container restart mid-window: на startup бот recompute_schedule с current_time и оставшимся pending. Идемпотентность Telegraph URL (Decision 9) предотвращает дубли.
-- [ ] AC17. Crash-loop guard: на startup бот читает `MAX(published_at)` из `published_articles`. Если < 40 минут назад → пропускает текущую scheduled публикацию, ждёт до `last_published_at + 40min`.
-- [ ] AC18. SQLite migration: новая таблица `bot_state(key TEXT PRIMARY KEY, value TEXT)` создаётся в `init_db()` через `CREATE TABLE IF NOT EXISTS`. Idempotent.
-- [ ] AC19. Token redaction: `_TokenRedactingFilter` extends с pattern `sk-ant-[A-Za-z0-9_-]{20,}` для редактирования `ANTHROPIC_API_KEY` в логах.
-- [ ] AC20. Legacy removed: `QUEUE_CAP`, `IDLE_TIMEOUT_HOURS`, `GRACE_WINDOW_HOURS`, `FALLBACK_THROTTLE_SECONDS` env vars + их use sites; `_overflow_fast_track` функция (lines ~799-1009); inline idle-fallback в `job()` step 1a/1b; bureaucratic regex (19 правил) в `transcreate_text`. `.env.example` обновлён.
-- [ ] AC21. `ux-guidelines.md` добавлена в `deploy.sh` FILES list И в `.github/workflows/deploy.yml` files block — файл должен оказаться на сервере для работы Claude transcreation.
-- [ ] AC22. `pytest tests/ -q` зелёный после фичи. Removed: ~28 tests (overflow + idle-fallback + throttle, минус общие invariants). Added: ~30 new tests (compute_publish_slots, claude_transcreation client, outage_state, distributed_schedule integration).
-- [ ] AC23. Manual smoke pre-deploy: `python3 -c "from claude_transcreation import transcreate_via_claude; print(transcreate_via_claude(<sample_article>))"` возвращает валидный RU-словарь за < 30 секунд.
-- [ ] AC24. Manual smoke post-deploy: первый 12:00 МСК cron tick после deploy → admin-ping приходит → 13:00 первая публикация → Telegraph-страница с emoji-title, без boilerplate, с маркером `↳ автоперевод` перед футером.
+**Расписание:**
+
+- [ ] AC1. Cron срабатывает один раз в сутки в 12:00 МСК (а не каждые 12 часов с произвольной отсчётной точки).
+- [ ] AC2. После фетча отправляется admin-ping оператору с числом новых статей, размером очереди и timestamps запланированных публикаций.
+- [ ] AC3. Публикации происходят строго в окне 13:00–20:00 МСК. До 13:00 или после 20:00 ни одна публикация не происходит.
+- [ ] AC4. Минимальный интервал между публикациями = 40 минут. Расчётный интервал capped at 40 если расчётное значение меньше.
+- [ ] AC5. Максимум 11 публикаций в день. Излишек carry over в pending до следующего дня.
+- [ ] AC6. Алгоритм распределения: для N статей в очереди после фетча, equally spaced в окне с floor=40 минут. Конкретные комбинации (N=7 → 7 постов через час; N=15 → 11 сегодня + 4 завтра) отражены в edge cases.
+- [ ] AC7. Container restart mid-window: бот перерасчитывает расписание из текущего времени до 20:00 МСК и оставшегося pending. Уже опубликованные сегодня (по `published_articles`) не дублируются.
+- [ ] AC8. Crash-loop guard: на startup бот не публикует следующую статью раньше чем через 40 минут после последней опубликованной. Защита от burst при многократных рестартах.
+
+**Перевод:**
+
+- [ ] AC9. Auto-публикации идут через Claude API с промптом из `ux-guidelines.md` (тем же, что использует manual-review путь).
+- [ ] AC10. Возвращаемая Claude транскреация содержит RU title с emoji prefix, 2-3 alt titles, RU subtitle (если EN был), и RU paragraphs (или blocks для autoevolution).
+- [ ] AC11. Title всегда содержит emoji prefix. Если Claude не вставил — добавляется regex wrapper'ом как safety net.
+- [ ] AC12. Hot Wheels-глоссарий (брендовые термины и идиомы) применяется как post-pass safety net на выходе Claude. Bureaucratic regex (канцелярит) удалён — Claude сам не пишет его.
+- [ ] AC13. Body на Telegraph публикуется без обрезки (отменена 4000-char truncation; Telegraph принимает любой объём).
+
+**Outage protocol (распознаём API-level vs per-article):**
+
+- [ ] AC14. **API-level outage** (auth error, rate-limit, network timeout, server error от Claude API) запускает 2-ping protocol: Ping #1 сразу + Ping #2 через 1 час + переключение на Google Translate через 2 часа от первой ошибки. Все события сохраняют timestamps в state БД.
+- [ ] AC15. **Per-article problem** (Claude refuse'ит конкретный article — safety filter; malformed JSON; нерелевантный output) — fallback'ит ТОЛЬКО эту статью на Google Translate. Не запускает outage protocol. Бот продолжает следующие публикации через Claude.
+- [ ] AC16. Auto-recovery: на каждой следующей попытке публикации после API-level outage бот сначала пробует Claude. Success → switch-back ping оператору («✓ Claude API recovered») + clear outage state.
+- [ ] AC17. Edge case (outage clears + queue empty в этот момент): бот остаётся в Google fallback mode до следующего cron tick'а. Recovery probe выполняется на первой публикации после 12:00 МСК.
+
+**Visibility и observability:**
+
+- [ ] AC18. Все auto-published Telegraph-страницы получают одинаковый маркер `↳ автоперевод` независимо от engine (Claude или Google Translate fallback).
+- [ ] AC19. Logs содержат рудиментарную observability на каждый Claude API call: input/output token counts, latency, model version. Это позволяет оператору проверять cost вручную через сравнение с Anthropic console.
+- [ ] AC20. Backlog admin-ping: если `len(pending_articles) > 50`, после фетча оператор получает дополнительное warning «pending очередь большая (N), проверь источники». Защита от silent runaway.
+
+**Совместимость:**
+
+- [ ] AC21. Manual-review путь (`hw_review` CLI) остаётся unchanged. Если оператор публикует статью локально, бот пропускает её на следующем cron tick'е.
+- [ ] AC22. Channel teaser format остаётся `#<source> #news` (one line, byte-identical для обоих путей). Decision 14 из manual-review-workflow tech-spec preserved.
+- [ ] AC23. Boilerplate filter, image policy, hashtag derivation, telegraph node tree builder — все без изменений.
+
+**Migration и cleanup:**
+
+- [ ] AC24. SQLite migration: новая таблица для outage state создаётся idempotent'но при первом cron-тике после deploy. Существующие таблицы не трогаются.
+- [ ] AC25. ANTHROPIC_API_KEY редактируется в логах (как сейчас редактируется TELEGRAM_BOT_TOKEN).
+- [ ] AC26. Legacy code удалён: overflow fast-track functionality, inline idle-fallback, throttle между сessions, неактуальные env vars (`QUEUE_CAP`, `IDLE_TIMEOUT_HOURS`, `GRACE_WINDOW_HOURS`, `FALLBACK_THROTTLE_SECONDS`). `.env.example` обновлён.
+- [ ] AC27. `ux-guidelines.md` добавлена в deploy bundle (manual `deploy.sh` и GitHub Actions workflow). На сервере файл должен присутствовать к моменту первого Claude API call.
+- [ ] AC28. Архитектурный сдвиг (ux-guidelines.md теперь runtime cron-side dependency, не только operator-side) задокументирован в `architecture.md`.
+
+**Verification:**
+
+- [ ] AC29. `pytest tests/ -q` зелёный после фичи. Test inventory delta учитывается (старые legacy-tests удалены, новые добавлены для distributed schedule, claude transcreation, outage state, recovery).
+- [ ] AC30. Manual smoke pre-deploy: вызов claude transcreation против sample article возвращает валидный RU-словарь за разумное время (<30 секунд для типичной статьи).
+- [ ] AC31. Manual smoke post-deploy: первый 12:00 МСК cron tick после deploy → admin-ping приходит → 13:00 первая публикация → Telegraph-страница соответствует AC10/AC11/AC18 (emoji-title, без boilerplate, с маркером перед футером).
 
 ## Ограничения
 
-- **Совместимость с manual-review путём.** `hw_review` CLI не меняется. Оператор продолжает работать локально через свою Claude Code сессию точно так же. Auto и manual пути читают/пишут одну и ту же `pending_articles`/`published_articles` БД с фильтрами по `ru_paragraphs` и `via_review`.
+- **Совместимость с manual-review путём.** `hw_review` CLI не меняется. Оператор продолжает работать локально через свою Claude Code сессию точно так же. Auto и manual пути читают/пишут одну и ту же БД с фильтрами по статусу перевода и source flag'у.
 - **Channel teaser format locked.** Тизер в канале `#<source> #news` (single line, byte-identical для обоих путей) — Decision 14 из manual-review-workflow tech-spec. Не меняем.
-- **Telegraph article body format locked.** `↳ автоперевод` маркер только в auto-fallback, перед `Источник:` футером. Тот же формат после фичи.
-- **Boilerplate filter, image policy, hashtag derivation** — все unchanged. `boilerplate_filter` уже фильтрует Share/Tweet/Subscribe и т.п.
-- **Без новых тяжёлых зависимостей.** Только `anthropic` SDK добавляется в `requirements.txt`. `zoneinfo` — stdlib (Python 3.9+).
-- **Manual-review путь имеет приоритет.** Если оператор в момент scheduled публикации руками опубликовал ту же статью через `hw_review` — бот видит `ru_paragraphs IS NOT NULL` и скипает.
-- **Cron container TZ.** Должен быть `TZ=Europe/Moscow`. Иначе `schedule.every().day.at("12:00")` выстрелит в неправильное время. Startup проверяет `os.getenv("TZ") == "Europe/Moscow"`, иначе log warning + admin-ping.
-- **Outage state persists across restart.** Если контейнер рестартует во время outage — `bot_state` SQLite сохраняет timestamps, ping count не сбрасывается.
-- **Cost ~ $3/месяц при Haiku 4.5** при 10 articles/day. Sonnet 4.6 — ~$15/месяц для лучшего качества (override через `ANTHROPIC_MODEL` env var). Operator выбирает.
+- **Telegraph article body format locked.** `↳ автоперевод` маркер только в auto-fallback, перед `Источник:` футером. Тот же формат после фичи. Маркер одинаковый независимо от engine (Claude или Google Translate).
+- **Boilerplate filter, image policy, hashtag derivation** — все unchanged. Уже работают, не трогаем.
+- **Без новых тяжёлых зависимостей.** Только `anthropic` Python SDK. Все остальное — stdlib либо уже в `requirements.txt`.
+- **Manual-review путь имеет приоритет.** Если оператор в момент scheduled публикации руками опубликовал ту же статью — бот её скипает.
+- **Cron container timezone.** Cron должен срабатывать в 12:00 МСК. Реализация может использовать либо TZ-aware schedule (если поддерживается scheduler-библиотекой), либо UTC-equivalent (MSK = UTC+3 круглогодично с 2014 в РФ). Startup проверяет конфигурацию и предупреждает оператора если несоответствие.
+- **Outage state persists across restart.** Контейнер может рестартнуть во время outage — состояние ping'ов сохраняется в БД и при возобновлении бот не сбрасывает счётчик.
+- **Cost ~ $3/месяц** при дефолтной модели Claude Haiku 4.5 и ~10 articles/day. Sonnet 4.6 — ~$15/месяц для лучшего качества (override через env var). Operator выбирает.
+- **Архитектурный сдвиг: ux-guidelines.md становится runtime cron-side dependency.** Ранее этот файл был только operator-side (загружался в Claude Code сессии). Теперь его читает Claude API call на сервере. Соответствующее изменение нужно зафиксировать в `architecture.md`.
 - **Без миграции данных.** Существующие `pending_articles` от старого QUEUE_CAP=10 model становятся input для нового distributed schedule на первом cron-тике после deploy.
-- **Никаких изменений в `news.db` schema** кроме одной idempotent `CREATE TABLE IF NOT EXISTS bot_state(...)`.
+- **Минимальная schema migration.** Одна новая таблица для outage state, idempotent.
+- **Backlog не имеет hard cap.** Алгоритм distribute сам ограничивает 11 публикаций/день (floor=40). Pending может расти — operator получает warning при `>50` (AC20).
 
 ## Риски
 
@@ -122,15 +151,16 @@ Manual-review путь (`hw_review`) не меняется — оператор 
 - Мы решили **окно 13:00–20:00 МСК** (7 часов = 420 минут), потому что это прайм-аудитория канала Hot Wheels-подписчиков; ночные часы и раннее утро не нужны.
 - Мы решили **interval = max(420/N, 40)** с минимумом 40 минут, потому что (а) равномерность во всём окне даёт subscriber-frendly темп, (б) меньше 40 мин = воспринимается как спам, (в) max 11 постов/день — ровный потолок.
 - Мы решили **carry-over excess в pending** (никаких потерь), потому что backlog лучше растянуть на несколько дней чем дропать.
-- Мы решили **outage protocol с 2 пингами + 2ч grace** перед auto-Gemini, потому что оператор должен иметь shanc исправить проблему (пополнить токены, etc) до того как канал переключится на хуже-качественный fallback.
+- Мы решили **outage protocol с 2 пингами + 2ч grace** перед auto-Google-Translate, потому что оператор должен иметь шанс исправить проблему (пополнить токены, etc) до того как канал переключится на хуже-качественный fallback.
 - Мы решили **passive recovery** (бот пробует Claude на следующей scheduled публикации) вместо активного health-check'а, потому что edge case (outage + empty queue) очень редкий, max delay 24ч приемлемо, +0.7$ в месяц за health-check ping не оправдан.
 - Мы решили **crash-loop guard через MAX(published_at) check** на startup, потому что 5 строк кода + 1 тест защищают канал от burst при многократных рестартах.
 - Мы решили **single uniform marker `↳ автоперевод`** для Claude и Google fallback одинаково, потому что подписчику разница не важна; оператор узнаёт через admin-пинги.
-- Мы решили **HW glossary (14 терминов) keep как post-pass safety net**, потому что Claude может перевести «гараж» дословно вместо «гаражный проект»; bureaucratic regex (19 правил) удаляем — Claude сам не пишет канцелярит.
-- Мы решили **outage state в SQLite `bot_state` таблице**, не in-memory, потому что контейнер может рестартнуть посреди outage и состояние ping'ов должно survive. Schedule же в памяти — recomputed каждый cron tick.
+- Мы решили **HW glossary keep как post-pass safety net** (брендовые термины и идиомы), потому что Claude может перевести «гараж» дословно вместо «гаражный проект»; bureaucratic regex удаляем — Claude сам не пишет канцелярит.
+- Мы решили **outage state persisted в БД** (новая таблица), не in-memory, потому что контейнер может рестартнуть посреди outage и состояние ping'ов должно survive. Schedule же в памяти — recomputed каждый cron tick (no migration needed for it).
 - Мы решили **отменить 4000-char body truncation** везде, потому что body публикуется на Telegraph (без лимита), а в канал летит только тизер `#<source> #news` (~30 символов). Truncation — пережиток pre-Telegraph эпохи.
-- Мы решили **delete `_overflow_fast_track`, idle-fallback, throttle code** полностью, потому что новый distributed schedule делает их избыточными (дренаж по одной статье в 40 мин = no overflow possible, no idle problem).
-- Мы решили **ux-guidelines.md ship в deploy bundle**, потому что Claude API нужен этот промпт; альтернатива (хардкодить в Python) — дубль источника правды.
+- Мы решили **delete legacy auto-publish code** полностью (overflow fast-track, inline idle-fallback, throttle между batch'ами), потому что новый distributed schedule делает их избыточными.
+- Мы решили **ux-guidelines.md ship в deploy bundle**, потому что Claude API нужен этот промпт; альтернатива (хардкодить в Python) — дубль источника правды. Это инвертирует прежнюю operator-side-only convention для этого файла — фиксируем в architecture.md.
+- Мы решили **различать API-level outage и per-article failure**: catastrophic API errors (auth/rate-limit/network) запускают 2-ping protocol; per-article problems (refusal/malformed JSON) fallback'ятся только для этой статьи. Иначе один странный article мог бы триггернуть ложный outage state.
 
 ## Тестирование
 
