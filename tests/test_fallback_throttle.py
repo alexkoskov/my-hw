@@ -320,7 +320,7 @@ class TestTeaserAlwaysSingleLine(unittest.TestCase):
         self.assertTrue(ok)
 
         text = mock_bot.send_message.await_args.kwargs['text']
-        self.assertEqual(text, '#autoevolution')
+        self.assertEqual(text, '#autoevolution #news')
         self.assertNotIn('\n', text)
         self.assertNotIn('автоперевод', text)
 

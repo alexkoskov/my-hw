@@ -556,7 +556,15 @@ def send_telegraph_teaser(telegraph_url, source_url):
         logger.error("Telegram credentials not set.")
         return False
 
-    text = _source_hashtag(source_url)
+    source_hashtag = _source_hashtag(source_url)
+    # Append the static `#news` tag alongside the source hashtag. Skip the
+    # append when `_source_hashtag` produced a bare `#` (unknown / malformed
+    # source_url) — emitting a lone `#news` would lose source attribution
+    # without giving the subscriber anything in return.
+    if source_hashtag and source_hashtag != "#":
+        text = f"{source_hashtag} #news"
+    else:
+        text = source_hashtag
 
     async def _send():
         bot = Bot(token=TELEGRAM_BOT_TOKEN)
