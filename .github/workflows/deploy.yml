@@ -41,11 +41,20 @@ jobs:
           SSH_USER: ${{ secrets.SSH_USER }}
           DEPLOY_PATH: ${{ secrets.DEPLOY_PATH }}
           SSH_PRIVATE_KEY: ${{ secrets.SSH_PRIVATE_KEY }}
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
         run: |
-          for var in SSH_HOST SSH_USER DEPLOY_PATH SSH_PRIVATE_KEY; do
+          # Required secrets — workflow fails fast if any of these are blank.
+          # ANTHROPIC_API_KEY is required: news_bot's llm-transcreation path
+          # cannot start without it (claude_transcreation hits AuthenticationError
+          # on the first API call, then 2-ping outage protocol fires immediately).
+          # Optional values handled with defaults below: ANTHROPIC_MODEL (defaults
+          # to claude-haiku-4-5) and TZ (defaults to Europe/Moscow). Both are
+          # better stored as repo `vars` (Settings → Secrets and variables →
+          # Actions → Variables) since they aren't sensitive.
+          for var in SSH_HOST SSH_USER DEPLOY_PATH SSH_PRIVATE_KEY ANTHROPIC_API_KEY; do
             if [[ -z "${!var}" ]]; then
               echo "::error::Missing required secret: $var"
-              echo "::error::Configure all four secrets in repo Settings → Secrets and variables → Actions."
+              echo "::error::Configure all required secrets in repo Settings → Secrets and variables → Actions."
               exit 1
             fi
           done
@@ -75,9 +84,19 @@ jobs:
           SSH_HOST: ${{ secrets.SSH_HOST }}
           SSH_USER: ${{ secrets.SSH_USER }}
           DEPLOY_PATH: ${{ secrets.DEPLOY_PATH }}
-        # FILES list mirrors deploy.sh — keep both in sync if you add a
-        # new cron-path module. Operator-side files (hw_review.py,
-        # preview_renderer.py) are intentionally excluded.
+        # FILES list mirrors deploy.sh BYTE-FOR-BYTE — keep both in sync if
+        # you add a new cron-path module. INVARIANT: every new first-party
+        # import added to news_bot.py MUST appear in BOTH FILES arrays.
+        # Otherwise news_bot will crash with ImportError on the next cron
+        # tick on the server with no CI signal beforehand.
+        # Operator-side files (hw_review.py, preview_renderer.py) are
+        # intentionally excluded.
+        # Special case — ux-guidelines.md: lives in subdir
+        # .claude/skills/project-knowledge/references/ in the repo but `scp`
+        # (without -r) flattens subdirs, so it lands at
+        # $DEPLOY_PATH/ux-guidelines.md on the server. Decision 8 of the
+        # llm-transcreation tech-spec covers this: _load_prompt tries the
+        # subdir path first and falls back to flat filename.
         run: |
           FILES=(
             "news_bot.py"
@@ -86,9 +105,13 @@ jobs:
             "lamley_source.py"
             "telegraph_publisher.py"
             "pending_articles_repo.py"
+            "claude_transcreation.py"
+            "compute_publish_slots.py"
+            "outage_state.py"
             "feeds.json"
             "requirements.txt"
             ".env.example"
+            ".claude/skills/project-knowledge/references/ux-guidelines.md"
           )
           for file in "${FILES[@]}"; do
             if [[ ! -f "$file" ]]; then
@@ -98,6 +121,65 @@ jobs:
           done
           echo "Copying ${#FILES[@]} files to $SSH_USER@$SSH_HOST:$DEPLOY_PATH/"
           scp -o StrictHostKeyChecking=yes "${FILES[@]}" "$SSH_USER@$SSH_HOST:$DEPLOY_PATH/"
+
+      - name: Write runtime env vars to server .env
+        env:
+          SSH_HOST: ${{ secrets.SSH_HOST }}
+          SSH_USER: ${{ secrets.SSH_USER }}
+          DEPLOY_PATH: ${{ secrets.DEPLOY_PATH }}
+          # Secrets/vars passed via `env:` so GitHub Actions auto-redacts them
+          # in workflow logs. NEVER pass them on the ssh command line — they
+          # would appear in `ps -ef` on the runner. ANTHROPIC_MODEL and TZ
+          # fall back to documented defaults when the repo `vars` are unset.
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+          ANTHROPIC_MODEL: ${{ vars.ANTHROPIC_MODEL || 'claude-haiku-4-5' }}
+          TZ: ${{ vars.TZ || 'Europe/Moscow' }}
+        # Idempotent .env update on the server: strip any existing lines
+        # with the three target keys, then append the current values.
+        # Repeated deploys do not duplicate lines; existing unrelated keys
+        # in .env are preserved verbatim.
+        #
+        # Secret-handling discipline:
+        #   - The shell script body and the three values are streamed into
+        #     `ssh ... bash -s` over stdin via a single heredoc. The ssh
+        #     command line itself carries only SSH options, the user@host
+        #     target, and the literal token `bash -s` — nothing sensitive
+        #     lands in `ps -ef` on the runner or on the remote.
+        #   - On the remote side, the three values are read off the FIRST
+        #     three lines of stdin via `read -r` (opaque, no shell
+        #     interpolation), THEN the rest of stdin runs as the script
+        #     body via `bash -s`.
+        #   - Secret values are referenced inside the heredoc only via the
+        #     `env:`-mapped names ($ANTHROPIC_API_KEY etc); GitHub Actions
+        #     auto-redacts them in workflow logs as defence in depth.
+        #   - DEPLOY_PATH is non-sensitive (a filesystem path); it travels
+        #     in the same stdin stream for symmetry.
+        run: |
+          ssh -o StrictHostKeyChecking=yes "$SSH_USER@$SSH_HOST" 'bash -s' <<EOF
+          set -e
+          # The four values were emitted by the runner's shell as part of
+          # this heredoc body; they are inlined as literal text in the
+          # stream, never on a command line. Secret values are auto-redacted
+          # in workflow logs by GitHub Actions.
+          DEPLOY_PATH='$DEPLOY_PATH'
+          ANTHROPIC_API_KEY='$ANTHROPIC_API_KEY'
+          ANTHROPIC_MODEL='$ANTHROPIC_MODEL'
+          TZ_VALUE='$TZ'
+          cd "\$DEPLOY_PATH"
+          touch .env
+          chmod 600 .env
+          # Strip stale entries for the three managed keys, keep everything
+          # else byte-for-byte. `|| true` covers the empty-file edge case
+          # where grep would exit 1.
+          grep -v -E '^(ANTHROPIC_API_KEY|ANTHROPIC_MODEL|TZ)=' .env > .env.tmp || true
+          {
+            printf 'ANTHROPIC_API_KEY=%s\n' "\$ANTHROPIC_API_KEY"
+            printf 'ANTHROPIC_MODEL=%s\n' "\$ANTHROPIC_MODEL"
+            printf 'TZ=%s\n' "\$TZ_VALUE"
+          } >> .env.tmp
+          mv .env.tmp .env
+          chmod 600 .env
+          EOF
 
       - name: Install Python dependencies on server
         env:
@@ -111,6 +193,6 @@ jobs:
 
       - name: Deploy summary
         run: |
-          echo "::notice::Deploy complete. news_bot cron will pick up changes on next 12h tick."
+          echo "::notice::Deploy complete. news_bot cron will pick up changes on next 12:00 МСК cron tick."
           echo "::notice::To kick a tick immediately: ssh into the server and run: python3 -c 'from news_bot import job; job()'"
           echo "::notice::Rollback: locally run 'git revert HEAD && git push origin main' — this workflow will redeploy the parent commit."
