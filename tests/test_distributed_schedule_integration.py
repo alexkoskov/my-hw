@@ -327,6 +327,13 @@ class TestDistributedSchedule(unittest.TestCase):
             f"expected plan-of-day ping, got: {msgs!r}",
         )
 
+        # Teaser dispatch ran once per successful publish (T7 — pin
+        # the channel-side handoff so a regression that bypasses Telegram
+        # but still writes to ``published_articles`` is caught).
+        self.assertEqual(self.mock_teaser.call_count, 3,
+                         f"expected 3 teaser dispatches, got "
+                         f"{self.mock_teaser.call_count}")
+
         # Slot timing — verify sleep args match compute_publish_slots output
         # for the same inputs (truth source, NOT hard-coded). Under freezegun
         # `now` is FROZEN, so every `wait_seconds = max(0, slot - now)` in the
@@ -638,6 +645,15 @@ class TestDistributedSchedule(unittest.TestCase):
 
         # Pending is empty.
         self.assertEqual(self._pending_links(), [])
+
+        # No error-shaped admin notification fired (T4 — manual-review
+        # preemption is a benign concurrent edit, not a failure).
+        msgs = self._admin_messages()
+        self.assertFalse(
+            any(('ошибка' in m.lower() or 'error' in m.lower()
+                 or 'failed' in m.lower()) for m in msgs),
+            f"unexpected error-shaped admin ping: {msgs!r}",
+        )
 
 
 if __name__ == '__main__':
