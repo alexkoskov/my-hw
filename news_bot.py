@@ -12,8 +12,10 @@ import json
 import asyncio
 import time
 from collections import Counter
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from urllib.parse import urlparse
+
+import pytz
 
 from dotenv import load_dotenv
 
@@ -52,12 +54,19 @@ import pending_articles_repo as pending_repo
 # degraded-mode global fallback) without conditional imports inside the
 # hot path. Tests patch the bound names ``news_bot.transcreate_via_claude``
 # / ``news_bot.outage_state.is_fallback_active`` on the module surface.
+import claude_transcreation
 from claude_transcreation import (
     transcreate_via_claude,
     ClaudeTranscreationError,
     ClaudeOutageError,
 )
 import outage_state
+
+# Pure scheduling helper (Task 02) — produces today's publish slots from a
+# pending count + tz-aware ``now``. Imported at module level so ``job()``
+# stays free of conditional imports inside the hot path; tests patch
+# ``news_bot.compute_publish_slots`` to inject synthetic slot lists.
+from compute_publish_slots import compute_publish_slots
 
 # Configuration - set via environment variables
 TELEGRAM_BOT_TOKEN = os.getenv('TELEGRAM_BOT_TOKEN')
@@ -81,6 +90,18 @@ QUEUE_CAP = int(os.getenv('QUEUE_CAP', '10'))
 # in a batch wait (N-1) × ``FALLBACK_THROTTLE_SECONDS``. Manual-review
 # (``hw_review publish``) is operator-paced and never throttled.
 FALLBACK_THROTTLE_SECONDS = int(os.getenv('FALLBACK_THROTTLE_SECONDS', '3600'))
+
+# Distributed-publish constants (llm-transcreation-and-distributed-publishing
+# Decisions 2, 4, 9, 14, 15). The 13:00–20:00 МСК window + 40-minute minimum
+# interval are the same numbers ``compute_publish_slots`` uses by default —
+# kept here for explicit reference in ``job()`` (window-end guard) and the
+# crash-loop guard (Decision 9). ``BACKLOG_WARNING_THRESHOLD`` seeds the
+# AC20 queue-pressure admin ping.
+MIN_INTERVAL_MINUTES = 40
+WINDOW_START_TIME = datetime.strptime("13:00", "%H:%M").time()
+WINDOW_END_TIME = datetime.strptime("20:00", "%H:%M").time()
+BACKLOG_WARNING_THRESHOLD = 50
+MSK_TZ = pytz.timezone("Europe/Moscow")
 
 # Env-var names whose values must never leak into stored error strings or
 # admin-chat messages (Decision 11; ANTHROPIC_API_KEY added per Decision 12
@@ -1319,112 +1340,107 @@ SOURCES = [
 
 
 # Scheduler
-def job():
-    """Prep-phase cron tick (manual-review-workflow Decision 10).
+def _parse_published_at_utc(raw):
+    """Parse a SQLite ``published_at`` string into a UTC-aware datetime.
 
-    The tick now STAGES articles into ``pending_articles`` and pings the
-    admin — it no longer publishes to Telegraph or Telegram. Publishing
-    is driven by the operator via ``hw_review publish`` (Task 8) or the
-    idle-fallback / overflow-fast-track helpers (Tasks 9 & 10) which own
-    steps (1) and (4) below.
-
-    Pass layout mirrors tech-spec §How-it-works "Prep phase":
-      (1a) idle heads-up        — Task 9 placeholder (no-op).
-      (1b) overdue auto-publish — Task 9 placeholder (no-op).
-      (2)  fetch all sources    — iterates ``SOURCES`` registry.
-      (3)  filter against processed_news + pending_articles.
-      (4)  overflow fast-track  — Task 10 placeholder (accepts all).
-      (5)  INSERT into pending  — per-entry fetch_full_article + insert.
-      (6)  admin ping           — single consolidated notification.
+    The column default is ``CURRENT_TIMESTAMP`` (UTC, naive — format
+    ``YYYY-MM-DD HH:MM:SS`` or, for direct INSERTs, the ISO-8601 form with
+    ``T``). On any parse failure return ``None`` so the crash-loop guard
+    fails open (skip the wait) rather than crashing the cron tick.
     """
-    logger.info("Starting prep-phase tick...")
+    if raw is None:
+        return None
+    try:
+        # SQLite CURRENT_TIMESTAMP uses space, not 'T'.
+        s = raw.replace('T', ' ')
+        # Truncate fractional seconds if present.
+        if '.' in s:
+            s = s.split('.', 1)[0]
+        naive = datetime.strptime(s, '%Y-%m-%d %H:%M:%S')
+        return naive.replace(tzinfo=timezone.utc)
+    except Exception:
+        logger.warning(
+            f"Could not parse published_at={raw!r}; skipping crash-loop guard."
+        )
+        return None
+
+
+def _fallback_publish_google_only(row):
+    """Google-only publish path used when ``outage_state.is_fallback_active()``
+    is already True at slot time.
+
+    Today this just delegates to ``_fallback_publish``: that helper already
+    short-circuits to the Google-translate body when the state machine flag
+    is set (see the ``if outage_state.is_fallback_active()`` branch in
+    ``_fallback_publish``). Keeping this thin wrapper gives the
+    distributed-publish loop a single, intent-named entry-point — and lets
+    Task 9's planned cleanup migrate the implementation off ``_fallback_publish``
+    without touching ``job()``.
+    """
+    return _fallback_publish(row, via_review=False)
+
+
+def job():
+    """Daily cron tick — fetch + distributed-publish loop.
+
+    Replaces the manual-review-workflow prep-phase tick (Decision 10) with
+    the llm-transcreation-and-distributed-publishing flow (Decisions 2, 4,
+    9, 14, 15 + tech-spec §Architecture How-it-works step 7).
+
+    Pass layout:
+      (a) crash-loop guard      — sleep until ``last_published + 40min``
+                                  if the most recent publish is too fresh.
+      (b) fetch + filter + insert — iterate ``SOURCES``, dedup, stage rows.
+      (c) compute today's slots  — ``compute_publish_slots(N, now_msk)``.
+      (d) admin ping             — plan-of-day; suppressed on N=0;
+                                  + backlog warning when N > 50.
+      (e) distributed-publish    — sleep-until-slot, publish via
+                                  ``_fallback_publish`` (Claude primary +
+                                  Google per-article fallback) or, if the
+                                  outage state machine has fallback active,
+                                  ``_fallback_publish_google_only``.
+                                  ``ClaudeOutageError`` re-raises from
+                                  step 7 are absorbed and the loop
+                                  advances. Other unexpected errors
+                                  follow the standard 3-strikes flow
+                                  (``increment_attempt`` → ``move_to_failed``).
+    """
+    logger.info("Starting daily cron tick...")
     init_db()  # idempotent — guard against missing tables on first run.
 
     # ------------------------------------------------------------------
-    # Step (1a): idle heads-up (Decision 12) — one consolidated admin
-    # ping per tick, then stamp ``notified_at`` on every included row.
-    # The whole block is wrapped so a repo or notifier failure cannot
-    # abort the prep tick; errors log and continue.
+    # Step (a): crash-loop guard (Decision 9). Defends against systematic
+    # container restarts producing burst-publishes by enforcing the
+    # ``MIN_INTERVAL_MINUTES`` gap between consecutive publishes across
+    # restarts. Reads ``MAX(published_at)`` (UTC-naive) and sleeps until
+    # ``last_published + 40min`` if the gap is too small. Failure to
+    # parse the timestamp logs a warning and skips the guard (fail-open).
     # ------------------------------------------------------------------
     try:
-        _stale = pending_repo.list_pending_stale(IDLE_TIMEOUT_HOURS)
-    except Exception as exc:
-        logger.error(f"list_pending_stale failed: {sanitize_error_message(exc)}")
-        _stale = []
-    if _stale:
-        titles = ", ".join((r.get('title') or '(no title)') for r in _stale)
-        ping = (
-            f"Will auto-publish in ~{GRACE_WINDOW_HOURS}h: {titles}. "
-            f"Intercept via hw_review take N"
-        )
-        try:
-            send_admin_notification(ping)
-        except Exception as notify_err:
-            logger.error(
-                f"Failed to send idle heads-up ping: "
-                f"{sanitize_error_message(notify_err)}"
-            )
-        for _row in _stale:
-            try:
-                pending_repo.mark_notified(_row['link'])
-            except Exception as exc:
-                logger.error(
-                    f"mark_notified failed for {_row.get('link')!r}: "
-                    f"{sanitize_error_message(exc)}"
-                )
-
-    # ------------------------------------------------------------------
-    # Step (1b): overdue auto-publish — call ``_fallback_publish`` on
-    # each row whose grace window has elapsed without operator action.
-    # Per-row try/except so one failure cannot abort the whole pass
-    # (Decision 13 shared attempt counter, Decision 11 sanitised
-    # ``last_error``). Third strike → ``move_to_failed``.
-    # ------------------------------------------------------------------
-    try:
-        _overdue = pending_repo.list_notified_overdue(GRACE_WINDOW_HOURS)
+        last_raw = pending_repo.get_max_published_at()
     except Exception as exc:
         logger.error(
-            f"list_notified_overdue failed: {sanitize_error_message(exc)}"
+            f"[crash-loop-guard] get_max_published_at failed: "
+            f"{sanitize_error_message(exc)}"
         )
-        _overdue = []
-    # Skip-first throttle (Decision: ``FALLBACK_THROTTLE_SECONDS``) —
-    # 1 overdue row publishes immediately; subsequent rows wait. Counts
-    # call attempts (not successes) so a failure still spaces out the
-    # next attempt — matches the overflow-loop semantics.
-    for _idx, _row in enumerate(_overdue):
-        _link = _row.get('link')
-        try:
-            if _idx > 0:
-                time.sleep(FALLBACK_THROTTLE_SECONDS)
-            _fallback_publish(_row, via_review=False)
-        except Exception as exc:
-            safe = sanitize_error_message(exc)
-            logger.error(
-                f"[fallback] publish failed for {_link}: {safe}"
-            )
-            try:
-                new_count = pending_repo.increment_attempt(_link, safe)
-            except Exception as repo_err:
-                logger.error(
-                    f"increment_attempt failed for {_link}: "
-                    f"{sanitize_error_message(repo_err)}"
+        last_raw = None
+    last_published = _parse_published_at_utc(last_raw)
+    if last_published is not None:
+        now_utc = datetime.now(timezone.utc)
+        gap = now_utc - last_published
+        threshold = timedelta(minutes=MIN_INTERVAL_MINUTES)
+        if gap < threshold:
+            wait_seconds = (threshold - gap).total_seconds()
+            if wait_seconds > 0:
+                logger.warning(
+                    f"[crash-loop-guard] last publish was {gap.total_seconds():.0f}s "
+                    f"ago (< {MIN_INTERVAL_MINUTES}min); sleeping "
+                    f"{wait_seconds:.0f}s before continuing."
                 )
-                continue
-            if new_count >= 3:
-                try:
-                    pending_repo.move_to_failed(_link, safe)
-                    logger.warning(
-                        f"[fallback] moved {_link} to failed after "
-                        f"{new_count} strikes"
-                    )
-                except Exception as repo_err:
-                    logger.error(
-                        f"move_to_failed failed for {_link}: "
-                        f"{sanitize_error_message(repo_err)}"
-                    )
+                time.sleep(wait_seconds)
 
     # ------------------------------------------------------------------
-    # Step (2): fetch all sources via the SOURCES registry.
+    # Step (b1): fetch all sources via the SOURCES registry.
     # One source failing must not abort the tick — sanitise the error
     # string and surface it to the admin, then carry on.
     # ------------------------------------------------------------------
@@ -1447,11 +1463,9 @@ def job():
     logger.info(f"Fetched {len(all_entries)} entries across {len(SOURCES)} sources.")
 
     # ------------------------------------------------------------------
-    # Step (3): filter against processed_news (existing helper) AND
+    # Step (b2): filter against processed_news (existing helper) AND
     # pending_articles (inline guard — we check each candidate against
-    # the repo). ``filter_new_entries_extended`` is deliberately NOT
-    # introduced here; the inline form keeps the existing unit tests
-    # that exercise ``filter_new_entries`` in isolation valid.
+    # the repo).
     # ------------------------------------------------------------------
     new_entries = filter_new_entries(all_entries)
     before_pending_filter = len(new_entries)
@@ -1466,31 +1480,12 @@ def job():
         )
 
     # ------------------------------------------------------------------
-    # Step (4): overflow fast-track (Decision 7 — staged rows never
-    # evicted). ``_overflow_fast_track`` runs ``_fallback_publish`` on
-    # the oldest ``ru_paragraphs IS NULL`` rows to make room; any new
-    # entries that still don't fit after the pass are dropped for this
-    # tick and surfaced via a consolidated admin ping.
-    # ------------------------------------------------------------------
-    try:
-        accepted, _overflow_errors = _overflow_fast_track(new_entries)
-    except Exception as exc:
-        # Overflow-pass failure must not abort the tick — log + accept
-        # zero entries so we don't blow past cap accidentally. The admin
-        # has visibility via the log trail.
-        logger.error(
-            f"[overflow] pass failed: {sanitize_error_message(exc)}"
-        )
-        accepted = []
-
-    # ------------------------------------------------------------------
-    # Step (5): stage each accepted entry into pending_articles.
-    # ``fetch_full_article`` network-failure → skip (existing behaviour
-    # from the former ``process_new_articles`` guard). The repo owns all
+    # Step (b3): stage each accepted entry into pending_articles.
+    # ``fetch_full_article`` network-failure → skip. The repo owns all
     # JSON serialisation — we pass Python lists/dicts verbatim.
     # ------------------------------------------------------------------
     inserted = 0
-    for entry in accepted:
+    for entry in new_entries:
         link = entry.get('link')
         if not link:
             logger.warning("Entry has no link, skipping.")
@@ -1523,40 +1518,217 @@ def job():
             logger.error(f"insert_pending failed for {link}: {safe}")
 
     # ------------------------------------------------------------------
-    # Step (6): admin-ping — exactly one consolidated notification,
-    # suppressed on an empty queue (user-spec AC L57).
+    # Step (c): compute today's publish slots.
+    # ``compute_publish_slots`` returns (slots, carry_over). N=0 → empty
+    # list, no admin ping (Step (d) guard), no loop (Step (e) guard).
     # ------------------------------------------------------------------
-    try:
-        rows = pending_repo.list_pending()
-    except Exception as exc:
-        logger.error(f"list_pending failed: {exc}")
-        rows = []
+    now_msk = datetime.now(MSK_TZ)
+    queue_size = pending_repo.count_pending()
+    slots, carry_over = compute_publish_slots(queue_size, now_msk)
 
-    ping = build_admin_ping(rows)
-    if ping:
+    # ------------------------------------------------------------------
+    # Step (d): admin ping with plan-of-day.
+    # Suppressed on N=0 per AC. ``count_pending() > BACKLOG_WARNING_THRESHOLD``
+    # adds a separate warning ping (AC20).
+    # ------------------------------------------------------------------
+    if queue_size > 0:
+        slot_strs = ", ".join(s.strftime("%H:%M") for s in slots)
+        plan_msg = (
+            f"Зафетчил {inserted} новых, в очереди {queue_size}, "
+            f"расписание сегодня: {slot_strs or '—'}; "
+            f"carry-over: {carry_over}"
+        )
         try:
-            send_admin_notification(ping)
+            send_admin_notification(plan_msg)
         except Exception as notify_err:
-            # Admin chat being unreachable must not fail the tick.
-            logger.error(f"Failed to send admin ping: {notify_err}")
+            logger.error(
+                f"Failed to send plan-of-day ping: "
+                f"{sanitize_error_message(notify_err)}"
+            )
+        if queue_size > BACKLOG_WARNING_THRESHOLD:
+            backlog_msg = (
+                f"⚠️ Backlog warning: queue size {queue_size} "
+                f"exceeds threshold {BACKLOG_WARNING_THRESHOLD}; "
+                f"carry-over today: {carry_over}"
+            )
+            try:
+                send_admin_notification(backlog_msg)
+            except Exception as notify_err:
+                logger.error(
+                    f"Failed to send backlog warning ping: "
+                    f"{sanitize_error_message(notify_err)}"
+                )
 
+    # ------------------------------------------------------------------
+    # Step (e): distributed-publish loop.
+    #
+    # For each slot:
+    #   * Window-end guard (Decision 15): break if slot beyond 20:00
+    #     (insurance against a publish overrunning its slot interval).
+    #   * Sleep until slot time (max(0, ...) so a slot in the past fires
+    #     immediately).
+    #   * Pull oldest pending row; if list_pending is empty (manual review
+    #     preempted between cron tick and slot), break.
+    #   * Publish via ``_fallback_publish`` (Claude primary + per-article
+    #     Google fallback) OR ``_fallback_publish_google_only`` if the
+    #     state machine has the global Google fallback active.
+    #   * ClaudeOutageError → already published in degraded mode by
+    #     ``_fallback_publish``; advance to the next slot without strike.
+    #   * Other Exception → 3-strikes flow.
+    # ------------------------------------------------------------------
+    window_end_dt = datetime.combine(
+        now_msk.date(), WINDOW_END_TIME, tzinfo=MSK_TZ,
+    )
+    published_count = 0
+    for idx, slot in enumerate(slots, start=1):
+        # Window-end insurance.
+        if slot > window_end_dt:
+            logger.info(
+                f"[slot {idx}/{len(slots)}] {slot.strftime('%H:%M')} > "
+                f"window_end {WINDOW_END_TIME.strftime('%H:%M')} — break."
+            )
+            break
+
+        wait_seconds = max(0.0, (slot - datetime.now(MSK_TZ)).total_seconds())
+        if wait_seconds > 0:
+            time.sleep(wait_seconds)
+
+        rows = pending_repo.list_pending()
+        if not rows:
+            logger.info(
+                f"[slot {idx}/{len(slots)}] queue empty (manual-review "
+                f"preempted) — break."
+            )
+            break
+        row = rows[0]
+        link = row.get('link')
+
+        logger.info(
+            f"[slot {idx}/{len(slots)}] publishing row {link}"
+        )
+        try:
+            if outage_state.is_fallback_active():
+                _fallback_publish_google_only(row)
+            else:
+                _fallback_publish(row, via_review=False)
+            published_count += 1
+        except ClaudeOutageError:
+            # ``_fallback_publish`` already published in degraded mode and
+            # advanced the state machine. We do NOT count this as a strike;
+            # the loop continues to the next slot, where the now-active
+            # fallback flag routes us through the Google-only path.
+            logger.warning(
+                f"[slot {idx}/{len(slots)}] ClaudeOutageError surfaced; "
+                f"degraded-mode publish completed, continuing loop."
+            )
+            published_count += 1
+        except Exception as exc:
+            safe = sanitize_error_message(exc)
+            logger.error(
+                f"[slot {idx}/{len(slots)}] publish failed for {link}: {safe}"
+            )
+            try:
+                new_count = pending_repo.increment_attempt(link, safe)
+            except Exception as repo_err:
+                logger.error(
+                    f"increment_attempt failed for {link}: "
+                    f"{sanitize_error_message(repo_err)}"
+                )
+                continue
+            if new_count >= 3:
+                try:
+                    pending_repo.move_to_failed(link, safe)
+                    logger.warning(
+                        f"[slot {idx}/{len(slots)}] moved {link} to failed "
+                        f"after {new_count} strikes"
+                    )
+                except Exception as repo_err:
+                    logger.error(
+                        f"move_to_failed failed for {link}: "
+                        f"{sanitize_error_message(repo_err)}"
+                    )
+
+    final_queue_size = pending_repo.count_pending()
     logger.info(
-        f"Prep-phase done. Inserted {inserted}, queue size {len(rows)}."
+        f"[job] done. Published {published_count}, "
+        f"carry-over {carry_over}, queue size now {final_queue_size}."
     )
 
+
 def main():
-    """Entry point."""
+    """Entry point — startup health checks + daily cron registration.
+
+    Decision 14 startup health checks (BEFORE cron registration so any
+    diagnostic ping reaches the operator before the first ``job()`` call):
+
+      1. ``claude_transcreation.health_check()`` — non-raising bool probe.
+         On ``False`` we ping the admin and flip the outage state machine
+         to ``fallback_active=True`` so the day's first ``job()`` runs
+         straight through the Google-only path.
+      2. ``os.getenv('TZ') == 'Europe/Moscow'`` — on mismatch we ping the
+         admin (warning, not blocking — explicit pytz makes the cron line
+         correct regardless of the container's wall-clock TZ).
+
+    Cron change (Decision 2 + 4): the legacy 12-hour cron is replaced by
+    a single daily fixed-time cron at 12:00 МСК via ``schedule.every().
+    day.at("12:00", tz=pytz.timezone("Europe/Moscow"))``. ``schedule==
+    1.2.1`` accepts ``pytz.BaseTzInfo`` or an IANA name string but NOT
+    ``zoneinfo.ZoneInfo`` — see TDD anchor in Task 8.
+    """
     init_db()
     telegraph_publisher.ensure_access_token()
     logger.info("News bot started.")
 
-    # Hourly cron (manual-review-workflow Decision 5). The 2h grace
-    # window after an idle-timeout heads-up is only meaningful if the
-    # scheduler ticks at least once within that window.
-    schedule.every(12).hours.do(job)
+    # Health check #1: Claude API + ux-guidelines.md probe.
+    if not claude_transcreation.health_check():
+        logger.warning(
+            "[startup] claude_transcreation.health_check() returned False — "
+            "switching to Google-only for the day."
+        )
+        try:
+            send_admin_notification(
+                "Claude probe failed at startup, switching to "
+                "Google-only for the day"
+            )
+        except Exception as notify_err:
+            logger.error(
+                f"[startup] failed to send Claude-probe ping: "
+                f"{sanitize_error_message(notify_err)}"
+            )
+        try:
+            outage_state.set_fallback_active(True)
+        except Exception as exc:
+            logger.error(
+                f"[startup] outage_state.set_fallback_active(True) failed: "
+                f"{sanitize_error_message(exc)}"
+            )
 
-    # Run immediately for testing / first-boot population. The cron loop
-    # below starts the hourly cadence after this first tick completes.
+    # Health check #2: container TZ.
+    tz_env = os.getenv('TZ')
+    if tz_env != 'Europe/Moscow':
+        logger.warning(
+            f"[startup] TZ env var = {tz_env!r}, expected 'Europe/Moscow'. "
+            f"Cron is still correct via explicit pytz, but operator should "
+            f"review the container deploy config."
+        )
+        try:
+            send_admin_notification(
+                f"⚠️ TZ env var = {tz_env!r}, expected 'Europe/Moscow'. "
+                f"Cron is correct via explicit pytz; please review container "
+                f"timezone config."
+            )
+        except Exception as notify_err:
+            logger.error(
+                f"[startup] failed to send TZ-warning ping: "
+                f"{sanitize_error_message(notify_err)}"
+            )
+
+    # Daily fixed-time cron at 12:00 МСК (Decisions 2 + 4). pytz is the
+    # only timezone API ``schedule==1.2.1`` accepts — see Decision 4.
+    schedule.every().day.at("12:00", tz=pytz.timezone("Europe/Moscow")).do(job)
+
+    # Run immediately for first-boot population. Subsequent runs go via
+    # the cron loop below, firing at 12:00 МСК daily.
     job()
 
     # Keep the script alive

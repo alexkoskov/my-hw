@@ -53,7 +53,34 @@ class PrepPhaseBase(unittest.TestCase):
         self.throttle_patcher = patch('news_bot.FALLBACK_THROTTLE_SECONDS', 0)
         self.throttle_patcher.start()
 
+        # Task 8 turned ``job()`` into fetch+stage PLUS a distributed-
+        # publish loop. The prep-only invariants exercised here still hold
+        # (no Telegraph publish during the staging phase, queue counts,
+        # admin-ping suppression on N=0), but we must keep the loop from
+        # actually sleeping or auto-publishing during these tests. Two
+        # patches do the work:
+        #   * ``time.sleep`` → no-op (window slot waits would otherwise
+        #     stall the test runner for hours).
+        #   * ``_fallback_publish`` → no-op (would otherwise try to call
+        #     Telegram / Telegraph; the prep tests assert those calls
+        #     don't happen DURING the staging phase, but the publish loop
+        #     fires after staging — see new test file
+        #     ``test_job_distributed_publish.py``).
+        self.sleep_patcher = patch('news_bot.time.sleep')
+        self.sleep_patcher.start()
+        self.publish_patcher = patch('news_bot._fallback_publish')
+        self.publish_patcher.start()
+        # Force fallback-inactive so the loop tries the Claude path —
+        # which is also patched here as a safety net for any stragglers.
+        self.outage_patcher = patch(
+            'news_bot.outage_state.is_fallback_active', return_value=False,
+        )
+        self.outage_patcher.start()
+
     def tearDown(self):
+        self.outage_patcher.stop()
+        self.publish_patcher.stop()
+        self.sleep_patcher.stop()
         self.throttle_patcher.stop()
         self.db_patcher.stop()
         self.token_patcher.stop()
@@ -170,9 +197,15 @@ class TestAdminPing(PrepPhaseBase):
     @patch('news_bot.send_telegraph_teaser')
     @patch('news_bot.telegraph_publisher.publish_article')
     @patch('news_bot.fetch_full_article')
-    def test_admin_ping_format_matches_spec(
+    def test_admin_ping_plan_of_day_sent(
         self, mock_fetch_article, mock_publish, mock_teaser, mock_admin,
     ):
+        """After Task 8 the prep-tick admin ping is the plan-of-day
+        summary (``Зафетчил X новых, в очереди M, расписание сегодня:
+        HH:MM, …; carry-over: K``), not the legacy
+        ``build_admin_ping(rows)`` format. We assert the new
+        contract — the byte-exact format check belongs in
+        ``test_job_distributed_publish``."""
         mock_fetch_article.return_value = self._article_payload()
 
         with _patch_sources(rss_return=[
@@ -183,22 +216,16 @@ class TestAdminPing(PrepPhaseBase):
         ]):
             news_bot.job()
 
-        # Build the expected string from the live helper so the test keeps
-        # in sync with any future format tweak (byte-exact is what matters).
-        rows = pending_articles_repo.list_pending()
-        expected = news_bot.build_admin_ping(rows)
-        self.assertIsNotNone(expected)
-
-        # Find the admin-notification call whose payload is the ping string.
-        # Other admin-notification calls (e.g. source errors) may coexist.
-        ping_calls = [
+        plan_calls = [
             c for c in mock_admin.call_args_list
-            if c.args and c.args[0] == expected
+            if c.args and isinstance(c.args[0], str)
+            and 'Зафетчил' in c.args[0]
+            and 'расписание' in c.args[0]
         ]
         self.assertEqual(
-            len(ping_calls), 1,
-            msg=f"Expected exactly one ping call with string={expected!r}, "
-                f"got: {mock_admin.call_args_list}",
+            len(plan_calls), 1,
+            msg=f"Expected one plan-of-day ping; got: "
+                f"{mock_admin.call_args_list}",
         )
 
     @patch('news_bot.send_admin_notification')
@@ -405,23 +432,23 @@ class TestProcessNewArticlesRemoved(unittest.TestCase):
         )
 
 
-class TestCronScheduleTwelveHourly(unittest.TestCase):
-    """AC (operator rule 2026-04-24): cron runs every 12 hours. Originally
-    Decision 5 set it hourly, but the operator dropped it to 12h after
-    live ops showed hourly fetches produce queue-pressure incidents on
-    the manual-review workflow. The schedule lives in ``main()``; we
-    assert the source text to avoid actually running the scheduler."""
+class TestCronScheduleDailyMSK(unittest.TestCase):
+    """AC (Task 8 / Decisions 2 + 4): cron runs once daily at 12:00 МСК
+    via TZ-aware ``schedule.every().day.at("12:00", tz=pytz.timezone(
+    "Europe/Moscow"))``. Replaces the legacy 12-hour cron from manual-
+    review-workflow. The schedule lives in ``main()``; we assert the
+    source text to avoid actually running the scheduler."""
 
-    def test_main_uses_twelve_hour_schedule(self):
+    def test_main_uses_daily_msk_schedule(self):
         import inspect
         src = inspect.getsource(news_bot.main)
-        self.assertIn('every(12).hours', src,
-                      msg="main() must register a 12-hour cron per operator rule")
-        # And the old hourly/daily cadences must be gone.
-        self.assertNotIn('every().hour.do', src,
-                         msg="hourly cron line must be removed")
-        self.assertNotIn('every().day.at', src,
-                         msg="daily cron line must be removed")
+        self.assertIn('every().day.at(', src,
+                      msg="main() must register the daily 12:00 МСК cron")
+        self.assertIn('12:00', src)
+        self.assertIn('Europe/Moscow', src)
+        # And the old 12-hour cadence must be gone.
+        self.assertNotIn('every(12).hours', src,
+                         msg="legacy 12-hour cron line must be removed")
 
 
 if __name__ == '__main__':

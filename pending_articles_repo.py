@@ -477,6 +477,34 @@ def count_pending() -> int:
         conn.close()
 
 
+def get_max_published_at() -> Optional[str]:
+    """Return the most recent ``published_at`` from ``published_articles``
+    as the raw SQLite TEXT (UTC-naive ISO ``YYYY-MM-DD HH:MM:SS``), or
+    ``None`` if the table is empty.
+
+    Backs the crash-loop guard in ``news_bot.job()`` (Decision 9 of the
+    llm-transcreation-and-distributed-publishing tech-spec): on cron tick
+    or container restart, the bot reads this and sleeps until
+    ``last_published + MIN_INTERVAL_MINUTES`` if the gap is too small —
+    so a systematic restart loop cannot produce burst-publishes.
+
+    The column default is SQLite ``CURRENT_TIMESTAMP`` (UTC, naive). The
+    caller is responsible for parsing into a tz-aware datetime; this
+    helper stays string-typed to keep the storage contract single-
+    source-of-truth at the column.
+    """
+    conn = _connect()
+    try:
+        row = conn.execute(
+            "SELECT MAX(published_at) FROM published_articles"
+        ).fetchone()
+        if row is None or row[0] is None:
+            return None
+        return str(row[0])
+    finally:
+        conn.close()
+
+
 # ---------------------------------------------------------------------------
 # Transactional moves
 # ---------------------------------------------------------------------------
