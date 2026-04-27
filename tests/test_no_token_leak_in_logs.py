@@ -21,6 +21,7 @@ import logging
 import os
 import re
 import sys
+from unittest.mock import AsyncMock
 
 import pytest
 
@@ -182,3 +183,261 @@ class TestEndToEndNoTokenInCapturedLogs:
             assert news_bot._BOT_TOKEN_RE.search(benign) is None, (
                 f"Regex spuriously matched benign string: {benign!r}"
             )
+
+
+# ===========================================================================
+# Part 4 — Anthropic API key redaction (Decision 12, Task 4)
+# ===========================================================================
+#
+# All keys below are SYNTHETIC fixtures.  The strings below intentionally
+# resemble real ``sk-ant-...`` formats so the regex is exercised, but no
+# real Anthropic credential is ever materialised in the test process.
+
+FAKE_ANTHROPIC_KEY_PROD = "sk-ant-api03-FAKE_KEY_FOR_TESTS_0123456789ABCDEF"
+FAKE_ANTHROPIC_KEY_SANDBOX = "sk-ant-FAKE=SANDBOX.value.0123456789ABCDEF"
+
+
+class TestAnthropicKeyRedaction:
+    """Unit-level tests for the broadened ``_TokenRedactingFilter`` and the
+    new ``_redact_text`` helper introduced by Decision 12 / Task 4.
+
+    These tests cover:
+      * regex coverage for prod-shape and sandbox-shape ``sk-ant-...`` keys;
+      * end-to-end redaction via the filter on records routed through the
+        ``anthropic`` SDK loggers;
+      * filter installation on each anthropic-family logger;
+      * env-name list extension;
+      * ``_redact_text`` helper covering both Telegram-bot-token and
+        Anthropic-key shapes in a single pass.
+    """
+
+    def test_filter_redacts_prod_shape_anthropic_key(self):
+        """Prod-shape ``sk-ant-api03-...`` substring on ``record.msg`` is
+        replaced by ``***`` after the filter runs."""
+        flt = news_bot._TokenRedactingFilter()
+        record = logging.LogRecord(
+            name="anthropic._client",
+            level=logging.WARNING,
+            pathname=__file__,
+            lineno=1,
+            msg=f"AuthenticationError: invalid api key {FAKE_ANTHROPIC_KEY_PROD}",
+            args=None,
+            exc_info=None,
+        )
+        assert flt.filter(record) is True
+        assert FAKE_ANTHROPIC_KEY_PROD not in record.getMessage()
+        assert "***" in record.getMessage()
+
+    def test_filter_redacts_sandbox_shape_with_equals_and_dots(self):
+        """Sandbox-shape key with ``=`` and ``.`` characters — the old
+        ``[A-Za-z0-9_-]{20,}`` regex would not have matched this."""
+        flt = news_bot._TokenRedactingFilter()
+        record = logging.LogRecord(
+            name="anthropic",
+            level=logging.WARNING,
+            pathname=__file__,
+            lineno=1,
+            msg=f"BadRequestError: key={FAKE_ANTHROPIC_KEY_SANDBOX} rejected",
+            args=None,
+            exc_info=None,
+        )
+        assert flt.filter(record) is True
+        assert FAKE_ANTHROPIC_KEY_SANDBOX not in record.getMessage()
+        assert "***" in record.getMessage()
+
+    def test_filter_redacts_anthropic_key_passed_via_args(self):
+        """``%s``-style logging passes the key via ``record.args`` — the
+        filter must catch it because it pre-renders the message."""
+        flt = news_bot._TokenRedactingFilter()
+        record = logging.LogRecord(
+            name="anthropic._base_client",
+            level=logging.WARNING,
+            pathname=__file__,
+            lineno=1,
+            msg="auth failed for key=%s",
+            args=(FAKE_ANTHROPIC_KEY_PROD,),
+            exc_info=None,
+        )
+        assert flt.filter(record) is True
+        assert FAKE_ANTHROPIC_KEY_PROD not in record.getMessage()
+        assert "***" in record.getMessage()
+
+    @pytest.mark.parametrize("name", [
+        "anthropic",
+        "anthropic._client",
+        "anthropic._base_client",
+    ])
+    def test_filter_attached_to_anthropic_sdk_loggers(self, name):
+        """The redacting filter must be attached to each anthropic-family
+        logger so SDK-emitted records get scrubbed even when handlers are
+        wired directly to them and propagation is short-circuited."""
+        anthropic_logger = logging.getLogger(name)
+        assert any(
+            isinstance(f, news_bot._TokenRedactingFilter)
+            for f in anthropic_logger.filters
+        ), f"_TokenRedactingFilter not installed on {name!r} logger."
+
+    def test_anthropic_api_key_in_secret_env_names(self):
+        """``ANTHROPIC_API_KEY`` must be in ``_SECRET_ENV_NAMES`` so
+        ``sanitize_error_message`` cleans its value out of stored error
+        strings."""
+        assert "ANTHROPIC_API_KEY" in news_bot._SECRET_ENV_NAMES
+
+    def test_redact_text_helper_redacts_both_telegram_and_anthropic(self):
+        """``_redact_text`` is the single source of truth — it must catch
+        both Telegram-bot-token and Anthropic-key shapes in one pass."""
+        text = (
+            f"telegram leak: {FAKE_URL} | anthropic leak: {FAKE_ANTHROPIC_KEY_PROD}"
+        )
+        out = news_bot._redact_text(text)
+        assert FAKE_TOKEN not in out
+        assert FAKE_ANTHROPIC_KEY_PROD not in out
+        assert out.count("***") >= 2
+
+    def test_redact_text_is_noop_on_clean_input(self):
+        """``_redact_text`` must return clean text untouched."""
+        clean = "job() completed, processed 3 entries"
+        assert news_bot._redact_text(clean) == clean
+
+    def test_redact_text_preserves_surrounding_text(self):
+        """Regex with ``=`` and ``.`` in the character class is greedy until
+        the first non-matching char (whitespace, quote, etc.) — surrounding
+        text after the key must be preserved."""
+        text = f"prefix {FAKE_ANTHROPIC_KEY_SANDBOX} suffix-after-key"
+        out = news_bot._redact_text(text)
+        assert FAKE_ANTHROPIC_KEY_SANDBOX not in out
+        assert "prefix" in out
+        assert "suffix-after-key" in out
+
+    def test_anthropic_regex_does_not_overmatch(self):
+        """Short ``sk-ant-...`` strings (< 16 chars after the prefix) must
+        NOT be matched."""
+        for benign in (
+            "sk-ant-shortish",                # 8 chars after prefix
+            "sk-ant-tiny",                    # 4 chars after prefix
+            "https://example.com/sk-ant-",    # nothing after prefix
+        ):
+            out = news_bot._redact_text(benign)
+            assert out == benign, (
+                f"Regex spuriously matched benign string: {benign!r} -> {out!r}"
+            )
+
+    def test_redact_text_handles_none_safely(self):
+        """``_redact_text`` must never raise — empty / None input is returned
+        untouched (or coerced to string), matching the filter's silent-fallback
+        invariant."""
+        # None and empty must not crash the helper.  The exact return value is
+        # implementation-defined, but it must not propagate an exception.
+        try:
+            news_bot._redact_text(None)
+            news_bot._redact_text("")
+        except Exception as e:  # pragma: no cover — safety net
+            pytest.fail(f"_redact_text raised on edge input: {e!r}")
+
+    def test_anthropic_key_redacted_through_root_logger(self, caplog):
+        """End-to-end: a record carrying a sandbox-shape key emitted on the
+        ``anthropic._client`` logger must be scrubbed before any handler
+        captures the text."""
+        anthropic_logger = logging.getLogger("anthropic._client")
+
+        with caplog.at_level(logging.WARNING, logger="anthropic._client"):
+            anthropic_logger.warning(
+                "AuthenticationError: invalid api key %s",
+                FAKE_ANTHROPIC_KEY_SANDBOX,
+            )
+
+        combined = "\n".join(r.getMessage() for r in caplog.records)
+        assert FAKE_ANTHROPIC_KEY_SANDBOX not in combined, (
+            "Anthropic key survived the redaction filter — captured text was:\n"
+            + combined
+        )
+
+
+class TestAdminNotifyRedaction:
+    """Tests for ``send_admin_notification`` — the admin-notify path lives
+    OUTSIDE the logging pipeline (builds the Telegram payload via Python
+    f-strings).  Without explicit ``_redact_text`` here, an exception text
+    containing the API key would land in operator's chat as plain text.
+    """
+
+    def _patch_credentials_and_bot(self, monkeypatch):
+        """Install fake creds + a FakeBot whose ``send_message`` is an
+        ``AsyncMock`` (the function awaits it inside ``asyncio.run``).
+
+        ``Mock`` is wrong here because it returns a non-awaitable; pytest
+        would emit ``RuntimeWarning: coroutine was never awaited`` and the
+        assert would fail vacuously.
+        """
+        monkeypatch.setattr(
+            news_bot,
+            "TELEGRAM_BOT_TOKEN",
+            "1234567890:fake_for_test_AAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+        )
+        monkeypatch.setattr(news_bot, "TELEGRAM_ADMIN_ID", "@fake_admin")
+
+        fake_send = AsyncMock()
+
+        class _FakeBot:
+            def __init__(self, token):
+                self.token = token
+                self.send_message = fake_send
+
+        monkeypatch.setattr(news_bot, "Bot", _FakeBot)
+        return fake_send
+
+    def test_send_admin_notification_redacts_anthropic_key_before_send(
+        self, monkeypatch
+    ):
+        fake_send = self._patch_credentials_and_bot(monkeypatch)
+
+        ok = news_bot.send_admin_notification(
+            f"Claude API auth failed: AuthenticationError: key={FAKE_ANTHROPIC_KEY_PROD}"
+        )
+
+        assert ok is True
+        fake_send.assert_awaited_once()
+        captured = fake_send.await_args.kwargs["text"]
+        assert FAKE_ANTHROPIC_KEY_PROD not in captured, (
+            "Anthropic key survived send_admin_notification — captured text:\n"
+            + captured
+        )
+        assert "***" in captured
+
+    def test_send_admin_notification_redacts_sandbox_anthropic_key(
+        self, monkeypatch
+    ):
+        fake_send = self._patch_credentials_and_bot(monkeypatch)
+
+        ok = news_bot.send_admin_notification(
+            f"Outage: BadRequestError key={FAKE_ANTHROPIC_KEY_SANDBOX}"
+        )
+
+        assert ok is True
+        captured = fake_send.await_args.kwargs["text"]
+        assert FAKE_ANTHROPIC_KEY_SANDBOX not in captured
+        assert "***" in captured
+
+    def test_send_admin_notification_redacts_telegram_token(self, monkeypatch):
+        """Same path also catches the Telegram-bot-token shape — single
+        helper, both regexes."""
+        fake_send = self._patch_credentials_and_bot(monkeypatch)
+
+        ok = news_bot.send_admin_notification(
+            f"Outage: HTTP error talking to {FAKE_URL}"
+        )
+
+        assert ok is True
+        captured = fake_send.await_args.kwargs["text"]
+        assert FAKE_TOKEN not in captured
+        assert "***" in captured
+
+    def test_send_admin_notification_preserves_clean_message(self, monkeypatch):
+        """Clean text (no secrets) passes through unchanged."""
+        fake_send = self._patch_credentials_and_bot(monkeypatch)
+        clean = "Job completed: processed 3 entries"
+
+        ok = news_bot.send_admin_notification(clean)
+
+        assert ok is True
+        captured = fake_send.await_args.kwargs["text"]
+        assert captured == clean

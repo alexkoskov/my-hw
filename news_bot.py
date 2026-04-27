@@ -70,13 +70,15 @@ QUEUE_CAP = int(os.getenv('QUEUE_CAP', '10'))
 FALLBACK_THROTTLE_SECONDS = int(os.getenv('FALLBACK_THROTTLE_SECONDS', '3600'))
 
 # Env-var names whose values must never leak into stored error strings or
-# admin-chat messages (Decision 11). Kept as a module-level tuple so new
-# secrets can be added without touching the function body.
+# admin-chat messages (Decision 11; ANTHROPIC_API_KEY added per Decision 12
+# of llm-transcreation-and-distributed-publishing). Kept as a module-level
+# tuple so new secrets can be added without touching the function body.
 _SECRET_ENV_NAMES = (
     'TELEGRAM_BOT_TOKEN',
     'TELEGRAM_CHANNEL_ID',
     'TELEGRAM_ADMIN_ID',
     'TELEGRAPH_ACCESS_TOKEN',
+    'ANTHROPIC_API_KEY',
 )
 
 
@@ -111,23 +113,6 @@ def sanitize_error_message(exc):
             # Defensive: never let sanitisation break the caller.
             continue
     return message
-
-
-def send_admin_notification(message):
-    """Send a notification message to the admin."""
-    if not TELEGRAM_BOT_TOKEN or not TELEGRAM_ADMIN_ID:
-        logging.error("Telegram credentials or admin ID not set.")
-        return False
-    async def _send():
-        bot = Bot(token=TELEGRAM_BOT_TOKEN)
-        try:
-            await bot.send_message(chat_id=TELEGRAM_ADMIN_ID, text=message, parse_mode='Markdown')
-            logging.info(f"Admin notification sent: {message[:50]}...")
-            return True
-        except TelegramError as e:
-            logging.error(f"Failed to send admin notification: {e}")
-            return False
-    return asyncio.run(_send())
 
 
 def load_feeds():
@@ -208,11 +193,53 @@ for _noisy in ("httpx", "httpcore", "urllib3", "requests"):
 # future token-format tweak from BotFather still gets caught.
 _BOT_TOKEN_RE = re.compile(r"\d{6,12}:[A-Za-z0-9_-]{30,}")
 
+# Anthropic API keys take the shape ``sk-ant-<env_or_kind>-<secret>`` and
+# may include ``=`` and ``.`` in sandbox/admin variants.  The character
+# class below is intentionally broad enough to catch sandbox-shape keys
+# (per Decision 12 of llm-transcreation-and-distributed-publishing); the
+# ``{16,}`` floor keeps the regex from matching short benign suffixes.
+_ANTHROPIC_KEY_RE = re.compile(r"sk-ant-[A-Za-z0-9_=.-]{16,}")
+
+
+def _redact_text(text):
+    """Scrub Telegram-bot-token AND Anthropic-API-key shapes from a string.
+
+    Single source of truth for redaction — used by both the logging filter
+    and ``send_admin_notification`` (the admin-notify path lives outside
+    the logging pipeline so the filter alone does not cover it; per
+    Decision 12).
+
+    Contract:
+      * Always returns a string.  Non-string input is coerced (``None`` →
+        ``""``, other → ``str(...)``) so the helper never raises on edge
+        input.  Matches the silent-fallback invariant of
+        ``_TokenRedactingFilter.filter`` which returns ``True`` even on
+        internal error.
+      * Never raises.  Any internal failure returns the input as-is
+        (best-effort coerced to string).
+    """
+    if text is None:
+        return ""
+    try:
+        if not isinstance(text, str):
+            text = str(text)
+        text = _BOT_TOKEN_RE.sub("***", text)
+        text = _ANTHROPIC_KEY_RE.sub("***", text)
+        return text
+    except Exception:
+        # Defensive: never let redaction break the caller.
+        try:
+            return text if isinstance(text, str) else str(text)
+        except Exception:
+            return ""
+
 
 class _TokenRedactingFilter(logging.Filter):
-    """Defence-in-depth: scrub Telegram-bot-token-shaped substrings from any
-    LogRecord before it reaches a handler.  Installed on the root logger so
-    it covers every library we import, including ones we haven't audited.
+    """Defence-in-depth: scrub Telegram-bot-token-shaped AND Anthropic-API-
+    key-shaped substrings from any LogRecord before it reaches a handler.
+    Installed on the root logger plus the noisy HTTP loggers and the
+    anthropic SDK loggers so it covers every library we import, including
+    ones we haven't audited.
 
     Rewriting ``record.msg`` / ``record.args`` is safe because ``filter`` is
     invoked after ``getMessage`` caching — handlers re-render from the
@@ -226,8 +253,9 @@ class _TokenRedactingFilter(logging.Filter):
             # Pre-render, scrub, then drop args so the handler doesn't
             # re-format and reintroduce a raw token from ``record.args``.
             rendered = record.getMessage()
-            if _BOT_TOKEN_RE.search(rendered):
-                record.msg = _BOT_TOKEN_RE.sub("***", rendered)
+            scrubbed = _redact_text(rendered)
+            if scrubbed != rendered:
+                record.msg = scrubbed
                 record.args = None
         except Exception:
             # Never let the filter break logging.
@@ -243,6 +271,44 @@ _TOKEN_FILTER = _TokenRedactingFilter()
 logging.getLogger().addFilter(_TOKEN_FILTER)
 for _noisy in ("httpx", "httpcore", "urllib3", "requests"):
     logging.getLogger(_noisy).addFilter(_TOKEN_FILTER)
+# Anthropic SDK family — the SDK uses its own logger hierarchy and may
+# emit ``logger.exception(...)`` lines whose text embeds the API key in
+# request URLs / headers.  We only ``addFilter`` (no ``setLevel`` bump):
+# anthropic loggers are not "noisy" — their default level is fine.
+for _anthropic_logger_name in ("anthropic", "anthropic._client", "anthropic._base_client"):
+    logging.getLogger(_anthropic_logger_name).addFilter(_TOKEN_FILTER)
+
+
+# Admin-notify invariant (Decision 12, llm-transcreation-and-distributed-
+# publishing): for outage / SDK-error admin pings, the user-visible text
+# MUST use ``type(exc).__name__`` only — never ``str(exc)``.  Full
+# ``str(exc)`` may go to logs (which are now redacted by the filter
+# above).  ``send_admin_notification`` itself routes its message through
+# ``_redact_text`` as a belt-and-suspenders measure, but callers should
+# still avoid embedding raw exception text in the user-visible payload.
+def send_admin_notification(message):
+    """Send a notification message to the admin.
+
+    The ``message`` is passed through ``_redact_text`` BEFORE the Telegram
+    payload is built so that any caller that accidentally embeds a secret
+    (Telegram bot token, Anthropic API key) sees ``***`` in the chat
+    rather than the raw value.  Per Decision 12.
+    """
+    if not TELEGRAM_BOT_TOKEN or not TELEGRAM_ADMIN_ID:
+        logging.error("Telegram credentials or admin ID not set.")
+        return False
+    safe_message = _redact_text(message)
+    async def _send():
+        bot = Bot(token=TELEGRAM_BOT_TOKEN)
+        try:
+            await bot.send_message(chat_id=TELEGRAM_ADMIN_ID, text=safe_message, parse_mode='Markdown')
+            logging.info(f"Admin notification sent: {safe_message[:50]}...")
+            return True
+        except TelegramError as e:
+            logging.error(f"Failed to send admin notification: {e}")
+            return False
+    return asyncio.run(_send())
+
 
 logger = logging.getLogger(__name__)
 
