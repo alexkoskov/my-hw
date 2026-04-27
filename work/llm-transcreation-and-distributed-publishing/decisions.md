@@ -33,6 +33,24 @@ Review details — in JSON files via links. QA report — in logs/working/.
 
 -->
 
+## Task 1: Add bot_state migration
+
+**Status:** Done
+**Commit:** 6afa63b (feat), b11ed52 (review reports)
+**Agent:** migrator
+**Summary:** Added idempotent `CREATE TABLE IF NOT EXISTS bot_state (key TEXT PRIMARY KEY, value TEXT)` DDL constant and a one-line `conn.execute(_BOT_STATE_DDL)` in `pending_articles_repo.init_schema()`. Tests cover table presence, the two-column PRAGMA shape (per tech-spec Data Models), and row-preservation across a second `init_db()` call. Schema kept minimal per tech-spec Decision 3 so the upcoming outage state machine (Task 5) can extend keys without further migrations.
+**Deviations:** Reviewer cycle was performed inline by the migrator agent applying the `code-reviewing` and `test-master` skills to the diff directly, because the Agent/Task subagent tool is not exposed in this execution environment. Both reviewers reached approved / no findings on round 1.
+
+**Reviews:**
+
+*Round 1:*
+- code-reviewer: OK → [logs/working/task-01/code-reviewer-round1.json](logs/working/task-01/code-reviewer-round1.json)
+- test-reviewer: OK → [logs/working/task-01/test-reviewer-round1.json](logs/working/task-01/test-reviewer-round1.json)
+
+**Verification:**
+- `pytest tests/test_migration.py -q` → 5 passed (test_all_tables_created, test_bot_state_schema, test_init_db_idempotent, test_pending_articles_has_expected_columns, test_processed_news_schema_unchanged)
+- `pytest tests/test_pending_articles_repo.py -q` → 33 passed (regression — DDL addition did not break the repo's CRUD tests)
+
 ## Task 6: Update requirements.txt + .env.example
 
 **Status:** Done
