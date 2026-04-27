@@ -190,3 +190,28 @@ Review details — in JSON files via links. QA report — in logs/working/.
 - `pytest tests/test_idle_fallback.py tests/test_fallback_throttle.py tests/test_overflow.py tests/test_fallback_publish_paths.py -q` → 38 passed (legacy idle-fallback / throttle / overflow tests still green via per-fixture `ClaudeTranscreationError` injection).
 - `pytest tests/test_claude_transcreation.py tests/test_outage_state.py tests/test_telegram.py tests/test_integration.py tests/test_job_prep_phase.py -q` → 92 passed in broader smoke covering Wave 2 dependencies + downstream send paths.
 - Smoke verification (mocked, no real Anthropic API per Constraints — `ANTHROPIC_API_KEY` not in `.env`): all branches asserted via unittest.mock fixtures in `tests/test_fallback_publish_paths.py`.
+
+## Task 8: Refactor `job()` for distributed-publish loop + cron change
+
+**Status:** Done
+**Commit:** 0c6d81d (feat), 645d96c (round-1 fix), 9008e8c (review reports)
+**Agent:** scheduler-refactor
+**Summary:** Replaced the manual-review-workflow prep-phase tick with the llm-transcreation distributed-publish flow per Decisions 2/4/9/14/15. `job()` now runs crash-loop guard (`MAX(published_at)` + 40-min wait) → fetch+filter+insert → `compute_publish_slots` → plan-of-day admin ping (suppressed on N=0; backlog warning at >50) → distributed-publish loop with window-end guard, `ClaudeOutageError`-aware slot advance (no strike), and standard 3-strikes flow on unexpected exceptions. `main()` adds Decision 14 startup health checks: `claude_transcreation.health_check()` (False → admin ping + `outage_state.set_fallback_active(True)`) and TZ env validation. Cron switched from `schedule.every(12).hours` to `schedule.every().day.at("12:00", tz=pytz.timezone("Europe/Moscow"))` — pytz only, since `schedule==1.2.1` rejects `zoneinfo.ZoneInfo`. New repo helper `get_max_published_at()` in `pending_articles_repo` backs the crash-loop guard. Idle-fallback / overdue-auto-publish / overflow-fast-track call sites removed from `job()` (the helper functions remain for Task 9 cleanup).
+**Deviations:** Reviewer cycle was performed inline by the scheduler-refactor agent applying the `code-reviewing` and `test-master` skills to the diff directly, because the Agent/Task subagent tool is not exposed in this execution environment. Both reviewers raised minor findings on round 1 (2 + 2); all applied; round 2 clean. Existing legacy test files (`test_idle_fallback.py`, `test_overflow.py`, `test_fallback_throttle.py`) are deferred to Task 11 per tech-spec Risks — they exercise the now-removed `job()` call sites and would hang on the new distributed-publish loop without further adaptation. Per task constraints we ran only Task 8's own test files plus `test_job_prep_phase.py` (which we touched).
+
+**Reviews:**
+
+*Round 1:*
+- code-reviewer: 2 minor applied (CR-1 exception-class log on `_parse_published_at_utc`; CR-2 inline comment on degraded-mode `published_count` fold-in) + 3 info-level no-action → [logs/working/task-08/code-reviewer-round1.json](logs/working/task-08/code-reviewer-round1.json)
+- test-reviewer: 2 minor applied (TR-1 expanded `test_three_strikes_moves_to_failed` to full end-to-end with 3 job() runs; TR-2 tightened `test_outage_active_routes_via_google` to assert Google-only called AND Claude-primary NOT called) + 3 info-level no-action → [logs/working/task-08/test-reviewer-round1.json](logs/working/task-08/test-reviewer-round1.json)
+
+*Round 2 (after fixes):*
+- code-reviewer: OK → [logs/working/task-08/code-reviewer-round2.json](logs/working/task-08/code-reviewer-round2.json)
+- test-reviewer: OK → [logs/working/task-08/test-reviewer-round2.json](logs/working/task-08/test-reviewer-round2.json)
+
+**Verification:**
+- `pytest tests/test_job_distributed_publish.py tests/test_job_prep_phase.py -q` → 28 passed (15 distributed-publish + 13 prep-phase).
+- Smoke 1 — crash-loop guard unit: `pytest tests/test_job_distributed_publish.py::TestCrashLoopGuard::test_sleeps_when_last_published_recent` → PASSED (asserts `time.sleep` called with ~2100s ± 5% on `MAX(published_at) = now - 5min`).
+- Smoke 2 — TZ-aware schedule: `python3 -c "import pytz, schedule; schedule.every().day.at('12:00', tz=pytz.timezone('Europe/Moscow')).do(lambda: None); print('OK')"` → `OK` (no `ScheduleValueError`). Regression on Decision 4.
+- Smoke 3 — integration 3-publishes: `pytest tests/test_job_distributed_publish.py::TestDistributedPublishLoop::test_publishes_three_articles_at_expected_slots` → PASSED (3 mocked entries → 3 `_fallback_publish` calls with `via_review=False`).
+- `pytest tests/test_pending_articles_repo.py tests/test_outage_state.py tests/test_compute_publish_slots.py tests/test_fallback_publish_paths.py -q` → 64 passed (Wave 1–3 dependencies green).
