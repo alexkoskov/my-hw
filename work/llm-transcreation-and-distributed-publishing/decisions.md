@@ -365,3 +365,24 @@ Per task spec, audit task is itself the deliverable; no reviewers.
 - `grep -n 'busy_timeout' outage_state.py` → present at lines 7/101/107/109; value `5000`.
 - `grep -n 'max_tokens' claude_transcreation.py` → default `_DEFAULT_MAX_TOKENS = 8000` line 74.
 - Anthropic regex coverage tested: prod / sandbox-with-equals-and-dots / admin shapes match; benign short prefix correctly rejected.
+
+## Task 16: Test Audit
+
+**Status:** Done
+**Commit:** _pending_
+**Agent:** test-auditor
+**Summary:** Read-only test-quality audit across all 13 implementation tasks. AC traceability matrix built for AC1–AC31 (user-spec) plus 12 tech-spec ACs — **39/41 covered**, 2 manual-smoke ACs (AC30/AC31) intentionally deferred to Task 17/19. Outage state machine: all 5 states + 12 transitions covered, including a real-thread BEGIN IMMEDIATE serialization race that fails without the lock. Crash-loop guard tested with two distinct gaps (5-min and 10-min) asserting the sleep delta. All 11 anthropic SDK exception classes from Decision 5 have explicit tests. compute_publish_slots covers N=0/1/4/7/10/11/15/20 + restart at 16:00 / 19:50 / window-end. Token redaction has the deepest single-AC coverage (14 tests across 3 layers). Integration tests confirmed mock-only (no real network/API). **One BLOCKER:** `tests/test_overflow.py` and `tests/test_idle_fallback.py` were re-introduced into the working tree as staged-but-uncommitted files; they reference deleted symbols and produce 25 pytest failures. With them excluded (= the actual feature HEAD `e659d05`), suite is **566 passed in 5.83s**. Five MINOR gaps recorded as 1-test-each follow-ups (AC17 isolated test, init_schema failure path, max_tokens=8000 kwarg assert, N=12/N=30 boundaries, missing-prompt-everywhere). Full report: [logs/audit/test-audit.md](logs/audit/test-audit.md).
+**Deviations:** Test count delta exceeds plan (+34 net vs ~+2 plan; 26 deleted vs ~28 plan, 38+22 added vs ~30 plan). Every overshoot maps to an `apply` finding in the round-1 review reports for the corresponding task; no silent inflation.
+
+**Findings flagged for Task 17 (pre-deploy QA):**
+- **BLOCKER-1:** `git rm tests/test_overflow.py tests/test_idle_fallback.py` BEFORE running the suite for AC29 sign-off. The HEAD commit (`e659d05`) does NOT include these files; they are working-tree artifacts only.
+- **MINOR-1 to MINOR-5:** five 1-test-each follow-ups (see audit report for exact test bodies). Optional — algorithmic / contract coverage is transitively present today.
+
+**Verification:**
+- `pytest tests/ -q` (current working tree) → 25 failed, 566 passed (BLOCKER-1).
+- `pytest tests/ -q --ignore=tests/test_overflow.py --ignore=tests/test_idle_fallback.py` → 566 passed in 5.83s.
+- `pytest tests/ --collect-only -q --ignore=tests/test_overflow.py --ignore=tests/test_idle_fallback.py` → 566 collected.
+- `grep -RE "_overflow_fast_track|IDLE_TIMEOUT_HOURS|QUEUE_CAP|GRACE_WINDOW_HOURS|FALLBACK_THROTTLE_SECONDS" tests/` → matches only inside the resurrected `test_overflow.py` and `test_idle_fallback.py`; empty on HEAD.
+- `grep -RE "anthropic\.com|api\.telegram\.org|telegra\.ph|autoevolution\.com" tests/` → all matches are fixture URLs / mock return values / `httpx.Request` constructors; no real network call.
+
+**Verdict:** PASS conditional on resolving BLOCKER-1 in Task 17. Once the two orphan files are removed, the test suite fully covers AC1–AC29 + 11 of 12 tech-spec ACs, with 5 minor 1-test gaps that do not block delivery.
