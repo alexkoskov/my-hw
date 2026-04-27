@@ -37,7 +37,7 @@ from __future__ import annotations
 
 import logging
 import sqlite3
-from datetime import datetime
+from datetime import datetime, timedelta
 from typing import Optional
 
 import news_bot  # for DB_FILE at call time — see pending_articles_repo
@@ -65,6 +65,11 @@ _PING_3_TEXT = (
 _RECOVERY_TEXT = (
     "✓ Claude API recovered, switching back from Google Translate fallback."
 )
+
+# State-transition thresholds. Named so future tuning is one-place and the
+# transition table reads in plain language (`elapsed >= _PING_2_THRESHOLD`).
+_PING_2_THRESHOLD = timedelta(hours=1)
+_FALLBACK_THRESHOLD = timedelta(hours=2)
 
 
 # ---------------------------------------------------------------------------
@@ -218,6 +223,12 @@ def is_fallback_active() -> bool:
 
 
 def set_fallback_active(active: bool) -> None:
+    # Storage asymmetry note: this writes literal '0' for the False case,
+    # while ``clear_outage_state`` / ``record_recovery_event`` DELETE the row
+    # entirely. ``is_fallback_active()`` treats both equivalently
+    # (only '1' returns True). The two paths exist because clearing on
+    # recovery is part of a multi-key DELETE batch — special-casing this
+    # one key would complicate the SQL with no behavioural gain.
     _set(_KEY_FALLBACK_ACTIVE, '1' if active else '0')
 
 
@@ -295,7 +306,7 @@ def _compute_next_state(
 
     if ping_count <= 1:
         # ping_1_sent
-        if elapsed.total_seconds() >= 3600:
+        if elapsed >= _PING_2_THRESHOLD:
             writes = {
                 _KEY_PING_COUNT: '2',
                 _KEY_LAST_PING_SENT_AT: _serialise_dt(now),
@@ -305,7 +316,7 @@ def _compute_next_state(
 
     if ping_count == 2:
         # ping_2_sent
-        if elapsed.total_seconds() >= 7200:
+        if elapsed >= _FALLBACK_THRESHOLD:
             writes = {
                 _KEY_PING_COUNT: '3',
                 _KEY_LAST_PING_SENT_AT: _serialise_dt(now),
@@ -392,12 +403,27 @@ def record_recovery_event(now: datetime) -> dict:
             'was_active':     bool,
             'pings_to_send':  list[str],
         }
+
+    Implementation uses double-checked locking: a read-only probe first
+    (no write lock) avoids per-publish contention in the steady-state
+    healthy case (which is the overwhelmingly common path). Only when the
+    probe shows an active outage do we open ``BEGIN IMMEDIATE`` and re-read
+    inside the transaction (race-safe: a concurrent writer that just set
+    ``outage_started_at`` will be observed by the second read).
     """
     if now.tzinfo is None:
         raise ValueError(
             "record_recovery_event requires tz-aware datetime; got naive %r"
             % (now,)
         )
+
+    # Fast read-only probe — no BEGIN IMMEDIATE, no contention with writers
+    # for the steady-state "healthy bot" case.
+    if _get(_KEY_OUTAGE_STARTED_AT) is None:
+        return {'was_active': False, 'pings_to_send': []}
+
+    # Probe said outage was active — escalate to a write transaction and
+    # re-read inside the lock to guard against a concurrent recovery.
     conn = _connect()
     try:
         conn.execute("BEGIN IMMEDIATE")
@@ -408,7 +434,8 @@ def record_recovery_event(now: datetime) -> dict:
         was_active = row is not None and row[0] is not None
 
         if not was_active:
-            # Read-only path — release the write lock with a no-op commit.
+            # Lost the race — another caller already cleared. Commit the
+            # empty txn (releases the write lock) and report no-op.
             conn.commit()
             return {'was_active': False, 'pings_to_send': []}
 

@@ -206,13 +206,26 @@ class TestPersistence(_TmpDbCase):
 class TestConcurrency(_TmpDbCase):
 
     def test_concurrent_writers_serialize_via_begin_immediate(self) -> None:
-        """Two threads call record_outage_event simultaneously against an
-        empty DB. BEGIN IMMEDIATE forces serialization; the LATE thread sees
-        the EARLY thread's row and treats itself as a follow-up call within
-        the same window (now-t0 < 1h → ping_1_sent, no extra ping).
-        Net: ping_count == 1 (not 2), exactly one started_at recorded."""
-        t_early = datetime(2026, 4, 27, 13, 0, 0, tzinfo=MSK)
-        t_late = datetime(2026, 4, 27, 13, 0, 0, 500_000, tzinfo=MSK)  # +0.5s
+        """Stronger concurrency check (per test-reviewer TR-3): seed
+        ping_1_sent state, race two callers PAST the 1h boundary. Without
+        BEGIN IMMEDIATE both would read ping_count=1, both compute
+        next=ping_2_sent, both write ping_count='2' → only one ping #2 is
+        emitted but ping_count would be '2' regardless.
+
+        The real serialization signal is in `pings_to_send`: exactly ONE
+        thread should observe the no_outage→ping_2 transition and produce
+        a ping #2; the other (post-lock-release) re-reads ping_count=2
+        and emits no extra ping (ping_2_sent steady state, no advance to
+        fallback because elapsed is still < 2h).
+        """
+        t0 = datetime(2026, 4, 27, 13, 0, tzinfo=MSK)
+        outage_state.set_outage_started_at(t0)
+        outage_state.set_ping_count(1)
+        outage_state.set_last_ping_sent_at(t0)
+
+        # Both racers fire ~1.0001h after t0 — past _PING_2_THRESHOLD.
+        t_a = t0 + timedelta(hours=1, seconds=1)
+        t_b = t0 + timedelta(hours=1, seconds=1, milliseconds=500)
 
         barrier = threading.Barrier(2)
         results: list[dict] = []
@@ -228,8 +241,8 @@ class TestConcurrency(_TmpDbCase):
             except BaseException as exc:  # noqa: BLE001 — surface in main thread
                 errors.append(exc)
 
-        t1 = threading.Thread(target=worker, args=(t_early,))
-        t2 = threading.Thread(target=worker, args=(t_late,))
+        t1 = threading.Thread(target=worker, args=(t_a,))
+        t2 = threading.Thread(target=worker, args=(t_b,))
         t1.start()
         t2.start()
         t1.join(timeout=10)
@@ -238,22 +251,85 @@ class TestConcurrency(_TmpDbCase):
         self.assertFalse(errors, f"thread errors: {errors}")
         self.assertEqual(len(results), 2)
 
-        # Exactly one inc → ping_count == 1. (If BEGIN IMMEDIATE were absent
-        # both threads would read 0 pre-write and write 1 → still 1, masking
-        # the bug. The real signal is on a SECOND outage event past the 1h
-        # boundary — but at unit-test scale we exploit the cleaner property:
-        # only ONE thread sees no_outage and emits ping #1; the other sees
-        # ping_1_sent within the 1h grace and emits no ping.)
-        self.assertEqual(outage_state.get_ping_count(), 1)
-        self.assertTrue(outage_state.get_outage_started_at() in (t_early, t_late))
+        # Strong assertion: exactly ONE caller emitted ping #2. With a
+        # missing BEGIN IMMEDIATE both threads would observe ping_count=1
+        # pre-write and both would emit ping #2 → list of 2 pings, not 1.
+        ping_emitting_calls = [r for r in results if r['pings_to_send']]
+        self.assertEqual(
+            len(ping_emitting_calls), 1,
+            f"BEGIN IMMEDIATE failed to serialise — got: {results}",
+        )
 
-        ping_1_calls = [r for r in results if r['pings_to_send']]
-        self.assertEqual(len(ping_1_calls), 1,
-                         f"expected exactly one ping #1, got: {results}")
-        # The other call should report state ping_1_sent with empty pings.
-        no_ping_calls = [r for r in results if not r['pings_to_send']]
-        self.assertEqual(len(no_ping_calls), 1)
-        self.assertEqual(no_ping_calls[0]['state'], 'ping_1_sent')
+        # Final state: ping_count advanced exactly once.
+        self.assertEqual(outage_state.get_ping_count(), 2)
+        self.assertEqual(outage_state.get_outage_started_at(), t0)
+        self.assertFalse(outage_state.is_fallback_active())
+
+        # Other caller saw ping_2_sent (already advanced) and emitted nothing.
+        non_emitting = [r for r in results if not r['pings_to_send']]
+        self.assertEqual(len(non_emitting), 1)
+        self.assertEqual(non_emitting[0]['state'], 'ping_2_sent')
+
+
+# ---------------------------------------------------------------------------
+# Tolerance + contract tests (added per test-reviewer round 1)
+# ---------------------------------------------------------------------------
+
+class TestReadTolerance(_TmpDbCase):
+    """Reads tolerate missing keys and corrupted content (AC: never crash)."""
+
+    def test_missing_keys_return_defaults(self) -> None:
+        """Fresh DB: getters return None / 0 / False, no exceptions."""
+        self.assertIsNone(outage_state.get_outage_started_at())
+        self.assertIsNone(outage_state.get_last_ping_sent_at())
+        self.assertIsNone(outage_state.get_last_health_check_at())
+        self.assertEqual(outage_state.get_ping_count(), 0)
+        self.assertFalse(outage_state.is_fallback_active())
+
+    def test_corrupted_timestamp_returns_none_and_warns(self) -> None:
+        """Corrupted ISO string (manual DB edit, file corruption, …) →
+        getter returns None and emits a logger.warning. Bot must keep
+        starting up; reads must never crash."""
+        with sqlite3.connect(self.db_path) as side:
+            side.execute(
+                "INSERT OR REPLACE INTO bot_state (key, value) VALUES (?, ?)",
+                ('outage_started_at', 'not-a-valid-iso-string'),
+            )
+            side.commit()
+
+        with self.assertLogs('outage_state', level='WARNING') as captured:
+            self.assertIsNone(outage_state.get_outage_started_at())
+        self.assertTrue(
+            any('outage_started_at' in m for m in captured.output),
+            f"expected warning mentioning the key, got: {captured.output}",
+        )
+
+    def test_corrupted_ping_count_returns_zero_and_warns(self) -> None:
+        """Corrupted ping_count (non-int) → 0, with warning. No crash."""
+        with sqlite3.connect(self.db_path) as side:
+            side.execute(
+                "INSERT OR REPLACE INTO bot_state (key, value) VALUES (?, ?)",
+                ('ping_count', 'banana'),
+            )
+            side.commit()
+        with self.assertLogs('outage_state', level='WARNING'):
+            self.assertEqual(outage_state.get_ping_count(), 0)
+
+
+class TestNaiveDatetimeRejection(_TmpDbCase):
+    """tz-aware contract: setters and state-machine helpers reject naive."""
+
+    def test_set_outage_started_at_rejects_naive(self) -> None:
+        with self.assertRaises(ValueError):
+            outage_state.set_outage_started_at(datetime(2026, 4, 27, 13, 0))
+
+    def test_record_outage_event_rejects_naive(self) -> None:
+        with self.assertRaises(ValueError):
+            outage_state.record_outage_event(now=datetime(2026, 4, 27, 13, 0))
+
+    def test_record_recovery_event_rejects_naive(self) -> None:
+        with self.assertRaises(ValueError):
+            outage_state.record_recovery_event(now=datetime(2026, 4, 27, 13, 0))
 
 
 if __name__ == '__main__':  # pragma: no cover
