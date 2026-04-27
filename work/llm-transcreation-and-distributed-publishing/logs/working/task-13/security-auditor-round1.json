@@ -1,0 +1,66 @@
+{
+  "reviewer": "security-auditor",
+  "task": "13",
+  "round": 1,
+  "verdict": "approve_with_minor_notes",
+  "summary": "ANTHROPIC_API_KEY handling in the deploy workflow is sound. Secret values flow through `env:` (auto-redacted in workflow logs by GitHub Actions), are inlined into the ssh stdin stream via a heredoc, and never appear on a command line on the runner or on the remote. The remote-side script uses bash builtins (printf, grep, mv, chmod) — no child processes are spawned with secret values as arguments, so `ps -ef` on the remote is also clean. .env mode is set to 0600 both before grep and after the move, which is the correct defensive pattern (mv adopts source mode, defeating any chmod that ran before it). Verify-required-secrets correctly fails fast when ANTHROPIC_API_KEY is unset, preventing a silent deploy that would land the bot in 2-ping outage protocol on first cron tick. PK docs document the redaction layers consistently with Decision 12.",
+  "findings": [
+    {
+      "severity": "low",
+      "file": ".github/workflows/deploy.yml",
+      "lines": "164-167",
+      "category": "secret-handling-robustness",
+      "issue": "Single-quote inline form (`ANTHROPIC_API_KEY='$ANTHROPIC_API_KEY'`) within the unquoted-EOF heredoc is correct for current key shapes (Anthropic prod keys are alphanumeric + [_=.-]) but would split the script if a value ever contained a literal single quote. Format-string interpolation in the printf calls is safe (`%s` consumes the arg as a string) — only the surrounding shell quoting is at risk.",
+      "suggestion": "Acceptable as-is given current Anthropic key shape. If shapes ever extend to include `'`, switch to per-line `read -r` from stdin or sentinel-delimited block; do not regress to command-line argument passing."
+    },
+    {
+      "severity": "info",
+      "file": ".github/workflows/deploy.yml",
+      "lines": "44-72",
+      "category": "fail-fast",
+      "issue": "Verify required secrets correctly extends the loop to include ANTHROPIC_API_KEY. ANTHROPIC_MODEL and TZ are intentionally NOT required because the env-write step inlines documented defaults (`claude-haiku-4-5`, `Europe/Moscow`) when the repo `vars` are unset. This matches Decision 14 health check #2 (TZ mismatch → admin warning, not crash) and Decision 6 (Haiku default).",
+      "suggestion": "No action."
+    },
+    {
+      "severity": "info",
+      "file": ".github/workflows/deploy.yml",
+      "lines": "157",
+      "category": "command-line-exposure",
+      "issue": "ssh command-line carries only `bash -s` and the user@host target. Secret values never land in `ps -ef` on the runner or on the remote-side sshd-spawned shell. Stdin-based secret transfer is the correct pattern.",
+      "suggestion": "No action."
+    },
+    {
+      "severity": "info",
+      "file": ".github/workflows/deploy.yml",
+      "lines": "168-181",
+      "category": "remote-side-safety",
+      "issue": "All operations on the remote are bash builtins or coreutils (`touch`, `chmod`, `grep -v`, `printf`, `mv`). No subprocess invocation passes the API key as an argument. printf format strings use `%s` consistently — no format-string-injection surface from the secret value itself. .env permissions are explicitly 0600 both before and after the atomic write (mv defeats pre-chmod, so the second chmod is mandatory).",
+      "suggestion": "No action."
+    },
+    {
+      "severity": "info",
+      "file": ".claude/skills/project-knowledge/references/patterns.md",
+      "lines": "76-87 (Auto-publish path → Token redaction)",
+      "category": "documentation-completeness",
+      "issue": "Three-layer Decision 12 redaction strategy is captured (regex broadening + _SECRET_ENV_NAMES + filter-attached-to-anthropic-loggers + _redact_text helper for admin-notify path). The doc explicitly notes the admin-notify path runs OUTSIDE Python's logging machinery, which is the failure mode security-validator R2 originally caught.",
+      "suggestion": "No action."
+    },
+    {
+      "severity": "info",
+      "file": ".claude/skills/project-knowledge/references/deployment.md",
+      "lines": "Required env vars + GitHub Secrets",
+      "category": "operator-guidance",
+      "issue": "ANTHROPIC_API_KEY documented as sensitive with redaction note, source URL (console.anthropic.com), exact secret name, and explicit 'never echo/log/commit' guidance. ANTHROPIC_MODEL/TZ documented as repo `vars` (not secrets) with default fallbacks. This matches the operator-prod-ops convention from memory: deploy is operator-applied, Claude prepares the bundle, secrets never echoed in instructions.",
+      "suggestion": "No action."
+    }
+  ],
+  "checks_passed": [
+    "Secrets travel via stdin, not command line — no `ps -ef` exposure on either host.",
+    "GitHub Actions auto-redaction is layered as defense in depth via `env:` mapping.",
+    "ANTHROPIC_API_KEY is required by the verify-secrets gate; deploy fails fast if unset.",
+    ".env is created and updated atomically (write-temp + mv); chmod 600 applied both before and after the mv to defeat the mode-loss issue.",
+    "No subprocess on the remote side accepts the secret as a command-line arg; only printf builtin uses it.",
+    "Doc redaction story (3-layer Decision 12) is faithfully captured in patterns.md.",
+    "Doc operator setup (Anthropic console URL, GitHub Secrets steps) is captured in deployment.md without echoing example values."
+  ]
+}

@@ -1,0 +1,76 @@
+{
+  "reviewer": "deploy-reviewer",
+  "task": "13",
+  "round": 1,
+  "verdict": "approve",
+  "summary": "Deploy bundle is consistent and ready to ship. FILES arrays in deploy.sh and .github/workflows/deploy.yml mirror byte-for-byte (13 elements, identical order). All four new files added by the llm-transcreation feature are included: claude_transcreation.py, compute_publish_slots.py, outage_state.py (cron-side runtime modules — without any of them news_bot crashes with ImportError) and ux-guidelines.md (Claude API system prompt — Decision 8 flat-fallback in _load_prompt covers the scp-flatten quirk). Idempotent .env-write step is correctly placed between Copy files and pip install. Stale 12h/hourly cron comments fixed in both deploy.sh and deploy.yml. PK docs (architecture.md, patterns.md, deployment.md) reflect the new daily-12:00-МСК + distributed-publish + Claude-API model with operator-actionable runbook content.",
+  "findings": [
+    {
+      "severity": "info",
+      "file": "deploy.sh",
+      "lines": "11-37",
+      "category": "deploy-bundle-integrity",
+      "issue": "FILES list extended from 9 → 13 entries with the four new items in the order specified by Task 13 (three .py modules grouped with cron-side runtime imports, ux-guidelines.md as last element). Headline comment explicitly notes the invariant ('any new first-party import → in FILES of both files') and the scp-flatten quirk for ux-guidelines.md (Decision 8 fallback in _load_prompt). Headline 'hourly cron path' replaced with 'daily 12:00 МСК cron path'.",
+      "suggestion": "No action."
+    },
+    {
+      "severity": "info",
+      "file": ".github/workflows/deploy.yml",
+      "lines": "82-115 (Copy files block + headline comment)",
+      "category": "deploy-bundle-integrity",
+      "issue": "FILES array mirrors deploy.sh byte-for-byte. Headline comment explicitly cross-references deploy.sh and the invariant. The pre-existing per-file `test -f` check still applies and will fail-fast if any FILES element is missing in the repo.",
+      "suggestion": "No action."
+    },
+    {
+      "severity": "info",
+      "file": ".github/workflows/deploy.yml",
+      "lines": "125-182 (Write runtime env vars step)",
+      "category": "env-write-pattern",
+      "issue": "Step is correctly placed AFTER Copy files (so .env exists if not already) and BEFORE pip install. ANTHROPIC_API_KEY/ANTHROPIC_MODEL/TZ are passed via `env:` (Actions auto-redaction). Inline heredoc form streams values over ssh stdin; remote shell uses bash builtins only. Idempotent: grep -v cleanup of the three managed keys before append → repeat-deploy preserves all unrelated keys verbatim and keeps each managed key at exactly one occurrence (verified by smoke). chmod 600 applied both before and after `mv` (mv adopts source mode, so post-mv chmod is the load-bearing one). `set -e` inside the remote heredoc + the runner's default `bash -eo pipefail` propagate any failure as a non-zero ssh exit. Workflow fails fast on env-write failure rather than continuing to pip install.",
+      "suggestion": "No action."
+    },
+    {
+      "severity": "info",
+      "file": ".github/workflows/deploy.yml",
+      "lines": "112-114 (Deploy summary)",
+      "category": "operator-clarity",
+      "issue": "Notice now reads 'next 12:00 МСК cron tick' — operator gets a correct expectation. Manual tick command (`python3 -c 'from news_bot import job; job()'`) and rollback instructions preserved.",
+      "suggestion": "No action."
+    },
+    {
+      "severity": "info",
+      "file": ".claude/skills/project-knowledge/references/deployment.md",
+      "lines": "Files deployed + GitHub Secrets/Variables sections",
+      "category": "runbook-completeness",
+      "issue": "Files deployed list explicitly groups the four llm-transcreation additions together. ux-guidelines.md gets a Decision 8 note about the flat-fallback path so the operator doesn't search for it inside a subdir on the server. GitHub Secrets section names ANTHROPIC_API_KEY with the exact source URL (console.anthropic.com). GitHub Variables section names ANTHROPIC_MODEL/TZ with documented defaults — operator can leave them unset and the deploy still succeeds with safe defaults.",
+      "suggestion": "No action."
+    },
+    {
+      "severity": "info",
+      "file": ".claude/skills/project-knowledge/references/deployment.md",
+      "lines": "Pre-Deploy Checklist + Cost Monitoring",
+      "category": "runbook-completeness",
+      "issue": "Pre-Deploy Checklist enumerates all required env vars including ANTHROPIC_API_KEY, mentions the bot_state migration (idempotent CREATE TABLE IF NOT EXISTS), and reminds about ux-guidelines.md flat-or-subdir presence. Cost Monitoring section gives Anthropic console URL, expected cost band ($3/mo Haiku, $15/mo Sonnet), and a sanity threshold (~$1/day for a week) tied back to AC20 backlog warning + manual sqlite remediation. Operator gets a self-contained runbook for cost surprise.",
+      "suggestion": "No action."
+    },
+    {
+      "severity": "info",
+      "file": ".claude/skills/project-knowledge/references/architecture.md",
+      "lines": "Operator-side vs cron-side split",
+      "category": "architectural-shift-documentation",
+      "issue": "Closes AC28: ux-guidelines.md was operator-side-only before this feature; the doc now explicitly records the architectural shift to cron-side runtime dependency, with the four new deploy-bundle files listed as a single 'cron-side files added by llm-transcreation feature' checklist for future reference. Closes AC27 implicitly (file is in the deploy bundle).",
+      "suggestion": "No action."
+    }
+  ],
+  "checks_passed": [
+    "FILES array invariant: deploy.sh and deploy.yml mirror each other byte-for-byte.",
+    "Smoke step 1: `bash -n deploy.sh` clean.",
+    "Smoke step 2: 13 FILES elements present in repo; flat-copy emulation lands all four new items in $DEPLOY_PATH/ as expected.",
+    "Smoke step 3: env-write step is idempotent under repeated execution; pre-existing keys preserved.",
+    "Smoke step 4: `python3 -c 'import yaml; yaml.safe_load(...)'` clean.",
+    "Smoke step 5: doc-grep for legacy symbols — only intentional 'removed in feature X' historical notes remain.",
+    "Smoke step 6: cross-link check — ux-guidelines.md mentioned in both architecture.md and deployment.md with cron-side-runtime-dependency framing.",
+    "Smoke step 7: `grep -nE 'hourly|12h' deploy.sh .github/workflows/deploy.yml` empty.",
+    "Full pytest: 566 passed (≥ baseline of 566+)."
+  ]
+}

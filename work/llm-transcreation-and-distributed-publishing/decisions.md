@@ -302,3 +302,27 @@ Review details — in JSON files via links. QA report — in logs/working/.
 - `pytest tests/ -q` → 566 passed in 6.15s (no regressions from the new file).
 - `python3 -c "import tests.test_distributed_schedule_integration"` → imports clean (no syntax errors / missing deps).
 
+
+## Task 13: Update deploy bundle (deploy.sh + GitHub Actions + PK docs)
+
+**Status:** Done
+**Commit:** f50fac8 (chore), <pending review-reports commit>
+**Agent:** deployer
+**Summary:** Extended `deploy.sh` and `.github/workflows/deploy.yml` FILES arrays from 9 → 13 entries, adding the four files the llm-transcreation feature needs at runtime: three Python modules (`claude_transcreation.py`, `compute_publish_slots.py`, `outage_state.py` — without any of them `news_bot` crashes with `ImportError` on cron startup) and `ux-guidelines.md` (Claude API system prompt; lands flat at `$DEPLOY_PATH/ux-guidelines.md` due to scp's subdir-flattening — covered by Decision 8 fallback in `_load_prompt`). Added a new `Write runtime env vars to server .env` step that idempotently writes `ANTHROPIC_API_KEY` / `ANTHROPIC_MODEL` / `TZ` to the server `.env` via ssh+heredoc on stdin (no secrets on command lines, GitHub Actions auto-redacts `env:` mappings in workflow logs). Updated `Verify required secrets` to fail-fast when `ANTHROPIC_API_KEY` is unset; `ANTHROPIC_MODEL` and `TZ` use documented defaults via repo `vars`. Refreshed stale "hourly cron path" / "next 12h tick" comments to "daily 12:00 МСК cron path" / "next 12:00 МСК cron tick" in both deploy files. Updated all three PK references (architecture.md captures the architectural shift for ux-guidelines.md closing AC28, the three new cron-side runtime modules, the new `bot_state` table, Anthropic Claude API as external integration, anthropic+pytz deps, daily distributed-publish data flow, and removes the delivered "LLM-powered transcreation fallback" from Planned Enhancements; patterns.md rewrites Transcreation/Channel-post-format/Scheduling, deletes Auto-fallback-throttle and Overflow-fast-track sections, adds Auto-publish-path section with state machine + classification + output validation + token redaction, refreshes Logging and Test Infrastructure; deployment.md adds ANTHROPIC_API_KEY/TZ as required and ANTHROPIC_MODEL as optional, drops legacy QUEUE_CAP/IDLE_TIMEOUT_HOURS/GRACE_WINDOW_HOURS/FALLBACK_THROTTLE_SECONDS, documents GitHub Secrets/Variables setup, rewrites Scheduling for daily 12:00 МСК + 13:00–20:00 МСК window, adds Cost Monitoring section with Anthropic console URL and a sanity threshold).
+**Deviations:** Reviewer cycle performed inline by this agent applying `code-reviewing`, `security-auditor`, and `deploy-pipeline` skills to the diff directly because the Agent/Task subagent tool is not exposed in this execution environment. Round 1 produced no critical or apply findings — code-reviewer flagged two informational notes (single-quote inlining in heredoc is theoretically brittle if Anthropic ever changes key shape; YAML block-scalar EOF terminator is robust today but sensitive to future indent edits — both deferred), security-auditor approved with minor notes (same single-quote forward-looking observation), deploy-reviewer approved without findings. No round 2 needed.
+
+**Reviews:**
+
+*Round 1:*
+- code-reviewer: approve_with_minor_notes (2 info notes) → [logs/working/task-13/code-reviewer-round1.json](logs/working/task-13/code-reviewer-round1.json)
+- security-auditor: approve_with_minor_notes (1 low + 5 info) → [logs/working/task-13/security-auditor-round1.json](logs/working/task-13/security-auditor-round1.json)
+- deploy-reviewer: approve (7 info confirmations) → [logs/working/task-13/deploy-reviewer-round1.json](logs/working/task-13/deploy-reviewer-round1.json)
+
+**Verification:**
+- `bash -n deploy.sh` → clean.
+- `python3 -c "import yaml; yaml.safe_load(open('.github/workflows/deploy.yml'))"` → clean.
+- Smoke step 2 (FILES list integrity + scp-flatten emulation): all 13 elements present in repo; `cp "${FILES[@]}" /tmp/hwbot-staging/` lands `claude_transcreation.py`, `compute_publish_slots.py`, `outage_state.py`, `ux-guidelines.md` flat in the staging dir.
+- Smoke step 3 (env-write idempotency): two consecutive runs of the env-write logic against a seeded `.env` keep each managed key (`ANTHROPIC_API_KEY`, `ANTHROPIC_MODEL`, `TZ`) at exactly one occurrence, preserve unrelated keys (`TELEGRAM_BOT_TOKEN`, `TELEGRAM_CHANNEL_ID`, `TELEGRAPH_ACCESS_TOKEN`) byte-for-byte, mode 0600 on `.env`.
+- Smoke step 7 (stale cron-comment): `grep -nE 'hourly|12h' deploy.sh .github/workflows/deploy.yml` → empty.
+- Doc-grep for legacy symbols (`_overflow_fast_track`, `FALLBACK_THROTTLE_SECONDS`, `QUEUE_CAP`, `IDLE_TIMEOUT_HOURS`, `GRACE_WINDOW_HOURS`, `idle-fallback`) on the three PK files → only two intentional "removed in feature X" historical notes in patterns.md remain (allowed per AC).
+- `pytest tests/ -q` → 566 passed in 5.30s (matches the ≥ 566 baseline).

@@ -1,0 +1,51 @@
+{
+  "reviewer": "code-reviewer",
+  "task": "13",
+  "round": 1,
+  "verdict": "approve_with_minor_notes",
+  "summary": "deploy.sh and .github/workflows/deploy.yml mirror each other byte-for-byte on FILES (13 entries). Idempotent .env-write step is correctly sequenced between Copy files and pip install. Headline comments keep the invariant explicit and call out the scp-flatten quirk for ux-guidelines.md (Decision 8). All three PK docs (architecture.md, patterns.md, deployment.md) are internally consistent and reflect the new daily-12:00-МСК + distributed-publish + Claude-API model. Doc-grep for legacy symbols is clean except for two intentional 'removed in feature' historical notes in patterns.md.",
+  "findings": [
+    {
+      "severity": "minor",
+      "file": ".github/workflows/deploy.yml",
+      "lines": "157-182",
+      "category": "robustness",
+      "issue": "The env-write step inlines secret/var values into the ssh stdin via single-quoted heredoc fragments like ANTHROPIC_API_KEY='$ANTHROPIC_API_KEY'. If a future Anthropic key shape ever contained a literal single quote, the inline form would break apart and either misassign or fail. Current Anthropic keys (sk-ant-api03-…) are alphanumeric + [_=.-], so this is theoretical, but worth flagging for the future. Mitigation if it ever appears: switch to read -r off stdin (opaque per-line) or to a fixed sentinel-delimited block.",
+      "suggestion": "Document the assumption inline ('values are alphanumeric + [_=.-]') or add a defensive check: `[[ \"$ANTHROPIC_API_KEY\" == *\\'* ]] && { echo '::error::API key contains single-quote — refusing to write'; exit 1; }`. Defer unless the assumption breaks."
+    },
+    {
+      "severity": "info",
+      "file": ".github/workflows/deploy.yml",
+      "lines": "158, 182",
+      "category": "robustness",
+      "issue": "The heredoc terminator EOF on line 182 sits at YAML-block-scalar indent level 10. After YAML strips the common leading indent (the run scalar `|`), EOF ends at column 0 and matches as expected. This is correct, but is brittle to future indentation edits (mixing tabs/spaces, deeper nesting). YAML lint passes today.",
+      "suggestion": "No action — current YAML lint is clean. Worth a comment near the run block if anyone refactors indentation."
+    },
+    {
+      "severity": "info",
+      "file": ".claude/skills/project-knowledge/references/architecture.md",
+      "lines": "239",
+      "category": "consistency",
+      "issue": "The pending_articles entry caveats the old QUEUE_CAP behavior with a clarifying note about distributed-publish capping at 11/day with carry-over. This correctly removes the stale 'cap QUEUE_CAP, default 10' phrasing flagged by the smoke grep.",
+      "suggestion": "No action — this is the fix."
+    },
+    {
+      "severity": "info",
+      "file": ".claude/skills/project-knowledge/references/patterns.md",
+      "lines": "72, 185",
+      "category": "documentation",
+      "issue": "Two remaining matches for legacy symbols (`_overflow_fast_track`, `idle-fallback`) are in explicit 'removed in feature X' historical notes. Per Task 13 AC, these are allowed.",
+      "suggestion": "No action."
+    }
+  ],
+  "checks_passed": [
+    "deploy.sh FILES array mirrors deploy.yml FILES (13 elements identical, in identical order).",
+    "Both arrays include claude_transcreation.py, compute_publish_slots.py, outage_state.py, and .claude/skills/project-knowledge/references/ux-guidelines.md.",
+    "Headline comments in both files call out the 'any new first-party import → in FILES of both' invariant.",
+    "Stale 'hourly cron path' (deploy.sh) and 'next 12h tick' (deploy.yml Deploy summary) replaced with daily-12:00-МСК phrasing. grep -nE 'hourly|12h' is empty.",
+    "Idempotent grep -v + append in env-write step; verified end-to-end with simulated runs (1st write inserts, 2nd write keeps each managed key at count 1, pre-existing TELEGRAM_* / TELEGRAPH_ACCESS_TOKEN preserved verbatim).",
+    "PK docs cover all 8 AC items in Task 13 (FILES integrity + cron-comment fix + env-write step + Verify required secrets + architecture.md sections + patterns.md sections + deployment.md sections + no stale legacy symbols)."
+  ],
+  "regressions": [],
+  "tests_passed": "566 passed in 5.30s (matches the 566+ baseline)."
+}
