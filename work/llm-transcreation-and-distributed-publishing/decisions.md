@@ -326,3 +326,24 @@ Review details — in JSON files via links. QA report — in logs/working/.
 - Smoke step 7 (stale cron-comment): `grep -nE 'hourly|12h' deploy.sh .github/workflows/deploy.yml` → empty.
 - Doc-grep for legacy symbols (`_overflow_fast_track`, `FALLBACK_THROTTLE_SECONDS`, `QUEUE_CAP`, `IDLE_TIMEOUT_HOURS`, `GRACE_WINDOW_HOURS`, `idle-fallback`) on the three PK files → only two intentional "removed in feature X" historical notes in patterns.md remain (allowed per AC).
 - `pytest tests/ -q` → 566 passed in 5.30s (matches the ≥ 566 baseline).
+
+## Task 15: Security Audit
+
+**Status:** Done
+**Commit:** _pending_
+**Agent:** security-auditor
+**Summary:** Holistic OWASP-relevant audit of the post-Wave-8 surface. All six probes (S1 token redaction, S2 prompt injection, S3 SQLite deadlock, S4 SQL injection, S5 deploy-bundle secret exposure, S6 environment leak via Anthropic API) closed PASS. Decisions 12 (3-layer `ANTHROPIC_API_KEY` redaction), 13 (`max_tokens=8000` + paragraph-count + 4000-char per-paragraph cap), and 16 (`PRAGMA busy_timeout=5000` on every `outage_state` connection) are faithfully realised in code. Zero blocking findings; two low-severity observations recorded as residual risks (uncapped output title length on adversarial input — already documented in tech-spec Risks; `_load_prompt(path)` accepts arbitrary path argument but no caller plumbs user input today). Verdict: **PASS** — feature is cleared for Pre-deploy QA (Task 17). Full report: [logs/audit/security-audit.md](logs/audit/security-audit.md).
+**Deviations:** None.
+
+**Residual security risks** (logged here for long-term visibility):
+1. Title/subtitle output length is uncapped (S2). Acceptable — Telegraph imposes practical limits, source fetchers filter input.
+2. `pending_articles_repo` connections lack `busy_timeout`. Acceptable today (no `BEGIN IMMEDIATE` in the repo); add code-review checklist note for future writers.
+3. `_load_prompt(path)` accepts arbitrary path argument. Acceptable today (no caller plumbs user input); flag if a future feature wires CLI/env input through.
+4. `sanitize_error_message` env-layer is best-effort only — the regex layer (`_ANTHROPIC_KEY_RE`) is the load-bearing redaction.
+
+**Verification:**
+- `grep -rnE 'f"SELECT|f"INSERT|f"UPDATE|f"DELETE' outage_state.py pending_articles_repo.py news_bot.py` → 2 matches in `outage_state.py`, both interpolating placeholder count from a fixed-arity tuple (no user-controlled values). Safe.
+- `grep -nE 'echo.*ANTHROPIC|echo.*TOKEN|echo.*SECRET|set -x|bash -x' .github/workflows/deploy.yml deploy.sh` → empty.
+- `grep -n 'busy_timeout' outage_state.py` → present at lines 7/101/107/109; value `5000`.
+- `grep -n 'max_tokens' claude_transcreation.py` → default `_DEFAULT_MAX_TOKENS = 8000` line 74.
+- Anthropic regex coverage tested: prod / sandbox-with-equals-and-dots / admin shapes match; benign short prefix correctly rejected.
