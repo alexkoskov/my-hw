@@ -482,14 +482,6 @@ All other decisions trace to specific user-spec ACs.
 - **Files to modify:** `compute_publish_slots.py` (new), `tests/test_compute_publish_slots.py` (new)
 - **Files to read:** user-spec.md (AC1–AC8 for edge case examples), code-research.md §14.2
 
-#### Task 3: Create `claude_transcreation.py` + tests
-- **Description:** Anthropic SDK wrapper module per Decisions 5, 6, 8, 13. Public function transcreates one article via Claude API + parses/validates JSON response. Per-article fallback path on validation failure. ~14 mocked anthropic tests covering each SDK exception class branch + output validation cases.
-- **Skill:** code-writing
-- **Reviewers:** code-reviewer, security-auditor, test-reviewer, prompt-reviewer
-- **Verify-smoke:** invoke transcreate_via_claude with sample article in dev container — valid dict response under 30s with all required keys (title with emoji, alts[2-3], subtitle, paragraphs of correct length)
-- **Files to modify:** `claude_transcreation.py` (new), `tests/test_claude_transcreation.py` (new)
-- **Files to read:** `.claude/skills/project-knowledge/references/ux-guidelines.md`, `news_bot.py` `transcreate_text` (legacy reference), code-research.md §14.3
-
 #### Task 4: Extend `_TokenRedactingFilter` for ANTHROPIC_API_KEY (3-layer)
 - **Description:** Per Decision 12, three layers of defense for `sk-ant-*` keys: (1) broaden anthropic-key regex pattern (covers sandbox/admin keys with `=`/`.`); (2) add to `_SECRET_ENV_NAMES`; (3) attach the filter to anthropic SDK loggers AND extract redaction core into `_redact_text(text)` helper used by both the logging filter and `send_admin_notification`. Update admin-ping template to use `type(exc).__name__` not `str(exc)`. Extend tests with anthropic-key fixtures including sandbox-shaped keys + an admin-notify path test asserting the key is redacted before reaching the Telegram send call.
 - **Skill:** code-writing
@@ -498,21 +490,29 @@ All other decisions trace to specific user-spec ACs.
 - **Files to modify:** `news_bot.py` (`_TokenRedactingFilter`, `_redact_text` helper, `_SECRET_ENV_NAMES`, logger attachment block, `send_admin_notification`), `tests/test_no_token_leak_in_logs.py`
 - **Files to read:** `news_bot.py` (token redaction section + `send_admin_notification`), Decision 12
 
-### Wave 2 (parallel — depend on Wave 1)
-
-#### Task 5: Create `outage_state.py` + tests
-- **Description:** SQLite-backed key/value access for `bot_state` table. Public API: simple getters/setters for each key + state-machine helpers `record_outage_event(now)` and `record_recovery_event(now)`. Atomic via `BEGIN IMMEDIATE`. ~6 tests covering each state transition + persistence + concurrency.
-- **Skill:** code-writing
-- **Reviewers:** code-reviewer, test-reviewer
-- **Files to modify:** `outage_state.py` (new), `tests/test_outage_state.py` (new)
-- **Files to read:** `pending_articles_repo.py` (connection pattern), code-research.md §14.4 (state machine)
-
 #### Task 6: Update `requirements.txt` + `.env.example`
 - **Description:** Pin new dependencies: `anthropic>=0.45.0,<0.46.0` and `pytz>=2024.1`. Update `.env.example`: remove `QUEUE_CAP`, `IDLE_TIMEOUT_HOURS`, `GRACE_WINDOW_HOURS`, `FALLBACK_THROTTLE_SECONDS`. Add `ANTHROPIC_API_KEY`, `ANTHROPIC_MODEL` (optional, commented as default `claude-haiku-4-5`), `TZ=Europe/Moscow`. Document each new var inline.
 - **Skill:** code-writing
 - **Reviewers:** code-reviewer
 - **Files to modify:** `requirements.txt`, `.env.example`
 - **Files to read:** `.env` (current shape, for reference)
+
+### Wave 2 (parallel — depend on Wave 1)
+
+#### Task 3: Create `claude_transcreation.py` + tests
+- **Description:** Anthropic SDK wrapper module per Decisions 5, 6, 8, 13. Public function transcreates one article via Claude API + parses/validates JSON response. Per-article fallback path on validation failure. ~14 mocked anthropic tests covering each SDK exception class branch + output validation cases. **Depends on Task 6** for `anthropic` SDK install.
+- **Skill:** code-writing
+- **Reviewers:** code-reviewer, security-auditor, test-reviewer, prompt-reviewer
+- **Verify-smoke:** invoke transcreate_via_claude with sample article in dev container — valid dict response under 30s with all required keys (title with emoji, alts[2-3], subtitle, paragraphs of correct length)
+- **Files to modify:** `claude_transcreation.py` (new), `tests/test_claude_transcreation.py` (new)
+- **Files to read:** `.claude/skills/project-knowledge/references/ux-guidelines.md`, `news_bot.py` `transcreate_text` (legacy reference), code-research.md §14.3
+
+#### Task 5: Create `outage_state.py` + tests
+- **Description:** SQLite-backed key/value access for `bot_state` table. Public API: simple getters/setters for each key + state-machine helpers `record_outage_event(now)` and `record_recovery_event(now)`. Atomic via `BEGIN IMMEDIATE`. ~6 tests covering each state transition + persistence + concurrency. **Depends on Task 1** for `bot_state` migration.
+- **Skill:** code-writing
+- **Reviewers:** code-reviewer, test-reviewer
+- **Files to modify:** `outage_state.py` (new), `tests/test_outage_state.py` (new)
+- **Files to read:** `pending_articles_repo.py` (connection pattern), code-research.md §14.4 (state machine)
 
 ### Wave 3 (depends on Wave 2)
 
