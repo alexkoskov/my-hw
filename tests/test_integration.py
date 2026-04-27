@@ -37,12 +37,18 @@ class TestIntegration(unittest.TestCase):
         # Mattel source returns nothing unless a test overrides it.
         self.mattel_patcher = patch('news_bot.fetch_mattel_news', return_value=[])
         self.mattel_patcher.start()
-        # Disable the fallback throttle so multi-row prep paths don't sleep.
-        self.throttle_patcher = patch('news_bot.FALLBACK_THROTTLE_SECONDS', 0)
-        self.throttle_patcher.start()
+        # Task 8 added a distributed-publish loop to ``job()``; without
+        # neutering ``time.sleep`` and ``_fallback_publish`` these prep-phase
+        # integration tests would block on slot waits or actually publish.
+        # Wave 7 (Task 11) reshapes these tests; here we only keep them green.
+        self.sleep_patcher = patch('news_bot.time.sleep')
+        self.sleep_patcher.start()
+        self.fallback_patcher = patch('news_bot._fallback_publish')
+        self.fallback_patcher.start()
 
     def tearDown(self):
-        self.throttle_patcher.stop()
+        self.fallback_patcher.stop()
+        self.sleep_patcher.stop()
         self.db_patcher.stop()
         self.token_patcher.stop()
         self.channel_patcher.stop()

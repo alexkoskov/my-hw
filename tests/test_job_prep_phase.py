@@ -11,15 +11,10 @@ After Task 6 of manual-review-workflow, ``job()`` must:
 * Make ZERO Telegraph-publish / channel-teaser calls during prep.
 * Leave NO trace of ``process_new_articles`` in the module.
 
-``job()`` also reads ``QUEUE_CAP`` / ``IDLE_TIMEOUT_HOURS`` /
-``GRACE_WINDOW_HOURS`` as env-overridable module constants — those
-overrides are exercised here too.
 """
 from __future__ import annotations
 
-import importlib
 import os
-import sqlite3
 import sys
 import tempfile
 import unittest
@@ -47,11 +42,6 @@ class PrepPhaseBase(unittest.TestCase):
         self.token_patcher.start()
         self.channel_patcher.start()
         self.admin_patcher.start()
-
-        # Disable the auto-fallback throttle to keep multi-row prep flows
-        # snappy; the throttle is exercised in ``test_fallback_throttle``.
-        self.throttle_patcher = patch('news_bot.FALLBACK_THROTTLE_SECONDS', 0)
-        self.throttle_patcher.start()
 
         # Task 8 turned ``job()`` into fetch+stage PLUS a distributed-
         # publish loop. The prep-only invariants exercised here still hold
@@ -81,7 +71,6 @@ class PrepPhaseBase(unittest.TestCase):
         self.outage_patcher.stop()
         self.publish_patcher.stop()
         self.sleep_patcher.stop()
-        self.throttle_patcher.stop()
         self.db_patcher.stop()
         self.token_patcher.stop()
         self.channel_patcher.stop()
@@ -373,52 +362,6 @@ class TestSourceErrorIsolation(PrepPhaseBase):
         # Admin got SOME notification about the RSS failure.
         self.assertTrue(mock_admin.called)
 
-
-class TestEnvOverridableConstants(unittest.TestCase):
-    """AC: ``IDLE_TIMEOUT_HOURS`` / ``GRACE_WINDOW_HOURS`` / ``QUEUE_CAP``
-    are module constants seeded from env, with explicit int defaults."""
-
-    def test_defaults(self):
-        # Re-import in a clean env so we see the defaults.
-        # (Do NOT leave the module swapped — other tests rely on the live one.)
-        saved = {
-            k: os.environ.pop(k, None)
-            for k in ('IDLE_TIMEOUT_HOURS', 'GRACE_WINDOW_HOURS', 'QUEUE_CAP')
-        }
-        try:
-            importlib.reload(news_bot)
-            self.assertEqual(news_bot.IDLE_TIMEOUT_HOURS, 48)
-            self.assertEqual(news_bot.GRACE_WINDOW_HOURS, 2)
-            self.assertEqual(news_bot.QUEUE_CAP, 10)
-            self.assertIsInstance(news_bot.IDLE_TIMEOUT_HOURS, int)
-            self.assertIsInstance(news_bot.GRACE_WINDOW_HOURS, int)
-            self.assertIsInstance(news_bot.QUEUE_CAP, int)
-        finally:
-            for k, v in saved.items():
-                if v is not None:
-                    os.environ[k] = v
-            importlib.reload(news_bot)
-
-    def test_env_overrides_applied(self):
-        saved = {
-            k: os.environ.get(k)
-            for k in ('IDLE_TIMEOUT_HOURS', 'GRACE_WINDOW_HOURS', 'QUEUE_CAP')
-        }
-        os.environ['IDLE_TIMEOUT_HOURS'] = '72'
-        os.environ['GRACE_WINDOW_HOURS'] = '5'
-        os.environ['QUEUE_CAP'] = '20'
-        try:
-            importlib.reload(news_bot)
-            self.assertEqual(news_bot.IDLE_TIMEOUT_HOURS, 72)
-            self.assertEqual(news_bot.GRACE_WINDOW_HOURS, 5)
-            self.assertEqual(news_bot.QUEUE_CAP, 20)
-        finally:
-            for k, v in saved.items():
-                if v is None:
-                    os.environ.pop(k, None)
-                else:
-                    os.environ[k] = v
-            importlib.reload(news_bot)
 
 
 class TestProcessNewArticlesRemoved(unittest.TestCase):

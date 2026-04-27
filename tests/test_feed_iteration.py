@@ -45,8 +45,18 @@ class TestJobIteration(unittest.TestCase):
                           'paragraphs': ['Body'], 'images': []},
         )
         self.mock_fetch_article = self.fetch_article_patcher.start()
+        # Task 8 added the distributed-publish loop to ``job()``; without
+        # neutering ``time.sleep`` and ``_fallback_publish`` these prep-phase
+        # tests would block on slot waits. Wave 7 (Task 11) reshapes them;
+        # here we only keep them green.
+        self.sleep_patcher = patch('news_bot.time.sleep')
+        self.sleep_patcher.start()
+        self.fallback_patcher = patch('news_bot._fallback_publish')
+        self.fallback_patcher.start()
 
     def tearDown(self):
+        self.fallback_patcher.stop()
+        self.sleep_patcher.stop()
         self.fetch_article_patcher.stop()
         self.mattel_patcher.stop()
         self.admin_patcher.stop()
@@ -102,8 +112,9 @@ class TestJobIteration(unittest.TestCase):
     @patch('news_bot.fetch_rss')
     def test_no_global_limit(self, mock_fetch, mock_load):
         """The old ``limit=3`` cap on ``process_new_articles`` is gone —
-        every accepted entry is staged (QUEUE_CAP enforcement belongs
-        to Task 10's overflow fast-track, not this task)."""
+        every accepted entry is staged. Hard-cap enforcement is no longer
+        part of the prep phase: the distributed-publish loop carries
+        excess rows over to the next day instead."""
         feed_urls = ['http://feed1.xml', 'http://feed2.xml']
         mock_load.return_value = feed_urls
         entries = [

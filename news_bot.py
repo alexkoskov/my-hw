@@ -77,20 +77,6 @@ RSS_URL = "https://www.autoevolution.com/rss/tag-Hot+Wheels.xml"
 DB_FILE = "news.db"
 LOG_LEVEL = logging.INFO
 
-# Manual-review-workflow knobs (Decision 5). Env-overridable so operators
-# can tune timing without a code change. Parsed at import-time — tests that
-# need different values reload the module or patch the constant directly.
-IDLE_TIMEOUT_HOURS = int(os.getenv('IDLE_TIMEOUT_HOURS', '48'))
-GRACE_WINDOW_HOURS = int(os.getenv('GRACE_WINDOW_HOURS', '2'))
-QUEUE_CAP = int(os.getenv('QUEUE_CAP', '10'))
-# Throttle between consecutive ``_fallback_publish`` calls in the overflow
-# fast-track and idle-fallback batches — reduces channel burst-spam when a
-# large eviction or idle-timeout pass fires multiple auto-publishes in one
-# tick. Skip-first pattern: 1 publish in a batch does NOT wait; N publishes
-# in a batch wait (N-1) × ``FALLBACK_THROTTLE_SECONDS``. Manual-review
-# (``hw_review publish``) is operator-paced and never throttled.
-FALLBACK_THROTTLE_SECONDS = int(os.getenv('FALLBACK_THROTTLE_SECONDS', '3600'))
-
 # Distributed-publish constants (llm-transcreation-and-distributed-publishing
 # Decisions 2, 4, 9, 14, 15). The 13:00–20:00 МСК window + 40-minute minimum
 # interval are the same numbers ``compute_publish_slots`` uses by default —
@@ -779,14 +765,15 @@ def _cleanup_preview_html(preview_path):
 # ---------------------------------------------------------------------------
 def _fallback_publish(row, via_review=False):
     """Auto-publish a pending row through Claude (primary) or Google
-    (per-article + global fallback). Used by ``job()`` step (1b) and the
-    overflow fast-track.
+    (per-article + global fallback). Used by ``job()`` step (e) — the
+    distributed-publish loop — and ``hw_review`` operator-driven
+    publishes (``via_review=True``).
 
     Parameters
     ----------
     row : dict
         A pending-articles row as returned by
-        ``pending_articles_repo.get_pending`` / ``list_notified_overdue``.
+        ``pending_articles_repo.get_pending`` / ``list_pending``.
     via_review : bool, default False
         Marker persisted into ``published_articles.via_review`` — False
         for auto-publish paths, True reserved for operator-driven
@@ -902,9 +889,9 @@ def _fallback_publish(row, via_review=False):
 
     # Step 2: Telegraph — reuse saved URL per Decision 9 idempotency.
     # Done BEFORE persisting RU so a Telegraph failure keeps
-    # ``ru_paragraphs IS NULL`` on the pending row — next tick's
-    # ``list_notified_overdue`` will re-match it and the attempt loop
-    # can retry. Once Telegraph succeeds the URL is written via
+    # ``ru_paragraphs IS NULL`` on the pending row — the next slot
+    # in the distributed-publish loop will pull it again and the
+    # attempt loop can retry. Once Telegraph succeeds the URL is written via
     # ``mark_telegraph_published`` (a dedicated txn) so a Telegram
     # teaser failure still preserves the URL for operator retry.
     telegraph_url = row.get('telegraph_url')
@@ -944,8 +931,8 @@ def _fallback_publish(row, via_review=False):
 
     # Step 3: persist RU fields. Required for the ``published_articles``
     # NOT NULL ``ru_title`` copy inside ``move_to_published``. Writes
-    # here (rather than before Telegraph) keep ``list_notified_overdue``
-    # eligible on a pure Telegraph failure. On a Telegram-teaser
+    # here (rather than before Telegraph) keep the row retry-eligible
+    # for the next slot on a pure Telegraph failure. On a Telegram-teaser
     # failure the RU fields ARE persisted — that's the correct end
     # state: the operator-driven ``hw_review publish`` retry skips
     # Telegraph (URL cached) and skips transcreation (RU cached).
@@ -995,243 +982,6 @@ def _fallback_publish(row, via_review=False):
         raise outage_signal
 
     return True
-
-
-# ---------------------------------------------------------------------------
-# Overflow fast-track (Task 10 / Decisions 6, 7, 9, 11, 13).
-#
-# Called from ``job()`` step (4), between filtering and INSERT. When the
-# queue would blow past ``QUEUE_CAP`` after inserting the freshly-fetched
-# ``new_entries``, we fast-track the OLDEST ``ru_paragraphs IS NULL``
-# pending rows through ``_fallback_publish`` (same helper as idle-fallback,
-# same 3-strike contract via the shared ``attempt_count`` column). Rows
-# with staged Russian text are NEVER evicted (Decision 7): that's the
-# exact CLI-cron race the feature defends against.
-#
-# Contract: returns ``(accepted, fast_track_errors)``.
-# * ``accepted``: slice of ``new_entries`` that fits after the pass.
-# * ``fast_track_errors``: titles of evicted rows whose ``_fallback_publish``
-#   raised — surfaced in the admin ping suffix for operator triage.
-#
-# Admin-ping format (byte-exact per task-10 spec):
-#   "Queue pressure: auto-published {E}, {D} new deferred, {S} staged rows
-#    protected"  (+ optional ", fast-track failed for {F}" on errors)
-#
-# Ping fires ONLY when there's something operator-actionable: deferred > 0,
-# staged_protected > 0, or fast_track_errors non-empty. Happy within-cap
-# paths are silent.
-# ---------------------------------------------------------------------------
-def _overflow_fast_track(new_entries):
-    """Fast-track-evict ru-NULL pending rows to make room for ``new_entries``
-    when the queue would otherwise blow past ``QUEUE_CAP``.
-
-    Parameters
-    ----------
-    new_entries : list[dict]
-        The post-filter list of entries the prep phase wants to INSERT.
-
-    Returns
-    -------
-    tuple[list[dict], list[str]]
-        ``(accepted, fast_track_errors)`` — ``accepted`` is the subset of
-        ``new_entries`` that fits after the pass (possibly all of them,
-        possibly none). ``fast_track_errors`` is the titles of rows
-        whose ``_fallback_publish`` raised during eviction.
-    """
-    if not new_entries:
-        return [], []
-
-    # ------------------------------------------------------------------
-    # Operator rule (2026-04-24, refined): queue is a sliding window of
-    # the NEWEST ``QUEUE_CAP`` rows across the combined pool of current
-    # pending rows + incoming new entries. Anything that doesn't fit the
-    # window gets auto-published via Gemini (``_fallback_publish``),
-    # with oldest rows evicted first. Staged pending rows (ru filled)
-    # are always protected — they never evict, they stay in the queue
-    # regardless of age.
-    #
-    # Concrete example: pending=8 (all ru-NULL), new=28. Pool=36,
-    # excess=26. Evict 8 oldest pending + 18 oldest-ordered new →
-    # 26 auto-publish. Remaining 10 new enter the queue.
-    # ------------------------------------------------------------------
-    pre_count = pending_repo.count_pending()
-    pool_size = pre_count + len(new_entries)
-
-    if pool_size <= QUEUE_CAP:
-        # Entire pool fits in the queue — no pressure, no eviction.
-        return list(new_entries), []
-
-    excess = pool_size - QUEUE_CAP
-
-    # ---- Step A: evict oldest ru-NULL pending rows (they're older than
-    # any just-fetched new entry). Bounded by ``excess``; each old-evict
-    # decrements the remaining budget. Staged pending rows are filtered
-    # out at the repo level (``list_pending_for_eviction``).
-    try:
-        old_candidates = pending_repo.list_pending_for_eviction()[:excess]
-    except Exception as exc:
-        logger.error(
-            f"[overflow] list_pending_for_eviction failed: "
-            f"{sanitize_error_message(exc)}"
-        )
-        old_candidates = []
-
-    # Rows physically present in pending but blocked from eviction because
-    # they're staged. Bounded by ``excess`` and by how many pending rows
-    # actually exist.
-    staged_protected = max(
-        0, min(excess - len(old_candidates), pre_count - len(old_candidates))
-    )
-
-    evicted_old = 0
-    fast_track_errors = []
-    # ``publish_attempts`` tracks ``_fallback_publish`` invocations across
-    # this overflow batch (both old-evict and new-autopub loops) so the
-    # throttle skip-first applies once per batch, not once per loop.
-    # Sleep BEFORE every call except the first — counts attempts (not
-    # successes) so a failed publish still spaces out the next attempt.
-    publish_attempts = 0
-    for row in old_candidates:
-        link = row.get('link')
-        title = row.get('title') or '(no title)'
-        try:
-            if publish_attempts > 0:
-                time.sleep(FALLBACK_THROTTLE_SECONDS)
-            publish_attempts += 1
-            _fallback_publish(row, via_review=False)
-            evicted_old += 1
-        except Exception as exc:
-            safe = sanitize_error_message(exc)
-            logger.error(
-                f"[overflow] fallback publish failed for {link}: {safe}"
-            )
-            fast_track_errors.append(title)
-            try:
-                new_count = pending_repo.increment_attempt(link, safe)
-            except Exception as repo_err:
-                logger.error(
-                    f"[overflow] increment_attempt failed for {link}: "
-                    f"{sanitize_error_message(repo_err)}"
-                )
-                continue
-            if new_count >= 3:
-                try:
-                    pending_repo.move_to_failed(link, safe)
-                    logger.warning(
-                        f"[overflow] moved {link} to failed after "
-                        f"{new_count} strikes"
-                    )
-                    evicted_old += 1
-                except Exception as repo_err:
-                    logger.error(
-                        f"[overflow] move_to_failed failed for {link}: "
-                        f"{sanitize_error_message(repo_err)}"
-                    )
-
-    # ---- Step B: if excess remains, evict the OLDEST-ordered new
-    # entries. "Oldest" within a freshly-fetched batch is first-indexed
-    # (earliest place in ``new_entries``). These entries bypass the
-    # queue: we fetch-full-article, insert briefly as pending, then
-    # immediately ``_fallback_publish`` them (which moves to published).
-    # The short stay in pending preserves ``_fallback_publish``'s
-    # invariant of operating on a DB-resident row.
-    remaining = excess - evicted_old
-    if remaining > 0:
-        new_to_autopublish = list(new_entries[:remaining])
-        accepted = list(new_entries[remaining:])
-    else:
-        new_to_autopublish = []
-        accepted = list(new_entries)
-
-    evicted_new = 0
-    for entry in new_to_autopublish:
-        link = entry.get('link')
-        title = entry.get('title') or '(no title)'
-        if not link:
-            fast_track_errors.append(title)
-            continue
-        try:
-            article = fetch_full_article(entry)
-            if not article or not article.get('paragraphs'):
-                logger.warning(
-                    f"[overflow-new] no article data for {link}, skipping autopub"
-                )
-                fast_track_errors.append(title)
-                continue
-            row = {
-                'link': link,
-                'source_name': entry.get('source_name') or _resolve_source_name(link),
-                'feed_url': entry.get('feed_url'),
-                'title': article.get('title') or entry.get('title') or '',
-                'subtitle': article.get('subtitle') or '',
-                'paragraphs': article.get('paragraphs') or [],
-                'images': article.get('images') or [],
-                'blocks': article.get('blocks'),
-                'pub_date': entry.get('published') or entry.get('pub_date') or '',
-            }
-            try:
-                pending_repo.insert_pending(row)
-            except Exception as ins_err:
-                logger.error(
-                    f"[overflow-new] insert failed for {link}: "
-                    f"{sanitize_error_message(ins_err)}"
-                )
-                fast_track_errors.append(title)
-                continue
-            full_row = pending_repo.get_pending(link)
-            if full_row is None:
-                logger.error(f"[overflow-new] row vanished after insert: {link}")
-                fast_track_errors.append(title)
-                continue
-            if publish_attempts > 0:
-                time.sleep(FALLBACK_THROTTLE_SECONDS)
-            publish_attempts += 1
-            _fallback_publish(full_row, via_review=False)
-            evicted_new += 1
-        except Exception as exc:
-            safe = sanitize_error_message(exc)
-            logger.error(
-                f"[overflow-new] autopub failed for {link}: {safe}"
-            )
-            fast_track_errors.append(title)
-            try:
-                new_count = pending_repo.increment_attempt(link, safe)
-                if new_count >= 3:
-                    pending_repo.move_to_failed(link, safe)
-            except Exception as repo_err:
-                logger.error(
-                    f"[overflow-new] attempt-tracking failed for {link}: "
-                    f"{sanitize_error_message(repo_err)}"
-                )
-
-    # ------------------------------------------------------------------
-    # Admin ping — always sent when overflow ran (pool exceeded cap).
-    # Format conveys the split between old and new auto-publishes.
-    # ------------------------------------------------------------------
-    total_evicted = evicted_old + evicted_new
-    msg_parts = [
-        f"Queue pressure: auto-published {total_evicted} "
-        f"({evicted_old} old + {evicted_new} new)"
-    ]
-    if staged_protected > 0:
-        msg_parts.append(f"{staged_protected} staged rows protected")
-    if fast_track_errors:
-        msg_parts.append(f"fast-track failed for {len(fast_track_errors)}")
-    msg = ", ".join(msg_parts)
-    try:
-        send_admin_notification(msg)
-    except Exception as notify_err:
-        logger.error(
-            f"[overflow] admin-ping send failed: "
-            f"{sanitize_error_message(notify_err)}"
-        )
-
-    logger.info(
-        f"[overflow] evicted_old={evicted_old}, evicted_new={evicted_new}, "
-        f"accepted={len(accepted)}, protected={staged_protected}, "
-        f"errors={len(fast_track_errors)}"
-    )
-    return accepted, fast_track_errors
 
 
 # Processing pipeline
