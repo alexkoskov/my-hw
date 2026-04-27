@@ -1,0 +1,41 @@
+{
+  "reviewer": "test-reviewer",
+  "task": "task-11",
+  "round": 1,
+  "scope": "git diff 7216d95~1 7216d95 -- tests/test_integration.py tests/test_job_prep_phase.py",
+  "summary": "Integration tests follow the pyramid: real tempfile SQLite, real outage_state public API (no raw SQL), external network mocked. Each test asserts on real state changes (bot_state contents, published_articles rows, mock call args), not just 'mock was called'. AC mapping documented in class docstrings. One bug-fix landed in this round (mock_dt.strptime passthrough). Quality is high; minor cleanups only.",
+  "verdict": "approve",
+  "findings": [
+    {
+      "id": "TR-1",
+      "severity": "minor",
+      "category": "test-design",
+      "file": "tests/test_integration.py",
+      "lines": "139-303",
+      "title": "Excessive mocking in TestIntegration prep-phase tests",
+      "description": "Tests like test_full_pipeline_with_multiple_feeds patch 6 dependencies (load_feeds, fetch_rss, fetch_full_article, transcreate_via_claude, telegraph_publisher.publish_article, send_telegraph_teaser) plus 3 patches inherited from base. By the test-master rule (>3 mocks → use integration test), these are already integration tests — and they are correctly classified as such. The mock count reflects the breadth of news_bot.job's external surface, not over-mocking. Acceptable.",
+      "recommendation": "No change. Document in a class-level comment that 6+ mocks reflect news_bot.job's external surface (file → RSS → article fetcher → Claude → Telegraph → Telegram channel)."
+    },
+    {
+      "id": "TR-2",
+      "severity": "minor",
+      "category": "assertion-clarity",
+      "file": "tests/test_integration.py",
+      "lines": "415-420",
+      "title": "Outage admin ping assertion is permissive",
+      "description": "test_api_level_outage_advances_state_machine asserts `any('Claude' in m for m in ping_msgs)`. This passes if ANY admin notification contains the word 'Claude' (even an unrelated one). Since the test only seeds one pending row and the only admin call should be the outage ping, this is fine in practice but the assertion is weaker than the intent.",
+      "recommendation": "Tighten to `mock_admin.assert_any_call_with(...)` or assert the exact ping #1 text constant from outage_state._PING_1_TEXT to confirm the right ping text fired (not just any 'Claude' string)."
+    },
+    {
+      "id": "TR-3",
+      "severity": "minor",
+      "category": "test-isolation",
+      "file": "tests/test_integration.py",
+      "lines": "347-366",
+      "title": "TestOutageStateIntegration.setUp/tearDown stop+restart of notify_patcher",
+      "description": "setUp stops `self.notify_patcher` (started by base setUp) and tearDown re-starts it so base tearDown can stop it. This start/stop dance works but is brittle — if a per-test @patch decorator throws inside the context, the patcher could be in an inconsistent state for the next test. Consider extracting per-test admin mocking via decorator-only and removing the base notify_patcher for this subclass.",
+      "recommendation": "In a follow-up cleanup, either (a) override _IntegrationBase.setUp's notify_patcher conditionally for outage tests, or (b) document the dance in a comment so the next maintainer doesn't 'tidy' it accidentally."
+    }
+  ],
+  "approved_for_merge": true
+}

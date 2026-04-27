@@ -1,0 +1,10 @@
+{
+  "reviewer": "code-reviewer",
+  "task": "task-11",
+  "round": 2,
+  "scope": "git diff 7216d95 7cbb72a -- tests/test_integration.py",
+  "summary": "Round 1 fixes applied cleanly: dead mock attributes removed, comments expanded on the notify_patcher dance, admin-ping assertion tightened to verbatim _PING_1_TEXT. No regressions; full pytest suite still 566 passing.",
+  "verdict": "approve",
+  "findings": [],
+  "approved_for_merge": true
+}
