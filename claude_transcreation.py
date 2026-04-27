@@ -60,8 +60,9 @@ _PROMPT_PATH = os.path.join(
     "ux-guidelines.md",
 )
 
-#: mtime-keyed cache. Reload on file change.
-_PROMPT_CACHE: dict = {"mtime": None, "body": None}
+#: Cache keyed by ``(resolved_path, mtime)``. Reload on file change OR when
+#: a different on-disk file resolves (e.g. flat fallback after subdir miss).
+_PROMPT_CACHE: dict = {"mtime": None, "body": None, "path": None}
 
 #: Allowed title emoji prefixes (per ux-guidelines.md + patterns.md).
 _TITLE_EMOJIS = ("🏆", "🏎️", "🚀", "💎", "🤝", "📢", "🚗", "🔥")
@@ -152,8 +153,11 @@ def _load_prompt(path: str = _PROMPT_PATH) -> str:
         candidate = flat_fallback
 
     mtime = os.path.getmtime(candidate)
-    cached = _PROMPT_CACHE.get("mtime")
-    if cached == mtime and _PROMPT_CACHE.get("body"):
+    if (
+        _PROMPT_CACHE.get("path") == candidate
+        and _PROMPT_CACHE.get("mtime") == mtime
+        and _PROMPT_CACHE.get("body")
+    ):
         return _PROMPT_CACHE["body"]
 
     with open(candidate, "r", encoding="utf-8") as fh:
@@ -163,6 +167,7 @@ def _load_prompt(path: str = _PROMPT_PATH) -> str:
             f"ux-guidelines.md at {candidate!r} is empty — treating as missing"
         )
 
+    _PROMPT_CACHE["path"] = candidate
     _PROMPT_CACHE["mtime"] = mtime
     _PROMPT_CACHE["body"] = body
     return body

@@ -15,7 +15,6 @@ import json
 import logging
 import os
 import sys
-import textwrap
 from unittest.mock import MagicMock
 
 import pytest
@@ -37,9 +36,9 @@ import claude_transcreation  # noqa: E402
 @pytest.fixture(autouse=True)
 def _reset_prompt_cache():
     """Each test starts with a fresh prompt cache."""
-    claude_transcreation._PROMPT_CACHE = {"mtime": None, "body": None}
+    claude_transcreation._PROMPT_CACHE = {"mtime": None, "body": None, "path": None}
     yield
-    claude_transcreation._PROMPT_CACHE = {"mtime": None, "body": None}
+    claude_transcreation._PROMPT_CACHE = {"mtime": None, "body": None, "path": None}
 
 
 @pytest.fixture
