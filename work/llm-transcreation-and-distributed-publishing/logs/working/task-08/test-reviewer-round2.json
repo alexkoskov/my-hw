@@ -1,0 +1,8 @@
+{
+  "reviewer": "test-reviewer",
+  "task": "08",
+  "round": 2,
+  "verdict": "approved",
+  "summary": "Round 1 findings TR-1 and TR-2 applied. test_three_strikes_moves_to_failed now seeds a pending row, runs job() three times under sources-empty, and asserts the row migrated from pending → failed_articles end-to-end. The original first-strike-only check was preserved (renamed test_first_strike_increments_attempt) for fast-feedback regression coverage. test_outage_active_routes_via_google now asserts mock_google.called == True AND mock_publish.called == False — no more either-or tautology. All 15 tests in the new file plus the 13 prep-phase tests pass.",
+  "findings": []
+}

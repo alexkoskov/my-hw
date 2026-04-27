@@ -1,0 +1,49 @@
+{
+  "reviewer": "test-reviewer",
+  "task": "08",
+  "round": 1,
+  "verdict": "approved-with-minor-suggestions",
+  "summary": "Test file test_job_distributed_publish.py covers all TDD anchors from Task 08: crash-loop guard (3 cases — recent / old / null), TZ-aware schedule registration (pytz pass + zoneinfo reject + main() source assertion), main health checks (False / True / TZ-mismatch), distributed-publish loop (3-article integration / outage-active routing / 3-strikes / N=0 ping suppression / backlog warning at 51), and window-end guard. test_job_prep_phase.py adapted with sleep + _fallback_publish patches so legacy fetch+stage invariants still hold. Two minor findings worth applying.",
+  "findings": [
+    {
+      "id": "TR-1",
+      "severity": "minor",
+      "location": "tests/test_job_distributed_publish.py::TestDistributedPublishLoop::test_three_strikes_moves_to_failed",
+      "issue": "Test name says 'three_strikes' but the body only runs job() once and asserts attempt_count==1. The full 3-strikes flow (3 separate failed publishes culminating in move_to_failed) is not exercised end-to-end — only the first strike is. The TDD anchor in the task explicitly mentions this scenario.",
+      "suggestion": "Either expand the test to seed a row, mock _fallback_publish to raise on each call, run job() three times in a row (with fresh inserts blocked) and assert move_to_failed was called and the row is in failed_articles. Or rename the test to test_first_strike_increments_attempt to match what it actually tests, and add a follow-up note that full 3-strikes coverage lives in the existing pending_articles_repo tests for increment_attempt.",
+      "action": "apply"
+    },
+    {
+      "id": "TR-2",
+      "severity": "minor",
+      "location": "tests/test_job_distributed_publish.py::TestDistributedPublishLoop::test_outage_active_routes_via_google",
+      "issue": "Assertion accepts EITHER mock_google.called OR mock_publish.called as a pass — that's effectively a tautology because at least one of the two must be reached. The test does NOT prove the Google-only path is taken; it just proves SOMETHING was called.",
+      "suggestion": "Tighten: the loop calls _fallback_publish_google_only when is_fallback_active=True. So assert mock_google.called is True AND _fallback_publish was NOT called. (Or, if you accept the existing behaviour where the helper delegates to _fallback_publish, assert _fallback_publish was called and outage_state.is_fallback_active() returned True at the call boundary.)",
+      "action": "apply"
+    },
+    {
+      "id": "TR-3",
+      "severity": "info",
+      "location": "tests/test_job_distributed_publish.py::TestCrashLoopGuard",
+      "issue": "Crash-loop guard tests are tight — three branches (recent, old, null) match the TDD anchor 1:1 and assert sleep arguments quantitatively. Good coverage.",
+      "suggestion": "No action.",
+      "action": "skip"
+    },
+    {
+      "id": "TR-4",
+      "severity": "info",
+      "location": "tests/test_job_distributed_publish.py::TestCronRegistration",
+      "issue": "All three cron-registration tests cover the schedule lib contract surface (pytz pass, zoneinfo fail, main() source assertion). Documents Decision 4 limitation in code.",
+      "suggestion": "No action.",
+      "action": "skip"
+    },
+    {
+      "id": "TR-5",
+      "severity": "info",
+      "location": "tests/test_job_prep_phase.py legacy adaptation",
+      "issue": "The added sleep + _fallback_publish + outage_state patches in the base setUp keep the old prep-phase invariants alive under the new job() shape. The test_admin_ping_format_matches_spec test was repurposed to assert the new plan-of-day format.",
+      "suggestion": "No action — clean adaptation, no over-mocking.",
+      "action": "skip"
+    }
+  ]
+}

@@ -1,0 +1,49 @@
+{
+  "reviewer": "code-reviewer",
+  "task": "08",
+  "round": 1,
+  "verdict": "approved-with-minor-suggestions",
+  "summary": "Refactor of news_bot.job() and main() correctly implements Decisions 2/4/9/14/15. Crash-loop guard reads MAX(published_at) and parses to UTC-aware before computing the 40-min gap. Distributed-publish loop has the window-end insurance break, ClaudeOutageError-aware slot advance (no strike), and 3-strikes path for unexpected exceptions. main() startup health checks are non-blocking; pytz cron registration is correct. Helper get_max_published_at() in pending_articles_repo follows the existing fetchone pattern (count_pending shape). Three findings worth applying — the rest are info-level.",
+  "findings": [
+    {
+      "id": "CR-1",
+      "severity": "minor",
+      "location": "news_bot.py:_parse_published_at_utc",
+      "issue": "Bare except Exception swallows the actual exception class — diagnostic log includes the raw value but not the exception type, which makes triaging a real corrupted SQLite timestamp harder than it needs to be.",
+      "suggestion": "Capture exc and include type(exc).__name__ in the warning log: logger.warning(f\"Could not parse published_at={raw!r} ({type(exc).__name__}); skipping crash-loop guard.\").",
+      "action": "apply"
+    },
+    {
+      "id": "CR-2",
+      "severity": "minor",
+      "location": "news_bot.py:job() distributed-publish loop, ClaudeOutageError except branch",
+      "issue": "When ClaudeOutageError surfaces from _fallback_publish (degraded-mode publish already completed), the except branch increments published_count. That count is logged at the end of the loop. Strictly correct on the user-facing semantics (the article DID publish), but a future reader could reasonably read the variable name and miss that degraded-mode publishes are folded into 'published' too.",
+      "suggestion": "Add a one-line inline comment next to the published_count += 1 inside the ClaudeOutageError handler clarifying that the degraded-mode publish counts as a publish for the end-of-loop summary.",
+      "action": "apply"
+    },
+    {
+      "id": "CR-3",
+      "severity": "low",
+      "location": "news_bot.py:job() Step (e), wait-then-list_pending",
+      "issue": "After sleeping until the slot, list_pending() is called twice: once for the existence check (`if not rows`) and once implicitly in the publish path (via _fallback_publish reading the row). Not a bug — list_pending() returns a snapshot and the published row is the SAME oldest row — but each call opens a SQLite connection. Negligible at <11 publishes/day.",
+      "suggestion": "Skip — the cost is dwarfed by 40-min interval and the simplicity of the existing code is worth more than micro-optimisation.",
+      "action": "skip"
+    },
+    {
+      "id": "CR-4",
+      "severity": "info",
+      "location": "news_bot.py:_fallback_publish_google_only",
+      "issue": "The wrapper is currently a one-line delegation to _fallback_publish. Documented as future-proofing for Task 9.",
+      "suggestion": "OK — the intent-named entry-point keeps the loop body readable and lets Task 9 cleanup migrate the implementation without touching job(). Skip.",
+      "action": "skip"
+    },
+    {
+      "id": "CR-5",
+      "severity": "minor",
+      "location": "news_bot.py:main() startup health checks",
+      "issue": "If health_check() returns False AND set_fallback_active(True) raises, the warning is logged but the day still proceeds with fallback_active in an unknown state — could be False if the row never got written. Adding context to the log helps post-mortems.",
+      "suggestion": "Already logs the exception via sanitize_error_message; an extra warning that 'job() may attempt Claude on first slot if write failed' would clarify but is verbose. Skip — the existing log + admin ping is enough signal.",
+      "action": "skip"
+    }
+  ]
+}
