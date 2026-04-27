@@ -1,0 +1,64 @@
+{
+  "task": "task-07",
+  "round": 1,
+  "reviewer": "test-reviewer",
+  "skill": "test-master",
+  "verdict": "approved-with-minor-suggestions",
+  "summary": "tests/test_fallback_publish_paths.py covers all four required and optional branches: Claude success (TestClaudePath), per-article ClaudeTranscreationError fallback (TestGoogleFallbackPath), already-in-fallback shortcut (TestAlreadyInFallback), and the API-level ClaudeOutageError + degraded-publish + re-raise contract (TestOutageDegradedThenReraises). Order assertions use `MagicMock.attach_mock` + `mock_calls` introspection — the legitimate unittest.mock pattern, NOT the hallucinated `assert_called_before`. Each branch verifies the four contract guarantees: via_review=False, auto_marker=True, mark_telegraph_published BEFORE send_telegraph_teaser, transcreate_text NOT called on Claude path / NOT called by Claude on the Google path.",
+  "test_count": 4,
+  "test_files_created": ["tests/test_fallback_publish_paths.py"],
+  "test_files_updated": [
+    "tests/test_idle_fallback.py — _IdleFallbackCase fixture patched to inject ClaudeTranscreationError so legacy Google-only assertions still hold",
+    "tests/test_fallback_throttle.py — _ThrottleCase fixture patched same way",
+    "tests/test_overflow.py — _OverflowCase fixture patched same way"
+  ],
+  "findings": [
+    {
+      "id": "TR-1",
+      "severity": "minor",
+      "dimension": "test-coverage",
+      "location": "tests/test_fallback_publish_paths.py:TestGoogleFallbackPath",
+      "finding": "The Google fallback test asserts `mock_google.call_count >= 4` (title + subtitle + 2 paragraphs). For a row with `blocks` (autoevolution), the count would be higher. A second test parameterized with a `blocks` array would lock the autoevolution branch.",
+      "suggested_action": "Add a third Google-fallback test where the row has `blocks=[{'type': 'paragraph', 'text': 'EN block text'}]` and assert ru_blocks shape after Google translation. Optional — the existing tests cover the primary path; blocks logic is symmetric to text/caption translation.",
+      "applied": false,
+      "rationale": "Optional enhancement. Out-of-scope for this task — the existing test-set (4 tests) covers the AC-mandated branches per the task file. Block translation is unchanged from the legacy code (test_idle_fallback covered it; we patched that fixture to keep it passing). Defer to future tightening."
+    },
+    {
+      "id": "TR-2",
+      "severity": "minor",
+      "dimension": "test-isolation",
+      "location": "tests/test_fallback_publish_paths.py — outage test does not patch is_fallback_active",
+      "finding": "The outage test relies on `outage_state.is_fallback_active()` reading from the tempfile DB (which has no rows → returns False). This works because of the tempfile-DB fixture pattern. An explicit patch on `is_fallback_active` would make the test less coupled to the underlying DB state and easier to reason about in isolation.",
+      "suggested_action": "Add `patch('news_bot.outage_state.is_fallback_active', return_value=False)` to TestOutageDegradedThenReraises. Optional — current implicit behaviour is correct for the in-test DB.",
+      "applied": true,
+      "rationale": "Looking at the test code, the patch is already present (line patches outage_state.is_fallback_active). Confirmed via inspection — this finding does not apply."
+    },
+    {
+      "id": "TR-3",
+      "severity": "info",
+      "dimension": "test-quality",
+      "location": "tests/test_fallback_publish_paths.py — order-assertion technique",
+      "finding": "Each test uses `MagicMock` with `attach_mock` to register multiple mocks and then reads `manager.mock_calls` to check ordering. This is the canonical unittest.mock pattern — robust against false positives because `attach_mock` records each call's name and arguments in a single ordered list.",
+      "suggested_action": "None — flagged as a positive observation.",
+      "applied": false,
+      "rationale": "Recognized strength. The task file explicitly warned against `assert_called_before` (which doesn't exist); this implementation uses the documented manager pattern correctly."
+    },
+    {
+      "id": "TR-4",
+      "severity": "info",
+      "dimension": "test-quality",
+      "location": "tests/test_fallback_publish_paths.py — explicit AssertionError side_effects",
+      "finding": "TestClaudePath sets `mock_google.side_effect = AssertionError(...)` and TestAlreadyInFallback sets `mock_claude.side_effect = AssertionError(...)`. This pattern surfaces hidden test-coupling bugs (e.g. Google path accidentally getting called on the Claude success branch) at test-failure time with a clear message — much stronger than `assert_not_called` after the fact.",
+      "suggested_action": "None.",
+      "applied": false,
+      "rationale": "Strength."
+    }
+  ],
+  "strengths": [
+    "Each test asserts the four-contract invariants (via_review=False, auto_marker=True, mark BEFORE teaser, no cross-engine bleed). All assertions are independent of test order.",
+    "Order-of-calls assertions use `MagicMock.attach_mock` + `mock_calls` index lookup. Robust and idiomatic.",
+    "AssertionError-as-side_effect catches accidental cross-path invocations at the moment they happen.",
+    "Outage test asserts the new state-machine + admin-ping contract added during the implementation phase, locking the AC9-AC18 traceability.",
+    "Existing legacy test fixtures (idle_fallback / fallback_throttle / overflow) get a single-line per-fixture patch that routes them through the per-article Google branch — keeps Wave 4-6 churn minimal."
+  ]
+}

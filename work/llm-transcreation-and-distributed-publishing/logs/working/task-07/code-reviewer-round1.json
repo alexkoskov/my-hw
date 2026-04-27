@@ -1,0 +1,56 @@
+{
+  "task": "task-07",
+  "round": 1,
+  "reviewer": "code-reviewer",
+  "skill": "code-reviewing",
+  "verdict": "approved-with-minor-suggestions",
+  "summary": "Refactor of _fallback_publish step 1 implements the dual-path translation contract correctly: primary Claude → per-article Google fallback (state untouched) → API-level outage with state advance + admin ping + degraded-mode Google + re-raise. Decision 9 idempotency is preserved (mark_telegraph_published before Telegram teaser; via_review=False; auto_marker=True). Function comment block, docstring, and inline comments accurately describe the new contract. The factored _google_translate inner closure removes duplication between the per-article fallback and the degraded-mode paths cleanly. Outage signal is captured into a local variable and re-raised after Steps 2-5 complete — exact match for the Task 8 contract.",
+  "findings": [
+    {
+      "id": "CR-1",
+      "severity": "minor",
+      "dimension": "code-readability",
+      "location": "news_bot.py:863 — inside ClaudeOutageError except block",
+      "finding": "`from datetime import datetime, timezone` is imported inside the except block. The rest of the module imports stdlib at the top. While the deferred import has negligible performance cost (it's an except path), it's stylistically inconsistent with the surrounding code.",
+      "suggested_action": "Move the import to the top-of-file imports block alongside the existing `from datetime import datetime`. Optional — the current local import is functionally equivalent.",
+      "applied": false,
+      "rationale": "The module already imports `datetime` at the top (line 15: `from datetime import datetime`); adding `timezone` to that line would be cleaner. Defer to a follow-up — the local form is currently correct and documented inline."
+    },
+    {
+      "id": "CR-2",
+      "severity": "low",
+      "dimension": "separation-of-concerns",
+      "location": "news_bot.py:797 — _google_translate inner closure",
+      "finding": "The Google-only translation path is a closure that captures `en_title`, `en_subtitle`, `en_paragraphs`, `en_blocks` from enclosing scope. While this is the simplest factoring of the previously-inline block, it ties the helper to one specific row. A pure helper taking the EN tuple as args would be more reusable.",
+      "suggested_action": "Refactor to a module-level helper `def _google_translate_row(en_title, en_subtitle, en_paragraphs, en_blocks): ...` for testability and reuse. Optional — the closure is currently single-call-site.",
+      "applied": false,
+      "rationale": "Closure is acceptable here: single call site within the same function; closure scope keeps the helper near the consumers. Refactor can wait for a use case that needs cross-function reuse."
+    },
+    {
+      "id": "CR-3",
+      "severity": "minor",
+      "dimension": "error-handling",
+      "location": "news_bot.py:863-880 — outage state machine update with try/except wrap",
+      "finding": "If `outage_state.record_outage_event` itself raises (DB locked > 5s, disk full), the code logs and continues — the degraded-mode publish proceeds and `ClaudeOutageError` is still re-raised. This is correct but worth an explicit comment that the slot must publish even if state-machine bookkeeping fails.",
+      "suggested_action": "Comment already present at lines 875-877 explaining the rationale. No code change required.",
+      "applied": false,
+      "rationale": "Comment is sufficient. Behaviour is correct: degraded publish takes priority over state machine bookkeeping."
+    },
+    {
+      "id": "CR-4",
+      "severity": "info",
+      "dimension": "logging",
+      "location": "news_bot.py:838-854 — warning log lines for both fallback paths",
+      "finding": "Log messages use `type(exc).__name__` (Decision 12 pattern) — no risk of API key leakage even if Claude exception text included a key. Sanitiser function `sanitize_error_message` and the redaction filter cover the residual paths. Strong adherence to the secret-redaction guidelines.",
+      "suggested_action": "None — flagged as a positive observation.",
+      "applied": false,
+      "rationale": "Recognized strength."
+    }
+  ],
+  "strengths": [
+    "Function comment header rewrites the steps document to reflect the new dual-path contract — future maintainers reading the function will understand the Decision 5 / Decision 9 boundaries.",
+    "outage_signal pattern is the cleanest way to defer the re-raise until Steps 2-5 complete: local variable carries the exception, single `if outage_signal is not None: raise outage_signal` at the end.",
+    "Both per-article and outage fallback paths share the same _google_translate body — no copy-paste of the title/subtitle/paragraphs/blocks loop.",
+    "Docstring Returns section explicitly documents the new re-raise contract so callers (Task 8) won't be surprised."
+  ]
+}
