@@ -1,16 +1,25 @@
 #!/usr/bin/env python3
 """Integration tests for the prep-only shape of ``news_bot.job()``.
 
-After Task 6 of manual-review-workflow, ``job()`` must:
+After Task 6 of manual-review-workflow + Wave 4-7 of
+llm-transcreation-and-distributed-publishing, ``job()`` must:
 * Iterate the ``SOURCES`` registry (Task 5) — no direct feed-URL loop.
 * Filter against both ``processed_news`` AND ``pending_articles``.
 * Call ``fetch_full_article`` for each accepted entry and stage the
   result via ``pending_articles_repo.insert_pending``.
-* Compose the admin-ping via ``build_admin_ping(rows)`` and send it
-  ONLY when the resulting queue is non-empty.
-* Make ZERO Telegraph-publish / channel-teaser calls during prep.
+* Compose the admin-ping plan-of-day after the staging phase and send
+  it ONLY when the resulting queue is non-empty.
+* Make ZERO Telegraph-publish / channel-teaser calls during prep
+  (publish loop runs after staging — covered by
+  ``tests/test_job_distributed_publish.py``).
 * Leave NO trace of ``process_new_articles`` in the module.
 
+The cron contract is now the distributed-schedule one (Wave 4 Decisions 2 + 4):
+``schedule.every().day.at("12:00", tz=pytz.timezone("Europe/Moscow"))``.
+See the contract in
+[tech-spec](../work/llm-transcreation-and-distributed-publishing/tech-spec.md).
+The legacy env-overridable knobs from manual-review-workflow were removed in
+Wave 5 — those names are not asserted here anymore.
 """
 from __future__ import annotations
 
@@ -375,23 +384,40 @@ class TestProcessNewArticlesRemoved(unittest.TestCase):
         )
 
 
-class TestCronScheduleDailyMSK(unittest.TestCase):
+class TestCronScheduleDailyAtNoonMSK(unittest.TestCase):
     """AC (Task 8 / Decisions 2 + 4): cron runs once daily at 12:00 МСК
     via TZ-aware ``schedule.every().day.at("12:00", tz=pytz.timezone(
     "Europe/Moscow"))``. Replaces the legacy 12-hour cron from manual-
     review-workflow. The schedule lives in ``main()``; we assert the
-    source text to avoid actually running the scheduler."""
+    source text to avoid actually running the scheduler.
 
-    def test_main_uses_daily_msk_schedule(self):
+    Asserts:
+      (a) ``every().day.at("12:00"`` is present (correct cron form);
+      (b) ``tz=`` keyword (TZ-aware) plus the explicit
+          ``pytz.timezone('Europe/Moscow')`` token;
+      (c) the legacy ``every(12).hours`` / ``every().hour.do`` /
+          ``every().day.at`` (without 12:00) lines are absent.
+    """
+
+    def test_main_uses_daily_noon_msk_schedule(self):
         import inspect
         src = inspect.getsource(news_bot.main)
-        self.assertIn('every().day.at(', src,
-                      msg="main() must register the daily 12:00 МСК cron")
-        self.assertIn('12:00', src)
-        self.assertIn('Europe/Moscow', src)
-        # And the old 12-hour cadence must be gone.
+        # (a) New form is registered.
+        self.assertIn('every().day.at("12:00"', src,
+                      msg="main() must register every().day.at(\"12:00\", tz=...)")
+        # (b) tz-aware via pytz.
+        self.assertIn('tz=', src, msg="cron registration must pass tz=...")
+        # Accept either quote style for the timezone literal.
+        self.assertTrue(
+            ("pytz.timezone('Europe/Moscow')" in src)
+            or ('pytz.timezone("Europe/Moscow")' in src),
+            msg="cron tz must be pytz.timezone('Europe/Moscow')",
+        )
+        # (c) Legacy forms are gone.
         self.assertNotIn('every(12).hours', src,
                          msg="legacy 12-hour cron line must be removed")
+        self.assertNotIn('every().hour.do', src,
+                         msg="legacy hourly cron line must be removed")
 
 
 if __name__ == '__main__':
