@@ -1,0 +1,49 @@
+{
+  "task": "03",
+  "round": 1,
+  "reviewer": "test-reviewer",
+  "skill": "test-master",
+  "verdict": "approved",
+  "summary": "15 tests cover the TDD anchor exactly. Shared make_status_error / make_connection_error fixtures correctly construct anthropic SDK exceptions with httpx.Response/Request. No real network calls. SDK exception coverage matches Decision 5 (8 outage + 2 per-article + parse/schema branches).",
+  "findings": [
+    {
+      "id": "T1",
+      "severity": "info",
+      "title": "Shared exception fixtures — correct constructor pattern",
+      "description": "make_status_error builds APIStatusError subclasses with required (message, response, body) keyword args. make_connection_error handles APIConnectionError (request kwarg) and APITimeoutError (positional request) signatures separately. Avoids the documented TypeError pitfall.",
+      "resolution": "OK."
+    },
+    {
+      "id": "T2",
+      "severity": "info",
+      "title": "Token observability assertion via caplog",
+      "description": "test_happy_path_returns_valid_dict asserts substring presence of input_tokens / output_tokens / latency_ms / model in log records. Matches AC19 — substring assertion not exact format match — robust to format-string changes.",
+      "resolution": "OK."
+    },
+    {
+      "id": "T3",
+      "severity": "info",
+      "title": "Two emoji safety-net branches tested",
+      "description": "test_title_without_emoji_gets_safety_net covers 🚀 (релиз/launch) and 🏆 (legends/tour) branches. Adequate coverage of the cascade per task spec ('минимум 2 ветки content regex').",
+      "resolution": "OK."
+    },
+    {
+      "id": "T4",
+      "severity": "low",
+      "title": "test_load_prompt_subdir_then_flat_fallback uses internal _MODULE_DIR knob",
+      "description": "Test monkeypatches claude_transcreation._MODULE_DIR to redirect the flat-fallback resolution. Slightly fragile — if the module ever stops using _MODULE_DIR for the flat fallback, the test is silently skipped of meaningful coverage. Mitigated because the alternative (full sys.path / file system staging) would be more brittle.",
+      "resolution": "Accepted. Test name + comment make the intent clear. Module contract documents _MODULE_DIR as internal but stable."
+    },
+    {
+      "id": "T5",
+      "severity": "info",
+      "title": "Auto-reset _PROMPT_CACHE fixture",
+      "description": "Autouse fixture clears _PROMPT_CACHE before/after each test → no test pollution across the cache.",
+      "resolution": "OK."
+    }
+  ],
+  "verification": {
+    "test_count": "15 (matches TDD anchor in tasks/03.md)",
+    "isolation": "All tests use mocks; no network. health_check tested implicitly via smoke verification, not unit (acceptable — health_check is a 5-line wrapper around already-tested SDK call)."
+  }
+}

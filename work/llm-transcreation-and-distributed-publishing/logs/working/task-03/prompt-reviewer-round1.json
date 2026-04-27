@@ -1,0 +1,62 @@
+{
+  "task": "03",
+  "round": 1,
+  "reviewer": "prompt-reviewer",
+  "skill": "prompt-master",
+  "verdict": "approved",
+  "summary": "System prompt construction matches Decision 6: ux-guidelines.md verbatim, JSON envelope appended after horizontal rule, model = claude-haiku-4-5, max_tokens=8000. User message is structured JSON (not free-text concatenation) — eliminates a major prompt-injection vector at the prompt-design layer. Envelope is module-level constant (no per-call rebuild).",
+  "findings": [
+    {
+      "id": "P1",
+      "severity": "info",
+      "title": "ux-guidelines.md loaded verbatim with rstrip()",
+      "description": "_build_system_prompt does prompt_body.rstrip() before appending the envelope. This is whitespace cleanup at the trailing boundary, not paraphrasing. ux-guidelines.md line 17 states 'Treat the text below as your role' — the role text inside the blockquote is preserved byte-for-byte.",
+      "resolution": "OK. rstrip is the standard 'no trailing whitespace before separator' idiom."
+    },
+    {
+      "id": "P2",
+      "severity": "info",
+      "title": "JSON envelope schema matches code-research §14.3",
+      "description": "Envelope specifies title (with emoji prefix from the 8-emoji set), alts (2-3 alternates), subtitle, paragraphs (length-locked), blocks (length+type-mirrored). Envelope text is the verbatim block from §14.3.",
+      "resolution": "OK."
+    },
+    {
+      "id": "P3",
+      "severity": "info",
+      "title": "Paragraph-count constraint enforced both in prompt + parse",
+      "description": "Prompt envelope says 'paragraphs MUST contain EXACTLY the same length as input'. _parse_response validates this on response. Two-layer defence: prompt-level instruction + structural validation.",
+      "resolution": "OK."
+    },
+    {
+      "id": "P4",
+      "severity": "info",
+      "title": "User message is structured JSON, not free-text concatenation",
+      "description": "_build_user_message uses json.dumps to serialise the article. Adversarial paragraph content cannot escape the JSON string boundary into the system-prompt context — this is the standard prompt-injection mitigation pattern for instruction-content separation.",
+      "resolution": "OK. Matches industry best practice."
+    },
+    {
+      "id": "P5",
+      "severity": "info",
+      "title": "No prompt caching",
+      "description": "Per Decision 6, prompt caching is disabled — slot interval (40+ min) exceeds 5-min cache TTL, no break-even. No cache control headers in the SDK call.",
+      "resolution": "OK. Documented intent."
+    },
+    {
+      "id": "P6",
+      "severity": "info",
+      "title": "Title emoji safety-net regex copied verbatim from legacy",
+      "description": "_apply_emoji_safety_net cascade matches news_bot.py:404-423 word-for-word. Per task spec: 'Скопировать паттерны как есть; не пытаться их улучшать в этой задаче.'",
+      "resolution": "OK."
+    },
+    {
+      "id": "P7",
+      "severity": "info",
+      "title": "No prompt leakage in error paths",
+      "description": "Neither system prompt nor user message text is echoed into raised exception messages. _classify_exception only includes type name + str(exc) of the SDK error.",
+      "resolution": "OK."
+    }
+  ],
+  "verification": {
+    "decision_alignment": "Decision 6 (system prompt), Decision 8 (flat fallback), Decision 13 (max_tokens, paragraph validation, defensive truncation) — all matched."
+  }
+}
