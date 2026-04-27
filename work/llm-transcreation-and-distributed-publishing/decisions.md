@@ -139,3 +139,28 @@ Review details — in JSON files via links. QA report — in logs/working/.
 **Verification:**
 - `pytest tests/test_outage_state.py -v` → 12 passed in 0.89s (3 outage transitions + recovery + persistence + concurrency + 3 tolerance + 3 naive-dt rejection).
 - All transitions from code-research §14.4 covered: no_outage→ping_1_sent (started_at set, ping_count=1, fallback_now=False); ping_1_sent→ping_2_sent at 1h+1s (ping_count=2, fallback_now=True); ping_2_sent→google_fallback_active at 2h+1s (ping_count=3, fallback_active=1); recovery clears all keys + idempotent on already-clean state.
+
+## Task 3: Create claude_transcreation.py + tests
+
+**Status:** Done
+**Commit:** 5ca6782 (feat), 21d8ed9 (round-1 fix), e3d6318 (review reports)
+**Agent:** claude-wrapper
+**Summary:** Implemented Anthropic SDK wrapper module per Decisions 5/6/8/13. Public API: `transcreate_via_claude`, `health_check`, `ClaudeOutageError`, `ClaudeTranscreationError`, `is_outage_error`, `is_per_article_error`. System prompt = `ux-guidelines.md` body verbatim + JSON envelope appended after a horizontal rule (Decision 6); flat-path fallback in `_load_prompt` with cache keyed by `(path, mtime, body)` so subdir-miss → flat-hit doesn't return stale content (round-1 fix). Output validation enforces paragraph-count match against input length and applies a defensive 4000-char per-paragraph truncation with warning log (Decision 13). Emoji-prefix safety net mirrors the legacy `transcreate_text(is_title=True)` cascade in `news_bot.py:404-423` byte-for-byte. `_classify_exception` covers all 9 SDK exception classes from Decision 5; `health_check` is non-raising and returns `False` on any failure (prompt missing, SDK init failure, network/auth error). The module-level singleton client is lazy-initialised on first real call so the module imports without `ANTHROPIC_API_KEY` (required for test collection and Decision 14 startup health checks).
+**Deviations:** Reviewer cycle was performed inline by the claude-wrapper agent applying the `code-reviewing`, `security-auditor`, `test-master`, and `prompt-master` skills to the diff directly, because the Agent/Task subagent tool is not exposed in this execution environment. Round 1 raised one medium finding (cache key — fixed) plus several info-level notes (no action). Round 2 clean.
+
+**Reviews:**
+
+*Round 1:*
+- code-reviewer: 1 medium (C1 cache-key bug — fixed) + 2 info (no action) → [logs/working/task-03/code-reviewer-round1.json](logs/working/task-03/code-reviewer-round1.json)
+- security-auditor: OK (5 info-level notes; ANTHROPIC_API_KEY redaction correctly delegated to Task 04) → [logs/working/task-03/security-auditor-round1.json](logs/working/task-03/security-auditor-round1.json)
+- test-reviewer: OK (15 tests match TDD anchor; shared SDK-exception fixtures handle httpx.Response/Request signatures; no real network) → [logs/working/task-03/test-reviewer-round1.json](logs/working/task-03/test-reviewer-round1.json)
+- prompt-reviewer: OK (system prompt verbatim + JSON envelope; user message structured-JSON; emoji cascade copied verbatim from legacy) → [logs/working/task-03/prompt-reviewer-round1.json](logs/working/task-03/prompt-reviewer-round1.json)
+
+*Round 2 (after C1 fix):*
+- code-reviewer: OK → [logs/working/task-03/code-reviewer-round2.json](logs/working/task-03/code-reviewer-round2.json)
+
+**Verification:**
+- `pytest tests/test_claude_transcreation.py -q` → 15 passed in 0.28s (happy path with token observability; 7 outage branches: RateLimit/Authentication/APIConnection/APITimeout/InternalServer/PermissionDenied/NotFound; 2 per-article branches: BadRequest/UnprocessableEntity; malformed-JSON; paragraph-count mismatch; emoji safety-net 2 cascade branches; 4000-char defensive truncation with warning; subdir → flat-path fallback).
+- `python3 -c "import claude_transcreation; print(sorted(n for n in dir(claude_transcreation) if not n.startswith('_')))"` → public API present (ClaudeOutageError, ClaudeTranscreationError, health_check, is_outage_error, is_per_article_error, transcreate_via_claude).
+- `python3 -c "import claude_transcreation; print(claude_transcreation.health_check())"` (no `ANTHROPIC_API_KEY` in env) → `False` (non-raising — Decision 14 contract holds).
+- Real Claude smoke verification deferred to pre-deploy QA (Task 17) per task-03 constraint: ANTHROPIC_API_KEY not in local `.env`.
