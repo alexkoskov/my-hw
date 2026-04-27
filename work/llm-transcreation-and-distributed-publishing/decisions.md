@@ -164,3 +164,29 @@ Review details — in JSON files via links. QA report — in logs/working/.
 - `python3 -c "import claude_transcreation; print(sorted(n for n in dir(claude_transcreation) if not n.startswith('_')))"` → public API present (ClaudeOutageError, ClaudeTranscreationError, health_check, is_outage_error, is_per_article_error, transcreate_via_claude).
 - `python3 -c "import claude_transcreation; print(claude_transcreation.health_check())"` (no `ANTHROPIC_API_KEY` in env) → `False` (non-raising — Decision 14 contract holds).
 - Real Claude smoke verification deferred to pre-deploy QA (Task 17) per task-03 constraint: ANTHROPIC_API_KEY not in local `.env`.
+
+## Task 7: Refactor _fallback_publish for Claude primary + Google per-article fallback
+
+**Status:** Done
+**Commit:** 9d9e53b (feat), fd6f1ed (round-1 fix), 59e75c0 (review reports)
+**Agent:** publish-refactor
+**Summary:** Refactored step 1 of `_fallback_publish` to follow the dual-path translation contract from Decisions 1/5/9. Primary path: `transcreate_via_claude(row)` when `outage_state.is_fallback_active() == False`; per-article `ClaudeTranscreationError` falls back to `transcreate_text` (Google) for THAT row only with state machine NOT advanced; API-level `ClaudeOutageError` advances the state machine via `outage_state.record_outage_event(now=utc)`, dispatches admin pings, runs Steps 2-5 in degraded-mode Google, and re-raises `ClaudeOutageError` so the upstream `job()` loop (Task 8) can advance its slot-counter without a strike. Already-in-fallback shortcut routes straight to Google. Steps 2-5 (Telegraph publish, persist URL via `mark_telegraph_published`, Telegram teaser, `move_to_published(via_review=False)`, preview cleanup) untouched per Decision 9 idempotency. Both engines share the uniform `↳ автоперевод` Telegraph marker via the existing `auto_marker=not via_review` kwarg. Per-fixture `transcreate_via_claude` patches added to `_IdleFallbackCase` / `_ThrottleCase` / `_OverflowCase` so legacy Google-only assertions still hold via the per-article fallback branch.
+**Deviations:** Reviewer cycle was performed inline by the publish-refactor agent applying the `code-reviewing`, `security-auditor`, and `test-master` skills to the diff directly, because the Agent/Task subagent tool is not exposed in this execution environment. Task file `decisions.md`-snippet template requires the inline-review note pattern.
+
+**Reviews:**
+
+*Round 1:*
+- code-reviewer: approved-with-minor-suggestions (CR-1 datetime/timezone hoist applied; CR-2/CR-3/CR-4 deferred or info) → [logs/working/task-07/code-reviewer-round1.json](logs/working/task-07/code-reviewer-round1.json)
+- security-auditor: approved (4 info-level notes — log discipline, admin-ping fixed strings, BEGIN IMMEDIATE concurrency, defensive .get patterns) → [logs/working/task-07/security-auditor-round1.json](logs/working/task-07/security-auditor-round1.json)
+- test-reviewer: approved-with-minor-suggestions (TR-1 parameterized blocks deferred; TR-2 not applicable on inspection; TR-3/TR-4 strengths) → [logs/working/task-07/test-reviewer-round1.json](logs/working/task-07/test-reviewer-round1.json)
+
+*Round 2 (after fix):*
+- code-reviewer: approved → [logs/working/task-07/code-reviewer-round2.json](logs/working/task-07/code-reviewer-round2.json)
+- security-auditor: approved → [logs/working/task-07/security-auditor-round2.json](logs/working/task-07/security-auditor-round2.json)
+- test-reviewer: approved → [logs/working/task-07/test-reviewer-round2.json](logs/working/task-07/test-reviewer-round2.json)
+
+**Verification:**
+- `pytest tests/test_fallback_publish_paths.py -q` → 4 passed (Claude success; ClaudeTranscreationError per-article Google fallback; already-in-fallback shortcut; ClaudeOutageError degraded-publish + state-advance + admin-ping + re-raise).
+- `pytest tests/test_idle_fallback.py tests/test_fallback_throttle.py tests/test_overflow.py tests/test_fallback_publish_paths.py -q` → 38 passed (legacy idle-fallback / throttle / overflow tests still green via per-fixture `ClaudeTranscreationError` injection).
+- `pytest tests/test_claude_transcreation.py tests/test_outage_state.py tests/test_telegram.py tests/test_integration.py tests/test_job_prep_phase.py -q` → 92 passed in broader smoke covering Wave 2 dependencies + downstream send paths.
+- Smoke verification (mocked, no real Anthropic API per Constraints — `ANTHROPIC_API_KEY` not in `.env`): all branches asserted via unittest.mock fixtures in `tests/test_fallback_publish_paths.py`.
