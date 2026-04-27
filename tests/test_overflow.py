@@ -111,7 +111,21 @@ class _OverflowCase(unittest.TestCase):
         self.throttle_patcher = patch('news_bot.FALLBACK_THROTTLE_SECONDS', 0)
         self.throttle_patcher.start()
 
+        # llm-transcreation-and-distributed-publishing Task 7: route
+        # legacy overflow tests through the per-article Google fallback
+        # branch (Claude refusal-equivalent) so existing assertions on
+        # ``transcreate_text`` / ``publish_article`` behaviour remain
+        # valid. Real Claude-path tests live in
+        # ``tests/test_fallback_publish_paths.py``.
+        from claude_transcreation import ClaudeTranscreationError
+        self.claude_patcher = patch(
+            'news_bot.transcreate_via_claude',
+            side_effect=ClaudeTranscreationError('test stub: per-article'),
+        )
+        self.claude_patcher.start()
+
     def tearDown(self):
+        self.claude_patcher.stop()
         self.throttle_patcher.stop()
         self.cap_patcher.stop()
         self.db_patcher.stop()

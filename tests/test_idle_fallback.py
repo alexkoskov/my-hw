@@ -82,7 +82,26 @@ class _IdleFallbackCase(unittest.TestCase):
         self.throttle_patcher = patch('news_bot.FALLBACK_THROTTLE_SECONDS', 0)
         self.throttle_patcher.start()
 
+        # llm-transcreation-and-distributed-publishing Task 7: the
+        # primary translation engine is now Claude. These legacy idle-
+        # fallback tests assert against Google-Translate behaviour
+        # (``transcreate_text``), so we force a per-article
+        # ``ClaudeTranscreationError`` to route every row through the
+        # per-article Google fallback branch — equivalent to the pre-
+        # Task 7 Google-only path. Tests that need a real Claude path
+        # live in ``tests/test_fallback_publish_paths.py``.
+        from claude_transcreation import ClaudeTranscreationError
+        self.claude_patcher = patch(
+            'news_bot.transcreate_via_claude',
+            side_effect=ClaudeTranscreationError('test stub: per-article'),
+        )
+        self.claude_patcher.start()
+        # Outage state is in a tempfile DB which has no ``bot_state``
+        # rows yet — ``is_fallback_active()`` returns False naturally.
+        # No patch needed.
+
     def tearDown(self):
+        self.claude_patcher.stop()
         self.throttle_patcher.stop()
         self.db_patcher.stop()
         self.token_patcher.stop()

@@ -46,6 +46,19 @@ from telegraph_publisher import TelegraphError
 # after all our module-level names have been bound.
 import pending_articles_repo as pending_repo
 
+# Claude transcreation (Wave 2 task 3) + outage state machine (Wave 2
+# task 5) — pulled in at import time so ``_fallback_publish`` can pivot
+# between Claude (primary) and Google Translate (per-article fallback /
+# degraded-mode global fallback) without conditional imports inside the
+# hot path. Tests patch the bound names ``news_bot.transcreate_via_claude``
+# / ``news_bot.outage_state.is_fallback_active`` on the module surface.
+from claude_transcreation import (
+    transcreate_via_claude,
+    ClaudeTranscreationError,
+    ClaudeOutageError,
+)
+import outage_state
+
 # Configuration - set via environment variables
 TELEGRAM_BOT_TOKEN = os.getenv('TELEGRAM_BOT_TOKEN')
 TELEGRAM_CHANNEL_ID = os.getenv('TELEGRAM_CHANNEL_ID')
@@ -689,32 +702,64 @@ def _cleanup_preview_html(preview_path):
 
 
 # ---------------------------------------------------------------------------
-# Idle-fallback publisher (Task 9 / Decisions 9, 11, 12, 13).
+# Auto-fallback publisher (manual-review Task 9 + llm-transcreation Task 7).
 #
-# Called from ``job()`` step (1b) for rows whose ``notified_at`` is older
-# than ``GRACE_WINDOW_HOURS`` and whose ``ru_paragraphs`` is still NULL —
-# i.e., stale rows the operator never reviewed. Runs Gemini-adjacent
-# ``transcreate_text`` against each EN paragraph, then composes the same
-# Telegraph → Telegram pipeline used by ``hw_review publish``:
+# Called from ``job()`` step (1b) for rows whose grace window has elapsed
+# without operator review, and from the overflow fast-track. Translates
+# the article EN→RU and runs the canonical Telegraph → Telegram → DB
+# pipeline shared with ``hw_review.cmd_publish``:
 #
-#   (1) EN → RU transcreation (title / subtitle / paragraphs).
-#   (2) Telegraph publish — SKIPPED if ``row['telegraph_url']`` already
-#       populated (Decision 9 idempotency); else ``publish_article`` →
-#       ``mark_telegraph_published`` (separate txn, survives Telegram
-#       failure so the URL is reused on the next tick).
-#   (3) Telegram teaser via ``send_telegraph_teaser``. False-return raises
-#       — the caller's ``increment_attempt`` path must treat teaser failure
-#       like any other failure (Decision 13 shared counter).
-#   (4) ``move_to_published(via_review=False)`` — single atomic repo txn.
-#   (5) Best-effort cleanup of the cached preview HTML.
+#   Step 1 (translate). Two-tier engine contract per llm-transcreation
+#       Decisions 1, 5, 9:
+#       * Primary: ``transcreate_via_claude(row)`` if
+#         ``outage_state.is_fallback_active() == False``. Returns a dict
+#         with ``title`` (emoji prefix), ``subtitle``, ``paragraphs``
+#         (and ``blocks`` for autoevolution). Hot Wheels-glossary +
+#         emoji safety net are applied inside the Claude module.
+#       * Per-article fallback (``ClaudeTranscreationError`` —
+#         refusal / malformed JSON / 4xx): drop THIS article to the
+#         legacy ``transcreate_text`` Google path. Outage state is NOT
+#         advanced (Decision 5 — per-article problems must not take
+#         the channel offline).
+#       * API-level outage (``ClaudeOutageError`` — 429 / 5xx / auth /
+#         network): the state machine and admin-pings already fired
+#         inside ``claude_transcreation``. We translate THIS article via
+#         Google (degraded mode — never leave a slot unpublished),
+#         finish Steps 2–5 normally, and then **re-raise the
+#         ClaudeOutageError** so the upstream ``job()`` loop (Task 8)
+#         can advance its slot-counter without a strike and route
+#         subsequent slots through Google directly.
+#       * Already-in-fallback shortcut: when
+#         ``is_fallback_active() == True`` on entry, Claude is NOT
+#         called at all — the row goes straight to Google. Recovery
+#         is owned by ``job()`` (probes Claude on the first slot of
+#         the next cron tick), not here.
+#   Step 2 (Telegraph). Reuse stored ``telegraph_url`` per Decision 9
+#       idempotency; else ``telegraph_publisher.publish_article`` →
+#       ``mark_telegraph_published`` (dedicated txn, survives Telegram
+#       teaser failure). The ``↳ автоперевод`` marker (user-spec AC18)
+#       is injected by ``publish_article(auto_marker=not via_review)``
+#       regardless of which engine produced the RU body — uniform
+#       across both Claude and Google paths.
+#   Step 3 (persist RU). ``pending_repo.update_staged`` writes RU
+#       title / subtitle / paragraphs / blocks into the pending row;
+#       this is the NOT NULL anchor read by ``move_to_published``.
+#   Step 4 (Telegram teaser). ``send_telegraph_teaser`` returns False
+#       on soft failure → raise so the caller bumps ``attempt_count``.
+#   Step 5 (DB move + preview cleanup). Atomic
+#       ``move_to_published(via_review=False)`` then best-effort
+#       ``_cleanup_preview_html``.
 #
-# Contract: returns ``True`` on full success, raises on any step's failure.
-# Callers in ``job()`` wrap each row in try/except, sanitise the exception,
-# and bump ``attempt_count`` via ``pending_repo.increment_attempt``.
+# Contract: returns ``True`` on full success; raises ``ClaudeOutageError``
+# AFTER successful Steps 2–5 on the API-level-outage degraded path; raises
+# any other exception (Telegraph / Telegram / repo failure) up to the
+# caller so ``attempt_count`` can be bumped via
+# ``pending_repo.increment_attempt``.
 # ---------------------------------------------------------------------------
 def _fallback_publish(row, via_review=False):
-    """Auto-publish a pending row using GoogleTranslate. Used by both the
-    idle-fallback pass (Task 9) and the overflow fast-track (Task 10).
+    """Auto-publish a pending row through Claude (primary) or Google
+    (per-article + global fallback). Used by ``job()`` step (1b) and the
+    overflow fast-track.
 
     Parameters
     ----------
@@ -722,46 +767,92 @@ def _fallback_publish(row, via_review=False):
         A pending-articles row as returned by
         ``pending_articles_repo.get_pending`` / ``list_notified_overdue``.
     via_review : bool, default False
-        Marker persisted into ``published_articles.via_review`` — False for
-        auto-publish paths, True reserved for operator-driven publishes.
+        Marker persisted into ``published_articles.via_review`` — False
+        for auto-publish paths, True reserved for operator-driven
+        publishes.
 
     Returns
     -------
     bool
-        ``True`` on success. Exceptions propagate to the caller so
-        ``attempt_count`` can be bumped.
+        ``True`` on success. Re-raises ``ClaudeOutageError`` after a
+        successful degraded-mode publish so ``job()`` can advance its
+        outage-aware slot loop. Other exceptions propagate to the
+        caller so ``attempt_count`` can be bumped.
     """
     link = row['link']
 
-    # Step 1: EN → RU. Translate title, subtitle, and each paragraph
-    # individually — symmetric to the removed ``process_new_articles``
-    # pre-refactor behaviour. ``transcreate_text`` is allowed to raise;
-    # we do NOT swallow translation failures (they count as a strike).
+    # Step 1: EN → RU. Two-tier translation engine — see comment header.
     en_title = row.get('title') or ''
     en_subtitle = row.get('subtitle') or ''
     en_paragraphs = row.get('paragraphs') or []
-
-    ru_title = transcreate_text(en_title, is_title=True) if en_title else ''
-    ru_subtitle = transcreate_text(en_subtitle) if en_subtitle else ''
-    ru_paragraphs = [transcreate_text(p) for p in en_paragraphs]
-
-    # Translate ``blocks.text``/``caption`` fields if present — the
-    # prep-path sometimes carries a structured ``blocks`` list from the
-    # source fetcher. Leave unknown/empty shapes untouched.
-    ru_blocks = None
     en_blocks = row.get('blocks')
-    if en_blocks:
-        ru_blocks = []
-        for block in en_blocks:
-            if not isinstance(block, dict):
-                ru_blocks.append(block)
-                continue
-            new_block = dict(block)
-            if 'text' in new_block and new_block.get('text'):
-                new_block['text'] = transcreate_text(new_block['text'])
-            if 'caption' in new_block and new_block.get('caption'):
-                new_block['caption'] = transcreate_text(new_block['caption'])
-            ru_blocks.append(new_block)
+
+    # ``outage_signal`` carries a ``ClaudeOutageError`` to re-raise after
+    # Steps 2–5 complete. It MUST stay None on the happy / per-article
+    # branches so the function's normal True return path is preserved.
+    outage_signal = None
+
+    # Pure-Google translation path, factored so both the per-article
+    # fallback and the API-level-outage degraded path share one body.
+    def _google_translate():
+        ru_title = transcreate_text(en_title, is_title=True) if en_title else ''
+        ru_subtitle = transcreate_text(en_subtitle) if en_subtitle else ''
+        ru_paragraphs = [transcreate_text(p) for p in en_paragraphs]
+        ru_blocks = None
+        if en_blocks:
+            ru_blocks = []
+            for block in en_blocks:
+                if not isinstance(block, dict):
+                    ru_blocks.append(block)
+                    continue
+                new_block = dict(block)
+                if 'text' in new_block and new_block.get('text'):
+                    new_block['text'] = transcreate_text(new_block['text'])
+                if 'caption' in new_block and new_block.get('caption'):
+                    new_block['caption'] = transcreate_text(new_block['caption'])
+                ru_blocks.append(new_block)
+        return ru_title, ru_subtitle, ru_paragraphs, ru_blocks
+
+    # Already-in-fallback shortcut (Decision 5 / tech-spec "Publish loop"):
+    # when the state machine says Claude is down + 2h grace elapsed, route
+    # straight to Google without trying Claude. Recovery is owned by
+    # ``job()``'s probe on the first slot of the next cron tick.
+    if outage_state.is_fallback_active():
+        logger.info(
+            f"[fallback] is_fallback_active=True — routing {link} via Google"
+        )
+        ru_title, ru_subtitle, ru_paragraphs, ru_blocks = _google_translate()
+    else:
+        # Try Claude. The classifier inside ``claude_transcreation``
+        # turns SDK exceptions into either ``ClaudeTranscreationError``
+        # (per-article) or ``ClaudeOutageError`` (API-level).
+        try:
+            claude_result = transcreate_via_claude(row)
+            ru_title = claude_result.get('title') or ''
+            ru_subtitle = claude_result.get('subtitle') or ''
+            ru_paragraphs = list(claude_result.get('paragraphs') or [])
+            ru_blocks = claude_result.get('blocks')
+        except ClaudeTranscreationError as exc:
+            # Per-article failure — Google for THIS row only; do NOT
+            # advance the outage state machine (Decision 5).
+            logger.warning(
+                f"[fallback] Claude per-article failure for {link}: "
+                f"{type(exc).__name__} — falling back to Google for this article"
+            )
+            ru_title, ru_subtitle, ru_paragraphs, ru_blocks = _google_translate()
+        except ClaudeOutageError as exc:
+            # API-level outage — the state machine inside
+            # ``claude_transcreation`` already advanced and the admin
+            # ping already fired (per outage protocol). Translate this
+            # article via Google so the slot doesn't stay unpublished
+            # (degraded mode), finish Steps 2–5, and re-raise after
+            # the publish so ``job()`` can advance its slot loop.
+            logger.warning(
+                f"[fallback] Claude API outage for {link}: "
+                f"{type(exc).__name__} — degraded-mode Google publish + re-raise"
+            )
+            outage_signal = exc
+            ru_title, ru_subtitle, ru_paragraphs, ru_blocks = _google_translate()
 
     # Step 2: Telegraph — reuse saved URL per Decision 9 idempotency.
     # Done BEFORE persisting RU so a Telegraph failure keeps
@@ -845,6 +936,18 @@ def _fallback_publish(row, via_review=False):
     logger.info(
         f"[fallback] Published {link} via_review={via_review} url={telegraph_url}"
     )
+
+    # API-level outage signal — re-raise AFTER successful Steps 2–5 so
+    # ``job()`` (Task 8) can advance its slot-counting loop without
+    # treating this slot as a strike, and so subsequent slots route
+    # through Google directly until recovery. This is the contract that
+    # keeps the channel publishing AND keeps the upstream loop informed
+    # — without re-raise the outage signal would be silently swallowed
+    # and ``job()`` would keep trying Claude on every slot (anti-pattern
+    # — articles drift to ``move_to_failed`` after 3 strikes).
+    if outage_signal is not None:
+        raise outage_signal
+
     return True
 
 
