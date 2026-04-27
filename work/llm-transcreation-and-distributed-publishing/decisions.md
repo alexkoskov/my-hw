@@ -117,3 +117,25 @@ Review details — in JSON files via links. QA report — in logs/working/.
 - Smoke check 1 (arbitrary child logger 'smoke' → key in stderr): redacted to `***` (after handler-filter fix).
 - Smoke check 2 (`anthropic._client` sandbox-shape key with `=` and `.`): redacted to `***`.
 - Smoke check 3 (`send_admin_notification` with `sk-ant-...` in message → captured `Bot.send_message text=`): redacted to `***`; clean message passes through unchanged.
+
+## Task 5: Create `outage_state.py` + tests
+
+**Status:** Done
+**Commit:** a1900a0 (feat), 6f1009e (round-1 fix), b9cc507 (review reports)
+**Agent:** outage
+**Summary:** New `outage_state.py` (~330 LoC) implements the SQLite-backed Claude API outage state machine over the `bot_state` table created in Task 1. Key/value getters/setters per Decision 3; pure `_compute_next_state` separates transition logic from SQL I/O; `record_outage_event` / `record_recovery_event` wrap read-then-write in `BEGIN IMMEDIATE`; `PRAGMA busy_timeout = 5000` per Decision 16. Reads tolerate corrupted content (warn + None, never crash). 12 tests cover all four transitions (no_outage→ping_1→ping_2→fallback→recovery), persistence across simulated restart, real concurrent-writer serialization (post-1h boundary race fails without `BEGIN IMMEDIATE`), corrupted-content tolerance, and naive-datetime rejection.
+**Deviations:** Reviewer cycle was performed inline by the outage agent applying the `code-reviewing` and `test-master` skills to the diff directly, because the Agent/Task subagent tool is not exposed in this execution environment. Both reviewers raised minor findings on round 1 (3 + 4); all applied; round 2 clean.
+
+**Reviews:**
+
+*Round 1:*
+- code-reviewer: 3 minor (CR-1 perf — double-checked locking on recovery hot path; CR-2 magic 3600/7200 → named timedelta constants; CR-3 documented set_fallback_active(False)='0' vs recovery-DELETE asymmetry) → [logs/working/task-05/code-reviewer-round1.json](logs/working/task-05/code-reviewer-round1.json)
+- test-reviewer: 4 minor (TR-1 corrupted-content tolerance tests; TR-2 naive-dt rejection x3; TR-3 strengthened concurrency test — race past 1h boundary so missing BEGIN IMMEDIATE produces 2 ping #2 emissions; TR-4 explicit defaults test) → [logs/working/task-05/test-reviewer-round1.json](logs/working/task-05/test-reviewer-round1.json)
+
+*Round 2 (after fixes):*
+- code-reviewer: OK → [logs/working/task-05/code-reviewer-round2.json](logs/working/task-05/code-reviewer-round2.json)
+- test-reviewer: OK → [logs/working/task-05/test-reviewer-round2.json](logs/working/task-05/test-reviewer-round2.json)
+
+**Verification:**
+- `pytest tests/test_outage_state.py -v` → 12 passed in 0.89s (3 outage transitions + recovery + persistence + concurrency + 3 tolerance + 3 naive-dt rejection).
+- All transitions from code-research §14.4 covered: no_outage→ping_1_sent (started_at set, ping_count=1, fallback_now=False); ping_1_sent→ping_2_sent at 1h+1s (ping_count=2, fallback_now=True); ping_2_sent→google_fallback_active at 2h+1s (ping_count=3, fallback_active=1); recovery clears all keys + idempotent on already-clean state.
