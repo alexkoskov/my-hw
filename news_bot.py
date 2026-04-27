@@ -1358,9 +1358,12 @@ def _parse_published_at_utc(raw):
             s = s.split('.', 1)[0]
         naive = datetime.strptime(s, '%Y-%m-%d %H:%M:%S')
         return naive.replace(tzinfo=timezone.utc)
-    except Exception:
+    except Exception as exc:
+        # Include the exception class in the log so a future operator
+        # triaging a corrupted SQLite timestamp sees what failed (CR-1).
         logger.warning(
-            f"Could not parse published_at={raw!r}; skipping crash-loop guard."
+            f"Could not parse published_at={raw!r} "
+            f"({type(exc).__name__}); skipping crash-loop guard."
         )
         return None
 
@@ -1621,6 +1624,9 @@ def job():
                 f"[slot {idx}/{len(slots)}] ClaudeOutageError surfaced; "
                 f"degraded-mode publish completed, continuing loop."
             )
+            # Degraded-mode publishes are still real publishes for the
+            # end-of-loop summary — folding them into ``published_count``
+            # matches what the channel actually saw (CR-2).
             published_count += 1
         except Exception as exc:
             safe = sanitize_error_message(exc)

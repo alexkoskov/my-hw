@@ -461,41 +461,61 @@ class TestDistributedPublishLoop(_DistribLoopBase):
     @patch('news_bot.send_admin_notification')
     @patch('news_bot.time.sleep')
     @patch('news_bot._fallback_publish')
+    @patch('news_bot._fallback_publish_google_only')
     @patch('news_bot.fetch_full_article')
     def test_outage_active_routes_via_google(
-        self, mock_fetch_article, mock_publish, _mock_sleep, _mock_admin,
+        self, mock_fetch_article, mock_google, mock_publish, _mock_sleep,
+        _mock_admin,
     ):
+        """When ``outage_state.is_fallback_active() == True`` the loop must
+        route through ``_fallback_publish_google_only`` and NOT the
+        Claude-primary ``_fallback_publish`` path. Tightened from the
+        original 'either-or' assertion (TR-2)."""
         mock_fetch_article.side_effect = lambda e: self._article_payload()
 
-        # When fallback active, the loop must NOT call _fallback_publish
-        # (which gates Claude-primary). Instead the Google-only helper is
-        # called per article.
         with _patch_sources_returning([
             self._entry('http://example.com/g1', 'T1'),
         ]):
             with patch('news_bot.outage_state.is_fallback_active',
-                       return_value=True), \
-                 patch('news_bot._fallback_publish_google_only') as mock_google:
-                # The implementer may name the Google-only helper
-                # ``_fallback_publish_google_only`` OR route through
-                # ``_fallback_publish`` (which already short-circuits via
-                # ``is_fallback_active`` internally). We accept either by
-                # checking that EITHER mock_google was called OR the
-                # _fallback_publish path was taken — but at least Claude
-                # must NOT be tried directly.
+                       return_value=True):
                 news_bot.job()
 
-        # The Google-only helper or _fallback_publish was called.
-        # Asserted indirectly: news_bot.transcreate_via_claude was NOT
-        # invoked at the loop boundary. (transcreate_via_claude lives on
-        # the Claude side of _fallback_publish — when fallback is active
-        # via the existing short-circuit it's skipped naturally.)
-        # Either path is acceptable so long as the article was processed.
-        # We assert at least one of the two routing primitives was hit.
+        # Google-only path was taken.
         self.assertTrue(
-            mock_google.called or mock_publish.called,
-            "expected Google-only routing primitive to be invoked",
+            mock_google.called,
+            "expected _fallback_publish_google_only to be called",
         )
+        # Claude-primary path was NOT.
+        self.assertFalse(
+            mock_publish.called,
+            "expected _fallback_publish (Claude-primary) NOT to be called",
+        )
+
+    @patch('news_bot.send_admin_notification')
+    @patch('news_bot.time.sleep')
+    @patch('news_bot._fallback_publish')
+    @patch('news_bot.fetch_full_article')
+    def test_first_strike_increments_attempt(
+        self, mock_fetch_article, mock_publish, _mock_sleep, _mock_admin,
+    ):
+        """One unexpected exception on a single slot bumps attempt_count
+        to 1 and writes the (sanitised) error to last_error. Full
+        end-to-end 3-strikes coverage lives in ``test_three_strikes_*``
+        below — this test isolates the first-strike side-effect."""
+        mock_fetch_article.side_effect = lambda e: self._article_payload()
+        mock_publish.side_effect = RuntimeError('boom')
+
+        with _patch_sources_returning([
+            self._entry('http://example.com/x1', 'T1'),
+        ]):
+            with patch('news_bot.outage_state.is_fallback_active',
+                       return_value=False):
+                news_bot.job()
+
+        rows = pending_articles_repo.list_pending()
+        self.assertEqual(len(rows), 1)
+        self.assertEqual(rows[0]['attempt_count'], 1)
+        self.assertIn('boom', (rows[0].get('last_error') or ''))
 
     @patch('news_bot.send_admin_notification')
     @patch('news_bot.time.sleep')
@@ -504,33 +524,36 @@ class TestDistributedPublishLoop(_DistribLoopBase):
     def test_three_strikes_moves_to_failed(
         self, mock_fetch_article, mock_publish, _mock_sleep, _mock_admin,
     ):
+        """Three consecutive unexpected exceptions for the SAME row across
+        three job() runs end with the row in ``failed_articles`` and
+        nothing in ``pending_articles``. Defends the 3-strikes contract
+        end-to-end (TR-1)."""
+        # Pre-seed one row directly so the fetch phase does not duplicate it.
+        pending_articles_repo.insert_pending({
+            'link': 'http://example.com/x1',
+            'source_name': 'autoevolution',
+            'title': 'T1',
+            'paragraphs': ['p'],
+            'images': [],
+        })
         mock_fetch_article.side_effect = lambda e: self._article_payload()
-        # _fallback_publish raises a non-outage exception every time.
         mock_publish.side_effect = RuntimeError('boom')
 
-        with _patch_sources_returning([
-            self._entry('http://example.com/x1', 'T1'),
-        ]):
+        # Run job() three times — each run picks up the SAME oldest row
+        # and bumps the attempt counter. After the third run move_to_failed
+        # fires.
+        with _patch_sources_empty():
             with patch('news_bot.outage_state.is_fallback_active',
                        return_value=False):
-                # First two calls bump attempt_count; third moves to failed.
-                # Since the loop publishes one row per slot but only 1 slot
-                # exists for 1 row, we run job() three times to simulate
-                # three retries. Simpler approach: directly bump via three
-                # separate runs with fresh inserts disabled.
-                # Actually the loop only retries one row per slot; in
-                # practice retries happen across cron ticks. We assert the
-                # 3-strikes flow EXISTS by running once, then confirming
-                # increment_attempt was called once with the row link.
+                news_bot.job()
+                news_bot.job()
                 news_bot.job()
 
-        # After one run, the row should have attempt_count=1 (no failed move
-        # yet). The 3-strikes test is best done by directly exercising the
-        # error path — see follow-up integration test if needed.
-        rows = pending_articles_repo.list_pending()
-        self.assertEqual(len(rows), 1)
-        self.assertEqual(rows[0]['attempt_count'], 1)
-        self.assertIn('boom', (rows[0].get('last_error') or ''))
+        # Row no longer pending; row IS in failed.
+        self.assertEqual(pending_articles_repo.count_pending(), 0)
+        failed = pending_articles_repo.get_failed('http://example.com/x1')
+        self.assertIsNotNone(failed)
+        self.assertIn('boom', (failed.get('last_error') or ''))
 
     @patch('news_bot.send_admin_notification')
     @patch('news_bot.time.sleep')
