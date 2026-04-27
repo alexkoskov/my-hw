@@ -1,0 +1,31 @@
+{
+  "task": "task-10",
+  "reviewer": "test-reviewer",
+  "round": 1,
+  "skill": "test-master",
+  "scope": [
+    "tests/test_translation.py (new TestTranscreateText class)"
+  ],
+  "diff_base": "HEAD~1",
+  "summary": "Adds TestTranscreateText with 7 tests: 2 HW-glossary positive cases, 2 regression tests on deleted bureaucratic / passive-active behavior, 1 regression on 4000-char truncation removal, 1 title emoji-prefix path, 1 GoogleTranslator-error fallback. All 12 tests in the file pass; full suite (555 tests) green.",
+  "criteria": {
+    "test_pyramid_fit": "PASS — unit tests at the function-boundary level (mocks only the external GoogleTranslator). One mock per test, well below the >3-deps integration threshold.",
+    "behavior_not_impl": "PASS — tests assert observable contract (substring presence/absence, length preservation, emoji-prefix family) rather than internal regex order. test_title_gets_emoji_prefix deliberately accepts any of 8 known emojis instead of pinning to the 'announce' branch — appropriate for a behavioral assertion.",
+    "one_scenario_per_test": "PASS — each test has a single, well-named scenario with a docstring stating the intent.",
+    "edge_coverage": "PASS — covers (a) HW glossary positive cases for two pattern families, (b) regressions on each removed feature (bureaucratic, passive, truncation), (c) title path, (d) translator-exception fallback. Empty translation already covered indirectly via the existing `not translated.strip()` guard (acceptable to not duplicate).",
+    "regression_value": "PASS — the three regression tests (bureaucratic/passive/4000-char) are exactly the right shape: they would have failed under the pre-Task-10 implementation (verified by the TDD step in execution), so they protect against accidental re-introduction.",
+    "mock_hygiene": "PASS — single `@patch('news_bot.GoogleTranslator')` per test, mirroring the established `TestTranslateText` pattern. No over-mocking; no leaked global state.",
+    "naming": "PASS — `test_<subject>_<expected_behavior>` style consistent across the class.",
+    "determinism": "PASS — all return values are stubbed; no network, no time, no random.",
+    "speed": "PASS — 12 tests run in ~0.65s. New tests add no measurable overhead.",
+    "fail_messages": "PASS — title-emoji test attaches a custom message listing the expected emoji set, which makes a flake legible.",
+    "stale_tests_removed": "PASS — task asked to remove tests asserting bureaucratic regex behavior. The pre-existing file only tested translate_text (no such asserts existed). grep confirms no other test file in tests/ asserts the removed behavior."
+  },
+  "findings": [],
+  "verdict": "approved",
+  "notes": [
+    "test_body_not_truncated_at_4000 uses a 5010-char string with an END_MARKER suffix — a clean way to assert the marker survives without coupling to exact length.",
+    "Glossary tests cross both is_title=False (default) and contain Cyrillic input: confirms the function still operates on UTF-8 correctly.",
+    "Pattern matches the docstring at the top of TestTranscreateText explaining the spec rationale — useful context for future readers."
+  ]
+}
