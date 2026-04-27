@@ -386,3 +386,27 @@ Per task spec, audit task is itself the deliverable; no reviewers.
 - `grep -RE "anthropic\.com|api\.telegram\.org|telegra\.ph|autoevolution\.com" tests/` → all matches are fixture URLs / mock return values / `httpx.Request` constructors; no real network call.
 
 **Verdict:** PASS conditional on resolving BLOCKER-1 in Task 17. Once the two orphan files are removed, the test suite fully covers AC1–AC29 + 11 of 12 tech-spec ACs, with 5 minor 1-test gaps that do not block delivery.
+
+## Task 17: Pre-deploy QA
+
+**Status:** Done
+**Commit:** _pending_
+**Agent:** qa-runner
+**Summary:** Pre-deploy acceptance testing. Full suite: 566 passed in 4.72s, 0 failed/skipped/warnings. Targeted suites (96 tests across 7 files) and additional spec-mandated suites (38 tests) all green. 4/4 smoke checks PASS — Smoke 1 synthetic transcreate_via_claude (real-API deferred — ANTHROPIC_API_KEY not in dev .env), Smoke 2 token redaction direct + handler, Smoke 3 SDK exception text, Smoke 4 admin-notify outgoing payload. AC matrix: 28/31 user-spec ACs PASS + 3 deferred (AC30, AC31, AC27 live-portion); 11/12 tech-spec ACs PASS + 1 minor non-blocking gap (init_schema failure-path test). Upstream Code-Audit C1 + Test-Audit BLOCKER-1 (orphan tests/test_overflow.py + test_idle_fallback.py) was already cleared before QA — files absent from working tree. **Verdict: PASS_WITH_DEFERRED — ready for operator deploy (Task 18).**
+**Deviations:** None.
+
+**Deferred to post-deploy (Task 19):** AC30 (real Claude API call <30s), AC31 (live 12:00 МСК cron tick + 13:00 МСК first publication smoke), AC27 live-server portion (`ux-guidelines.md` present at `$DEPLOY_PATH` after `scp`), and the optional outage drill. See `deferredToPostDeploy` in `logs/working/task-17/qa-report.json`.
+
+**Reviews:**
+
+Per task spec, QA task is itself the deliverable; no reviewers.
+
+**Verification:**
+- `pytest tests/ -q` → 566 passed in 4.72s.
+- `pytest tests/test_compute_publish_slots.py tests/test_claude_transcreation.py tests/test_outage_state.py tests/test_fallback_publish_paths.py tests/test_job_distributed_publish.py tests/test_distributed_schedule_integration.py tests/test_no_token_leak_in_logs.py -v` → 96 passed in 1.24s.
+- `pytest tests/test_migration.py tests/test_integration.py tests/test_job_prep_phase.py tests/test_translation.py -v` → 38 passed in 0.77s.
+- Smoke 1 (synthetic transcreate_via_claude with mocked anthropic client): valid dict in 0.0005s, all required keys present (title with emoji, alts=3, subtitle, paragraphs=3==input).
+- Smoke 2 (`_redact_text` + `_TokenRedactingFilter` on prod-shape + sandbox-shape keys): both redacted to `***` in helper output AND in handler-emitted log lines.
+- Smoke 3 (synthetic anthropic SDK exception text): key fully redacted; surrounding context preserved.
+- Smoke 4 (admin-notify path with patched FakeBot): outgoing Telegram payload contains `***` instead of plain key.
+- Full QA report: [logs/qa/pre-deploy-qa.md](logs/qa/pre-deploy-qa.md). JSON report: [logs/working/task-17/qa-report.json](logs/working/task-17/qa-report.json).
