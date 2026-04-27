@@ -1,0 +1,15 @@
+{
+  "status": "approved",
+  "task": "task-01",
+  "round": 1,
+  "reviewer": "test-reviewer",
+  "reviewer_notes": "Review performed inline by the migrator agent: the Agent/Task subagent tool is not exposed in this environment, so the parent agent applied the test-master skill to the diff directly. This is documented as a deviation in decisions.md.",
+  "scope": {
+    "diff_target": "HEAD~1..HEAD",
+    "files": [
+      "tests/test_migration.py"
+    ]
+  },
+  "findings": [],
+  "summary": "All three TDD anchors from task 01 spec are covered with one test each, no overlap: (a) test_all_tables_created adds 'bot_state' to the table-presence assertion; (b) new test_bot_state_schema asserts via PRAGMA table_info that bot_state has exactly two columns with shapes {key: TEXT, notnull=0, pk=1, dflt=None} and {value: TEXT, notnull=0, pk=0, dflt=None} — matching task hint about SQLite TEXT-PK quirk; (c) test_init_db_idempotent now seeds a row in bot_state between two init_db() calls and asserts row count is preserved, regression-locking the idempotency contract from user-spec AC24 and tech-spec AC 'Schema & migration'. Tests use real SQLite via tempfile (consistent with existing pattern), no excessive mocking (only news_bot.DB_FILE patched), assertions check actual state not mock calls, each test earns its place — none are redundant."
+}
