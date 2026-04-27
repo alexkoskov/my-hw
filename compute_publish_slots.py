@@ -71,6 +71,8 @@ def compute_publish_slots(
     if now.tzinfo is None:
         raise ValueError("compute_publish_slots requires tz-aware datetime")
 
+    # Spec contract is `n >= 0`; treating negative N as a no-op rather than
+    # raising keeps callers (e.g. count_pending() arithmetic) defensively safe.
     if n <= 0:
         return [], 0
 

@@ -129,6 +129,12 @@ class TestComputePublishSlots(unittest.TestCase):
         self.assertEqual(slots, [])
         self.assertEqual(carry, 5)
 
+    def test_now_exactly_at_window_end(self):
+        """now=20:00 MSK exactly → empty slots, carry_over=N (boundary exclusive per AC3)."""
+        slots, carry = compute_publish_slots(5, msk(2026, 4, 26, 20, 0))
+        self.assertEqual(slots, [])
+        self.assertEqual(carry, 5)
+
     def test_naive_datetime_raises(self):
         """now without tzinfo → ValueError (TZ-aware invariant)."""
         naive_now = datetime(2026, 4, 26, 13, 0)  # no tzinfo
