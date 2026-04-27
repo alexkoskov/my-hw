@@ -269,6 +269,16 @@ _TOKEN_FILTER = _TokenRedactingFilter()
 # directly to one of them (e.g. pytest ``caplog``, third-party test
 # harnesses, operator-added per-library handlers) also benefits.
 logging.getLogger().addFilter(_TOKEN_FILTER)
+# Also attach the filter to every handler currently on the root logger.
+# Logger-level filters in Python's logging module only run for records
+# ORIGINATING on that logger — propagated records from child loggers
+# (e.g. ``logging.getLogger("foo").info(...)``) reach root's handlers
+# WITHOUT root's logger-level filter being consulted.  Handler-level
+# filters DO run on every record dispatched to the handler, including
+# propagated ones, so this closes the gap for arbitrary child loggers we
+# haven't named explicitly below (Decision 12 hardening).
+for _root_handler in logging.getLogger().handlers:
+    _root_handler.addFilter(_TOKEN_FILTER)
 for _noisy in ("httpx", "httpcore", "urllib3", "requests"):
     logging.getLogger(_noisy).addFilter(_TOKEN_FILTER)
 # Anthropic SDK family — the SDK uses its own logger hierarchy and may

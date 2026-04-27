@@ -140,6 +140,79 @@ class TestTokenRedactingFilter:
             isinstance(f, news_bot._TokenRedactingFilter) for f in root.filters
         ), "_TokenRedactingFilter is not installed on the root logger."
 
+    def test_filter_is_installed_on_root_stream_handler(self):
+        """The redacting filter must ALSO be attached to the StreamHandler
+        installed by ``logging.basicConfig`` on the root logger.  Logger-level
+        filters in Python's logging only run for records originating at that
+        logger; propagated records from arbitrary child loggers (e.g.
+        ``logging.getLogger("smoke").warning(...)``) reach root's handlers
+        WITHOUT root's logger-filter being consulted.  The handler-level
+        attachment on the StreamHandler is what closes that gap.
+
+        We assert at least one of root's StreamHandlers carries our filter
+        — additional handlers (e.g. pytest's ``LogCaptureHandler``, attached
+        per-test by ``caplog``) may be present without our filter; that's
+        fine, as caplog has its own handler-level filter chain."""
+        root = logging.getLogger()
+        stream_handlers = [
+            h for h in root.handlers
+            if isinstance(h, logging.StreamHandler)
+            and not h.__class__.__name__.startswith("LogCaptureHandler")
+        ]
+        assert stream_handlers, (
+            "root logger has no StreamHandler — basicConfig should have added one"
+        )
+        for h in stream_handlers:
+            assert any(
+                isinstance(f, news_bot._TokenRedactingFilter) for f in h.filters
+            ), (
+                f"_TokenRedactingFilter not installed on root StreamHandler {h!r} "
+                "— propagated records from child loggers will leak."
+            )
+
+    def test_token_redacted_on_propagated_record_from_arbitrary_child_logger(
+        self
+    ):
+        """Regression: a record emitted on an arbitrary child logger (one we
+        haven't explicitly named in the addFilter loop) and propagated to
+        root's StreamHandler must be scrubbed.  This exercises the
+        handler-level filter path — without ``addFilter`` on the StreamHandler
+        itself, propagated records bypass the logger-level filter on root and
+        leak to stderr / journald.
+
+        We can't use ``caplog`` here: pytest's ``LogCaptureHandler`` is a
+        separate handler with its own filter chain, so it would not catch a
+        regression in the basicConfig StreamHandler's filter wiring.  Instead
+        we redirect the StreamHandler's stream to a buffer and assert.
+        """
+        import io
+        root = logging.getLogger()
+        stream_handlers = [
+            h for h in root.handlers
+            if isinstance(h, logging.StreamHandler)
+            and not h.__class__.__name__.startswith("LogCaptureHandler")
+        ]
+        assert stream_handlers, "no StreamHandler on root — basicConfig should have added one"
+        target = stream_handlers[0]
+        original_stream = target.stream
+        buf = io.StringIO()
+        target.stream = buf
+        try:
+            child = logging.getLogger("propagation_smoke_test_arbitrary")
+            child.warning(
+                'HTTP Request: POST %s "HTTP/1.1 200 OK"', FAKE_URL
+            )
+        finally:
+            target.stream = original_stream
+        captured = buf.getvalue()
+        assert FAKE_TOKEN not in captured, (
+            "Bot token survived on propagated record from arbitrary child "
+            "logger — captured text was:\n" + captured
+        )
+        assert "***" in captured, (
+            "Redaction marker '***' missing from captured StreamHandler output"
+        )
+
 
 # ===========================================================================
 # Part 3 — end-to-end: a WARNING record carrying a token does not leak
