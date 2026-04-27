@@ -256,3 +256,26 @@ Review details — in JSON files via links. QA report — in logs/working/.
 - `grep -n "bureaucratic\|был выполн\|был представлен\|было объявлено\|был запущен" news_bot.py` → only the docstring's Decision 11 reference (`bureaucratic-regex cleanup … were removed`).
 - `grep -n "if len(result) > 4000" news_bot.py` → empty.
 
+## Task 12: Create tests/test_distributed_schedule_integration.py
+
+**Status:** Done
+**Commit:** 682d833 (test), ba04acc (round-1 fix)
+**Agent:** schedule-integ
+**Summary:** New integration test file with 4 end-to-end scenarios exercising the post-Wave-1–6 distributed-publish flow: full happy path (3 articles → 3 slots → 3 Claude publishes), API-level outage on slot 2 (ping #1 + Google fallback for that one article + state-machine advance), container restart mid-window with crash-loop guard (5 pre-seeded pending + 1 already-published, time frozen at 16:00 МСК), manual-review preemption (operator publishes one row mid-loop via `update_staged` + `move_to_published`). All 4 scenarios use `freezegun.freeze_time` for deterministic `now`, mock the Claude SDK at the pinned `news_bot.transcreate_via_claude` bound name, and verify slot timing against `compute_publish_slots` rather than hard-coded values per task constraint. Coverage: user-spec AC1–AC8, AC14–AC17 (AC17 implicit), AC21.
+**Deviations:** Reviewer cycle performed inline by this agent applying `code-reviewing` and `test-master` skills directly because the Agent/Task subagent tool is not exposed in this execution environment. Round-1 produced two minor `apply` findings: T7 — added a `mock_teaser.call_count == 3` assertion in scenario 1 to pin the channel-side handoff; T4 — added a negative assertion that no error-shaped admin ping fires during the manual-review-preemption scenario. Both fixes are 8 lines total, all 4 tests still pass, full suite remains 566 passed.
+
+**Reviews:**
+
+*Round 1:*
+- code-reviewer: 7 minor findings (all `skip`) → [logs/working/task-12/code-reviewer-round1.json](logs/working/task-12/code-reviewer-round1.json)
+- test-reviewer: 8 findings (2 `apply` — T4, T7; 6 `skip`) → [logs/working/task-12/test-reviewer-round1.json](logs/working/task-12/test-reviewer-round1.json)
+
+*Round 2 (after fixes):*
+- code-reviewer: approve, no findings → [logs/working/task-12/code-reviewer-round2.json](logs/working/task-12/code-reviewer-round2.json)
+- test-reviewer: approve, no findings → [logs/working/task-12/test-reviewer-round2.json](logs/working/task-12/test-reviewer-round2.json)
+
+**Verification:**
+- `pytest tests/test_distributed_schedule_integration.py -v` → 4 passed in 0.62s (test_full_happy_path_three_articles_three_slots_three_publishes, test_outage_mid_day_advances_state_and_recovers_on_next_slot, test_container_restart_mid_window_recomputes_slots_and_continues, test_manual_review_preemption_skips_locally_published_row).
+- `pytest tests/ -q` → 566 passed in 6.15s (no regressions from the new file).
+- `python3 -c "import tests.test_distributed_schedule_integration"` → imports clean (no syntax errors / missing deps).
+

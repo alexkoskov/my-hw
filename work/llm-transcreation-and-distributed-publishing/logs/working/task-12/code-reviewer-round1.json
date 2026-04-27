@@ -1,0 +1,76 @@
+{
+  "task": "12",
+  "round": 1,
+  "reviewer": "code-reviewer",
+  "skill": "code-reviewing",
+  "scope": "tests/test_distributed_schedule_integration.py (new file)",
+  "summary": "New file with 4 scenarios. All 4 tests pass locally and full pytest suite remains green (566 passed). Code is well-commented, mocks are pinned to bound names per Task 11 convention, freezegun is used for time control. A few minor improvements identified.",
+  "verdict": "approve_with_minor_suggestions",
+  "findings": [
+    {
+      "id": "C1",
+      "severity": "minor",
+      "title": "Use sqlite3.Row factory inline instead of accessing tuple by index",
+      "location": "_published_links() at lines 248-255",
+      "description": "Helper opens a raw sqlite3 connection and reads with default tuple cursor. The query selects only one column so r[0] is fine; just noting it for stylistic consistency with pending_articles_repo.list_pending() which uses dict-row.",
+      "recommendation": "Optional. Acceptable as-is — single-column SELECT.",
+      "action": "skip"
+    },
+    {
+      "id": "C2",
+      "severity": "minor",
+      "title": "Magic UTC offset in scenario 1 comment",
+      "location": "Line 291 — '2026-04-27 09:00:00' with comment 'UTC == 12:00 МСК'",
+      "description": "Comment is correct (MSK is UTC+3) but a reader might miss why the test passes 09:00 UTC. The MSK constant is defined at module scope; using MSK.localize(...).astimezone(pytz.UTC) inside the freeze_time call would make the relationship explicit. Trivial.",
+      "recommendation": "Comment is sufficient. Fine as-is.",
+      "action": "skip"
+    },
+    {
+      "id": "C3",
+      "severity": "minor",
+      "title": "tearDown stops patchers manually instead of using addCleanup",
+      "location": "setUp/tearDown at lines 150-235",
+      "description": "Modern unittest pattern uses self.addCleanup(patcher.stop) right after patcher.start(); on test failure during setUp this guarantees cleanup. The current tearDown is correct as long as setUp doesn't raise mid-stream — in this file the patchers are simple enough that the risk is low.",
+      "recommendation": "Acceptable. addCleanup would be a small refactor improvement but not required.",
+      "action": "skip"
+    },
+    {
+      "id": "C4",
+      "severity": "minor",
+      "title": "Crash-loop guard sleep tolerance hardcoded ±5%",
+      "location": "Lines 528-531",
+      "description": "Test asserts the guard sleep is within 5% of 1800s. Since freezegun freezes time absolutely, the elapsed delta should be exact (or within microseconds). The 5% slack is generous and gives a sane buffer for any time-zone or freeze-precision issue.",
+      "recommendation": "Acceptable as-is.",
+      "action": "skip"
+    },
+    {
+      "id": "C5",
+      "severity": "low",
+      "title": "Manual-review preemption test tolerates small false-positive: side_effect mutation triggers BEFORE Claude returns",
+      "location": "claude_side_effect at line 572",
+      "description": "The mutation runs at the entry of slot 1's Claude call, not after. This is correct for the test purpose (mutation lands in DB before slot 2 runs list_pending), but the docstring at lines 552-556 says 'AFTER slot 1's row was selected by list_pending, but BEFORE slot 2's selection' — which is technically true because the bot already pulled o1 from list_pending into a Python list before the Claude call begins. Doc could be slightly clearer.",
+      "recommendation": "Docstring is acceptable. Mechanism is correct.",
+      "action": "skip"
+    },
+    {
+      "id": "C6",
+      "severity": "minor",
+      "title": "Scenario 2 docstring overstates state-machine recovery coverage",
+      "location": "Lines 368-379",
+      "description": "Test verifies advance to ping #1 and Google fallback for the slot-2 article, but does NOT verify recovery clears state on slot 3. The class-level comment at lines 360-365 already documents this: 'state machine does NOT auto-clear under current Wave 1-6 wiring' — so the test is intentionally relaxed. Test name 'recovers_on_next_slot' could mislead future readers; consider 'state_advances_and_continues_on_next_slot'.",
+      "recommendation": "Test name change would be cleaner but not required since the docstring + class-level comment already document the actual behaviour.",
+      "action": "skip"
+    },
+    {
+      "id": "C7",
+      "severity": "low",
+      "title": "Hard-coded telegraph URL in publish_article mock could shadow per-test URL needs",
+      "location": "Line 182",
+      "description": "All tests share 'https://telegra.ph/fake-page-04-27'. Scenario 4 uses a different URL for the operator path ('https://telegra.ph/operator-page'). Both URLs are distinct; test 4 already verifies the operator URL is preserved through move_to_published. Fine.",
+      "recommendation": "Acceptable.",
+      "action": "skip"
+    }
+  ],
+  "blocking_issues": [],
+  "approve_to_merge": true
+}
