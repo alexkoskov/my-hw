@@ -1,0 +1,49 @@
+{
+  "task": "05",
+  "round": 1,
+  "reviewer": "code-reviewer",
+  "skill": "code-reviewing",
+  "files_reviewed": [
+    "outage_state.py",
+    "tests/test_outage_state.py"
+  ],
+  "summary": "Module follows the established short-lived-connection pattern from pending_articles_repo. State machine logic is correctly extracted into a pure _compute_next_state function. PRAGMA busy_timeout = 5000 set on every connection per Decision 16. BEGIN IMMEDIATE wraps every read-then-write sequence. One real perf concern on the recovery hot path (write-lock acquired even for the no-op case). Several minor stylistic / consistency concerns.",
+  "findings": [
+    {
+      "id": "CR-1",
+      "severity": "minor",
+      "dimension": "Performance",
+      "title": "record_recovery_event acquires write lock on no-op path",
+      "where": "outage_state.py — record_recovery_event",
+      "detail": "Recovery is called on every successful Claude transcreation. In steady-state (no active outage) this opens a write transaction (BEGIN IMMEDIATE) just to read one row and discover was_active=False. Under high publish rate that's a per-publish write-lock acquisition for nothing. Recommend: read started_at first WITHOUT BEGIN IMMEDIATE; only escalate to BEGIN IMMEDIATE if a clear is required. The DOUBLE-CHECKED-LOCKING pattern is safe here because the bad case (concurrent recovery events) just re-clears already-cleared state.",
+      "action": "apply"
+    },
+    {
+      "id": "CR-2",
+      "severity": "minor",
+      "dimension": "Readability",
+      "title": "Magic seconds 3600 / 7200 instead of named constants",
+      "where": "outage_state.py — _compute_next_state",
+      "detail": "elapsed.total_seconds() >= 3600 / 7200 — readers must mentally convert. Extract to module-level _PING_2_THRESHOLD = timedelta(hours=1) and _FALLBACK_THRESHOLD = timedelta(hours=2) — clearer intent, single point of change for tuning.",
+      "action": "apply"
+    },
+    {
+      "id": "CR-3",
+      "severity": "minor",
+      "dimension": "Consistency",
+      "title": "set_fallback_active(False) writes '0' but recovery DELETEs the key",
+      "where": "outage_state.py — set_fallback_active vs clear_outage_state",
+      "detail": "set_fallback_active(False) writes literal '0', but clear_outage_state() DELETEs the row entirely. is_fallback_active() handles both ('=='1') so semantics match, but the storage-layer asymmetry could surprise a future maintainer reading the bot_state table directly. Either change set_fallback_active(False) to DELETE the row, or document the asymmetry. Low-priority — leave as comment.",
+      "action": "apply_doc_comment"
+    },
+    {
+      "id": "CR-4",
+      "severity": "minor",
+      "dimension": "Error Handling",
+      "title": "_get tolerates missing table only via OperationalError propagation",
+      "where": "outage_state.py — _get",
+      "detail": "If init_schema was never called and bot_state table is missing, the SELECT raises OperationalError. The task spec says callers must call init_schema first, so this is in-contract. No action needed; documented in module docstring.",
+      "action": "no_action"
+    }
+  ]
+}

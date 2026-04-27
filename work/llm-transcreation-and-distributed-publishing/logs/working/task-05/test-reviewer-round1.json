@@ -1,0 +1,40 @@
+{
+  "task": "05",
+  "round": 1,
+  "reviewer": "test-reviewer",
+  "skill": "test-master",
+  "files_reviewed": [
+    "tests/test_outage_state.py"
+  ],
+  "summary": "6 unit tests cover all 4 state-machine transitions plus persistence and concurrency. Tests assert on real state, not mock calls. Each test is independent with its own tempfile DB. Two real coverage gaps: (1) AC explicitly lists 'corrupted timestamp tolerance' but no test exists, (2) AC implies naive datetime rejection but no test asserts ValueError. The concurrency test is a weak signal — it would pass even without BEGIN IMMEDIATE because the racing INSERT OR REPLACE writes the same value (no double-increment visible). A stronger concurrency test would race two callers PAST the 1h boundary so a missing lock would visibly double-increment ping_count.",
+  "findings": [
+    {
+      "id": "TR-1",
+      "severity": "minor",
+      "title": "Missing test: corrupted timestamp string in bot_state returns None + warns",
+      "detail": "AC explicitly: 'Reading corrupted timestamp string returns None + log warning, never crash'. Add test that inserts garbage value into bot_state via direct SQL, calls get_outage_started_at(), asserts None and asserts a warning was logged (using assertLogs).",
+      "action": "apply"
+    },
+    {
+      "id": "TR-2",
+      "severity": "minor",
+      "title": "Missing test: naive datetime rejected by setters and state-machine helpers",
+      "detail": "Implementation raises ValueError on naive datetime in _serialise_dt and at the head of record_outage_event / record_recovery_event. AC implies tz-aware contract. Add test asserting set_outage_started_at(naive) and record_outage_event(naive) both raise ValueError.",
+      "action": "apply"
+    },
+    {
+      "id": "TR-3",
+      "severity": "minor",
+      "title": "Concurrency test is structurally weak — would pass without BEGIN IMMEDIATE",
+      "detail": "Both racing threads currently see started_at=None and both write started_at=now, ping_count='1' via INSERT OR REPLACE. Final ping_count is '1' regardless of serialization. Strengthen by seeding state at ping_count=1, then race two callers AT now=t0+1h+1s — if the lock is missing, both read ping_count=1 and write ping_count=2, but with the lock the second caller reads ping_count=2 (already advanced) and writes nothing. The behavioural signal is identical, but the assertion now genuinely requires serialization.",
+      "action": "apply"
+    },
+    {
+      "id": "TR-4",
+      "severity": "minor",
+      "title": "Missing test: getter returns 0/False on absent keys",
+      "detail": "AC: 'Reading missing key returns None / 0 / False'. While get_ping_count() == 0 and is_fallback_active() == False are exercised implicitly in transition tests starting from a clean DB, an explicit assertion documents the contract clearly.",
+      "action": "apply"
+    }
+  ]
+}
