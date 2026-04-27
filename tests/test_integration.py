@@ -346,9 +346,13 @@ class TestOutageStateIntegration(_IntegrationBase):
 
     def setUp(self):
         super().setUp()
-        # Stop the auto-notify silencer so each outage test can use a
-        # fresh per-test send_admin_notification mock with its own
-        # @patch decorator.
+        # NOTE TO FUTURE MAINTAINERS: the notify_patcher.stop() below is
+        # NOT redundant — _IntegrationBase.setUp installed a generic
+        # silencer for `news_bot.send_admin_notification`. Each per-test
+        # @patch('news_bot.send_admin_notification') in this class needs
+        # to OWN that name, so we stop the base's silencer here. tearDown
+        # restarts it so the base's tearDown has something to stop —
+        # changing this dance breaks the per-test admin mock interception.
         self.notify_patcher.stop()
         # Neuter sleep — we don't want the real wall-clock to slow
         # the tests down, but each outage test asserts on number of
@@ -358,10 +362,10 @@ class TestOutageStateIntegration(_IntegrationBase):
 
     def tearDown(self):
         self.sleep_patcher.stop()
-        # Reinstate the silencer so _IntegrationBase.tearDown's stop()
-        # has something to stop. (notify_patcher.start() in the base
-        # class registered the patch — re-start it here so tearDown
-        # doesn't double-stop.)
+        # Pair with setUp's stop(): re-start the base silencer so
+        # _IntegrationBase.tearDown's notify_patcher.stop() has something
+        # to stop. Without this, the second test in the class fails
+        # because the patcher is already stopped.
         self.notify_patcher.start()
         super().tearDown()
 
@@ -399,9 +403,10 @@ class TestOutageStateIntegration(_IntegrationBase):
              patch('news_bot.outage_state.is_fallback_active', return_value=False), \
              patch('news_bot.SOURCES', [lambda notifier=None: []]):
             mock_dt.now.side_effect = fake_now
+            # Pass-through `datetime.combine` only — news_bot imports
+            # `timezone` and `timedelta` separately at module level, so
+            # mock_dt.timezone / mock_dt.timedelta would never resolve.
             mock_dt.combine = dt.datetime.combine
-            mock_dt.timezone = dt.timezone
-            mock_dt.timedelta = dt.timedelta
 
             news_bot.job()
 
@@ -412,11 +417,16 @@ class TestOutageStateIntegration(_IntegrationBase):
         # Fallback NOT active yet — flips only after ping #2 + 2h grace.
         self.assertFalse(outage_state.is_fallback_active())
 
-        # Admin received an outage ping (ping #1 text mentions Claude).
+        # Admin received the canonical ping #1. We pin to the
+        # outage_state._PING_1_TEXT prefix instead of just 'Claude' — that
+        # rules out an unrelated admin notification (e.g. a source-fetcher
+        # error message that happens to contain the word "Claude") from
+        # accidentally satisfying this assertion.
+        from outage_state import _PING_1_TEXT  # private — pinned contract
         ping_msgs = [c.args[0] for c in mock_admin.call_args_list if c.args]
-        self.assertTrue(
-            any('Claude' in m for m in ping_msgs),
-            f"expected an outage admin ping mentioning Claude, got: {ping_msgs!r}",
+        self.assertIn(
+            _PING_1_TEXT, ping_msgs,
+            msg=f"expected ping #1 verbatim; got admin pings: {ping_msgs!r}",
         )
 
     @patch('news_bot.send_admin_notification')
@@ -445,9 +455,10 @@ class TestOutageStateIntegration(_IntegrationBase):
              patch('news_bot.outage_state.is_fallback_active', return_value=False), \
              patch('news_bot.SOURCES', [lambda notifier=None: []]):
             mock_dt.now.side_effect = fake_now
+            # Pass-through `datetime.combine` only — news_bot imports
+            # `timezone` and `timedelta` separately at module level, so
+            # mock_dt.timezone / mock_dt.timedelta would never resolve.
             mock_dt.combine = dt.datetime.combine
-            mock_dt.timezone = dt.timezone
-            mock_dt.timedelta = dt.timedelta
 
             news_bot.job()
 
@@ -510,9 +521,10 @@ class TestOutageStateIntegration(_IntegrationBase):
              patch('news_bot.outage_state.is_fallback_active', return_value=False), \
              patch('news_bot.SOURCES', [lambda notifier=None: []]):
             mock_dt.now.side_effect = fake_now
+            # Pass-through `datetime.combine` only — news_bot imports
+            # `timezone` and `timedelta` separately at module level, so
+            # mock_dt.timezone / mock_dt.timedelta would never resolve.
             mock_dt.combine = dt.datetime.combine
-            mock_dt.timezone = dt.timezone
-            mock_dt.timedelta = dt.timedelta
 
             news_bot.job()
 
@@ -647,15 +659,15 @@ class TestRestartMidWindow(_IntegrationBase):
              patch('news_bot.outage_state.is_fallback_active', return_value=False), \
              patch('news_bot.SOURCES', [lambda notifier=None: []]):
             mock_dt.now.side_effect = fake_now
-            # Pass-through every other datetime classmethod news_bot uses
-            # (combine, strptime) — only ``now`` needs the freeze. The
-            # crash-loop guard at line 1069 calls ``datetime.strptime`` on
-            # the seeded published_at; without this passthrough strptime
-            # returns a MagicMock and the gap subtraction explodes.
+            # Pass-through `datetime.combine` and `datetime.strptime` —
+            # news_bot uses both. The crash-loop guard parses the seeded
+            # published_at via `datetime.strptime`; without this
+            # passthrough strptime returns a MagicMock and the gap
+            # subtraction explodes. (`timezone` and `timedelta` are
+            # imported separately at news_bot module level, so they
+            # don't need passthrough.)
             mock_dt.combine = dt.datetime.combine
             mock_dt.strptime = dt.datetime.strptime
-            mock_dt.timezone = dt.timezone
-            mock_dt.timedelta = dt.timedelta
 
             news_bot.job()
 
@@ -749,9 +761,10 @@ class TestManualReviewPreemption(_IntegrationBase):
              patch('news_bot.outage_state.is_fallback_active', return_value=False), \
              patch('news_bot.SOURCES', [lambda notifier=None: []]):
             mock_dt.now.side_effect = fake_now
+            # Pass-through `datetime.combine` only — news_bot imports
+            # `timezone` and `timedelta` separately at module level, so
+            # mock_dt.timezone / mock_dt.timedelta would never resolve.
             mock_dt.combine = dt.datetime.combine
-            mock_dt.timezone = dt.timezone
-            mock_dt.timedelta = dt.timedelta
 
             news_bot.job()
 
