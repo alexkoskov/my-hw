@@ -256,6 +256,29 @@ Review details — in JSON files via links. QA report — in logs/working/.
 - `grep -n "bureaucratic\|был выполн\|был представлен\|было объявлено\|был запущен" news_bot.py` → only the docstring's Decision 11 reference (`bureaucratic-regex cleanup … were removed`).
 - `grep -n "if len(result) > 4000" news_bot.py` → empty.
 
+## Task 11: Update integration tests for the new auto-publish path
+
+**Status:** Done
+**Commit:** 7216d95 (test), 7cbb72a (round-1 fix), 6a92ab7 (review reports)
+**Agent:** integration-update
+**Summary:** Synchronised `tests/test_integration.py` and `tests/test_job_prep_phase.py` with Wave 3–6: switched publish-branch patch targets from `news_bot.transcreate_text` to `news_bot.transcreate_via_claude` (pinned per Task 7 import), added `TestOutageStateIntegration` (AC14/15/16/17 — read state via `outage_state` public getters, never raw SQL on `bot_state`), `TestRestartMidWindow` (AC7), `TestManualReviewPreemption` (AC21), `TestCrashLoopGuard` (AC8), and replaced `TestCronScheduleTwelveHourly` with `TestCronScheduleDailyAtNoonMSK`. Fixed a pre-existing bug in the restart-mid-window test where the crash-loop guard's `datetime.strptime` call returned a `MagicMock` (the `news_bot.datetime` patch swallowed it) — added `mock_dt.strptime` passthrough alongside `combine`. Replaced deprecated `datetime.utcnow()` calls with the explicit UTC-naive form to clean up DeprecationWarnings.
+**Deviations:** Reviewer cycle performed inline by this agent applying `code-reviewing` and `test-master` skills directly, because the Agent/Task subagent tool is not exposed in this execution environment. Both reviewers approved on round 1 with minor findings only; round-1 fix applied 3 of 6 (CR-1 dead mock attrs, TR-2 verbatim ping assertion, TR-3 notify_patcher dance comment); CR-2 / CR-3 / TR-1 logged as no-action with reasoning in the JSON reports. Round 2 both approve, zero new findings.
+
+**Reviews:**
+
+*Round 1:*
+- code-reviewer: 3 minor findings (CR-1 apply, CR-2 skip, CR-3 skip) → [logs/working/task-11/code-reviewer-round1.json](logs/working/task-11/code-reviewer-round1.json)
+- test-reviewer: 3 minor findings (TR-1 skip, TR-2 apply, TR-3 apply) → [logs/working/task-11/test-reviewer-round1.json](logs/working/task-11/test-reviewer-round1.json)
+
+*Round 2 (after fixes):*
+- code-reviewer: approve, no findings → [logs/working/task-11/code-reviewer-round2.json](logs/working/task-11/code-reviewer-round2.json)
+- test-reviewer: approve, no findings → [logs/working/task-11/test-reviewer-round2.json](logs/working/task-11/test-reviewer-round2.json)
+
+**Verification:**
+- `pytest tests/test_integration.py tests/test_job_prep_phase.py -q` → 21 passed in 0.87s.
+- `pytest tests/ -q` → 566 passed in 5.47s (no regressions across the full suite).
+- `grep -nE "FALLBACK_THROTTLE_SECONDS|_overflow_fast_track|QUEUE_CAP|IDLE_TIMEOUT_HOURS|GRACE_WINDOW_HOURS" tests/test_integration.py tests/test_job_prep_phase.py` → empty (no leftover refs to deleted symbols).
+
 ## Task 12: Create tests/test_distributed_schedule_integration.py
 
 **Status:** Done
