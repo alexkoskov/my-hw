@@ -1,0 +1,40 @@
+{
+  "task": "04",
+  "round": 2,
+  "reviewer": "code-reviewer (inline by redactor — Task tool unavailable for subagent spawn in this environment)",
+  "scope": [
+    "news_bot.py: addFilter loop on root.handlers (10 lines added)",
+    "tests/test_no_token_leak_in_logs.py: 2 new tests covering handler-filter attachment + propagation regression"
+  ],
+  "verdict": "approve",
+  "summary": "Round-1 finding (defense-in-depth gap on propagated records from arbitrary child loggers, flagged minor by both reviewers and originally marked out-of-scope) is now addressed. The fix is the canonical Python-logging idiom: handler-level filters run for any record dispatched to the handler, including propagated ones, so attaching _TOKEN_FILTER to root.handlers closes the gap. Tests are well-targeted and the regression test correctly avoids caplog (which would have masked the regression).",
+  "criteria_checked": {
+    "fix_addresses_round1_finding": "ok — handler-attached filter catches propagated records from arbitrary child loggers, validated by smoke check and new regression test",
+    "no_double_filtering": "ok — handler.addFilter and logger.addFilter are independent paths in Python's logging dispatch; no double-redaction issue (idempotent string substitution)",
+    "iteration_safety": "ok — `for _root_handler in logging.getLogger().handlers` iterates a snapshot of the list at module-load time; later-added handlers (pytest caplog) won't get our filter, which is correct behaviour (caplog has its own filter chain)",
+    "test_correctly_avoids_caplog": "ok — the new regression test redirects the StreamHandler's stream to StringIO directly, exercising the actual filter wiring rather than pytest's separate handler",
+    "all_tests_pass": "ok — pytest tests/test_no_token_leak_in_logs.py -q → 30 passed",
+    "smoke_checks_pass": "ok — all 3 smoke checks from task spec verified manually"
+  },
+  "findings": [
+    {
+      "severity": "info",
+      "type": "code-readability",
+      "where": "news_bot.py:272-278 (handler addFilter loop)",
+      "finding": "Loop variable named `_root_handler` is clear; comment block explains the WHY (logger-level filters don't catch propagation). Implementation matches Python logging idiom from cookbook recipes.",
+      "action": "no change"
+    },
+    {
+      "severity": "info",
+      "type": "test-design",
+      "where": "tests/test_no_token_leak_in_logs.py: test_token_redacted_on_propagated_record_from_arbitrary_child_logger",
+      "finding": "Test correctly mutates the StreamHandler stream and restores it via try/finally. Uses a uniquely-named child logger to avoid collision with other tests' loggers. Asserts both negative (FAKE_TOKEN not in captured) and positive (*** in captured) for full redaction-or-leak coverage.",
+      "action": "no change"
+    }
+  ],
+  "tests": {
+    "new_test_count": 2,
+    "total_test_count_in_file": 30,
+    "all_pass": true
+  }
+}

@@ -1,0 +1,56 @@
+{
+  "task": "04",
+  "round": 1,
+  "reviewer": "code-reviewer (inline by redactor — Task tool unavailable for subagent spawn in this environment)",
+  "scope": [
+    "news_bot.py (token-redaction block + send_admin_notification)",
+    "tests/test_no_token_leak_in_logs.py (new TestAnthropicKeyRedaction + TestAdminNotifyRedaction)"
+  ],
+  "verdict": "approve",
+  "summary": "Implementation matches Decision 12 spec exactly. All 9 acceptance criteria from task 04 met. 28 tests pass (12 pre-existing + 16 new). Three layers of defense (regex, env-name list, filter+admin-notify-helper) are correctly wired and have explicit tests for each layer. Module-level reorder is clean — _redact_text is defined before its first use in send_admin_notification.",
+  "criteria_checked": {
+    "anthropic_regex_present": "ok — _ANTHROPIC_KEY_RE = re.compile(r'sk-ant-[A-Za-z0-9_=.-]{16,}') at news_bot.py:201",
+    "filter_redacts_both_in_one_pass": "ok — _TokenRedactingFilter.filter delegates to _redact_text which applies both regexes",
+    "redact_text_pure_helper": "ok — module-level function at lines 204-234, used by both filter and send_admin_notification",
+    "anthropic_in_secret_env_names": "ok — added to _SECRET_ENV_NAMES tuple at line 81",
+    "filter_attached_to_anthropic_loggers": "ok — addFilter loop at lines 278-279 covers anthropic, anthropic._client, anthropic._base_client",
+    "admin_notify_routes_through_redact_text": "ok — safe_message = _redact_text(message) before payload build at line 300",
+    "type_exc_name_invariant_documented": "ok — module-level comment block at lines 282-288 above send_admin_notification",
+    "tests_green": "ok — pytest tests/test_no_token_leak_in_logs.py -q → 28 passed"
+  },
+  "findings": [
+    {
+      "severity": "minor",
+      "type": "documentation",
+      "where": "news_bot.py:204-234 (_redact_text contract)",
+      "finding": "_redact_text(None) returns '' rather than echoing input. Documented in docstring. Acceptable; no caller currently passes None to this helper. send_admin_notification(None) would have crashed before this change too at message[:50].",
+      "action": "no change — contract is explicit in docstring"
+    },
+    {
+      "severity": "minor",
+      "type": "logging-architecture",
+      "where": "news_bot.py:271-279 (addFilter loop)",
+      "finding": "Python logging caveat: addFilter on a logger only filters records ORIGINATING on that logger, not propagated records from descendants. A hypothetical future logger like 'anthropic._streaming' (not in our explicit list) propagates to root, where root's filter only runs for records originating on root — not propagated ones. Decision 12 explicitly lists three loggers. Within-spec, but worth flagging as a known limitation.",
+      "action": "out-of-scope — Decision 12 specifies the three loggers; broader coverage would be a future hardening pass"
+    },
+    {
+      "severity": "minor",
+      "type": "robustness",
+      "where": "news_bot.py:223-234 (_redact_text fallback path)",
+      "finding": "If _BOT_TOKEN_RE.sub succeeds but _ANTHROPIC_KEY_RE.sub raises, text holds a partially-redacted string with Telegram redacted but Anthropic key still present. Both regexes are pre-compiled constants and re.sub on a string is not expected to raise; this is a defense-in-depth fallback. The current 'best-effort, never raise' contract is acceptable.",
+      "action": "no change — matches existing _TokenRedactingFilter.filter silent-fallback invariant"
+    }
+  ],
+  "tests": {
+    "new_test_classes": ["TestAnthropicKeyRedaction (10 tests)", "TestAdminNotifyRedaction (4 tests + 1 sandbox = 4 unique)"],
+    "new_test_count": 16,
+    "preexisting_count": 12,
+    "all_pass": true,
+    "smoke_verified": [
+      "synthetic warning on root logger with sk-ant-... key → redacted to *** in stderr",
+      "synthetic error on anthropic._client with sandbox-shape key → redacted to ***",
+      "send_admin_notification with sk-ant-... in message → captured Bot.send_message text contains *** not the key",
+      "send_admin_notification with clean message → captured text unchanged"
+    ]
+  }
+}

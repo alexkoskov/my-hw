@@ -93,3 +93,27 @@ Review details — in JSON files via links. QA report — in logs/working/.
 **Verification:**
 - `pytest tests/test_compute_publish_slots.py -q` → 15 passed in 0.02s (covers N=0,1,4,7,10,11,15,20; restart-at-16:00 → interval=48; restart-at-19:50 → 1 slot + 4 carry-over; now=20:00 boundary; now=21:00 post-window; tz-naive ValueError; tzinfo preservation; module-constants export).
 - `python3 -c "from compute_publish_slots import compute_publish_slots, WINDOW_START, WINDOW_END, MIN_INTERVAL_MINUTES; print('OK')"` → OK (no import errors, no external deps beyond stdlib).
+
+## Task 4: Extend `_TokenRedactingFilter` for `ANTHROPIC_API_KEY` (3-layer)
+
+**Status:** Done
+**Commit:** 0c6e3e8 (initial impl, mis-labelled "chore: review reports for task 02"), b1125d0 (round-1 fix: handler-level filter)
+**Agent:** redactor
+**Summary:** Implemented Decision 12 three-layer defense for `sk-ant-...` keys. Layer 1: new `_ANTHROPIC_KEY_RE = re.compile(r'sk-ant-[A-Za-z0-9_=.-]{16,}')` covers prod and sandbox/admin shapes (with `=` and `.`). Layer 2: `'ANTHROPIC_API_KEY'` added to `_SECRET_ENV_NAMES`. Layer 3: redaction core extracted to module-level `_redact_text(text)` helper used by both `_TokenRedactingFilter` and `send_admin_notification`; the redaction block was reordered above `send_admin_notification` to satisfy the forward-reference invariant noted in the task. Filter additionally attached to `anthropic` / `anthropic._client` / `anthropic._base_client` loggers, and (round-1 fix) to the basicConfig StreamHandler on root so propagated records from arbitrary child loggers are also scrubbed. Module-level invariant comment instructs future callers to use `type(exc).__name__` instead of `str(exc)` in admin-ping payloads.
+**Deviations:** Reviewer cycle was performed inline by the redactor agent applying the `code-reviewing` and `security-auditor` skills to the diff directly, because the Agent/Task subagent tool is not exposed in this execution environment. Round 1 raised one shared minor/low finding (Python `Logger.filter()` does not run on propagated records from arbitrary child loggers) — initially marked out-of-scope, then promoted to round-1 fix when smoke check #1 (synthetic 'smoke' logger emitting a `sk-ant-...` key) demonstrated the gap as a real exposure. Round 2 clean.
+
+**Reviews:**
+
+*Round 1:*
+- code-reviewer: 3 minor (1 doc, 1 logging-architecture promoted to round-1 fix, 1 robustness no-action) → [logs/working/task-04/code-reviewer-round1.json](logs/working/task-04/code-reviewer-round1.json)
+- security-auditor: 3 findings (1 low promoted to round-1 fix, 1 low no-action, 1 info) → [logs/working/task-04/security-auditor-round1.json](logs/working/task-04/security-auditor-round1.json)
+
+*Round 2 (after fixes):*
+- code-reviewer: OK → [logs/working/task-04/code-reviewer-round2.json](logs/working/task-04/code-reviewer-round2.json)
+- security-auditor: OK → [logs/working/task-04/security-auditor-round2.json](logs/working/task-04/security-auditor-round2.json)
+
+**Verification:**
+- `pytest tests/test_no_token_leak_in_logs.py -q` → 30 passed in 0.24s (12 pre-existing Telegram-token tests + 14 new Anthropic-key tests + 2 round-1-fix tests + 2 admin-notify tests).
+- Smoke check 1 (arbitrary child logger 'smoke' → key in stderr): redacted to `***` (after handler-filter fix).
+- Smoke check 2 (`anthropic._client` sandbox-shape key with `=` and `.`): redacted to `***`.
+- Smoke check 3 (`send_admin_notification` with `sk-ant-...` in message → captured `Bot.send_message text=`): redacted to `***`; clean message passes through unchanged.
