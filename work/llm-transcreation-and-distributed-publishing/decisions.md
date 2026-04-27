@@ -327,6 +327,24 @@ Review details — in JSON files via links. QA report — in logs/working/.
 - Doc-grep for legacy symbols (`_overflow_fast_track`, `FALLBACK_THROTTLE_SECONDS`, `QUEUE_CAP`, `IDLE_TIMEOUT_HOURS`, `GRACE_WINDOW_HOURS`, `idle-fallback`) on the three PK files → only two intentional "removed in feature X" historical notes in patterns.md remain (allowed per AC).
 - `pytest tests/ -q` → 566 passed in 5.30s (matches the ≥ 566 baseline).
 
+## Task 14: Code Audit
+
+**Status:** Done
+**Commit:** _pending_
+**Agent:** code-auditor
+**Summary:** Holistic static review of Wave 1–8 deliverables against the 7 focus areas + 11 code-review dimensions. All 7 focus areas PASS — Decision 9 idempotency (`mark_telegraph_published` BEFORE `send_telegraph_teaser`), Decision 5 SDK exception classification, `outage_state` state machine, `compute_publish_slots` algorithm, Decision 8 flat-path fallback, and `hw_review` call-site safety are all preserved. One critical finding (C1): `tests/test_overflow.py` and `tests/test_idle_fallback.py` — deleted in commit `050b6eb` — are physically present in the working tree as untracked files; they reference removed symbols and would break pytest collection. Two medium findings (M1: dead `_fallback_publish_google_only` helper; M2: startup `job()` immediate-run deviates from named "12:00 МСК cron" schedule) tracked as post-deploy follow-ups. Verdict: **FAIL** until C1 is resolved (`rm` the two stray legacy test files from disk), then PASS-WITH-FIXES. Full report → [logs/audit/code-audit.md](logs/audit/code-audit.md).
+**Deviations:** None.
+
+**Reviews:**
+
+Per task spec, audit task is itself the deliverable; no reviewers.
+
+**Verification:**
+- All 7 focus areas covered with file:line cites in the report.
+- grep on 6 deleted symbols across live source/test/deploy: clean except for the two staged-legacy-test files (C1).
+- 11 review dimensions applied to all new modules + touched functions.
+- Test suite NOT re-run by the auditor (per task constraint); pre-deploy QA must verify `git status` is clean before `pytest tests/ -q`.
+
 ## Task 15: Security Audit
 
 **Status:** Done
