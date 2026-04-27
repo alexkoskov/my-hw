@@ -1,13 +1,17 @@
 #!/usr/bin/env python3
 """Migration tests for ``news_bot.init_db``.
 
-After Task 6 of manual-review-workflow, ``news_bot.init_db`` is expected to
-create four tables:
+After Task 6 of manual-review-workflow, ``news_bot.init_db`` was expected to
+create four tables. After Task 1 of llm-transcreation-and-distributed-
+publishing, ``init_db`` is now expected to create five tables:
 
 * ``processed_news``    (existing — owned by news_bot's own DDL)
 * ``pending_articles``   (delegated to ``pending_articles_repo.init_schema``)
 * ``published_articles`` (delegated to ``pending_articles_repo.init_schema``)
 * ``failed_articles``    (delegated to ``pending_articles_repo.init_schema``)
+* ``bot_state``          (delegated to ``pending_articles_repo.init_schema``;
+   tiny key/value store backing the outage state machine — Decision 3 of
+   tech-spec llm-transcreation-and-distributed-publishing).
 
 These tests use a tempfile SQLite DB (NOT ``:memory:``) because the repo
 opens its own short-lived connections via ``news_bot.DB_FILE`` — a
@@ -99,7 +103,7 @@ class TestMigration(unittest.TestCase):
     # ------------------------------------------------------------------
 
     def test_all_tables_created(self):
-        """After ``init_db``, all four expected tables exist."""
+        """After ``init_db``, all five expected tables exist."""
         news_bot.init_db()
 
         tables = self._tables()
@@ -107,6 +111,7 @@ class TestMigration(unittest.TestCase):
         self.assertIn('pending_articles', tables)
         self.assertIn('published_articles', tables)
         self.assertIn('failed_articles', tables)
+        self.assertIn('bot_state', tables)
 
     def test_processed_news_schema_unchanged(self):
         """``processed_news`` DDL is still owned by news_bot (Decision 2 —
@@ -136,6 +141,35 @@ class TestMigration(unittest.TestCase):
                 actual[col], expected,
                 msg=f"pending_articles.{col} diverged: {actual[col]} != {expected}",
             )
+
+    # ------------------------------------------------------------------
+    # AC: bot_state column schema matches tech-spec
+    # ------------------------------------------------------------------
+
+    def test_bot_state_schema(self):
+        """``bot_state`` is a minimal key/value store: exactly two columns,
+        ``key TEXT PRIMARY KEY`` (PRAGMA reports notnull=0 by SQLite quirk —
+        TEXT PRIMARY KEY without explicit NOT NULL accepts NULL keys; this
+        matches the project convention used by ``pending_articles.link``),
+        ``value TEXT`` nullable.
+        """
+        news_bot.init_db()
+
+        cols = self._pragma_columns('bot_state')
+        self.assertEqual(
+            set(cols), {'key', 'value'},
+            msg="bot_state column set diverged from tech-spec",
+        )
+        self.assertEqual(
+            cols['key'],
+            {'type': 'TEXT', 'notnull': 0, 'dflt_value': None, 'pk': 1},
+            msg="bot_state.key shape diverged",
+        )
+        self.assertEqual(
+            cols['value'],
+            {'type': 'TEXT', 'notnull': 0, 'dflt_value': None, 'pk': 0},
+            msg="bot_state.value shape diverged",
+        )
 
     # ------------------------------------------------------------------
     # AC: init_db is idempotent
@@ -168,6 +202,12 @@ class TestMigration(unittest.TestCase):
                 "(link, title, ru_title, telegraph_url, source_name, via_review) "
                 "VALUES ('http://w', 't', 'ru', 'https://t.ph/x', 'mattel', 1)"
             )
+            # Seed a bot_state row so we can prove the new table also
+            # survives a re-init (Decision 3 — outage state must persist).
+            conn.execute(
+                "INSERT INTO bot_state (key, value) "
+                "VALUES ('outage_started_at', '2026-04-26T12:00:00')"
+            )
             conn.commit()
         finally:
             conn.close()
@@ -183,7 +223,7 @@ class TestMigration(unittest.TestCase):
         try:
             for table in (
                 'processed_news', 'pending_articles',
-                'published_articles', 'failed_articles',
+                'published_articles', 'failed_articles', 'bot_state',
             ):
                 count = conn.execute(
                     f"SELECT COUNT(*) FROM {table}"

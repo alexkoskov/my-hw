@@ -97,6 +97,21 @@ CREATE TABLE IF NOT EXISTS failed_articles (
 )
 """
 
+# Tiny key/value store backing the Claude-API outage state machine
+# (tech-spec llm-transcreation-and-distributed-publishing, Decision 3).
+# Active keys: ``outage_started_at``, ``last_ping_sent_at``, ``ping_count``,
+# ``fallback_active``, ``last_health_check_at`` — all values stored as
+# ISO-8601 strings or short flag strings (``'0'`` / ``'1'`` / ``'2'``).
+# Schema kept deliberately minimal so future additions do not require a
+# migration. ``key`` is the primary key; ``value`` is nullable — readers
+# treat a missing row as ``None``.
+_BOT_STATE_DDL = """
+CREATE TABLE IF NOT EXISTS bot_state (
+    key   TEXT PRIMARY KEY,
+    value TEXT
+)
+"""
+
 # JSON-serialised columns per table. Used by the row→dict converters to
 # deserialise list/dict fields, distinguishing NULL (absence) from "[]"
 # (empty-but-present). See tech-spec §9.13.
@@ -148,7 +163,11 @@ def _connect() -> sqlite3.Connection:
 # ---------------------------------------------------------------------------
 
 def init_schema(conn: sqlite3.Connection) -> None:
-    """Create the three new tables if missing. Idempotent.
+    """Create the four feature tables if missing. Idempotent.
+
+    Tables: ``pending_articles``, ``published_articles``, ``failed_articles``
+    (manual-review-workflow), and ``bot_state`` (llm-transcreation-and-
+    distributed-publishing — outage state machine; Decision 3).
 
     Takes an already-open ``conn`` so ``news_bot.init_db`` can re-use its own
     connection, and tests can pass ``:memory:``.
@@ -156,6 +175,7 @@ def init_schema(conn: sqlite3.Connection) -> None:
     conn.execute(_PENDING_DDL)
     conn.execute(_PUBLISHED_DDL)
     conn.execute(_FAILED_DDL)
+    conn.execute(_BOT_STATE_DDL)
     conn.commit()
 
 
