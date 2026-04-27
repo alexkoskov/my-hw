@@ -424,11 +424,16 @@ def transcreate_text(text, source='auto', target='ru', is_title=False):
     """
     Translate and adapt text for a lively Russian Telegram channel.
 
-    Google Translate + post-processing:
-    - replaces bureaucratic phrasing with plain Russian
+    Google Translate + minimal post-processing:
     - fixes common Hot Wheels mistranslations (brand names, jargon)
-    - flips a few passive constructions to active
     - prepends a single content-aware emoji to titles (deterministic)
+
+    Per Decision 11 (llm-transcreation-and-distributed-publishing) the
+    bureaucratic-regex cleanup and 4000-char body truncation were removed:
+    Claude is now the primary transcreator (idiomatic by design) and
+    Telegraph has no caption-style length limit. This function survives
+    only as a Google-Translate fallback for per-article Claude failures
+    and global Anthropic outages, so the HW glossary safety net stays.
     """
     import re
 
@@ -442,37 +447,6 @@ def transcreate_text(text, source='auto', target='ru', is_title=False):
         return text
 
     result = translated
-
-    # Bureaucratic → plain Russian
-    bureaucratic = {
-        r'является': 'это',
-        r'осуществляется': 'происходит',
-        r'представляет собой': 'это',
-        r'в рамках': 'в',
-        r'в процессе': 'во время',
-        r'в ходе': 'во время',
-        r'на сегодняшний день': 'сейчас',
-        r'в настоящее время': 'сейчас',
-        r'на данный момент': 'сейчас',
-        r'как правило': 'обычно',
-        r'в связи с тем,?\s+что': 'так как',
-        r'в целях': 'чтобы',
-        r'с целью': 'чтобы',
-        r'в случае,?\s+если': 'если',
-        r'по итогам': 'после',
-        r'имеет возможность': 'может',
-        r'получат возможность': 'смогут',
-        r'тем не менее': 'но',
-        r'при этом': 'и',
-    }
-    for pattern, repl in bureaucratic.items():
-        result = re.sub(pattern, repl, result, flags=re.IGNORECASE)
-
-    # Passive → active
-    result = re.sub(r'был выполн[еён]', 'сделали', result, flags=re.IGNORECASE)
-    result = re.sub(r'был представлен', 'представили', result, flags=re.IGNORECASE)
-    result = re.sub(r'было объявлено', 'объявили', result, flags=re.IGNORECASE)
-    result = re.sub(r'был запущен', 'запустили', result, flags=re.IGNORECASE)
 
     # Hot Wheels domain glossary — fix recurring Google Translate mistakes.
     # Keeps brand names in English (fandom convention) and fixes terms Google
@@ -517,20 +491,6 @@ def transcreate_text(text, source='auto', target='ru', is_title=False):
         else:
             emoji = '🔥'
         return f"{emoji} {result}"
-
-    # Body: truncate to 4000 chars on a sentence boundary.
-    if len(result) > 4000:
-        window = result[:4000]
-        match = re.search(r'[.!?][\s\n]', window[::-1])
-        if match:
-            cut_pos = 4000 - match.start() - 1
-            result = result[:cut_pos]
-        else:
-            last_space = window.rfind(' ')
-            if last_space != -1:
-                result = result[:last_space]
-            else:
-                result = result[:4000]
 
     return result
 
