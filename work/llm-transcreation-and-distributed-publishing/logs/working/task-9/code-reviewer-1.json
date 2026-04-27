@@ -1,0 +1,34 @@
+{
+  "task": "Task 9 — Delete legacy auto-publish code + env vars",
+  "round": 1,
+  "reviewer": "code-reviewer",
+  "scope": {
+    "commit": "050b6eb",
+    "files_changed": [
+      "news_bot.py",
+      "tests/test_fallback_throttle.py",
+      "tests/test_feed_iteration.py",
+      "tests/test_integration.py",
+      "tests/test_job_prep_phase.py",
+      "tests/test_mattel_integration.py",
+      "tests/test_idle_fallback.py (deleted)",
+      "tests/test_overflow.py (deleted)"
+    ],
+    "deletions_loc": 1883,
+    "insertions_loc": 121
+  },
+  "summary": "Pure deletion task. Removes _overflow_fast_track helper (~270 LoC), four legacy env vars (IDLE_TIMEOUT_HOURS / GRACE_WINDOW_HOURS / QUEUE_CAP / FALLBACK_THROTTLE_SECONDS), two test files (test_overflow.py, test_idle_fallback.py), and trims test_fallback_throttle.py to the surviving auto_marker + single-line-teaser invariants. Doc-comments in _fallback_publish that referenced removed helpers are rewritten. Prep-phase integration tests gain time.sleep + _fallback_publish patches because Task 8 added a distributed-publish loop to job() and the prior FALLBACK_THROTTLE_SECONDS=0 patch is gone.",
+  "verification": {
+    "pytest_full_suite": "548 passed in 8.58s",
+    "import_smoke": "python3 -c 'import news_bot; print(ok)' → ok",
+    "grep_audit_legacy_symbols": "empty",
+    "grep_audit_helper_calls_in_news_bot": "empty (list_pending_stale / list_notified_overdue / mark_notified all gone)"
+  },
+  "findings": [],
+  "verdict": "approve",
+  "notes": [
+    "Acceptance criteria all met: _overflow_fast_track removed, inline idle-fallback gone (was already removed by Task 08, this round confirms), step (4) overflow call site absent, time.sleep(FALLBACK_THROTTLE_SECONDS) sites removed (function holding them was deleted entirely), env-var declarations dropped, test files deleted, fallback-throttle tests trimmed, TestFallbackPublishPassesAutoMarkerToPublishArticle rewritten to drive _fallback_publish directly with the same three assertions preserved.",
+    "Side-effect to note for Task 11: prep-phase integration tests (test_feed_iteration / test_integration / test_mattel_integration / test_job_prep_phase) now patch news_bot.time.sleep + news_bot._fallback_publish to keep them green under the post-Task-8 distributed-publish loop. These patches are scaffolding; Wave 7 will reshape the tests properly.",
+    "Two consecutive blank lines now separate _fallback_publish from fetch_full_article (PEP 8). Verified."
+  ]
+}

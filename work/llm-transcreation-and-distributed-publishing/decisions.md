@@ -215,3 +215,23 @@ Review details — in JSON files via links. QA report — in logs/working/.
 - Smoke 2 — TZ-aware schedule: `python3 -c "import pytz, schedule; schedule.every().day.at('12:00', tz=pytz.timezone('Europe/Moscow')).do(lambda: None); print('OK')"` → `OK` (no `ScheduleValueError`). Regression on Decision 4.
 - Smoke 3 — integration 3-publishes: `pytest tests/test_job_distributed_publish.py::TestDistributedPublishLoop::test_publishes_three_articles_at_expected_slots` → PASSED (3 mocked entries → 3 `_fallback_publish` calls with `via_review=False`).
 - `pytest tests/test_pending_articles_repo.py tests/test_outage_state.py tests/test_compute_publish_slots.py tests/test_fallback_publish_paths.py -q` → 64 passed (Wave 1–3 dependencies green).
+
+## Task 9: Delete legacy auto-publish code + env vars
+
+**Status:** Done
+**Commit:** 050b6eb (refactor)
+**Agent:** cleaner
+**Summary:** Pure deletion task — removes the legacy auto-publish machinery now superseded by the Task 08 distributed-publish loop: `_overflow_fast_track` helper (~270 LoC), four legacy env vars (`IDLE_TIMEOUT_HOURS`, `GRACE_WINDOW_HOURS`, `QUEUE_CAP`, `FALLBACK_THROTTLE_SECONDS`), `tests/test_overflow.py`, `tests/test_idle_fallback.py`, and the throttle-related sections of `tests/test_fallback_throttle.py`. Doc-comments in `_fallback_publish` referencing removed helpers (`list_notified_overdue`) are rewritten to point at the new distributed-publish loop. `TestFallbackPublishPassesAutoMarkerToPublishArticle` is rewritten to drive `_fallback_publish` directly with a fixture row (the prior `job()` + `_age_notified` trigger no longer reaches the publish helper after Task 08). The auto_marker invariants are preserved verbatim. Net diff: −1762 LoC.
+**Deviations:** Side-effect adjustment to four prep-phase integration tests (`test_feed_iteration`, `test_integration`, `test_mattel_integration`, `test_job_prep_phase`): the prior `FALLBACK_THROTTLE_SECONDS=0` patch is gone, so we add `news_bot.time.sleep` + `news_bot._fallback_publish` patches to keep the post-Task-08 distributed-publish loop from blocking these tests. Per task spec ("точечное «погасить красное»") this is minimal scaffolding; Wave 7 (Task 11) reshapes these test files properly.
+
+**Reviews:**
+
+*Round 1:*
+- code-reviewer: approve, no findings → [logs/working/task-9/code-reviewer-1.json](logs/working/task-9/code-reviewer-1.json)
+
+**Verification:**
+- `pytest tests/ -q` → 548 passed in 8.58s.
+- `pytest tests/test_fallback_throttle.py tests/test_job_distributed_publish.py tests/test_fallback_publish_paths.py -q` → 23 passed.
+- `grep -nE 'FALLBACK_THROTTLE_SECONDS|QUEUE_CAP|IDLE_TIMEOUT_HOURS|GRACE_WINDOW_HOURS|_overflow_fast_track' news_bot.py tests/` → empty.
+- `grep -nE 'list_pending_stale|list_notified_overdue|mark_notified' news_bot.py` → empty.
+- `python3 -c "import news_bot; print('ok')"` → ok.
