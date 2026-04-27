@@ -239,7 +239,7 @@ Review details — in JSON files via links. QA report — in logs/working/.
 ## Task 10: Strip bureaucratic regex + 4000-char truncation from `transcreate_text`
 
 **Status:** Done
-**Commit:** f9eee57 (refactor), <review-reports-commit> (review reports)
+**Commit:** f9eee57 (refactor), 108af0b (review reports)
 **Agent:** translator-trim
 **Summary:** Pure-deletion refactor applying Decision 11. Removed the 19-pattern `bureaucratic` dict + apply loop, the 4 passive→active `re.sub` flips, and the 4000-char body truncation block from `transcreate_text` in `news_bot.py`. Kept the GoogleTranslator try/except, the 14-pattern `hw_glossary` post-pass, and the `is_title` content-aware emoji prefix. Docstring rewritten to point at Decision 11 and clarify the function's surviving role as a Google-Translate fallback (per-article Claude failure or global outage). `tests/test_translation.py` extended with a new `TestTranscreateText` class (7 tests): 2 HW-glossary positive cases, 3 regression tests asserting the deleted bureaucratic / passive-flip / truncation behavior is gone, 1 title emoji-prefix path, 1 GoogleTranslator-error fallback. TDD: tests written first, 3 failed against the legacy code, all 12 passed after the deletion.
 **Deviations:** Reviewer cycle was performed inline by the translator-trim agent applying the `code-reviewing` and `test-master` skills to the diff directly, because the Agent/Task subagent tool is not exposed in this execution environment. Both reviewers approved with zero findings on round 1.
