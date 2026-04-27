@@ -365,11 +365,12 @@ class TestAlreadyInFallback(_FallbackPublishPathsCase):
 class TestOutageDegradedThenReraises(_FallbackPublishPathsCase):
 
     def test_fallback_publish_outage_error_degraded_then_reraises(self):
-        """``ClaudeOutageError`` from Claude → Google fallback fires for
-        THIS publication; Steps 2–5 (Telegraph publish, persist, teaser,
-        move_to_published) execute fully; THEN ``_fallback_publish``
-        re-raises ``ClaudeOutageError`` so ``job()`` (Task 8) can
-        advance its slot-counting loop without treating this as a strike.
+        """``ClaudeOutageError`` from Claude → ``record_outage_event``
+        advances the state machine, admin ping is dispatched, Google
+        fallback fires for THIS publication, Steps 2–5 execute fully,
+        and THEN ``_fallback_publish`` re-raises ``ClaudeOutageError``
+        so ``job()`` (Task 8) can advance its slot-counting loop without
+        treating this as a strike.
 
         Critical contract for Task 8: the article DOES get published
         (degraded via Google) AND the upstream loop still hears the
@@ -389,6 +390,17 @@ class TestOutageDegradedThenReraises(_FallbackPublishPathsCase):
         # Google still translates — degraded mode publishes anyway.
         mock_google = MagicMock(side_effect=lambda t, **kw: f"[g] {t}")
 
+        # Outage state machine + admin ping mocks. ``record_outage_event``
+        # returns a dict with ``pings_to_send`` (admin Telegram messages
+        # to dispatch) — assert ``send_admin_notification`` is called
+        # with each ping.
+        mock_record = MagicMock(return_value={
+            'state': 'ping_1_sent',
+            'pings_to_send': ['⚠️ Claude API недоступна. ...'],
+            'fallback_now': False,
+        })
+        mock_notify = MagicMock(return_value=True)
+
         tg_url = 'https://telegra.ph/Outage-04-27'
         manager = MagicMock()
         mock_publish = MagicMock(return_value=tg_url)
@@ -396,6 +408,8 @@ class TestOutageDegradedThenReraises(_FallbackPublishPathsCase):
         mock_teaser = MagicMock(return_value=True)
         mock_move = MagicMock()
         manager.attach_mock(mock_claude, 'claude')
+        manager.attach_mock(mock_record, 'record')
+        manager.attach_mock(mock_notify, 'notify')
         manager.attach_mock(mock_google, 'google')
         manager.attach_mock(mock_publish, 'publish')
         manager.attach_mock(mock_mark, 'mark')
@@ -406,6 +420,8 @@ class TestOutageDegradedThenReraises(_FallbackPublishPathsCase):
              patch('news_bot.transcreate_text', mock_google), \
              patch('news_bot.outage_state.is_fallback_active',
                    return_value=False), \
+             patch('news_bot.outage_state.record_outage_event', mock_record), \
+             patch('news_bot.send_admin_notification', mock_notify), \
              patch('news_bot.telegraph_publisher.publish_article',
                    mock_publish), \
              patch('news_bot.pending_repo.mark_telegraph_published',
@@ -414,6 +430,13 @@ class TestOutageDegradedThenReraises(_FallbackPublishPathsCase):
              patch('news_bot.pending_repo.move_to_published', mock_move):
             with self.assertRaises(ClaudeOutageError):
                 news_bot._fallback_publish(row, via_review=False)
+
+        # State machine advanced + admin ping fired.
+        mock_record.assert_called_once()
+        # The single ping returned by record_outage_event was dispatched.
+        notify_payloads = [c.args[0] for c in mock_notify.call_args_list
+                           if c.args]
+        self.assertIn('⚠️ Claude API недоступна. ...', notify_payloads)
 
         # Critical: Steps 2–5 ran BEFORE the re-raise. The article must
         # have been published in degraded mode.
@@ -431,6 +454,11 @@ class TestOutageDegradedThenReraises(_FallbackPublishPathsCase):
         names = [c[0] for c in manager.mock_calls]
         self.assertLess(names.index('mark'), names.index('teaser'),
                         f"mark must run BEFORE teaser even in degraded mode; got {names}")
+        # State-machine update + admin ping happened BEFORE Telegraph
+        # publish (so operator knows about outage even if publish later
+        # fails for unrelated reasons).
+        self.assertLess(names.index('record'), names.index('publish'),
+                        f"record_outage_event must precede Telegraph publish; got {names}")
 
 
 if __name__ == '__main__':

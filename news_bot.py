@@ -12,7 +12,7 @@ import json
 import asyncio
 import time
 from collections import Counter
-from datetime import datetime
+from datetime import datetime, timezone
 from urllib.parse import urlparse
 
 from dotenv import load_dotenv
@@ -841,17 +841,42 @@ def _fallback_publish(row, via_review=False):
             )
             ru_title, ru_subtitle, ru_paragraphs, ru_blocks = _google_translate()
         except ClaudeOutageError as exc:
-            # API-level outage — the state machine inside
-            # ``claude_transcreation`` already advanced and the admin
-            # ping already fired (per outage protocol). Translate this
-            # article via Google so the slot doesn't stay unpublished
-            # (degraded mode), finish Steps 2–5, and re-raise after
-            # the publish so ``job()`` can advance its slot loop.
+            # API-level outage — advance the state machine and dispatch
+            # admin pings per the outage protocol (2 pings + 2h grace
+            # before global Google fallback). Then translate THIS article
+            # via Google so the slot doesn't stay unpublished (degraded
+            # mode), finish Steps 2–5, and re-raise after the publish so
+            # ``job()`` can advance its slot loop without a strike.
             logger.warning(
                 f"[fallback] Claude API outage for {link}: "
-                f"{type(exc).__name__} — degraded-mode Google publish + re-raise"
+                f"{type(exc).__name__} — advancing outage state, "
+                f"degraded-mode Google publish + re-raise"
             )
             outage_signal = exc
+            try:
+                # Use a tz-aware UTC datetime — outage_state rejects
+                # naive datetimes (timestamps must be unambiguous across
+                # the 1h/2h thresholds in the state machine).
+                event = outage_state.record_outage_event(
+                    datetime.now(timezone.utc),
+                )
+                for ping_text in event.get('pings_to_send') or []:
+                    try:
+                        send_admin_notification(ping_text)
+                    except Exception as notify_err:
+                        logger.error(
+                            f"[fallback] outage admin-ping send failed: "
+                            f"{sanitize_error_message(notify_err)}"
+                        )
+            except Exception as state_err:
+                # State-machine update failure must not block the
+                # degraded-mode publish — log + continue. The re-raise
+                # below still informs ``job()`` so it can route
+                # subsequent slots through Google.
+                logger.error(
+                    f"[fallback] outage_state.record_outage_event failed "
+                    f"for {link}: {sanitize_error_message(state_err)}"
+                )
             ru_title, ru_subtitle, ru_paragraphs, ru_blocks = _google_translate()
 
     # Step 2: Telegraph — reuse saved URL per Decision 9 idempotency.
