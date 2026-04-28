@@ -87,3 +87,50 @@ def is_boilerplate(text: str) -> bool:
 def filter_boilerplate(paragraphs: Iterable[str]) -> List[str]:
     """Drop paragraphs identified as boilerplate. Preserve order of the rest."""
     return [p for p in paragraphs if not is_boilerplate(p)]
+
+
+def filter_blocks(blocks: Iterable[dict]) -> List[dict]:
+    """Drop content blocks whose ``text`` / ``caption`` are pure UI
+    boilerplate (ads, social-share, "Subscribe" labels). Mirror of
+    ``filter_boilerplate`` but for the structured-block representation
+    used by autoevolution articles (lead / paragraph / image / video).
+
+    Decision rules per block:
+
+    * Non-dict / empty entries → drop.
+    * Block with media (``src`` or ``image_url`` set) → KEEP regardless
+      of caption text. We never want to lose visual content; a short
+      caption like "1995 Honda NSX" must not look like boilerplate.
+      Only drop a media block if its caption matches a boilerplate
+      pattern AND ``text`` is empty (rare — represents an ad slot
+      that happened to ship with a placeholder image).
+    * Pure-text block (no media, just ``text``) → drop if
+      ``is_boilerplate(text)`` matches. Same rule as
+      ``filter_boilerplate`` for paragraph strings.
+    * Anything else → keep.
+
+    Order preserved.
+    """
+    out: List[dict] = []
+    for block in blocks:
+        if not isinstance(block, dict):
+            continue
+        text = (block.get("text") or "").strip()
+        caption = (block.get("caption") or "").strip()
+        has_media = bool(block.get("src") or block.get("image_url"))
+
+        if has_media:
+            # Drop only if caption is junk AND there's no other text.
+            if caption and is_boilerplate(caption) and not text:
+                continue
+            out.append(block)
+            continue
+
+        # Pure-text block — drop if text is boilerplate (or empty AND
+        # caption is boilerplate, though that combination is rare).
+        if text and is_boilerplate(text):
+            continue
+        if not text and caption and is_boilerplate(caption):
+            continue
+        out.append(block)
+    return out

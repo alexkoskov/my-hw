@@ -257,11 +257,13 @@ def _parse_response(
     blocks = parsed.get("blocks")
     if expected_block_count is not None:
         if not isinstance(blocks, list) or len(blocks) != expected_block_count:
-            raise ClaudeTranscreationError(
-                f"Claude response 'blocks' length mismatch: "
-                f"expected {expected_block_count}, got "
-                f"{len(blocks) if isinstance(blocks, list) else 'non-list'}"
+            logger.warning(
+                "Claude response 'blocks' length diverges: expected %d, got %s; "
+                "caller will fall back to original EN blocks for structure",
+                expected_block_count,
+                len(blocks) if isinstance(blocks, list) else type(blocks).__name__,
             )
+            parsed["blocks"] = None
 
     return {
         "title": title,
@@ -523,6 +525,15 @@ def transcreate_via_claude(
     # Post-pass: emoji safety net + per-paragraph defensive truncation.
     parsed["title"] = _apply_emoji_safety_net(parsed["title"])
     parsed["paragraphs"] = _truncate_paragraphs(parsed["paragraphs"])
+
+    # Variant B fallback: if model didn't return matching blocks, use
+    # the article's original EN blocks for structural completeness.
+    if expected_block_count and not parsed.get("blocks"):
+        parsed["blocks"] = blocks_in
+        logger.info(
+            "Using original EN blocks (count=%d) — model did not return "
+            "matching translated blocks", expected_block_count,
+        )
 
     return parsed
 

@@ -22,7 +22,7 @@ except ImportError:
 
 from bs4 import BeautifulSoup
 
-from boilerplate_filter import filter_boilerplate, is_boilerplate
+from boilerplate_filter import filter_blocks, filter_boilerplate, is_boilerplate
 
 logger = logging.getLogger(__name__)
 
@@ -283,14 +283,14 @@ def _scrape_article_page(link: str, fetcher=None) -> Optional[Dict]:
     if hero_block:
         blocks.insert(0, hero_block)
 
-    # Strip UI-boilerplate (social-share, "Subscribe", "Read more", etc.) from
-    # text blocks — applies before the flat ``paragraphs`` list is built so the
-    # structured ``blocks`` list and the back-compat flat list agree.
-    blocks = [
-        b for b in blocks
-        if b["type"] not in ("lead", "paragraph", "heading")
-        or not is_boilerplate(b.get("text", ""))
-    ]
+    # Strip UI-boilerplate (social-share, "Subscribe", "Read more", ads
+    # with placeholder images, etc.) from blocks. ``filter_blocks`` is
+    # smarter than the previous inline check: it also drops media blocks
+    # whose caption is pure boilerplate AND has no other text (rare, but
+    # protects the ``article['blocks']`` fallback used by
+    # ``transcreate_via_claude`` when the LLM returns null/short blocks
+    # — we don't want to leak ad slots into the Telegraph page).
+    blocks = filter_blocks(blocks)
 
     if not blocks:
         return None

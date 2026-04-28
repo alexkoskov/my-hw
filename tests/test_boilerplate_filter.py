@@ -11,7 +11,7 @@ from unittest.mock import MagicMock
 
 import pytest
 
-from boilerplate_filter import filter_boilerplate, is_boilerplate
+from boilerplate_filter import filter_blocks, filter_boilerplate, is_boilerplate
 
 
 # ---------------------------------------------------------------------------
@@ -304,6 +304,86 @@ class TestAutoevolutionIntegration:
         assert "Tweet" not in block_texts
         assert "Subscribe to our newsletter" not in block_texts
         assert "Related articles" not in block_texts
+
+
+# ---------------------------------------------------------------------------
+# Pure-helper tests for filter_blocks
+# ---------------------------------------------------------------------------
+
+
+class TestFilterBlocks:
+    """``filter_blocks`` — same UI-junk strip as ``filter_boilerplate``
+    but for the structured-block representation used by autoevolution
+    (lead / paragraph / image / video). Media-bearing blocks are
+    preserved regardless of short captions (visual content beats
+    label heuristic)."""
+
+    def test_drops_pure_text_boilerplate_block(self):
+        blocks = [
+            {"type": "paragraph", "text": "Real article paragraph."},
+            {"type": "paragraph", "text": "Share on Facebook"},
+            {"type": "paragraph", "text": "Subscribe to our newsletter"},
+            {"type": "paragraph", "text": "Another real paragraph."},
+        ]
+        out = filter_blocks(blocks)
+        assert len(out) == 2
+        assert out[0]["text"] == "Real article paragraph."
+        assert out[1]["text"] == "Another real paragraph."
+
+    def test_keeps_image_block_with_short_caption(self):
+        blocks = [
+            {"type": "image", "src": "https://cdn/x.jpg",
+             "caption": "1995 Honda NSX"},
+            {"type": "image", "src": "https://cdn/y.jpg",
+             "caption": "Toyota AE86 Trueno"},
+        ]
+        out = filter_blocks(blocks)
+        assert len(out) == 2
+
+    def test_keeps_video_block_without_caption(self):
+        blocks = [
+            {"type": "video", "src": "https://youtube.com/watch?v=abc"},
+        ]
+        out = filter_blocks(blocks)
+        assert len(out) == 1
+
+    def test_drops_image_with_boilerplate_caption_and_no_text(self):
+        blocks = [
+            {"type": "image", "src": "https://cdn/banner.jpg",
+             "caption": "Subscribe to our newsletter"},
+        ]
+        out = filter_blocks(blocks)
+        assert out == []
+
+    def test_keeps_image_with_boilerplate_caption_if_text_present(self):
+        blocks = [
+            {"type": "image", "src": "https://cdn/x.jpg",
+             "caption": "Share on Facebook",
+             "text": "This is the actual story body about the Porsche."},
+        ]
+        out = filter_blocks(blocks)
+        assert len(out) == 1
+
+    def test_drops_non_dict_entries(self):
+        blocks = [
+            {"type": "paragraph", "text": "Real para"},
+            "not-a-dict",
+            None,
+            42,
+        ]
+        out = filter_blocks(blocks)
+        assert len(out) == 1
+
+    def test_preserves_order(self):
+        blocks = [
+            {"type": "paragraph", "text": "First."},
+            {"type": "paragraph", "text": "Share on Facebook"},
+            {"type": "paragraph", "text": "Second."},
+            {"type": "paragraph", "text": "Subscribe"},
+            {"type": "paragraph", "text": "Third."},
+        ]
+        out = filter_blocks(blocks)
+        assert [b["text"] for b in out] == ["First.", "Second.", "Third."]
 
 
 if __name__ == "__main__":

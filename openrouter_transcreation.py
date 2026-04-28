@@ -245,12 +245,21 @@ def _parse_response(
 
     blocks = parsed.get("blocks")
     if expected_block_count is not None:
+        # Soften: long autoevolution articles (10+ inline images / videos)
+        # see the model return ``blocks: null`` rather than a 1:1 array.
+        # We accept that and let the caller substitute the original
+        # (filtered) EN blocks for structural completeness — captions
+        # stay English, but galleries / videos / image structure
+        # survive on the Telegraph page (variant B).
         if not isinstance(blocks, list) or len(blocks) != expected_block_count:
-            raise ClaudeTranscreationError(
-                f"OpenRouter response 'blocks' length mismatch: "
-                f"expected {expected_block_count}, got "
-                f"{len(blocks) if isinstance(blocks, list) else 'non-list'}"
+            logger.warning(
+                "OpenRouter response 'blocks' length diverges: "
+                "expected %d, got %s; caller will fall back to original "
+                "EN blocks for structure",
+                expected_block_count,
+                len(blocks) if isinstance(blocks, list) else type(blocks).__name__,
             )
+            parsed["blocks"] = None  # signal to caller: no usable blocks
 
     return {
         "title": title,
@@ -466,6 +475,19 @@ def transcreate_via_claude(  # name kept for backward compat
     parsed = _parse_response(text, expected_paragraph_count, expected_block_count)
     parsed["title"] = _apply_emoji_safety_net(parsed["title"])
     parsed["paragraphs"] = _truncate_paragraphs(parsed["paragraphs"])
+
+    # Variant B: if the model didn't return matching blocks (the
+    # ``_parse_response`` softener nulled them out for us), fall back
+    # to the article's original EN blocks so galleries / videos /
+    # image structure survive on the Telegraph page. autoevolution_source
+    # already runs ``filter_blocks`` on these so no ad / social-share
+    # content leaks through.
+    if expected_block_count and not parsed.get("blocks"):
+        parsed["blocks"] = blocks_in
+        logger.info(
+            "Using original EN blocks (count=%d) — model did not return "
+            "matching translated blocks", expected_block_count,
+        )
 
     return parsed
 
