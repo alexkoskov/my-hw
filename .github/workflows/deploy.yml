@@ -233,7 +233,7 @@ jobs:
           DEPLOY_PATH: ${{ secrets.DEPLOY_PATH }}
         run: |
           ssh -o StrictHostKeyChecking=yes "$SSH_USER@$SSH_HOST" \
-            "set -e; cd '$DEPLOY_PATH' && pip install --user -r requirements.txt" \
+            "set -e; cd '$DEPLOY_PATH' && python3 -m pip install --user --break-system-packages -r requirements.txt" \
             || { echo "::error::pip install failed on server — SSH into $SSH_USER@$SSH_HOST to inspect ~/.local and ~/.cache/pip/log."; exit 1; }
 
       - name: Deploy summary
