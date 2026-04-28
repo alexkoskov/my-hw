@@ -89,6 +89,17 @@ WINDOW_END_TIME = datetime.strptime("20:00", "%H:%M").time()
 BACKLOG_WARNING_THRESHOLD = 50
 MSK_TZ = pytz.timezone("Europe/Moscow")
 
+#: Per-article LLM retry tuning — applies to ClaudeTranscreationError
+#: only (refusal / malformed JSON / too-short / etc). True outages
+#: (ClaudeOutageError) still route through the existing 2-ping + 2h
+#: grace state machine in outage_state. Operator-tuned (variant X'):
+#: three quick retries within a single slot, then admin ping +
+#: Google fallback so the article still publishes (with the
+#: ``↳ автоперевод`` marker as a quality warning). Tests patch these
+#: to 0 / smaller numbers to keep the suite fast.
+_LLM_PER_ARTICLE_MAX_ATTEMPTS = 3
+_LLM_PER_ARTICLE_RETRY_INTERVAL_S = 300  # 5 minutes
+
 # Env-var names whose values must never leak into stored error strings or
 # admin-chat messages (Decision 11; ANTHROPIC_API_KEY added per Decision 12
 # of llm-transcreation-and-distributed-publishing). Kept as a module-level
@@ -917,18 +928,67 @@ def _fallback_publish(row, via_review=False):
             ru_paragraphs = list(claude_result.get('paragraphs') or [])
             ru_blocks = claude_result.get('blocks')
         except ClaudeTranscreationError as exc:
-            # Per-article failure — Google for THIS row only; do NOT
-            # advance the outage state machine (Decision 5).
-            # Include the exception message (not just the class name) so
-            # operators can tell apart "paragraph count mismatch",
-            # "malformed JSON", "refusal text", etc. without a tcpdump.
-            logger.warning(
-                f"[fallback] Claude per-article failure for {link}: "
-                f"{type(exc).__name__}: {sanitize_error_message(exc)} "
-                f"— falling back to Google for this article"
-            )
-            ru_title, ru_subtitle, ru_paragraphs, ru_blocks = _google_translate()
-            used_google_fallback = True
+            # Variant X' (operator-tuned): 3 quick retries with 5-min
+            # waits between each, then admin ping + Google fallback so
+            # the article still ships. The ↳ автоперевод marker on the
+            # Telegraph body signals to subscribers that quality is
+            # degraded (Google, not LLM). Outage state is NOT advanced
+            # — a single weird article must not take the channel offline.
+            last_exc = exc
+            claude_result = None
+            for attempt in range(2, _LLM_PER_ARTICLE_MAX_ATTEMPTS + 1):  # 2, 3
+                logger.warning(
+                    f"[fallback] Claude attempt "
+                    f"{attempt - 1}/{_LLM_PER_ARTICLE_MAX_ATTEMPTS} failed for "
+                    f"{link}: {type(last_exc).__name__}: "
+                    f"{sanitize_error_message(last_exc)} — retrying in "
+                    f"{_LLM_PER_ARTICLE_RETRY_INTERVAL_S}s"
+                )
+                time.sleep(_LLM_PER_ARTICLE_RETRY_INTERVAL_S)
+                try:
+                    claude_result = transcreate_via_claude(row)
+                    logger.info(
+                        f"[fallback] Claude retry {attempt}/"
+                        f"{_LLM_PER_ARTICLE_MAX_ATTEMPTS} succeeded for {link}"
+                    )
+                    break
+                except ClaudeTranscreationError as retry_exc:
+                    last_exc = retry_exc
+                    continue
+                # ClaudeOutageError on retry would propagate up to the
+                # function's outer caller, missing the sibling outage
+                # handler below. We catch it explicitly and re-route.
+                except ClaudeOutageError as outage_exc:
+                    raise outage_exc
+            if claude_result is not None:
+                ru_title = claude_result.get('title') or ''
+                ru_subtitle = claude_result.get('subtitle') or ''
+                ru_paragraphs = list(claude_result.get('paragraphs') or [])
+                ru_blocks = claude_result.get('blocks')
+            else:
+                # All N attempts failed — admin ping + Google fallback.
+                logger.warning(
+                    f"[fallback] Claude attempt "
+                    f"{_LLM_PER_ARTICLE_MAX_ATTEMPTS}/"
+                    f"{_LLM_PER_ARTICLE_MAX_ATTEMPTS} failed for {link}: "
+                    f"{type(last_exc).__name__}: "
+                    f"{sanitize_error_message(last_exc)} — admin ping + "
+                    f"Google fallback for this article"
+                )
+                try:
+                    send_admin_notification(
+                        f"⚠️ GPT перевод не удался "
+                        f"{_LLM_PER_ARTICLE_MAX_ATTEMPTS} раза для статьи "
+                        f"{link}: {type(last_exc).__name__}. Переключаюсь "
+                        f"на Google для этой статьи."
+                    )
+                except Exception as notify_err:
+                    logger.error(
+                        f"[fallback] admin ping for per-article failure "
+                        f"failed: {sanitize_error_message(notify_err)}"
+                    )
+                ru_title, ru_subtitle, ru_paragraphs, ru_blocks = _google_translate()
+                used_google_fallback = True
         except ClaudeOutageError as exc:
             # API-level outage — advance the state machine and dispatch
             # admin pings per the outage protocol (2 pings + 2h grace

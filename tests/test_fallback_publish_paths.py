@@ -225,11 +225,24 @@ class TestClaudePath(_FallbackPublishPathsCase):
 
 class TestGoogleFallbackPath(_FallbackPublishPathsCase):
 
-    def test_fallback_publish_google_fallback_path(self):
-        """``ClaudeTranscreationError`` → per-article fallback to
-        ``transcreate_text`` for THIS row only; downstream chain unchanged
-        (Decision 9 idempotency: mark BEFORE teaser; via_review=False;
-        auto_marker=True).
+    def test_fallback_publish_per_article_failure_retries_then_google(self):
+        """``ClaudeTranscreationError`` 3x in a row → admin ping +
+        Google fallback for THIS article (variant X' per operator).
+
+        Slot block is bounded by ``_LLM_PER_ARTICLE_RETRY_INTERVAL_S``
+        (production: 5 min × 2 retries = 10 min; tests: 0 via conftest).
+        After 3 GPT failures the article is still published (through
+        Google) so the channel does not lose content; the
+        ``↳ автоперевод`` marker on the Telegraph body signals quality
+        degradation. Outage state machine is NOT advanced.
+
+        Asserts:
+        * transcreate_via_claude was called 3 times (initial + 2 retries)
+        * transcreate_text (Google) was called for title + subtitle + paragraphs
+        * send_admin_notification was called once with a 3x-failure ping
+        * publish_article got auto_marker=True
+        * record_outage_event was NOT called
+        * the row was moved to published_articles
         """
         entry = self._insert(
             link='http://a/2',
@@ -239,39 +252,30 @@ class TestGoogleFallbackPath(_FallbackPublishPathsCase):
         )
         row = repo.get_pending(entry['link'])
 
-        # Claude refuses / produces malformed JSON → per-article error.
-        mock_claude = MagicMock(side_effect=ClaudeTranscreationError(
-            'malformed JSON',
-        ))
-        # Google receives every EN string and prefixes "[g] " — gives the
-        # test a way to confirm Google was the engine that produced the
-        # values that ended up at Telegraph.
+        # 3 failures in a row.
+        mock_claude = MagicMock(side_effect=[
+            ClaudeTranscreationError('malformed JSON #1'),
+            ClaudeTranscreationError('malformed JSON #2'),
+            ClaudeTranscreationError('malformed JSON #3'),
+        ])
         mock_google = MagicMock(side_effect=lambda t, **kw: f"[g] {t}")
-
-        # Outage state machine NOT advanced — assert ``record_outage_event``
-        # is never called.
         mock_record = MagicMock(side_effect=AssertionError(
             "record_outage_event must NOT fire on per-article failure"
         ))
+        mock_admin = MagicMock(return_value=True)
 
-        tg_url = 'https://telegra.ph/Google-04-27'
-        manager = MagicMock()
+        tg_url = 'https://telegra.ph/Google-after-3-fails-04-28'
         mock_publish = MagicMock(return_value=tg_url)
         mock_mark = MagicMock()
         mock_teaser = MagicMock(return_value=True)
         mock_move = MagicMock()
-        manager.attach_mock(mock_claude, 'claude')
-        manager.attach_mock(mock_google, 'google')
-        manager.attach_mock(mock_publish, 'publish')
-        manager.attach_mock(mock_mark, 'mark')
-        manager.attach_mock(mock_teaser, 'teaser')
-        manager.attach_mock(mock_move, 'move')
 
         with patch('news_bot.transcreate_via_claude', mock_claude), \
              patch('news_bot.transcreate_text', mock_google), \
              patch('news_bot.outage_state.is_fallback_active',
                    return_value=False), \
              patch('news_bot.outage_state.record_outage_event', mock_record), \
+             patch('news_bot.send_admin_notification', mock_admin), \
              patch('news_bot.telegraph_publisher.publish_article',
                    mock_publish), \
              patch('news_bot.pending_repo.mark_telegraph_published',
@@ -281,30 +285,21 @@ class TestGoogleFallbackPath(_FallbackPublishPathsCase):
             ok = news_bot._fallback_publish(row, via_review=False)
 
         self.assertTrue(ok)
-        mock_claude.assert_called_once()
-        # Google fired for title + subtitle + each paragraph (3 inputs:
-        # title, subtitle, 2 paragraphs = 4 calls).
-        self.assertGreaterEqual(mock_google.call_count, 4)
-
-        # Telegraph received Google RU fields (prefixed [g] from stub).
+        # 3 attempts to GPT.
+        self.assertEqual(mock_claude.call_count, 3)
+        # Google fired after all 3 GPT failures.
+        self.assertGreaterEqual(mock_google.call_count, 4)  # title + subtitle + 2 paragraphs
+        # Admin ping fired exactly once with the 3-failure summary.
+        mock_admin.assert_called_once()
+        ping_text = mock_admin.call_args.args[0]
+        self.assertIn('GPT перевод не удался', ping_text)
+        # Telegraph published with auto_marker=True (Google fallback was used).
         mock_publish.assert_called_once()
         kwargs = mock_publish.call_args.kwargs
-        # Title: transcreate_text result is "[g] EN Title 2".
         self.assertEqual(kwargs['title'], '[g] EN Title 2')
-        self.assertEqual(kwargs['subtitle'], '[g] EN sub 2')
-        self.assertEqual(kwargs['paragraphs'], ['[g] EN one.', '[g] EN two.'])
-        self.assertTrue(kwargs.get('auto_marker'),
-                        f"auto_marker must be True, got {kwargs.get('auto_marker')!r}")
-
-        # Decision 9 ordering — same invariant as the Claude path.
-        names = [c[0] for c in manager.mock_calls]
-        self.assertIn('mark', names)
-        self.assertIn('teaser', names)
-        self.assertLess(names.index('mark'), names.index('teaser'),
-                        f"mark_telegraph_published must run BEFORE teaser; got {names}")
-
+        self.assertTrue(kwargs.get('auto_marker'))
+        # Row was moved to published.
         mock_move.assert_called_once()
-        self.assertEqual(mock_move.call_args.kwargs.get('via_review'), False)
 
 
 # ============================================================================

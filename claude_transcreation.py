@@ -238,9 +238,20 @@ def _parse_response(
             "Claude response 'paragraphs' must be a list of strings"
         )
     if len(paragraphs) != expected_paragraph_count:
+        # Soften: see openrouter_transcreation for rationale. Accept the
+        # LLM's paragraph segmentation — Telegraph renders <p> nodes
+        # without a structural 1:1 mapping requirement.
+        logger.warning(
+            "Claude response paragraph count diverges: "
+            "expected %d, got %d; accepting LLM-chosen segmentation",
+            expected_paragraph_count, len(paragraphs),
+        )
+
+    total_chars = sum(len(p) for p in paragraphs)
+    if total_chars < 30:
         raise ClaudeTranscreationError(
-            f"Claude response paragraph count mismatch: "
-            f"expected {expected_paragraph_count}, got {len(paragraphs)}"
+            f"Claude response paragraphs total content too short "
+            f"({total_chars} chars < 30 minimum) — likely empty / stub translation"
         )
 
     blocks = parsed.get("blocks")

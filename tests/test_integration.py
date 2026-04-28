@@ -430,10 +430,17 @@ class TestOutageStateIntegration(_IntegrationBase):
         )
 
     @patch('news_bot.send_admin_notification')
-    def test_per_article_problem_does_not_advance_state(self, mock_admin):
-        """``ClaudeTranscreationError`` (per-article refusal / malformed
-        JSON) routes THIS row through Google. Outage state machine is
-        NOT advanced — started_at remains None, ping_count remains 0.
+    def test_per_article_problem_retries_then_google_no_state_advance(
+        self, mock_admin,
+    ):
+        """``ClaudeTranscreationError`` 3x in a row (variant X') →
+        admin ping + Google fallback for THIS article. Outage state
+        machine is NOT advanced — started_at None, ping_count 0,
+        is_fallback_active False. Row IS moved to published_articles
+        (via Google) so the channel doesn't lose content.
+
+        Slot block is bounded by ``_LLM_PER_ARTICLE_RETRY_INTERVAL_S``
+        (zeroed via conftest fixture so test runs fast).
         """
         _seed_pending_row('http://example.com/perart1')
 
@@ -446,7 +453,11 @@ class TestOutageStateIntegration(_IntegrationBase):
 
         with patch('news_bot.datetime') as mock_dt, \
              patch('news_bot.transcreate_via_claude',
-                   side_effect=ClaudeTranscreationError('malformed JSON')), \
+                   side_effect=[
+                       ClaudeTranscreationError('malformed JSON #1'),
+                       ClaudeTranscreationError('malformed JSON #2'),
+                       ClaudeTranscreationError('malformed JSON #3'),
+                   ]), \
              patch('news_bot.transcreate_text',
                    side_effect=lambda t, **kw: f"[g] {t}"), \
              patch('news_bot.telegraph_publisher.publish_article',
@@ -467,7 +478,14 @@ class TestOutageStateIntegration(_IntegrationBase):
         self.assertEqual(outage_state.get_ping_count(), 0)
         self.assertFalse(outage_state.is_fallback_active())
 
-        # Row was published via Google — landed in published_articles.
+        # Admin pinged once with the 3-failure summary.
+        ping_messages = [c.args[0] for c in mock_admin.call_args_list if c.args]
+        self.assertTrue(
+            any('GPT перевод не удался' in m for m in ping_messages),
+            f'expected 3x-failure admin ping, got pings: {ping_messages!r}',
+        )
+
+        # Row WAS published via Google after retries exhausted.
         published = pending_articles_repo.get_published('http://example.com/perart1')
         self.assertIsNotNone(published)
 

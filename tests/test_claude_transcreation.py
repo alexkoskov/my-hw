@@ -242,11 +242,25 @@ def test_malformed_json_raises_per_article(sample_article):
         claude_transcreation.transcreate_via_claude(sample_article, client=client)
 
 
-def test_paragraph_count_mismatch_raises(sample_article):
-    # Input has 2 paragraphs but model returns 3 — schema mismatch.
+def test_paragraph_count_mismatch_is_accepted_with_warning(sample_article, caplog):
+    # Input has 2 paragraphs but model returns 3 — count divergence is
+    # accepted (logged as a warning) per the relaxed contract: long
+    # autoevolution articles routinely see the model merge two short
+    # adjacent paragraphs into one for editorial flow. Telegraph just
+    # renders <p> nodes, exact 1:1 mapping is not a structural requirement.
     client = _make_mock_client(_good_response_text(paragraph_count=3))
-    with pytest.raises(claude_transcreation.ClaudeTranscreationError):
-        claude_transcreation.transcreate_via_claude(sample_article, client=client)
+    import logging
+    with caplog.at_level(logging.WARNING, logger='claude_transcreation'):
+        out = claude_transcreation.transcreate_via_claude(
+            sample_article, client=client,
+        )
+    assert len(out['paragraphs']) == 3, (
+        'parser must return whatever the LLM produced, not pad/truncate'
+    )
+    assert any(
+        'paragraph count diverges' in rec.message and 'expected 2' in rec.message
+        for rec in caplog.records
+    ), 'a warning explaining the count divergence must be logged'
 
 
 # --------------------------------------------------------------------------- #

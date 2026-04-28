@@ -141,18 +141,34 @@ class TestResponseValidation(unittest.TestCase):
             with self.assertRaises(ClaudeTranscreationError):
                 gemini_transcreation.transcreate_via_claude(SAMPLE_ARTICLE, client=client)
 
-    def test_paragraph_count_mismatch_is_per_article(self):
+    def test_paragraph_count_mismatch_is_accepted_with_warning(self):
+        """Count divergence (model merged 2 paragraphs into 1) is accepted
+        per the relaxed contract — Telegraph renders <p> nodes without
+        a structural 1:1 mapping requirement. A WARNING is logged for
+        operator visibility, but the call returns successfully. Paragraph
+        kept long enough (>=30 chars) so the separate too-short floor is
+        not hit."""
         bad_json = json.dumps({
             "title": "🚀 Title",
             "alts": ["a", "b"],
             "subtitle": "sub",
-            "paragraphs": ["only one"],  # input had 2
+            "paragraphs": [
+                "Один абзац, в который модель сложила оба исходных абзаца ради читабельности.",
+            ],
             "blocks": None,
         })
         client = _make_client_returning(_make_response(bad_json))
+        import logging
         with patch.object(gemini_transcreation, "_load_prompt", return_value="X"):
-            with self.assertRaises(ClaudeTranscreationError):
-                gemini_transcreation.transcreate_via_claude(SAMPLE_ARTICLE, client=client)
+            with self.assertLogs('gemini_transcreation', level='WARNING') as cm:
+                out = gemini_transcreation.transcreate_via_claude(
+                    SAMPLE_ARTICLE, client=client,
+                )
+        self.assertEqual(len(out["paragraphs"]), 1)
+        self.assertTrue(any(
+            'paragraph count diverges' in r.message and 'expected 2' in r.message
+            for r in cm.records
+        ))
 
     def test_missing_title_is_per_article(self):
         bad_json = json.dumps({

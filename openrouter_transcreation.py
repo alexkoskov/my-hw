@@ -219,9 +219,28 @@ def _parse_response(
             "OpenRouter response 'paragraphs' must be a list of strings"
         )
     if len(paragraphs) != expected_paragraph_count:
+        # Soften: long autoevolution / lamley articles often see the model
+        # merge two short adjacent paragraphs into one (or split a long
+        # one) for editorial flow. We accept the LLM-chosen segmentation
+        # — Telegraph just renders <p> nodes, exact 1:1 mapping is not a
+        # structural requirement. Log for observability so operators
+        # notice if a model starts dropping content wholesale.
+        logger.warning(
+            "OpenRouter response paragraph count diverges: "
+            "expected %d, got %d; accepting LLM-chosen segmentation",
+            expected_paragraph_count, len(paragraphs),
+        )
+
+    # Sanity floor: total translated content must be at least 30 chars.
+    # Anything shorter is almost certainly a stub or empty response from
+    # the model and would land in the channel as a near-blank Telegraph
+    # page — operator would rather skip the article (and let the 3-strike
+    # flow surface it for review) than publish garbage.
+    total_chars = sum(len(p) for p in paragraphs)
+    if total_chars < 30:
         raise ClaudeTranscreationError(
-            f"OpenRouter response paragraph count mismatch: "
-            f"expected {expected_paragraph_count}, got {len(paragraphs)}"
+            f"OpenRouter response paragraphs total content too short "
+            f"({total_chars} chars < 30 minimum) — likely empty / stub translation"
         )
 
     blocks = parsed.get("blocks")
