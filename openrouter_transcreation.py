@@ -471,16 +471,23 @@ def health_check(client: Optional["openai.OpenAI"] = None) -> bool:
         return False
 
     try:
+        # max_tokens=200 (not 10) because OpenRouter routes some models
+        # through reasoning-style providers (GPT-5 family, Claude thinking
+        # mode, DeepSeek R1, etc.) which need budget for an internal CoT
+        # token allocation BEFORE producing visible output. Tiny budgets
+        # round-trip a 400 BadRequestError on those routes. 200 is enough
+        # to fit a reasoning preamble + a one-word reply across all
+        # providers; cost is negligible (~$0.001 per probe).
         client.chat.completions.create(
             model=os.getenv("OPENROUTER_MODEL", _DEFAULT_MODEL),
             messages=[
                 {"role": "system", "content": "You are a health probe."},
                 {"role": "user", "content": "ping"},
             ],
-            max_tokens=10,
+            max_tokens=200,
             timeout=15,
         )
         return True
     except Exception as exc:  # noqa: BLE001
-        logger.info("health_check: probe failed: %s", type(exc).__name__)
+        logger.info("health_check: probe failed: %s: %s", type(exc).__name__, exc)
         return False
