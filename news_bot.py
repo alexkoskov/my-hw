@@ -919,9 +919,13 @@ def _fallback_publish(row, via_review=False):
         except ClaudeTranscreationError as exc:
             # Per-article failure — Google for THIS row only; do NOT
             # advance the outage state machine (Decision 5).
+            # Include the exception message (not just the class name) so
+            # operators can tell apart "paragraph count mismatch",
+            # "malformed JSON", "refusal text", etc. without a tcpdump.
             logger.warning(
                 f"[fallback] Claude per-article failure for {link}: "
-                f"{type(exc).__name__} — falling back to Google for this article"
+                f"{type(exc).__name__}: {sanitize_error_message(exc)} "
+                f"— falling back to Google for this article"
             )
             ru_title, ru_subtitle, ru_paragraphs, ru_blocks = _google_translate()
             used_google_fallback = True
