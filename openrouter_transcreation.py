@@ -64,7 +64,20 @@ _PARAGRAPH_MAX_CHARS = 4000
 _DEFAULT_MAX_TOKENS = 8000
 
 #: Default model spec; "provider/model" form. Override via OPENROUTER_MODEL.
-_DEFAULT_MODEL = "openai/gpt-4o-mini"
+#: GPT-5.5 is the latest non-pro OpenAI model on OpenRouter.
+_DEFAULT_MODEL = "openai/gpt-5.5"
+
+#: Env var names accepted for the API key. Canonical first, alias second.
+_API_KEY_ENV_VARS = ("OPENROUTER_API_KEY", "OPEN_ROUTER_API_KEY")
+
+
+def _resolve_api_key() -> Optional[str]:
+    """Return the first non-empty value from ``_API_KEY_ENV_VARS``."""
+    for name in _API_KEY_ENV_VARS:
+        v = os.getenv(name, "").strip()
+        if v:
+            return v
+    return None
 
 #: OpenRouter API base URL (OpenAI-compatible).
 _DEFAULT_BASE_URL = "https://openrouter.ai/api/v1"
@@ -328,13 +341,24 @@ def is_per_article_error(exc: BaseException) -> bool:
 
 
 def _get_default_client() -> "openai.OpenAI":
-    """Lazily build an ``openai.OpenAI`` client pointed at OpenRouter's base URL."""
+    """Lazily build an ``openai.OpenAI`` client pointed at OpenRouter's base URL.
+
+    Accepts the API key from either ``OPENROUTER_API_KEY`` (canonical, per
+    OpenRouter docs) or ``OPEN_ROUTER_API_KEY`` (alias — typo-tolerance for
+    operators who add the underscore).
+    """
     global _DEFAULT_CLIENT
     if _DEFAULT_CLIENT is None:
-        api_key = os.getenv("OPENROUTER_API_KEY")
+        api_key = _resolve_api_key()
         if not api_key:
-            raise RuntimeError("OPENROUTER_API_KEY env var not set")
-        base_url = os.getenv("OPENROUTER_BASE_URL", _DEFAULT_BASE_URL)
+            raise RuntimeError(
+                "OPENROUTER_API_KEY (or alias OPEN_ROUTER_API_KEY) env var not set"
+            )
+        base_url = (
+            os.getenv("OPENROUTER_BASE_URL")
+            or os.getenv("OPEN_ROUTER_BASE_URL")
+            or _DEFAULT_BASE_URL
+        )
         _DEFAULT_CLIENT = openai.OpenAI(api_key=api_key, base_url=base_url)
     return _DEFAULT_CLIENT
 

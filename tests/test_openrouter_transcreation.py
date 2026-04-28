@@ -149,8 +149,21 @@ class TestClientLifecycle(unittest.TestCase):
     def test_missing_api_key_raises(self):
         with patch.dict(os.environ, {}, clear=False):
             os.environ.pop("OPENROUTER_API_KEY", None)
+            os.environ.pop("OPEN_ROUTER_API_KEY", None)
             with self.assertRaises(RuntimeError):
                 openrouter_transcreation._get_default_client()
+
+    def test_alias_env_var_accepted(self):
+        """OPEN_ROUTER_API_KEY (with underscore) should also work."""
+        with patch.dict(os.environ, {}, clear=False):
+            os.environ.pop("OPENROUTER_API_KEY", None)
+            os.environ["OPEN_ROUTER_API_KEY"] = "test-alias-key"
+            with patch.object(openai, "OpenAI") as mock_openai:
+                openrouter_transcreation._get_default_client()
+                kwargs = mock_openai.call_args.kwargs
+                self.assertEqual(kwargs["api_key"], "test-alias-key")
+            # Clean up
+            os.environ.pop("OPEN_ROUTER_API_KEY", None)
 
 
 class TestHealthCheck(unittest.TestCase):
@@ -167,6 +180,7 @@ class TestHealthCheck(unittest.TestCase):
         with patch.object(openrouter_transcreation, "_load_prompt", return_value="X"):
             with patch.dict(os.environ, {}, clear=False):
                 os.environ.pop("OPENROUTER_API_KEY", None)
+                os.environ.pop("OPEN_ROUTER_API_KEY", None)
                 self.assertFalse(openrouter_transcreation.health_check())
 
     def test_health_check_true_on_successful_probe(self):

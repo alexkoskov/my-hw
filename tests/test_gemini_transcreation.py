@@ -213,7 +213,7 @@ class TestLLMTranscreationDispatcher(unittest.TestCase):
     then auto-select by API-key presence in priority order
     openai → claude → gemini."""
 
-    _ENV_KEYS = ("LLM_PROVIDER", "OPENAI_API_KEY", "ANTHROPIC_API_KEY", "GEMINI_API_KEY", "OPENROUTER_API_KEY")
+    _ENV_KEYS = ("LLM_PROVIDER", "OPENAI_API_KEY", "ANTHROPIC_API_KEY", "GEMINI_API_KEY", "OPENROUTER_API_KEY", "OPEN_ROUTER_API_KEY")
 
     def setUp(self):
         # Snapshot then clear all relevant env vars so each test starts clean.

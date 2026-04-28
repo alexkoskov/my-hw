@@ -57,7 +57,7 @@ def _auto_select_by_key_presence() -> str:
         return "claude"
     if _has_key("GEMINI_API_KEY"):
         return "gemini"
-    if _has_key("OPENROUTER_API_KEY"):
+    if _has_key("OPENROUTER_API_KEY") or _has_key("OPEN_ROUTER_API_KEY"):
         return "openrouter"
     return "claude"
 
