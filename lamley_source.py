@@ -35,10 +35,12 @@ MAX_RESPONSE_SIZE = 5 * 1024 * 1024
 IMAGE_LIMIT = 10
 
 #: Minimum gap between two consecutive Lamley fetches in the same process.
-#: 2 s keeps us well under any typical WAF rate-limit while not noticeably
-#: slowing the daily 12:00 МСК cron tick (10 articles → +20 s, deep within
-#: the publish window).
-_MIN_REQUEST_INTERVAL_S = 2.0
+#: Field-tested: 2 s still triggered 429 from Lamley's WAF for back-to-back
+#: bursts. 20 s gives lamleygroup.com room to breathe between requests.
+#: Cost: 10 articles → +200 s (≈ 3.5 min) added to the daily 12:00 МСК
+#: cron prep phase — still leaves a wide margin before the 13:00 МСК
+#: publish window opens.
+_MIN_REQUEST_INTERVAL_S = 20.0
 
 #: How long to wait when a 429 response arrives without a usable
 #: ``Retry-After`` header.
