@@ -672,7 +672,6 @@ def send_telegraph_teaser(telegraph_url, source_url):
                 link_preview_options=LinkPreviewOptions(
                     url=telegraph_url,
                     show_above_text=True,
-                    prefer_large_media=True,
                 ),
             )
             logger.info(f"Posted to Telegram: {telegraph_url}")
