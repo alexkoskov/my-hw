@@ -54,7 +54,7 @@ _TITLE_EMOJIS = ("🏆", "🏎️", "🚀", "💎", "🤝", "📢", "🚗", "�
 
 _PARAGRAPH_MAX_CHARS = 4000
 _DEFAULT_MAX_TOKENS = 8000
-_DEFAULT_MODEL = "gemini-2.0-flash"
+_DEFAULT_MODEL = "gemini-2.5-flash-lite"
 
 #: Lazily-instantiated singleton client.
 _DEFAULT_CLIENT: Optional["genai.Client"] = None

@@ -137,7 +137,7 @@ jobs:
           ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
           ANTHROPIC_MODEL: ${{ vars.ANTHROPIC_MODEL || 'claude-haiku-4-5' }}
           GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
-          GEMINI_MODEL: ${{ vars.GEMINI_MODEL || 'gemini-2.0-flash' }}
+          GEMINI_MODEL: ${{ vars.GEMINI_MODEL || 'gemini-2.5-flash-lite' }}
           LLM_PROVIDER: ${{ vars.LLM_PROVIDER || 'claude' }}
           TZ: ${{ vars.TZ || 'Europe/Moscow' }}
         # Idempotent .env update on the server: strip any existing lines
