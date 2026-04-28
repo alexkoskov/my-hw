@@ -9,4 +9,4 @@ schedule==1.2.1
 pytz>=2024.1
 python-telegram-bot==21.10
 curl_cffi==0.15.0
-python-dotenv
+python-dotenv>=1.0.0,<2.0.0
