@@ -49,6 +49,7 @@ FILES=(
     "_llm_common.py"
     "compute_publish_slots.py"
     "outage_state.py"
+    "boilerplate_filter.py"
     "feeds.json"
     "requirements.txt"
     ".env.example"
