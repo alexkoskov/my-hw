@@ -633,20 +633,56 @@ def build_admin_ping(rows):
     return f"{len(rows)} ждут review: " + ", ".join(parts)
 
 
-def send_telegraph_teaser(telegraph_url, source_url):
-    """Publish the locked-format channel post: a single source hashtag +
-    Telegraph preview card above (via LinkPreviewOptions). See
-    work/telegraph-pipeline/post-format.md for the spec. The preview card
-    carries all visible content (domain, title, excerpt, image, ⚡ INSTANT
-    VIEW button) — the message body is just the source attribution.
+_TELEGRAPH_OG_IMAGE_RE = re.compile(
+    r'<meta\s+property="og:image"\s+content="([^"]+)"', re.IGNORECASE
+)
 
-    The teaser body is byte-identical for the manual-review path
-    (``hw_review publish``) and the auto-fallback path
-    (``_fallback_publish``) — Decision 14 of the manual-review-workflow
-    tech-spec. Path differentiation lives INSIDE the Telegra.ph article
-    body as a ``↳ автоперевод`` paragraph node before the ``Источник:``
-    footer (auto-fallback only) — see ``telegraph_publisher.publish_article``
-    ``auto_marker`` parameter.
+
+def _fetch_telegraph_og_image(telegraph_url):
+    """Best-effort fetch of the Telegraph article's ``og:image`` URL.
+
+    Returns the image URL string on success, ``None`` on any failure.
+    Used by ``send_telegraph_teaser`` to drive Variant C (large image +
+    INSTANT VIEW link below). Never raises — caller falls back to the
+    single-message preview-only flow when this returns ``None``.
+
+    Network timeout is intentionally short (5 s): if the Telegraph page
+    is slow we'd rather degrade to the simpler post format than block
+    the publish loop.
+    """
+    try:
+        resp = requests.get(telegraph_url, timeout=5)
+        if resp.status_code != 200:
+            return None
+        match = _TELEGRAPH_OG_IMAGE_RE.search(resp.text)
+        return match.group(1) if match else None
+    except Exception as exc:  # noqa: BLE001 — best-effort, never propagate
+        logger.debug(f"og:image fetch failed for {telegraph_url}: {exc}")
+        return None
+
+
+def send_telegraph_teaser(telegraph_url, source_url):
+    """Publish a two-message Variant-C channel teaser:
+
+      Message 1: ``send_photo`` with the article's lead image + hashtag
+                 caption. Forces a LARGE image preview on every Telegram
+                 client (iOS especially), where ``LinkPreviewOptions``
+                 alone falls back to a thumbnail.
+      Message 2: ``send_message`` with a Telegraph link-preview that
+                 carries the ⚡ INSTANT VIEW button.
+
+    Together these give the subscriber both the visual punch of a
+    full-width image AND the one-tap fullscreen reader experience.
+    Spec: work/telegraph-pipeline/post-format.md.
+
+    Fallback: if the Telegraph article has no recognisable ``og:image``,
+    or the og:image fetch fails, we degrade to the original single-
+    message preview-only flow (still has INSTANT VIEW, just thumbnail
+    image). Either path is byte-stable across the manual-review
+    (``hw_review publish``) and auto-fallback (``_fallback_publish``)
+    callers — Decision 14 of the manual-review-workflow tech-spec.
+    Path differentiation lives INSIDE the Telegraph body as the
+    ``↳ автоперевод`` marker paragraph before the source footer.
     """
     if not TELEGRAM_BOT_TOKEN or not TELEGRAM_CHANNEL_ID:
         logger.error("Telegram credentials not set.")
@@ -662,7 +698,36 @@ def send_telegraph_teaser(telegraph_url, source_url):
     else:
         text = source_hashtag
 
-    async def _send():
+    og_image = _fetch_telegraph_og_image(telegraph_url)
+
+    async def _send_variant_c():
+        """Two messages: photo + caption, then Telegraph link with INSTANT VIEW."""
+        bot = Bot(token=TELEGRAM_BOT_TOKEN)
+        try:
+            await bot.send_photo(
+                chat_id=TELEGRAM_CHANNEL_ID,
+                photo=og_image,
+                caption=text,
+                parse_mode='Markdown',
+            )
+            await bot.send_message(
+                chat_id=TELEGRAM_CHANNEL_ID,
+                text=telegraph_url,
+                link_preview_options=LinkPreviewOptions(
+                    url=telegraph_url,
+                    show_above_text=False,
+                ),
+            )
+            logger.info(f"Posted to Telegram (variant C): {telegraph_url}")
+            return True
+        except TelegramError as e:
+            logger.error(f"Telegram error (variant C): {e}")
+            return False
+
+    async def _send_fallback():
+        """Single message — the original preview-only teaser. Used when
+        og:image extraction fails. Still gets INSTANT VIEW, just smaller
+        thumbnail."""
         bot = Bot(token=TELEGRAM_BOT_TOKEN)
         try:
             await bot.send_message(
@@ -674,13 +739,15 @@ def send_telegraph_teaser(telegraph_url, source_url):
                     show_above_text=True,
                 ),
             )
-            logger.info(f"Posted to Telegram: {telegraph_url}")
+            logger.info(f"Posted to Telegram (fallback): {telegraph_url}")
             return True
         except TelegramError as e:
-            logger.error(f"Telegram error: {e}")
+            logger.error(f"Telegram error (fallback): {e}")
             return False
 
-    return asyncio.run(_send())
+    if og_image:
+        return asyncio.run(_send_variant_c())
+    return asyncio.run(_send_fallback())
 
 
 # ---------------------------------------------------------------------------

@@ -144,10 +144,14 @@ class TestSendTelegraphTeaser(unittest.TestCase):
         )
         self.assertFalse(ok)
 
+    @patch('news_bot._fetch_telegraph_og_image', return_value=None)
     @patch('news_bot.TELEGRAM_BOT_TOKEN', 'test_token')
     @patch('news_bot.TELEGRAM_CHANNEL_ID', '@channel')
     @patch('news_bot.Bot')
-    def test_logs_success(self, mock_bot_class):
+    def test_logs_success_fallback_path(self, mock_bot_class, _mock_og):
+        """When the Telegraph article has no og:image, send_telegraph_teaser
+        degrades to the single-message preview-only flow and logs
+        'Posted to Telegram (fallback): ...'."""
         mock_bot = MagicMock()
         mock_bot.send_message = AsyncMock()
         mock_bot_class.return_value = mock_bot
@@ -157,7 +161,37 @@ class TestSendTelegraphTeaser(unittest.TestCase):
                 source_url='https://example.com/a',
             )
         self.assertTrue(ok)
-        self.assertTrue(any('Posted to Telegram: https://telegra.ph/X' in r.message for r in cm.records))
+        self.assertTrue(any(
+            'Posted to Telegram (fallback): https://telegra.ph/X' in r.message
+            for r in cm.records
+        ))
+
+    @patch('news_bot._fetch_telegraph_og_image', return_value='https://cdn.telegra.ph/file/img.jpg')
+    @patch('news_bot.TELEGRAM_BOT_TOKEN', 'test_token')
+    @patch('news_bot.TELEGRAM_CHANNEL_ID', '@channel')
+    @patch('news_bot.Bot')
+    def test_variant_c_sends_photo_then_link(self, mock_bot_class, _mock_og):
+        """Happy path: og:image found → variant C sends BOTH a send_photo
+        (lead image + hashtag caption) AND a send_message (Telegraph URL
+        with INSTANT VIEW)."""
+        mock_bot = MagicMock()
+        mock_bot.send_photo = AsyncMock()
+        mock_bot.send_message = AsyncMock()
+        mock_bot_class.return_value = mock_bot
+        with self.assertLogs('news_bot', level='INFO') as cm:
+            ok = send_telegraph_teaser(
+                telegraph_url='https://telegra.ph/X',
+                source_url='https://example.com/a',
+            )
+        self.assertTrue(ok)
+        mock_bot.send_photo.assert_awaited_once()
+        mock_bot.send_message.assert_awaited_once()
+        photo_kwargs = mock_bot.send_photo.await_args.kwargs
+        self.assertEqual(photo_kwargs['photo'], 'https://cdn.telegra.ph/file/img.jpg')
+        self.assertEqual(photo_kwargs['caption'], '#example #news')
+        self.assertTrue(any(
+            'variant C' in r.message for r in cm.records
+        ))
 
 
 if __name__ == '__main__':
