@@ -928,12 +928,16 @@ def _fallback_publish(row, via_review=False):
             ru_paragraphs = list(claude_result.get('paragraphs') or [])
             ru_blocks = claude_result.get('blocks')
         except ClaudeTranscreationError as exc:
-            # Variant X' (operator-tuned): 3 quick retries with 5-min
-            # waits between each, then admin ping + Google fallback so
-            # the article still ships. The ↳ автоперевод marker on the
-            # Telegraph body signals to subscribers that quality is
-            # degraded (Google, not LLM). Outage state is NOT advanced
-            # — a single weird article must not take the channel offline.
+            # Operator decision: GPT translates EVERYTHING, even hard /
+            # weird-structure articles. Google fallback is RESERVED for
+            # true outages (ClaudeOutageError — no tokens, API
+            # unreachable, network failure). Per-article LLM hiccups go
+            # through 3 retries at 5-min intervals; if still failing,
+            # the slot counts a strike and the slot loop continues —
+            # after 3 slot strikes the article moves to failed_articles
+            # and the operator gets pinged. Outage state machine is
+            # NOT advanced — a single weird article must not take the
+            # channel offline.
             last_exc = exc
             claude_result = None
             for attempt in range(2, _LLM_PER_ARTICLE_MAX_ATTEMPTS + 1):  # 2, 3
@@ -966,29 +970,22 @@ def _fallback_publish(row, via_review=False):
                 ru_paragraphs = list(claude_result.get('paragraphs') or [])
                 ru_blocks = claude_result.get('blocks')
             else:
-                # All N attempts failed — admin ping + Google fallback.
+                # All N attempts failed — re-raise so the slot loop's
+                # generic Exception handler bumps attempt_count. After
+                # 3 slot strikes the article auto-moves to
+                # failed_articles via increment_attempt → move_to_failed
+                # and the operator gets the standard 3-strikes admin
+                # ping (no extra ping here to avoid double-pinging).
                 logger.warning(
                     f"[fallback] Claude attempt "
                     f"{_LLM_PER_ARTICLE_MAX_ATTEMPTS}/"
                     f"{_LLM_PER_ARTICLE_MAX_ATTEMPTS} failed for {link}: "
                     f"{type(last_exc).__name__}: "
-                    f"{sanitize_error_message(last_exc)} — admin ping + "
-                    f"Google fallback for this article"
+                    f"{sanitize_error_message(last_exc)} — re-raising; "
+                    f"slot will count this as a strike (no Google fallback "
+                    f"per operator decision: GPT-only translation)"
                 )
-                try:
-                    send_admin_notification(
-                        f"⚠️ GPT перевод не удался "
-                        f"{_LLM_PER_ARTICLE_MAX_ATTEMPTS} раза для статьи "
-                        f"{link}: {type(last_exc).__name__}. Переключаюсь "
-                        f"на Google для этой статьи."
-                    )
-                except Exception as notify_err:
-                    logger.error(
-                        f"[fallback] admin ping for per-article failure "
-                        f"failed: {sanitize_error_message(notify_err)}"
-                    )
-                ru_title, ru_subtitle, ru_paragraphs, ru_blocks = _google_translate()
-                used_google_fallback = True
+                raise last_exc
         except ClaudeOutageError as exc:
             # API-level outage — advance the state machine and dispatch
             # admin pings per the outage protocol (2 pings + 2h grace

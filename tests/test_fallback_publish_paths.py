@@ -225,24 +225,25 @@ class TestClaudePath(_FallbackPublishPathsCase):
 
 class TestGoogleFallbackPath(_FallbackPublishPathsCase):
 
-    def test_fallback_publish_per_article_failure_retries_then_google(self):
-        """``ClaudeTranscreationError`` 3x in a row → admin ping +
-        Google fallback for THIS article (variant X' per operator).
+    def test_fallback_publish_per_article_failure_retries_then_re_raises(self):
+        """``ClaudeTranscreationError`` 3x in a row → re-raise so the
+        slot loop counts a strike. NO Google fallback, NO admin ping
+        from _fallback_publish itself.
+
+        Operator decision: GPT translates everything, even hard /
+        weird-structure articles. Google is reserved for true outages
+        (ClaudeOutageError — no tokens, API unreachable). Per-article
+        LLM hiccups must not silently degrade channel quality.
 
         Slot block is bounded by ``_LLM_PER_ARTICLE_RETRY_INTERVAL_S``
         (production: 5 min × 2 retries = 10 min; tests: 0 via conftest).
-        After 3 GPT failures the article is still published (through
-        Google) so the channel does not lose content; the
-        ``↳ автоперевод`` marker on the Telegraph body signals quality
-        degradation. Outage state machine is NOT advanced.
 
         Asserts:
         * transcreate_via_claude was called 3 times (initial + 2 retries)
-        * transcreate_text (Google) was called for title + subtitle + paragraphs
-        * send_admin_notification was called once with a 3x-failure ping
-        * publish_article got auto_marker=True
-        * record_outage_event was NOT called
-        * the row was moved to published_articles
+        * transcreate_text (Google) was NEVER called
+        * publish_article was NEVER called (translation failed)
+        * record_outage_event was NEVER called
+        * ClaudeTranscreationError propagates to caller
         """
         entry = self._insert(
             link='http://a/2',
@@ -258,48 +259,28 @@ class TestGoogleFallbackPath(_FallbackPublishPathsCase):
             ClaudeTranscreationError('malformed JSON #2'),
             ClaudeTranscreationError('malformed JSON #3'),
         ])
-        mock_google = MagicMock(side_effect=lambda t, **kw: f"[g] {t}")
+        mock_google = MagicMock(side_effect=AssertionError(
+            "transcreate_text (Google) must NOT fire on per-article failure"
+        ))
         mock_record = MagicMock(side_effect=AssertionError(
             "record_outage_event must NOT fire on per-article failure"
         ))
-        mock_admin = MagicMock(return_value=True)
-
-        tg_url = 'https://telegra.ph/Google-after-3-fails-04-28'
-        mock_publish = MagicMock(return_value=tg_url)
-        mock_mark = MagicMock()
-        mock_teaser = MagicMock(return_value=True)
-        mock_move = MagicMock()
+        mock_publish = MagicMock(side_effect=AssertionError(
+            "publish_article must NOT fire when translation failed"
+        ))
 
         with patch('news_bot.transcreate_via_claude', mock_claude), \
              patch('news_bot.transcreate_text', mock_google), \
              patch('news_bot.outage_state.is_fallback_active',
                    return_value=False), \
              patch('news_bot.outage_state.record_outage_event', mock_record), \
-             patch('news_bot.send_admin_notification', mock_admin), \
              patch('news_bot.telegraph_publisher.publish_article',
-                   mock_publish), \
-             patch('news_bot.pending_repo.mark_telegraph_published',
-                   mock_mark), \
-             patch('news_bot.send_telegraph_teaser', mock_teaser), \
-             patch('news_bot.pending_repo.move_to_published', mock_move):
-            ok = news_bot._fallback_publish(row, via_review=False)
+                   mock_publish):
+            with self.assertRaises(ClaudeTranscreationError):
+                news_bot._fallback_publish(row, via_review=False)
 
-        self.assertTrue(ok)
-        # 3 attempts to GPT.
+        # 3 attempts to GPT (initial + 2 retries).
         self.assertEqual(mock_claude.call_count, 3)
-        # Google fired after all 3 GPT failures.
-        self.assertGreaterEqual(mock_google.call_count, 4)  # title + subtitle + 2 paragraphs
-        # Admin ping fired exactly once with the 3-failure summary.
-        mock_admin.assert_called_once()
-        ping_text = mock_admin.call_args.args[0]
-        self.assertIn('GPT перевод не удался', ping_text)
-        # Telegraph published with auto_marker=True (Google fallback was used).
-        mock_publish.assert_called_once()
-        kwargs = mock_publish.call_args.kwargs
-        self.assertEqual(kwargs['title'], '[g] EN Title 2')
-        self.assertTrue(kwargs.get('auto_marker'))
-        # Row was moved to published.
-        mock_move.assert_called_once()
 
 
 # ============================================================================

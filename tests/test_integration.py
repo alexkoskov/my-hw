@@ -430,14 +430,14 @@ class TestOutageStateIntegration(_IntegrationBase):
         )
 
     @patch('news_bot.send_admin_notification')
-    def test_per_article_problem_retries_then_google_no_state_advance(
+    def test_per_article_problem_retries_then_strikes_no_state_advance(
         self, mock_admin,
     ):
-        """``ClaudeTranscreationError`` 3x in a row (variant X') →
-        admin ping + Google fallback for THIS article. Outage state
-        machine is NOT advanced — started_at None, ping_count 0,
-        is_fallback_active False. Row IS moved to published_articles
-        (via Google) so the channel doesn't lose content.
+        """``ClaudeTranscreationError`` 3x in a row → re-raise from
+        _fallback_publish; the slot loop's generic Exception handler
+        bumps attempt_count. NO Google fallback for per-article failures
+        (operator decision: GPT translates everything). Outage state
+        machine is NOT advanced.
 
         Slot block is bounded by ``_LLM_PER_ARTICLE_RETRY_INTERVAL_S``
         (zeroed via conftest fixture so test runs fast).
@@ -459,10 +459,17 @@ class TestOutageStateIntegration(_IntegrationBase):
                        ClaudeTranscreationError('malformed JSON #3'),
                    ]), \
              patch('news_bot.transcreate_text',
-                   side_effect=lambda t, **kw: f"[g] {t}"), \
+                   side_effect=AssertionError(
+                       'Google must NOT fire on per-article failure',
+                   )), \
              patch('news_bot.telegraph_publisher.publish_article',
-                   return_value='https://telegra.ph/perart'), \
-             patch('news_bot.send_telegraph_teaser', return_value=True), \
+                   side_effect=AssertionError(
+                       'publish_article must NOT fire when translation failed',
+                   )), \
+             patch('news_bot.send_telegraph_teaser',
+                   side_effect=AssertionError(
+                       'teaser must NOT fire when translation failed',
+                   )), \
              patch('news_bot.outage_state.is_fallback_active', return_value=False), \
              patch('news_bot.SOURCES', [lambda notifier=None: []]):
             mock_dt.now.side_effect = fake_now
@@ -478,16 +485,12 @@ class TestOutageStateIntegration(_IntegrationBase):
         self.assertEqual(outage_state.get_ping_count(), 0)
         self.assertFalse(outage_state.is_fallback_active())
 
-        # Admin pinged once with the 3-failure summary.
-        ping_messages = [c.args[0] for c in mock_admin.call_args_list if c.args]
-        self.assertTrue(
-            any('GPT перевод не удался' in m for m in ping_messages),
-            f'expected 3x-failure admin ping, got pings: {ping_messages!r}',
-        )
-
-        # Row WAS published via Google after retries exhausted.
+        # Row was NOT published — stayed in pending with attempt_count++.
         published = pending_articles_repo.get_published('http://example.com/perart1')
-        self.assertIsNotNone(published)
+        self.assertIsNone(published)
+        pending = pending_articles_repo.get_pending('http://example.com/perart1')
+        self.assertIsNotNone(pending)
+        self.assertEqual(pending.get('attempt_count'), 1)
 
     @patch('news_bot.send_admin_notification')
     def test_recovery_clears_outage_state_and_sends_switchback_ping(
