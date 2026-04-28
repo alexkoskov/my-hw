@@ -1,0 +1,35 @@
+# Pre-commit hooks: catch secrets and obvious file mistakes BEFORE commit.
+#
+# Setup (one-time, per clone):
+#   pip install pre-commit
+#   pre-commit install        # wires hooks into .git/hooks/pre-commit
+#
+# Usage: hooks run automatically on `git commit`. Bypass only when truly
+# needed (and explain in the commit message): `git commit --no-verify`.
+#
+# Manual run on all files: `pre-commit run --all-files`
+# Update hook versions:    `pre-commit autoupdate`
+
+repos:
+  # gitleaks — catches API keys, secrets, tokens in staged files.
+  # Patterns include AWS, GCP, GitHub, Stripe, OpenAI (sk-...), Slack, etc.
+  - repo: https://github.com/gitleaks/gitleaks
+    rev: v8.21.4
+    hooks:
+      - id: gitleaks
+
+  # Standard hygiene: strips trailing whitespace, ensures newline-at-EOF,
+  # blocks accidental commits of large files / merge conflicts / private keys.
+  - repo: https://github.com/pre-commit/pre-commit-hooks
+    rev: v5.0.0
+    hooks:
+      - id: trailing-whitespace
+      - id: end-of-file-fixer
+      - id: check-merge-conflict
+      - id: check-added-large-files
+        args: ["--maxkb=1000"]
+      - id: detect-private-key
+      - id: check-yaml
+        # deploy.yml uses GitHub Actions ${{ ... }} expression syntax that
+        # pyyaml's safe_load handles cleanly, but if you add unusual yaml
+        # later and check-yaml chokes, add `args: ["--unsafe"]` or exclude.
