@@ -164,7 +164,16 @@ class TestFallbackPublishPassesAutoMarkerToPublishArticle(unittest.TestCase):
         if os.path.exists(self.db_path):
             os.unlink(self.db_path)
 
-    def test_fallback_publish_passes_auto_marker_true_to_publish_article(self):
+    def test_fallback_publish_passes_auto_marker_false_on_claude_success(self):
+        """Claude/LLM success → auto_marker=False. The ``↳ автоперевод``
+        marker is reserved for the Google-fallback degradation path and
+        must NOT decorate LLM-translated posts (operator-confirmed UX
+        decision: marker = quality warning, LLM output is treated as
+        production quality).
+
+        Teaser must still NOT receive ``auto_marker`` either way —
+        Decision 14 byte-equality at the visible-feed level.
+        """
         # Fixture row: shape mirrors what
         # ``pending_articles_repo.get_pending`` returns to ``job()``'s
         # distributed-publish loop.
@@ -182,13 +191,13 @@ class TestFallbackPublishPassesAutoMarkerToPublishArticle(unittest.TestCase):
              patch('news_bot.send_admin_notification', return_value=True):
             news_bot._fallback_publish(row, via_review=False)
 
-        # publish_article must have been called with auto_marker=True
-        # for the auto-fallback path.
+        # publish_article must have been called with auto_marker=False
+        # for the LLM-success path.
         self.assertEqual(mock_publish.call_count, 1)
         kwargs = mock_publish.call_args.kwargs
-        self.assertTrue(
-            kwargs.get('auto_marker') is True,
-            f'expected auto_marker=True forwarded to publish_article, '
+        self.assertFalse(
+            kwargs.get('auto_marker'),
+            f'expected auto_marker=False on Claude-success path, '
             f'got kwargs={kwargs!r}',
         )
 

@@ -888,6 +888,14 @@ def _fallback_publish(row, via_review=False):
                 ru_blocks.append(new_block)
         return ru_title, ru_subtitle, ru_paragraphs, ru_blocks
 
+    # Track whether THIS article was translated by Google fallback (legacy
+    # path, lower quality) vs. by an LLM (Claude / OpenRouter / etc, current
+    # quality bar). Only the Google-fallback path warrants the
+    # ``↳ автоперевод`` marker on the Telegra.ph page (operator decision —
+    # users see the marker as a quality warning; LLM output is
+    # indistinguishable from manual review and should not carry it).
+    used_google_fallback = False
+
     # Already-in-fallback shortcut (Decision 5 / tech-spec "Publish loop"):
     # when the state machine says Claude is down + 2h grace elapsed, route
     # straight to Google without trying Claude. Recovery is owned by
@@ -897,6 +905,7 @@ def _fallback_publish(row, via_review=False):
             f"[fallback] is_fallback_active=True — routing {link} via Google"
         )
         ru_title, ru_subtitle, ru_paragraphs, ru_blocks = _google_translate()
+        used_google_fallback = True
     else:
         # Try Claude. The classifier inside ``claude_transcreation``
         # turns SDK exceptions into either ``ClaudeTranscreationError``
@@ -915,6 +924,7 @@ def _fallback_publish(row, via_review=False):
                 f"{type(exc).__name__} — falling back to Google for this article"
             )
             ru_title, ru_subtitle, ru_paragraphs, ru_blocks = _google_translate()
+            used_google_fallback = True
         except ClaudeOutageError as exc:
             # API-level outage — advance the state machine and dispatch
             # admin pings per the outage protocol (2 pings + 2h grace
@@ -953,6 +963,7 @@ def _fallback_publish(row, via_review=False):
                     f"for {link}: {sanitize_error_message(state_err)}"
                 )
             ru_title, ru_subtitle, ru_paragraphs, ru_blocks = _google_translate()
+            used_google_fallback = True
 
     # Step 2: Telegraph — reuse saved URL per Decision 9 idempotency.
     # Done BEFORE persisting RU so a Telegraph failure keeps
@@ -968,13 +979,12 @@ def _fallback_publish(row, via_review=False):
             f"[fallback] reusing stored telegraph_url for {link}: {telegraph_url}"
         )
     else:
-        # Auto-fallback path injects the ``↳ автоперевод`` paragraph
-        # inside the Telegra.ph article body (immediately before the
-        # Источник footer) so operators and curious readers can tell
-        # auto-fallback posts apart from operator-curated ones. The
-        # marker mirrors ``via_review`` inverted: ``via_review=False`` →
-        # ``auto_marker=True``. Manual hw_review.cmd_publish never sets
-        # the flag, so its node tree carries no marker.
+        # ``↳ автоперевод`` marker is injected ONLY when this article was
+        # translated via Google fallback (legacy lower-quality path). LLM
+        # output (Claude / OpenRouter / etc) is treated as production
+        # quality and carries no marker, matching the manual-review path's
+        # node-tree shape. Manual review (via_review=True) never gets the
+        # marker either.
         telegraph_url = telegraph_publisher.publish_article(
             title=ru_title,
             paragraphs=ru_paragraphs,
@@ -982,7 +992,7 @@ def _fallback_publish(row, via_review=False):
             source_url=link,
             subtitle=ru_subtitle,
             blocks=ru_blocks,
-            auto_marker=not via_review,
+            auto_marker=used_google_fallback and not via_review,
         )
         telegraph_path = urlparse(telegraph_url).path.lstrip('/')
         if not telegraph_path:

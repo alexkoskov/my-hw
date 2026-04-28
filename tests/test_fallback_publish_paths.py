@@ -187,16 +187,18 @@ class TestClaudePath(_FallbackPublishPathsCase):
         mock_claude.assert_called_once()
         mock_google.assert_not_called()
 
-        # Telegraph received Claude RU fields with auto_marker=True
-        # (auto path: via_review=False → auto_marker=True).
+        # Telegraph received Claude RU fields. Claude success → auto_marker
+        # MUST be False (no ↳ автоперевод marker for LLM-translated posts;
+        # marker now reserved for actual Google-fallback degradations).
         mock_publish.assert_called_once()
         kwargs = mock_publish.call_args.kwargs
         self.assertEqual(kwargs['title'], '🚀 RU Title')
         self.assertEqual(kwargs['subtitle'], 'RU subtitle')
         self.assertEqual(kwargs['paragraphs'], ['RU one.', 'RU two.'])
         self.assertEqual(kwargs['source_url'], entry['link'])
-        self.assertTrue(kwargs.get('auto_marker'),
-                        f"auto_marker must be True, got {kwargs.get('auto_marker')!r}")
+        self.assertFalse(kwargs.get('auto_marker'),
+                         f"auto_marker must be False on Claude-success path, "
+                         f"got {kwargs.get('auto_marker')!r}")
 
         # Decision 9: mark BEFORE teaser. Read manager.mock_calls and
         # confirm 'mark' index < 'teaser' index. ``mock_calls`` carries
