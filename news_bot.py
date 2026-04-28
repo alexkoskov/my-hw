@@ -99,6 +99,10 @@ _SECRET_ENV_NAMES = (
     'TELEGRAM_ADMIN_ID',
     'TELEGRAPH_ACCESS_TOKEN',
     'ANTHROPIC_API_KEY',
+    'GEMINI_API_KEY',
+    'OPENAI_API_KEY',
+    'OPENROUTER_API_KEY',
+    'OPEN_ROUTER_API_KEY',  # alias accepted by openrouter_transcreation
 )
 
 
@@ -213,6 +217,10 @@ for _noisy in ("httpx", "httpcore", "urllib3", "requests"):
 # future token-format tweak from BotFather still gets caught.
 _BOT_TOKEN_RE = re.compile(r"\d{6,12}:[A-Za-z0-9_-]{30,}")
 
+# OpenRouter keys: ``sk-or-v1-<60+ chars>``. Matched FIRST so the more
+# generic OpenAI ``sk-...`` pattern below cannot win on the same substring.
+_OPENROUTER_KEY_RE = re.compile(r"sk-or-(?:v\d+-)?[A-Za-z0-9_-]{20,}")
+
 # Anthropic API keys take the shape ``sk-ant-<env_or_kind>-<secret>`` and
 # may include ``=`` and ``.`` in sandbox/admin variants.  The character
 # class below is intentionally broad enough to catch sandbox-shape keys
@@ -220,14 +228,38 @@ _BOT_TOKEN_RE = re.compile(r"\d{6,12}:[A-Za-z0-9_-]{30,}")
 # ``{16,}`` floor keeps the regex from matching short benign suffixes.
 _ANTHROPIC_KEY_RE = re.compile(r"sk-ant-[A-Za-z0-9_=.-]{16,}")
 
+# OpenAI keys come in three shapes:
+#   * Project keys  : ``sk-proj-<long-id>``  (50+ chars, includes hyphens)
+#   * Service acct  : ``sk-svcacct-<long-id>``
+#   * Legacy classic: ``sk-<48-char-base62>`` (no hyphens after the prefix)
+# The legacy form must be a separate alternation so it doesn't clash with
+# the prefix-based shapes; the contiguous ``[A-Za-z0-9]{32,}`` body
+# additionally ensures we do NOT match ``sk-or-v1-...`` or ``sk-ant-...``
+# (those contain ``-`` which breaks the contiguous run).
+_OPENAI_KEY_RE = re.compile(
+    r"sk-(?:proj|svcacct)-[A-Za-z0-9_-]{20,}|sk-[A-Za-z0-9]{32,}"
+)
+
+# Google API keys (Gemini, Maps, etc.) follow ``AIza<35 chars>`` per
+# https://cloud.google.com/docs/authentication/api-keys-best-practices.
+# Anchoring to the ``AIza`` prefix makes false positives unlikely; we use
+# ``{35,}`` (open-ended) so any future format that grows the body still
+# scrubs cleanly without trimming the tail.
+_GEMINI_KEY_RE = re.compile(r"AIza[A-Za-z0-9_-]{35,}")
+
 
 def _redact_text(text):
-    """Scrub Telegram-bot-token AND Anthropic-API-key shapes from a string.
+    """Scrub Telegram-bot-token, Anthropic, OpenAI, OpenRouter, and Gemini
+    API-key shapes from a string.
 
     Single source of truth for redaction — used by both the logging filter
     and ``send_admin_notification`` (the admin-notify path lives outside
     the logging pipeline so the filter alone does not cover it; per
     Decision 12).
+
+    Pattern order matters: OpenRouter (``sk-or-...``) and Anthropic
+    (``sk-ant-...``) are scrubbed BEFORE the broader OpenAI ``sk-...``
+    pattern so the latter cannot win on substrings already replaced.
 
     Contract:
       * Always returns a string.  Non-string input is coerced (``None`` →
@@ -244,7 +276,10 @@ def _redact_text(text):
         if not isinstance(text, str):
             text = str(text)
         text = _BOT_TOKEN_RE.sub("***", text)
+        text = _OPENROUTER_KEY_RE.sub("***", text)
         text = _ANTHROPIC_KEY_RE.sub("***", text)
+        text = _OPENAI_KEY_RE.sub("***", text)
+        text = _GEMINI_KEY_RE.sub("***", text)
         return text
     except Exception:
         # Defensive: never let redaction break the caller.
@@ -255,11 +290,11 @@ def _redact_text(text):
 
 
 class _TokenRedactingFilter(logging.Filter):
-    """Defence-in-depth: scrub Telegram-bot-token-shaped AND Anthropic-API-
-    key-shaped substrings from any LogRecord before it reaches a handler.
-    Installed on the root logger plus the noisy HTTP loggers and the
-    anthropic SDK loggers so it covers every library we import, including
-    ones we haven't audited.
+    """Defence-in-depth: scrub Telegram-bot-token, Anthropic, OpenAI,
+    OpenRouter, and Gemini API-key shapes from any LogRecord before it
+    reaches a handler. Installed on the root logger plus the noisy HTTP
+    loggers and every LLM SDK logger so it covers every library we import,
+    including ones we haven't audited.
 
     Rewriting ``record.msg`` / ``record.args`` is safe because ``filter`` is
     invoked after ``getMessage`` caching — handlers re-render from the
@@ -301,12 +336,17 @@ for _root_handler in logging.getLogger().handlers:
     _root_handler.addFilter(_TOKEN_FILTER)
 for _noisy in ("httpx", "httpcore", "urllib3", "requests"):
     logging.getLogger(_noisy).addFilter(_TOKEN_FILTER)
-# Anthropic SDK family — the SDK uses its own logger hierarchy and may
-# emit ``logger.exception(...)`` lines whose text embeds the API key in
+# LLM SDK families — each uses its own logger hierarchy and may emit
+# ``logger.exception(...)`` lines whose text embeds the API key in
 # request URLs / headers.  We only ``addFilter`` (no ``setLevel`` bump):
-# anthropic loggers are not "noisy" — their default level is fine.
-for _anthropic_logger_name in ("anthropic", "anthropic._client", "anthropic._base_client"):
-    logging.getLogger(_anthropic_logger_name).addFilter(_TOKEN_FILTER)
+# these loggers are not "noisy" — their default level is fine.
+for _llm_logger_name in (
+    "anthropic", "anthropic._client", "anthropic._base_client",
+    "openai", "openai._base_client",
+    "google_genai", "google_genai.models",
+    # OpenRouter goes through the openai SDK above.
+):
+    logging.getLogger(_llm_logger_name).addFilter(_TOKEN_FILTER)
 
 
 # Admin-notify invariant (Decision 12, llm-transcreation-and-distributed-

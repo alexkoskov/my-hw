@@ -268,6 +268,13 @@ class TestEndToEndNoTokenInCapturedLogs:
 
 FAKE_ANTHROPIC_KEY_PROD = "sk-ant-api03-FAKE_KEY_FOR_TESTS_0123456789ABCDEF"
 FAKE_ANTHROPIC_KEY_SANDBOX = "sk-ant-FAKE=SANDBOX.value.0123456789ABCDEF"
+# Provider key fixtures for the multi-LLM redaction layer (gemini /
+# openai / openrouter). Lengths match real-world shapes; bodies are
+# deterministic uppercase + digits so they're obviously fake to a reader.
+FAKE_GEMINI_KEY = "AIzaSyFAKE_KEY_FOR_TESTS_0123456789ABCDEF"  # 39 chars
+FAKE_OPENAI_KEY_PROJ = "sk-proj-FAKE_PROJECT_KEY_0123456789ABCDEFGH"
+FAKE_OPENAI_KEY_LEGACY = "sk-FAKEKEY0123456789ABCDEFGHIJKLMNOPQRSTUVWX"  # 51 chars
+FAKE_OPENROUTER_KEY = "sk-or-v1-FAKE_OPENROUTER_KEY_0123456789ABCDEFGH"
 
 
 class TestAnthropicKeyRedaction:
@@ -424,6 +431,108 @@ class TestAnthropicKeyRedaction:
             "Anthropic key survived the redaction filter — captured text was:\n"
             + combined
         )
+
+
+class TestMultiLLMKeyRedaction:
+    """Coverage for the multi-LLM redaction layer: Gemini, OpenAI (project +
+    legacy), and OpenRouter key shapes must all be scrubbed by ``_redact_text``,
+    by the logging filter, AND covered by ``_SECRET_ENV_NAMES`` for
+    ``sanitize_error_message``.
+    """
+
+    @pytest.mark.parametrize("key,label", [
+        (FAKE_GEMINI_KEY, "gemini"),
+        (FAKE_OPENAI_KEY_PROJ, "openai-proj"),
+        (FAKE_OPENAI_KEY_LEGACY, "openai-legacy"),
+        (FAKE_OPENROUTER_KEY, "openrouter"),
+    ])
+    def test_redact_text_scrubs_each_llm_key_shape(self, key, label):
+        text = f"error from {label}: api_key={key} rejected"
+        out = news_bot._redact_text(text)
+        assert key not in out, f"{label} key survived _redact_text: {out}"
+        assert "***" in out
+
+    def test_redact_text_handles_all_keys_in_one_pass(self):
+        """Single string with every known LLM-key shape — every one redacted."""
+        text = (
+            f"BOT={FAKE_TOKEN} ANT={FAKE_ANTHROPIC_KEY_PROD} "
+            f"GEM={FAKE_GEMINI_KEY} OAI_PROJ={FAKE_OPENAI_KEY_PROJ} "
+            f"OAI_LEGACY={FAKE_OPENAI_KEY_LEGACY} OR={FAKE_OPENROUTER_KEY}"
+        )
+        out = news_bot._redact_text(text)
+        for k in (FAKE_TOKEN, FAKE_ANTHROPIC_KEY_PROD, FAKE_GEMINI_KEY,
+                  FAKE_OPENAI_KEY_PROJ, FAKE_OPENAI_KEY_LEGACY, FAKE_OPENROUTER_KEY):
+            assert k not in out, f"key {k!r} leaked: {out}"
+        assert out.count("***") >= 6
+
+    def test_openai_pattern_does_not_overmatch_anthropic_or_openrouter(self):
+        """The broad ``sk-...{32,}`` legacy-OpenAI pattern must NOT also eat
+        Anthropic (``sk-ant-...``) or OpenRouter (``sk-or-...``) keys — those
+        get their own redaction, but the OpenAI alternation should not be
+        what catches them (it would still produce ``***``, but the test
+        verifies regex hygiene)."""
+        # Anthropic: contains hyphens after sk- → won't match contiguous {32,}
+        ant_only = f"prefix {FAKE_ANTHROPIC_KEY_PROD} suffix"
+        out_ant = news_bot._OPENAI_KEY_RE.sub("@@@", ant_only)
+        # The OpenAI regex alone (without other passes) shouldn't have replaced
+        # the anthropic key
+        assert FAKE_ANTHROPIC_KEY_PROD in out_ant, (
+            "OpenAI regex spuriously matched Anthropic key shape"
+        )
+        or_only = f"prefix {FAKE_OPENROUTER_KEY} suffix"
+        out_or = news_bot._OPENAI_KEY_RE.sub("@@@", or_only)
+        assert FAKE_OPENROUTER_KEY in out_or, (
+            "OpenAI regex spuriously matched OpenRouter key shape"
+        )
+
+    def test_gemini_pattern_does_not_overmatch_short_AIza_prefix(self):
+        """Bare ``AIza`` without the 35-char body must NOT be redacted."""
+        benign = "see https://docs.google.com/spreadsheets/AIza-not-a-key"
+        out = news_bot._redact_text(benign)
+        assert out == benign, f"Spurious match on benign AIza prefix: {out!r}"
+
+    @pytest.mark.parametrize("name", [
+        "GEMINI_API_KEY",
+        "OPENAI_API_KEY",
+        "OPENROUTER_API_KEY",
+        "OPEN_ROUTER_API_KEY",
+    ])
+    def test_llm_env_var_in_secret_env_names(self, name):
+        """All LLM-provider env vars must be in ``_SECRET_ENV_NAMES`` so
+        ``sanitize_error_message`` redacts their values out of stored
+        error strings (defence-in-depth even if regex misses a key shape)."""
+        assert name in news_bot._SECRET_ENV_NAMES
+
+    @pytest.mark.parametrize("logger_name", [
+        "openai", "openai._base_client",
+        "google_genai", "google_genai.models",
+    ])
+    def test_filter_attached_to_llm_sdk_loggers(self, logger_name):
+        """The redacting filter must be attached to OpenAI and Google-genai
+        SDK loggers so emitted records are scrubbed even with handlers wired
+        directly to them."""
+        sdk_logger = logging.getLogger(logger_name)
+        assert any(
+            isinstance(f, news_bot._TokenRedactingFilter)
+            for f in sdk_logger.filters
+        ), f"_TokenRedactingFilter not installed on {logger_name!r} logger."
+
+    def test_gemini_key_redacted_through_root_logger(self, caplog):
+        """End-to-end: a Gemini key emitted on google_genai logger gets scrubbed."""
+        gen_logger = logging.getLogger("google_genai.models")
+        with caplog.at_level(logging.WARNING, logger="google_genai.models"):
+            gen_logger.warning("auth failed for key=%s", FAKE_GEMINI_KEY)
+        combined = "\n".join(r.getMessage() for r in caplog.records)
+        assert FAKE_GEMINI_KEY not in combined, combined
+
+    def test_openrouter_key_redacted_through_root_logger(self, caplog):
+        """End-to-end: an OpenRouter key emitted on openai SDK logger gets scrubbed
+        (OpenRouter requests go through the OpenAI SDK with a custom base URL)."""
+        oai_logger = logging.getLogger("openai._base_client")
+        with caplog.at_level(logging.WARNING, logger="openai._base_client"):
+            oai_logger.warning("AuthenticationError api_key=%s", FAKE_OPENROUTER_KEY)
+        combined = "\n".join(r.getMessage() for r in caplog.records)
+        assert FAKE_OPENROUTER_KEY not in combined, combined
 
 
 class TestAdminNotifyRedaction:
