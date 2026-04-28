@@ -3,6 +3,7 @@ requests==2.32.3
 beautifulsoup4==4.12.3
 deep-translator==1.11.4
 anthropic>=0.45.0,<0.46.0
+google-genai>=1.70.0,<2.0.0
 schedule==1.2.1
 pytz>=2024.1
 python-telegram-bot==21.10

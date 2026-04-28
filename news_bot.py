@@ -54,8 +54,8 @@ import pending_articles_repo as pending_repo
 # degraded-mode global fallback) without conditional imports inside the
 # hot path. Tests patch the bound names ``news_bot.transcreate_via_claude``
 # / ``news_bot.outage_state.is_fallback_active`` on the module surface.
-import claude_transcreation
-from claude_transcreation import (
+import llm_transcreation as claude_transcreation  # alias preserves bound name
+from llm_transcreation import (
     transcreate_via_claude,
     ClaudeTranscreationError,
     ClaudeOutageError,

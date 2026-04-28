@@ -106,6 +106,9 @@ jobs:
             "telegraph_publisher.py"
             "pending_articles_repo.py"
             "claude_transcreation.py"
+            "gemini_transcreation.py"
+            "llm_transcreation.py"
+            "_llm_common.py"
             "compute_publish_slots.py"
             "outage_state.py"
             "feeds.json"
@@ -133,6 +136,9 @@ jobs:
           # fall back to documented defaults when the repo `vars` are unset.
           ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
           ANTHROPIC_MODEL: ${{ vars.ANTHROPIC_MODEL || 'claude-haiku-4-5' }}
+          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+          GEMINI_MODEL: ${{ vars.GEMINI_MODEL || 'gemini-2.0-flash' }}
+          LLM_PROVIDER: ${{ vars.LLM_PROVIDER || 'claude' }}
           TZ: ${{ vars.TZ || 'Europe/Moscow' }}
         # Idempotent .env update on the server: strip any existing lines
         # with the three target keys, then append the current values.
@@ -164,17 +170,23 @@ jobs:
           DEPLOY_PATH='$DEPLOY_PATH'
           ANTHROPIC_API_KEY='$ANTHROPIC_API_KEY'
           ANTHROPIC_MODEL='$ANTHROPIC_MODEL'
+          GEMINI_API_KEY='$GEMINI_API_KEY'
+          GEMINI_MODEL='$GEMINI_MODEL'
+          LLM_PROVIDER='$LLM_PROVIDER'
           TZ_VALUE='$TZ'
           cd "\$DEPLOY_PATH"
           touch .env
           chmod 600 .env
-          # Strip stale entries for the three managed keys, keep everything
+          # Strip stale entries for the managed keys, keep everything
           # else byte-for-byte. `|| true` covers the empty-file edge case
           # where grep would exit 1.
-          grep -v -E '^(ANTHROPIC_API_KEY|ANTHROPIC_MODEL|TZ)=' .env > .env.tmp || true
+          grep -v -E '^(ANTHROPIC_API_KEY|ANTHROPIC_MODEL|GEMINI_API_KEY|GEMINI_MODEL|LLM_PROVIDER|TZ)=' .env > .env.tmp || true
           {
             printf 'ANTHROPIC_API_KEY=%s\n' "\$ANTHROPIC_API_KEY"
             printf 'ANTHROPIC_MODEL=%s\n' "\$ANTHROPIC_MODEL"
+            [ -n "\$GEMINI_API_KEY" ] && printf 'GEMINI_API_KEY=%s\n' "\$GEMINI_API_KEY"
+            printf 'GEMINI_MODEL=%s\n' "\$GEMINI_MODEL"
+            printf 'LLM_PROVIDER=%s\n' "\$LLM_PROVIDER"
             printf 'TZ=%s\n' "\$TZ_VALUE"
           } >> .env.tmp
           mv .env.tmp .env

@@ -110,21 +110,7 @@ block was provided, the `blocks` array must mirror its length and types.
 # --------------------------------------------------------------------------- #
 
 
-class ClaudeTranscreationError(Exception):
-    """Per-article Claude failure (refusal, malformed JSON, schema mismatch).
-
-    Caller treats as a single-article strike → Google fallback for THIS
-    article only; outage state machine NOT advanced.
-    """
-
-
-class ClaudeOutageError(Exception):
-    """API-level Claude failure (network, 429, 5xx, auth, model 404).
-
-    Caller advances outage state machine (admin pings, 2h grace, then
-    global Google fallback). Distinct from ``ClaudeTranscreationError``
-    so a single weird article cannot take the channel offline.
-    """
+from _llm_common import ClaudeTranscreationError, ClaudeOutageError
 
 
 # --------------------------------------------------------------------------- #
