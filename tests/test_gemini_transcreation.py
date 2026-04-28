@@ -209,48 +209,101 @@ class TestHealthCheck(unittest.TestCase):
 
 
 class TestLLMTranscreationDispatcher(unittest.TestCase):
-    """Verify dispatcher routes to correct engine based on LLM_PROVIDER env."""
+    """Verify dispatcher selects correct engine: explicit LLM_PROVIDER first,
+    then auto-select by API-key presence in priority order
+    openai → claude → gemini."""
 
-    def test_default_routes_to_claude(self):
+    _ENV_KEYS = ("LLM_PROVIDER", "OPENAI_API_KEY", "ANTHROPIC_API_KEY", "GEMINI_API_KEY")
+
+    def setUp(self):
+        # Snapshot then clear all relevant env vars so each test starts clean.
+        self._saved = {k: os.environ.get(k) for k in self._ENV_KEYS}
+        for k in self._ENV_KEYS:
+            os.environ.pop(k, None)
+
+    def tearDown(self):
+        # Restore env exactly to its pre-test state.
+        for k, v in self._saved.items():
+            if v is None:
+                os.environ.pop(k, None)
+            else:
+                os.environ[k] = v
         import importlib
         import llm_transcreation
-        with patch.dict(os.environ, {}, clear=False):
-            os.environ.pop("LLM_PROVIDER", None)
-            importlib.reload(llm_transcreation)
-            self.assertEqual(llm_transcreation._engine.__name__, "claude_transcreation")
+        importlib.reload(llm_transcreation)
 
-    def test_gemini_provider_routes_to_gemini(self):
+    def _reload_and_get_engine(self):
         import importlib
         import llm_transcreation
-        with patch.dict(os.environ, {"LLM_PROVIDER": "gemini"}):
-            importlib.reload(llm_transcreation)
-            self.assertEqual(llm_transcreation._engine.__name__, "gemini_transcreation")
+        importlib.reload(llm_transcreation)
+        return llm_transcreation._engine.__name__
 
-    def test_unknown_provider_falls_back_to_claude(self):
-        import importlib
-        import llm_transcreation
-        with patch.dict(os.environ, {"LLM_PROVIDER": "garbage"}):
-            importlib.reload(llm_transcreation)
-            self.assertEqual(llm_transcreation._engine.__name__, "claude_transcreation")
+    def test_no_keys_no_provider_defaults_to_claude(self):
+        self.assertEqual(self._reload_and_get_engine(), "claude_transcreation")
+
+    def test_only_gemini_key_auto_selects_gemini(self):
+        os.environ["GEMINI_API_KEY"] = "test-key"
+        self.assertEqual(self._reload_and_get_engine(), "gemini_transcreation")
+
+    def test_only_anthropic_key_auto_selects_claude(self):
+        os.environ["ANTHROPIC_API_KEY"] = "test-key"
+        self.assertEqual(self._reload_and_get_engine(), "claude_transcreation")
+
+    def test_only_openai_key_auto_selects_openai(self):
+        os.environ["OPENAI_API_KEY"] = "test-key"
+        self.assertEqual(self._reload_and_get_engine(), "openai_transcreation")
+
+    def test_all_three_keys_priority_picks_openai(self):
+        os.environ["OPENAI_API_KEY"] = "a"
+        os.environ["ANTHROPIC_API_KEY"] = "b"
+        os.environ["GEMINI_API_KEY"] = "c"
+        self.assertEqual(self._reload_and_get_engine(), "openai_transcreation")
+
+    def test_claude_and_gemini_priority_picks_claude(self):
+        os.environ["ANTHROPIC_API_KEY"] = "a"
+        os.environ["GEMINI_API_KEY"] = "b"
+        self.assertEqual(self._reload_and_get_engine(), "claude_transcreation")
+
+    def test_explicit_provider_overrides_auto_selection(self):
+        # Only Gemini key present, but LLM_PROVIDER=claude → use claude
+        os.environ["GEMINI_API_KEY"] = "a"
+        os.environ["LLM_PROVIDER"] = "claude"
+        self.assertEqual(self._reload_and_get_engine(), "claude_transcreation")
+
+    def test_explicit_provider_gemini(self):
+        os.environ["LLM_PROVIDER"] = "gemini"
+        self.assertEqual(self._reload_and_get_engine(), "gemini_transcreation")
+
+    def test_explicit_provider_openai(self):
+        os.environ["LLM_PROVIDER"] = "openai"
+        self.assertEqual(self._reload_and_get_engine(), "openai_transcreation")
+
+    def test_unknown_provider_falls_back_to_auto_selection(self):
+        # Unknown provider + Gemini key → gemini (auto-selection kicks in)
+        os.environ["LLM_PROVIDER"] = "garbage"
+        os.environ["GEMINI_API_KEY"] = "a"
+        self.assertEqual(self._reload_and_get_engine(), "gemini_transcreation")
+
+    def test_unknown_provider_no_keys_defaults_to_claude(self):
+        os.environ["LLM_PROVIDER"] = "garbage"
+        self.assertEqual(self._reload_and_get_engine(), "claude_transcreation")
+
+    def test_empty_string_key_treated_as_unset(self):
+        os.environ["GEMINI_API_KEY"] = ""
+        os.environ["ANTHROPIC_API_KEY"] = "  "  # whitespace also counts as unset
+        self.assertEqual(self._reload_and_get_engine(), "claude_transcreation")
 
     def test_exception_class_identity_shared(self):
-        """ClaudeOutageError from gemini_transcreation IS ClaudeOutageError from
-        claude_transcreation IS ClaudeOutageError from llm_transcreation IS the
-        one in _llm_common."""
+        """ClaudeOutageError from each engine IS the one in _llm_common."""
         from _llm_common import ClaudeOutageError as CommonOutage
         import claude_transcreation
         import gemini_transcreation
+        import openai_transcreation
         import llm_transcreation
         self.assertIs(claude_transcreation.ClaudeOutageError, CommonOutage)
         self.assertIs(gemini_transcreation.ClaudeOutageError, CommonOutage)
+        self.assertIs(openai_transcreation.ClaudeOutageError, CommonOutage)
         self.assertIs(llm_transcreation.ClaudeOutageError, CommonOutage)
-
-    def tearDown(self):
-        # Reset llm_transcreation back to default for other tests
-        import importlib
-        import llm_transcreation
-        os.environ.pop("LLM_PROVIDER", None)
-        importlib.reload(llm_transcreation)
 
 
 if __name__ == "__main__":

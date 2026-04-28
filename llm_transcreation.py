@@ -1,27 +1,30 @@
-"""LLM transcreation dispatcher — selects engine by ``LLM_PROVIDER`` env var.
+"""LLM transcreation dispatcher — selects engine by env vars.
+
+Selection logic (in order):
+    1. If ``LLM_PROVIDER`` is set explicitly → use that engine (overrides
+       priority below). Unknown values warn + fall back to the priority chain.
+    2. Otherwise, auto-select by API-key presence in priority order:
+       ``OPENAI_API_KEY`` → openai (highest priority)
+       ``ANTHROPIC_API_KEY`` → claude
+       ``GEMINI_API_KEY`` → gemini (lowest priority)
+    3. If no key is present and no provider set → claude (so news_bot's
+       startup health check fails cleanly with admin-ping rather than
+       a cryptic import error).
 
 Public API:
-    * ``transcreate_via_claude(article)`` — main entry point (function name
-      kept for backward compat; actually routes to the configured engine).
+    * ``transcreate_via_claude(article)`` — main entry (function name
+      kept for backward compat; routes to the configured engine).
     * ``health_check()`` — non-raising bool probe.
-    * ``ClaudeOutageError``, ``ClaudeTranscreationError`` — shared exception
-      types from ``_llm_common`` (single class identity across engines).
+    * ``ClaudeOutageError``, ``ClaudeTranscreationError`` — shared types
+      from ``_llm_common`` (single class identity across engines).
     * ``is_outage_error(exc)``, ``is_per_article_error(exc)``.
-
-Environment:
-    LLM_PROVIDER  ``claude`` (default) | ``gemini``
-    ANTHROPIC_API_KEY / ANTHROPIC_MODEL  (when LLM_PROVIDER=claude)
-    GEMINI_API_KEY / GEMINI_MODEL        (when LLM_PROVIDER=gemini)
-
-Engines share the system prompt (``ux-guidelines.md`` + JSON envelope),
-JSON output schema, and post-processing (emoji safety net, paragraph
-truncation). They differ only in SDK calls and exception classification.
 
 Adding a new engine:
     1. Create ``<name>_transcreation.py`` mirroring the public API.
     2. Use ``from _llm_common import ClaudeOutageError, ClaudeTranscreationError``
        so exceptions share class identity.
-    3. Add a branch to ``_select_engine()`` below.
+    3. Add a branch to ``_select_engine()`` below for the explicit env-var case.
+    4. Add a branch to ``_auto_select_by_key_presence()`` for auto-selection.
 """
 
 from __future__ import annotations
@@ -34,25 +37,60 @@ from _llm_common import ClaudeOutageError, ClaudeTranscreationError
 logger = logging.getLogger(__name__)
 
 
-def _select_engine():
-    """Return the engine module based on ``LLM_PROVIDER`` env var.
+def _has_key(env_var: str) -> bool:
+    """True iff ``env_var`` is set to a non-empty value."""
+    return bool(os.getenv(env_var, "").strip())
 
-    Falls back to Claude on unknown values (logs a warning).
-    Lazy-imports the engine module so the unused engine's SDK is not
-    loaded at import time.
+
+def _auto_select_by_key_presence() -> str:
+    """Return engine name based on which API keys are configured.
+
+    Priority: openai > claude > gemini. Falls back to ``claude`` when
+    no key is configured (so the startup health check produces the
+    canonical missing-key admin ping rather than a cryptic error).
     """
-    provider = os.getenv("LLM_PROVIDER", "claude").lower()
-    if provider == "gemini":
+    if _has_key("OPENAI_API_KEY"):
+        return "openai"
+    if _has_key("ANTHROPIC_API_KEY"):
+        return "claude"
+    if _has_key("GEMINI_API_KEY"):
+        return "gemini"
+    return "claude"
+
+
+def _select_engine():
+    """Return the engine module based on ``LLM_PROVIDER`` env or key presence.
+
+    Lazy-imports the engine module so unused engines' SDKs are not loaded.
+    """
+    explicit = os.getenv("LLM_PROVIDER", "").strip().lower()
+    if explicit:
+        if explicit == "openai":
+            import openai_transcreation as engine
+            logger.info("LLM_PROVIDER=openai (explicit)")
+            return engine
+        if explicit == "claude":
+            import claude_transcreation as engine
+            logger.info("LLM_PROVIDER=claude (explicit)")
+            return engine
+        if explicit == "gemini":
+            import gemini_transcreation as engine
+            logger.info("LLM_PROVIDER=gemini (explicit)")
+            return engine
+        logger.warning(
+            "LLM_PROVIDER=%r is not recognized; falling back to key-presence "
+            "auto-selection (openai → claude → gemini)",
+            explicit,
+        )
+
+    auto = _auto_select_by_key_presence()
+    if auto == "openai":
+        import openai_transcreation as engine
+    elif auto == "gemini":
         import gemini_transcreation as engine
-        return engine
-    if provider == "claude":
+    else:
         import claude_transcreation as engine
-        return engine
-    logger.warning(
-        "LLM_PROVIDER=%r is not recognized; falling back to claude",
-        provider,
-    )
-    import claude_transcreation as engine
+    logger.info("LLM_PROVIDER auto-selected: %s (by key presence)", auto)
     return engine
 
 
