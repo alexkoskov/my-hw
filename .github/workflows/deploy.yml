@@ -42,22 +42,33 @@ jobs:
           DEPLOY_PATH: ${{ secrets.DEPLOY_PATH }}
           SSH_PRIVATE_KEY: ${{ secrets.SSH_PRIVATE_KEY }}
           ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+          OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}
         run: |
-          # Required secrets — workflow fails fast if any of these are blank.
-          # ANTHROPIC_API_KEY is required: news_bot's llm-transcreation path
-          # cannot start without it (claude_transcreation hits AuthenticationError
-          # on the first API call, then 2-ping outage protocol fires immediately).
-          # Optional values handled with defaults below: ANTHROPIC_MODEL (defaults
-          # to claude-haiku-4-5) and TZ (defaults to Europe/Moscow). Both are
-          # better stored as repo `vars` (Settings → Secrets and variables →
-          # Actions → Variables) since they aren't sensitive.
-          for var in SSH_HOST SSH_USER DEPLOY_PATH SSH_PRIVATE_KEY ANTHROPIC_API_KEY; do
+          # SSH-related secrets are unconditionally required: without them
+          # the deploy step has nothing to push to.
+          for var in SSH_HOST SSH_USER DEPLOY_PATH SSH_PRIVATE_KEY; do
             if [[ -z "${!var}" ]]; then
               echo "::error::Missing required secret: $var"
-              echo "::error::Configure all required secrets in repo Settings → Secrets and variables → Actions."
+              echo "::error::Configure secrets in repo Settings → Secrets and variables → Actions."
               exit 1
             fi
           done
+          # At least ONE LLM key must be set so news_bot can transcreate.
+          # The dispatcher (llm_transcreation.py) auto-selects an engine by
+          # key presence in priority order: openai → claude → gemini → openrouter.
+          # Override per-deploy via repo var LLM_PROVIDER if you have multiple.
+          if [[ -z "$ANTHROPIC_API_KEY" && -z "$OPENAI_API_KEY" && -z "$GEMINI_API_KEY" && -z "$OPENROUTER_API_KEY" ]]; then
+            echo "::error::No LLM API key set. Add at least one of:"
+            echo "::error::  ANTHROPIC_API_KEY, OPENAI_API_KEY, GEMINI_API_KEY, OPENROUTER_API_KEY"
+            echo "::error::in repo Settings → Secrets and variables → Actions."
+            exit 1
+          fi
+          # Optional non-secret values handled with defaults below:
+          # LLM_PROVIDER, ANTHROPIC_MODEL, OPENAI_MODEL, GEMINI_MODEL,
+          # OPENROUTER_MODEL, TZ. Better stored as repo `vars` since they
+          # aren't sensitive.
           echo "All required secrets present."
 
       - name: Set up SSH agent
