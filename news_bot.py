@@ -78,13 +78,13 @@ DB_FILE = "news.db"
 LOG_LEVEL = logging.INFO
 
 # Distributed-publish constants (llm-transcreation-and-distributed-publishing
-# Decisions 2, 4, 9, 14, 15). The 13:00–20:00 МСК window + 40-minute minimum
+# Decisions 2, 4, 9, 14, 15). The 10:00–20:00 МСК window + 40-minute minimum
 # interval are the same numbers ``compute_publish_slots`` uses by default —
 # kept here for explicit reference in ``job()`` (window-end guard) and the
 # crash-loop guard (Decision 9). ``BACKLOG_WARNING_THRESHOLD`` seeds the
 # AC20 queue-pressure admin ping.
 MIN_INTERVAL_MINUTES = 40
-WINDOW_START_TIME = datetime.strptime("13:00", "%H:%M").time()
+WINDOW_START_TIME = datetime.strptime("10:00", "%H:%M").time()
 WINDOW_END_TIME = datetime.strptime("20:00", "%H:%M").time()
 BACKLOG_WARNING_THRESHOLD = 50
 MSK_TZ = pytz.timezone("Europe/Moscow")
@@ -1564,7 +1564,7 @@ def main():
          correct regardless of the container's wall-clock TZ).
 
     Cron change (Decision 2 + 4): the legacy 12-hour cron is replaced by
-    a single daily fixed-time cron at 12:00 МСК via ``schedule.every().
+    a single daily fixed-time cron at 10:00 МСК via ``schedule.every().
     day.at("12:00", tz=pytz.timezone("Europe/Moscow"))``. ``schedule==
     1.2.1`` accepts ``pytz.BaseTzInfo`` or an IANA name string but NOT
     ``zoneinfo.ZoneInfo`` — see TDD anchor in Task 8.
@@ -1617,12 +1617,12 @@ def main():
                 f"{sanitize_error_message(notify_err)}"
             )
 
-    # Daily fixed-time cron at 12:00 МСК (Decisions 2 + 4). pytz is the
+    # Daily fixed-time cron at 10:00 МСК (Decisions 2 + 4). pytz is the
     # only timezone API ``schedule==1.2.1`` accepts — see Decision 4.
-    schedule.every().day.at("12:00", tz=pytz.timezone("Europe/Moscow")).do(job)
+    schedule.every().day.at("10:00", tz=pytz.timezone("Europe/Moscow")).do(job)
 
     # Run immediately for first-boot population. Subsequent runs go via
-    # the cron loop below, firing at 12:00 МСК daily.
+    # the cron loop below, firing at 10:00 МСК daily.
     job()
 
     # Keep the script alive

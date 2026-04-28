@@ -15,16 +15,31 @@ def _no_real_sleep(monkeypatch):
     tests never actually wait. Tests that want to inspect sleep arguments
     can patch ``lamley_source.time.sleep`` themselves on top of this."""
     monkeypatch.setattr(lamley_source.time, "sleep", lambda s: None)
-    # Reset throttle state so each test starts from a clean baseline.
+    # Reset throttle + WAF-protection state so each test starts from a
+    # clean baseline.
     monkeypatch.setattr(lamley_source, "_last_request_time", 0.0)
+    monkeypatch.setattr(lamley_source, "_consecutive_429_count", 0)
+    monkeypatch.setattr(lamley_source, "_cooldown_until", 0.0)
+    monkeypatch.setattr(lamley_source, "_url_blacklist", {})
     yield
 
 
-def _make_response(text="", status=200, raise_exc=None, content=None):
+def _make_429_http_error(url):
+    """Construct a real ``requests.HTTPError`` whose attached response
+    has status_code=429 — what raise_for_status() raises on a 429."""
+    resp = MagicMock(spec=requests.Response)
+    resp.status_code = 429
+    err = requests.HTTPError(f"429 Client Error: Too Many Requests for url: {url}")
+    err.response = resp
+    return err
+
+
+def _make_response(text="", status=200, raise_exc=None, content=None, headers=None):
     resp = MagicMock(spec=requests.Response)
     resp.text = text
     resp.status_code = status
     resp.content = content if content is not None else text.encode("utf-8")
+    resp.headers = headers if headers is not None else {}
     if raise_exc is not None:
         resp.raise_for_status.side_effect = raise_exc
     else:
@@ -185,6 +200,100 @@ class TestRateLimitHandling:
         assert sleep_calls, "Expected throttle to sleep on back-to-back call"
         assert sleep_calls[0] > 0
         assert sleep_calls[0] <= lamley_source._MIN_REQUEST_INTERVAL_S
+
+
+class TestWAFProtection:
+    """Tests for the cool-down + per-URL blacklist that engages when
+    Lamley's WAF starts returning 429 across the board."""
+
+    def test_429_after_retry_records_url_in_blacklist(self):
+        url = "https://lamleygroup.com/some-article"
+        session = MagicMock()
+        # Both the initial fetch AND the retry return 429.
+        session.get.return_value = _make_response(
+            status=429, raise_exc=_make_429_http_error(url),
+        )
+        lamley_source.fetch_lamley_article(url, session=session, notifier=None)
+        assert url in lamley_source._url_blacklist
+        assert lamley_source._url_blacklist[url] > 0
+
+    def test_blacklisted_url_skipped_on_subsequent_call(self):
+        url = "https://lamleygroup.com/blacklisted"
+        # Pre-populate the blacklist with a future expiry.
+        lamley_source._url_blacklist[url] = lamley_source.time.monotonic() + 3600
+        session = MagicMock()
+        session.get.side_effect = AssertionError(
+            "fetch must not hit Lamley when URL is blacklisted"
+        )
+        result = lamley_source.fetch_lamley_article(
+            url, session=session, notifier=None,
+        )
+        assert result is None
+        session.get.assert_not_called()
+
+    def test_consecutive_429_threshold_trips_cooldown(self):
+        url_template = "https://lamleygroup.com/article-{}"
+        session = MagicMock()
+        session.get.return_value = _make_response(
+            status=429, raise_exc=_make_429_http_error("any"),
+        )
+
+        # Hit the threshold: _429_THRESHOLD failures from distinct URLs.
+        for i in range(lamley_source._429_THRESHOLD):
+            lamley_source.fetch_lamley_article(
+                url_template.format(i), session=session, notifier=None,
+            )
+
+        # Cool-down should now be active.
+        assert lamley_source._cooldown_until > lamley_source.time.monotonic()
+        assert lamley_source._is_in_cooldown()
+
+    def test_cooldown_skips_fetch(self):
+        # Activate cool-down by hand.
+        lamley_source._cooldown_until = lamley_source.time.monotonic() + 600
+        session = MagicMock()
+        session.get.side_effect = AssertionError(
+            "fetch must not hit Lamley while cool-down is active"
+        )
+        url = "https://lamleygroup.com/another"
+        result = lamley_source.fetch_lamley_article(
+            url, session=session, notifier=None,
+        )
+        assert result is None
+        session.get.assert_not_called()
+
+    def test_success_resets_consecutive_429_counter(self):
+        # Simulate having accumulated some 429 strikes.
+        lamley_source._consecutive_429_count = 3
+        session = MagicMock()
+        session.get.return_value = _make_response(text=SAMPLE_HTML)
+        lamley_source.fetch_lamley_article(
+            "https://lamleygroup.com/recovery",
+            session=session, notifier=None,
+        )
+        assert lamley_source._consecutive_429_count == 0
+
+    def test_expired_blacklist_entry_is_pruned_on_check(self):
+        url = "https://lamleygroup.com/stale"
+        # Past expiry — should be cleaned up on next check.
+        lamley_source._url_blacklist[url] = lamley_source.time.monotonic() - 1
+        assert not lamley_source._is_url_blacklisted(url)
+        # Lazy cleanup: the expired entry should be gone.
+        assert url not in lamley_source._url_blacklist
+
+    def test_non_429_http_error_does_not_blacklist_url(self):
+        url = "https://lamleygroup.com/server-error"
+        session = MagicMock()
+        # 500 — server error, not WAF.
+        resp_500 = MagicMock(spec=requests.Response)
+        resp_500.status_code = 500
+        err_500 = requests.HTTPError("500 Internal Server Error")
+        err_500.response = resp_500
+        session.get.return_value = _make_response(status=500, raise_exc=err_500)
+        lamley_source.fetch_lamley_article(url, session=session, notifier=None)
+        # 500 is not 429 — URL should NOT be blacklisted.
+        assert url not in lamley_source._url_blacklist
+        assert lamley_source._consecutive_429_count == 0
 
 
 if __name__ == "__main__":

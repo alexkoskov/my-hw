@@ -385,26 +385,27 @@ class TestProcessNewArticlesRemoved(unittest.TestCase):
 
 
 class TestCronScheduleDailyAtNoonMSK(unittest.TestCase):
-    """AC (Task 8 / Decisions 2 + 4): cron runs once daily at 12:00 МСК
-    via TZ-aware ``schedule.every().day.at("12:00", tz=pytz.timezone(
-    "Europe/Moscow"))``. Replaces the legacy 12-hour cron from manual-
-    review-workflow. The schedule lives in ``main()``; we assert the
-    source text to avoid actually running the scheduler.
+    """AC (Task 8 / Decisions 2 + 4 — operator follow-up 2026-04-28
+    moved the tick to 10:00 МСК so the publish window starts the same
+    hour subscribers wake up): cron runs once daily at 10:00 МСК via
+    TZ-aware ``schedule.every().day.at("10:00", tz=pytz.timezone(
+    "Europe/Moscow"))``. The schedule lives in ``main()``; we assert
+    the source text to avoid actually running the scheduler.
 
     Asserts:
-      (a) ``every().day.at("12:00"`` is present (correct cron form);
+      (a) ``every().day.at("10:00"`` is present (correct cron form);
       (b) ``tz=`` keyword (TZ-aware) plus the explicit
           ``pytz.timezone('Europe/Moscow')`` token;
-      (c) the legacy ``every(12).hours`` / ``every().hour.do`` /
-          ``every().day.at`` (without 12:00) lines are absent.
+      (c) the legacy ``every(12).hours`` / ``every().hour.do`` lines
+          are absent.
     """
 
-    def test_main_uses_daily_noon_msk_schedule(self):
+    def test_main_uses_daily_morning_msk_schedule(self):
         import inspect
         src = inspect.getsource(news_bot.main)
         # (a) New form is registered.
-        self.assertIn('every().day.at("12:00"', src,
-                      msg="main() must register every().day.at(\"12:00\", tz=...)")
+        self.assertIn('every().day.at("10:00"', src,
+                      msg="main() must register every().day.at(\"10:00\", tz=...)")
         # (b) tz-aware via pytz.
         self.assertIn('tz=', src, msg="cron registration must pass tz=...")
         # Accept either quote style for the timezone literal.

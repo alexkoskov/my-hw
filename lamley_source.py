@@ -46,10 +46,81 @@ _MIN_REQUEST_INTERVAL_S = 20.0
 #: ``Retry-After`` header.
 _DEFAULT_RETRY_AFTER_S = 30.0
 
+#: After this many consecutive 429s in the current process, declare a
+#: WAF-level lockout and pause ALL Lamley fetches for ``_COOLDOWN_S``.
+#: Operator-tuned: 5 strikes is enough to detect "we're in the
+#: penalty box" without overreacting to a couple of unlucky responses.
+_429_THRESHOLD = 5
+
+#: How long to pause Lamley fetches after the consecutive-429 threshold
+#: trips. 1 hour gives Lamley's WAF time to forget about us.
+_COOLDOWN_S = 3600.0  # 1 hour
+
+#: Per-URL blacklist TTL — a URL that hit 429 (after the per-request
+#: retry already failed) is skipped for this long even after the
+#: process-wide cool-down expires. Most Lamley articles are timeless
+#: enough that 24 h of staleness is acceptable; this stops the bot
+#: from re-hitting known-bad URLs every cron tick.
+_URL_BLACKLIST_S = 86400.0  # 24 hours
+
 #: Throttle state. ``threading.Lock`` is sufficient because the cron-side
 #: bot is single-threaded; the lock is defensive only.
 _throttle_lock = threading.Lock()
 _last_request_time: float = 0.0
+
+#: WAF-protection state. Reset on process restart — that's intentional;
+#: a fresh process should re-probe Lamley and find out itself whether
+#: the lockout cleared.
+_consecutive_429_count: int = 0
+_cooldown_until: float = 0.0
+#: ``{url: time.monotonic() expiry}``. Stale entries are cleaned up
+#: lazily on each fetch — a 24-hour TTL × ~10 articles/day caps the
+#: dict at low double digits without a sweeper job.
+_url_blacklist: dict[str, float] = {}
+
+
+def _is_in_cooldown() -> bool:
+    """True if the process is currently locked out of Lamley fetches."""
+    return time.monotonic() < _cooldown_until
+
+
+def _is_url_blacklisted(url: str) -> bool:
+    """True if this specific URL hit 429 within the last
+    ``_URL_BLACKLIST_S`` and should be skipped on this attempt."""
+    expiry = _url_blacklist.get(url)
+    if expiry is None:
+        return False
+    if time.monotonic() >= expiry:
+        # Lazy cleanup — expired entry, drop it.
+        _url_blacklist.pop(url, None)
+        return False
+    return True
+
+
+def _record_429(url: str) -> None:
+    """Per-URL blacklist + consecutive-429 counter. May trip the
+    process-wide cool-down if the threshold is reached."""
+    global _consecutive_429_count, _cooldown_until
+    _url_blacklist[url] = time.monotonic() + _URL_BLACKLIST_S
+    _consecutive_429_count += 1
+    if _consecutive_429_count >= _429_THRESHOLD:
+        _cooldown_until = time.monotonic() + _COOLDOWN_S
+        logger.warning(
+            "Lamley consecutive 429 threshold hit (%d/%d) — entering "
+            "process-wide cool-down for %.0f minutes",
+            _consecutive_429_count, _429_THRESHOLD, _COOLDOWN_S / 60,
+        )
+
+
+def _record_success() -> None:
+    """Reset the consecutive-429 counter on a successful fetch."""
+    global _consecutive_429_count
+    if _consecutive_429_count > 0:
+        logger.info(
+            "Lamley fetch succeeded — resetting 429 counter (was %d)",
+            _consecutive_429_count,
+        )
+    _consecutive_429_count = 0
 
 
 def _throttle_wait() -> None:
@@ -103,6 +174,23 @@ def fetch_lamley_article(
     """
     http = session or requests
 
+    # WAF-protection short-circuits — log at INFO so the operator sees
+    # the bot is intentionally skipping rather than silently dropping.
+    if _is_in_cooldown():
+        remaining = int(_cooldown_until - time.monotonic())
+        logger.info(
+            "Lamley cool-down active (%ds left) — skipping %s",
+            remaining, link,
+        )
+        return None
+    if _is_url_blacklisted(link):
+        remaining = int(_url_blacklist[link] - time.monotonic())
+        logger.info(
+            "Lamley URL blacklisted (%ds left) — skipping %s",
+            remaining, link,
+        )
+        return None
+
     def _do_fetch():
         return http.get(
             link,
@@ -128,9 +216,23 @@ def fetch_lamley_article(
         if len(response.content) > MAX_RESPONSE_SIZE:
             _notify(notifier, f"Lamley article too large: {len(response.content)}")
             return None
-    except requests.RequestException as exc:
+    except requests.HTTPError as exc:
+        # 429 after retry → record both the per-URL blacklist and the
+        # consecutive-strike counter (which may trip cool-down).
+        resp = getattr(exc, "response", None)
+        if resp is not None and resp.status_code == 429:
+            _record_429(link)
         _notify(notifier, f"Lamley fetch error ({link}): {exc}")
         return None
+    except requests.RequestException as exc:
+        # Other transport-level errors (timeout, connection refused,
+        # DNS) — don't blacklist the URL or trip the counter; they're
+        # not WAF-shaped.
+        _notify(notifier, f"Lamley fetch error ({link}): {exc}")
+        return None
+
+    # Successful response — reset the consecutive-429 counter.
+    _record_success()
 
     soup = BeautifulSoup(response.text, "html.parser")
     # Strip inline scripts/styles so their JS doesn't end up in body text.
