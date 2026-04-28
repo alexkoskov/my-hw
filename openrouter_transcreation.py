@@ -64,8 +64,9 @@ _PARAGRAPH_MAX_CHARS = 4000
 _DEFAULT_MAX_TOKENS = 8000
 
 #: Default model spec; "provider/model" form. Override via OPENROUTER_MODEL.
-#: GPT-5.5 is the latest non-pro OpenAI model on OpenRouter.
-_DEFAULT_MODEL = "openai/gpt-5.5"
+#: gpt-5.4-mini balances quality and cost — ~$0.03 per typical article
+#: (vs ~$0.24 for gpt-5.5), good enough for transcreation per ux-guidelines.
+_DEFAULT_MODEL = "openai/gpt-5.4-mini"
 
 #: Env var names accepted for the API key. Canonical first, alias second.
 _API_KEY_ENV_VARS = ("OPENROUTER_API_KEY", "OPEN_ROUTER_API_KEY")
