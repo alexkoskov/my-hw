@@ -276,6 +276,92 @@ def _truncate_paragraphs(paragraphs: list) -> list:
 
 
 # --------------------------------------------------------------------------- #
+# Variant B+ second-pass: translate captions/text in EN-fallback blocks       #
+# --------------------------------------------------------------------------- #
+
+
+_BLOCK_TRANSLATE_SYSTEM = (
+    "You are a Hot Wheels diecast collector blog translator. "
+    "Translate each numbered English caption/text below into natural, "
+    "idiomatic Russian suitable for a Telegram channel. "
+    "Brand and model names (Hot Wheels, Mattel, Nissan GT-R, Bugatti, "
+    "Matchbox, etc.) stay in English. Keep tone enthusiastic but factual. "
+    'Return strictly JSON: {"translations": ["ru1", "ru2", ...]} — same '
+    "count and order as the input."
+)
+
+
+def _translate_block_strings(
+    blocks: list,
+    client: "genai.Client",
+    model: str,
+    *,
+    max_tokens: int = 4000,
+) -> list:
+    """Variant B+ second-pass: translate block ``text`` / ``caption`` fields.
+
+    See ``openrouter_transcreation._translate_block_strings`` for full doc.
+    Always returns a list — keeps EN blocks on any failure.
+    """
+    if not isinstance(blocks, list) or not blocks:
+        return blocks
+
+    items: list[tuple[int, str, str]] = []
+    for i, b in enumerate(blocks):
+        if not isinstance(b, dict):
+            continue
+        for field in ("text", "caption"):
+            v = b.get(field)
+            if isinstance(v, str) and v.strip():
+                items.append((i, field, v))
+
+    if not items:
+        return blocks
+
+    en_lines = [f"{n+1}. {it[2]}" for n, it in enumerate(items)]
+    user_msg = "\n".join(en_lines)
+
+    try:
+        response = client.models.generate_content(
+            model=model,
+            contents=user_msg,
+            config=genai_types.GenerateContentConfig(
+                system_instruction=_BLOCK_TRANSLATE_SYSTEM,
+                max_output_tokens=max_tokens,
+                response_mime_type="application/json",
+            ),
+        )
+        text = response.text
+        parsed = json.loads(text or "{}")
+        translations = parsed.get("translations")
+    except Exception as exc:  # noqa: BLE001
+        logger.warning(
+            "block-caption second-pass failed: %s; keeping EN captions",
+            type(exc).__name__,
+        )
+        return blocks
+
+    if not isinstance(translations, list) or len(translations) != len(items):
+        logger.warning(
+            "block-caption translation count mismatch: expected %d, got %s; "
+            "keeping EN captions",
+            len(items),
+            len(translations) if isinstance(translations, list) else type(translations).__name__,
+        )
+        return blocks
+
+    result = [dict(b) if isinstance(b, dict) else b for b in blocks]
+    for (idx, field, _en), ru in zip(items, translations):
+        if isinstance(ru, str) and ru.strip():
+            result[idx][field] = ru
+    logger.info(
+        "block-caption second-pass success: translated %d strings across %d blocks",
+        len(items), len(blocks),
+    )
+    return result
+
+
+# --------------------------------------------------------------------------- #
 # Exception classification (Gemini-specific mapping)                          #
 # --------------------------------------------------------------------------- #
 
@@ -440,6 +526,9 @@ def transcreate_via_claude(  # name kept for backward compat
             "Using original EN blocks (count=%d) — model did not return "
             "matching translated blocks", expected_block_count,
         )
+        # Variant B+: focused second pass to translate the EN
+        # captions/text we just fell back to.
+        parsed["blocks"] = _translate_block_strings(parsed["blocks"], client, model)
 
     return parsed
 

@@ -192,5 +192,105 @@ class TestHealthCheck(unittest.TestCase):
             self.assertTrue(openrouter_transcreation.health_check(client=client))
 
 
+class TestVariantBPlus(unittest.TestCase):
+    """Variant B+: second-pass translation of EN block captions/text after
+    main response returned ``blocks: null``."""
+
+    def setUp(self):
+        openrouter_transcreation._PROMPT_CACHE = {"mtime": None, "body": None, "path": None}
+
+    def test_empty_blocks_short_circuit(self):
+        client = _make_client_returning(_make_response('{"translations": []}'))
+        out = openrouter_transcreation._translate_block_strings([], client, "m")
+        self.assertEqual(out, [])
+        client.chat.completions.create.assert_not_called()
+
+    def test_blocks_with_no_text_or_caption_short_circuit(self):
+        blocks = [{"type": "image", "src": "https://x/a.jpg"},
+                  {"type": "video", "src": "https://x/v.mp4"}]
+        client = MagicMock()
+        out = openrouter_transcreation._translate_block_strings(blocks, client, "m")
+        self.assertEqual(out, blocks)
+        client.chat.completions.create.assert_not_called()
+
+    def test_successful_translation_spliced_back(self):
+        blocks = [
+            {"type": "image", "src": "https://x/a.jpg", "caption": "Front view"},
+            {"type": "p", "text": "More cars coming."},
+            {"type": "image", "src": "https://x/b.jpg", "caption": "Rear view"},
+        ]
+        translations_json = json.dumps({
+            "translations": ["Вид спереди", "Скоро ещё машины.", "Вид сзади"],
+        })
+        client = _make_client_returning(_make_response(translations_json))
+        out = openrouter_transcreation._translate_block_strings(blocks, client, "m")
+        self.assertEqual(out[0]["caption"], "Вид спереди")
+        self.assertEqual(out[1]["text"], "Скоро ещё машины.")
+        self.assertEqual(out[2]["caption"], "Вид сзади")
+        # src URLs preserved
+        self.assertEqual(out[0]["src"], "https://x/a.jpg")
+        self.assertEqual(out[2]["src"], "https://x/b.jpg")
+        # original blocks not mutated
+        self.assertEqual(blocks[0]["caption"], "Front view")
+
+    def test_count_mismatch_keeps_en_blocks(self):
+        blocks = [{"type": "image", "caption": "Front"},
+                  {"type": "image", "caption": "Rear"}]
+        # Returns only 1 translation for 2 items
+        translations_json = json.dumps({"translations": ["Спереди"]})
+        client = _make_client_returning(_make_response(translations_json))
+        out = openrouter_transcreation._translate_block_strings(blocks, client, "m")
+        self.assertEqual(out[0]["caption"], "Front")
+        self.assertEqual(out[1]["caption"], "Rear")
+
+    def test_api_exception_keeps_en_blocks(self):
+        blocks = [{"type": "image", "caption": "Front"}]
+        client = _make_client_returning(
+            _make_openai_error(openai.RateLimitError, "boom"),
+        )
+        out = openrouter_transcreation._translate_block_strings(blocks, client, "m")
+        self.assertEqual(out[0]["caption"], "Front")
+
+    def test_invalid_json_keeps_en_blocks(self):
+        blocks = [{"type": "image", "caption": "Front"}]
+        client = _make_client_returning(_make_response("not json at all"))
+        out = openrouter_transcreation._translate_block_strings(blocks, client, "m")
+        self.assertEqual(out[0]["caption"], "Front")
+
+    def test_translations_not_list_keeps_en_blocks(self):
+        blocks = [{"type": "image", "caption": "Front"}]
+        client = _make_client_returning(_make_response('{"translations": "oops"}'))
+        out = openrouter_transcreation._translate_block_strings(blocks, client, "m")
+        self.assertEqual(out[0]["caption"], "Front")
+
+    def test_full_flow_main_null_blocks_triggers_second_pass(self):
+        """End-to-end: main response returns blocks=null with mismatched count
+        → variant B fills with EN blocks → variant B+ second-pass translates."""
+        article_with_blocks = dict(SAMPLE_ARTICLE)
+        article_with_blocks["blocks"] = [
+            {"type": "image", "src": "https://x/a.jpg", "caption": "Hot Wheels GT-R"},
+            {"type": "image", "src": "https://x/b.jpg", "caption": "Bugatti reveal"},
+        ]
+        # Main response: paragraphs OK, blocks=null
+        main_payload = json.loads(SAMPLE_VALID_JSON)
+        main_payload["blocks"] = None
+        main_response = _make_response(json.dumps(main_payload))
+        # Second-pass response: translations matching items
+        second_response = _make_response(json.dumps({
+            "translations": ["Hot Wheels GT-R", "Релиз Bugatti"],
+        }))
+        client = MagicMock()
+        client.chat.completions.create.side_effect = [main_response, second_response]
+        with patch.object(openrouter_transcreation, "_load_prompt", return_value="STUB"):
+            result = openrouter_transcreation.transcreate_via_claude(
+                article_with_blocks, client=client,
+            )
+        self.assertEqual(client.chat.completions.create.call_count, 2)
+        self.assertEqual(len(result["blocks"]), 2)
+        self.assertEqual(result["blocks"][1]["caption"], "Релиз Bugatti")
+        # src URLs preserved
+        self.assertEqual(result["blocks"][0]["src"], "https://x/a.jpg")
+
+
 if __name__ == "__main__":
     unittest.main()
