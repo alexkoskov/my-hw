@@ -4,9 +4,10 @@ Selection logic (in order):
     1. If ``LLM_PROVIDER`` is set explicitly → use that engine (overrides
        priority below). Unknown values warn + fall back to the priority chain.
     2. Otherwise, auto-select by API-key presence in priority order:
-       ``OPENAI_API_KEY`` → openai (highest priority)
-       ``ANTHROPIC_API_KEY`` → claude
-       ``GEMINI_API_KEY`` → gemini (lowest priority)
+       ``OPENAI_API_KEY``     → openai     (highest priority — direct, cheapest for OpenAI models)
+       ``ANTHROPIC_API_KEY``  → claude     (direct Anthropic)
+       ``GEMINI_API_KEY``     → gemini     (direct Google)
+       ``OPENROUTER_API_KEY`` → openrouter (lowest priority — multi-model gateway)
     3. If no key is present and no provider set → claude (so news_bot's
        startup health check fails cleanly with admin-ping rather than
        a cryptic import error).
@@ -45,9 +46,10 @@ def _has_key(env_var: str) -> bool:
 def _auto_select_by_key_presence() -> str:
     """Return engine name based on which API keys are configured.
 
-    Priority: openai > claude > gemini. Falls back to ``claude`` when
-    no key is configured (so the startup health check produces the
-    canonical missing-key admin ping rather than a cryptic error).
+    Priority: openai > claude > gemini > openrouter. Falls back to
+    ``claude`` when no key is configured (so the startup health check
+    produces the canonical missing-key admin ping rather than a cryptic
+    error).
     """
     if _has_key("OPENAI_API_KEY"):
         return "openai"
@@ -55,6 +57,8 @@ def _auto_select_by_key_presence() -> str:
         return "claude"
     if _has_key("GEMINI_API_KEY"):
         return "gemini"
+    if _has_key("OPENROUTER_API_KEY"):
+        return "openrouter"
     return "claude"
 
 
@@ -77,9 +81,13 @@ def _select_engine():
             import gemini_transcreation as engine
             logger.info("LLM_PROVIDER=gemini (explicit)")
             return engine
+        if explicit == "openrouter":
+            import openrouter_transcreation as engine
+            logger.info("LLM_PROVIDER=openrouter (explicit)")
+            return engine
         logger.warning(
             "LLM_PROVIDER=%r is not recognized; falling back to key-presence "
-            "auto-selection (openai → claude → gemini)",
+            "auto-selection (openai → claude → gemini → openrouter)",
             explicit,
         )
 
@@ -88,6 +96,8 @@ def _select_engine():
         import openai_transcreation as engine
     elif auto == "gemini":
         import gemini_transcreation as engine
+    elif auto == "openrouter":
+        import openrouter_transcreation as engine
     else:
         import claude_transcreation as engine
     logger.info("LLM_PROVIDER auto-selected: %s (by key presence)", auto)

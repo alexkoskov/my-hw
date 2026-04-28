@@ -108,6 +108,7 @@ jobs:
             "claude_transcreation.py"
             "gemini_transcreation.py"
             "openai_transcreation.py"
+            "openrouter_transcreation.py"
             "llm_transcreation.py"
             "_llm_common.py"
             "compute_publish_slots.py"
@@ -141,6 +142,8 @@ jobs:
           GEMINI_MODEL: ${{ vars.GEMINI_MODEL || 'gemini-2.5-flash-lite' }}
           OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
           OPENAI_MODEL: ${{ vars.OPENAI_MODEL || 'gpt-4o-mini' }}
+          OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}
+          OPENROUTER_MODEL: ${{ vars.OPENROUTER_MODEL || 'openai/gpt-4o-mini' }}
           LLM_PROVIDER: ${{ vars.LLM_PROVIDER }}
           TZ: ${{ vars.TZ || 'Europe/Moscow' }}
         # Idempotent .env update on the server: strip any existing lines
@@ -177,6 +180,8 @@ jobs:
           GEMINI_MODEL='$GEMINI_MODEL'
           OPENAI_API_KEY='$OPENAI_API_KEY'
           OPENAI_MODEL='$OPENAI_MODEL'
+          OPENROUTER_API_KEY='$OPENROUTER_API_KEY'
+          OPENROUTER_MODEL='$OPENROUTER_MODEL'
           LLM_PROVIDER='$LLM_PROVIDER'
           TZ_VALUE='$TZ'
           cd "\$DEPLOY_PATH"
@@ -185,7 +190,7 @@ jobs:
           # Strip stale entries for the managed keys, keep everything
           # else byte-for-byte. `|| true` covers the empty-file edge case
           # where grep would exit 1.
-          grep -v -E '^(ANTHROPIC_API_KEY|ANTHROPIC_MODEL|GEMINI_API_KEY|GEMINI_MODEL|OPENAI_API_KEY|OPENAI_MODEL|LLM_PROVIDER|TZ)=' .env > .env.tmp || true
+          grep -v -E '^(ANTHROPIC_API_KEY|ANTHROPIC_MODEL|GEMINI_API_KEY|GEMINI_MODEL|OPENAI_API_KEY|OPENAI_MODEL|OPENROUTER_API_KEY|OPENROUTER_MODEL|LLM_PROVIDER|TZ)=' .env > .env.tmp || true
           {
             printf 'ANTHROPIC_API_KEY=%s\n' "\$ANTHROPIC_API_KEY"
             printf 'ANTHROPIC_MODEL=%s\n' "\$ANTHROPIC_MODEL"
@@ -193,6 +198,8 @@ jobs:
             printf 'GEMINI_MODEL=%s\n' "\$GEMINI_MODEL"
             [ -n "\$OPENAI_API_KEY" ] && printf 'OPENAI_API_KEY=%s\n' "\$OPENAI_API_KEY"
             printf 'OPENAI_MODEL=%s\n' "\$OPENAI_MODEL"
+            [ -n "\$OPENROUTER_API_KEY" ] && printf 'OPENROUTER_API_KEY=%s\n' "\$OPENROUTER_API_KEY"
+            printf 'OPENROUTER_MODEL=%s\n' "\$OPENROUTER_MODEL"
             [ -n "\$LLM_PROVIDER" ] && printf 'LLM_PROVIDER=%s\n' "\$LLM_PROVIDER"
             printf 'TZ=%s\n' "\$TZ_VALUE"
           } >> .env.tmp

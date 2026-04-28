@@ -44,6 +44,7 @@ FILES=(
     "claude_transcreation.py"
     "gemini_transcreation.py"
     "openai_transcreation.py"
+    "openrouter_transcreation.py"
     "llm_transcreation.py"
     "_llm_common.py"
     "compute_publish_slots.py"

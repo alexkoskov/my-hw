@@ -213,7 +213,7 @@ class TestLLMTranscreationDispatcher(unittest.TestCase):
     then auto-select by API-key presence in priority order
     openai → claude → gemini."""
 
-    _ENV_KEYS = ("LLM_PROVIDER", "OPENAI_API_KEY", "ANTHROPIC_API_KEY", "GEMINI_API_KEY")
+    _ENV_KEYS = ("LLM_PROVIDER", "OPENAI_API_KEY", "ANTHROPIC_API_KEY", "GEMINI_API_KEY", "OPENROUTER_API_KEY")
 
     def setUp(self):
         # Snapshot then clear all relevant env vars so each test starts clean.
@@ -278,6 +278,20 @@ class TestLLMTranscreationDispatcher(unittest.TestCase):
         os.environ["LLM_PROVIDER"] = "openai"
         self.assertEqual(self._reload_and_get_engine(), "openai_transcreation")
 
+    def test_explicit_provider_openrouter(self):
+        os.environ["LLM_PROVIDER"] = "openrouter"
+        self.assertEqual(self._reload_and_get_engine(), "openrouter_transcreation")
+
+    def test_only_openrouter_key_auto_selects_openrouter(self):
+        os.environ["OPENROUTER_API_KEY"] = "test-key"
+        self.assertEqual(self._reload_and_get_engine(), "openrouter_transcreation")
+
+    def test_openrouter_lowest_priority_when_others_present(self):
+        os.environ["OPENROUTER_API_KEY"] = "a"
+        os.environ["GEMINI_API_KEY"] = "b"
+        # gemini wins over openrouter (gemini is direct provider, higher priority)
+        self.assertEqual(self._reload_and_get_engine(), "gemini_transcreation")
+
     def test_unknown_provider_falls_back_to_auto_selection(self):
         # Unknown provider + Gemini key → gemini (auto-selection kicks in)
         os.environ["LLM_PROVIDER"] = "garbage"
@@ -299,10 +313,12 @@ class TestLLMTranscreationDispatcher(unittest.TestCase):
         import claude_transcreation
         import gemini_transcreation
         import openai_transcreation
+        import openrouter_transcreation
         import llm_transcreation
         self.assertIs(claude_transcreation.ClaudeOutageError, CommonOutage)
         self.assertIs(gemini_transcreation.ClaudeOutageError, CommonOutage)
         self.assertIs(openai_transcreation.ClaudeOutageError, CommonOutage)
+        self.assertIs(openrouter_transcreation.ClaudeOutageError, CommonOutage)
         self.assertIs(llm_transcreation.ClaudeOutageError, CommonOutage)
 
 
