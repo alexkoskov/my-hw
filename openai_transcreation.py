@@ -50,7 +50,9 @@ _PROMPT_CACHE: dict = {"mtime": None, "body": None, "path": None}
 _TITLE_EMOJIS = ("🏆", "🏎️", "🚀", "💎", "🤝", "📢", "🚗", "🔥")
 
 _PARAGRAPH_MAX_CHARS = 4000
-_DEFAULT_MAX_TOKENS = 8000
+#: Output token cap; 30K leaves headroom for long unboxing-style posts
+#: that were truncating at 8K. See openrouter_transcreation for rationale.
+_DEFAULT_MAX_TOKENS = 30000
 _DEFAULT_MODEL = "gpt-4o-mini"
 
 #: Lazily-instantiated singleton client.
@@ -68,13 +70,14 @@ Output a single JSON object — no markdown fence, no commentary. Schema:
   "title": "<RU title with emoji prefix from {🏆,🏎️,🚀,💎,🤝,📢,🚗,🔥}>",
   "alts": ["<alt RU title 1>", "<alt RU title 2>", "<alt RU title 3>"],
   "subtitle": "<RU subtitle>",
-  "paragraphs": ["<RU paragraph 1>", "<RU paragraph 2>", ...],
-  "blocks": [{"type": "...", "text": "<RU>", "caption": "<RU>"}, ...] | null
+  "paragraphs": ["<RU paragraph 1>", "<RU paragraph 2>", ...]
 }
 
 The output JSON MUST contain `paragraphs` of EXACTLY the same length as
-the input EN paragraphs, in the same order. Do not merge or split. If a
-block was provided, the `blocks` array must mirror its length and types.
+the input EN paragraphs, in the same order. Do not merge or split.
+
+Image URLs and caption strings are NOT part of this request — they are
+handled by a separate downstream call. Do not output a `blocks` field.
 """
 
 
@@ -120,12 +123,17 @@ def _build_system_prompt(prompt_body: str) -> str:
 
 
 def _build_user_message(article: dict) -> str:
+    """Serialise the article for the main translation call.
+
+    ``blocks`` is intentionally OMITTED — captions/text inside blocks
+    are translated by the variant B+ second-pass in a smaller focused
+    call. Removing them halves prompt tokens on long unboxing posts.
+    """
     payload = {
         "source_name": article.get("source_name"),
         "title": article.get("title"),
         "subtitle": article.get("subtitle"),
         "paragraphs": article.get("paragraphs") or [],
-        "blocks": article.get("blocks"),
     }
     return json.dumps(payload, ensure_ascii=False)
 

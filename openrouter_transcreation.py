@@ -61,7 +61,12 @@ _PROMPT_CACHE: dict = {"mtime": None, "body": None, "path": None}
 _TITLE_EMOJIS = ("🏆", "🏎️", "🚀", "💎", "🤝", "📢", "🚗", "🔥")
 
 _PARAGRAPH_MAX_CHARS = 4000
-_DEFAULT_MAX_TOKENS = 8000
+#: Output token cap. 30000 is generous — typical articles fit in 4-8K,
+#: long autoevolution unboxing posts (50+ blocks) can hit ~16-20K of
+#: Russian output. Going to 30K removes the "Unterminated string" JSON
+#: truncation failure mode entirely; cost impact is bounded by actual
+#: response size, not the cap.
+_DEFAULT_MAX_TOKENS = 30000
 
 #: Default model spec; "provider/model" form. Override via OPENROUTER_MODEL.
 #: gpt-5.4-mini balances quality and cost — ~$0.03 per typical article
@@ -98,13 +103,14 @@ Output a single JSON object — no markdown fence, no commentary. Schema:
   "title": "<RU title with emoji prefix from {🏆,🏎️,🚀,💎,🤝,📢,🚗,🔥}>",
   "alts": ["<alt RU title 1>", "<alt RU title 2>", "<alt RU title 3>"],
   "subtitle": "<RU subtitle>",
-  "paragraphs": ["<RU paragraph 1>", "<RU paragraph 2>", ...],
-  "blocks": [{"type": "...", "text": "<RU>", "caption": "<RU>"}, ...] | null
+  "paragraphs": ["<RU paragraph 1>", "<RU paragraph 2>", ...]
 }
 
 The output JSON MUST contain `paragraphs` of EXACTLY the same length as
-the input EN paragraphs, in the same order. Do not merge or split. If a
-block was provided, the `blocks` array must mirror its length and types.
+the input EN paragraphs, in the same order. Do not merge or split.
+
+Image URLs and caption strings are NOT part of this request — they are
+handled by a separate downstream call. Do not output a `blocks` field.
 """
 
 
@@ -150,12 +156,19 @@ def _build_system_prompt(prompt_body: str) -> str:
 
 
 def _build_user_message(article: dict) -> str:
+    """Serialise the article for the main translation call.
+
+    ``blocks`` is intentionally OMITTED — block image URLs and caption
+    strings are handled by ``_translate_block_strings`` (variant B+
+    second-pass) instead. Keeping them out of the main prompt cuts
+    input tokens roughly in half on long autoevolution unboxing posts
+    (which were hitting the 8K output cap and producing truncated JSON).
+    """
     payload = {
         "source_name": article.get("source_name"),
         "title": article.get("title"),
         "subtitle": article.get("subtitle"),
         "paragraphs": article.get("paragraphs") or [],
-        "blocks": article.get("blocks"),
     }
     return json.dumps(payload, ensure_ascii=False)
 
