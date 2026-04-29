@@ -634,7 +634,9 @@ def cmd_publish(args: argparse.Namespace) -> int:
     # internally and returns False, but we still guard for ``TelegramError``
     # explicitly in case it ever bubbles (defence in depth).
     try:
-        ok = send_telegraph_teaser(telegraph_url, row['link'])
+        images = row.get('images') or []
+        lead_image = images[0] if images else None
+        ok = send_telegraph_teaser(telegraph_url, row['link'], lead_image=lead_image)
     except Exception as exc:  # noqa: BLE001 — intentional broad catch
         sanitised = news_bot.sanitize_error_message(exc)
         logger.error('telegram teaser raised for %s: %s', link, sanitised)

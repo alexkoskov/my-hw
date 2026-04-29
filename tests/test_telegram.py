@@ -147,13 +147,13 @@ class TestSendTelegraphTeaser(unittest.TestCase):
     @patch('news_bot.TELEGRAM_BOT_TOKEN', 'test_token')
     @patch('news_bot.TELEGRAM_CHANNEL_ID', '@channel')
     @patch('news_bot.Bot')
-    def test_single_message_layout(self, mock_bot_class):
-        """``send_telegraph_teaser`` sends ONE message:
-          - text = hashtag line (#source #news), NOT the raw URL.
-          - link_preview_options.url carries the Telegraph URL.
-          - show_above_text=True renders the IV preview ABOVE the tags.
-        No ``send_photo`` call — IV preview already shows a full-width
-        image on iOS, so a separate hero photo is unnecessary.
+    def test_two_message_layout_with_lead_image(self, mock_bot_class):
+        """``send_telegraph_teaser`` with a lead_image sends TWO messages:
+          1. ``send_photo`` with the lead image (no caption — clean hero).
+          2. ``send_message`` whose visible body is the hashtag line and
+             whose ``LinkPreviewOptions(show_above_text=True)`` renders
+             the INSTANT VIEW preview ABOVE the tags. URL stays hidden
+             inside the options object.
         """
         mock_bot = MagicMock()
         mock_bot.send_photo = AsyncMock()
@@ -163,11 +163,15 @@ class TestSendTelegraphTeaser(unittest.TestCase):
             ok = send_telegraph_teaser(
                 telegraph_url='https://telegra.ph/X',
                 source_url='https://example.com/a',
+                lead_image='https://cdn.example.com/photo.jpg',
             )
         self.assertTrue(ok)
-        mock_bot.send_photo.assert_not_called()
-        mock_bot.send_message.assert_awaited_once()
+        mock_bot.send_photo.assert_awaited_once()
+        photo_kwargs = mock_bot.send_photo.await_args.kwargs
+        self.assertEqual(photo_kwargs['photo'], 'https://cdn.example.com/photo.jpg')
+        self.assertNotIn('caption', photo_kwargs)
 
+        mock_bot.send_message.assert_awaited_once()
         msg_kwargs = mock_bot.send_message.await_args.kwargs
         self.assertEqual(msg_kwargs['text'], '#example #news')
         self.assertNotIn('https://telegra.ph/X', msg_kwargs['text'])
@@ -179,6 +183,26 @@ class TestSendTelegraphTeaser(unittest.TestCase):
             'Posted to Telegram: https://telegra.ph/X' in r.message
             for r in cm.records
         ))
+
+    @patch('news_bot.TELEGRAM_BOT_TOKEN', 'test_token')
+    @patch('news_bot.TELEGRAM_CHANNEL_ID', '@channel')
+    @patch('news_bot.Bot')
+    def test_no_lead_image_falls_back_to_single_message(self, mock_bot_class):
+        """If lead_image is None (text-only article), skip send_photo
+        and just send the IV-preview message. The post still publishes
+        with INSTANT VIEW; subscribers just don't get a hero shot."""
+        mock_bot = MagicMock()
+        mock_bot.send_photo = AsyncMock()
+        mock_bot.send_message = AsyncMock()
+        mock_bot_class.return_value = mock_bot
+        ok = send_telegraph_teaser(
+            telegraph_url='https://telegra.ph/X',
+            source_url='https://example.com/a',
+            lead_image=None,
+        )
+        self.assertTrue(ok)
+        mock_bot.send_photo.assert_not_called()
+        mock_bot.send_message.assert_awaited_once()
 
 
 if __name__ == '__main__':
