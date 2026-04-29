@@ -656,6 +656,7 @@ class TestRestartMidWindow(_IntegrationBase):
         def fake_compute(n, now, *args, **kwargs):
             captured['n'] = n
             captured['now'] = now
+            captured['kwargs'] = kwargs
             from compute_publish_slots import compute_publish_slots as real
             return real(n, now, *args, **kwargs)
 
@@ -696,6 +697,13 @@ class TestRestartMidWindow(_IntegrationBase):
         self.assertEqual(captured.get('n'), 5)
         self.assertEqual(captured['now'].hour, 16)
         self.assertEqual(captured['now'].minute, 0)
+        # And it must receive the news_bot.WINDOW_START_TIME (10:00) /
+        # WINDOW_END_TIME (20:00) — otherwise the function falls back to
+        # its own default of 13:00 and we lose the morning window.
+        self.assertEqual(captured['kwargs'].get('window_start'),
+                         news_bot.WINDOW_START_TIME)
+        self.assertEqual(captured['kwargs'].get('window_end'),
+                         news_bot.WINDOW_END_TIME)
 
         # _fallback_publish was called for every slot (5 calls, since
         # compute returned 5 slots all within the window).

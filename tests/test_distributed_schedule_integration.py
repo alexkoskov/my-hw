@@ -342,20 +342,28 @@ class TestDistributedSchedule(unittest.TestCase):
         # each slot from the cron-tick now, not the inter-slot deltas a real
         # wall clock would see.
         now_msk = MSK.localize(dt.datetime(2026, 4, 27, 12, 0, 0))
-        slots, _carry = compute_publish_slots(3, now_msk)
+        # Pass the same window kwargs news_bot.job() uses, otherwise the
+        # function's default 13:00 start would drift the expected slots
+        # away from the loop's actual 10:00-window slots.
+        slots, _carry = compute_publish_slots(
+            3, now_msk,
+            window_start=news_bot.WINDOW_START_TIME,
+            window_end=news_bot.WINDOW_END_TIME,
+        )
         expected_offsets = [
             (s - now_msk).total_seconds() for s in slots
         ]
         sleep_args = [c.args[0] for c in self.mock_sleep.call_args_list
                       if c.args and isinstance(c.args[0], (int, float))]
-        # The publish-loop emits one sleep per in-window slot. The crash-loop
-        # guard fires only when MAX(published_at) is recent — empty table here,
-        # so the only sleeps are the 3 slot waits.
-        self.assertEqual(len(sleep_args), 3,
-                         f"expected 3 slot-wait sleeps, got {sleep_args!r}")
-        for actual, expected in zip(sleep_args, expected_offsets):
-            # Allow ±2s slack for any micro-elapse between freeze entry and
-            # the loop's `datetime.now(MSK)` call.
+        # The publish-loop emits ONE sleep per in-window slot whose
+        # offset > 0. With WINDOW_START=10:00 and now=12:00, the first
+        # slot lands at 12:00 itself (offset 0) and is published without
+        # a sleep call — so only the 2 later slots produce sleeps.
+        positive_expected = [o for o in expected_offsets if o > 0]
+        self.assertEqual(len(sleep_args), len(positive_expected),
+                         f"expected {len(positive_expected)} slot-wait sleeps, "
+                         f"got {sleep_args!r}")
+        for actual, expected in zip(sleep_args, positive_expected):
             self.assertAlmostEqual(actual, expected, delta=2,
                                    msg=f"slot-wait mismatch: actual={actual} "
                                        f"expected={expected}")

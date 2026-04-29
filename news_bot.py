@@ -1415,7 +1415,11 @@ def job():
     # ------------------------------------------------------------------
     now_msk = datetime.now(MSK_TZ)
     queue_size = pending_repo.count_pending()
-    slots, carry_over = compute_publish_slots(queue_size, now_msk)
+    slots, carry_over = compute_publish_slots(
+        queue_size, now_msk,
+        window_start=WINDOW_START_TIME,
+        window_end=WINDOW_END_TIME,
+    )
 
     # ------------------------------------------------------------------
     # Step (d): admin ping with plan-of-day.
