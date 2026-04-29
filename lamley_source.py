@@ -26,6 +26,18 @@ from boilerplate_filter import filter_boilerplate
 
 logger = logging.getLogger(__name__)
 
+#: ``curl_cffi`` impersonates a real Chrome's TLS/JA3 fingerprint, which
+#: Cloudflare-style bot management explicitly checks for. Plain ``requests``
+#: ships a Python TLS handshake that the WAF flags before any header is
+#: even read. We fall back to ``requests`` if the optional dep is missing
+#: so tests / dev environments without the wheel keep working.
+try:
+    from curl_cffi import requests as _cffi_requests
+    _CFFI_AVAILABLE = True
+except ImportError:  # pragma: no cover — only triggers in stripped envs
+    _cffi_requests = None
+    _CFFI_AVAILABLE = False
+
 USER_AGENT = (
     "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 "
     "(KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36"
@@ -200,8 +212,19 @@ def fetch_lamley_article(
     """Scrape a lamleygroup.com article page.
 
     Returns ``{'title', 'paragraphs', 'images'}`` or ``None`` on failure.
+
+    When no ``session`` is injected (the production path), we route
+    through ``curl_cffi.requests`` with ``impersonate="chrome131"`` so
+    the TLS handshake matches a real Chrome — Cloudflare's bot manager
+    fingerprints the JA3 hash before headers are read. Tests inject a
+    ``MagicMock`` session and bypass this entirely.
     """
-    http = session or requests
+    if session is not None:
+        http = session
+    elif _CFFI_AVAILABLE:
+        http = _cffi_requests
+    else:
+        http = requests
 
     # WAF-protection short-circuits — log at INFO so the operator sees
     # the bot is intentionally skipping rather than silently dropping.
@@ -221,11 +244,13 @@ def fetch_lamley_article(
         return None
 
     def _do_fetch():
-        return http.get(
-            link,
-            headers=BROWSER_HEADERS,
-            timeout=REQUEST_TIMEOUT,
-        )
+        kwargs = {"headers": BROWSER_HEADERS, "timeout": REQUEST_TIMEOUT}
+        # ``impersonate`` is only meaningful for curl_cffi. Inject it only
+        # when we routed there, so MagicMock test sessions don't see an
+        # unexpected kwarg.
+        if http is _cffi_requests:
+            kwargs["impersonate"] = "chrome131"
+        return http.get(link, **kwargs)
 
     # Soft client-side throttle BEFORE the first attempt so a tight call
     # loop doesn't hammer Lamley's WordPress.
