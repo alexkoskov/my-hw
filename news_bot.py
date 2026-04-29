@@ -686,6 +686,15 @@ def send_telegraph_teaser(telegraph_url, source_url, lead_image=None):
             link_preview_options=LinkPreviewOptions(
                 url=telegraph_url,
                 show_above_text=True,
+                # ``prefer_large_media`` forces the IV preview card to
+                # render with a full-width image rather than the default
+                # small thumbnail in the top-right corner. Historically
+                # this killed the INSTANT VIEW button on iOS — the bot
+                # team explicitly reverted it in 27a1e31. Re-attempt now
+                # because the operator wants the big-image IV layout; if
+                # the button regression returns, drop this back to
+                # default and rely on ``send_photo`` alone for visual.
+                prefer_large_media=True,
             ),
         )
 

@@ -178,6 +178,9 @@ class TestSendTelegraphTeaser(unittest.TestCase):
         preview = msg_kwargs['link_preview_options']
         self.assertEqual(preview.url, 'https://telegra.ph/X')
         self.assertTrue(preview.show_above_text)
+        # prefer_large_media forces the IV preview to render with a
+        # full-width image instead of the default small thumbnail.
+        self.assertTrue(preview.prefer_large_media)
 
         self.assertTrue(any(
             'Posted to Telegram: https://telegra.ph/X' in r.message
