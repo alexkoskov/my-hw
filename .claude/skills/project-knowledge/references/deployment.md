@@ -76,7 +76,17 @@ The list lives in two places — `.github/workflows/deploy.yml` and `deploy.sh` 
 
 **Files NOT deployed**: `hw_review.py`, `preview_renderer.py` — operator runs these locally in Claude Code session, not on the VPS.
 
-**Rollback:** `git revert HEAD && git push origin main` — the deploy workflow redeploys the parent commit. ~2-3 min total. For schema rollback, restore `news.db` backup separately (the workflow never touches the DB).
+**Service auto-restart:** the deploy workflow ends with `ssh ... "sudo systemctl restart news_bot.service"` — code changes go live immediately, NOT deferred to the next 10:00 МСК cron tick. The SSH step depends on the sudoers NOPASSWD rule below; if it's missing, the deploy step prints a `::error::` hint pointing at `/etc/sudoers.d/news_bot`.
+
+**Server-side sudoers** (`/etc/sudoers.d/news_bot`, mode **0440 — anything else and sudo silently ignores the file**):
+
+```
+hwbot ALL=(ALL) NOPASSWD: /usr/bin/systemctl restart news_bot.service, /usr/bin/systemctl status news_bot.service, /usr/bin/journalctl -u news_bot.service
+```
+
+Install via `ssh root@<host>` (one-time): `visudo -f /etc/sudoers.d/news_bot`, paste the line, `chmod 0440 /etc/sudoers.d/news_bot`, `visudo -c` to verify. Without this rule the deploy's restart step fails with "terminal is required to read the password" — the only command path that needs explicit privilege escalation is the systemd restart.
+
+**Rollback:** `git revert HEAD && git push origin main` — the deploy workflow redeploys the parent commit, restarts the service. ~2-3 min total. For schema rollback, restore `news.db` from `/home/hwbot/backup/` (see Backups below).
 
 **Staging:** Not configured. For test publishes without touching the prod channel, operator temporarily swaps `TELEGRAM_CHANNEL_ID` in `.env` to a personal chat ID.
 
@@ -84,9 +94,11 @@ The list lives in two places — `.github/workflows/deploy.yml` and `deploy.sh` 
 
 ## Scheduling
 
-Daily fixed-time cron at **12:00 МСК** via `schedule.every().day.at("12:00", tz=pytz.timezone("Europe/Moscow")).do(job)` inside `news_bot.main()` (since the llm-transcreation feature; was `every(12).hours` before). One `job()` call also fires immediately on `python3 news_bot.py` startup so a deploy doesn't wait until midday for the next tick. The crash-loop guard prevents burst posting on rapid restarts.
+Daily fixed-time cron at **10:00 МСК** via `schedule.every().day.at("10:00", tz=pytz.timezone("Europe/Moscow")).do(job)` inside `news_bot.main()`. One `job()` call also fires immediately on `python3 news_bot.py` startup so a deploy doesn't wait until 10:00 for the next tick. The crash-loop guard prevents burst posting on rapid restarts.
 
-After fetch, the publish loop distributes the day's articles across the **13:00–20:00 МСК** window with a **40-minute floor between publishes** and a **max of 11 publishes/day**. Excess articles carry over to the next day's pending queue (no hard cap on backlog; AC20 admin-warning fires when `len(pending) > 50`).
+After fetch, the publish loop distributes the day's articles across the **10:00–20:00 МСК** window with a **40-minute floor between publishes** and a **max of 15 publishes/day**. Excess articles carry over to the next day's pending queue (no hard cap on backlog; AC20 admin-warning fires when `len(pending) > 50`).
+
+**Window invariant**: `news_bot.WINDOW_START_TIME` and `WINDOW_END_TIME` MUST be passed explicitly to `compute_publish_slots(...)` — the function defaults to `13:00`/`20:00`, which silently shrinks the window to 7h (≤ 11 slots) if you forget. Regression-guarded by `tests/test_integration.py::test_recompute_schedule_with_window_kwargs`.
 
 For production, prefer systemd-managed long-running process over raw `nohup` — `schedule` runs in-process. Container restart mid-window: the next `job()` recomputes slots from the current time to 20:00 МСК; already-published rows are skipped via Decision 9 idempotency (telegraph_url presence).
 
@@ -151,11 +163,40 @@ For production, prefer systemd-managed long-running process over raw `nohup` —
 
 ---
 
+## Backups
+
+`news.db` holds three load-bearing tables (`pending_articles`, `published_articles`, `processed_news`) — losing it means the bot re-publishes every URL the RSS feeds still hold (typically months of backlog). Daily backups via `/home/hwbot/bot/backup_db.sh`:
+
+- Runs at **02:00 server time** via hwbot's user crontab.
+- Atomic `sqlite3 .backup` (consistent under concurrent writes).
+- Output: `/home/hwbot/backup/news_<YYYY-MM-DD>.db` (mode 700 dir).
+- Rotation: `find ... -mtime +7 -delete` keeps last 7 days.
+
+**Reference copy** of the script: `scripts/backup_db.sh` in repo. **Not auto-deployed** (not in `FILES=()` list) — install once on a fresh VPS via the inline heredoc snippet in the same script's docstring.
+
+**Restore from backup:**
+```bash
+ssh hwbot@<host>
+systemctl stop news_bot.service   # via sudoers NOPASSWD if configured
+cp /home/hwbot/backup/news_<DATE>.db /home/hwbot/bot/news.db
+systemctl start news_bot.service
+```
+
+**Manual merge** (e.g. recovering history from a different machine's `news.db` after migration):
+```sql
+ATTACH '/tmp/other_news.db' AS other;
+INSERT OR IGNORE INTO processed_news SELECT * FROM other.processed_news;
+DELETE FROM pending_articles WHERE link IN (SELECT link FROM processed_news);
+DETACH other;
+```
+
+---
+
 ## Cost Monitoring
 
-The auto-publish path uses Anthropic Claude API (added by the llm-transcreation feature). Cost varies with the `ANTHROPIC_MODEL` choice and the article volume.
+Production runs the auto-publish path through **OpenRouter** (`LLM_PROVIDER=openrouter`, default model `openai/gpt-5.4-mini`). The dispatcher (`llm_transcreation.py`) auto-selects an engine in priority order Anthropic → OpenAI → Gemini → OpenRouter based on which API keys are present, but the operator override via `LLM_PROVIDER` env var pins it. Variant B+ second-pass adds ~$0.005 per long autoevolution article (when `blocks=null` triggers the focused caption-translation call).
 
-**Where to watch:** https://console.anthropic.com → Usage → daily breakdown.
+**Where to watch:** https://openrouter.ai/activity → daily breakdown by model. (For the legacy Anthropic path: https://console.anthropic.com → Usage.)
 
 **Expected cost (default Haiku 4.5):** ~$3/month at ~10 articles/day. Each transcreation call uses ~3,200 system-prompt tokens (`ux-guidelines.md`) + ~1,000–2,000 user-message tokens (one English article) + ~1,000–2,500 output tokens. Prompt caching is intentionally NOT used (slot interval ≥ 40 min ≫ 5-min cache TTL — Decision 6).
 
