@@ -215,8 +215,13 @@ class TestClaudePath(_FallbackPublishPathsCase):
         self.assertEqual(mark_args[0], entry['link'])
         self.assertEqual(mark_args[1], tg_url)
 
-        # Teaser sent with the persisted URL.
-        mock_teaser.assert_called_once_with(tg_url, entry['link'])
+        # Teaser sent with the persisted URL. ``lead_image`` is passed
+        # explicitly so the photo is decoupled from Telegraph's og:image —
+        # accept whichever value the test fixture seeded.
+        mock_teaser.assert_called_once()
+        teaser_args = mock_teaser.call_args
+        self.assertEqual(teaser_args.args[:2], (tg_url, entry['link']))
+        self.assertIn('lead_image', teaser_args.kwargs)
 
         # Final move with via_review=False.
         mock_move.assert_called_once()
@@ -420,7 +425,10 @@ class TestOutageDegradedThenReraises(_FallbackPublishPathsCase):
         # have been published in degraded mode.
         mock_publish.assert_called_once()
         mock_mark.assert_called_once()
-        mock_teaser.assert_called_once_with(tg_url, entry['link'])
+        mock_teaser.assert_called_once()
+        teaser_args = mock_teaser.call_args
+        self.assertEqual(teaser_args.args[:2], (tg_url, entry['link']))
+        self.assertIn('lead_image', teaser_args.kwargs)
         mock_move.assert_called_once()
 
         # via_review=False, auto_marker=True preserved.

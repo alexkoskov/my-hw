@@ -85,11 +85,14 @@ class TestEnsureAccessToken:
 
 
 class TestBuildContent:
-    def test_hero_image_first(self):
+    def test_first_image_dropped(self):
+        """First image is intentionally NOT rendered into Telegraph — it's
+        sent as a separate Telegram photo. Single-image articles end up
+        with no images at all in the Telegraph body."""
         nodes = tp._build_content("", ["para one"], ["img1.jpg"], None)
-        assert nodes[0]["tag"] == "figure"
-        assert nodes[0]["children"][0]["attrs"]["src"] == "img1.jpg"
-        assert nodes[1]["tag"] == "p"
+        # No figure node anywhere — single-image articles get pure text body.
+        assert all(n["tag"] != "figure" for n in nodes)
+        assert nodes[0]["tag"] == "p"
 
     def test_source_link_at_end(self):
         nodes = tp._build_content("", ["para"], [], "http://src")
@@ -102,11 +105,18 @@ class TestBuildContent:
 
     def test_images_interleaved_every_third_paragraph(self):
         paragraphs = [f"p{i}" for i in range(6)]
+        # First image (hero.jpg) is dropped; mid + extra interleave.
         images = ["hero.jpg", "mid.jpg", "extra.jpg"]
         nodes = tp._build_content("", paragraphs, images, None)
-        # [figure(hero), p0, p1, p2, figure(mid), p3, p4, p5, figure(extra)]
+        # [p0, p1, p2, figure(mid), p3, p4, p5, figure(extra)]
         tags = [n["tag"] for n in nodes]
-        assert tags == ["figure", "p", "p", "p", "figure", "p", "p", "p", "figure"]
+        assert tags == ["p", "p", "p", "figure", "p", "p", "p", "figure"]
+        figure_srcs = [
+            n["children"][0]["attrs"]["src"]
+            for n in nodes if n["tag"] == "figure"
+        ]
+        assert figure_srcs == ["mid.jpg", "extra.jpg"]
+        assert "hero.jpg" not in figure_srcs
 
     def test_no_images(self):
         nodes = tp._build_content("", ["a", "b"], [], None)
@@ -119,11 +129,12 @@ class TestBuildContent:
             ["hero.jpg"],
             "http://src",
         )
-        # [figure(hero), p(italic "💬 «subtitle»"), hr, p(body), p(footer)]
+        # Hero image is dropped from Telegraph (sent as Telegram photo).
+        # [p(italic "💬 «subtitle»"), hr, p(body), p(footer)]
         tags = [n["tag"] for n in nodes]
-        assert tags == ["figure", "p", "hr", "p", "p"]
-        # Decorated subtitle paragraph
-        subtitle_p = nodes[1]
+        assert tags == ["p", "hr", "p", "p"]
+        # Decorated subtitle paragraph is now first.
+        subtitle_p = nodes[0]
         italic_child = subtitle_p["children"][0]
         assert italic_child["tag"] == "i"
         assert italic_child["children"] == ["💬 «Forgive me father»"]
@@ -142,20 +153,20 @@ class TestBuildContentFromBlocks:
             {"type": "image", "src": "inline.jpg", "caption": "Photo: Lamley Group"},
         ]
         nodes = tp._build_content_from_blocks("", blocks, None)
-        # Hero figure has figcaption
-        hero_children = nodes[0]["children"]
-        assert hero_children[0]["tag"] == "img"
-        assert hero_children[0]["attrs"]["src"] == "hero.jpg"
-        assert hero_children[1] == {"tag": "figcaption", "children": ["Photo: Mattel"]}
-        # Inline figure also has its caption
-        inline_figure = nodes[2]
-        assert inline_figure["tag"] == "figure"
-        assert inline_figure["children"][1] == {"tag": "figcaption", "children": ["Photo: Lamley Group"]}
+        # Hero (first image) is dropped — it's sent as a Telegram photo.
+        # The inline figure remains and keeps its figcaption.
+        figures = [n for n in nodes if n["tag"] == "figure"]
+        assert len(figures) == 1
+        srcs = [f["children"][0]["attrs"]["src"] for f in figures]
+        assert srcs == ["inline.jpg"]
+        assert figures[0]["children"][1] == {"tag": "figcaption", "children": ["Photo: Lamley Group"]}
 
     def test_image_without_caption_has_no_figcaption(self):
+        # Single-image article: the only image is dropped (it's the lead),
+        # so Telegraph has no figure at all.
         blocks = [{"type": "image", "src": "hero.jpg"}]
         nodes = tp._build_content_from_blocks("", blocks, None)
-        assert nodes[0]["children"] == [{"tag": "img", "attrs": {"src": "hero.jpg"}}]
+        assert all(n["tag"] != "figure" for n in nodes)
 
     def test_video_block_becomes_iframe(self):
         blocks = [
@@ -185,7 +196,7 @@ class TestBuildContentFromBlocks:
         p_node = nodes[0]
         assert p_node == {"tag": "p", "children": ["See Red Line Club for more."]}
 
-    def test_block_order_preserved_except_hero_promotion(self):
+    def test_block_order_preserved_first_image_dropped(self):
         blocks = [
             {"type": "paragraph", "text": "p1"},
             {"type": "image", "src": "img1.jpg"},
@@ -193,9 +204,12 @@ class TestBuildContentFromBlocks:
             {"type": "image", "src": "img2.jpg"},
         ]
         nodes = tp._build_content_from_blocks("", blocks, None)
-        # First image promoted to hero; remaining blocks in original order
+        # First image (img1.jpg) is dropped entirely; remaining blocks in
+        # original order. img2 still appears at its inline position.
         tags = [n["tag"] for n in nodes]
-        assert tags == ["figure", "p", "p", "figure"]
+        assert tags == ["p", "p", "figure"]
+        figure_src = nodes[-1]["children"][0]["attrs"]["src"]
+        assert figure_src == "img2.jpg"
 
 
 class TestPublishArticle:
@@ -494,17 +508,17 @@ class TestPreviewNodes:
         assert isinstance(nodes, list)
         assert len(nodes) > 0
 
-    def test_hero_image_figure_first(self):
+    def test_first_image_dropped_in_preview(self):
+        """Single-image article: the lead image is sent separately as a
+        Telegram photo, so Telegraph (and its preview) renders it without
+        any figure node — pure text body."""
         nodes = tp.preview_nodes(
             title="t",
             paragraphs=["body"],
             images=["https://cdn/1.jpg"],
         )
-        assert nodes[0]["tag"] == "figure"
-        # Nested <img> with the hero src
-        inner = nodes[0]["children"][0]
-        assert inner["tag"] == "img"
-        assert inner["attrs"]["src"] == "https://cdn/1.jpg"
+        # No figure anywhere — single image dropped entirely.
+        assert all(n["tag"] != "figure" for n in nodes)
 
     def test_empty_paragraphs_and_no_blocks(self):
         # No source_url → _build_content returns [] for empty paragraphs; no exception.

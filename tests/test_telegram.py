@@ -171,9 +171,12 @@ class TestSendTelegraphTeaser(unittest.TestCase):
     @patch('news_bot.TELEGRAM_CHANNEL_ID', '@channel')
     @patch('news_bot.Bot')
     def test_variant_c_sends_photo_then_link(self, mock_bot_class, _mock_og):
-        """Happy path: og:image found → variant C sends BOTH a send_photo
-        (lead image + hashtag caption) AND a send_message (Telegraph URL
-        with INSTANT VIEW)."""
+        """Happy path: og:image found → variant C sends:
+          1. ``send_photo`` with the lead image (NO caption — clean hero).
+          2. ``send_message`` whose visible text is the hashtag line and
+             whose ``LinkPreviewOptions(show_above_text=True)`` renders
+             the INSTANT VIEW preview ABOVE the tags. Raw URL must NOT
+             appear as visible text."""
         mock_bot = MagicMock()
         mock_bot.send_photo = AsyncMock()
         mock_bot.send_message = AsyncMock()
@@ -186,9 +189,21 @@ class TestSendTelegraphTeaser(unittest.TestCase):
         self.assertTrue(ok)
         mock_bot.send_photo.assert_awaited_once()
         mock_bot.send_message.assert_awaited_once()
+
         photo_kwargs = mock_bot.send_photo.await_args.kwargs
         self.assertEqual(photo_kwargs['photo'], 'https://cdn.telegra.ph/file/img.jpg')
-        self.assertEqual(photo_kwargs['caption'], '#example #news')
+        # Photo must NOT carry a caption (tags moved to the second message).
+        self.assertNotIn('caption', photo_kwargs)
+
+        msg_kwargs = mock_bot.send_message.await_args.kwargs
+        # Visible text is the hashtag line, NOT the raw Telegraph URL.
+        self.assertEqual(msg_kwargs['text'], '#example #news')
+        self.assertNotIn('https://telegra.ph/X', msg_kwargs['text'])
+        # Preview above text + URL passed via options (so URL is hidden).
+        preview = msg_kwargs['link_preview_options']
+        self.assertEqual(preview.url, 'https://telegra.ph/X')
+        self.assertTrue(preview.show_above_text)
+
         self.assertTrue(any(
             'variant C' in r.message for r in cm.records
         ))

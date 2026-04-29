@@ -672,7 +672,7 @@ def _fetch_telegraph_og_image(telegraph_url):
         return None
 
 
-def send_telegraph_teaser(telegraph_url, source_url):
+def send_telegraph_teaser(telegraph_url, source_url, lead_image=None):
     """Publish a two-message Variant-C channel teaser:
 
       Message 1: ``send_photo`` with the article's lead image + hashtag
@@ -709,24 +709,36 @@ def send_telegraph_teaser(telegraph_url, source_url):
     else:
         text = source_hashtag
 
-    og_image = _fetch_telegraph_og_image(telegraph_url)
+    # Photo source preference: explicit ``lead_image`` from the article
+    # (decoupled from Telegraph's og:image so the photo and the IV preview
+    # don't show the same picture). Fall back to og:image scraping for
+    # callers that haven't been updated to pass ``lead_image``.
+    og_image = lead_image or _fetch_telegraph_og_image(telegraph_url)
 
     async def _send_variant_c():
-        """Two messages: photo + caption, then Telegraph link with INSTANT VIEW."""
+        """Two messages, layout = [photo] → [Telegraph IV preview] → [tags].
+
+        Message 1: ``send_photo`` carrying just the lead image (no caption)
+                   so subscribers see a clean full-width hero shot.
+        Message 2: ``send_message`` whose visible body is the hashtag line.
+                   The Telegraph URL is passed via ``LinkPreviewOptions.url``
+                   with ``show_above_text=True``, which renders the INSTANT
+                   VIEW preview ABOVE the hashtags and HIDES the raw URL
+                   text — so the final stack is photo → IV preview → tags.
+        """
         bot = Bot(token=TELEGRAM_BOT_TOKEN)
         try:
             await bot.send_photo(
                 chat_id=TELEGRAM_CHANNEL_ID,
                 photo=og_image,
-                caption=text,
-                parse_mode='Markdown',
             )
             await bot.send_message(
                 chat_id=TELEGRAM_CHANNEL_ID,
-                text=telegraph_url,
+                text=text,
+                parse_mode='Markdown',
                 link_preview_options=LinkPreviewOptions(
                     url=telegraph_url,
-                    show_above_text=False,
+                    show_above_text=True,
                 ),
             )
             logger.info(f"Posted to Telegram (variant C): {telegraph_url}")
@@ -1090,7 +1102,13 @@ def _fallback_publish(row, via_review=False):
     # at the visible-feed level). The auto-marker lives in the
     # Telegra.ph article body — see the ``auto_marker`` kwarg passed
     # to ``publish_article`` above.
-    ok = send_telegraph_teaser(telegraph_url, link)
+    # Pass the article's lead image explicitly so the photo we send is
+    # decoupled from Telegraph's og:image — see ``send_telegraph_teaser``
+    # docstring. ``images`` may be missing/empty on text-only articles;
+    # the helper falls back to og:image scraping in that case.
+    images = row.get('images') or []
+    lead_image = images[0] if images else None
+    ok = send_telegraph_teaser(telegraph_url, link, lead_image=lead_image)
     if not ok:
         raise RuntimeError(
             f"send_telegraph_teaser returned False for {link}"
