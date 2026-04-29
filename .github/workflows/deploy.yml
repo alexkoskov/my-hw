@@ -237,8 +237,25 @@ jobs:
             "set -e; cd '$DEPLOY_PATH' && python3 -m pip install --user --break-system-packages -r requirements.txt" \
             || { echo "::error::pip install failed on server — SSH into $SSH_USER@$SSH_HOST to inspect ~/.local and ~/.cache/pip/log."; exit 1; }
 
+      - name: Restart news_bot service on server
+        env:
+          SSH_HOST: ${{ secrets.SSH_HOST }}
+          SSH_USER: ${{ secrets.SSH_USER }}
+        # Relies on the sudoers rule configured on the server in
+        # /etc/sudoers.d/news_bot:
+        #   <user> ALL=(ALL) NOPASSWD: /usr/bin/systemctl restart news_bot.service, ...
+        # so this works without a TTY or password prompt. If the rule is
+        # missing or has wrong perms (must be 0440), this step will fail
+        # with a "terminal is required to read password" error — fix the
+        # sudoers file on the server, not here.
+        run: |
+          ssh -o StrictHostKeyChecking=yes "$SSH_USER@$SSH_HOST" \
+            "sudo /usr/bin/systemctl restart news_bot.service" \
+            || { echo "::error::Service restart failed — check /etc/sudoers.d/news_bot exists with mode 0440 and includes 'NOPASSWD: /usr/bin/systemctl restart news_bot.service'."; exit 1; }
+          echo "::notice::news_bot.service restarted — running on the new code."
+
       - name: Deploy summary
         run: |
-          echo "::notice::Deploy complete. news_bot cron will pick up changes on next 12:00 МСК cron tick."
-          echo "::notice::To kick a tick immediately: ssh into the server and run: python3 -c 'from news_bot import job; job()'"
+          echo "::notice::Deploy complete. news_bot.service was restarted; the new code is live now."
+          echo "::notice::Verify: ssh \$SSH_USER@\$SSH_HOST and run: journalctl -u news_bot.service -n 20"
           echo "::notice::Rollback: locally run 'git revert HEAD && git push origin main' — this workflow will redeploy the parent commit."
