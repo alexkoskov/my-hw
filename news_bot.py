@@ -27,7 +27,6 @@ from dotenv import load_dotenv
 load_dotenv()
 
 import feedparser
-import requests
 from deep_translator import GoogleTranslator
 import schedule
 from telegram import Bot, LinkPreviewOptions
@@ -644,56 +643,23 @@ def build_admin_ping(rows):
     return f"{len(rows)} ждут review: " + ", ".join(parts)
 
 
-_TELEGRAPH_OG_IMAGE_RE = re.compile(
-    r'<meta\s+property="og:image"\s+content="([^"]+)"', re.IGNORECASE
-)
+def send_telegraph_teaser(telegraph_url, source_url):
+    """Publish a one-message channel teaser:
 
+    Single ``send_message`` whose visible body is the hashtag line
+    (e.g. ``#autoevolution #news``). The Telegraph URL travels via
+    ``LinkPreviewOptions.url`` with ``show_above_text=True``, which
+    renders the INSTANT VIEW preview card ABOVE the tags and hides
+    the raw URL text. iOS shows a full-width hero image inside the
+    IV card, so a separate ``send_photo`` is no longer needed (it
+    used to be — it caused a duplicate-image problem we worked
+    around with photo / IV decoupling, all now obsolete).
 
-def _fetch_telegraph_og_image(telegraph_url):
-    """Best-effort fetch of the Telegraph article's ``og:image`` URL.
+    Final stack subscribers see:
+        [Telegraph IV preview card with title + body + image]
+        #source #news
 
-    Returns the image URL string on success, ``None`` on any failure.
-    Used by ``send_telegraph_teaser`` to drive Variant C (large image +
-    INSTANT VIEW link below). Never raises — caller falls back to the
-    single-message preview-only flow when this returns ``None``.
-
-    Network timeout is intentionally short (5 s): if the Telegraph page
-    is slow we'd rather degrade to the simpler post format than block
-    the publish loop.
-    """
-    try:
-        resp = requests.get(telegraph_url, timeout=5)
-        if resp.status_code != 200:
-            return None
-        match = _TELEGRAPH_OG_IMAGE_RE.search(resp.text)
-        return match.group(1) if match else None
-    except Exception as exc:  # noqa: BLE001 — best-effort, never propagate
-        logger.debug(f"og:image fetch failed for {telegraph_url}: {exc}")
-        return None
-
-
-def send_telegraph_teaser(telegraph_url, source_url, lead_image=None):
-    """Publish a two-message Variant-C channel teaser:
-
-      Message 1: ``send_photo`` with the article's lead image + hashtag
-                 caption. Forces a LARGE image preview on every Telegram
-                 client (iOS especially), where ``LinkPreviewOptions``
-                 alone falls back to a thumbnail.
-      Message 2: ``send_message`` with a Telegraph link-preview that
-                 carries the ⚡ INSTANT VIEW button.
-
-    Together these give the subscriber both the visual punch of a
-    full-width image AND the one-tap fullscreen reader experience.
     Spec: work/telegraph-pipeline/post-format.md.
-
-    Fallback: if the Telegraph article has no recognisable ``og:image``,
-    or the og:image fetch fails, we degrade to the original single-
-    message preview-only flow (still has INSTANT VIEW, just thumbnail
-    image). Either path is byte-stable across the manual-review
-    (``hw_review publish``) and auto-fallback (``_fallback_publish``)
-    callers — Decision 14 of the manual-review-workflow tech-spec.
-    Path differentiation lives INSIDE the Telegraph body as the
-    ``↳ автоперевод`` marker paragraph before the source footer.
     """
     if not TELEGRAM_BOT_TOKEN or not TELEGRAM_CHANNEL_ID:
         logger.error("Telegram credentials not set.")
@@ -709,48 +675,7 @@ def send_telegraph_teaser(telegraph_url, source_url, lead_image=None):
     else:
         text = source_hashtag
 
-    # Photo source preference: explicit ``lead_image`` from the article
-    # (decoupled from Telegraph's og:image so the photo and the IV preview
-    # don't show the same picture). Fall back to og:image scraping for
-    # callers that haven't been updated to pass ``lead_image``.
-    og_image = lead_image or _fetch_telegraph_og_image(telegraph_url)
-
-    async def _send_variant_c():
-        """Two messages, layout = [photo] → [Telegraph IV preview] → [tags].
-
-        Message 1: ``send_photo`` carrying just the lead image (no caption)
-                   so subscribers see a clean full-width hero shot.
-        Message 2: ``send_message`` whose visible body is the hashtag line.
-                   The Telegraph URL is passed via ``LinkPreviewOptions.url``
-                   with ``show_above_text=True``, which renders the INSTANT
-                   VIEW preview ABOVE the hashtags and HIDES the raw URL
-                   text — so the final stack is photo → IV preview → tags.
-        """
-        bot = Bot(token=TELEGRAM_BOT_TOKEN)
-        try:
-            await bot.send_photo(
-                chat_id=TELEGRAM_CHANNEL_ID,
-                photo=og_image,
-            )
-            await bot.send_message(
-                chat_id=TELEGRAM_CHANNEL_ID,
-                text=text,
-                parse_mode='Markdown',
-                link_preview_options=LinkPreviewOptions(
-                    url=telegraph_url,
-                    show_above_text=True,
-                ),
-            )
-            logger.info(f"Posted to Telegram (variant C): {telegraph_url}")
-            return True
-        except TelegramError as e:
-            logger.error(f"Telegram error (variant C): {e}")
-            return False
-
-    async def _send_fallback():
-        """Single message — the original preview-only teaser. Used when
-        og:image extraction fails. Still gets INSTANT VIEW, just smaller
-        thumbnail."""
+    async def _send():
         bot = Bot(token=TELEGRAM_BOT_TOKEN)
         try:
             await bot.send_message(
@@ -762,15 +687,13 @@ def send_telegraph_teaser(telegraph_url, source_url, lead_image=None):
                     show_above_text=True,
                 ),
             )
-            logger.info(f"Posted to Telegram (fallback): {telegraph_url}")
+            logger.info(f"Posted to Telegram: {telegraph_url}")
             return True
         except TelegramError as e:
-            logger.error(f"Telegram error (fallback): {e}")
+            logger.error(f"Telegram error: {e}")
             return False
 
-    if og_image:
-        return asyncio.run(_send_variant_c())
-    return asyncio.run(_send_fallback())
+    return asyncio.run(_send())
 
 
 # ---------------------------------------------------------------------------
@@ -1102,13 +1025,7 @@ def _fallback_publish(row, via_review=False):
     # at the visible-feed level). The auto-marker lives in the
     # Telegra.ph article body — see the ``auto_marker`` kwarg passed
     # to ``publish_article`` above.
-    # Pass the article's lead image explicitly so the photo we send is
-    # decoupled from Telegraph's og:image — see ``send_telegraph_teaser``
-    # docstring. ``images`` may be missing/empty on text-only articles;
-    # the helper falls back to og:image scraping in that case.
-    images = row.get('images') or []
-    lead_image = images[0] if images else None
-    ok = send_telegraph_teaser(telegraph_url, link, lead_image=lead_image)
+    ok = send_telegraph_teaser(telegraph_url, link)
     if not ok:
         raise RuntimeError(
             f"send_telegraph_teaser returned False for {link}"

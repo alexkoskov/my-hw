@@ -144,39 +144,17 @@ class TestSendTelegraphTeaser(unittest.TestCase):
         )
         self.assertFalse(ok)
 
-    @patch('news_bot._fetch_telegraph_og_image', return_value=None)
     @patch('news_bot.TELEGRAM_BOT_TOKEN', 'test_token')
     @patch('news_bot.TELEGRAM_CHANNEL_ID', '@channel')
     @patch('news_bot.Bot')
-    def test_logs_success_fallback_path(self, mock_bot_class, _mock_og):
-        """When the Telegraph article has no og:image, send_telegraph_teaser
-        degrades to the single-message preview-only flow and logs
-        'Posted to Telegram (fallback): ...'."""
-        mock_bot = MagicMock()
-        mock_bot.send_message = AsyncMock()
-        mock_bot_class.return_value = mock_bot
-        with self.assertLogs('news_bot', level='INFO') as cm:
-            ok = send_telegraph_teaser(
-                telegraph_url='https://telegra.ph/X',
-                source_url='https://example.com/a',
-            )
-        self.assertTrue(ok)
-        self.assertTrue(any(
-            'Posted to Telegram (fallback): https://telegra.ph/X' in r.message
-            for r in cm.records
-        ))
-
-    @patch('news_bot._fetch_telegraph_og_image', return_value='https://cdn.telegra.ph/file/img.jpg')
-    @patch('news_bot.TELEGRAM_BOT_TOKEN', 'test_token')
-    @patch('news_bot.TELEGRAM_CHANNEL_ID', '@channel')
-    @patch('news_bot.Bot')
-    def test_variant_c_sends_photo_then_link(self, mock_bot_class, _mock_og):
-        """Happy path: og:image found → variant C sends:
-          1. ``send_photo`` with the lead image (NO caption — clean hero).
-          2. ``send_message`` whose visible text is the hashtag line and
-             whose ``LinkPreviewOptions(show_above_text=True)`` renders
-             the INSTANT VIEW preview ABOVE the tags. Raw URL must NOT
-             appear as visible text."""
+    def test_single_message_layout(self, mock_bot_class):
+        """``send_telegraph_teaser`` sends ONE message:
+          - text = hashtag line (#source #news), NOT the raw URL.
+          - link_preview_options.url carries the Telegraph URL.
+          - show_above_text=True renders the IV preview ABOVE the tags.
+        No ``send_photo`` call — IV preview already shows a full-width
+        image on iOS, so a separate hero photo is unnecessary.
+        """
         mock_bot = MagicMock()
         mock_bot.send_photo = AsyncMock()
         mock_bot.send_message = AsyncMock()
@@ -187,25 +165,19 @@ class TestSendTelegraphTeaser(unittest.TestCase):
                 source_url='https://example.com/a',
             )
         self.assertTrue(ok)
-        mock_bot.send_photo.assert_awaited_once()
+        mock_bot.send_photo.assert_not_called()
         mock_bot.send_message.assert_awaited_once()
 
-        photo_kwargs = mock_bot.send_photo.await_args.kwargs
-        self.assertEqual(photo_kwargs['photo'], 'https://cdn.telegra.ph/file/img.jpg')
-        # Photo must NOT carry a caption (tags moved to the second message).
-        self.assertNotIn('caption', photo_kwargs)
-
         msg_kwargs = mock_bot.send_message.await_args.kwargs
-        # Visible text is the hashtag line, NOT the raw Telegraph URL.
         self.assertEqual(msg_kwargs['text'], '#example #news')
         self.assertNotIn('https://telegra.ph/X', msg_kwargs['text'])
-        # Preview above text + URL passed via options (so URL is hidden).
         preview = msg_kwargs['link_preview_options']
         self.assertEqual(preview.url, 'https://telegra.ph/X')
         self.assertTrue(preview.show_above_text)
 
         self.assertTrue(any(
-            'variant C' in r.message for r in cm.records
+            'Posted to Telegram: https://telegra.ph/X' in r.message
+            for r in cm.records
         ))
 
 

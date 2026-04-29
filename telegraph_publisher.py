@@ -127,15 +127,8 @@ def _build_content_from_blocks(
         {'type': 'image', 'src': str}
         {'type': 'video', 'src': str}          # embed URL
 
-    The first ``image`` block is INTENTIONALLY DROPPED from the Telegraph
-    article body. Rationale: news_bot's variant-C teaser sends that lead
-    image as a separate ``send_photo`` message; if Telegraph kept the same
-    image as its hero, the IV preview card on the bot's second message
-    would duplicate the picture the subscriber just saw. By dropping
-    image[0] here, Telegraph's auto-generated ``og:image`` becomes the
-    article's image[1] (or empty if there's only one image) — so the
-    photo and the IV preview show different visuals. The remaining inline
-    images keep their original positions.
+    The first ``image`` block becomes the hero figure so it drives the
+    Telegram preview thumbnail; the rest appear in their original positions.
     """
     def p(*children): return {"tag": "p", "children": list(children)}
 
@@ -159,11 +152,9 @@ def _build_content_from_blocks(
     )
 
     nodes: list = []
-    # NOTE: we deliberately do NOT emit a hero figure for the first image
-    # block; that image is shown by news_bot's variant-C teaser as a
-    # separate send_photo. Skipping it here makes Telegraph's og:image
-    # resolve to image[1] (or empty), so the IV preview card never
-    # duplicates the photo the subscriber already saw.
+    if first_image_idx is not None:
+        hero = blocks[first_image_idx]
+        nodes.append(figure_img(hero["src"], hero.get("caption", "")))
 
     if subtitle:
         nodes.append(p(i_(f"💬 «{subtitle}»")))
@@ -238,13 +229,8 @@ def _build_content(
 
     nodes: list = []
     remaining = list(images or [])
-    # Drop the lead image entirely — it is sent as a separate Telegram
-    # photo by news_bot's variant-C teaser. Keeping it here would make
-    # Telegraph's og:image equal the photo and the IV preview card would
-    # duplicate the image the subscriber just saw. See _build_content_from_blocks
-    # for the full rationale.
     if remaining:
-        remaining.pop(0)
+        nodes.append(figure_img(remaining.pop(0)))
 
     if subtitle:
         nodes.append(p(i_(f"💬 «{subtitle}»")))
