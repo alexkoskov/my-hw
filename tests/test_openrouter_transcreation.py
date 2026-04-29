@@ -102,6 +102,57 @@ class TestSuccessPath(unittest.TestCase):
         self.assertEqual(called_with["model"], "google/gemini-2.5-flash")
 
 
+class TestEnglishGuard(unittest.TestCase):
+    """Reject responses where paragraphs came back in English (model
+    silently skipped the translation step). The article must enter the
+    3-strike retry flow rather than surface in the channel as EN."""
+
+    def setUp(self):
+        openrouter_transcreation._PROMPT_CACHE = {"mtime": None, "body": None, "path": None}
+
+    def test_en_only_paragraphs_rejected(self):
+        en_payload = json.loads(SAMPLE_VALID_JSON)
+        en_payload["paragraphs"] = [
+            "First English paragraph that is long enough to pass the floor.",
+            "Second English paragraph that is also long.",
+        ]
+        client = _make_client_returning(_make_response(json.dumps(en_payload)))
+        with patch.object(openrouter_transcreation, "_load_prompt", return_value="STUB"):
+            with self.assertRaises(ClaudeTranscreationError) as ctx:
+                openrouter_transcreation.transcreate_via_claude(
+                    SAMPLE_ARTICLE, client=client,
+                )
+        self.assertIn("English", str(ctx.exception))
+
+    def test_brand_heavy_russian_paragraphs_accepted(self):
+        """Real-world: Russian translation legitimately keeps brand names
+        in Latin (Hot Wheels, Nissan GT-R). 30% threshold must accept this."""
+        ru_payload = json.loads(SAMPLE_VALID_JSON)
+        ru_payload["paragraphs"] = [
+            "Hot Wheels представил новую модель Nissan GT-R на выставке.",
+            "В новой коллекции Bugatti и Porsche будут эксклюзивами.",
+        ]
+        client = _make_client_returning(_make_response(json.dumps(ru_payload)))
+        with patch.object(openrouter_transcreation, "_load_prompt", return_value="STUB"):
+            result = openrouter_transcreation.transcreate_via_claude(
+                SAMPLE_ARTICLE, client=client,
+            )
+        self.assertEqual(len(result["paragraphs"]), 2)
+
+    def test_helper_threshold_boundary(self):
+        # 50/50 mix should pass (≥30% Cyrillic)
+        self.assertTrue(openrouter_transcreation._is_mostly_russian(
+            ["Hello мир hello мир"],
+        ))
+        # All English → fail
+        self.assertFalse(openrouter_transcreation._is_mostly_russian(
+            ["Hello world"],
+        ))
+        # Empty paragraphs → True (other validators handle empties)
+        self.assertTrue(openrouter_transcreation._is_mostly_russian([]))
+        self.assertTrue(openrouter_transcreation._is_mostly_russian(["  "]))
+
+
 class TestExceptionClassification(unittest.TestCase):
     def setUp(self):
         openrouter_transcreation._PROMPT_CACHE = {"mtime": None, "body": None, "path": None}
@@ -262,6 +313,76 @@ class TestVariantBPlus(unittest.TestCase):
         client = _make_client_returning(_make_response('{"translations": "oops"}'))
         out = openrouter_transcreation._translate_block_strings(blocks, client, "m")
         self.assertEqual(out[0]["caption"], "Front")
+
+    def test_patch_text_with_ru_paragraphs_splices_in_order(self):
+        """``_patch_text_with_ru_paragraphs`` must replace text in
+        lead/paragraph/heading blocks in occurrence order with the RU
+        paragraphs from the main response, leaving image/video blocks
+        and their captions untouched."""
+        blocks_in = [
+            {"type": "lead", "text": "Lead in EN."},
+            {"type": "image", "src": "https://x/a.jpg", "caption": "Front EN"},
+            {"type": "paragraph", "text": "Body 1 EN."},
+            {"type": "paragraph", "text": "Body 2 EN."},
+            {"type": "video", "src": "https://x/v"},  # no text
+            {"type": "image", "src": "https://x/b.jpg", "caption": "Rear EN"},
+        ]
+        ru_paragraphs = ["Лид RU.", "Тело 1 RU.", "Тело 2 RU."]
+        out = openrouter_transcreation._patch_text_with_ru_paragraphs(
+            blocks_in, ru_paragraphs,
+        )
+        self.assertEqual(out[0]["text"], "Лид RU.")
+        self.assertEqual(out[2]["text"], "Тело 1 RU.")
+        self.assertEqual(out[3]["text"], "Тело 2 RU.")
+        # Image/video blocks left untouched
+        self.assertEqual(out[1]["caption"], "Front EN")
+        self.assertEqual(out[5]["caption"], "Rear EN")
+        self.assertEqual(out[4]["src"], "https://x/v")
+        # Original blocks not mutated
+        self.assertEqual(blocks_in[0]["text"], "Lead in EN.")
+
+    def test_full_flow_keeps_paragraphs_ru_when_second_pass_fails(self):
+        """The exact regression that hit production 2026-04-29: long
+        unboxing article, main GPT call returns RU paragraphs but no
+        blocks; second-pass exception → blocks must still publish with
+        RU paragraph text (spliced from main response). Captions stay
+        EN as a controlled degradation."""
+        article = dict(SAMPLE_ARTICLE)
+        article["blocks"] = [
+            {"type": "lead", "text": "Lead body EN."},
+            {"type": "paragraph", "text": "Body para 1 EN."},
+            {"type": "image", "src": "https://x/img.jpg", "caption": "Cap EN"},
+        ]
+        main_payload = json.loads(SAMPLE_VALID_JSON)
+        main_payload["blocks"] = None
+        # Different paragraphs from SAMPLE_VALID_JSON's defaults — verify
+        # they actually get spliced in.
+        main_payload["paragraphs"] = [
+            "Лид-абзац на русском с длиной достаточной.",
+            "Второй абзац перевода с подробностями.",
+        ]
+        main_response = _make_response(json.dumps(main_payload))
+        # Second-pass call raises (simulates B+ failure)
+        client = MagicMock()
+        client.chat.completions.create.side_effect = [
+            main_response,
+            _make_openai_error(openai.RateLimitError, "boom"),
+        ]
+        with patch.object(openrouter_transcreation, "_load_prompt", return_value="STUB"):
+            result = openrouter_transcreation.transcreate_via_claude(
+                article, client=client,
+            )
+        # Paragraphs must be RU (spliced from main response).
+        self.assertEqual(
+            result["blocks"][0]["text"],
+            "Лид-абзац на русском с длиной достаточной.",
+        )
+        self.assertEqual(
+            result["blocks"][1]["text"],
+            "Второй абзац перевода с подробностями.",
+        )
+        # Caption stays EN — controlled degradation when B+ fails.
+        self.assertEqual(result["blocks"][2]["caption"], "Cap EN")
 
     def test_full_flow_main_null_blocks_triggers_second_pass(self):
         """End-to-end: main response returns blocks=null with mismatched count

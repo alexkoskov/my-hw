@@ -183,6 +183,33 @@ _JSON_FENCE_RE = re.compile(
 )
 
 
+def _is_mostly_russian(paragraphs: list, threshold: float = 0.30) -> bool:
+    """Cheap heuristic: do at least ``threshold`` of all letter chars
+    fall in the Cyrillic block (U+0400–U+04FF)?
+
+    Hot Wheels articles always come in English, so a translated response
+    must contain a meaningful share of Cyrillic. Brand / model names stay
+    in Latin (Hot Wheels, Nissan GT-R, Bugatti, …) — 30% leaves headroom
+    for heavy brand-name density while still flagging a response that
+    silently returned the source verbatim. A 0-letter response (rare —
+    digits / symbols only) returns True so downstream length validators
+    catch it instead of this one.
+    """
+    total = 0
+    cyr = 0
+    for p in paragraphs:
+        if not isinstance(p, str):
+            continue
+        for ch in p:
+            if ch.isalpha():
+                total += 1
+                if 0x0400 <= ord(ch) <= 0x04FF:
+                    cyr += 1
+    if total == 0:
+        return True
+    return (cyr / total) >= threshold
+
+
 def _strip_json_fence(text: str) -> str:
     if not text:
         return text
@@ -254,6 +281,16 @@ def _parse_response(
         raise ClaudeTranscreationError(
             f"OpenRouter response paragraphs total content too short "
             f"({total_chars} chars < 30 minimum) — likely empty / stub translation"
+        )
+
+    # Reject EN-leaking responses: if the model silently returned the
+    # source paragraphs without translating, refuse to publish so the
+    # article enters the 3-strike → failed_articles flow rather than
+    # surfacing in the channel as English.
+    if not _is_mostly_russian(paragraphs):
+        raise ClaudeTranscreationError(
+            "OpenRouter response paragraphs appear to be English — "
+            "translation likely skipped (Cyrillic letter share below 30%)"
         )
 
     blocks = parsed.get("blocks")
@@ -346,13 +383,45 @@ _BLOCK_TRANSLATE_SYSTEM = (
 )
 
 
+def _patch_text_with_ru_paragraphs(blocks_in: list, ru_paragraphs: list) -> list:
+    """Splice RU paragraphs from the main response into the EN-fallback
+    blocks at every ``lead`` / ``paragraph`` / ``heading`` position
+    (1:1 in occurrence order — see ``autoevolution_source`` ``paragraphs``
+    extraction). Image / video blocks are passed through untouched.
+
+    This guarantees the article body publishes in Russian even if the
+    variant B+ second-pass call fails or comes back partial; captions
+    are still up to that second-pass call to translate (or stay EN as
+    a controlled degradation).
+    """
+    if not isinstance(blocks_in, list) or not blocks_in:
+        return blocks_in
+    paragraphs_iter = iter(ru_paragraphs or [])
+    result = []
+    for block in blocks_in:
+        if not isinstance(block, dict):
+            result.append(block)
+            continue
+        new_block = dict(block)
+        if block.get("type") in ("lead", "paragraph", "heading"):
+            try:
+                ru = next(paragraphs_iter)
+                if isinstance(ru, str) and ru.strip():
+                    new_block["text"] = ru
+            except StopIteration:
+                # More text-blocks than RU paragraphs (rare) — keep EN
+                pass
+        result.append(new_block)
+    return result
+
+
 def _translate_block_strings(
     blocks: list,
     client: "openai.OpenAI",
     model: str,
     *,
     timeout_s: int = 60,
-    max_tokens: int = 4000,
+    max_tokens: int = 30000,
 ) -> list:
     """Second-pass translation of block ``text`` / ``caption`` fields.
 
@@ -589,14 +658,20 @@ def transcreate_via_claude(  # name kept for backward compat
     # already runs ``filter_blocks`` on these so no ad / social-share
     # content leaks through.
     if expected_block_count and not parsed.get("blocks"):
-        parsed["blocks"] = blocks_in
-        logger.info(
-            "Using original EN blocks (count=%d) — model did not return "
-            "matching translated blocks", expected_block_count,
+        # Variant B: substitute the original EN blocks, but FIRST patch
+        # paragraph/lead/heading text with the RU translations the main
+        # call already produced — so the article body is always Russian
+        # even if the second-pass call fails on a long article.
+        parsed["blocks"] = _patch_text_with_ru_paragraphs(
+            blocks_in, parsed["paragraphs"],
         )
-        # Variant B+: focused second pass to translate the EN
-        # captions/text we just fell back to. On failure, helper
-        # silently returns blocks_in unchanged (B remains correct).
+        logger.info(
+            "Using original EN blocks (count=%d, paragraph text spliced "
+            "from main response)", expected_block_count,
+        )
+        # Variant B+: focused second pass to translate captions (and any
+        # remaining text). Captions stay EN as a controlled degradation
+        # if this fails; paragraphs are already RU from the patch above.
         parsed["blocks"] = _translate_block_strings(
             parsed["blocks"], client, model, timeout_s=timeout_s,
         )

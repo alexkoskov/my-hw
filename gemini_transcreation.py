@@ -150,6 +150,23 @@ _JSON_FENCE_RE = re.compile(
 )
 
 
+def _is_mostly_russian(paragraphs: list, threshold: float = 0.30) -> bool:
+    """See openrouter_transcreation._is_mostly_russian."""
+    total = 0
+    cyr = 0
+    for p in paragraphs:
+        if not isinstance(p, str):
+            continue
+        for ch in p:
+            if ch.isalpha():
+                total += 1
+                if 0x0400 <= ord(ch) <= 0x04FF:
+                    cyr += 1
+    if total == 0:
+        return True
+    return (cyr / total) >= threshold
+
+
 def _strip_json_fence(text: str) -> str:
     if not text:
         return text
@@ -213,6 +230,13 @@ def _parse_response(
         raise ClaudeTranscreationError(
             f"Gemini response paragraphs total content too short "
             f"({total_chars} chars < 30 minimum) — likely empty / stub translation"
+        )
+
+    # Reject EN-leaking responses (translation silently skipped).
+    if not _is_mostly_russian(paragraphs):
+        raise ClaudeTranscreationError(
+            "Gemini response paragraphs appear to be English — "
+            "translation likely skipped (Cyrillic letter share below 30%)"
         )
 
     blocks = parsed.get("blocks")
@@ -298,12 +322,34 @@ _BLOCK_TRANSLATE_SYSTEM = (
 )
 
 
+def _patch_text_with_ru_paragraphs(blocks_in: list, ru_paragraphs: list) -> list:
+    """See openrouter_transcreation._patch_text_with_ru_paragraphs."""
+    if not isinstance(blocks_in, list) or not blocks_in:
+        return blocks_in
+    paragraphs_iter = iter(ru_paragraphs or [])
+    result = []
+    for block in blocks_in:
+        if not isinstance(block, dict):
+            result.append(block)
+            continue
+        new_block = dict(block)
+        if block.get("type") in ("lead", "paragraph", "heading"):
+            try:
+                ru = next(paragraphs_iter)
+                if isinstance(ru, str) and ru.strip():
+                    new_block["text"] = ru
+            except StopIteration:
+                pass
+        result.append(new_block)
+    return result
+
+
 def _translate_block_strings(
     blocks: list,
     client: "genai.Client",
     model: str,
     *,
-    max_tokens: int = 4000,
+    max_tokens: int = 30000,
 ) -> list:
     """Variant B+ second-pass: translate block ``text`` / ``caption`` fields.
 
@@ -528,13 +574,13 @@ def transcreate_via_claude(  # name kept for backward compat
     # Variant B fallback: if model didn't return matching blocks, use
     # the article's original EN blocks for structural completeness.
     if expected_block_count and not parsed.get("blocks"):
-        parsed["blocks"] = blocks_in
-        logger.info(
-            "Using original EN blocks (count=%d) — model did not return "
-            "matching translated blocks", expected_block_count,
+        parsed["blocks"] = _patch_text_with_ru_paragraphs(
+            blocks_in, parsed["paragraphs"],
         )
-        # Variant B+: focused second pass to translate the EN
-        # captions/text we just fell back to.
+        logger.info(
+            "Using original EN blocks (count=%d, paragraph text spliced "
+            "from main response)", expected_block_count,
+        )
         parsed["blocks"] = _translate_block_strings(parsed["blocks"], client, model)
 
     return parsed

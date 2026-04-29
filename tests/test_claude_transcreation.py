@@ -293,7 +293,9 @@ def test_title_without_emoji_gets_safety_net(sample_article):
 
 def test_paragraph_over_4000_truncated_with_warning(sample_article, caplog):
     payload = json.loads(_good_response_text(2))
-    payload["paragraphs"] = ["a" * 5000, "b" * 200]
+    # Use Cyrillic so the EN-guard heuristic doesn't fire — this test
+    # is about length truncation, not language detection.
+    payload["paragraphs"] = ["а" * 5000, "б" * 200]
     client = _make_mock_client(json.dumps(payload, ensure_ascii=False))
 
     caplog.set_level(logging.WARNING, logger="claude_transcreation")
