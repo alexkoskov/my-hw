@@ -643,26 +643,21 @@ def build_admin_ping(rows):
     return f"{len(rows)} ждут review: " + ", ".join(parts)
 
 
-def send_telegraph_teaser(telegraph_url, source_url, lead_image=None):
-    """Publish a two-message channel teaser:
+def send_telegraph_teaser(telegraph_url, source_url):
+    """Publish a single-message channel teaser:
 
-      Message 1: ``send_photo`` with the article's lead image. Forces a
-                 full-width hero on every Telegram client — the IV preview
-                 card alone collapses to a small thumbnail on most posts.
-      Message 2: ``send_message`` whose visible body is the hashtag line.
-                 The Telegraph URL travels via ``LinkPreviewOptions.url``
-                 with ``show_above_text=True``, so the INSTANT VIEW
-                 preview renders ABOVE the tags and the raw URL stays
-                 hidden inside the options object.
+    One ``send_message`` whose visible body is the hashtag line
+    (e.g. ``#autoevolution #news``). The Telegraph URL travels via
+    ``LinkPreviewOptions.url`` with ``show_above_text=True`` and
+    ``prefer_large_media=True``, which renders the INSTANT VIEW
+    preview card with a full-width image ABOVE the tags. The raw
+    URL stays hidden inside the options object.
 
     Final stack subscribers see:
-        [hero photo]
-        [Telegraph IV preview card]
+        [Telegraph IV preview card with full-width image + INSTANT VIEW]
         #source #news
 
-    If ``lead_image`` is ``None`` (article has no images), we degrade to
-    a single-message preview-only flow — still gets INSTANT VIEW, just
-    no hero photo. Spec: work/telegraph-pipeline/post-format.md.
+    Spec: work/telegraph-pipeline/post-format.md.
     """
     if not TELEGRAM_BOT_TOKEN or not TELEGRAM_CHANNEL_ID:
         logger.error("Telegram credentials not set.")
@@ -678,35 +673,19 @@ def send_telegraph_teaser(telegraph_url, source_url, lead_image=None):
     else:
         text = source_hashtag
 
-    async def _send_iv_message(bot):
-        await bot.send_message(
-            chat_id=TELEGRAM_CHANNEL_ID,
-            text=text,
-            parse_mode='Markdown',
-            link_preview_options=LinkPreviewOptions(
-                url=telegraph_url,
-                show_above_text=True,
-                # ``prefer_large_media`` forces the IV preview card to
-                # render with a full-width image rather than the default
-                # small thumbnail in the top-right corner. Historically
-                # this killed the INSTANT VIEW button on iOS — the bot
-                # team explicitly reverted it in 27a1e31. Re-attempt now
-                # because the operator wants the big-image IV layout; if
-                # the button regression returns, drop this back to
-                # default and rely on ``send_photo`` alone for visual.
-                prefer_large_media=True,
-            ),
-        )
-
     async def _send():
         bot = Bot(token=TELEGRAM_BOT_TOKEN)
         try:
-            if lead_image:
-                await bot.send_photo(
-                    chat_id=TELEGRAM_CHANNEL_ID,
-                    photo=lead_image,
-                )
-            await _send_iv_message(bot)
+            await bot.send_message(
+                chat_id=TELEGRAM_CHANNEL_ID,
+                text=text,
+                parse_mode='Markdown',
+                link_preview_options=LinkPreviewOptions(
+                    url=telegraph_url,
+                    show_above_text=True,
+                    prefer_large_media=True,
+                ),
+            )
             logger.info(f"Posted to Telegram: {telegraph_url}")
             return True
         except TelegramError as e:
@@ -1045,9 +1024,7 @@ def _fallback_publish(row, via_review=False):
     # at the visible-feed level). The auto-marker lives in the
     # Telegra.ph article body — see the ``auto_marker`` kwarg passed
     # to ``publish_article`` above.
-    images = row.get('images') or []
-    lead_image = images[0] if images else None
-    ok = send_telegraph_teaser(telegraph_url, link, lead_image=lead_image)
+    ok = send_telegraph_teaser(telegraph_url, link)
     if not ok:
         raise RuntimeError(
             f"send_telegraph_teaser returned False for {link}"
