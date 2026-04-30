@@ -447,15 +447,55 @@ def fetch_rss(url):
         logger.error(f"Failed to fetch RSS from {url}: {e}")
         return []
 
+def _is_hot_wheels_relevant(entry):
+    """Reject articles that came through the Hot Wheels RSS feed by
+    cross-tagging but are actually about a sibling Mattel brand.
+
+    autoevolution.com tags Matchbox / Mega Bloks / Hot Wheels articles
+    with overlapping topic tags, so the ``tag-Hot+Wheels+News`` feed
+    occasionally yields Matchbox-only stories. The channel is Hot
+    Wheels-focused — anything where the title names a sibling brand
+    *without also* naming Hot Wheels is filtered out at fetch time so
+    it never enters ``pending_articles``.
+    """
+    title = (entry.get('title') or '').lower()
+    if not title:
+        return True  # nothing to inspect; default include
+    if 'hot wheels' in title:
+        return True  # explicit HW mention — keep
+    # Sibling brands observed in production. Add more conservatively —
+    # broad keyword bans risk dropping legitimate cross-over articles.
+    sibling_brands = ('matchbox',)
+    if any(brand in title for brand in sibling_brands):
+        return False
+    return True
+
+
 def filter_new_entries(entries):
-    """Filter entries that are not already processed."""
+    """Filter entries that are not already processed AND that look
+    Hot-Wheels-relevant (see ``_is_hot_wheels_relevant`` for the
+    sibling-brand exclusion)."""
     new_entries = []
     seen = set()
+    skipped_offtopic = 0
     for entry in entries:
         link = entry.get('link')
-        if link and not is_processed(link) and link not in seen:
-            new_entries.append(entry)
-            seen.add(link)
+        if not link or is_processed(link) or link in seen:
+            continue
+        if not _is_hot_wheels_relevant(entry):
+            skipped_offtopic += 1
+            logger.info(
+                "Skipping off-topic entry (sibling brand): %r",
+                entry.get('title'),
+            )
+            continue
+        new_entries.append(entry)
+        seen.add(link)
+    if skipped_offtopic:
+        logger.info(
+            "Filtered out %d off-topic entries (sibling brands)",
+            skipped_offtopic,
+        )
     logger.info(f"Found {len(new_entries)} new entries.")
     return new_entries
 
