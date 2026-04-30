@@ -82,7 +82,7 @@ LOG_LEVEL = logging.INFO
 # kept here for explicit reference in ``job()`` (window-end guard) and the
 # crash-loop guard (Decision 9). ``BACKLOG_WARNING_THRESHOLD`` seeds the
 # AC20 queue-pressure admin ping.
-MIN_INTERVAL_MINUTES = 40
+MIN_INTERVAL_MINUTES = 90
 WINDOW_START_TIME = datetime.strptime("10:00", "%H:%M").time()
 WINDOW_END_TIME = datetime.strptime("20:00", "%H:%M").time()
 BACKLOG_WARNING_THRESHOLD = 50

@@ -180,24 +180,26 @@ class TestCrashLoopGuard(_JobBase):
         with _patch_sources_empty():
             news_bot.job()
 
-        # Expected: 35 minutes ± 5% (40-min interval - 5 min elapsed).
+        # Expected: (MIN_INTERVAL_MINUTES * 60) - 5*60 seconds, ± 5%.
         self.assertTrue(
             mock_sleep.called,
             "time.sleep must be called by the crash-loop guard",
         )
         first_sleep = self._sleep_args(mock_sleep)
         self.assertIsNotNone(first_sleep)
-        # 35min == 2100s; allow ± 5% slack for elapsed wall-time during test.
-        self.assertGreater(first_sleep, 2100 * 0.95)
-        self.assertLess(first_sleep, 2100 * 1.05)
+        expected = news_bot.MIN_INTERVAL_MINUTES * 60 - 5 * 60
+        self.assertGreater(first_sleep, expected * 0.95)
+        self.assertLess(first_sleep, expected * 1.05)
 
     @patch('news_bot.send_admin_notification')
     @patch('news_bot.time.sleep')
     def test_no_sleep_when_last_published_old(self, mock_sleep, _mock_admin):
-        fifty_min_ago = dt.datetime.now(dt.timezone.utc).replace(tzinfo=None) - dt.timedelta(minutes=50)
+        # Seed publish older than the guard threshold so no sleep fires.
+        gap_minutes = news_bot.MIN_INTERVAL_MINUTES + 10
+        long_ago = dt.datetime.now(dt.timezone.utc).replace(tzinfo=None) - dt.timedelta(minutes=gap_minutes)
         self._seed_published(
             'https://example.com/old',
-            fifty_min_ago.strftime('%Y-%m-%d %H:%M:%S'),
+            long_ago.strftime('%Y-%m-%d %H:%M:%S'),
         )
 
         with _patch_sources_empty():

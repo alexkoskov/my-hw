@@ -456,7 +456,11 @@ class TestDistributedSchedule(unittest.TestCase):
     # at 16:00 inside the publish window → recompute slots from `now`.
     # ======================================================================
 
-    def test_container_restart_mid_window_recomputes_slots_and_continues(self):
+    @patch('news_bot.MIN_INTERVAL_MINUTES', 40)
+    @patch('news_bot.compute_publish_slots')
+    def test_container_restart_mid_window_recomputes_slots_and_continues(
+        self, mock_compute,
+    ):
         """Pre-seed 5 pending rows + 1 already-published row (simulated
         prior-tick result). Freeze time at 16:00 МСК (mid-window).
         Call ``job()`` directly. Expectation:
@@ -468,7 +472,20 @@ class TestDistributedSchedule(unittest.TestCase):
           * Crash-loop guard: simulate the most recent publish was 10 min
             before now, which is < MIN_INTERVAL_MINUTES (40). Bot must
             sleep (40 - 10) = 30 min before continuing.
+
+        ``MIN_INTERVAL_MINUTES`` and ``compute_publish_slots`` are pinned
+        to the historical 40-min floor for this test so the algorithm
+        scenario stays valid after the production default moved to 90.
+        ``compute_publish_slots`` is called by the loop with the module
+        default kwarg, so we patch it to inject a 40-min mock.
         """
+        from compute_publish_slots import compute_publish_slots as real_compute
+        mock_compute.side_effect = lambda n, now, **kw: real_compute(
+            n, now,
+            window_start=kw.get('window_start'),
+            window_end=kw.get('window_end'),
+            min_interval_min=40,
+        )
         # Pre-seed 5 pending rows directly so we don't depend on the fetch
         # step recomputing them.
         for i in range(5):

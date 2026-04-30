@@ -63,9 +63,17 @@ class TestComputePublishSlots(unittest.TestCase):
         self.assertEqual(slots[3], msk(2026, 4, 26, 18, 15))
         self.assertEqual(carry, 0)
 
+    # The tests below exercise specific algorithm behaviours at the
+    # historical 40-minute floor — pass it explicitly so they remain
+    # valid after the production default moved to 90 (operator preference,
+    # 2026-04-30: less-frequent posts to spread the day's news across
+    # the window).
+
     def test_n_seven_hourly(self):
         """N=7, now=12:00 MSK → 7 slots at 60-min interval (13:00…19:00)."""
-        slots, carry = compute_publish_slots(7, msk(2026, 4, 26, 12, 0))
+        slots, carry = compute_publish_slots(
+            7, msk(2026, 4, 26, 12, 0), min_interval_min=40,
+        )
         self.assertEqual(len(slots), 7)
         for i, hour in enumerate(range(13, 20)):
             self.assertEqual(slots[i], msk(2026, 4, 26, hour, 0))
@@ -73,7 +81,9 @@ class TestComputePublishSlots(unittest.TestCase):
 
     def test_n_ten_interval_42min(self):
         """N=10, now=12:00 MSK → 10 slots at 42-min interval (420/10), carry_over=0."""
-        slots, carry = compute_publish_slots(10, msk(2026, 4, 26, 12, 0))
+        slots, carry = compute_publish_slots(
+            10, msk(2026, 4, 26, 12, 0), min_interval_min=40,
+        )
         self.assertEqual(len(slots), 10)
         self.assertEqual(slots[0], msk(2026, 4, 26, 13, 0))
         # Each subsequent slot is 42 minutes after the previous.
@@ -84,7 +94,9 @@ class TestComputePublishSlots(unittest.TestCase):
 
     def test_n_eleven_at_floor(self):
         """N=11, now=12:00 MSK → 11 slots at floor=40-min interval (13:00, 13:40, …, 19:40)."""
-        slots, carry = compute_publish_slots(11, msk(2026, 4, 26, 12, 0))
+        slots, carry = compute_publish_slots(
+            11, msk(2026, 4, 26, 12, 0), min_interval_min=40,
+        )
         self.assertEqual(len(slots), 11)
         self.assertEqual(slots[0], msk(2026, 4, 26, 13, 0))
         self.assertEqual(slots[-1], msk(2026, 4, 26, 19, 40))
@@ -95,19 +107,25 @@ class TestComputePublishSlots(unittest.TestCase):
 
     def test_n_fifteen_capped_at_eleven(self):
         """N=15, now=12:00 MSK → 11 slots (natural cap from floor=40), carry_over=4."""
-        slots, carry = compute_publish_slots(15, msk(2026, 4, 26, 12, 0))
+        slots, carry = compute_publish_slots(
+            15, msk(2026, 4, 26, 12, 0), min_interval_min=40,
+        )
         self.assertEqual(len(slots), 11)
         self.assertEqual(carry, 4)
 
     def test_n_twenty_capped_at_eleven(self):
         """N=20, now=12:00 MSK → 11 slots, carry_over=9."""
-        slots, carry = compute_publish_slots(20, msk(2026, 4, 26, 12, 0))
+        slots, carry = compute_publish_slots(
+            20, msk(2026, 4, 26, 12, 0), min_interval_min=40,
+        )
         self.assertEqual(len(slots), 11)
         self.assertEqual(carry, 9)
 
     def test_restart_at_16_n5(self):
         """Restart at 16:00 MSK, N=5 → 5 slots at 48-min interval (16:00, 16:48, 17:36, 18:24, 19:12)."""
-        slots, carry = compute_publish_slots(5, msk(2026, 4, 26, 16, 0))
+        slots, carry = compute_publish_slots(
+            5, msk(2026, 4, 26, 16, 0), min_interval_min=40,
+        )
         self.assertEqual(len(slots), 5)
         self.assertEqual(slots[0], msk(2026, 4, 26, 16, 0))
         self.assertEqual(slots[1], msk(2026, 4, 26, 16, 48))
@@ -160,7 +178,9 @@ class TestModuleConstants(unittest.TestCase):
 
         self.assertEqual(WINDOW_START, dtime(13, 0))
         self.assertEqual(WINDOW_END, dtime(20, 0))
-        self.assertEqual(MIN_INTERVAL_MINUTES, 40)
+        # Operator preference (2026-04-30): 90-min spacing so a few
+        # articles per day spread across the 10-hour publish window.
+        self.assertEqual(MIN_INTERVAL_MINUTES, 90)
 
 
 if __name__ == "__main__":

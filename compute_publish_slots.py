@@ -20,10 +20,11 @@ and `remaining_min = 420`, so `raw_interval = 420/N` — full-window pacing.
 When `now > window_start` (container restart mid-window) `effective_start = now`
 and `remaining_min = window_end - now`, so the interval adapts to the leftover.
 
-Cap of 11 publishes/day is the natural consequence of `MIN_INTERVAL_MINUTES = 40`
-on a 7-hour window: `floor(420 / 40) + 1 = 11`. No explicit cap constant is
-declared — that would duplicate the invariant and break customisation through
-the `min_interval_min` parameter.
+Daily publish cap is a natural consequence of `MIN_INTERVAL_MINUTES`: with
+the production 10:00–20:00 МСК window (600 min) and a 90-minute interval,
+`floor(600 / 90) + 1 = 7` slots/day. No explicit cap constant is declared —
+that would duplicate the invariant and break customisation through the
+`min_interval_min` parameter.
 
 Examples (from user-spec / tech-spec Architecture):
 
@@ -39,7 +40,7 @@ from typing import List, Tuple
 
 WINDOW_START: time = time(13, 0)
 WINDOW_END: time = time(20, 0)
-MIN_INTERVAL_MINUTES: int = 40
+MIN_INTERVAL_MINUTES: int = 90
 
 
 def compute_publish_slots(
@@ -56,7 +57,7 @@ def compute_publish_slots(
         now: Current time. MUST be tz-aware; raises ValueError otherwise.
         window_start: Daily window open time (default 13:00).
         window_end: Daily window close time (default 20:00).
-        min_interval_min: Minimum spacing between publications in minutes (default 40).
+        min_interval_min: Minimum spacing between publications in minutes (default 90).
 
     Returns:
         (slots, carry_over) where:

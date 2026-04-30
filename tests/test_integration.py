@@ -658,7 +658,15 @@ class TestRestartMidWindow(_IntegrationBase):
             captured['now'] = now
             captured['kwargs'] = kwargs
             from compute_publish_slots import compute_publish_slots as real
-            return real(n, now, *args, **kwargs)
+            # Pin the floor to the historical 40-min value for this
+            # scenario — production now defaults to 90-min, but the
+            # test asserts a 5-publish recompute that only fits at 40.
+            return real(
+                n, now,
+                window_start=kwargs.get('window_start'),
+                window_end=kwargs.get('window_end'),
+                min_interval_min=40,
+            )
 
         # The crash-loop guard reads ``datetime.now(timezone.utc)`` for
         # gap arithmetic against the UTC-naive ``published_at``. Returning
@@ -823,8 +831,8 @@ class TestManualReviewPreemption(_IntegrationBase):
 
 class TestCrashLoopGuard(_IntegrationBase):
     """AC8: a recent ``MAX(published_at)`` makes ``job()`` sleep until
-    ``last_published + 40min`` before continuing — defends against
-    container restart loops producing burst-publishes.
+    ``last_published + MIN_INTERVAL_MINUTES`` before continuing —
+    defends against container restart loops producing burst-publishes.
     """
 
     @patch('news_bot.send_admin_notification')
@@ -856,12 +864,14 @@ class TestCrashLoopGuard(_IntegrationBase):
         with patch('news_bot.SOURCES', [lambda notifier=None: []]):
             news_bot.job()
 
-        # Guard called time.sleep with ≈ 35*60 seconds (40min - 5min).
+        # Guard sleep ≈ (MIN_INTERVAL_MINUTES - 5) * 60 seconds — driven
+        # by the module-level constant so a future floor change doesn't
+        # silently break this regression check.
         self.assertTrue(mock_sleep.called, "crash-loop guard must sleep")
         first_arg = mock_sleep.call_args_list[0].args[0]
-        # 35min = 2100s; ±60s tolerance.
-        self.assertGreater(first_arg, 2100 - 60)
-        self.assertLess(first_arg, 2100 + 60)
+        expected_seconds = (news_bot.MIN_INTERVAL_MINUTES - 5) * 60
+        self.assertGreater(first_arg, expected_seconds - 60)
+        self.assertLess(first_arg, expected_seconds + 60)
 
 
 if __name__ == '__main__':

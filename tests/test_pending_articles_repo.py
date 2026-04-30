@@ -294,14 +294,54 @@ class TestListsAndFilters(_TmpDbCase):
             )
             c.commit()
 
-    def test_list_pending_orders_by_fetched_at_asc(self):
-        self._insert_with_ts('http://a/1', '2026-04-01 00:00:00')
-        self._insert_with_ts('http://a/2', '2026-04-03 00:00:00')
-        self._insert_with_ts('http://a/3', '2026-04-02 00:00:00')
+    def test_list_pending_orders_today_first_then_backlog_oldest_first(self):
+        """Two-tier ordering: today's fresh batch publishes first
+        (in the order it was fetched), then carry-over from earlier
+        days drains oldest-first.
+
+        Inserts use SQLite ``datetime('now', ...)`` so timestamps are
+        anchored to whatever date the test runs on — same anchor that
+        ``list_pending`` uses internally via ``date('now')``.
+        """
+        with self._conn() as c:
+            c.execute(
+                "INSERT INTO pending_articles "
+                "(link, source_name, title, paragraphs, fetched_at) "
+                "VALUES (?, ?, ?, ?, datetime('now', '-2 minutes'))",
+                ('http://today/early', 'mattel', 't', '[]'),
+            )
+            c.execute(
+                "INSERT INTO pending_articles "
+                "(link, source_name, title, paragraphs, fetched_at) "
+                "VALUES (?, ?, ?, ?, datetime('now', '-1 minute'))",
+                ('http://today/late', 'mattel', 't', '[]'),
+            )
+            c.execute(
+                "INSERT INTO pending_articles "
+                "(link, source_name, title, paragraphs, fetched_at) "
+                "VALUES (?, ?, ?, ?, datetime('now', '-1 day'))",
+                ('http://yesterday', 'mattel', 't', '[]'),
+            )
+            c.execute(
+                "INSERT INTO pending_articles "
+                "(link, source_name, title, paragraphs, fetched_at) "
+                "VALUES (?, ?, ?, ?, datetime('now', '-5 days'))",
+                ('http://very-old', 'mattel', 't', '[]'),
+            )
+            c.commit()
 
         rows = repo.list_pending()
-        self.assertEqual([r['link'] for r in rows],
-                         ['http://a/1', 'http://a/3', 'http://a/2'])
+        self.assertEqual(
+            [r['link'] for r in rows],
+            [
+                # Today's fresh batch (oldest-fetched within today first)
+                'http://today/early',
+                'http://today/late',
+                # Backlog drained oldest-first
+                'http://very-old',
+                'http://yesterday',
+            ],
+        )
 
     def test_list_pending_stale_filters(self):
         # Use SQLite datetime() to compute timestamps relative to "now",

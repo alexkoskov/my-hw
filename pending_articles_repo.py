@@ -382,12 +382,30 @@ def get_failed(link: str) -> Optional[dict]:
 
 
 def list_pending() -> list[dict]:
-    """All pending rows, oldest first. Backs CLI ``list`` + admin-ping
-    counter."""
+    """All pending rows in publish order: today's batch first, then
+    the carry-over backlog **oldest-first**.
+
+    Two-tier ordering:
+      * Tier 0 — rows whose ``date(fetched_at) = date('now')``: today's
+        freshly-fetched batch goes to the top of the queue, in the
+        natural order it was fetched (``fetched_at ASC``).
+      * Tier 1 — everything else (carry-over from earlier days): drained
+        oldest-first so stale items don't starve forever.
+
+    SQL: ``ORDER BY CASE WHEN date(fetched_at) = date('now') THEN 0
+                         ELSE 1 END, fetched_at ASC``.
+
+    The publish loop reads ``rows[0]`` to pick the next slot, so this
+    yields: today's news → very-oldest carry-over → … → almost-recent
+    carry-over.
+    """
     conn = _connect()
     try:
         cur = conn.execute(
-            "SELECT * FROM pending_articles ORDER BY fetched_at ASC"
+            "SELECT * FROM pending_articles "
+            "ORDER BY "
+            "  CASE WHEN date(fetched_at) = date('now') THEN 0 ELSE 1 END, "
+            "  fetched_at ASC"
         )
         rows = cur.fetchall()
         desc = cur.description
