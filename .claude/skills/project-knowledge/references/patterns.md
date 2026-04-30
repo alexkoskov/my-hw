@@ -71,7 +71,7 @@ For universal coding standards, see `~/.claude/skills/code-writing/references/un
 
 The auto-publish path is the cron-side route that lands articles in the channel WITHOUT operator intervention. Replaces the legacy auto-fallback throttle + overflow fast-track + inline idle-fallback (all removed in this feature).
 
-- **Distributed-publish loop.** `news_bot.job()` fires once daily at 12:00 МСК. After fetch, `compute_publish_slots(N, now, 13:00, 20:00, min_interval_min=40)` returns `(slots, carry_over)` with `posts_today = min(N, 11)`. The publish loop then calls `time.sleep((slot - now).total_seconds())` between iterations and publishes one article per slot. Window-end guard (Decision 15) breaks before scheduling past 20:00 МСК — excess slots become carry-over to the next day. Crash-loop guard (Decision 9) at the start of `job()` reads `MAX(published_at)` and waits for `last_published + 40min` before resuming, protecting the channel from burst posting under rapid-restart loops.
+- **Distributed-publish loop.** `news_bot.job()` fires once daily at 10:00 МСК. After fetch, `compute_publish_slots(N, now, 10:00, 20:00, min_interval_min=90)` returns `(slots, carry_over)` with `posts_today ≈ min(N, 7)`. The publish loop then calls `time.sleep((slot - now).total_seconds())` between iterations and publishes one article per slot. Window-end guard (Decision 15) breaks before scheduling past 20:00 МСК — excess slots become carry-over to the next day. Crash-loop guard (Decision 9) at the start of `job()` reads `MAX(published_at)` and waits for `last_published + MIN_INTERVAL_MINUTES` before resuming, protecting the channel from burst posting under rapid-restart loops.
 
 - **Outage state machine** (`outage_state.py`). Five states — `no_outage`, `ping_1_sent`, `ping_2_sent`, `google_fallback_active`, `recovery_pending`. State persists in `bot_state` SQLite table (survives container restart). `record_outage_event(now)` and `record_recovery_event(now)` are atomic via `BEGIN IMMEDIATE`; `PRAGMA busy_timeout=5000` absorbs typical contention. Pings: #1 immediately on first outage, #2 after 1 h, #3 ("switching to Google Translate") after 2 h. Recovery ping fires on the next slot where Claude succeeds again.
 
@@ -83,6 +83,29 @@ The auto-publish path is the cron-side route that lands articles in the channel 
   1. `_TokenRedactingFilter` regex on Python's logging pipeline (covers anthropic SDK's own `logger.exception(...)` calls — the filter is attached to `anthropic`, `anthropic._client`, `anthropic._base_client` loggers at import time).
   2. `'ANTHROPIC_API_KEY'` added to `_SECRET_ENV_NAMES` so any env-var-name verbatim replace path strips it.
   3. `_redact_text(text)` pure helper — used by both the logging filter AND `send_admin_notification` so admin-ping payloads (which travel OUTSIDE Python's logging machinery) are also redacted. The admin-ping template uses `type(exc).__name__` not `str(exc)` for user-visible messages on outage paths; full exception text only goes to redacted logs.
+
+### Sibling-brand relevance filter
+- `_is_hot_wheels_relevant(entry)` rejects autoevolution entries whose
+  title names a sibling Mattel brand without also naming "hot wheels".
+  autoevolution cross-tags Matchbox / Mega Bloks / etc under
+  `tag-Hot+Wheels+News.xml` — the channel is HW-only, so we skip these
+  at fetch time (before they enter `pending_articles`).
+- Sibling-brands tuple is currently `('matchbox',)`; extend
+  conservatively. Default for any title without a known sibling-brand
+  keyword is "include" — over-publishing is preferred to dropping
+  legitimate cross-over articles.
+
+### Channel post layout (single-message IV preview)
+- One `send_message` call: text = hashtag line (`#source #news`),
+  `LinkPreviewOptions(url=telegraph_url, show_above_text=True,
+  prefer_large_media=True)`. Renders as a full-width INSTANT VIEW
+  preview card above the tags. Raw URL stays hidden inside options.
+- `prefer_large_media=True` was historically reverted (it killed the
+  IV button on iOS). Re-enabled 2026-04-30 after iOS field test
+  confirmed the regression no longer reproduces with the show_above_text
+  layout. If the IV button regression returns: drop just that flag.
+- No separate `send_photo` — it duplicated the IV image without adding
+  value once `prefer_large_media` started working again.
 
 ### Image/Media Handling
 - All images from the source are carried through to the Telegra.ph page
@@ -118,8 +141,9 @@ Different source parsers take different paths to image URLs. Each is tuned to ma
   something — truncated is better than silent.
 
 ### Scheduling
-- Daily fixed-time cron via `schedule.every().day.at("12:00", tz=pytz.timezone("Europe/Moscow")).do(job)` in `news_bot.main()` since the llm-transcreation feature (was `every(12).hours` before). The `tz=` argument requires `pytz` — `schedule==1.2.1` rejects stdlib `zoneinfo.ZoneInfo` with `ScheduleValueError` (verified via `inspect.getsource(schedule.Job.at)`). `pytz>=2024.1` is a hard runtime dep.
-- After fetch, `compute_publish_slots(N, now, window_start=13:00 МСК, window_end=20:00 МСК, min_interval_min=40)` returns `(slots, carry_over)` with `posts_today = min(N, 11)`. The publish loop sleeps between slots via `time.sleep` (in-process). See "Auto-publish path" above for the full loop including window-end guard and crash-loop guard.
+- Daily fixed-time cron via `schedule.every().day.at("10:00", tz=pytz.timezone("Europe/Moscow")).do(job)` in `news_bot.main()`. The `tz=` argument requires `pytz` — `schedule==1.2.1` rejects stdlib `zoneinfo.ZoneInfo` with `ScheduleValueError` (verified via `inspect.getsource(schedule.Job.at)`). `pytz>=2024.1` is a hard runtime dep.
+- After fetch, `compute_publish_slots(N, now, window_start=10:00 МСК, window_end=20:00 МСК, min_interval_min=90)` returns `(slots, carry_over)` with `posts_today ≈ min(N, 7)`. The publish loop sleeps between slots via `time.sleep` (in-process). See "Auto-publish path" above for the full loop including window-end guard and crash-loop guard.
+- **Pending order** (`list_pending`): two-tier — today's freshly-fetched batch first (in fetch order), then carry-over backlog drained oldest-first. SQL: `ORDER BY CASE WHEN date(fetched_at) = date('now') THEN 0 ELSE 1 END, fetched_at ASC`.
 - Container restart mid-window: `news_bot.main()` triggers `job()` immediately (existing pattern). Crash-loop guard kicks in if needed. `compute_publish_slots(remaining_pending, now)` recomputes the schedule for the rest of the window — no migration of old slots. Already-published rows are skipped via Decision 9 idempotency from manual-review-workflow (telegraph_url presence).
 - The script runs indefinitely (`while True: schedule.run_pending(); time.sleep(60)`) when started interactively.
 - For production, a systemd service or cron job is recommended instead of relying on the in-process scheduler.

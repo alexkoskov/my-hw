@@ -23,9 +23,9 @@ Technical architecture overview for AI agents. Helps agents understand HOW the s
 
 ```
 my-hw/
-├── news_bot.py              # Daily 12:00 МСК cron entry point: job() runs crash-loop guard,
+├── news_bot.py              # Daily 10:00 МСК cron entry point: job() runs crash-loop guard,
 │                              fetch + stage + admin ping, computes distributed-publish slots
-│                              (13:00–20:00 МСК window, ≥40 min interval, max 11/day) and
+│                              (10:00–20:00 МСК window, ≥90 min interval, ~7/day) and
 │                              publishes via _fallback_publish in a sleep-between-slots loop.
 │                              SOURCES registry, build_admin_ping, sanitize_error_message,
 │                              transcreate_text (HW glossary safety net + emoji prefix only —
@@ -111,13 +111,13 @@ my-hw/
 - `pytz>=2024.1` – IANA timezone library. Required by `schedule==1.2.1` for
   `Job.at(time_str, tz=...)`; stdlib `zoneinfo.ZoneInfo` is rejected by the
   scheduler with `ScheduleValueError` (verified). Used for the daily
-  12:00 МСК cron trigger in `news_bot.main()`.
+  10:00 МСК cron trigger in `news_bot.main()`.
 - `python-telegram-bot` – Posts the channel card with
-  `LinkPreviewOptions(url=telegraph_url, show_above_text=True)` to trigger
-  the Instant View preview, and delivers admin failure notifications.
+  `LinkPreviewOptions(url=telegraph_url, show_above_text=True,
+  prefer_large_media=True)` for a full-width INSTANT VIEW preview,
+  and delivers admin failure notifications.
 - `schedule==1.2.1` – In-process job scheduling. Daily fixed-time cron
-  (`every().day.at("12:00", tz=pytz.timezone("Europe/Moscow"))`) since the
-  llm-transcreation feature; previously `every(12).hours`.
+  (`every().day.at("10:00", tz=pytz.timezone("Europe/Moscow"))`).
 
 ---
 
@@ -185,20 +185,20 @@ my-hw/
 
 ## Data Flow
 
-The pipeline is split into a **cron prep + distributed-publish phase** (no operator, daily at 12:00 МСК) and a **manual review loop** (operator in Claude Code session). Both paths converge on the same `publish_article` + `send_telegraph_teaser` output. The auto-publish path uses Claude API (primary) with Google Translate as per-article + global fallback.
+The pipeline is split into a **cron prep + distributed-publish phase** (no operator, daily at 10:00 МСК) and a **manual review loop** (operator in Claude Code session). Both paths converge on the same `publish_article` + `send_telegraph_teaser` output. Production uses OpenRouter (`openai/gpt-5.4-mini`) as the primary translator with Google Translate as per-article + global fallback.
 
-### Cron prep + distributed-publish phase — `news_bot.job()` daily at 12:00 МСК
+### Cron prep + distributed-publish phase — `news_bot.job()` daily at 10:00 МСК
 
-1. **Crash-loop guard.** Read `MAX(published_at)` from `published_articles`. If `now - last_published < 40 min`, sleep until that gap elapses before continuing. Protects the channel from burst posting under systemd/Docker rapid-restart loops.
+1. **Crash-loop guard.** Read `MAX(published_at)` from `published_articles`. If `now - last_published < MIN_INTERVAL_MINUTES (90)`, sleep until that gap elapses before continuing. Protects the channel from burst posting under systemd/Docker rapid-restart loops.
 2. **Fetch** all sources via `SOURCES` registry; each entry gets `source_name` via `_resolve_source_name(link)` → netloc → `autoevolution` / `mattel` / `lamley` / `other`. Boilerplate filter, image policy, dedup unchanged.
-3. **Dedup** against `processed_news` AND `pending_articles` (no re-fetch of seen links).
+3. **Dedup + relevance.** Filter against `processed_news` AND `pending_articles` (no re-fetch of seen links). Also drop sibling-brand articles via `_is_hot_wheels_relevant` — autoevolution cross-tags Matchbox / Mega Bloks under "Hot Wheels", the channel is HW-only.
 4. **Insert** accepted entries into `pending_articles` via `pending_articles_repo.insert_pending` (JSON-serialised paragraphs/images/blocks). Staged rows from prior days remain in the queue as carry-over.
-5. **Compute schedule.** `compute_publish_slots(N=count_pending(), now, window_start=13:00 МСК, window_end=20:00 МСК, min_interval_min=40)` → `(slots, carry_over)`. `posts_today = min(N, 11)`.
+5. **Compute schedule.** `compute_publish_slots(N=count_pending(), now, window_start=10:00 МСК, window_end=20:00 МСК, min_interval_min=90)` → `(slots, carry_over)`. `posts_today ≈ min(N, 7)`.
 6. **Admin ping.** `build_admin_ping(rows, slots, carry_over)` to `TELEGRAM_ADMIN_ID` — schedule for the day. Suppressed when `N=0`. Additional warning ping when `len(pending) > 50` (AC20).
 7. **Publish loop.** For each slot in `slots`:
    - Window-end guard: if `slot > 20:00 МСК`, break (excess becomes carry-over).
    - `time.sleep((slot - now).total_seconds())` until slot arrives.
-   - Pop oldest pending row.
+   - Pop next row via `list_pending()` two-tier ordering: today's freshly-fetched batch first (in fetch order), then carry-over backlog drained oldest-first.
    - If `outage_state.is_fallback_active()`, route directly to Google Translate; otherwise call `_fallback_publish` (Claude primary, Google per-article fallback).
    - On `OutageError` (state-machine signal): the state machine already recorded the event and routed this article through Google. Continue to next slot.
    - On unexpected exception: standard 3-strikes attempt counter → `move_to_failed`.
