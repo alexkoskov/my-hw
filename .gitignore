@@ -50,3 +50,9 @@ htmlcov/
 tmp/
 temp/
 *.tmp
+
+# VSCode workspace files (auto-generated, per-machine)
+*.code-workspace
+
+# pip artefacts from typo'd commands like `pip install pytz=2024.1`
+=*
