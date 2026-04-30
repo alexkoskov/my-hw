@@ -415,6 +415,14 @@ def _patch_text_with_ru_paragraphs(blocks_in: list, ru_paragraphs: list) -> list
     return result
 
 
+#: Block types whose ``text`` field is filled in by
+#: ``_patch_text_with_ru_paragraphs`` from the main response. The
+#: second-pass translator skips the ``text`` of these types to avoid
+#: re-translating already-RU paragraphs (one wasted API call per long
+#: article).
+_PATCHED_TEXT_BLOCK_TYPES = ("lead", "paragraph", "heading")
+
+
 def _translate_block_strings(
     blocks: list,
     client: "openai.OpenAI",
@@ -422,6 +430,7 @@ def _translate_block_strings(
     *,
     timeout_s: int = 60,
     max_tokens: int = 30000,
+    skip_patched_text: bool = True,
 ) -> list:
     """Second-pass translation of block ``text`` / ``caption`` fields.
 
@@ -429,6 +438,14 @@ def _translate_block_strings(
     we fell back to the article's original EN blocks. We send a flat numbered
     list of the EN strings to a small focused call and splice the Russian
     translations back, preserving block structure (``src`` URLs etc.).
+
+    ``skip_patched_text=True`` (default in the variant-B+ flow) skips the
+    ``text`` field on ``lead`` / ``paragraph`` / ``heading`` blocks because
+    those are already filled in with RU strings by
+    ``_patch_text_with_ru_paragraphs``; without the skip we'd ask the
+    model to "translate" already-RU text, wasting tokens. Tests that
+    call this helper directly (without a prior patch) should pass
+    ``skip_patched_text=False`` for the legacy contract.
 
     Always returns a list — on any failure, returns ``blocks`` unchanged
     so the article still publishes (with EN captions, same as plain B).
@@ -440,7 +457,11 @@ def _translate_block_strings(
     for i, b in enumerate(blocks):
         if not isinstance(b, dict):
             continue
+        btype = b.get("type")
         for field in ("text", "caption"):
+            if (skip_patched_text and field == "text"
+                    and btype in _PATCHED_TEXT_BLOCK_TYPES):
+                continue
             v = b.get(field)
             if isinstance(v, str) and v.strip():
                 items.append((i, field, v))

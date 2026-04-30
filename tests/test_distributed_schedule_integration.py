@@ -183,11 +183,15 @@ class TestDistributedSchedule(unittest.TestCase):
         )
         self.mock_publish_article = self.publish_article_patcher.start()
 
-        # Google identity stub — verifies Google fallback paths return
-        # input verbatim (so RU == EN proves no real translation).
+        # Google stub — returns the input wrapped in enough Cyrillic
+        # context to clear the 30% threshold of
+        # ``_llm_translation_is_russian`` (which would reject pure-EN
+        # output as "blocked translate call returning source verbatim").
+        # The marker prefix survives in the published row so tests can
+        # still prove the Google path was used.
         self.transcreate_text_patcher = patch(
             'news_bot.transcreate_text',
-            side_effect=lambda t, **k: t,
+            side_effect=lambda t, **k: f"Это русский перевод: {t}",
         )
         self.mock_transcreate_text = self.transcreate_text_patcher.start()
 
@@ -384,13 +388,12 @@ class TestDistributedSchedule(unittest.TestCase):
         """Slot 2 throws ClaudeOutageError → ping #1 fires, article goes via
         Google for THIS slot (degraded mode), outage state advances
         (ping_count='1', outage_started_at set). Slot 3 succeeds via Claude
-        — no additional state change because no record_recovery_event call
-        site yet exists in news_bot.py (Wave 1-6 gap).
+        and ``_maybe_record_recovery`` (P1 fix C1+C4, 2026-04-30) auto-
+        clears the outage state and sends the switch-back ping.
 
         Verifies AC14 (API-level outage → ping #1 + degraded-mode publish)
-        and AC15 boundary (state advance is API-level only — but here we
-        also exercise the success-after-outage path that future Wave will
-        hook into recovery).
+        and AC15 (state advance is API-level only) plus AC for recovery
+        on the next successful Claude call.
         """
         entries = [
             _create_mock_rss_entry('http://example.com/o1', title='Outage 1'),
@@ -399,9 +402,6 @@ class TestDistributedSchedule(unittest.TestCase):
         ]
         self._set_rss_entries(entries)
 
-        # Slot 1: Claude success.
-        # Slot 2: ClaudeOutageError → outage state advance + Google for this row.
-        # Slot 3: Claude success again (no exception).
         outage_exc = ClaudeOutageError("simulated rate-limit (RateLimitError-equiv)")
 
         with freeze_time('2026-04-27 09:00:00'):
@@ -415,33 +415,33 @@ class TestDistributedSchedule(unittest.TestCase):
                 ]
                 news_bot.job()
 
-        # Three Claude attempts (one per slot — slot 2 raised, but the
-        # attempt happened).
         self.assertEqual(mock_claude.call_count, 3)
 
-        # All three articles published — slot 2 via Google fallback,
-        # slots 1+3 via Claude. The channel never goes dark.
         published = self._published_links()
         self.assertEqual(len(published), 3,
                          f"expected 3 published rows (all slots succeeded), "
                          f"got {published}")
         self.assertEqual(self._pending_links(), [])
 
-        # Outage state recorded ping #1: ping_count is '1' (string in DB,
-        # int via getter); outage_started_at is set.
-        self.assertEqual(outage_state.get_ping_count(), 1)
-        self.assertIsNotNone(outage_state.get_outage_started_at())
+        # Slot 3's Claude success triggered _maybe_record_recovery which
+        # cleared the state. So at end-of-job, ping_count is back to 0
+        # and outage_started_at is unset.
+        self.assertEqual(outage_state.get_ping_count(), 0)
+        self.assertIsNone(outage_state.get_outage_started_at())
+        self.assertFalse(outage_state.is_fallback_active())
 
-        # ping_1_sent state — fallback flag NOT yet flipped (only ping #3
-        # at the 2h mark flips fallback_active). Decision 5 alignment.
-        self.assertFalse(outage_state.is_fallback_active(),
-                         "fallback_active should remain False at ping_1_sent")
-
-        # Admin received at least the ping #1 outage warning.
+        # Admin received BOTH the slot-2 outage warning AND the slot-3
+        # recovery ping.
         msgs = self._admin_messages()
         self.assertTrue(
             any('Claude API недоступна' in m for m in msgs),
             f"expected ping #1 outage warning, got: {msgs!r}",
+        )
+        self.assertTrue(
+            any(('Claude' in m and ('восстанов' in m.lower() or
+                                    'recovered' in m.lower()))
+                for m in msgs),
+            f"expected recovery switch-back ping, got: {msgs!r}",
         )
 
         # Slot 2's article went through Google — transcreate_text was

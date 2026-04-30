@@ -225,21 +225,19 @@ class TestClaudePath(_FallbackPublishPathsCase):
 
 class TestGoogleFallbackPath(_FallbackPublishPathsCase):
 
-    def test_fallback_publish_per_article_failure_retries_then_re_raises(self):
-        """``ClaudeTranscreationError`` 3x in a row → re-raise so the
-        slot loop counts a strike. NO Google fallback, NO admin ping
-        from _fallback_publish itself.
+    def test_fallback_publish_per_article_failure_re_raises_immediately(self):
+        """``ClaudeTranscreationError`` → re-raise so the slot loop
+        counts a strike. NO inline retry, NO Google fallback, NO
+        admin ping from _fallback_publish itself.
 
-        Operator decision: GPT translates everything, even hard /
-        weird-structure articles. Google is reserved for true outages
-        (ClaudeOutageError — no tokens, API unreachable). Per-article
-        LLM hiccups must not silently degrade channel quality.
-
-        Slot block is bounded by ``_LLM_PER_ARTICLE_RETRY_INTERVAL_S``
-        (production: 5 min × 2 retries = 10 min; tests: 0 via conftest).
+        Operator decision: GPT translates everything; per-article
+        hiccups go through the slot-level 3-strike retry (each retry
+        on a fresh slot ≥ MIN_INTERVAL_MINUTES later) instead of the
+        old inline retry-with-sleep loop. Inline retries blocked the
+        slot for 10+ min synchronously and stalled publish-loop pacing.
 
         Asserts:
-        * transcreate_via_claude was called 3 times (initial + 2 retries)
+        * transcreate_via_claude was called exactly ONCE
         * transcreate_text (Google) was NEVER called
         * publish_article was NEVER called (translation failed)
         * record_outage_event was NEVER called
@@ -253,12 +251,9 @@ class TestGoogleFallbackPath(_FallbackPublishPathsCase):
         )
         row = repo.get_pending(entry['link'])
 
-        # 3 failures in a row.
-        mock_claude = MagicMock(side_effect=[
-            ClaudeTranscreationError('malformed JSON #1'),
-            ClaudeTranscreationError('malformed JSON #2'),
-            ClaudeTranscreationError('malformed JSON #3'),
-        ])
+        mock_claude = MagicMock(
+            side_effect=ClaudeTranscreationError('malformed JSON'),
+        )
         mock_google = MagicMock(side_effect=AssertionError(
             "transcreate_text (Google) must NOT fire on per-article failure"
         ))
@@ -279,8 +274,38 @@ class TestGoogleFallbackPath(_FallbackPublishPathsCase):
             with self.assertRaises(ClaudeTranscreationError):
                 news_bot._fallback_publish(row, via_review=False)
 
-        # 3 attempts to GPT (initial + 2 retries).
-        self.assertEqual(mock_claude.call_count, 3)
+        # Single attempt — no inline retries (regression guard).
+        self.assertEqual(mock_claude.call_count, 1)
+
+
+class TestGoogleEnglishGuard(_FallbackPublishPathsCase):
+    """When Google Translate returns the source verbatim (403 / blocked
+    call), ``_google_translate`` raises ``GoogleTranslationError`` so
+    the slot loop strikes the article instead of publishing EN body
+    content with an RU-emoji title."""
+
+    def test_pure_english_google_output_raises(self):
+        entry = self._insert(
+            link='http://a/eng-leak',
+            paragraphs=['First English paragraph.', 'Second one.'],
+        )
+        row = repo.get_pending(entry['link'])
+
+        # Google identity stub — returns the EN input verbatim, mimicking
+        # a 403 / blocked translate call.
+        mock_google = MagicMock(side_effect=lambda t, **k: t)
+        mock_publish = MagicMock(side_effect=AssertionError(
+            "publish_article must NOT fire when Google returned EN-only",
+        ))
+        # Force the already-in-fallback path so we exercise the Google
+        # branch directly without going through Claude.
+        with patch('news_bot.transcreate_text', mock_google), \
+             patch('news_bot.outage_state.is_fallback_active',
+                   return_value=True), \
+             patch('news_bot.telegraph_publisher.publish_article',
+                   mock_publish):
+            with self.assertRaises(news_bot.GoogleTranslationError):
+                news_bot._fallback_publish(row, via_review=False)
 
 
 # ============================================================================
@@ -305,7 +330,7 @@ class TestAlreadyInFallback(_FallbackPublishPathsCase):
         mock_claude = MagicMock(side_effect=AssertionError(
             "Claude must NOT be called when fallback is already active"
         ))
-        mock_google = MagicMock(side_effect=lambda t, **kw: f"[g] {t}")
+        mock_google = MagicMock(side_effect=lambda t, **kw: f"[ру] {t}")
 
         tg_url = 'https://telegra.ph/Skip-Claude-04-27'
         mock_publish = MagicMock(return_value=tg_url)
@@ -332,8 +357,8 @@ class TestAlreadyInFallback(_FallbackPublishPathsCase):
 
         mock_publish.assert_called_once()
         kwargs = mock_publish.call_args.kwargs
-        self.assertEqual(kwargs['title'], '[g] EN T3')
-        self.assertEqual(kwargs['paragraphs'], ['[g] EN p1.'])
+        self.assertEqual(kwargs['title'], '[ру] EN T3')
+        self.assertEqual(kwargs['paragraphs'], ['[ру] EN p1.'])
         self.assertTrue(kwargs.get('auto_marker'))
 
         mock_move.assert_called_once()
@@ -366,7 +391,7 @@ class TestOutageDegradedThenReraises(_FallbackPublishPathsCase):
             'RateLimitError: 429',
         ))
         # Google still translates — degraded mode publishes anyway.
-        mock_google = MagicMock(side_effect=lambda t, **kw: f"[g] {t}")
+        mock_google = MagicMock(side_effect=lambda t, **kw: f"[ру] {t}")
 
         # Outage state machine + admin ping mocks. ``record_outage_event``
         # returns a dict with ``pings_to_send`` (admin Telegram messages

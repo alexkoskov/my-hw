@@ -92,12 +92,12 @@ MSK_TZ = pytz.timezone("Europe/Moscow")
 #: only (refusal / malformed JSON / too-short / etc). True outages
 #: (ClaudeOutageError) still route through the existing 2-ping + 2h
 #: grace state machine in outage_state. Operator-tuned (variant X'):
-#: three quick retries within a single slot, then admin ping +
-#: Google fallback so the article still publishes (with the
-#: ``↳ автоперевод`` marker as a quality warning). Tests patch these
-#: to 0 / smaller numbers to keep the suite fast.
-_LLM_PER_ARTICLE_MAX_ATTEMPTS = 3
-_LLM_PER_ARTICLE_RETRY_INTERVAL_S = 300  # 5 minutes
+#: Per-article LLM failure handling: a single attempt per slot. The
+#: slot loop's standard 3-strike attempt counter handles transient
+#: LLM hiccups across slots (≥ MIN_INTERVAL_MINUTES apart). Inline
+#: retry-with-sleep was removed 2026-04-30 — it blocked the slot for
+#: up to 10 min synchronously and left the publish loop's pacing
+#: unable to absorb a misbehaving article without lag.
 
 # Env-var names whose values must never leak into stored error strings or
 # admin-chat messages (Decision 11; ANTHROPIC_API_KEY added per Decision 12
@@ -381,7 +381,17 @@ def send_admin_notification(message):
     async def _send():
         bot = Bot(token=TELEGRAM_BOT_TOKEN)
         try:
-            await bot.send_message(chat_id=TELEGRAM_ADMIN_ID, text=safe_message, parse_mode='Markdown')
+            # parse_mode=None (plain text). Markdown was rejected
+            # 2026-04-30: a stray ``*`` / ``_`` / ``[`` in a sanitised
+            # exception message caused ``can't parse entities`` and the
+            # admin ping was silently dropped. Operational alerts have no
+            # use for inline formatting, and plain text removes the
+            # spoofing risk where article-derived text could rewrite the
+            # visible message via crafted ``[label](url)`` syntax.
+            await bot.send_message(
+                chat_id=TELEGRAM_ADMIN_ID,
+                text=safe_message,
+            )
             logging.info(f"Admin notification sent: {safe_message[:50]}...")
             return True
         except TelegramError as e:
@@ -391,6 +401,39 @@ def send_admin_notification(message):
 
 
 logger = logging.getLogger(__name__)
+
+
+class GoogleTranslationError(Exception):
+    """Raised by the Google-fallback path when a translation came back
+    mostly-English — typically a 403/blocked Google Translate call that
+    returned the source verbatim. Caught by the slot loop; treated as a
+    standard publish failure (attempt_count++, eventually move_to_failed).
+    """
+
+
+def _llm_translation_is_russian(paragraphs, threshold=0.30):
+    """Heuristic: total Cyrillic letter share across all paragraphs.
+
+    Mirrors ``_is_mostly_russian`` in the LLM transcreation modules so
+    the Google fallback path applies the same EN-leak guard. 30%
+    accommodates brand-name density (Hot Wheels, Nissan GT-R, Bugatti)
+    while still flagging an entirely-English response. Empty / no-letter
+    paragraphs return True (other validators handle empty content).
+    """
+    total = 0
+    cyr = 0
+    for p in paragraphs or ():
+        if not isinstance(p, str):
+            continue
+        for ch in p:
+            if ch.isalpha():
+                total += 1
+                if 0x0400 <= ord(ch) <= 0x04FF:
+                    cyr += 1
+    if total == 0:
+        return True
+    return (cyr / total) >= threshold
+
 
 # Database functions
 def init_db():
@@ -815,6 +858,41 @@ def _cleanup_preview_html(preview_path):
 # caller so ``attempt_count`` can be bumped via
 # ``pending_repo.increment_attempt``.
 # ---------------------------------------------------------------------------
+
+
+def _maybe_record_recovery():
+    """Idempotent: if the outage state machine is currently active,
+    clear it and emit the recovery admin ping. No-op (cheap read-only
+    probe) when the bot is in steady-state healthy mode.
+
+    Called from every successful Claude transcreation in
+    ``_fallback_publish`` AND from a successful startup health probe
+    in ``main()``. Without it, a single transient outage in the past
+    leaves ``fallback_active=1`` set forever — the bot silently
+    routes every future article through Google Translate with the
+    ``↳ автоперевод`` marker, and the channel is permanently
+    degraded until an operator hand-edits ``bot_state``.
+    """
+    try:
+        event = outage_state.record_recovery_event(
+            datetime.now(timezone.utc),
+        )
+    except Exception as state_err:  # noqa: BLE001 — health probe, never raise
+        logger.error(
+            f"[recovery] outage_state.record_recovery_event failed: "
+            f"{sanitize_error_message(state_err)}"
+        )
+        return
+    for ping_text in event.get('pings_to_send') or []:
+        try:
+            send_admin_notification(ping_text)
+        except Exception as notify_err:  # noqa: BLE001
+            logger.error(
+                f"[recovery] admin-ping send failed: "
+                f"{sanitize_error_message(notify_err)}"
+            )
+
+
 def _fallback_publish(row, via_review=False):
     """Auto-publish a pending row through Claude (primary) or Google
     (per-article + global fallback). Used by ``job()`` step (e) — the
@@ -866,11 +944,27 @@ def _fallback_publish(row, via_review=False):
                     ru_blocks.append(block)
                     continue
                 new_block = dict(block)
-                if 'text' in new_block and new_block.get('text'):
-                    new_block['text'] = transcreate_text(new_block['text'])
-                if 'caption' in new_block and new_block.get('caption'):
-                    new_block['caption'] = transcreate_text(new_block['caption'])
+                # Defensive isinstance() guards: a malformed upstream
+                # block dict (e.g. ``text=None`` or a nested object)
+                # would have crashed inside ``GoogleTranslator.translate``.
+                text_val = new_block.get('text')
+                if isinstance(text_val, str) and text_val:
+                    new_block['text'] = transcreate_text(text_val)
+                cap_val = new_block.get('caption')
+                if isinstance(cap_val, str) and cap_val:
+                    new_block['caption'] = transcreate_text(cap_val)
                 ru_blocks.append(new_block)
+        # GoogleTranslator returns the input verbatim on a 403 / blocked
+        # call (``transcreate_text`` swallows the exception and falls
+        # back to the original string). Under double-engine outage
+        # (Claude AND Google both down) this would surface in the
+        # channel as RU title + EN body. Reject those — the slot loop
+        # bumps attempt_count, the article retries on a later slot.
+        if not _llm_translation_is_russian(ru_paragraphs):
+            raise GoogleTranslationError(
+                "Google fallback returned mostly-English paragraphs — "
+                "likely 403/blocked translate call returning source verbatim",
+            )
         return ru_title, ru_subtitle, ru_paragraphs, ru_blocks
 
     # Track whether THIS article was translated by Google fallback (legacy
@@ -883,8 +977,7 @@ def _fallback_publish(row, via_review=False):
 
     # Already-in-fallback shortcut (Decision 5 / tech-spec "Publish loop"):
     # when the state machine says Claude is down + 2h grace elapsed, route
-    # straight to Google without trying Claude. Recovery is owned by
-    # ``job()``'s probe on the first slot of the next cron tick.
+    # straight to Google without trying Claude.
     if outage_state.is_fallback_active():
         logger.info(
             f"[fallback] is_fallback_active=True — routing {link} via Google"
@@ -901,65 +994,24 @@ def _fallback_publish(row, via_review=False):
             ru_subtitle = claude_result.get('subtitle') or ''
             ru_paragraphs = list(claude_result.get('paragraphs') or [])
             ru_blocks = claude_result.get('blocks')
+            # Healthy Claude call → close any active outage and emit
+            # the recovery ping. Idempotent: if no outage was active
+            # this is a cheap read-only probe inside outage_state.
+            _maybe_record_recovery()
         except ClaudeTranscreationError as exc:
-            # Operator decision: GPT translates EVERYTHING, even hard /
-            # weird-structure articles. Google fallback is RESERVED for
-            # true outages (ClaudeOutageError — no tokens, API
-            # unreachable, network failure). Per-article LLM hiccups go
-            # through 3 retries at 5-min intervals; if still failing,
-            # the slot counts a strike and the slot loop continues —
-            # after 3 slot strikes the article moves to failed_articles
-            # and the operator gets pinged. Outage state machine is
-            # NOT advanced — a single weird article must not take the
-            # channel offline.
-            last_exc = exc
-            claude_result = None
-            for attempt in range(2, _LLM_PER_ARTICLE_MAX_ATTEMPTS + 1):  # 2, 3
-                logger.warning(
-                    f"[fallback] Claude attempt "
-                    f"{attempt - 1}/{_LLM_PER_ARTICLE_MAX_ATTEMPTS} failed for "
-                    f"{link}: {type(last_exc).__name__}: "
-                    f"{sanitize_error_message(last_exc)} — retrying in "
-                    f"{_LLM_PER_ARTICLE_RETRY_INTERVAL_S}s"
-                )
-                time.sleep(_LLM_PER_ARTICLE_RETRY_INTERVAL_S)
-                try:
-                    claude_result = transcreate_via_claude(row)
-                    logger.info(
-                        f"[fallback] Claude retry {attempt}/"
-                        f"{_LLM_PER_ARTICLE_MAX_ATTEMPTS} succeeded for {link}"
-                    )
-                    break
-                except ClaudeTranscreationError as retry_exc:
-                    last_exc = retry_exc
-                    continue
-                # ClaudeOutageError on retry would propagate up to the
-                # function's outer caller, missing the sibling outage
-                # handler below. We catch it explicitly and re-route.
-                except ClaudeOutageError as outage_exc:
-                    raise outage_exc
-            if claude_result is not None:
-                ru_title = claude_result.get('title') or ''
-                ru_subtitle = claude_result.get('subtitle') or ''
-                ru_paragraphs = list(claude_result.get('paragraphs') or [])
-                ru_blocks = claude_result.get('blocks')
-            else:
-                # All N attempts failed — re-raise so the slot loop's
-                # generic Exception handler bumps attempt_count. After
-                # 3 slot strikes the article auto-moves to
-                # failed_articles via increment_attempt → move_to_failed
-                # and the operator gets the standard 3-strikes admin
-                # ping (no extra ping here to avoid double-pinging).
-                logger.warning(
-                    f"[fallback] Claude attempt "
-                    f"{_LLM_PER_ARTICLE_MAX_ATTEMPTS}/"
-                    f"{_LLM_PER_ARTICLE_MAX_ATTEMPTS} failed for {link}: "
-                    f"{type(last_exc).__name__}: "
-                    f"{sanitize_error_message(last_exc)} — re-raising; "
-                    f"slot will count this as a strike (no Google fallback "
-                    f"per operator decision: GPT-only translation)"
-                )
-                raise last_exc
+            # Operator decision: GPT translates EVERYTHING. Per-article
+            # LLM hiccups (refusal, malformed JSON, schema drift) raise
+            # straight up — the slot loop bumps attempt_count, and after
+            # 3 slot strikes (= 3 cron slots ≈ 4.5h with the 90-min floor)
+            # the article auto-moves to failed_articles. No inline retry
+            # with time.sleep — that would block the slot for 10+ min
+            # synchronously and stall publish-loop pacing.
+            logger.warning(
+                f"[fallback] Claude per-article failure for {link}: "
+                f"{type(exc).__name__}: {sanitize_error_message(exc)} "
+                f"— slot strike (next slot retries this row)"
+            )
+            raise
         except ClaudeOutageError as exc:
             # API-level outage — advance the state machine and dispatch
             # admin pings per the outage protocol (2 pings + 2h grace
@@ -972,6 +1024,16 @@ def _fallback_publish(row, via_review=False):
                 f"{type(exc).__name__} — advancing outage state, "
                 f"degraded-mode Google publish + re-raise"
             )
+            # NB: ``outage_signal`` is intentionally function-local. If
+            # Steps 2-5 below raise a non-outage exception (Telegraph
+            # 503, Telegram error, …) the signal is "lost" — but
+            # ``record_outage_event`` already persisted the state in
+            # bot_state, so cross-call communication still works via
+            # the DB. The protocol explicitly probes Claude again on
+            # subsequent slots between ping #1 and ping #3 (1-2h) on
+            # the off chance the outage was transient; the global
+            # ``is_fallback_active`` flag flips at ping #3, and only
+            # then does the slot loop short-circuit Claude.
             outage_signal = exc
             try:
                 # Use a tz-aware UTC datetime — outage_state rejects
@@ -1574,6 +1636,13 @@ def main():
                 f"[startup] outage_state.set_fallback_active(True) failed: "
                 f"{sanitize_error_message(exc)}"
             )
+    else:
+        # Probe healthy — close any stale outage state from a prior run.
+        # Without this, a transient outage that happened yesterday and
+        # was never recovered (because nothing called record_recovery_event
+        # on success) would persist across restarts and force every slot
+        # through Google forever.
+        _maybe_record_recovery()
 
     # Health check #2: container TZ.
     tz_env = os.getenv('TZ')

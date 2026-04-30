@@ -176,6 +176,22 @@ def init_schema(conn: sqlite3.Connection) -> None:
     conn.execute(_PUBLISHED_DDL)
     conn.execute(_FAILED_DDL)
     conn.execute(_BOT_STATE_DDL)
+
+    # Migration (2026-04-30): preserve telegraph_url + telegraph_path on
+    # the failed row so ``retry_from_failed`` can restore them and a
+    # retry doesn't create a second Telegraph page (Decision 9 idempotency).
+    # SQLite has no ``ADD COLUMN IF NOT EXISTS``; use a try/except so the
+    # ALTER is a no-op on already-migrated DBs.
+    for ddl in (
+        "ALTER TABLE failed_articles ADD COLUMN telegraph_url TEXT",
+        "ALTER TABLE failed_articles ADD COLUMN telegraph_path TEXT",
+    ):
+        try:
+            conn.execute(ddl)
+        except sqlite3.OperationalError:
+            # Column already exists — idempotent path on subsequent
+            # init_schema calls.
+            pass
     conn.commit()
 
 
@@ -593,30 +609,36 @@ def move_to_published(link: str, telegraph_url: str, telegraph_path: str,
 
 def move_to_failed(link: str, last_error: Optional[str]) -> None:
     """Move a pending row into ``failed_articles`` and DELETE from pending,
-    atomically. EN fields are preserved on failed so ``retry_from_failed``
-    can re-queue without re-fetching (AC user-spec L72).
+    atomically. EN fields + (if set) ``telegraph_url`` / ``telegraph_path``
+    are preserved on failed so ``retry_from_failed`` can re-queue without
+    re-fetching AND without creating a second Telegraph page (Decision 9
+    idempotency holds across the failed/retry boundary).
     """
     conn = _connect()
     try:
         src = conn.execute(
             "SELECT title, source_name, paragraphs, images, blocks, "
-            "       subtitle, pub_date, feed_url, fetched_at "
+            "       subtitle, pub_date, feed_url, fetched_at, "
+            "       telegraph_url, telegraph_path "
             "FROM pending_articles WHERE link=?",
             (link,),
         ).fetchone()
         if src is None:
             return
         (title, source_name, paragraphs, images, blocks, subtitle,
-         pub_date, feed_url, fetched_at) = src
+         pub_date, feed_url, fetched_at,
+         telegraph_url, telegraph_path) = src
 
         conn.execute(
             "INSERT INTO failed_articles "
             "(link, title, source_name, paragraphs, images, blocks, "
-            " subtitle, pub_date, feed_url, last_error, original_fetched_at) "
-            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            " subtitle, pub_date, feed_url, last_error, original_fetched_at, "
+            " telegraph_url, telegraph_path) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
             (
                 link, title, source_name, paragraphs, images, blocks,
                 subtitle or '', pub_date, feed_url, last_error, fetched_at,
+                telegraph_url, telegraph_path,
             ),
         )
         conn.execute(
@@ -688,26 +710,32 @@ def retry_from_failed(link: str) -> bool:
         # Guard 2: link must be present in failed.
         src = conn.execute(
             "SELECT title, source_name, paragraphs, images, blocks, "
-            "       subtitle, pub_date, feed_url "
+            "       subtitle, pub_date, feed_url, "
+            "       telegraph_url, telegraph_path "
             "FROM failed_articles WHERE link=?",
             (link,),
         ).fetchone()
         if src is None:
             return False
         (title, source_name, paragraphs, images, blocks, subtitle,
-         pub_date, feed_url) = src
+         pub_date, feed_url, telegraph_url, telegraph_path) = src
 
         # INSERT pending with explicit resets. `subtitle` may be NULL on legacy
         # failed rows — coerce to ''. JSON fields are already TEXT, passed
-        # through unchanged.
+        # through unchanged. ``telegraph_url`` / ``telegraph_path`` are
+        # preserved (may be NULL pre-migration / pre-Telegraph step) so the
+        # next publish attempt re-uses the existing Telegraph page rather
+        # than creating an orphan duplicate.
         conn.execute(
             "INSERT INTO pending_articles "
             "(link, source_name, feed_url, title, subtitle, paragraphs, "
-            " images, blocks, fetched_at, attempt_count, pub_date) "
-            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP, 0, ?)",
+            " images, blocks, fetched_at, attempt_count, pub_date, "
+            " telegraph_url, telegraph_path) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP, 0, ?, ?, ?)",
             (
                 link, source_name, feed_url, title, subtitle or '',
                 paragraphs, images, blocks, pub_date,
+                telegraph_url, telegraph_path,
             ),
         )
         conn.execute(

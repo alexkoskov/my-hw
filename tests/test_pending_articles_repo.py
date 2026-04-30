@@ -74,6 +74,10 @@ EXPECTED_FAILED = {
     'last_error':          {'type': 'TEXT',      'notnull': 0, 'dflt_value': None,                'pk': 0},
     'failed_at':           {'type': 'TIMESTAMP', 'notnull': 1, 'dflt_value': 'CURRENT_TIMESTAMP', 'pk': 0},
     'original_fetched_at': {'type': 'TIMESTAMP', 'notnull': 0, 'dflt_value': None,                'pk': 0},
+    # Migration 2026-04-30: preserved across the failed/retry boundary so
+    # ``retry_from_failed`` doesn't create an orphan Telegraph page.
+    'telegraph_url':       {'type': 'TEXT',      'notnull': 0, 'dflt_value': None,                'pk': 0},
+    'telegraph_path':      {'type': 'TEXT',      'notnull': 0, 'dflt_value': None,                'pk': 0},
 }
 
 
@@ -770,6 +774,61 @@ class TestMoves(_TmpDbCase):
         self.assertIsNone(row['last_error'])
         # fetched_at must differ from original 2025-12-30 timestamp.
         self.assertNotEqual(row['fetched_at'], '2025-12-30 00:00:00')
+
+    def test_retry_from_failed_preserves_telegraph_url_and_path(self):
+        """When a Telegraph page was already published before the row
+        flunked into failed (e.g. the article translated and uploaded
+        but the Telegram-teaser step failed), ``retry_from_failed``
+        must restore ``telegraph_url`` / ``telegraph_path`` so the
+        retry re-uses the existing Telegraph page (Decision 9
+        idempotency) rather than creating an orphan duplicate."""
+        with self._conn() as c:
+            c.execute(
+                "INSERT INTO failed_articles "
+                "(link, title, source_name, paragraphs, images, blocks, "
+                " subtitle, pub_date, feed_url, last_error, failed_at, "
+                " original_fetched_at, telegraph_url, telegraph_path) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                (
+                    'http://r/preserve', 't', 'mattel',
+                    json.dumps(['p1'], ensure_ascii=False),
+                    json.dumps([], ensure_ascii=False),
+                    None, '', '2026-01-01', None,
+                    'telegram_send failed', '2026-01-01 00:00:00',
+                    '2025-12-30 00:00:00',
+                    'https://telegra.ph/Saved-04-29',
+                    'Saved-04-29',
+                ),
+            )
+            c.commit()
+
+        ok = repo.retry_from_failed('http://r/preserve')
+        self.assertTrue(ok)
+
+        row = repo.get_pending('http://r/preserve')
+        self.assertIsNotNone(row)
+        self.assertEqual(row['telegraph_url'], 'https://telegra.ph/Saved-04-29')
+        self.assertEqual(row['telegraph_path'], 'Saved-04-29')
+        # attempt_count still resets — only Telegraph fields are carried over.
+        self.assertEqual(row['attempt_count'], 0)
+
+    def test_move_to_failed_carries_telegraph_url_when_set(self):
+        """A pending row that already has ``telegraph_url`` populated
+        (Telegraph published, downstream step crashed) carries the URL
+        into ``failed_articles`` so a later ``retry_from_failed``
+        round-trip can preserve it."""
+        repo.insert_pending(_sample_entry(link='http://m/preserve'))
+        repo.mark_telegraph_published(
+            'http://m/preserve',
+            'https://telegra.ph/Mid-04-30',
+            'Mid-04-30',
+        )
+        repo.move_to_failed('http://m/preserve', 'simulated late failure')
+
+        failed = repo.get_failed('http://m/preserve')
+        self.assertIsNotNone(failed)
+        self.assertEqual(failed['telegraph_url'], 'https://telegra.ph/Mid-04-30')
+        self.assertEqual(failed['telegraph_path'], 'Mid-04-30')
 
     def test_retry_from_failed_returns_false_when_link_already_pending(self):
         # Defensive: a link present in BOTH pending and failed is anomalous,

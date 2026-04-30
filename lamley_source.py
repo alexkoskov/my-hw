@@ -18,6 +18,7 @@ import logging
 import threading
 import time
 from typing import Callable, Dict, List, Optional
+from urllib.parse import urlparse
 
 import requests
 from bs4 import BeautifulSoup
@@ -204,6 +205,26 @@ def _notify(notifier, message: str) -> None:
         logger.exception("Failed to send admin notification")
 
 
+#: Allowlist of host suffixes that ``fetch_lamley_article`` will GET.
+#: Defends against SSRF when an upstream caller (RSS, news_bot's
+#: substring host-dispatch) passes a hostile URL whose hostname merely
+#: *contains* "lamleygroup.com" — e.g. ``lamleygroup.com.attacker.example``.
+_ALLOWED_HOSTS = ('lamleygroup.com', 'www.lamleygroup.com')
+
+
+def _is_allowed_lamley_url(link: str) -> bool:
+    """Return True iff ``link`` is an https:// URL whose host is in
+    ``_ALLOWED_HOSTS``. Anything else is rejected silently."""
+    try:
+        parsed = urlparse(link)
+    except (ValueError, AttributeError):
+        return False
+    if parsed.scheme not in ('http', 'https'):
+        return False
+    host = (parsed.hostname or '').lower()
+    return host in _ALLOWED_HOSTS
+
+
 def fetch_lamley_article(
     link: str,
     session: Optional[requests.Session] = None,
@@ -213,12 +234,25 @@ def fetch_lamley_article(
 
     Returns ``{'title', 'paragraphs', 'images'}`` or ``None`` on failure.
 
+    SSRF guard: ``link``'s hostname must exactly equal ``lamleygroup.com``
+    or ``www.lamleygroup.com``. The upstream news_bot dispatcher does a
+    substring host check (``'lamleygroup.com' in domain``) which would
+    accept ``lamleygroup.com.attacker.example`` — this allowlist is the
+    defence-in-depth guard that closes that hole.
+
     When no ``session`` is injected (the production path), we route
     through ``curl_cffi.requests`` with ``impersonate="chrome131"`` so
     the TLS handshake matches a real Chrome — Cloudflare's bot manager
     fingerprints the JA3 hash before headers are read. Tests inject a
     ``MagicMock`` session and bypass this entirely.
     """
+    if not _is_allowed_lamley_url(link):
+        logger.warning(
+            "Lamley fetch rejected (hostname not in allowlist): %r", link,
+        )
+        _notify(notifier, f"Lamley fetch rejected (host allowlist): {link}")
+        return None
+
     if session is not None:
         http = session
     elif _CFFI_AVAILABLE:

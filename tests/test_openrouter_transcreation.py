@@ -384,6 +384,48 @@ class TestVariantBPlus(unittest.TestCase):
         # Caption stays EN — controlled degradation when B+ fails.
         self.assertEqual(result["blocks"][2]["caption"], "Cap EN")
 
+    def test_skip_patched_text_default_skips_paragraph_block_text(self):
+        """``skip_patched_text=True`` (default in the variant-B+ flow)
+        skips the ``text`` field on lead/paragraph/heading blocks
+        because those are already RU after _patch_text_with_ru_paragraphs.
+        Only ``caption`` (and text on other block types) hits the API."""
+        blocks = [
+            {"type": "paragraph", "text": "Already RU paragraph."},
+            {"type": "image", "src": "https://x/a.jpg", "caption": "EN cap"},
+            {"type": "lead", "text": "Already RU lead."},
+        ]
+        # Mock returns 1 translation — only the image caption.
+        translations_json = json.dumps({"translations": ["RU cap"]})
+        client = _make_client_returning(_make_response(translations_json))
+        out = openrouter_transcreation._translate_block_strings(
+            blocks, client, "m",
+        )
+        # Only caption translated; paragraph + lead text untouched.
+        self.assertEqual(out[0]["text"], "Already RU paragraph.")
+        self.assertEqual(out[1]["caption"], "RU cap")
+        self.assertEqual(out[2]["text"], "Already RU lead.")
+        # The user_msg sent to GPT contained ONLY the caption.
+        called = client.chat.completions.create.call_args.kwargs
+        user_msg = called["messages"][1]["content"]
+        self.assertIn("EN cap", user_msg)
+        self.assertNotIn("Already RU", user_msg)
+
+    def test_skip_patched_text_false_translates_all_text_fields(self):
+        """``skip_patched_text=False`` preserves the legacy contract —
+        all text/caption fields are sent for translation regardless of
+        block type. Used by tests that don't run the patch beforehand."""
+        blocks = [
+            {"type": "paragraph", "text": "Para text."},
+            {"type": "image", "src": "https://x/a.jpg", "caption": "Cap"},
+        ]
+        translations_json = json.dumps({"translations": ["RU para", "RU cap"]})
+        client = _make_client_returning(_make_response(translations_json))
+        out = openrouter_transcreation._translate_block_strings(
+            blocks, client, "m", skip_patched_text=False,
+        )
+        self.assertEqual(out[0]["text"], "RU para")
+        self.assertEqual(out[1]["caption"], "RU cap")
+
     def test_full_flow_main_null_blocks_triggers_second_pass(self):
         """End-to-end: main response returns blocks=null with mismatched count
         → variant B fills with EN blocks → variant B+ second-pass translates."""

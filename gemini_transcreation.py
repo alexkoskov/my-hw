@@ -344,12 +344,16 @@ def _patch_text_with_ru_paragraphs(blocks_in: list, ru_paragraphs: list) -> list
     return result
 
 
+_PATCHED_TEXT_BLOCK_TYPES = ("lead", "paragraph", "heading")
+
+
 def _translate_block_strings(
     blocks: list,
     client: "genai.Client",
     model: str,
     *,
     max_tokens: int = 30000,
+    skip_patched_text: bool = True,
 ) -> list:
     """Variant B+ second-pass: translate block ``text`` / ``caption`` fields.
 
@@ -363,7 +367,11 @@ def _translate_block_strings(
     for i, b in enumerate(blocks):
         if not isinstance(b, dict):
             continue
+        btype = b.get("type")
         for field in ("text", "caption"):
+            if (skip_patched_text and field == "text"
+                    and btype in _PATCHED_TEXT_BLOCK_TYPES):
+                continue
             v = b.get(field)
             if isinstance(v, str) and v.strip():
                 items.append((i, field, v))

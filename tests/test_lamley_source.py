@@ -90,7 +90,7 @@ class TestFetchLamleyArticle:
         session = MagicMock()
         session.get.side_effect = requests.ConnectionError("boom")
         notifier = MagicMock()
-        out = lamley_source.fetch_lamley_article("http://x", session=session, notifier=notifier)
+        out = lamley_source.fetch_lamley_article("https://lamleygroup.com/x", session=session, notifier=notifier)
         assert out is None
         notifier.assert_called_once()
 
@@ -100,7 +100,7 @@ class TestFetchLamleyArticle:
             text="<html><body><h1>Only title</h1></body></html>"
         )
         notifier = MagicMock()
-        out = lamley_source.fetch_lamley_article("http://x", session=session, notifier=notifier)
+        out = lamley_source.fetch_lamley_article("https://lamleygroup.com/x", session=session, notifier=notifier)
         assert out is None
         notifier.assert_called_once()
 
@@ -111,7 +111,7 @@ class TestFetchLamleyArticle:
         html = f'<html><body><article><div class="entry-content">{imgs}</div></article></body></html>'
         session = MagicMock()
         session.get.return_value = _make_response(text=html)
-        out = lamley_source.fetch_lamley_article("http://x", session=session)
+        out = lamley_source.fetch_lamley_article("https://lamleygroup.com/x", session=session)
         assert len(out["images"]) == lamley_source.IMAGE_LIMIT
 
 
@@ -148,7 +148,7 @@ class TestRateLimitHandling:
         monkeypatch.setattr(
             lamley_source.time, "sleep", lambda s: sleep_calls.append(s),
         )
-        out = lamley_source.fetch_lamley_article("http://x", session=session)
+        out = lamley_source.fetch_lamley_article("https://lamleygroup.com/x", session=session)
         assert out is not None
         assert lamley_source._DEFAULT_RETRY_AFTER_S in sleep_calls
 
@@ -165,7 +165,7 @@ class TestRateLimitHandling:
         session.get.side_effect = [first, second]
         notifier = MagicMock()
         out = lamley_source.fetch_lamley_article(
-            "http://x", session=session, notifier=notifier,
+            "https://lamleygroup.com/x", session=session, notifier=notifier,
         )
         assert out is None
         notifier.assert_called_once()
@@ -294,6 +294,57 @@ class TestWAFProtection:
         # 500 is not 429 — URL should NOT be blacklisted.
         assert url not in lamley_source._url_blacklist
         assert lamley_source._consecutive_429_count == 0
+
+
+class TestHostAllowlist:
+    """``fetch_lamley_article`` must reject URLs whose hostname isn't
+    exactly ``lamleygroup.com`` / ``www.lamleygroup.com`` — defends
+    against SSRF when an upstream caller passes a hostile URL whose
+    hostname merely *contains* the lamley domain."""
+
+    def setup_method(self):
+        lamley_source._consecutive_429_count = 0
+        lamley_source._cooldown_until = 0.0
+        lamley_source._url_blacklist.clear()
+        lamley_source._last_request_time = 0.0
+
+    def test_exact_lamleygroup_host_allowed(self):
+        assert lamley_source._is_allowed_lamley_url(
+            'https://lamleygroup.com/2026/01/post',
+        )
+
+    def test_www_subdomain_allowed(self):
+        assert lamley_source._is_allowed_lamley_url(
+            'https://www.lamleygroup.com/2026/01/post',
+        )
+
+    def test_attacker_dot_lamleygroup_dot_com_rejected(self):
+        # Substring host check would have ALLOWED this — exact match doesn't.
+        assert not lamley_source._is_allowed_lamley_url(
+            'https://lamleygroup.com.attacker.example/x',
+        )
+
+    def test_unrelated_host_rejected(self):
+        assert not lamley_source._is_allowed_lamley_url('https://example.com/x')
+
+    def test_non_http_scheme_rejected(self):
+        assert not lamley_source._is_allowed_lamley_url('file:///etc/passwd')
+        assert not lamley_source._is_allowed_lamley_url('ftp://lamleygroup.com/x')
+
+    def test_fetch_returns_none_and_pings_when_host_not_allowed(self):
+        notifier = MagicMock()
+        session = MagicMock()
+        out = lamley_source.fetch_lamley_article(
+            'https://lamleygroup.com.attacker.example/x',
+            session=session, notifier=notifier,
+        )
+        assert out is None
+        # Network was NOT touched.
+        session.get.assert_not_called()
+        # Operator gets warned.
+        notifier.assert_called_once()
+        msg = notifier.call_args.args[0]
+        assert 'allowlist' in msg.lower() or 'rejected' in msg.lower()
 
 
 if __name__ == "__main__":

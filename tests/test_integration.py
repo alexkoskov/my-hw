@@ -430,17 +430,15 @@ class TestOutageStateIntegration(_IntegrationBase):
         )
 
     @patch('news_bot.send_admin_notification')
-    def test_per_article_problem_retries_then_strikes_no_state_advance(
+    def test_per_article_problem_strikes_immediately_no_state_advance(
         self, mock_admin,
     ):
-        """``ClaudeTranscreationError`` 3x in a row → re-raise from
-        _fallback_publish; the slot loop's generic Exception handler
-        bumps attempt_count. NO Google fallback for per-article failures
-        (operator decision: GPT translates everything). Outage state
-        machine is NOT advanced.
-
-        Slot block is bounded by ``_LLM_PER_ARTICLE_RETRY_INTERVAL_S``
-        (zeroed via conftest fixture so test runs fast).
+        """``ClaudeTranscreationError`` → re-raise from _fallback_publish;
+        the slot loop's generic Exception handler bumps attempt_count.
+        NO inline retry, NO Google fallback for per-article failures —
+        per-article hiccups go through the slot-level 3-strike path
+        across separate slots (≥ MIN_INTERVAL_MINUTES apart). Outage
+        state machine is NOT advanced.
         """
         _seed_pending_row('http://example.com/perart1')
 
@@ -451,13 +449,12 @@ class TestOutageStateIntegration(_IntegrationBase):
                 return dt.datetime.now(dt.timezone.utc)
             return frozen_now
 
+        mock_claude = MagicMock(
+            side_effect=ClaudeTranscreationError('malformed JSON'),
+        )
+
         with patch('news_bot.datetime') as mock_dt, \
-             patch('news_bot.transcreate_via_claude',
-                   side_effect=[
-                       ClaudeTranscreationError('malformed JSON #1'),
-                       ClaudeTranscreationError('malformed JSON #2'),
-                       ClaudeTranscreationError('malformed JSON #3'),
-                   ]), \
+             patch('news_bot.transcreate_via_claude', mock_claude), \
              patch('news_bot.transcreate_text',
                    side_effect=AssertionError(
                        'Google must NOT fire on per-article failure',
@@ -473,12 +470,12 @@ class TestOutageStateIntegration(_IntegrationBase):
              patch('news_bot.outage_state.is_fallback_active', return_value=False), \
              patch('news_bot.SOURCES', [lambda notifier=None: []]):
             mock_dt.now.side_effect = fake_now
-            # Pass-through `datetime.combine` only — news_bot imports
-            # `timezone` and `timedelta` separately at module level, so
-            # mock_dt.timezone / mock_dt.timedelta would never resolve.
             mock_dt.combine = dt.datetime.combine
 
             news_bot.job()
+
+        # Single Claude call (regression guard against any inline retry).
+        self.assertEqual(mock_claude.call_count, 1)
 
         # State machine UNTOUCHED for per-article failures.
         self.assertIsNone(outage_state.get_outage_started_at())
@@ -497,15 +494,14 @@ class TestOutageStateIntegration(_IntegrationBase):
         self, mock_admin,
     ):
         """Pre-seeded outage state (started_at + ping_count==2) is
-        cleared on the next successful Claude publish. The switch-back
-        ping mentions ``Claude`` or ``recovered``.
+        cleared automatically on the next successful Claude publish via
+        ``_maybe_record_recovery`` inside ``_fallback_publish``. The
+        switch-back ping mentions ``Claude`` or ``recovered``.
 
-        Recovery is owned by ``job()``'s pre-publish probe via
-        ``record_recovery_event``. Since ``job()`` doesn't call
-        ``record_recovery_event`` directly today (Task 8 left it to a
-        future hook), we simulate the recovery path by invoking the
-        canonical helper directly after the successful publish — which
-        is the contract any future hook must respect.
+        2026-04-30 (P1 fix C1+C4): recovery is no longer "left for a
+        future hook" — every successful Claude transcreation in
+        ``_fallback_publish`` now calls the helper, so a single in-
+        flight outage automatically closes the next time Claude works.
         """
         # Seed an outage that has progressed to ping_2_sent.
         t0 = dt.datetime(2026, 4, 27, 11, 0, tzinfo=UTC)
@@ -519,7 +515,6 @@ class TestOutageStateIntegration(_IntegrationBase):
 
         frozen_now = MSK.localize(dt.datetime(2026, 4, 27, 12, 0, 0))
 
-        # The mocked Claude helper returns a valid claude-dict.
         claude_response = {
             'title': '🚀 RU Title',
             'alts': ['alt 1', 'alt 2'],
@@ -542,38 +537,26 @@ class TestOutageStateIntegration(_IntegrationBase):
              patch('news_bot.outage_state.is_fallback_active', return_value=False), \
              patch('news_bot.SOURCES', [lambda notifier=None: []]):
             mock_dt.now.side_effect = fake_now
-            # Pass-through `datetime.combine` only — news_bot imports
-            # `timezone` and `timedelta` separately at module level, so
-            # mock_dt.timezone / mock_dt.timedelta would never resolve.
             mock_dt.combine = dt.datetime.combine
 
             news_bot.job()
 
-        # Confirm the row was published (proves Claude succeeded).
+        # Row published (proves Claude succeeded).
         self.assertIsNotNone(
             pending_articles_repo.get_published('http://example.com/recovery1'),
         )
 
-        # Now drive the recovery hook directly. ``record_recovery_event``
-        # clears every outage_* key in one BEGIN IMMEDIATE batch and
-        # returns the switch-back ping text in ``pings_to_send``.
-        result = outage_state.record_recovery_event(
-            now=dt.datetime(2026, 4, 27, 13, 0, tzinfo=UTC),
-        )
-
-        # State cleared.
+        # Outage state auto-cleared by _maybe_record_recovery hook.
         self.assertIsNone(outage_state.get_outage_started_at())
         self.assertEqual(outage_state.get_ping_count(), 0)
         self.assertFalse(outage_state.is_fallback_active())
 
-        # Recovery ping text contains 'Claude' or 'recovered' (tech-spec
-        # Decision 5 — "✓ Claude API recovered, switching back…").
-        self.assertTrue(result['was_active'])
-        self.assertEqual(len(result['pings_to_send']), 1)
-        ping = result['pings_to_send'][0]
+        # Switch-back ping was sent to admin via send_admin_notification.
+        ping_msgs = [c.args[0] for c in mock_admin.call_args_list if c.args]
         self.assertTrue(
-            ('Claude' in ping) or ('recovered' in ping.lower()),
-            f"recovery ping text must mention Claude/recovered, got: {ping!r}",
+            any(('Claude' in m) or ('recovered' in m.lower()) or
+                ('восстанов' in m.lower()) for m in ping_msgs),
+            f"recovery ping must reach admin; got: {ping_msgs!r}",
         )
 
     def test_outage_state_persists_across_simulated_restart(self):
