@@ -164,74 +164,56 @@ jobs:
           LLM_PROVIDER: ${{ vars.LLM_PROVIDER }}
           TZ: ${{ vars.TZ || 'Europe/Moscow' }}
         # Idempotent .env update on the server: strip any existing lines
-        # with the managed keys, then append the current values. Repeated
-        # deploys do not duplicate lines; existing unrelated keys in .env
-        # are preserved verbatim.
+        # with the managed keys, then append the current values.
         #
         # Secret-handling discipline (hardened 2026-04-30 vs CWE-78):
-        #   - Values are NEVER interpolated into the remote script body.
-        #     We send them on stdin as 11 NUL-delimited records, followed
-        #     by the script body itself (a QUOTED heredoc — no $-expansion
-        #     on the runner). The remote shell reads each value into a
-        #     variable via ``IFS= read -r -d ''`` which preserves any
-        #     character (single quotes, backslashes, newlines, etc).
-        #     A secret containing a stray ``'`` can no longer escape its
-        #     quoting and inject shell on the production VPS.
-        #   - The ssh command line carries only SSH options, the user@host
-        #     target, and the literal token ``bash -s`` — nothing sensitive
-        #     in ``ps -ef`` on the runner or remote.
-        #   - GitHub Actions still auto-redacts secret values in workflow
+        #   - Values are interpolated into the remote script via
+        #     ``printf '%q'`` on the runner — bash's own shell-escape
+        #     primitive. A value containing ``'`` / ``\\`` / ``\\n``
+        #     gets converted to a literal that bash on remote parses
+        #     back to the original byte-for-byte; the value cannot
+        #     escape its quoting and inject shell.
+        #   - Values never appear on the SSH command line — only the
+        #     literal ``bash -s`` token does. Nothing sensitive in
+        #     ``ps -ef`` on the runner or remote.
+        #   - GitHub Actions auto-redacts secret values in workflow
         #     logs as defence in depth.
         run: |
-          {
-            printf '%s\0' \
-              "$DEPLOY_PATH" \
-              "$ANTHROPIC_API_KEY" \
-              "$ANTHROPIC_MODEL" \
-              "$GEMINI_API_KEY" \
-              "$GEMINI_MODEL" \
-              "$OPENAI_API_KEY" \
-              "$OPENAI_MODEL" \
-              "$OPENROUTER_API_KEY" \
-              "$OPENROUTER_MODEL" \
-              "$LLM_PROVIDER" \
-              "$TZ"
-            cat <<'REMOTE_EOF'
+          ssh -o StrictHostKeyChecking=yes "$SSH_USER@$SSH_HOST" 'bash -s' <<EOF
           set -e
-          IFS= read -r -d '' DEPLOY_PATH
-          IFS= read -r -d '' ANTHROPIC_API_KEY
-          IFS= read -r -d '' ANTHROPIC_MODEL
-          IFS= read -r -d '' GEMINI_API_KEY
-          IFS= read -r -d '' GEMINI_MODEL
-          IFS= read -r -d '' OPENAI_API_KEY
-          IFS= read -r -d '' OPENAI_MODEL
-          IFS= read -r -d '' OPENROUTER_API_KEY
-          IFS= read -r -d '' OPENROUTER_MODEL
-          IFS= read -r -d '' LLM_PROVIDER
-          IFS= read -r -d '' TZ_VALUE
-          cd "$DEPLOY_PATH"
+          DEPLOY_PATH=$(printf '%q' "$DEPLOY_PATH")
+          ANTHROPIC_API_KEY=$(printf '%q' "$ANTHROPIC_API_KEY")
+          ANTHROPIC_MODEL=$(printf '%q' "$ANTHROPIC_MODEL")
+          GEMINI_API_KEY=$(printf '%q' "$GEMINI_API_KEY")
+          GEMINI_MODEL=$(printf '%q' "$GEMINI_MODEL")
+          OPENAI_API_KEY=$(printf '%q' "$OPENAI_API_KEY")
+          OPENAI_MODEL=$(printf '%q' "$OPENAI_MODEL")
+          OPENROUTER_API_KEY=$(printf '%q' "$OPENROUTER_API_KEY")
+          OPENROUTER_MODEL=$(printf '%q' "$OPENROUTER_MODEL")
+          LLM_PROVIDER=$(printf '%q' "$LLM_PROVIDER")
+          TZ_VALUE=$(printf '%q' "$TZ")
+          cd "\$DEPLOY_PATH"
           touch .env
           chmod 600 .env
           # Strip stale entries for the managed keys, keep everything
-          # else byte-for-byte. `|| true` covers the empty-file edge case.
+          # else byte-for-byte. \`|| true\` covers the empty-file edge case.
           grep -v -E '^(ANTHROPIC_API_KEY|ANTHROPIC_MODEL|GEMINI_API_KEY|GEMINI_MODEL|OPENAI_API_KEY|OPENAI_MODEL|OPENROUTER_API_KEY|OPEN_ROUTER_API_KEY|OPENROUTER_MODEL|LLM_PROVIDER|TZ)=' .env > .env.tmp || true
           # 600 BEFORE writing secrets — close the TOCTOU window.
           chmod 600 .env.tmp
           {
-            [ -n "$ANTHROPIC_API_KEY" ] && printf 'ANTHROPIC_API_KEY=%s\n' "$ANTHROPIC_API_KEY"
-            printf 'ANTHROPIC_MODEL=%s\n' "$ANTHROPIC_MODEL"
-            [ -n "$GEMINI_API_KEY" ] && printf 'GEMINI_API_KEY=%s\n' "$GEMINI_API_KEY"
-            printf 'GEMINI_MODEL=%s\n' "$GEMINI_MODEL"
-            [ -n "$OPENAI_API_KEY" ] && printf 'OPENAI_API_KEY=%s\n' "$OPENAI_API_KEY"
-            printf 'OPENAI_MODEL=%s\n' "$OPENAI_MODEL"
-            [ -n "$OPENROUTER_API_KEY" ] && printf 'OPENROUTER_API_KEY=%s\n' "$OPENROUTER_API_KEY"
-            printf 'OPENROUTER_MODEL=%s\n' "$OPENROUTER_MODEL"
-            [ -n "$LLM_PROVIDER" ] && printf 'LLM_PROVIDER=%s\n' "$LLM_PROVIDER"
-            printf 'TZ=%s\n' "$TZ_VALUE"
+            [ -n "\$ANTHROPIC_API_KEY" ] && printf 'ANTHROPIC_API_KEY=%s\n' "\$ANTHROPIC_API_KEY"
+            printf 'ANTHROPIC_MODEL=%s\n' "\$ANTHROPIC_MODEL"
+            [ -n "\$GEMINI_API_KEY" ] && printf 'GEMINI_API_KEY=%s\n' "\$GEMINI_API_KEY"
+            printf 'GEMINI_MODEL=%s\n' "\$GEMINI_MODEL"
+            [ -n "\$OPENAI_API_KEY" ] && printf 'OPENAI_API_KEY=%s\n' "\$OPENAI_API_KEY"
+            printf 'OPENAI_MODEL=%s\n' "\$OPENAI_MODEL"
+            [ -n "\$OPENROUTER_API_KEY" ] && printf 'OPENROUTER_API_KEY=%s\n' "\$OPENROUTER_API_KEY"
+            printf 'OPENROUTER_MODEL=%s\n' "\$OPENROUTER_MODEL"
+            [ -n "\$LLM_PROVIDER" ] && printf 'LLM_PROVIDER=%s\n' "\$LLM_PROVIDER"
+            printf 'TZ=%s\n' "\$TZ_VALUE"
           } >> .env.tmp
           mv .env.tmp .env
-          REMOTE_EOF
-          } | ssh -o StrictHostKeyChecking=yes "$SSH_USER@$SSH_HOST" 'bash -s'
+          EOF
 
       - name: Install Python dependencies on server
         env:
