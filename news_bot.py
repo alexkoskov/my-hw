@@ -11,7 +11,6 @@ import os
 import json
 import asyncio
 import time
-from collections import Counter
 from datetime import datetime, timedelta, timezone
 from urllib.parse import urlparse
 
@@ -149,53 +148,38 @@ def sanitize_error_message(exc):
     return message
 
 
+def _feeds_fallback(reason):
+    """Log + admin-ping a feeds.json failure and return the default list."""
+    logging.warning(f"{reason}. Falling back to default RSS URL.")
+    try:
+        send_admin_notification(f"⚠️ {reason}. Bot has no RSS feed to process.")
+    except Exception as notify_err:
+        logging.error(f"Failed to send admin notification: {notify_err}")
+    return [RSS_URL]
+
+
 def load_feeds():
-    """Load RSS feed URLs from feeds.json. If missing or invalid, send admin notification and return empty list."""
+    """Load RSS feed URLs from feeds.json. If missing or invalid, send admin notification and return [RSS_URL]."""
     try:
         with open('feeds.json', 'r') as f:
             data = json.load(f)
     except (FileNotFoundError, json.JSONDecodeError) as e:
-        logging.warning(f"feeds.json missing or invalid: {e}. Falling back to default RSS URL.")
-        try:
-            send_admin_notification(f"⚠️ feeds.json missing or invalid: {e}. Bot has no RSS feed to process.")
-        except Exception as notify_err:
-            logging.error(f"Failed to send admin notification: {notify_err}")
-        return [RSS_URL]
+        return _feeds_fallback(f"feeds.json missing or invalid: {e}")
 
     if not isinstance(data, list):
-        logging.warning("feeds.json does not contain a list. Falling back to default RSS URL.")
-        try:
-            send_admin_notification("⚠️ feeds.json does not contain a list. Bot has no RSS feed to process.")
-        except Exception as notify_err:
-            logging.error(f"Failed to send admin notification: {notify_err}")
-        return [RSS_URL]
+        return _feeds_fallback("feeds.json does not contain a list")
 
     valid_urls = []
     for item in data[:5]:  # limit to first 5
         if not isinstance(item, str):
-            logging.warning("feeds.json contains non‑string item. Falling back to default RSS URL.")
-            try:
-                send_admin_notification("⚠️ feeds.json contains non‑string item. Bot has no RSS feed to process.")
-            except Exception as notify_err:
-                logging.error(f"Failed to send admin notification: {notify_err}")
-            return [RSS_URL]
+            return _feeds_fallback("feeds.json contains non‑string item")
         parsed = urlparse(item)
         if not (parsed.scheme and parsed.netloc) or parsed.scheme not in ('http', 'https'):
-            logging.warning(f"Invalid URL in feeds.json: {item}. Falling back to default RSS URL.")
-            try:
-                send_admin_notification(f"⚠️ Invalid URL in feeds.json: {item}. Bot has no RSS feed to process.")
-            except Exception as notify_err:
-                logging.error(f"Failed to send admin notification: {notify_err}")
-            return [RSS_URL]
+            return _feeds_fallback(f"Invalid URL in feeds.json: {item}")
         valid_urls.append(item)
 
     if not valid_urls:
-        logging.warning("feeds.json contains no valid URLs. Falling back to default RSS URL.")
-        try:
-            send_admin_notification("⚠️ feeds.json contains no valid URLs. Bot has no RSS feed to process.")
-        except Exception as notify_err:
-            logging.error(f"Failed to send admin notification: {notify_err}")
-        return [RSS_URL]
+        return _feeds_fallback("feeds.json contains no valid URLs")
     return valid_urls
 
 
@@ -543,16 +527,6 @@ def filter_new_entries(entries):
     return new_entries
 
 # Translation
-def translate_text(text, source='auto', target='ru'):
-    """Translate text using Google Translate."""
-    try:
-        translator = GoogleTranslator(source=source, target=target)
-        translated = translator.translate(text)
-        return translated
-    except Exception as e:
-        logger.error(f"Translation failed: {e}")
-        return text  # fallback to original
-
 def transcreate_text(text, source='auto', target='ru', is_title=False):
     """
     Translate and adapt text for a lively Russian Telegram channel.
@@ -693,38 +667,6 @@ SOURCE_LABEL = {
     'mattel':        'mattel',
     'lamley':        'lamley',
 }
-
-# Canonical iteration order for the admin-ping fragments. Literal, not
-# derived from dict insertion order or sort — pinned so future refactors
-# don't silently change the operator-visible format.
-_ADMIN_PING_ORDER = ('autoevolution', 'mattel', 'lamley')
-
-
-def build_admin_ping(rows):
-    """Compose the consolidated admin-ping line for the pending-review
-    queue. Decision 12 (single ping per tick) + user-spec L25/L57.
-
-    Format (byte-for-byte): ``"N ждут review: 🟠 autoevolution ×K, 🟣 mattel
-    ×M, 🟢 lamley ×L"``. Sources with a zero count are omitted; ``N`` is the
-    total row count including entries whose ``source_name`` is outside the
-    known vocabulary (e.g. ``'other'``).
-
-    Returns ``None`` on an empty ``rows`` list — user-spec AC L57 forbids
-    pinging about an empty queue.
-    """
-    if not rows:
-        return None
-
-    counts = Counter(r['source_name'] for r in rows)
-    parts = []
-    for key in _ADMIN_PING_ORDER:
-        count = counts.get(key, 0)
-        if count == 0:
-            continue
-        parts.append(f"{SOURCE_EMOJI[key]} {SOURCE_LABEL[key]} ×{count}")
-
-    return f"{len(rows)} ждут review: " + ", ".join(parts)
-
 
 def send_telegraph_teaser(telegraph_url, source_url):
     """Publish a single-message channel teaser:
@@ -1292,21 +1234,6 @@ def _parse_published_at_utc(raw):
         return None
 
 
-def _fallback_publish_google_only(row):
-    """Google-only publish path used when ``outage_state.is_fallback_active()``
-    is already True at slot time.
-
-    Today this just delegates to ``_fallback_publish``: that helper already
-    short-circuits to the Google-translate body when the state machine flag
-    is set (see the ``if outage_state.is_fallback_active()`` branch in
-    ``_fallback_publish``). Keeping this thin wrapper gives the
-    distributed-publish loop a single, intent-named entry-point — and lets
-    Task 9's planned cleanup migrate the implementation off ``_fallback_publish``
-    without touching ``job()``.
-    """
-    return _fallback_publish(row, via_review=False)
-
-
 def job():
     """Daily cron tick — fetch + distributed-publish loop.
 
@@ -1323,11 +1250,11 @@ def job():
                                   + backlog warning when N > 50.
       (e) distributed-publish    — sleep-until-slot, publish via
                                   ``_fallback_publish`` (Claude primary +
-                                  Google per-article fallback) or, if the
+                                  Google per-article fallback). When the
                                   outage state machine has fallback active,
-                                  ``_fallback_publish_google_only``.
-                                  ``ClaudeOutageError`` re-raises from
-                                  step 7 are absorbed and the loop
+                                  ``_fallback_publish`` short-circuits to
+                                  Google internally. ``ClaudeOutageError``
+                                  re-raises are absorbed and the loop
                                   advances. Other unexpected errors
                                   follow the standard 3-strikes flow
                                   (``increment_attempt`` → ``move_to_failed``).
@@ -1501,8 +1428,9 @@ def job():
     #   * Pull oldest pending row; if list_pending is empty (manual review
     #     preempted between cron tick and slot), break.
     #   * Publish via ``_fallback_publish`` (Claude primary + per-article
-    #     Google fallback) OR ``_fallback_publish_google_only`` if the
-    #     state machine has the global Google fallback active.
+    #     Google fallback). ``_fallback_publish`` short-circuits to Google
+    #     internally when the state machine has the global Google fallback
+    #     active.
     #   * ClaudeOutageError → already published in degraded mode by
     #     ``_fallback_publish``; advance to the next slot without strike.
     #   * Other Exception → 3-strikes flow.
@@ -1538,10 +1466,7 @@ def job():
             f"[slot {idx}/{len(slots)}] publishing row {link}"
         )
         try:
-            if outage_state.is_fallback_active():
-                _fallback_publish_google_only(row)
-            else:
-                _fallback_publish(row, via_review=False)
+            _fallback_publish(row, via_review=False)
             published_count += 1
         except ClaudeOutageError:
             # ``_fallback_publish`` already published in degraded mode and

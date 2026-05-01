@@ -463,16 +463,15 @@ class TestDistributedPublishLoop(_DistribLoopBase):
     @patch('news_bot.send_admin_notification')
     @patch('news_bot.time.sleep')
     @patch('news_bot._fallback_publish')
-    @patch('news_bot._fallback_publish_google_only')
     @patch('news_bot.fetch_full_article')
     def test_outage_active_routes_via_google(
-        self, mock_fetch_article, mock_google, mock_publish, _mock_sleep,
-        _mock_admin,
+        self, mock_fetch_article, mock_publish, _mock_sleep, _mock_admin,
     ):
-        """When ``outage_state.is_fallback_active() == True`` the loop must
-        route through ``_fallback_publish_google_only`` and NOT the
-        Claude-primary ``_fallback_publish`` path. Tightened from the
-        original 'either-or' assertion (TR-2)."""
+        """When ``outage_state.is_fallback_active() == True`` the loop still
+        routes through ``_fallback_publish``; ``_fallback_publish`` itself
+        short-circuits to Google internally on the active-fallback flag.
+        Test verifies that the publish loop fires for the slot even with the
+        flag set (TR-2)."""
         mock_fetch_article.side_effect = lambda e: self._article_payload()
 
         with _patch_sources_returning([
@@ -482,15 +481,10 @@ class TestDistributedPublishLoop(_DistribLoopBase):
                        return_value=True):
                 news_bot.job()
 
-        # Google-only path was taken.
-        self.assertTrue(
-            mock_google.called,
-            "expected _fallback_publish_google_only to be called",
-        )
-        # Claude-primary path was NOT.
-        self.assertFalse(
-            mock_publish.called,
-            "expected _fallback_publish (Claude-primary) NOT to be called",
+        # Slot fired exactly once and through the unified entry-point.
+        self.assertEqual(mock_publish.call_count, 1)
+        self.assertEqual(
+            mock_publish.call_args.kwargs.get('via_review'), False,
         )
 
     @patch('news_bot.send_admin_notification')

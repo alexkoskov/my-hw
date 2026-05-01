@@ -236,13 +236,9 @@ class TestAdminPing(PrepPhaseBase):
         with _patch_sources():  # all sources return []
             news_bot.job()
 
-        # No pending row → no ping string. Any admin-notification that
-        # happened (e.g. source warning) must NOT be the ping string.
-        # Easiest invariant: `build_admin_ping([])` is None, so no call can
-        # pass that string.
-        self.assertIsNone(news_bot.build_admin_ping([]))
-
-        # Nothing in the queue, so there's no matching "N ждут review" call.
+        # No pending row → no "N ждут review" string in any admin
+        # notification (source warnings may still fire — those are
+        # different content).
         for call_args in mock_admin.call_args_list:
             if not call_args.args:
                 continue

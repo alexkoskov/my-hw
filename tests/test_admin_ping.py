@@ -1,10 +1,10 @@
 #!/usr/bin/env python3
 """
-Unit tests for `build_admin_ping`, `sanitize_error_message`, and the
-source vocabulary (`SOURCE_EMOJI` / `SOURCE_LABEL`) in `news_bot.py`.
+Unit tests for `sanitize_error_message` and the source vocabulary
+(`SOURCE_EMOJI` / `SOURCE_LABEL`) in `news_bot.py`.
 
-Covers Decisions 4 (source vocabulary), 11 (error sanitisation),
-12 (consolidated admin ping) of the manual-review-workflow tech-spec.
+Covers Decisions 4 (source vocabulary) and 11 (error sanitisation)
+of the manual-review-workflow tech-spec.
 """
 
 import os
@@ -17,7 +17,6 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from news_bot import (
     SOURCE_EMOJI,
     SOURCE_LABEL,
-    build_admin_ping,
     sanitize_error_message,
 )
 
@@ -55,89 +54,6 @@ class TestSourceVocabulary:
         # 'other' is a netloc-fallback for Task 5; it has no ping emoji.
         assert 'other' not in SOURCE_EMOJI
         assert 'other' not in SOURCE_LABEL
-
-
-# ---------------------------------------------------------------------------
-# build_admin_ping
-# ---------------------------------------------------------------------------
-
-class TestBuildAdminPing:
-    """Decision 12 - consolidated admin ping; user-spec L25/L57 format."""
-
-    def test_returns_none_for_empty_queue(self):
-        # user-spec AC L57: empty queue -> no ping.
-        assert build_admin_ping([]) is None
-
-    def test_omits_zero_sources(self):
-        # Only autoevolution in the queue -> no mattel/lamley fragments.
-        rows = [{'source_name': 'autoevolution'}]
-        result = build_admin_ping(rows)
-        assert result == '1 ждут review: \U0001F7E0 autoevolution ×1'
-        assert 'mattel' not in result
-        assert 'lamley' not in result
-
-    def test_format_matches_spec_byte_for_byte(self):
-        rows = [
-            {'source_name': 'autoevolution'},
-            {'source_name': 'autoevolution'},
-            {'source_name': 'mattel'},
-        ]
-        assert build_admin_ping(rows) == (
-            '3 ждут review: '
-            '\U0001F7E0 autoevolution ×2, '
-            '\U0001F7E3 mattel ×1'
-        )
-
-    def test_all_three_sources(self):
-        rows = [
-            {'source_name': 'autoevolution'},
-            {'source_name': 'mattel'},
-            {'source_name': 'lamley'},
-        ]
-        assert build_admin_ping(rows) == (
-            '3 ждут review: '
-            '\U0001F7E0 autoevolution ×1, '
-            '\U0001F7E3 mattel ×1, '
-            '\U0001F7E2 lamley ×1'
-        )
-
-    def test_stable_order_regardless_of_input_order(self):
-        # Shuffle input: mattel-first, lamley-second, autoevolution-last.
-        # Output must still be autoevolution -> mattel -> lamley.
-        rows = [
-            {'source_name': 'mattel'},
-            {'source_name': 'mattel'},
-            {'source_name': 'lamley'},
-            {'source_name': 'autoevolution'},
-        ]
-        assert build_admin_ping(rows) == (
-            '4 ждут review: '
-            '\U0001F7E0 autoevolution ×1, '
-            '\U0001F7E3 mattel ×2, '
-            '\U0001F7E2 lamley ×1'
-        )
-
-    def test_ignores_unknown_source_name(self):
-        # 'other' appears in rows but is not in the fixed iteration tuple.
-        # N in prefix = len(rows) (including 'other'); counters fragment
-        # skips 'other'.
-        rows = [
-            {'source_name': 'other'},
-            {'source_name': 'autoevolution'},
-        ]
-        assert build_admin_ping(rows) == (
-            '2 ждут review: \U0001F7E0 autoevolution ×1'
-        )
-
-    def test_multiple_unknowns_still_counted_in_prefix(self):
-        rows = [
-            {'source_name': 'other'},
-            {'source_name': 'other'},
-            {'source_name': 'lamley'},
-        ]
-        assert build_admin_ping(rows) == (
-            '3 ждут review: \U0001F7E2 lamley ×1'
-        )
 
 
 # ---------------------------------------------------------------------------

@@ -119,13 +119,8 @@ class _PrepPhaseBase(_IntegrationBase):
         # only assert what landed in pending_articles.
         self.fallback_patcher = patch('news_bot._fallback_publish')
         self.fallback_patcher.start()
-        self.fallback_google_patcher = patch(
-            'news_bot._fallback_publish_google_only',
-        )
-        self.fallback_google_patcher.start()
 
     def tearDown(self):
-        self.fallback_google_patcher.stop()
         self.fallback_patcher.stop()
         self.sleep_patcher.stop()
         super().tearDown()
@@ -668,7 +663,6 @@ class TestRestartMidWindow(_IntegrationBase):
              patch('news_bot.compute_publish_slots',
                    side_effect=fake_compute), \
              patch('news_bot._fallback_publish') as mock_publish, \
-             patch('news_bot._fallback_publish_google_only') as mock_publish_g, \
              patch('news_bot.outage_state.is_fallback_active', return_value=False), \
              patch('news_bot.SOURCES', [lambda notifier=None: []]):
             mock_dt.now.side_effect = fake_now
@@ -699,8 +693,6 @@ class TestRestartMidWindow(_IntegrationBase):
         # _fallback_publish was called for every slot (5 calls, since
         # compute returned 5 slots all within the window).
         self.assertEqual(mock_publish.call_count, 5)
-        # And the Google-only path was NOT taken (state machine inactive).
-        mock_publish_g.assert_not_called()
 
         # Already-published row never went through the publish loop.
         for c in mock_publish.call_args_list:

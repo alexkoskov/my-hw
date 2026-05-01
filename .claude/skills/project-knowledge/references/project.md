@@ -9,7 +9,7 @@ This file provides high-level project overview for AI agents. Helps agents under
 
 **Name:** Hot Wheels News Bot
 
-**Description:** A Hot Wheels news pipeline split into two halves. A **cron prep phase** (every 12h on a VPS) fetches from autoevolution.com, lamleygroup.com, and corporate.mattel.com, dedups, and stages articles into a SQLite review queue. A **manual review loop** (operator in Claude Code session) then translates articles via a style-pinned prompt and publishes them to Telegra.ph + Telegram. A **Gemini auto-fallback** covers idle-timeout and queue-overflow cases so the channel never blocks on operator absence.
+**Description:** A Hot Wheels news pipeline. A **daily cron tick at 10:00 МСК** on a VPS fetches from autoevolution.com, lamleygroup.com, and corporate.mattel.com, dedups, and stages articles into a SQLite queue, then a **distributed-publish loop** (10:00–20:00 МСК window, ≥90 min between publishes, ~7 articles/day) translates each article via an LLM (default OpenRouter `openai/gpt-5.4-mini`; Anthropic Claude / Google Gemini / OpenAI as alternates — engine selected by `LLM_PROVIDER` or by which API key is configured) and publishes to Telegra.ph + Telegram. A **Google Translate fallback** covers per-article LLM failures and global LLM outages so the channel never goes dark. A separate **manual review loop** (operator in Claude Code session) is available for cases the operator wants to review before publishing.
 
 ---
 
@@ -31,15 +31,18 @@ Currently users have to regularly check multiple sites, translate articles thems
 
 ## Key Features
 
-- **Manual-review workflow** — operator in a Claude Code session uses `hw_review.py` CLI (`list / show / stage / skip / preview / publish / take / retry`) to translate articles style-pinned to `ux-guidelines.md` (role: ведущий редактор/локализатор). Strict 1:1 transcreation; 2-3 alt titles per article.
+- **Auto-publish path (default)** — daily cron tick at 10:00 МСК fetches → stages → distributes publishes across the 10:00–20:00 МСК window (≥90 min between posts, ~7/day). LLM transcreation (style-pinned to `ux-guidelines.md`, role: ведущий редактор/локализатор) → Telegra.ph → Telegram channel card.
+- **Pluggable LLM engines** — `claude_transcreation`, `gemini_transcreation`, `openai_transcreation`, `openrouter_transcreation` share `_llm_common.py` (prompt loading skeleton, JSON envelope, response parsing, emoji safety net, EN-leak guard). Engine selected by `LLM_PROVIDER` env var or by which API key is set; new engines plug in by mirroring the existing public API. Default engine: `openrouter` (model `openai/gpt-5.4-mini`).
+- **Two-tier translation** — primary: configured LLM. Per-article fallback: Google Translate (when the LLM refuses or returns malformed output, no state change). Global fallback: Google Translate after the 2-ping + 2 h grace outage protocol exhausts.
+- **Manual review path (optional)** — operator in a Claude Code session uses `hw_review.py` CLI (`list / show / stage / skip / preview / publish / take / retry`) to translate articles style-pinned to `ux-guidelines.md`. Strict 1:1 transcreation; 2-3 alt titles per article.
 - **Local HTML preview** — `preview_renderer` renders the proposed Telegraph node tree into a sandboxed HTML file under `~/.cache/hw-review/` (CSP meta, tag/URL allowlists, path guard). Operator opens in browser before publish.
 - **Multi-source aggregation** — 3 sources via `SOURCES` registry: autoevolution (RSS + Cloudflare-bypass scrape), lamley (RSS + HTML scrape), mattel (RSC flight-payload parser, see patterns.md "Mattel RSC flight-payload parser").
-- **4-table state model** — `processed_news` (dedup), `pending_articles` (WIP queue ≤10, cap configurable), `published_articles` (audit with `via_review` flag), `failed_articles` (dead letter after 3 GT attempts).
+- **5-table state model** — `processed_news` (dedup), `pending_articles` (queue, no hard cap; admin warning at >50), `published_articles` (audit with `via_review` flag), `failed_articles` (dead letter after 3 strikes), `bot_state` (outage state machine k/v).
 - **Idempotent publishing** — Decision 9: Telegraph URL persisted before Telegram send, so retries after teaser failure reuse the same Telegraph page (no orphan pages on the account).
-- **Two safety nets** — idle-fallback (auto-publish via Gemini after ~24h operator absence) and overflow fast-track (newest-10 window rule: anything exceeding queue cap goes through Gemini).
-- **Telegram channel card** — one-line `#{source_hashtag}` with `LinkPreviewOptions(show_above_text=True)` triggers Instant View preview card with ⚡ button. Hashtag unchanged across manual/fallback paths (Decision 14 — uses `_source_hashtag`, TLD-stripped form).
-- **Admin pings** — queue-pressure notifications, idle-fallback heads-ups, error digests go to `TELEGRAM_ADMIN_ID` (operator's personal chat), NOT the public channel.
-- **Scheduling** — cron every 12h via `schedule.every(12).hours.do(job)`.
+- **Outage state machine** — 5 states (`no_outage` / `ping_1_sent` / `ping_2_sent` / `google_fallback_active` / `recovery_pending`) with 2-ping protocol + 2 h grace before flipping the bot to global Google Translate. Recovery ping fires on the next slot where the LLM succeeds again.
+- **Telegram channel card** — single-line `#{source_hashtag} #news` with `LinkPreviewOptions(show_above_text=True, prefer_large_media=True)` triggers Instant View preview card with ⚡ button. Hashtag identical across manual/auto paths (Decision 14 — `_source_hashtag`, TLD-stripped form). Auto-publishes inject a `↳ автоперевод` marker INSIDE the Telegra.ph page (above source footer); manual publishes don't.
+- **Admin pings** — plan-of-day, backlog warnings, outage transitions, error digests go to `TELEGRAM_ADMIN_ID` (operator's personal chat), NOT the public channel.
+- **Scheduling** — daily fixed-time cron at 10:00 МСК via `schedule.every().day.at("10:00", tz=pytz.timezone("Europe/Moscow")).do(job)`.
 
 ---
 ## Out of Scope
