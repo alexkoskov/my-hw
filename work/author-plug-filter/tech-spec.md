@@ -12,8 +12,10 @@ size: S
 Two complementary regex-based filters that strip author social-media plugs from auto-published articles before they reach Telegraph + Telegram.
 
 - **Variant A** extends the existing source-side allowlist `boilerplate_filter._BOILERPLATE_PATTERNS` with five new patterns covering `(follow|check|subscribe to) (me|us) on <platform>`, `<platform>: <handle>`, orphan `@handle`, parenthesised plug with `@handle`, and author `subscribe to my <feed>` shapes. Runs in every source parser before the article is staged. Length-bounded by `_MAX_BOILERPLATE_LEN` (bumped 80 → 120 to fit the new shapes).
-- **Variant B** is a new module `author_plug_filter.py` providing `strip_author_plugs(text)`, `strip_in_paragraphs(paragraphs)`, and `strip_in_blocks(blocks)`. Three pattern families cover (B1) RU sentences with cue verb anchors, (B2) parenthesised umbrella with mandatory `@handle` regardless of verb, (B3) defensive orphan-handle paragraph. Called once from `news_bot._fallback_publish` after RU translation results converge from any engine (Claude / OpenRouter / OpenAI / Gemini / Google Translate fallback) and before Telegraph upload + DB persist. Wrapped in `try/except`: any internal failure logs ERROR and yields the original RU strings (publish-something > publish-nothing).
+- **Variant B** is a new module `author_plug_filter.py` providing `strip_author_plugs(text)`, `strip_in_paragraphs(paragraphs)`, and `strip_in_blocks(blocks)`. Three pattern families cover (B1) RU sentences with cue verb anchors, (B2) parenthesised umbrella with mandatory `@handle` regardless of verb, (B3) defensive orphan-handle paragraph. Called once from `news_bot._fallback_publish` at the post-translation convergence point (after either the LLM-success branch or the `_google_translate()` branch sets `ru_*` locals) and before Telegraph upload + DB persist. Wrapped in `try/except`: any internal failure logs ERROR and yields the original RU strings (publish-something > publish-nothing).
 - **Soft-defence in the LLM prompt:** `ux-guidelines.md` is extended with one bullet point under "Единственные разрешённые дропы → category (a) Author social links" naming inline parenthesised plugs explicitly. Zero code surface, helps the LLM produce already-clean output and reduces variant-B work.
+
+**Engine paths that produce `ru_*` locals (verified against `news_bot.py`):** (1) LLM-success branch — Claude/OpenRouter/OpenAI/Gemini, the most common path; (2) `is_fallback_active()` shortcut — when the outage state machine has flipped to global Google Translate; (3) `ClaudeOutageError` degraded-mode publish — Claude raised an API-level outage and the article is published via Google Translate before the OutageError re-raises. Per-article `ClaudeTranscreationError` (refusal / malformed JSON) does NOT fall through to Google — it re-raises into the 3-strikes counter, so variant B never sees that path. Variant B's single insertion at the convergence point covers (1)+(2)+(3) — every article that actually reaches Telegraph.
 
 The manual-review path (`hw_review publish`) does NOT call `_fallback_publish` — by architecture variant B never runs there. Plugs on the manual path are removed by the operator at `hw_review stage` per `ux-guidelines.md`.
 
@@ -21,14 +23,22 @@ The manual-review path (`hw_review publish`) does NOT call `_fallback_publish` �
 
 ### What we're building/modifying
 
+(File:line refs are *not* repeated here — they live in `code-research.md` (round 2 §9–§21). Anchors below are logical, not numeric.)
+
 - **`boilerplate_filter.py`** — extend `_BOILERPLATE_PATTERNS` with 5 new patterns (A1–A5), remove legacy `^follow us on \w+` (shadowed by A1), bump `_MAX_BOILERPLATE_LEN` 80 → 120.
-- **`author_plug_filter.py` (new module)** — pure-stdlib helpers: `strip_author_plugs(text) -> tuple[str, list[str]]`, `strip_in_paragraphs(paragraphs) -> tuple[list[str], list[str]]`, `strip_in_blocks(blocks) -> tuple[list[dict], list[str]]`. Each returns the cleaned content plus the list of removed fragments (drives the AC9 INFO log). Three pattern families: B1 cue-verb sentence (RU), B2 parenthesised umbrella with mandatory `@handle`, B3 orphan-handle paragraph.
-- **`news_bot._fallback_publish`** — single insertion at line ~1006 (between `_google_translate` unpack at line 1004–1005 and Telegraph upload at line 1027). Calls all three variant-B helpers on `ru_title` / `ru_subtitle` / `ru_paragraphs` / `ru_blocks`, accumulates removed fragments, emits one INFO log line per fragment, wraps in `try/except` returning unchanged RU on internal failure. Single call site — no per-engine branching.
-- **`.claude/skills/project-knowledge/references/ux-guidelines.md`** — append one bullet to the existing "Единственные разрешённые дропы" list (line ~64–69, sub-item a) explicitly naming inline parenthesised plugs and cue-verb-anchored variants.
-- **`.claude/skills/project-knowledge/references/patterns.md:28`** — update one line: "Length-bounded at 80 chars" → "Length-bounded at 120 chars".
-- **`tests/test_boilerplate_filter.py`** — fix the literal-`80` assertion at line 129 to import `_MAX_BOILERPLATE_LEN` from the module; add positive + negative test cases per AC1–AC5.
-- **`tests/test_author_plug_filter.py` (new)** — covers variant B comprehensively: B1/B2/B3 pattern positives, AC9–AC15 negatives, empty-paragraph handling, INFO-logging, `try/except` defence.
-- **`tests/test_fallback_publish_paths.py`** — add ONE smoke test asserting variant B is invoked exactly once on the canonical path (per AC10–AC11).
+- **`author_plug_filter.py` (new module)** — pure-stdlib helpers with this contract:
+  - `strip_author_plugs(text: str | None) -> tuple[str, list[str]]` — `None` and non-`str` pass through as-is with empty `removed_fragments` (no exception, no log). Cleaned `text` is the input minus matched plug-substrings.
+  - `strip_in_paragraphs(paragraphs: list[str]) -> tuple[list[str], list[str]]` — applies `strip_author_plugs` per element, drops paragraphs that became whitespace-only (per Decision 10), aggregates `removed_fragments` across the list.
+  - `strip_in_blocks(blocks: list[dict]) -> tuple[list[dict], list[str]]` — block-aware: cleans `text` for `_PATCHED_TEXT_BLOCK_TYPES` (lead / paragraph / heading); cleans `caption` for `image`; passes `video` and unknown block types through unchanged. Drops blocks whose type is in `_PATCHED_TEXT_BLOCK_TYPES` AND whose cleaned `text` is empty (per Decision 10). Per-block `isinstance(text, str)` and `isinstance(caption, str)` guards: a malformed block with non-string fields passes through unchanged (degrade gracefully — Decision 8 try/except is whole-call defence, the per-block guard avoids triggering it on isolated noise).
+  - Module is stdlib-only (`re`, `typing`). No logging from the module — caller emits INFO logs.
+  - Three pattern families: B1 cue-verb sentence (RU), B2 parenthesised umbrella with mandatory `@handle`, B3 orphan-handle paragraph. Final regex strings reproduced verbatim under Decision 4.
+- **`news_bot._fallback_publish`** — single insertion at the post-translation convergence point (after both the LLM-success branch and the `_google_translate()` branch set `ru_*`, before Telegraph upload + `update_staged`). Calls all three variant-B helpers on `ru_title` / `ru_subtitle` / `ru_paragraphs` / `ru_blocks`, accumulates removed fragments, emits one INFO log line per fragment, wraps in `try/except` returning unchanged RU on internal failure. Single call site — no per-engine branching.
+- **`.claude/skills/project-knowledge/references/ux-guidelines.md`** — append one bullet to the existing "Единственные разрешённые дропы" list (sub-item a — Author social links) explicitly naming inline parenthesised plugs and cue-verb-anchored variants.
+- **`.claude/skills/project-knowledge/references/patterns.md`** — update one line: "Length-bounded at 80 chars" → "Length-bounded at 120 chars".
+- **`tests/test_boilerplate_filter.py`** — fix the literal-`80` assertion in `TestLengthThreshold.test_long_paragraph_with_trigger_preserved` to import `_MAX_BOILERPLATE_LEN` from the module; add positive + negative test cases per AC1–AC5; add explicit negative for «Follow Mattel on Instagram, X, and Facebook» (AC16 corporate plug pass-through).
+- **`tests/test_author_plug_filter.py` (new)** — covers variant B comprehensively: B1/B2/B3 pattern positives across all 10 platforms (AC5), AC13–AC15 negatives, empty-paragraph + empty-block disposal, lead / heading / image-caption / video-passthrough block-type cases, `try/except` defence. The 7-fixture negative battery from `code-research.md` §10 (including bare-brand `Instagram` line and soft-edge «Подписывайтесь на новости индустрии через RSS-агрегаторы») is reproduced verbatim.
+- **`tests/test_fallback_publish_paths.py`** — add (a) mock-wiring smoke asserting variant B helpers invoked exactly once on each engine path, (b) ONE behavioural test that does NOT mock `strip_*` and verifies the canonical leak phrase «(подписывайтесь на меня в Instagram @diecast215 )» is absent from the resulting `ru_paragraphs`, (c) caplog assertion on `news_bot` logger that the AC9 INFO line shape (`[author_plug] stripped from {link!r}: {frag!r}`) appears once per stripped fragment.
+- **`tests/test_no_token_leak_in_logs.py`** — add ONE test injecting a `AIza…` shape into `ru_paragraphs`, asserting the new INFO line is redacted by the existing `_TokenRedactingFilter` (defence-in-depth verification per security review).
 - **`deploy.sh`** + **`.github/workflows/deploy.yml`** — both `FILES=(...)` arrays gain `author_plug_filter.py` (deploy invariant per `patterns.md`).
 
 ### How it works
@@ -46,15 +56,21 @@ news_bot.job() → pending_articles row
    ▼
 news_bot._fallback_publish(row, via_review=False)
    │
-   ├─→ Claude / OpenRouter / OpenAI / Gemini ── transcreate_via_claude(...) ──┐
-   │                                                                          │
-   ├─→ Google Translate fallback (per-article OR global) ── _google_translate()┤
-   │                                                                          │
-   ▼                                                                          ▼
-   ru_title / ru_subtitle / ru_paragraphs / ru_blocks  (converged locals)
+   ├─[A] LLM-success branch ── transcreate_via_claude(...) ─────────┐
+   │     (Claude / OpenRouter / OpenAI / Gemini)                    │
+   │                                                                │
+   ├─[B] is_fallback_active() shortcut ── _google_translate() ──────┤
+   │                                                                │
+   ├─[C] ClaudeOutageError degraded mode ── _google_translate() ────┤
+   │     (article publishes, then OutageError re-raises)            │
+   │                                                                │
+   │  (ClaudeTranscreationError ─→ re-raise to 3-strikes; never reaches Telegraph)
+   │                                                                │
+   ▼                                                                ▼
+   ru_title / ru_subtitle / ru_paragraphs / ru_blocks  (converged locals from A or B or C)
    │
    ├─→ [VARIANT B]  author_plug_filter.strip_*  ──→ inline plugs REMOVED + INFO logged
-   │       (try/except: on failure return originals + ERROR log)
+   │       (try/except: on failure return originals + ERROR log; INFO emitted by caller)
    ▼
    telegraph_publisher.publish_article(...)
    │
@@ -104,16 +120,58 @@ No DB pools, ML models, or browser instances introduced.
 
 ### Decision 4: Cue-verb anchored RU regex + parenthetical umbrella with mandatory `@handle`
 
-**Decision:** Variant B uses three patterns:
-- **B1 (cue-verb sentence):** anchors on RU verbs `подпиш[иу]тесь / подпис[ыа]вайтесь / подписаться / следите за (нами|мной) / (мой|наш|моего|нашего) (Instagram|Twitter|...)` plus surrounding sentence boundary.
-- **B2 (parenthetical umbrella):** any parenthesised text containing one of the listed platforms followed by `@handle` of 2–30 chars. The `@handle` is **mandatory** to avoid catching journalistic references like `(см. фото в Instagram)`.
-- **B3 (orphan handle paragraph):** RU paragraph that is exactly `@handle` (defensive — should be caught by variant A but kept as belt-and-suspenders).
+**Decision:** Variant B uses three patterns. Each cue verb MUST be paired with EITHER a target audience phrase (`на (меня|нас) / за (нами|мной) / (мой|наш|моего|нашего) <something>`) OR a recognised platform name within the same sentence. Bare cue verbs without that anchor (e.g. «Подписывайтесь на новости индустрии через RSS-агрегаторы») do NOT match — preserves generic content. Final regex strings:
 
-**Rationale:** B1 catches faithful translations of «подписывайтесь на меня в Instagram». B2 catches Google-Translate variants where the verb is not a clean cue (e.g. «(посмотрите меня в Instagram @x)»). Mandatory `@handle` in B2 anchors on the third-party-promo signal, not platform mention. **Supports user-spec AC11, AC12, AC15.**
+```python
+# B1 — cue-verb sentence with target-anchor or platform-anchor
+_PLATFORM_OR_TARGET_RU = (
+    r'(?:'
+        r'на\s+(?:меня|нас)|'
+        r'за\s+(?:нами|мной)|'
+        r'(?:мой|наш|моего|нашего)\s+\w+|'
+        r'(?:Instagram|Twitter|X|TikTok|YouTube|Facebook|Reddit|Patreon|Discord|Linktree)'
+    r')'
+)
+_CUE_RU = (
+    r'(?:'
+        r'подпиш[иу]тесь|'
+        r'подпис[ыа]вайтесь|'
+        r'подписаться|'
+        r'следите\s+за\s+(?:нами|мной)|'
+        r'найди(?:те)?\s+меня'
+    r')'
+)
+_RU_SENTENCE_WITH_CUE = re.compile(
+    r'(?:(?<=[\.\!\?])\s*|^)'                          # start: after sentence-end OR string start
+    r'[^\.\!\?]*?' + _CUE_RU + r'[^\.\!\?]*?'          # cue verb appears in the sentence
+    r'(?:[\.\!\?]+|$)\s*',                              # terminal punct OR end of string
+    re.I,
+)
+# Post-match guard: drop the match only if it ALSO contains _PLATFORM_OR_TARGET_RU.
+# Implementation: re.finditer(_RU_SENTENCE_WITH_CUE, text), then
+# `if re.search(_PLATFORM_OR_TARGET_RU, m.group(0), re.I)` — gate.
+
+# B2 — parenthesised umbrella with mandatory @handle
+_PARENTHETICAL_PLUG = re.compile(
+    r'\s*\(\s*[^()]*?'
+    r'(?:Instagram|Twitter|X|TikTok|YouTube|Facebook|Reddit|Patreon|Discord|Linktree)'
+    r'\s*@\w{2,30}'
+    r'[^()]*?\)\s*',
+    re.I,
+)
+
+# B3 — orphan handle paragraph (full-match predicate)
+_ORPHAN_HANDLE = re.compile(r'^\s*@\w{2,30}\s*$')
+```
+
+Replacement logic: B2 substitutes the match with a single space (preserves word boundaries), then B1 (gated by `_PLATFORM_OR_TARGET_RU` post-match check) substitutes its match with empty string, then B3 (full-match) replaces the whole paragraph with empty if it matches. Final pass: `re.sub(r'\s+', ' ', cleaned).strip()` collapses stray whitespace.
+
+**Rationale:** B1 catches faithful translations of «подписывайтесь на меня в Instagram». B2 catches Google-Translate variants where the verb is not a clean cue (e.g. «(посмотрите меня в Instagram @x)»). Mandatory `@handle` in B2 anchors on the third-party-promo signal, not platform mention. The two-step gate on B1 (`_CUE_RU` matched + `_PLATFORM_OR_TARGET_RU` matched within the sentence) prevents over-strip on bare cue verbs in unrelated contexts. **Supports user-spec AC11, AC12, AC14, AC15.**
 
 **Alternatives considered:**
 - NLP sentence tokenizer (e.g. `nltk.sent_tokenize`). Rejected — adds dependency, less predictable, overkill for this surface.
 - Bare-platform parenthetical (no `@handle` requirement). Rejected — would over-strip journalistic references (user-spec Risk 2).
+- Single-step B1 without `_PLATFORM_OR_TARGET_RU` gate. Rejected — would over-strip generic «подписывайтесь на наш RSS» / «подпишитесь на рассылку».
 
 ### Decision 5: Variant B applied to all RU fields
 
@@ -149,9 +207,9 @@ No DB pools, ML models, or browser instances introduced.
 
 ### Decision 9: INFO log per stripped fragment
 
-**Decision:** For every fragment removed by variant B, emit a single line `logger.info(f"[author_plug] stripped from {link}: {frag!r}")` to journalctl.
+**Decision:** For every fragment removed by variant B, emit a single line `logger.info(f"[author_plug] stripped from {link!r}: {frag!r}")` to journalctl. Both `link` and `frag` are passed through `repr()` (`!r` formatter) so any control characters or terminal escape sequences are escaped — no log-injection surface. The line routes through the `news_bot` logger and is automatically scrubbed by the existing `_TokenRedactingFilter` (defence-in-depth: even if a stripped fragment contained a leaked secret, the filter would redact it before it lands in journalctl).
 
-**Rationale:** Per-strip granularity gives operator a paste-able fragment when investigating false positives. Tag `[author_plug]` matches the existing `[fallback]` / `[recovery]` pattern in `news_bot.py`. `repr()` of fragment preserves whitespace and quotes. **Supports user-spec AC9 + verification step «journalctl grep».**
+**Rationale:** Per-strip granularity gives operator a paste-able fragment when investigating false positives. Tag `[author_plug]` matches the existing `[fallback]` / `[recovery]` pattern in `news_bot.py`. `repr()` of both `link` and `frag` neutralises log-injection (security review medium #1). **Supports user-spec AC9 + verification step «journalctl grep».**
 
 **Alternatives considered:** Aggregate count in plan-of-day admin ping. Rejected by user-spec; per-strip INFO is enough.
 
@@ -194,34 +252,48 @@ None.
 
 ## Testing Strategy
 
-**Feature size:** S
+**Feature size:** S — pyramid is mostly unit (~38 cases), 3 integration smokes, 0 E2E.
 
 ### Unit tests
 
-**`tests/test_boilerplate_filter.py` (extend existing):**
+**`tests/test_boilerplate_filter.py` (extend existing, ~15 new cases):**
 - One positive + one negative per new pattern A1–A5 (10 cases).
-- Fix line 129 assertion: replace `assert len(long_text) > 80` with `assert len(long_text) > _MAX_BOILERPLATE_LEN` after `from boilerplate_filter import _MAX_BOILERPLATE_LEN`.
-- Confirm legacy `^follow us on \w+` removal does not regress the existing positives that depended on it (every existing positive should still match A1).
+- AC5 platform coverage: ten positives, one per platform — instagram, twitter, x, tiktok, youtube, facebook, reddit, patreon, discord, linktree (ensures pattern alternation covers every named platform). May reuse the same plug shape, just rotating the platform.
+- Fix `TestLengthThreshold.test_long_paragraph_with_trigger_preserved`: replace literal-`80` assertion with `from boilerplate_filter import _MAX_BOILERPLATE_LEN; assert len(long_text) > _MAX_BOILERPLATE_LEN`.
+- Confirm legacy `^follow us on \w+` removal does not regress existing positives — each pre-existing «follow us on …» fixture should still match A1.
+- AC16 negative: `"Follow Mattel on Instagram, X, and Facebook"` — corporate plug must pass through variant A unchanged. Lives in this file to assert *variant A* doesn't catch it (separate negative in `test_author_plug_filter.py` covers variant B).
 
-**`tests/test_author_plug_filter.py` (new, ~60–80 LoC):**
-- B1 positives: standalone «(подписывайтесь на меня в Instagram @diecast215)»; cue-verb sentence in middle / start / end of paragraph; multiple plugs in one paragraph (AC8).
-- B2 positives: parenthesised umbrella with various platforms + `@handle`; Google-Translate variants («(посмотрите меня в Twitter @x)», «(подпишитесь… в YouTube @y)»).
-- B3 positives: orphan-handle paragraph.
-- Cross-cutting positives: title plug, subtitle plug, plug in `text` of paragraph block, plug in `caption` of image block.
-- Negatives (AC13/AC14/AC15): real-content sentences mentioning Instagram, RU body content without cue verb, journalistic parenthetical without `@handle` («(см. фото в Instagram)», «(трансляция шла на YouTube)»), corporate plug «Follow Mattel on Instagram, X, and Facebook».
-- Empty-paragraph handling: paragraph with only a plug becomes empty → dropped.
-- INFO logging: capture `caplog` for `news_bot` logger, assert one record per fragment, format matches `[author_plug] stripped from ... :`.
-- `try/except` defence: monkeypatch one of the regex modules to raise, assert variant B returns original strings + ERROR log.
+**`tests/test_author_plug_filter.py` (new, ~120 LoC):**
+- **B1 positives:** standalone canonical leak phrase; cue verb in middle / start / end of paragraph; multiple plugs in one paragraph (AC8); two adjacent plug sentences without terminal punct between them (AC8 corner case from completeness GAP-3).
+- **B1 with all anchor variants:** «подписывайтесь **на меня**», «следите **за нами**», «**мой Instagram**», «**найди меня**» — each must match.
+- **B2 positives:** parenthesised umbrella with each of the ten platforms + `@handle`; Google-Translate variants («(посмотрите меня в Twitter @x)», «(подпишитесь… в YouTube @y)»).
+- **B3 positives:** orphan-handle paragraph («@diecast215» on its own line).
+- **Cross-cutting positives:** title plug, subtitle plug, plug in `text` of paragraph block, plug in `text` of lead block, plug in `text` of heading block, plug in `caption` of image block.
+- **Block-type pass-through:** video block with plug-shaped `caption` — caption survives unchanged (video captions don't render on Telegraph per code-research §13). Unknown block type passes through.
+- **Empty-block disposal (AC10):** paragraph block whose `text` becomes empty after strip — block dropped from list. Image block whose `caption` becomes empty — block KEPT (image still renders).
+- **Empty-paragraph disposal:** flat paragraph with only a plug → after strip, dropped from `ru_paragraphs` list per Decision 10.
+- **None / non-string safety:** `strip_author_plugs(None)` returns `(None, [])` — no exception. `strip_author_plugs(42)` returns `(42, [])`. `strip_in_blocks` traversing a malformed block with `text=None` passes the block through unchanged.
+- **Negatives (full 7-fixture battery from code-research §10):** «The collector posted his find to Instagram and gathered 50K likes»; «Коллекционер написал в Instagram, что нашёл редкий Chase»; «Хорошие фото можно найти в источнике (см. фото в Instagram).»; «Анонс прошёл вчера (трансляция шла на YouTube).»; «Follow Mattel on Instagram, X, and Facebook for more news.» (AC16 corporate); bare-brand `Instagram` on its own line (no @handle, not orphan); soft-edge «Подписывайтесь на новости индустрии через RSS-агрегаторы — это удобно.» (cue verb but no platform/target anchor — must NOT match per Decision 4 gate).
+- **`try/except` defence (logged by caller):** This test lives in `test_fallback_publish_paths.py` (variant B is called from there, and the caller emits the ERROR log). Inside `test_author_plug_filter.py` — only assert that the helpers themselves do not raise on malformed input.
 
 ### Integration tests
 
-Minimal — one smoke test added to `tests/test_fallback_publish_paths.py`:
-- Patch `news_bot.author_plug_filter.strip_*` with mocks; run `_fallback_publish` once on Claude path; assert `strip_author_plugs` called for `ru_title` / `ru_subtitle` and `strip_in_paragraphs` / `strip_in_blocks` each called once. Same assertion on Google-fallback path.
-- No new file. No E2E.
+Three additions to `tests/test_fallback_publish_paths.py`:
+
+1. **Mock-wiring smoke (covers AC9 / AC10 / AC11):** patch `news_bot.author_plug_filter.strip_author_plugs` / `strip_in_paragraphs` / `strip_in_blocks` with mocks. Run `_fallback_publish` once on the LLM-success branch and once on the `is_fallback_active`=True branch; assert each helper invoked once with the expected `ru_*` argument. Same assertion on the `ClaudeOutageError` degraded-mode branch (third path that produces `ru_*`).
+2. **Behavioural anchor (covers Solution + AC11 end-to-end):** real call (no mock of `strip_*`) — feed a `pending_articles` row whose LLM-mocked output `ru_paragraphs` contains the canonical leak phrase «(подписывайтесь на меня в Instagram @diecast215 )»; run `_fallback_publish`; assert the final argument passed to `telegraph_publisher.publish_article` no longer contains the plug. Litmus-test against silent no-op: a stub `strip_*` returning input unchanged would FAIL this test.
+3. **Caplog assertion (covers AC9 from caller side):** `caplog.set_level(logging.INFO, logger='news_bot')`, run the same behavioural scenario as #2; assert exactly one record with shape `[author_plug] stripped from ...: ...` per stripped fragment.
+
+Also one addition to `tests/test_no_token_leak_in_logs.py` per security review medium #2:
+- Inject a synthetic Google-API-key shape (`AIzaSy...`) into a `ru_paragraphs` element; run a behavioural strip + log; assert the captured INFO line contains `***` (redacted), not the raw key. Defence-in-depth verification of `_TokenRedactingFilter` coverage.
 
 ### E2E tests
 
 None — feature is pure-functional regex layer; full pipeline already covered by existing integration tests in `tests/test_fallback_publish_paths.py`. Live-environment verification handled by post-deploy QA task.
+
+### ReDoS guard
+
+A pytest-timeout sentinel test under `tests/test_author_plug_filter.py` runs each variant-B regex against a 50K-char adversarial input (lots of nested parens, repeated cue verbs, dense `@handle`-shaped tokens) and asserts the call returns within 1 s. Defence against future regex changes that could introduce catastrophic backtracking — the existing patterns are linear-time per security-review info #1, but adding a runtime guard prevents regression.
 
 ## Agent Verification Plan
 
@@ -244,12 +316,16 @@ None — feature is pure-functional regex layer; full pipeline already covered b
 
 | Risk | Mitigation |
 |------|-----------|
-| Variant B over-strips a real-content sentence | Patterns anchor on cue verbs OR mandatory `@handle` — never on bare platform mention; INFO log per strip exposes false positives quickly; rollback `git revert HEAD && git push` ~3 min. |
+| Variant B over-strips a real-content sentence | Patterns anchor on cue verbs paired with target/platform OR mandatory `@handle` — never on bare platform mention or bare cue verb; INFO log per strip exposes false positives quickly; rollback `git revert HEAD && git push` ~3 min. |
 | Bumping `_MAX_BOILERPLATE_LEN` 80→120 breaks existing test pinned to literal 80 | Replace literal with `from boilerplate_filter import _MAX_BOILERPLATE_LEN` (constant import); fixture is 113 chars — survives bump unchanged. |
 | New module forgotten in `deploy.sh` / `deploy.yml` FILES — server hits ImportError on next cron tick | Explicit task in Wave 3 (Task 5) requires updating BOTH FILES arrays; pre-deploy QA reads both and verifies. |
 | Empty paragraph after strip leaves visible blank line in Telegraph | Decision 10 — drop empty paragraphs / empty `paragraph`-blocks from `ru_paragraphs` / `ru_blocks` lists. |
 | Variant B regex bug crashes publish loop | `try/except Exception` wrapper at the call site (Decision 8); ERROR log + original RU returned; channel keeps publishing. |
 | Architecture change makes `hw_review publish` route through `_fallback_publish` in future | Tech-spec documents the via_review boundary in Decision 2; reviewer of any such future architecture change must re-evaluate this feature's behaviour on the manual path. |
+| Log-injection through `link` in INFO line | Both `link` and `frag` are passed through `repr()` (`!r`) per Decision 9; control characters / terminal escapes neutralised. |
+| Future regex change introduces catastrophic backtracking (CPU-bind, NOT raise — `try/except` would not catch) | ReDoS sentinel test in `tests/test_author_plug_filter.py` runs each pattern against 50K-char adversarial input with `pytest-timeout` → guards future changes. |
+| Corporate plug «Follow Mattel on Instagram, X, and Facebook» reaches the channel | Intentional per AC11 / AC16 — out of scope for this feature; will be addressed by a separate press-release-boilerplate feature. |
+| Per-block guard on `text`/`caption` non-string values | `strip_in_blocks` does `isinstance(text, str)` per block before applying regex; malformed block degrades only itself (no whole-call try/except trip). |
 
 ## User-Spec Deviations
 
@@ -261,7 +337,7 @@ Technical criteria complementing user-spec AC1–AC17:
 
 - [ ] All 682 existing tests still pass.
 - [ ] New tests in `tests/test_boilerplate_filter.py` and `tests/test_author_plug_filter.py` are green; new smoke test in `tests/test_fallback_publish_paths.py` is green.
-- [ ] Test count grows by ~25 (10 variant-A cases + ~12 variant-B cases + 1 wiring smoke + a few empty-handling / log / defence tests).
+- [ ] Test count grows by ~38 (~15 variant-A: 10 platform positives + 5 negatives/AC16 + assertion fix; ~17 variant-B unit cases including B1 anchor variants, block-type cases, empty-disposal, None-safety, full 7-fixture negative battery; 3 integration tests in `test_fallback_publish_paths.py` (mock-wiring + behavioural + caplog); 1 redaction test in `test_no_token_leak_in_logs.py`; 1 ReDoS sentinel test).
 - [ ] No new pip dependencies in `requirements.txt`.
 - [ ] `deploy.sh` and `.github/workflows/deploy.yml` FILES arrays both contain `author_plug_filter.py`.
 - [ ] `git diff main...HEAD` shows ~250 lines added across 10 files; ~3 removed.
@@ -277,7 +353,7 @@ Technical criteria complementing user-spec AC1–AC17:
 
 #### Task 1: Variant A — extend boilerplate filter
 
-- **Description:** Add five regex patterns (A1–A5 per code-research §9) to `boilerplate_filter._BOILERPLATE_PATTERNS`, remove the legacy `^follow us on \w+` line (shadowed by A1), bump `_MAX_BOILERPLATE_LEN` 80→120. Update `tests/test_boilerplate_filter.py` to import the constant for the line-129 assertion and add positive + negative test cases per AC1–AC5. Result: variant A drops standalone plug paragraphs at all three source parsers without touching their contracts.
+- **Description:** Implement variant A per Decisions 1, 7 — add patterns A1–A5 to `_BOILERPLATE_PATTERNS`, remove legacy `^follow us on \w+`, bump `_MAX_BOILERPLATE_LEN` 80→120, update `tests/test_boilerplate_filter.py` accordingly (constant-import for the length-threshold test plus the AC1–AC5 positives and AC16 corporate-plug negative).
 - **Skill:** code-writing
 - **Reviewers:** code-reviewer, security-auditor, test-reviewer
 - **Verify-smoke:** `python3 -m pytest tests/test_boilerplate_filter.py tests/test_lamley_source.py tests/test_mattel_news_source.py tests/test_autoevolution_source.py -v` → all green
@@ -296,7 +372,7 @@ Technical criteria complementing user-spec AC1–AC17:
 
 #### Task 3: Create author_plug_filter.py module
 
-- **Description:** Create `author_plug_filter.py` with three public helpers — `strip_author_plugs(text)`, `strip_in_paragraphs(paragraphs)`, `strip_in_blocks(blocks)` — each returning `(cleaned, removed_fragments)`. Compile B1 cue-verb-RU, B2 parenthetical-umbrella-with-@handle, B3 orphan-handle patterns at module level (Decision 4). Re-use `_PATCHED_TEXT_BLOCK_TYPES` from `_llm_common` for block traversal (Decision 11). Drop empty paragraphs / empty `paragraph`-blocks (Decision 10). Create `tests/test_author_plug_filter.py` covering all positives + negatives per AC1–AC15 plus empty-handling and `try/except` defence. Module is pure stdlib; no API/IO; no log calls inside (caller logs).
+- **Description:** Implement variant B per Decisions 3, 4, 10, 11 — new pure-stdlib module exposing `strip_author_plugs` / `strip_in_paragraphs` / `strip_in_blocks`. Cover the full Testing Strategy section's variant-B unit list including the 7-fixture negative battery and ReDoS sentinel.
 - **Skill:** code-writing
 - **Reviewers:** code-reviewer, security-auditor, test-reviewer
 - **Verify-smoke:** `python3 -m pytest tests/test_author_plug_filter.py -v` → all green; `python3 -c "import author_plug_filter; print(author_plug_filter.strip_author_plugs('(подписывайтесь на меня в Instagram @x )')[0])"` → empty-or-whitespace
@@ -307,16 +383,16 @@ Technical criteria complementing user-spec AC1–AC17:
 
 #### Task 4: Integrate variant B into _fallback_publish
 
-- **Description:** Add `import author_plug_filter` to `news_bot.py` import block. Insert ~12-line variant-B call block at line ~1006 (between `_google_translate` unpack at line 1004–1005 and Telegraph upload at line 1027) per code-research §12. Wrap in `try/except Exception` (Decision 8) — on failure, log ERROR with `sanitize_error_message` and yield original `ru_*` strings. Emit one `logger.info(f"[author_plug] stripped from {link}: {frag!r}")` per removed fragment (Decision 9). Add ONE smoke test in `tests/test_fallback_publish_paths.py` asserting variant B helpers called exactly once on canonical path (Claude success branch + Google fallback branch). Do not modify `cmd_publish` in `hw_review.py` — manual path bypasses `_fallback_publish` by architecture.
+- **Description:** Wire variant B into the auto-publish path per Decisions 2, 8, 9 — single call site at the post-translation convergence point in `_fallback_publish` (covers all three engine paths: LLM-success, `is_fallback_active`, `ClaudeOutageError` degraded mode). Add the three integration tests from Testing Strategy (mock-wiring + behavioural + caplog) and the redaction-filter test in `tests/test_no_token_leak_in_logs.py`.
 - **Skill:** code-writing
 - **Reviewers:** code-reviewer, security-auditor, test-reviewer
-- **Verify-smoke:** `python3 -m pytest tests/test_fallback_publish_paths.py tests/test_integration.py -v` → all green
-- **Files to modify:** `news_bot.py`, `tests/test_fallback_publish_paths.py`
+- **Verify-smoke:** `python3 -m pytest tests/test_fallback_publish_paths.py tests/test_no_token_leak_in_logs.py tests/test_integration.py -v` → all green
+- **Files to modify:** `news_bot.py`, `tests/test_fallback_publish_paths.py`, `tests/test_no_token_leak_in_logs.py`
 - **Files to read:** `author_plug_filter.py`, `news_bot.py`, `work/author-plug-filter/code-research.md`
 
 #### Task 5: Add author_plug_filter.py to deploy FILES
 
-- **Description:** Add `author_plug_filter.py` to the `FILES=(...)` array in both `deploy.sh:52` and `.github/workflows/deploy.yml:132` (per the `patterns.md` deploy invariant — both arrays must mirror byte-for-byte). Without this entry, the file never reaches the production server and `news_bot.py` hits `ImportError` on the next cron tick. No code change beyond the two array updates.
+- **Description:** Add `author_plug_filter.py` to the `FILES=(...)` array in BOTH `deploy.sh` and `.github/workflows/deploy.yml` (the `patterns.md` deploy invariant — both arrays must mirror).
 - **Skill:** deploy-pipeline
 - **Reviewers:** code-reviewer, security-auditor, deploy-reviewer
 - **Verify-smoke:** `grep -n author_plug_filter deploy.sh .github/workflows/deploy.yml` → both files show the new line
@@ -359,12 +435,6 @@ Technical criteria complementing user-spec AC1–AC17:
 
 #### Task 11: Post-deploy verification
 
-- **Description:** Live-environment checks AFTER `news_bot.service` restart on prod:
-  - Wait for the next auto-publication from lamley/autoevolution (typical interval 90 min within 10:00–20:00 МСК window).
-  - Fetch the published Telegraph URL via `curl` and read body — confirm absence of plug-shaped phrases (parenthesised `@handle`, «подписывайтесь на меня в …»).
-  - SSH to server: `journalctl -u news_bot.service -S today | grep author_plug` — confirm INFO lines appear when the filter triggered (or are absent if no plug present in the day's articles).
-  - Verify no ERROR-level log from `[author_plug]` (would indicate the `try/except` defence fired — needs investigation).
-  - Spot-check 2–3 articles from the day for false positives — real Instagram mentions in content (e.g. «фото из Instagram», «постит в Instagram» without cue verb / `@handle`) must survive.
-  Tools: `bash`, `curl`, `ssh` (operator-driven; no MCP needed since Telegraph pages are public HTTPS).
+- **Description:** Live-environment checks AFTER `news_bot.service` restart on prod, following the procedure in Agent Verification Plan → Verification approach. Operator-driven (uses `bash` / `curl` / `ssh`).
 - **Skill:** post-deploy-qa
 - **Reviewers:** none
