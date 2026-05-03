@@ -106,7 +106,7 @@ No DB pools, ML models, or browser instances introduced.
 
 **Decision:** Variant B is called exactly once from `news_bot._fallback_publish` at the convergence point of the four LLM paths and Google Translate fallback.
 
-**Rationale:** Both the LLM-success branch and the `_google_translate()` branch unpack into the same locals (`ru_title`, `ru_subtitle`, `ru_paragraphs`, `ru_blocks`). Inserting variant B once after the convergence (line 1006 per code-research §12) covers all engines without duplication. **Supports user-spec AC11.**
+**Rationale:** Both the LLM-success branch and the `_google_translate()` branch unpack into the same locals (`ru_title`, `ru_subtitle`, `ru_paragraphs`, `ru_blocks`). Inserting variant B once after the convergence (anchor in code-research §12) covers all engines without duplication. **Supports user-spec AC11.**
 
 **Alternatives considered:** Per-engine call (4× duplication, drift risk). Rejected.
 
@@ -220,7 +220,7 @@ Replacement logic: B2 substitutes the match with a single space (preserves word 
 - After variant B strips a block of type `paragraph`/`lead`/`heading`, if the result is empty `text` — drop the entire block from `ru_blocks`.
 - Image/video blocks where the `caption` becomes empty — keep the block (the image still renders).
 
-**Rationale:** Empty `<p>` in Telegraph renders as a visible blank line — operator-undesired noise. No downstream invariant requires `len(ru_paragraphs) == len(en_paragraphs)` (LLM count validator at `_llm_common.py:226–230` is soft warning only). Dropping the block keeps DOM clean and image/video order intact. **Supports user-spec Risk 3.**
+**Rationale:** Empty `<p>` in Telegraph renders as a visible blank line — operator-undesired noise. No downstream invariant requires `len(ru_paragraphs) == len(en_paragraphs)` — `_llm_common._parse_response` issues a soft warning on count mismatch but does not raise. Dropping the block keeps DOM clean and image/video order intact. **Supports user-spec Risk 3.**
 
 **Alternatives considered:** Keep empty `<p>`. Rejected — visible cosmetic harm.
 
@@ -341,7 +341,7 @@ Technical criteria complementing user-spec AC1–AC17:
 - [ ] No new pip dependencies in `requirements.txt`.
 - [ ] `deploy.sh` and `.github/workflows/deploy.yml` FILES arrays both contain `author_plug_filter.py`.
 - [ ] `git diff main...HEAD` shows ~250 lines added across 10 files; ~3 removed.
-- [ ] `news_bot.py` import block has `import author_plug_filter` near line 55–60.
+- [ ] `news_bot.py` imports `author_plug_filter` at module-import block (top of file).
 - [ ] `boilerplate_filter._MAX_BOILERPLATE_LEN == 120` after the change.
 - [ ] `boilerplate_filter._BOILERPLATE_PATTERNS` no longer contains the legacy `^follow us on \w+` pattern.
 - [ ] `ux-guidelines.md` — "разрешённые дропы → (a)" list includes a new bullet naming parenthesised plugs and cue-verb-anchored shapes.
@@ -362,7 +362,7 @@ Technical criteria complementing user-spec AC1–AC17:
 
 #### Task 2: ux-guidelines + patterns.md prose updates
 
-- **Description:** Append one bullet to `.claude/skills/project-knowledge/references/ux-guidelines.md` under existing "разрешённые дропы → (a) Author social links" naming inline parenthesised plugs and cue-verb-anchored shapes (Decision 6). Update `.claude/skills/project-knowledge/references/patterns.md:28` "Length-bounded at 80 chars" → "Length-bounded at 120 chars" so the prose matches the bumped constant from Task 1.
+- **Description:** Append one bullet to `.claude/skills/project-knowledge/references/ux-guidelines.md` under existing "разрешённые дропы → (a) Author social links" naming inline parenthesised plugs and cue-verb-anchored shapes (Decision 6). Update the "Length-bounded at 80 chars" line in `.claude/skills/project-knowledge/references/patterns.md` so the prose matches the bumped 120-char constant from Task 1.
 - **Skill:** prompt-master
 - **Reviewers:** prompt-reviewer
 - **Files to modify:** `.claude/skills/project-knowledge/references/ux-guidelines.md`, `.claude/skills/project-knowledge/references/patterns.md`
