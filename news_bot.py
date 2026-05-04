@@ -1400,8 +1400,8 @@ def job():
                                   if the most recent publish is too fresh.
       (b) fetch + filter + insert — iterate ``SOURCES``, dedup, stage rows.
       (c) compute today's slots  — ``compute_publish_slots(N, now_msk)``.
-      (d) admin ping             — plan-of-day; suppressed on N=0;
-                                  + backlog warning when N > 50.
+      (d) admin ping             — plan-of-day; always fires (heartbeat on
+                                  quiet days); + backlog warning when N > 50.
       (e) distributed-publish    — sleep-until-slot, publish via
                                   ``_fallback_publish`` (Claude primary +
                                   Google per-article fallback). When the
@@ -1539,37 +1539,43 @@ def job():
     )
 
     # ------------------------------------------------------------------
-    # Step (d): admin ping with plan-of-day.
-    # Suppressed on N=0 per AC. ``count_pending() > BACKLOG_WARNING_THRESHOLD``
-    # adds a separate warning ping (AC20).
+    # Step (d): admin ping with plan-of-day. Always sent — operator wants a
+    # heartbeat that confirms the cron tick fired, even on quiet days when
+    # there are no new articles and the queue is empty.
+    # Quiet day: «🟢 Бот сработал, новых статей нет.»
+    # Busy day:  «Зафетчил N новых, в очереди M, расписание сегодня: …; carry-over: K»
+    # Backlog warning fires as a separate ping at queue_size > 50 (AC20).
     # ------------------------------------------------------------------
-    if queue_size > 0:
+    if queue_size == 0 and inserted == 0:
+        plan_msg = "🟢 Бот сработал, новых статей нет."
+    else:
         slot_strs = ", ".join(s.strftime("%H:%M") for s in slots)
         plan_msg = (
             f"Зафетчил {inserted} новых, в очереди {queue_size}, "
             f"расписание сегодня: {slot_strs or '—'}; "
             f"carry-over: {carry_over}"
         )
+    try:
+        send_admin_notification(plan_msg)
+    except Exception as notify_err:
+        logger.error(
+            f"Failed to send plan-of-day ping: "
+            f"{sanitize_error_message(notify_err)}"
+        )
+
+    if queue_size > BACKLOG_WARNING_THRESHOLD:
+        backlog_msg = (
+            f"⚠️ Backlog warning: queue size {queue_size} "
+            f"exceeds threshold {BACKLOG_WARNING_THRESHOLD}; "
+            f"carry-over today: {carry_over}"
+        )
         try:
-            send_admin_notification(plan_msg)
+            send_admin_notification(backlog_msg)
         except Exception as notify_err:
             logger.error(
-                f"Failed to send plan-of-day ping: "
+                f"Failed to send backlog warning ping: "
                 f"{sanitize_error_message(notify_err)}"
             )
-        if queue_size > BACKLOG_WARNING_THRESHOLD:
-            backlog_msg = (
-                f"⚠️ Backlog warning: queue size {queue_size} "
-                f"exceeds threshold {BACKLOG_WARNING_THRESHOLD}; "
-                f"carry-over today: {carry_over}"
-            )
-            try:
-                send_admin_notification(backlog_msg)
-            except Exception as notify_err:
-                logger.error(
-                    f"Failed to send backlog warning ping: "
-                    f"{sanitize_error_message(notify_err)}"
-                )
 
     # ------------------------------------------------------------------
     # Step (e): distributed-publish loop.

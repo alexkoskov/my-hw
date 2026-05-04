@@ -188,22 +188,20 @@ class TestPrepDoesNotPublish(PrepPhaseBase):
 
 
 class TestAdminPing(PrepPhaseBase):
-    """AC: admin-ping uses ``build_admin_ping`` byte-for-byte and is
-    suppressed when the post-prep queue is empty."""
+    """AC: admin-ping always fires (heartbeat on quiet days). Format
+    differs by branch: «Зафетчил N новых, …» on busy days, «🟢 Бот
+    сработал, новых статей нет.» on quiet days."""
 
     @patch('news_bot.send_admin_notification')
     @patch('news_bot.send_telegraph_teaser')
     @patch('news_bot.telegraph_publisher.publish_article')
     @patch('news_bot.fetch_full_article')
-    def test_admin_ping_plan_of_day_sent(
+    def test_admin_ping_plan_of_day_sent_on_busy_day(
         self, mock_fetch_article, mock_publish, mock_teaser, mock_admin,
     ):
-        """After Task 8 the prep-tick admin ping is the plan-of-day
-        summary (``Зафетчил X новых, в очереди M, расписание сегодня:
-        HH:MM, …; carry-over: K``), not the legacy
-        ``build_admin_ping(rows)`` format. We assert the new
-        contract — the byte-exact format check belongs in
-        ``test_job_distributed_publish``."""
+        """When new articles are inserted, plan-of-day ping has the
+        ``Зафетчил X новых, в очереди M, расписание сегодня: …;
+        carry-over: K`` shape."""
         mock_fetch_article.return_value = self._article_payload()
 
         with _patch_sources(rss_return=[
@@ -230,21 +228,25 @@ class TestAdminPing(PrepPhaseBase):
     @patch('news_bot.send_telegraph_teaser')
     @patch('news_bot.telegraph_publisher.publish_article')
     @patch('news_bot.fetch_full_article')
-    def test_admin_ping_suppressed_on_empty_queue(
+    def test_heartbeat_ping_on_quiet_day(
         self, mock_fetch_article, mock_publish, mock_teaser, mock_admin,
     ):
+        """Quiet day: 0 new articles AND 0 in queue → operator still gets
+        a heartbeat ping confirming the cron tick fired."""
         with _patch_sources():  # all sources return []
             news_bot.job()
 
-        # No pending row → no "N ждут review" string in any admin
-        # notification (source warnings may still fire — those are
-        # different content).
-        for call_args in mock_admin.call_args_list:
-            if not call_args.args:
-                continue
-            arg0 = call_args.args[0]
-            if isinstance(arg0, str):
-                self.assertNotIn('ждут review', arg0)
+        heartbeat_calls = [
+            c for c in mock_admin.call_args_list
+            if c.args and isinstance(c.args[0], str)
+            and 'Бот сработал' in c.args[0]
+            and 'новых статей нет' in c.args[0]
+        ]
+        self.assertEqual(
+            len(heartbeat_calls), 1,
+            msg=f"Expected one heartbeat ping on quiet day; got: "
+                f"{mock_admin.call_args_list}",
+        )
 
 
 class TestFiltering(PrepPhaseBase):
