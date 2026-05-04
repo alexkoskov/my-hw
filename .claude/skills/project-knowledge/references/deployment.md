@@ -42,6 +42,7 @@ Deployment process, infrastructure, and production operations for AI agents.
 **Optional (tunable defaults):**
 
 - `ANTHROPIC_MODEL` (default `claude-haiku-4-5`) — Claude model name. Override to `claude-sonnet-4-6` for higher quality at ~5× cost. Best stored as a GitHub Actions repo `var` rather than a secret; safe to log.
+- `INSTANCE_LABEL` — short label distinguishing this bot instance in admin pings. When set (e.g. `prod` or `test`), `send_admin_notification` prepends `[<label>] ` to every admin-bound message. Empty / unset → no prefix (backward-compatible). Set ONCE manually in each instance's `.env` on the server; the deploy workflows do NOT manage this var (their regex strips only LLM-related keys + TZ, leaving INSTANCE_LABEL untouched). Used by the two-instance topology (see below).
 
 These must be present on the production server (systemd EnvironmentFile or `source .env` in the cron wrapper). Operator-side `hw_review.py` also reads them locally from `.env` when publishing manually. The deploy workflow (`.github/workflows/deploy.yml` step "Write runtime env vars to server `.env`") writes `ANTHROPIC_API_KEY`, `ANTHROPIC_MODEL`, and `TZ` to the server's `.env` idempotently on every deploy — repeated deploys do not duplicate lines, and any pre-existing keys (TELEGRAM_*, TELEGRAPH_ACCESS_TOKEN) are preserved verbatim.
 
@@ -73,11 +74,12 @@ The bot Telegram TOKEN is shared (one bot account posts to both channels). The A
 **Test / staging (GitHub Actions CI):** `git push origin dev` → `ci.yml` runs pytest → on green, `.github/workflows/deploy_test.yml` triggers via `workflow_run`, SCPs the same FILES list to `$DEPLOY_PATH_TEST` (= `/home/hwbot/bot_test/`), `pip install`, then `sudo systemctl restart news_bot_test.service`. Independent concurrency group from prod (`deploy-test`). Manual run available via `Actions → Deploy test → Run workflow`.
 
 **GitHub Secrets required** (Settings → Secrets and variables → Actions → New repository secret):
-- `SSH_HOST` — VPS hostname or IP (e.g. `bot.example.com`).
-- `SSH_USER` — SSH login user on the VPS.
-- `DEPLOY_PATH` — absolute path on the VPS where files land (e.g. `/home/user/bot`).
-- `SSH_PRIVATE_KEY` — full PEM-encoded private key (including `-----BEGIN…END-----` lines) for the deploy account. Generate a dedicated key for CI: `ssh-keygen -t ed25519 -f ~/.ssh/hwbot_deploy -C "github-actions-hwbot"`; append the `.pub` half to the VPS account's `~/.ssh/authorized_keys`; paste the private half into the secret.
-- `ANTHROPIC_API_KEY` — Claude API key (format `sk-ant-api03-…`). Get from https://console.anthropic.com → API Keys → Create Key, copy the value, paste it as a new repository secret with name `ANTHROPIC_API_KEY`. The deploy workflow forwards it to the server's `.env` over ssh stdin; values never appear on a command line and are auto-redacted in workflow logs.
+- `SSH_HOST` — VPS hostname or IP (e.g. `148.135.207.54`).
+- `SSH_USER` — SSH login user on the VPS (`hwbot` for both deploy workflows).
+- `DEPLOY_PATH` — prod deploy path on the VPS (= `/home/hwbot/bot/`). Used by `deploy.yml` (main branch).
+- `DEPLOY_PATH_TEST` — test deploy path on the VPS (= `/home/hwbot/bot_test/`). Used by `deploy_test.yml` (dev branch). Required only for the two-instance topology; without it `deploy_test.yml` fails fast with a clear error.
+- `SSH_PRIVATE_KEY` — full PEM-encoded private key (including `-----BEGIN…END-----` lines) for the deploy account. Generate a dedicated key for CI: `ssh-keygen -t ed25519 -f ~/.ssh/hwbot_deploy -C "github-actions-hwbot"`; append the `.pub` half to the VPS account's `~/.ssh/authorized_keys`; paste the private half into the secret. The same key is used by both prod and test deploy workflows.
+- `ANTHROPIC_API_KEY` — Claude API key (format `sk-ant-api03-…`). Get from https://console.anthropic.com → API Keys → Create Key, copy the value, paste it as a new repository secret with name `ANTHROPIC_API_KEY`. The deploy workflow forwards it to the server's `.env` over ssh stdin; values never appear on a command line and are auto-redacted in workflow logs. Both prod and test instances share this key.
 
 **GitHub Variables (optional, non-sensitive)** (Settings → Secrets and variables → Actions → Variables):
 - `ANTHROPIC_MODEL` — defaults to `claude-haiku-4-5` if unset. Set this `var` to override (e.g. `claude-sonnet-4-6`).
@@ -102,14 +104,14 @@ The list lives in two places — `.github/workflows/deploy.yml` and `deploy.sh` 
 **Server-side sudoers** (`/etc/sudoers.d/news_bot`, mode **0440 — anything else and sudo silently ignores the file**):
 
 ```
-hwbot ALL=(ALL) NOPASSWD: /usr/bin/systemctl restart news_bot.service, /usr/bin/systemctl status news_bot.service, /usr/bin/journalctl -u news_bot.service
+hwbot ALL=(ALL) NOPASSWD: /usr/bin/systemctl restart news_bot.service, /usr/bin/systemctl restart news_bot_test.service, /usr/bin/systemctl status news_bot.service, /usr/bin/systemctl status news_bot_test.service, /usr/bin/journalctl -u news_bot.service, /usr/bin/journalctl -u news_bot_test.service
 ```
 
-Install via `ssh root@<host>` (one-time): `visudo -f /etc/sudoers.d/news_bot`, paste the line, `chmod 0440 /etc/sudoers.d/news_bot`, `visudo -c` to verify. Without this rule the deploy's restart step fails with "terminal is required to read the password" — the only command path that needs explicit privilege escalation is the systemd restart.
+The single rule covers BOTH instances — prod (`news_bot.service`) and test (`news_bot_test.service`). Install via `ssh root@<host>` (one-time): `visudo -f /etc/sudoers.d/news_bot`, paste the line, `chmod 0440 /etc/sudoers.d/news_bot`, `visudo -c` to verify. Without this rule the deploy's restart step fails with "terminal is required to read the password" — the only command path that needs explicit privilege escalation is the systemd restart.
 
-**Rollback:** `git revert HEAD && git push origin main` — the deploy workflow redeploys the parent commit, restarts the service. ~2-3 min total. For schema rollback, restore `news.db` from `/home/hwbot/backup/` (see Backups below).
+**Rollback:** `git revert HEAD && git push origin main` (for prod) or `... origin dev` (for test) — the respective deploy workflow redeploys the parent commit and restarts the matching service. ~2-3 min total. For schema rollback, restore `news.db` from `/home/hwbot/backup/` (see Backups below).
 
-**Staging:** Not configured. For test publishes without touching the prod channel, operator temporarily swaps `TELEGRAM_CHANNEL_ID` in `.env` to a personal chat ID.
+**Staging:** Yes — the `news_bot_test.service` instance on the same VPS is the staging environment. Posts go to `@myhwchannel123` (operator's only-subscriber test channel), not to the prod channel `-1004027529994`. Activated by pushing to the `dev` branch, which triggers `deploy_test.yml`. See "Two-instance topology" section above.
 
 ---
 
