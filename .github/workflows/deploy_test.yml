@@ -1,0 +1,200 @@
+name: Deploy test
+
+# Triggers ONLY after the CI workflow on `dev` finishes successfully.
+# Mirrors deploy.yml structure but targets the staging instance:
+#   DEPLOY_PATH_TEST  (e.g. /home/hwbot/bot_test/)
+#   news_bot_test.service
+# INSTANCE_LABEL=test is set MANUALLY in the server .env once;
+# this workflow does not manage it.
+on:
+  workflow_run:
+    workflows: ["CI"]
+    types: [completed]
+    branches: [dev]
+  workflow_dispatch:
+
+# One test deploy at a time. Independent of prod's `deploy-prod` group.
+concurrency:
+  group: deploy-test
+  cancel-in-progress: false
+
+jobs:
+  deploy:
+    if: >
+      github.event_name == 'workflow_dispatch' ||
+      (github.event.workflow_run.conclusion == 'success' &&
+       github.event.workflow_run.event == 'push')
+
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Verify required secrets
+        env:
+          SSH_HOST: ${{ secrets.SSH_HOST }}
+          SSH_USER: ${{ secrets.SSH_USER }}
+          DEPLOY_PATH_TEST: ${{ secrets.DEPLOY_PATH_TEST }}
+          SSH_PRIVATE_KEY: ${{ secrets.SSH_PRIVATE_KEY }}
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+          OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}
+          OPEN_ROUTER_API_KEY: ${{ secrets.OPEN_ROUTER_API_KEY }}
+        run: |
+          for var in SSH_HOST SSH_USER DEPLOY_PATH_TEST SSH_PRIVATE_KEY; do
+            if [[ -z "${!var}" ]]; then
+              echo "::error::Missing required secret: $var"
+              echo "::error::DEPLOY_PATH_TEST should point at /home/hwbot/bot_test/ on the VPS."
+              exit 1
+            fi
+          done
+          if [[ -z "$ANTHROPIC_API_KEY" && -z "$OPENAI_API_KEY" && -z "$GEMINI_API_KEY" && -z "$OPENROUTER_API_KEY" && -z "$OPEN_ROUTER_API_KEY" ]]; then
+            echo "::error::No LLM API key set. Add at least one of:"
+            echo "::error::  ANTHROPIC_API_KEY, OPENAI_API_KEY, GEMINI_API_KEY,"
+            echo "::error::  OPENROUTER_API_KEY (or OPEN_ROUTER_API_KEY alias)"
+            exit 1
+          fi
+          echo "All required secrets present."
+
+      - name: Set up SSH agent
+        uses: webfactory/ssh-agent@v0.9.0
+        with:
+          ssh-private-key: ${{ secrets.SSH_PRIVATE_KEY }}
+
+      - name: Add host to known_hosts
+        env:
+          SSH_HOST: ${{ secrets.SSH_HOST }}
+        run: |
+          mkdir -p ~/.ssh
+          chmod 700 ~/.ssh
+          ssh-keyscan -H "$SSH_HOST" > /tmp/known_hosts.new
+          if [[ ! -s /tmp/known_hosts.new ]]; then
+            echo "::error::ssh-keyscan produced no host keys for $SSH_HOST"
+            exit 1
+          fi
+          cat /tmp/known_hosts.new >> ~/.ssh/known_hosts
+          chmod 644 ~/.ssh/known_hosts
+
+      - name: Copy files to server
+        env:
+          SSH_HOST: ${{ secrets.SSH_HOST }}
+          SSH_USER: ${{ secrets.SSH_USER }}
+          DEPLOY_PATH_TEST: ${{ secrets.DEPLOY_PATH_TEST }}
+        # FILES list mirrors deploy.yml byte-for-byte. Keep them in sync if
+        # a new module is added to news_bot.py imports.
+        run: |
+          FILES=(
+            "news_bot.py"
+            "autoevolution_source.py"
+            "mattel_news_source.py"
+            "lamley_source.py"
+            "telegraph_publisher.py"
+            "pending_articles_repo.py"
+            "claude_transcreation.py"
+            "gemini_transcreation.py"
+            "openai_transcreation.py"
+            "openrouter_transcreation.py"
+            "llm_transcreation.py"
+            "_llm_common.py"
+            "compute_publish_slots.py"
+            "outage_state.py"
+            "boilerplate_filter.py"
+            "feeds.json"
+            "requirements.txt"
+            ".env.example"
+            ".claude/skills/project-knowledge/references/ux-guidelines.md"
+          )
+          for file in "${FILES[@]}"; do
+            if [[ ! -f "$file" ]]; then
+              echo "::error::$file not found in repo root"
+              exit 1
+            fi
+          done
+          echo "Copying ${#FILES[@]} files to $SSH_USER@$SSH_HOST:$DEPLOY_PATH_TEST/"
+          scp -o StrictHostKeyChecking=yes "${FILES[@]}" "$SSH_USER@$SSH_HOST:$DEPLOY_PATH_TEST/"
+
+      - name: Write runtime env vars to server .env
+        env:
+          SSH_HOST: ${{ secrets.SSH_HOST }}
+          SSH_USER: ${{ secrets.SSH_USER }}
+          DEPLOY_PATH_TEST: ${{ secrets.DEPLOY_PATH_TEST }}
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+          ANTHROPIC_MODEL: ${{ vars.ANTHROPIC_MODEL || 'claude-haiku-4-5' }}
+          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+          GEMINI_MODEL: ${{ vars.GEMINI_MODEL || 'gemini-2.5-flash-lite' }}
+          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+          OPENAI_MODEL: ${{ vars.OPENAI_MODEL || 'gpt-4o-mini' }}
+          OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_API_KEY || secrets.OPEN_ROUTER_API_KEY }}
+          OPENROUTER_MODEL: ${{ vars.OPENROUTER_MODEL || 'openai/gpt-5.4-mini' }}
+          LLM_PROVIDER: ${{ vars.LLM_PROVIDER }}
+          TZ: ${{ vars.TZ || 'Europe/Moscow' }}
+        # NB: the strip-then-append pattern below preserves any keys NOT
+        # in the managed list — that includes TELEGRAM_BOT_TOKEN /
+        # TELEGRAM_CHANNEL_ID / TELEGRAM_ADMIN_ID / TELEGRAPH_ACCESS_TOKEN
+        # / INSTANCE_LABEL. Those are set ONCE manually on the server and
+        # never managed by CI/CD.
+        run: |
+          ssh -o StrictHostKeyChecking=yes "$SSH_USER@$SSH_HOST" 'bash -s' <<EOF
+          set -e
+          DEPLOY_PATH=$(printf '%q' "$DEPLOY_PATH_TEST")
+          ANTHROPIC_API_KEY=$(printf '%q' "$ANTHROPIC_API_KEY")
+          ANTHROPIC_MODEL=$(printf '%q' "$ANTHROPIC_MODEL")
+          GEMINI_API_KEY=$(printf '%q' "$GEMINI_API_KEY")
+          GEMINI_MODEL=$(printf '%q' "$GEMINI_MODEL")
+          OPENAI_API_KEY=$(printf '%q' "$OPENAI_API_KEY")
+          OPENAI_MODEL=$(printf '%q' "$OPENAI_MODEL")
+          OPENROUTER_API_KEY=$(printf '%q' "$OPENROUTER_API_KEY")
+          OPENROUTER_MODEL=$(printf '%q' "$OPENROUTER_MODEL")
+          LLM_PROVIDER=$(printf '%q' "$LLM_PROVIDER")
+          TZ_VALUE=$(printf '%q' "$TZ")
+          cd "\$DEPLOY_PATH"
+          touch .env
+          chmod 600 .env
+          grep -v -E '^(ANTHROPIC_API_KEY|ANTHROPIC_MODEL|GEMINI_API_KEY|GEMINI_MODEL|OPENAI_API_KEY|OPENAI_MODEL|OPENROUTER_API_KEY|OPEN_ROUTER_API_KEY|OPENROUTER_MODEL|LLM_PROVIDER|TZ)=' .env > .env.tmp || true
+          chmod 600 .env.tmp
+          {
+            [ -n "\$ANTHROPIC_API_KEY" ] && printf 'ANTHROPIC_API_KEY=%s\n' "\$ANTHROPIC_API_KEY"
+            printf 'ANTHROPIC_MODEL=%s\n' "\$ANTHROPIC_MODEL"
+            [ -n "\$GEMINI_API_KEY" ] && printf 'GEMINI_API_KEY=%s\n' "\$GEMINI_API_KEY"
+            printf 'GEMINI_MODEL=%s\n' "\$GEMINI_MODEL"
+            [ -n "\$OPENAI_API_KEY" ] && printf 'OPENAI_API_KEY=%s\n' "\$OPENAI_API_KEY"
+            printf 'OPENAI_MODEL=%s\n' "\$OPENAI_MODEL"
+            [ -n "\$OPENROUTER_API_KEY" ] && printf 'OPENROUTER_API_KEY=%s\n' "\$OPENROUTER_API_KEY"
+            printf 'OPENROUTER_MODEL=%s\n' "\$OPENROUTER_MODEL"
+            [ -n "\$LLM_PROVIDER" ] && printf 'LLM_PROVIDER=%s\n' "\$LLM_PROVIDER"
+            printf 'TZ=%s\n' "\$TZ_VALUE"
+          } >> .env.tmp
+          mv .env.tmp .env
+          EOF
+
+      - name: Install Python dependencies on server
+        env:
+          SSH_HOST: ${{ secrets.SSH_HOST }}
+          SSH_USER: ${{ secrets.SSH_USER }}
+          DEPLOY_PATH_TEST: ${{ secrets.DEPLOY_PATH_TEST }}
+        run: |
+          ssh -o StrictHostKeyChecking=yes "$SSH_USER@$SSH_HOST" \
+            "set -e; cd '$DEPLOY_PATH_TEST' && python3 -m pip install --user --break-system-packages -r requirements.txt" \
+            || { echo "::error::pip install failed on server"; exit 1; }
+
+      - name: Restart news_bot_test service on server
+        env:
+          SSH_HOST: ${{ secrets.SSH_HOST }}
+          SSH_USER: ${{ secrets.SSH_USER }}
+        # Requires sudoers rule on server in /etc/sudoers.d/news_bot:
+        #   <user> ALL=(ALL) NOPASSWD: /usr/bin/systemctl restart news_bot.service, \
+        #                              /usr/bin/systemctl restart news_bot_test.service, ...
+        # Operator must add the news_bot_test.service entry there once.
+        run: |
+          ssh -o StrictHostKeyChecking=yes "$SSH_USER@$SSH_HOST" \
+            "sudo /usr/bin/systemctl restart news_bot_test.service" \
+            || { echo "::error::Service restart failed — check /etc/sudoers.d/news_bot has 'NOPASSWD: /usr/bin/systemctl restart news_bot_test.service'."; exit 1; }
+          echo "::notice::news_bot_test.service restarted on dev branch code."
+
+      - name: Deploy summary
+        run: |
+          echo "::notice::Test deploy complete. news_bot_test.service is running dev-branch code."
+          echo "::notice::Test channel: @myhwchannel123 (current). Prod is untouched."
+          echo "::notice::Verify: ssh and run: journalctl -u news_bot_test.service -n 20"
