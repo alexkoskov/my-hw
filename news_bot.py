@@ -70,6 +70,9 @@ from compute_publish_slots import compute_publish_slots
 TELEGRAM_BOT_TOKEN = os.getenv('TELEGRAM_BOT_TOKEN')
 TELEGRAM_CHANNEL_ID = os.getenv('TELEGRAM_CHANNEL_ID')
 TELEGRAM_ADMIN_ID = os.getenv('TELEGRAM_ADMIN_ID', '@sunny413x')
+# Optional label distinguishing this bot instance in admin pings
+# (e.g. "prod" / "test"). Empty / unset → no prefix (backward compat).
+INSTANCE_LABEL = os.getenv('INSTANCE_LABEL', '').strip()
 TRANSLATOR_SERVICE = 'google'  # or 'libre'
 RSS_URL = "https://www.autoevolution.com/rss/tag-Hot+Wheels.xml"
 DB_FILE = "news.db"
@@ -362,6 +365,10 @@ def send_admin_notification(message):
         logging.error("Telegram credentials or admin ID not set.")
         return False
     safe_message = _redact_text(message)
+    # Prepend [INSTANCE_LABEL] when set so operator can distinguish
+    # admin pings from prod vs test bot in the same admin chat.
+    if INSTANCE_LABEL:
+        safe_message = f"[{INSTANCE_LABEL}] {safe_message}"
     async def _send():
         bot = Bot(token=TELEGRAM_BOT_TOKEN)
         try:
