@@ -395,6 +395,116 @@ class GoogleTranslationError(Exception):
     """
 
 
+# ---------------------------------------------------------------------------
+# Author social-media plug stripper (post-translation, RU-side).
+#
+# Variant B of the author-plug-filter feature: surgically removes inline
+# plugs left over by the LLM (or Google Translate fallback) — phrases like
+# "(подписывайтесь на меня в Instagram @diecast215)" or "follow me on
+# Instagram @x" that were embedded in a longer paragraph and so did not
+# fit the boilerplate filter's length-bound or whole-string-match shape.
+#
+# Patterns are anchored on (a) cue verbs paired with a target/platform OR
+# (b) a parenthesised phrase containing a platform name + @handle. Bare
+# platform mentions like «коллекционер написал в Instagram» do NOT match.
+# Corporate plugs like "Follow Mattel on Instagram" do NOT match either —
+# A1 and the cue patterns require me/us, not a brand name.
+# ---------------------------------------------------------------------------
+
+_PLUG_PLATFORMS_NB = (
+    'instagram|twitter|x|tiktok|youtube|facebook|reddit|patreon|discord|linktree'
+)
+
+_PLUG_PATTERNS = [
+    # Parenthesised plug with mandatory @handle, regardless of verb.
+    # Catches the canonical leak shape and Google-Translate variants:
+    #   "(подписывайтесь на меня в Instagram @diecast215)"
+    #   "(посмотрите меня в Twitter @x)"
+    #   "(follow me on Instagram for the latest reveals @diecast215)"
+    re.compile(
+        r'\s*\(\s*[^()]*?(' + _PLUG_PLATFORMS_NB + r')\s*@\w{2,30}[^()]*?\)\s*',
+        re.I,
+    ),
+    # RU cue-verb sentence: "подписывайтесь / следите за / мой Instagram"
+    # paired with target (на меня/нас) OR platform name within the same
+    # sentence. Sentence boundary = previous .!? ... next .!? or end.
+    re.compile(
+        r'(?:(?<=[\.\!\?])\s*|^)'                                       # start
+        r'[^\.\!\?]*?'
+        r'(?:'
+            r'подпиш[иу]тесь|подпис[ыа]вайтесь|подписаться|'
+            r'следите\s+за\s+(?:нами|мной)|'
+            r'(?:мой|наш|моего|нашего)\s+(?:' + _PLUG_PLATFORMS_NB + r')'
+        r')'
+        r'[^\.\!\?]*?'
+        r'(?:на\s+(?:меня|нас)|за\s+(?:нами|мной)|(?:' + _PLUG_PLATFORMS_NB + r'))'
+        r'[^\.\!\?]*?'
+        r'(?:[\.\!\?]+|$)\s*',
+        re.I,
+    ),
+    # EN cue-verb sentence: "follow|check|subscribe to me/us on <platform>"
+    # paired with platform mention. Sentence-bounded same as RU.
+    re.compile(
+        r'(?:(?<=[\.\!\?])\s*|^)'
+        r'[^\.\!\?]*?'
+        r'(?:follow|check|subscribe\s+to)\s+(?:me|us)\s+on\s+'
+        r'(?:' + _PLUG_PLATFORMS_NB + r')'
+        r'[^\.\!\?]*?'
+        r'(?:[\.\!\?]+|$)\s*',
+        re.I,
+    ),
+]
+
+
+def _strip_plugs(text):
+    """Remove inline author-social-media plug sentences from a string.
+
+    Returns cleaned text. Non-string input passes through unchanged. Safe
+    on None. Caller is responsible for logging which fragments were
+    removed (this helper does not log).
+
+    Idempotent: applying twice yields the same result as applying once.
+    """
+    if not isinstance(text, str) or not text:
+        return text
+    cleaned = text
+    for pat in _PLUG_PATTERNS:
+        cleaned = pat.sub(' ', cleaned)
+    # Collapse stray whitespace introduced at sentence boundaries.
+    cleaned = re.sub(r'\s+', ' ', cleaned).strip()
+    return cleaned
+
+
+def _strip_plugs_in_blocks(blocks):
+    """Apply ``_strip_plugs`` to ``text`` and ``caption`` fields of every
+    block. Drops blocks of type paragraph/lead/heading whose ``text``
+    became empty after strip. Image/video blocks are kept regardless of
+    caption emptiness. Returns a new list; never mutates input."""
+    if not isinstance(blocks, list):
+        return blocks
+    out = []
+    for b in blocks:
+        if not isinstance(b, dict):
+            out.append(b)
+            continue
+        new_b = dict(b)
+        text = new_b.get('text')
+        if isinstance(text, str):
+            new_b['text'] = _strip_plugs(text)
+        cap = new_b.get('caption')
+        if isinstance(cap, str):
+            new_b['caption'] = _strip_plugs(cap)
+        # Drop pure-text block whose text became empty.
+        if (
+            new_b.get('type') in ('paragraph', 'lead', 'heading')
+            and isinstance(new_b.get('text'), str)
+            and not new_b['text'].strip()
+        ):
+            continue
+        out.append(new_b)
+    return out
+
+
 def _llm_translation_is_russian(paragraphs, threshold=0.30):
     """Heuristic: total Cyrillic letter share across all paragraphs.
 
@@ -1003,6 +1113,50 @@ def _fallback_publish(row, via_review=False):
                 )
             ru_title, ru_subtitle, ru_paragraphs, ru_blocks = _google_translate()
             used_google_fallback = True
+
+    # Step 1b: strip author social-media plugs from RU output.
+    # Single call site — covers Claude-success, is_fallback_active shortcut,
+    # ClaudeOutageError degraded mode (every path that reaches this point).
+    # Wrapped in try/except: regex bug must not block publish (publish-
+    # something > publish-nothing). Per-fragment INFO log so operator can
+    # spot false positives via journalctl.
+    try:
+        original_pieces = (
+            [ru_title or '', ru_subtitle or '']
+            + list(ru_paragraphs or [])
+            + [
+                str(b.get('text') or '') + '|' + str(b.get('caption') or '')
+                for b in (ru_blocks or [])
+                if isinstance(b, dict)
+            ]
+        )
+        ru_title = _strip_plugs(ru_title)
+        ru_subtitle = _strip_plugs(ru_subtitle)
+        if ru_paragraphs:
+            ru_paragraphs = [
+                p for p in (_strip_plugs(p) for p in ru_paragraphs)
+                if isinstance(p, str) and p.strip()
+            ]
+        ru_blocks = _strip_plugs_in_blocks(ru_blocks)
+        cleaned_pieces = (
+            [ru_title or '', ru_subtitle or '']
+            + list(ru_paragraphs or [])
+            + [
+                str(b.get('text') or '') + '|' + str(b.get('caption') or '')
+                for b in (ru_blocks or [])
+                if isinstance(b, dict)
+            ]
+        )
+        if original_pieces != cleaned_pieces:
+            logger.info(
+                f"[author_plug] stripped from {link!r} "
+                f"(via_review={via_review}, used_google={used_google_fallback})"
+            )
+    except Exception as plug_err:
+        logger.error(
+            f"[author_plug] strip failed for {link}: "
+            f"{sanitize_error_message(plug_err)} — using original RU"
+        )
 
     # Step 2: Telegraph — reuse saved URL per Decision 9 idempotency.
     # Done BEFORE persisting RU so a Telegraph failure keeps

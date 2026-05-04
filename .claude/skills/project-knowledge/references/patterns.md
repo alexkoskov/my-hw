@@ -25,7 +25,7 @@ For universal coding standards, see `~/.claude/skills/code-writing/references/un
 - `news_bot.fetch_full_article` dispatches to the right parser by URL
   domain and wraps each call in a try/except so one bad article doesn't
   stop the pipeline.
-- **Boilerplate filter** (`boilerplate_filter.py`, added 2026-04-27) — every parser passes its paragraphs through `filter_boilerplate(...)` before returning. Strips short standalone UI labels like "Share on Facebook", "Tweet", "Subscribe", "Related articles" + Russian equivalents ("Поделиться на Facebook", "Твитнуть", "Читайте также", "Теги: ..."). Length-bounded at 80 chars, so long sentences mentioning these terms inline as content are preserved. Autoevolution `blocks` are filtered first; the flat `paragraphs` list is rebuilt from filtered blocks so both forms stay consistent. Goal: clean Telegraph article body + skip Google-Translate calls on UI text.
+- **Boilerplate filter** (`boilerplate_filter.py`, added 2026-04-27) — every parser passes its paragraphs through `filter_boilerplate(...)` before returning. Strips short standalone UI labels like "Share on Facebook", "Tweet", "Subscribe", "Related articles" + Russian equivalents ("Поделиться на Facebook", "Твитнуть", "Читайте также", "Теги: ..."). Length-bounded at 120 chars, so long sentences mentioning these terms inline as content are preserved. Autoevolution `blocks` are filtered first; the flat `paragraphs` list is rebuilt from filtered blocks so both forms stay consistent. Goal: clean Telegraph article body + skip Google-Translate calls on UI text.
 
 ### Transcreation, not plain translation
 - **Primary engine (auto-publish path):** `claude_transcreation.transcreate_via_claude` —

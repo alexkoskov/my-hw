@@ -11,7 +11,13 @@ from unittest.mock import MagicMock
 
 import pytest
 
-from boilerplate_filter import filter_blocks, filter_boilerplate, is_boilerplate
+from boilerplate_filter import (
+    _MAX_BOILERPLATE_LEN,
+    _PLUG_PLATFORMS,
+    filter_blocks,
+    filter_boilerplate,
+    is_boilerplate,
+)
 
 
 # ---------------------------------------------------------------------------
@@ -120,14 +126,105 @@ class TestIsBoilerplateNegative:
 
 class TestLengthThreshold:
     def test_long_paragraph_with_trigger_preserved(self):
-        # >80 chars; even though it begins with "Share on Facebook"
-        # we treat it as real prose because the bound is exceeded.
+        # Long content that begins with "Share on Facebook" — treated as
+        # real prose because the length exceeds the bound.
         long_text = (
             "Share on Facebook with all your friends and family for the rest "
-            "of your life and even beyond, share share share."
+            "of your life and even beyond, share share share, please share, "
+            "share more, even more, share share share share share."
         )
-        assert len(long_text) > 80
+        assert len(long_text) > _MAX_BOILERPLATE_LEN
         assert is_boilerplate(long_text) is False
+
+
+# ---------------------------------------------------------------------------
+# Author social-media plug patterns (variant A of the author-plug-filter
+# feature). Standalone-paragraph plugs from authors of source articles,
+# distinct from the corporate / UI-button shapes above.
+# ---------------------------------------------------------------------------
+
+
+class TestAuthorPlugPositive:
+    """Each of the 10 supported platforms must be caught in at least one
+    pattern shape."""
+
+    @pytest.mark.parametrize("platform", _PLUG_PLATFORMS)
+    def test_follow_me_on_each_platform(self, platform):
+        assert is_boilerplate(f"Follow me on {platform.capitalize()}") is True
+
+    @pytest.mark.parametrize("platform", _PLUG_PLATFORMS)
+    def test_parenthesised_with_handle(self, platform):
+        assert is_boilerplate(
+            f"(follow me on {platform.capitalize()} @diecast215)"
+        ) is True
+
+    @pytest.mark.parametrize("platform", _PLUG_PLATFORMS)
+    def test_platform_colon_handle(self, platform):
+        assert is_boilerplate(f"{platform.capitalize()}: @diecast215") is True
+
+    @pytest.mark.parametrize(
+        "text",
+        [
+            "@diecast215",
+            "@hot_wheels_collector",
+            "@a1B_2",
+        ],
+    )
+    def test_orphan_handle(self, text):
+        assert is_boilerplate(text) is True
+
+    @pytest.mark.parametrize(
+        "text",
+        [
+            "Subscribe to my channel",
+            "Subscribe to my newsletter",
+            "Subscribe to my YouTube",
+            "Subscribe to my Patreon",
+        ],
+    )
+    def test_subscribe_to_my_feed(self, text):
+        assert is_boilerplate(text) is True
+
+    def test_check_us_on_instagram(self):
+        # A1 covers "check" alongside "follow" and "subscribe to".
+        assert is_boilerplate("Check us on Instagram") is True
+
+    def test_subscribe_to_us_on_youtube(self):
+        # A1 with "subscribe to ... us on <platform>".
+        assert is_boilerplate("Subscribe to us on YouTube") is True
+
+
+class TestAuthorPlugNegative:
+    """Real content / corporate plugs / journalistic refs MUST NOT be caught
+    by variant-A. (Inline-plug stripping is variant B's job, not this layer.)"""
+
+    def test_corporate_mattel_plug_passes(self):
+        # AC16 — corporate "Follow Mattel on ..." is intentionally out of
+        # scope (separate future feature). A1 anchors on me|us; Mattel
+        # naming structurally cannot match.
+        assert is_boilerplate(
+            "Follow Mattel on Instagram, X, and Facebook"
+        ) is False
+
+    def test_real_content_with_instagram_mention(self):
+        # Long inline content mentioning a platform — preserved.
+        assert is_boilerplate(
+            "The collector posted his find to Instagram and gathered 50K likes."
+        ) is False
+
+    def test_journalistic_paren_no_handle(self):
+        # Standalone parenthesised reference WITHOUT @handle. A2 requires
+        # @handle, so this doesn't match.
+        assert is_boilerplate("(see photos on Instagram)") is False
+
+    def test_bare_at_word_too_short(self):
+        # A4 needs \w{2,30}; single-char or empty handles don't match.
+        assert is_boilerplate("@a") is False
+
+    def test_short_random_word_starting_with_at(self):
+        # @-prefix alone isn't enough — must match \w{2,30}, but a
+        # known-good real word also passes. Negative is the boundary case.
+        assert is_boilerplate("@@") is False
 
 
 # ---------------------------------------------------------------------------

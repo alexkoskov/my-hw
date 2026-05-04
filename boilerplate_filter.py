@@ -31,7 +31,20 @@ from typing import Iterable, List
 # Length threshold: only filter "short" paragraphs (boilerplate is usually a
 # label / button text). A long paragraph that happens to mention "Share on
 # Facebook" inline is real content — keep it.
-_MAX_BOILERPLATE_LEN = 80
+# Bumped 80 → 120 in the author-plug-filter feature so longer parenthesised
+# plugs like "(follow me on Instagram for the latest reveals @diecast215)"
+# (~80–110 chars) fit under the threshold.
+_MAX_BOILERPLATE_LEN = 120
+
+# Platforms covered by author-plug patterns (variant A and B of the
+# author-plug-filter feature). Single tuple keeps the alternation in sync
+# across patterns. Threads / OnlyFans intentionally out of scope (rare in HW
+# articles).
+_PLUG_PLATFORMS = (
+    'instagram', 'twitter', 'x', 'tiktok', 'youtube',
+    'facebook', 'reddit', 'patreon', 'discord', 'linktree',
+)
+_PLATFORMS_RE = '|'.join(_PLUG_PLATFORMS)
 
 # Each pattern is matched against the WHOLE stripped paragraph,
 # case-insensitive. Match → drop the paragraph.
@@ -46,11 +59,44 @@ _BOILERPLATE_PATTERNS = [
     re.compile(r'^email this( article)?$', re.I),
     re.compile(r'^copy (link|url|article url)$', re.I),
     re.compile(r'^subscribe( to (our )?newsletter)?$', re.I),
-    re.compile(r'^follow us on \w+', re.I),
     re.compile(r'^(related (articles?|posts?)|see also|you may also like)$', re.I),
     re.compile(r'^read more[:\s]*$', re.I),
     re.compile(r'^(tags?|filed under|categories?):', re.I),
     re.compile(r'^comments?$', re.I),
+    # ------------------------------------------------------------------
+    # Author social-media plugs (author-plug-filter feature, variant A).
+    # Drops standalone-paragraph plugs at every source parser. Inline
+    # plugs embedded inside larger paragraphs are handled by variant B
+    # (post-LLM) in author_plug_filter.py.
+    # ------------------------------------------------------------------
+    # A1 — umbrella: "follow|check|subscribe to me/us on <platform>".
+    # Replaces and supersedes the legacy "^follow us on \w+" pattern.
+    re.compile(
+        r'^(follow|check|subscribe\s+to)\s+(me|us)\s+on\s+(' + _PLATFORMS_RE + r')\b',
+        re.I,
+    ),
+    # A2 — parenthesised umbrella with mandatory @handle.
+    # Catches the canonical leak shape "(follow me on Instagram @diecast215)".
+    re.compile(
+        r'^\(\s*(follow|check|subscribe\s+to|join)\s+(me|us)\s+on\s+'
+        r'(' + _PLATFORMS_RE + r')\s+@\w{2,30}\s*\)$',
+        re.I,
+    ),
+    # A3 — "Platform: handle" shape, with or without @.
+    re.compile(
+        r'^(' + _PLATFORMS_RE + r')\s*:\s*@?[\w./_-]+\s*$',
+        re.I,
+    ),
+    # A4 — orphan handle on its own line (multi-line plug fallback).
+    re.compile(r'^@\w{2,30}$', re.I),
+    # A5 — "subscribe to my <feed>" (author form, distinct from the "our"
+    # newsletter pattern above).
+    re.compile(
+        r'^subscribe\s+to\s+my\s+'
+        r'(channel|newsletter|patreon|youtube|page|feed)\b',
+        re.I,
+    ),
+    # ------------------------------------------------------------------
     # Russian — defence in depth in case translated text ever reaches us.
     re.compile(
         r'^поделит(ь(ся)?|есь)\s+(на|в|через)\s+'

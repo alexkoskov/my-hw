@@ -9,7 +9,7 @@ import sys
 import os
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from news_bot import transcreate_text
+from news_bot import transcreate_text, _strip_plugs, _strip_plugs_in_blocks
 
 
 class TestTranscreateText(unittest.TestCase):
@@ -112,6 +112,106 @@ class TestTranscreateText(unittest.TestCase):
 
         result = transcreate_text('Original English text')
         self.assertEqual(result, 'Original English text')
+
+
+class TestStripPlugs(unittest.TestCase):
+    """Variant B of the author-plug-filter feature: post-translation
+    inline plug removal."""
+
+    def test_canonical_leak_phrase_removed(self):
+        # The 2026-05-02 14:40 production leak — must be cut.
+        text = "Привет всем коллекционерам. (подписывайтесь на меня в Instagram @diecast215). Конец статьи."
+        result = _strip_plugs(text)
+        self.assertNotIn('@diecast215', result)
+        self.assertNotIn('подписывайтесь', result.lower())
+        self.assertIn('Привет всем коллекционерам.', result)
+        self.assertIn('Конец статьи.', result)
+
+    def test_en_inline_plug_removed(self):
+        text = "Hello readers. Follow me on Instagram @diecast215. End of story."
+        result = _strip_plugs(text)
+        self.assertNotIn('@diecast215', result)
+        self.assertNotIn('follow me', result.lower())
+        self.assertIn('Hello readers.', result)
+        self.assertIn('End of story.', result)
+
+    def test_google_translate_paren_variant(self):
+        # GT might render "follow me on Instagram @x" as different cue verbs
+        # — the parenthesised umbrella with mandatory @handle catches them all.
+        text = "Текст. (посмотрите меня в Instagram @x_collector). Дальше."
+        result = _strip_plugs(text)
+        self.assertNotIn('@x_collector', result)
+        self.assertIn('Текст.', result)
+        self.assertIn('Дальше.', result)
+
+    def test_real_content_with_instagram_preserved(self):
+        # Mention without cue verb / @handle → not a plug.
+        text = "Коллекционер написал в Instagram, что нашёл редкий Chase."
+        self.assertEqual(_strip_plugs(text), text)
+
+    def test_journalistic_paren_no_handle_preserved(self):
+        # No @handle in the parens → not caught by the umbrella.
+        text = "Хорошие фото есть в источнике (см. фото в Instagram)."
+        self.assertEqual(_strip_plugs(text), text)
+
+    def test_corporate_mattel_plug_preserved(self):
+        # AC16 — corporate plug is out of scope; me/us anchor doesn't match.
+        text = "Follow Mattel on Instagram, X, and Facebook for more news."
+        self.assertEqual(_strip_plugs(text), text)
+
+    def test_soft_cue_without_target_preserved(self):
+        # «подписывайтесь на новости индустрии через RSS» — cue verb but
+        # no target/platform anchor; must NOT match.
+        text = "Подписывайтесь на новости индустрии через RSS-агрегаторы — это удобно."
+        self.assertEqual(_strip_plugs(text), text)
+
+    def test_multiple_plugs_one_pass(self):
+        text = "Начало. (подписывайтесь на меня в Instagram @x). Середина. (follow me on Twitter @y). Конец."
+        result = _strip_plugs(text)
+        self.assertNotIn('@x', result)
+        self.assertNotIn('@y', result)
+        self.assertIn('Начало.', result)
+        self.assertIn('Середина.', result)
+        self.assertIn('Конец.', result)
+
+    def test_none_passthrough(self):
+        self.assertIsNone(_strip_plugs(None))
+
+    def test_empty_string_passthrough(self):
+        self.assertEqual(_strip_plugs(''), '')
+
+    def test_idempotent(self):
+        text = "Текст. (подписывайтесь на меня в Instagram @x). Конец."
+        once = _strip_plugs(text)
+        twice = _strip_plugs(once)
+        self.assertEqual(once, twice)
+
+    def test_strip_plugs_in_blocks_drops_empty_paragraph_block(self):
+        blocks = [
+            {"type": "paragraph", "text": "Реальный контент."},
+            {"type": "paragraph", "text": "(подписывайтесь на меня в Instagram @x)"},
+            {"type": "paragraph", "text": "Ещё контент."},
+        ]
+        result = _strip_plugs_in_blocks(blocks)
+        # Block 2 became empty → dropped. Other two kept in order.
+        self.assertEqual(len(result), 2)
+        self.assertEqual(result[0]['text'], 'Реальный контент.')
+        self.assertEqual(result[1]['text'], 'Ещё контент.')
+
+    def test_strip_plugs_in_blocks_keeps_image_with_empty_caption(self):
+        # Image block with caption that becomes empty → image still kept.
+        blocks = [
+            {"type": "image", "src": "https://cdn/x.jpg",
+             "caption": "(подписывайтесь на меня в Instagram @x)"},
+        ]
+        result = _strip_plugs_in_blocks(blocks)
+        self.assertEqual(len(result), 1)
+        self.assertEqual(result[0]['caption'], '')
+
+    def test_strip_plugs_in_blocks_passes_through_video(self):
+        blocks = [{"type": "video", "src": "https://youtube/abc"}]
+        result = _strip_plugs_in_blocks(blocks)
+        self.assertEqual(result, blocks)
 
 
 if __name__ == '__main__':
