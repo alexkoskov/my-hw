@@ -47,9 +47,30 @@ These must be present on the production server (systemd EnvironmentFile or `sour
 
 ---
 
+## Two-instance topology (prod + test on the same VPS)
+
+Both bot instances run on `148.135.207.54` as separate systemd units, each with its own deploy directory, `.env`, `news.db`, and Telegram channel target. The single VPS hosts both.
+
+| Instance | Deploy path | Service | Channel | Branch | Workflow |
+|---|---|---|---|---|---|
+| **prod** | `/home/hwbot/bot/` | `news_bot.service` | `-1004027529994` (prod) | `main` | `deploy.yml` |
+| **test** | `/home/hwbot/bot_test/` | `news_bot_test.service` | `@myhwchannel123` (test) | `dev` | `deploy_test.yml` |
+
+The bot Telegram TOKEN is shared (one bot account posts to both channels). The Anthropic / OpenRouter / etc. API keys are shared (CI writes them to both `.env` files via the respective deploy workflow). Per-instance values that differ:
+
+- `TELEGRAM_CHANNEL_ID`
+- `INSTANCE_LABEL` (`prod` / `test`) — prepended to every admin ping by `news_bot.send_admin_notification` so the operator can distinguish source.
+- `news.db` — independent SQLite files, no contention.
+
+`INSTANCE_LABEL` and `TELEGRAM_CHANNEL_ID` are set ONCE manually on the server and NOT managed by the deploy workflow's strip-then-append rewrite (the workflow's regex strips only LLM-related keys + TZ, leaving everything else untouched).
+
+**Iteration cycle:** `git push origin dev` → CI on dev → `deploy_test.yml` → test instance updates → operator inspects test channel → on confirmation `git checkout main && git merge dev && git push origin main` → CI on main → `deploy.yml` → prod instance updates.
+
 ## Deployment Triggers
 
-**Production (default — GitHub Actions CI):** `git push origin main` → `.github/workflows/ci.yml` runs pytest → on green, `.github/workflows/deploy.yml` triggers via `workflow_run`, SCPs the FILES list to the VPS, runs `pip install --user -r requirements.txt` on the server. One concurrent deploy at a time; queued runs replace pending. Manual override: `Actions → Deploy → Run workflow` (UI button only appears once `deploy.yml` lives on `main`, so the first deploy MUST go through merge-and-push).
+**Production (default — GitHub Actions CI):** `git push origin main` → `.github/workflows/ci.yml` runs pytest → on green, `.github/workflows/deploy.yml` triggers via `workflow_run`, SCPs the FILES list to the VPS at `$DEPLOY_PATH` (= `/home/hwbot/bot/`), runs `pip install --user -r requirements.txt` on the server, then `sudo systemctl restart news_bot.service`. One concurrent prod deploy at a time; queued runs replace pending.
+
+**Test / staging (GitHub Actions CI):** `git push origin dev` → `ci.yml` runs pytest → on green, `.github/workflows/deploy_test.yml` triggers via `workflow_run`, SCPs the same FILES list to `$DEPLOY_PATH_TEST` (= `/home/hwbot/bot_test/`), `pip install`, then `sudo systemctl restart news_bot_test.service`. Independent concurrency group from prod (`deploy-test`). Manual run available via `Actions → Deploy test → Run workflow`.
 
 **GitHub Secrets required** (Settings → Secrets and variables → Actions → New repository secret):
 - `SSH_HOST` — VPS hostname or IP (e.g. `bot.example.com`).
