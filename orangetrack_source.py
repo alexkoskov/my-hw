@@ -776,13 +776,28 @@ class OrangetrackPingAggregator:
         # {code: {link: count}} preserving insertion order via dict semantics.
         self._events: Dict[str, Dict[str, int]] = {}
         self._total_calls = 0
+        # Total count of add() invocations that landed AFTER the
+        # _MAX_TOTAL_EVENTS guard but BEFORE any per-code-link cap dropped
+        # them. Used by format_summary to reflect real event volume in the
+        # header even when the per-code cap (50 links) trips. Distinct from
+        # _total_calls, which counts ALL calls (including ones the
+        # _MAX_TOTAL_EVENTS guard rejects); _total_added counts events that
+        # passed the global guard regardless of the per-code cap.
+        self._total_added = 0
         # Per-code link-list-truncated flag — for the "… N more truncated"
         # marker. Stored separately so we don't grow the dict past cap.
         self._truncated_count: Dict[str, int] = {}
 
     def add(self, code: str, link: str) -> None:
+        # Count every add() invocation up-front so format_summary() can
+        # reflect true event volume in the header — independent of either
+        # the global 500-cap (which silent-drops further calls) or the
+        # per-code link cap (which truncates the bullet list).
+        self._total_added += 1
         if self._total_calls >= _MAX_TOTAL_EVENTS:
-            # Silent no-op — pathological flood guard.
+            # Silent no-op for storage — pathological flood guard. The
+            # header (via _total_added) still reflects the true call
+            # volume, which is what the operator needs for severity.
             return
         self._total_calls += 1
         safe_code = _safe_for_ping(code)
@@ -804,16 +819,22 @@ class OrangetrackPingAggregator:
     def format_summary(self) -> str:
         if self.is_empty():
             return ""
-        # N = number of distinct (code, link) pairs.
-        distinct = sum(len(b) for b in self._events.values())
+        # Header reflects the TRUE volume of events that fired during the
+        # tick (every add() call that passed the global 500-cap), so an
+        # operator triaging a flood sees the real severity even when the
+        # per-code link cap (50) drops some entries from the bullet list.
+        total_events = self._total_added
         prefix = f"[{self.instance_label}] " if self.instance_label else ""
-        header = f"{prefix}orangetrack: {distinct} issues this tick"
+        header = f"{prefix}orangetrack: {total_events} issues this tick"
         lines = [header]
         for code in sorted(self._events.keys(), key=_code_sort_key):
             bucket = self._events[code]
-            count_total = sum(bucket.values())
-            link_list = list(bucket.keys())
+            # count_total includes the per-code truncated overflow so the
+            # bullet count matches the header semantic (events fired, not
+            # links stored).
             extra_truncated = self._truncated_count.get(code, 0)
+            count_total = sum(bucket.values()) + extra_truncated
+            link_list = list(bucket.keys())
             link_str = ", ".join(link_list)
             if extra_truncated:
                 link_str += f" … {extra_truncated} more truncated"

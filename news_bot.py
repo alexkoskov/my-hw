@@ -1398,14 +1398,6 @@ def _fetch_orangetrack_entries(notifier=None):
          ``requests.get`` (defense-in-depth).
     """
     import socket
-    from xml.parsers.expat import ExpatError
-    try:
-        from xml.sax.SAXParseException import SAXParseException  # type: ignore
-    except ImportError:  # pragma: no cover — actual import shape below
-        try:
-            from xml.sax import SAXParseException  # type: ignore
-        except ImportError:
-            SAXParseException = Exception  # type: ignore
     from urllib.error import URLError
 
     aggregator = orangetrack_source.OrangetrackPingAggregator(
@@ -1424,7 +1416,9 @@ def _fetch_orangetrack_entries(notifier=None):
             if isinstance(bozo_exc, (URLError, socket.timeout, ConnectionError, TimeoutError)):
                 aggregator.add('FEED_TIMEOUT', feed_url)
             else:
-                # ExpatError, SAXParseException, malformed XML, etc.
+                # Anything not URLError/socket-timeout/ConnectionError → treat
+                # as XML parse. (feedparser surfaces SAX/Expat parse errors
+                # via bozo_exception too.)
                 aggregator.add('FEED_XML_PARSE', feed_url)
             # bozo doesn't always mean fatal — feedparser still parses what
             # it can. If we got entries despite bozo, fall through and
