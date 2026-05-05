@@ -90,6 +90,15 @@ class _IntegrationBase(unittest.TestCase):
         # Mattel source returns nothing unless a test overrides it.
         self.mattel_patcher = patch('news_bot.fetch_mattel_news', return_value=[])
         self.mattel_patcher.start()
+        # Orangetrack source returns nothing unless a test overrides it
+        # (avoids real network calls to orangetrackdiecast.com). Patch
+        # SOURCES to a narrower list — patching the function attribute
+        # alone doesn't work because SOURCES holds the original reference.
+        self.sources_patcher = patch(
+            'news_bot.SOURCES',
+            [news_bot._fetch_rss_entries, news_bot._fetch_mattel_entries],
+        )
+        self.sources_patcher.start()
 
     def tearDown(self):
         self.db_patcher.stop()
@@ -98,6 +107,7 @@ class _IntegrationBase(unittest.TestCase):
         self.admin_patcher.stop()
         self.notify_patcher.stop()
         self.mattel_patcher.stop()
+        self.sources_patcher.stop()
         if os.path.exists(self.db_path):
             os.unlink(self.db_path)
 

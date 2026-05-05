@@ -210,6 +210,14 @@ class TestDistributedSchedule(unittest.TestCase):
             'news_bot.fetch_mattel_news', return_value=[],
         )
         self.mock_fetch_mattel = self.fetch_mattel_patcher.start()
+        # Narrow SOURCES — patching the function attribute alone doesn't
+        # work because SOURCES holds the original function reference.
+        import news_bot as _nb
+        self.sources_patcher = patch(
+            'news_bot.SOURCES',
+            [_nb._fetch_rss_entries, _nb._fetch_mattel_entries],
+        )
+        self.sources_patcher.start()
         self.fetch_full_patcher = patch(
             'news_bot.fetch_full_article',
             side_effect=lambda e: _create_mock_full_article(
@@ -223,6 +231,7 @@ class TestDistributedSchedule(unittest.TestCase):
     def tearDown(self):
         # Stop in reverse order to avoid surprises.
         self.fetch_full_patcher.stop()
+        self.sources_patcher.stop()
         self.fetch_mattel_patcher.stop()
         self.fetch_rss_patcher.stop()
         self.load_feeds_patcher.stop()

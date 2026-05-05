@@ -80,8 +80,17 @@ class TestMattelIntegration(unittest.TestCase):
         self.sleep_patcher.start()
         self.fallback_patcher = patch("news_bot._fallback_publish")
         self.fallback_patcher.start()
+        # Keep orangetrack silent (no real network traffic). Narrow
+        # SOURCES — patching the function attribute alone doesn't work
+        # because SOURCES holds the original function reference.
+        self.sources_patcher = patch(
+            "news_bot.SOURCES",
+            [news_bot._fetch_rss_entries, news_bot._fetch_mattel_entries],
+        )
+        self.sources_patcher.start()
 
     def tearDown(self):
+        self.sources_patcher.stop()
         self.fallback_patcher.stop()
         self.sleep_patcher.stop()
         self.db_patcher.stop()

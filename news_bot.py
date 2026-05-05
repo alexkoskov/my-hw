@@ -34,6 +34,7 @@ from telegram.error import TelegramError
 from mattel_news_source import fetch_mattel_news, fetch_mattel_article
 import autoevolution_source
 import lamley_source
+import orangetrack_source
 import telegraph_publisher
 from telegraph_publisher import TelegraphError
 
@@ -743,11 +744,13 @@ def _source_hashtag(source_url):
 # TLD-stripped form (`#lamleygroup`, not `#lamley`) for continuity with the
 # existing channel format.
 NETLOC_TO_SOURCE = {
-    'www.autoevolution.com': 'autoevolution',
-    'autoevolution.com':     'autoevolution',
-    'lamleygroup.com':       'lamley',
-    'www.lamleygroup.com':   'lamley',
-    'corporate.mattel.com':  'mattel',
+    'www.autoevolution.com':         'autoevolution',
+    'autoevolution.com':             'autoevolution',
+    'lamleygroup.com':               'lamley',
+    'www.lamleygroup.com':           'lamley',
+    'corporate.mattel.com':          'mattel',
+    'orangetrackdiecast.com':        'orangetrack',
+    'www.orangetrackdiecast.com':    'orangetrack',
 }
 
 
@@ -778,11 +781,13 @@ SOURCE_EMOJI = {
     'autoevolution': '\U0001F7E0',  # orange circle
     'mattel':        '\U0001F7E3',  # purple circle
     'lamley':        '\U0001F7E2',  # green circle
+    'orangetrack':   '\U0001F535',  # blue circle
 }
 SOURCE_LABEL = {
     'autoevolution': 'autoevolution',
     'mattel':        'mattel',
     'lamley':        'lamley',
+    'orangetrack':   'orangetrack',
 }
 
 def send_telegraph_teaser(telegraph_url, source_url):
@@ -1273,6 +1278,24 @@ def fetch_full_article(entry):
     link = entry.get('link') or ''
     domain = urlparse(link).netloc.lower()
     try:
+        if 'orangetrackdiecast.com' in domain:
+            # Pass-through: body fields already populated by
+            # ``_fetch_orangetrack_entries`` (Decision 4 — full parse cycle
+            # runs at fetch-time so the per-tick aggregator can see both
+            # FEED_* and ART_* events). No second HTTP fetch.
+            paragraphs = entry.get('paragraphs')
+            if not paragraphs:
+                logger.warning(
+                    f"Orangetrack entry without pre-populated paragraphs: {link}"
+                )
+                return None
+            return {
+                'title': entry.get('title') or '',
+                'subtitle': entry.get('subtitle') or '',
+                'paragraphs': paragraphs,
+                'images': entry.get('images') or [],
+                'blocks': entry.get('blocks'),
+            }
         if 'corporate.mattel.com' in domain:
             return fetch_mattel_article(link, notifier=send_admin_notification)
         if 'lamleygroup.com' in domain:
@@ -1357,12 +1380,106 @@ def _fetch_mattel_entries(notifier=None):
     return items
 
 
+def _fetch_orangetrack_entries(notifier=None):
+    """Fetch orangetrackdiecast.com feed and parse every entry's body in-place.
+
+    Returns a list of plain dicts with body fields (title / subtitle /
+    paragraphs / images / blocks) already populated — ``fetch_full_article``
+    is then a pass-through (Decision 4). One ``OrangetrackPingAggregator``
+    instance lives only inside this function's stack frame, collects feed-
+    and article-level events via ``aggregator.add`` (passed as ``notifier``
+    callback into ``fetch_orangetrack_article``), and emits a single
+    aggregated admin-ping at end of the function via try/finally.
+
+    SSRF guard runs at TWO call sites (Decision 13):
+      1. Entry-level: ``_is_allowed_orangetrack_url(entry.link)`` BEFORE the
+         entry enters parsing — closes content-spoofing via poisoned link.
+      2. Fallback-HTTP: inside ``fetch_orangetrack_article`` before
+         ``requests.get`` (defense-in-depth).
+    """
+    import socket
+    from xml.parsers.expat import ExpatError
+    try:
+        from xml.sax.SAXParseException import SAXParseException  # type: ignore
+    except ImportError:  # pragma: no cover — actual import shape below
+        try:
+            from xml.sax import SAXParseException  # type: ignore
+        except ImportError:
+            SAXParseException = Exception  # type: ignore
+    from urllib.error import URLError
+
+    aggregator = orangetrack_source.OrangetrackPingAggregator(
+        instance_label=os.getenv('INSTANCE_LABEL'),
+    )
+    results = []
+    feed_url = orangetrack_source._FEED_URL
+    try:
+        parsed = feedparser.parse(feed_url)
+        status = parsed.get('status', 200) if hasattr(parsed, 'get') else getattr(parsed, 'status', 200)
+        if status and status >= 400:
+            aggregator.add(f'FEED_HTTP_{status}', feed_url)
+            return []
+        if getattr(parsed, 'bozo', 0):
+            bozo_exc = getattr(parsed, 'bozo_exception', None)
+            if isinstance(bozo_exc, (URLError, socket.timeout, ConnectionError, TimeoutError)):
+                aggregator.add('FEED_TIMEOUT', feed_url)
+            else:
+                # ExpatError, SAXParseException, malformed XML, etc.
+                aggregator.add('FEED_XML_PARSE', feed_url)
+            # bozo doesn't always mean fatal — feedparser still parses what
+            # it can. If we got entries despite bozo, fall through and
+            # process them. If empty, return [].
+            if not parsed.entries:
+                return []
+
+        for entry in parsed.entries:
+            link = entry.get('link') if hasattr(entry, 'get') else getattr(entry, 'link', None)
+            if not orangetrack_source._is_allowed_orangetrack_url(link):
+                aggregator.add('ENTRY_HOST_REJECTED', link or '')
+                continue
+            try:
+                article = orangetrack_source.fetch_orangetrack_article(
+                    entry, notifier=aggregator.add,
+                )
+            except Exception as exc:
+                logger.exception(
+                    f"orangetrack article fetch raised for {link}: {exc}"
+                )
+                aggregator.add('ART_PARSE_EXCEPTION', link or '')
+                continue
+            if article is None:
+                continue
+            item = {
+                'link': link,
+                'title': entry.get('title') if hasattr(entry, 'get') else getattr(entry, 'title', '') or '',
+                'published': (entry.get('published', '') if hasattr(entry, 'get') else getattr(entry, 'published', '')) or '',
+                'summary': (entry.get('summary', '') if hasattr(entry, 'get') else getattr(entry, 'summary', '')) or '',
+                'feed_url': feed_url,
+                'source_name': 'orangetrack',
+                'subtitle': article.get('subtitle') or '',
+                'paragraphs': article.get('paragraphs') or [],
+                'images': article.get('images') or [],
+                'blocks': article.get('blocks'),
+            }
+            # Prefer parsed title only if non-empty (content:encoded usually
+            # has no h1; RSS entry.title is the canonical title).
+            parsed_title = article.get('title') or ''
+            if parsed_title:
+                item['title'] = parsed_title
+            results.append(item)
+    finally:
+        if not aggregator.is_empty():
+            aggregator.emit(send_admin_notification)
+    return results
+
+
 # Module-level registry the prep phase (Task 6) will iterate. Order matters
 # only for log readability — RSS first (fastest, cheapest), Mattel second
-# (single HTTP fetch + HTML parse).
+# (single HTTP fetch + HTML parse), orangetrack last (per-entry parse).
 SOURCES = [
     _fetch_rss_entries,
     _fetch_mattel_entries,
+    _fetch_orangetrack_entries,
 ]
 
 

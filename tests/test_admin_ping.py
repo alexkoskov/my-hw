@@ -26,23 +26,29 @@ from news_bot import (
 # ---------------------------------------------------------------------------
 
 class TestSourceVocabulary:
-    """Decision 4 - keys are exactly {'autoevolution','mattel','lamley'}."""
+    """Decision 4 - keys are the registered source labels."""
 
     def test_source_emoji_has_exact_keys(self):
-        assert set(SOURCE_EMOJI) == {'autoevolution', 'mattel', 'lamley'}
+        assert set(SOURCE_EMOJI) == {
+            'autoevolution', 'mattel', 'lamley', 'orangetrack',
+        }
 
     def test_source_label_has_exact_keys(self):
-        assert set(SOURCE_LABEL) == {'autoevolution', 'mattel', 'lamley'}
+        assert set(SOURCE_LABEL) == {
+            'autoevolution', 'mattel', 'lamley', 'orangetrack',
+        }
 
     def test_source_emoji_values(self):
         assert SOURCE_EMOJI['autoevolution'] == '\U0001F7E0'
         assert SOURCE_EMOJI['mattel'] == '\U0001F7E3'
         assert SOURCE_EMOJI['lamley'] == '\U0001F7E2'
+        assert SOURCE_EMOJI['orangetrack'] == '\U0001F535'
 
     def test_source_label_values(self):
         assert SOURCE_LABEL['autoevolution'] == 'autoevolution'
         assert SOURCE_LABEL['mattel'] == 'mattel'
         assert SOURCE_LABEL['lamley'] == 'lamley'
+        assert SOURCE_LABEL['orangetrack'] == 'orangetrack'
 
     def test_no_rss_key(self):
         # user-spec / Decision 4: lamley also arrives via RSS, so no

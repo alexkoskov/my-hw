@@ -38,6 +38,15 @@ class TestJobIteration(unittest.TestCase):
         # Keep Mattel silent unless a test changes it.
         self.mattel_patcher = patch('news_bot.fetch_mattel_news', return_value=[])
         self.mattel_patcher.start()
+        # Keep Orangetrack silent unless a test changes it (no real
+        # network call into orangetrackdiecast.com). Patch SOURCES to a
+        # narrower list — patching `_fetch_orangetrack_entries` doesn't
+        # work because SOURCES holds the original function reference.
+        self.sources_patcher = patch(
+            'news_bot.SOURCES',
+            [news_bot._fetch_rss_entries, news_bot._fetch_mattel_entries],
+        )
+        self.sources_patcher.start()
         # Default: no full-article fetch network traffic.
         self.fetch_article_patcher = patch(
             'news_bot.fetch_full_article',
@@ -58,6 +67,7 @@ class TestJobIteration(unittest.TestCase):
         self.fallback_patcher.stop()
         self.sleep_patcher.stop()
         self.fetch_article_patcher.stop()
+        self.sources_patcher.stop()
         self.mattel_patcher.stop()
         self.admin_patcher.stop()
         self.db_patcher.stop()

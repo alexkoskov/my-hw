@@ -49,11 +49,13 @@ class TestNetlocToSource:
             'lamleygroup.com',
             'www.lamleygroup.com',
             'corporate.mattel.com',
+            'orangetrackdiecast.com',
+            'www.orangetrackdiecast.com',
         }
 
     def test_values_are_only_the_three_source_names(self):
         assert set(NETLOC_TO_SOURCE.values()) == {
-            'autoevolution', 'lamley', 'mattel',
+            'autoevolution', 'lamley', 'mattel', 'orangetrack',
         }
 
     def test_autoevolution_both_netlocs(self):
@@ -324,6 +326,7 @@ class TestSourcesRegistry:
         assert [f.__name__ for f in SOURCES] == [
             '_fetch_rss_entries',
             '_fetch_mattel_entries',
+            '_fetch_orangetrack_entries',
         ]
 
     def test_sources_are_callables(self):
@@ -335,6 +338,9 @@ class TestSourcesRegistry:
         monkeypatch.setattr(news_bot, 'load_feeds', lambda: [])
         monkeypatch.setattr(news_bot, 'fetch_rss', lambda url: [])
         monkeypatch.setattr(news_bot, 'fetch_mattel_news', lambda notifier=None: [])
+        # Orangetrack feedparser → empty (no network).
+        empty_parsed = type('P', (), {'entries': [], 'bozo': 0, 'status': 200, 'get': lambda self, k, d=None: 200 if k == 'status' else d})()
+        monkeypatch.setattr('feedparser.parse', lambda url: empty_parsed)
 
         collected = []
         for fetcher in SOURCES:
