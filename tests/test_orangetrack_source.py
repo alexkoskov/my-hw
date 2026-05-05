@@ -217,6 +217,28 @@ class TestPrimaryPath:
         out = fetch_orangetrack_article(entry)
         assert out is None
 
+    def test_multiple_iframes_in_one_paragraph(self):
+        # Tech-spec line 365: "Multiple <iframe> in same paragraph block →
+        # blocks list contains 2 video entries in order". Regression guard
+        # against the parser emitting only the first iframe.
+        html = (
+            "<p>Watch:</p>"
+            "<p>"
+            "<iframe src='https://www.youtube.com/embed/A123abcXYZ'></iframe>"
+            "<iframe src='https://www.youtube.com/embed/B456defABC'></iframe>"
+            "</p>"
+        )
+        out = fetch_orangetrack_article(_make_entry(html))
+        assert out is not None
+        videos = [b for b in out["blocks"] if b["type"] == "video"]
+        assert len(videos) == 2
+        # Both wrapped via Telegra.ph proxy.
+        for v in videos:
+            assert v["src"].startswith("https://telegra.ph/embed/youtube?url=")
+        # Order preserved: A123 comes before B456.
+        assert "A123abcXYZ" in videos[0]["src"]
+        assert "B456defABC" in videos[1]["src"]
+
 
 # ---------------------------------------------------------------------------
 # TestSSRFAllowlist — _is_allowed_orangetrack_url + entry-level guard
@@ -543,8 +565,9 @@ class TestOrangetrackPingAggregator:
         a.add("FEED_HTTP_503", "https://x/y")
         out = a.format_summary()
         assert "(2×)" in out
-        # N = 1 distinct (code, link) pair despite 2 add() calls.
-        assert "1 issues this tick" in out
+        # Header reflects total events fired (2 add() calls), not just
+        # distinct (code, link) pairs — operator-severity semantic.
+        assert "2 issues this tick" in out
 
     def test_distinct_status_codes_separate_lines(self):
         a = OrangetrackPingAggregator("test")
@@ -601,13 +624,40 @@ class TestOrangetrackPingAggregator:
         # Truncation marker present — not all 60 links visible.
         assert "more truncated" in out
 
-    def test_total_event_cap_500_silent(self):
+    def test_header_count_includes_truncated_overflow(self):
+        # 60 distinct (code, link) pairs of the same code → only 50 stored
+        # in the bullet's link list, but the header MUST reflect all 60
+        # events that fired so the operator's severity assessment is honest.
+        # Per-code count must also include the truncated tail.
         a = OrangetrackPingAggregator("test")
-        # 600 distinct codes — past 500 cap, additional adds are no-ops.
+        for i in range(60):
+            a.add("FEED_HTTP_503", f"https://orangetrackdiecast.com/post-{i}")
+        out = a.format_summary()
+        # Header reports the TRUE total (events fired), not stored count.
+        assert "60 issues this tick" in out
+        # Per-bucket count also reflects the truncated overflow.
+        assert "FEED_HTTP_503 (60×)" in out
+        # Truncation marker for the link list itself stays at the tail.
+        assert "10 more truncated" in out
+
+    def test_total_event_cap_500_silent(self):
+        from orangetrack_source import _MAX_TOTAL_EVENTS
+        a = OrangetrackPingAggregator("test")
+        # 600 distinct codes — past 500 cap, additional adds are silent
+        # no-ops (no raise, no storage).
         for i in range(600):
             a.add(f"FEED_HTTP_{i}", f"https://x/{i}")
-        # Distinct (code, link) pairs ≤ 500 (per the cap on add() calls).
         out = a.format_summary()
+        # Storage cap is bound: only 500 events were stored (litmus: if the
+        # _MAX_TOTAL_EVENTS guard at orangetrack_source.py is removed, this
+        # assertion fails because _total_calls would reach 600).
+        assert a._total_calls == _MAX_TOTAL_EVENTS  # 500
+        distinct_stored = sum(len(b) for b in a._events.values())
+        assert distinct_stored == _MAX_TOTAL_EVENTS  # 500
+        # Header reflects the TRUE event volume (600), not just stored
+        # count — operator severity signal must not be muted by the
+        # internal storage cap.
+        assert "600 issues this tick" in out
         # Format summary still emits — must not raise.
         assert "issues this tick" in out
 
@@ -654,6 +704,93 @@ class TestOrangetrackPingAggregator:
         errors = [r for r in caplog.records if r.levelno == logging.ERROR]
         assert any("send_fn raised" in r.getMessage() or "swallowing" in r.getMessage()
                    for r in errors)
+
+
+# ---------------------------------------------------------------------------
+# TestDispatcherIntegration — news_bot.fetch_full_article orangetrack branch
+# ---------------------------------------------------------------------------
+
+
+class TestDispatcherIntegration:
+    """Verifies the orangetrack pass-through branch in
+    ``news_bot.fetch_full_article`` (news_bot.py:1281-1298).
+
+    The branch is the contract that ``_fetch_orangetrack_entries`` upstream
+    pre-populates body fields and ``fetch_full_article`` is then a
+    zero-HTTP pass-through. Without these tests the branch can be deleted
+    or swapped for a fallback HTTP fetch with no test failure (M1 in
+    test-audit.md).
+    """
+
+    def test_dispatcher_routes_orangetrack_apex_passthrough(self):
+        import news_bot
+        entry = {
+            "link": "https://orangetrackdiecast.com/post-x",
+            "title": "T",
+            "subtitle": "S",
+            "paragraphs": ["Body para 1", "Body para 2"],
+            "images": ["https://orangetrackdiecast.com/img.jpg"],
+            "blocks": [{"type": "paragraph", "text": "Body para 1"}],
+        }
+        with patch("orangetrack_source.requests.get") as mock_get:
+            out = news_bot.fetch_full_article(entry)
+        assert out is not None
+        assert out["title"] == "T"
+        assert out["subtitle"] == "S"
+        assert out["paragraphs"] == ["Body para 1", "Body para 2"]
+        assert out["images"] == ["https://orangetrackdiecast.com/img.jpg"]
+        assert out["blocks"] == [{"type": "paragraph", "text": "Body para 1"}]
+        # Zero HTTP — pass-through must NOT issue any GET.
+        assert mock_get.call_count == 0
+
+    def test_dispatcher_routes_orangetrack_www_passthrough(self):
+        import news_bot
+        entry = {
+            "link": "https://www.orangetrackdiecast.com/post-y",
+            "title": "T2",
+            "subtitle": "",
+            "paragraphs": ["www-host paragraph"],
+            "images": [],
+            "blocks": None,
+        }
+        with patch("orangetrack_source.requests.get") as mock_get:
+            out = news_bot.fetch_full_article(entry)
+        assert out is not None
+        assert out["paragraphs"] == ["www-host paragraph"]
+        assert mock_get.call_count == 0
+
+    def test_dispatcher_orangetrack_subdomain_attack_does_not_route(self):
+        # Defense-in-depth: dispatcher's substring `'orangetrackdiecast.com'
+        # in domain` would route this to the orangetrack branch — but the
+        # entry here lacks pre-populated paragraphs (a malicious upstream
+        # entry would have been rejected by _fetch_orangetrack_entries'
+        # ENTRY_HOST_REJECTED guard and never reached here with body
+        # fields). Pass-through MUST return None — body fields from the
+        # entry must NOT be returned.
+        import news_bot
+        entry = {
+            "link": "https://orangetrackdiecast.com.attacker.example/x",
+            "title": "Bad",
+            # No 'paragraphs' field at all.
+        }
+        with patch("orangetrack_source.requests.get") as mock_get:
+            out = news_bot.fetch_full_article(entry)
+        assert out is None
+        assert mock_get.call_count == 0
+
+    def test_dispatcher_orangetrack_without_pre_populated_paragraphs_returns_none(self):
+        # Safety check at news_bot.py:1287-1291 — entry without paragraphs
+        # field returns None rather than synthesizing an empty article.
+        import news_bot
+        entry = {
+            "link": "https://orangetrackdiecast.com/post-z",
+            "title": "T",
+            # No 'paragraphs' key.
+        }
+        with patch("orangetrack_source.requests.get") as mock_get:
+            out = news_bot.fetch_full_article(entry)
+        assert out is None
+        assert mock_get.call_count == 0
 
 
 # ---------------------------------------------------------------------------
