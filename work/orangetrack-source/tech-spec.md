@@ -17,7 +17,7 @@ Add a 4th news source — `orangetrackdiecast.com` (Brad Bannach's solo Hot Whee
 - **`fetch_full_article` for orangetrack URLs** is a pass-through — reads pre-populated body fields from the entry dict (already filled by `_fetch_orangetrack_entries`) and returns the canonical contract dict. No second HTTP fetch.
 - **Boilerplate filter extension** — 1-3 patterns appended to `_BOILERPLATE_PATTERNS` in `boilerplate_filter.py` for standalone short affiliate lines (`*QUICK LINK!* Buy from <store> now.` shape, length ≤ 120 chars). All new patterns anchored at start (`^`), no nested greedy quantifiers (ReDoS-safe). Inline affiliate sentences inside real paragraphs are out of scope (deferred per user-spec Q5 = I).
 - **Routing wiring** in `news_bot.py` — `NETLOC_TO_SOURCE` adds the two host variants (apex + www), `SOURCE_EMOJI` adds 🔵, `SOURCE_LABEL` adds the label, `fetch_full_article` dispatcher gets a new domain branch (pass-through, see above).
-- **Deploy plumbing** — `feeds.json` adds the feed URL (used by `_fetch_orangetrack_entries`, NOT iterated through shared `_fetch_rss_entries`), `deploy.sh` and `.github/workflows/deploy.yml` FILES list both add `orangetrack_source.py` (project INVARIANT — drift between the two breaks the production cron tick on next restart).
+- **Deploy plumbing** — `deploy.sh` and `.github/workflows/deploy.yml` FILES list both add `orangetrack_source.py` (project INVARIANT — drift between the two breaks the production cron tick on next restart). `feeds.json` is **NOT modified** — orangetrack feed URL lives as a module-level constant inside `orangetrack_source.py` (mirrors mattel_news_source's hardcoded URL convention). This keeps `_fetch_rss_entries` untouched and avoids a duplicate-fetch bug.
 - **Tests** — new `tests/test_orangetrack_source.py` (~40-50 unit cases including aggregator lifecycle, SSRF allowlist, security guards), additions to `tests/test_boilerplate_filter.py` for affiliate patterns (~3-5 cases), one-line update to `tests/test_sources_registry.py` set assertion.
 
 The feature is purely additive at the runtime path level: existing autoevolution / lamley / mattel parsers and the shared `_fetch_rss_entries` are untouched. Telegraph publisher's existing block-or-flat renderer auto-selects blocks-path when present — no changes there. LLM transcreation goes through the existing `ux-guidelines.md` system prompt unchanged. The existing `claude_transcreation._translate_block_strings` (Variant B+) and `_patch_text_with_ru_paragraphs` already handle blocks-shaped output → ru_blocks for the channel — verified at [`claude_transcreation.py:159, 436`](../../../claude_transcreation.py#L159).
@@ -33,7 +33,7 @@ The feature is purely additive at the runtime path level: existing autoevolution
 - **`news_bot._fetch_orangetrack_entries` (new function)** — entry in `SOURCES` registry. Constructs a fresh `OrangetrackPingAggregator` instance, fetches the feed, iterates entries, calls `orangetrack_source.fetch_orangetrack_article(entry, notifier=aggregator.add)` for each entry, attaches the parsed body fields back onto the entry dict, emits aggregator at end via `aggregator.emit(send_admin_notification)` if bag non-empty. Whole function wrapped in try/finally so aggregator is GC'd cleanly even on exceptions.
 - **`news_bot.SOURCES` (modify)** — append `_fetch_orangetrack_entries` to the registry list.
 - **`boilerplate_filter._BOILERPLATE_PATTERNS` (modify)** — append 1-3 affiliate-line regexes. All anchored at `^`, no nested greedy groups.
-- **`feeds.json` (modify)** — append `https://orangetrackdiecast.com/feed/` (3 → 4 entries; cap 5 in `news_bot.load_feeds` still respected). Used by `_fetch_orangetrack_entries` only — `_fetch_rss_entries` filters this URL out (or `_fetch_orangetrack_entries` reads it directly without going through `load_feeds`, see Decision 4).
+- **`feeds.json` (NOT modified)** — orangetrack feed URL stays out of `feeds.json`. Lives as module-level constant `_FEED_URL = 'https://orangetrackdiecast.com/feed/'` in `orangetrack_source.py`. This mirrors `mattel_news_source`'s hardcoded URL and avoids modifying the shared `_fetch_rss_entries` iteration path (Decision 4 resolves the OR-branch in favor of a constant).
 - **`deploy.sh` FILES list (modify)** — append `orangetrack_source.py`.
 - **`.github/workflows/deploy.yml` FILES list (modify)** — append `orangetrack_source.py`. Must mirror `deploy.sh` byte-for-byte.
 - **`tests/test_orangetrack_source.py` (new)** — unit coverage including SSRF allowlist guard, aggregator lifecycle, primary path, fallback path, edge cases.
@@ -51,15 +51,15 @@ Step (b1) — fetch + filter + insert
   ▼
 Iterate SOURCES = [_fetch_rss_entries, _fetch_mattel_entries, _fetch_orangetrack_entries]
   │
-  ├── _fetch_rss_entries     ◀── unchanged; iterates feeds.json EXCLUDING orangetrack URL
+  ├── _fetch_rss_entries     ◀── unchanged; iterates feeds.json (which still has 3 URLs — autoevolution × 2 + lamley)
   ├── _fetch_mattel_entries  ◀── unchanged
-  └── _fetch_orangetrack_entries  ◀── NEW
+  └── _fetch_orangetrack_entries  ◀── NEW; URL = module-level constant orangetrack_source._FEED_URL
         │
         ▼
         aggregator = OrangetrackPingAggregator(instance_label=os.getenv('INSTANCE_LABEL'))
         try:
           ▼
-          response = requests.get('https://orangetrackdiecast.com/feed/',
+          response = requests.get(orangetrack_source._FEED_URL,
                                   timeout=REQUEST_TIMEOUT,
                                   allow_redirects=False,
                                   stream=False)  # feed is small; no streaming
@@ -75,6 +75,9 @@ Iterate SOURCES = [_fetch_rss_entries, _fetch_mattel_entries, _fetch_orangetrack
           └── 200 + valid XML, entries = [...]
               ▼
               For each entry:
+                if not _is_allowed_orangetrack_url(entry['link']):
+                    aggregator.add('ENTRY_HOST_REJECTED', entry['link'])
+                    continue  # skip this entry, never reaches pending_articles
                 article = orangetrack_source.fetch_orangetrack_article(
                     entry, notifier=aggregator.add
                 )
@@ -165,9 +168,11 @@ The aggregator is the only stateful resource introduced. **Function-local, no mo
 
 **Supports user-spec:** AC14, R1.
 
-### Decision 4: Separate `_fetch_orangetrack_entries` doing FULL parse cycle in one place
-**Decision:** Add a new fetcher function `_fetch_orangetrack_entries` to the `SOURCES` registry list. It fetches the feed AND parses every entry's body inside the same function call. Returns enriched entries with `title`, `subtitle`, `paragraphs`, `images`, `blocks` already populated. The orangetrackdiecast feed URL stays in `feeds.json` for configuration but is filtered out of `_fetch_rss_entries`'s iteration scope (or `_fetch_orangetrack_entries` reads its URL from a constant rather than `feeds.json` — implementation choice deferred to Task 1).
+### Decision 4: Separate `_fetch_orangetrack_entries` doing FULL parse cycle in one place; URL is a module constant (NOT in feeds.json)
+**Decision:** Add a new fetcher function `_fetch_orangetrack_entries` to the `SOURCES` registry list. It fetches the feed AND parses every entry's body inside the same function call. Returns enriched entries with `title`, `subtitle`, `paragraphs`, `images`, `blocks` already populated. **Feed URL is a module-level constant `_FEED_URL = 'https://orangetrackdiecast.com/feed/'` in `orangetrack_source.py`** — it does NOT appear in `feeds.json`. `_fetch_rss_entries` is not touched in any way; `feeds.json` keeps its 3 existing URLs unchanged.
 **Rationale:** The admin-ping aggregator (Decision 5) needs to see BOTH feed-level events (FEED_*) AND per-article events (ART_*). If we only fetch entries here and let per-article parsing happen later in step b3 via `fetch_full_article`, the aggregator's emit() would fire too early and ART_* events would be silently lost. By doing the full parse cycle inside `_fetch_orangetrack_entries`, the aggregator stays alive for the whole event window and emits exactly once at the end. As a side effect, `fetch_full_article` for orangetrack URLs becomes a trivial pass-through (entry already has body fields). This is also the smallest change at the integration boundary and preserves the existing per-source isolation (one source's failure doesn't block others).
+
+**Why `_FEED_URL` is a constant, not in `feeds.json`:** Adding the URL to `feeds.json` would make `_fetch_rss_entries` fetch it as well (it iterates `load_feeds()` unconditionally — no per-URL filter capability), causing a duplicate fetch and producing shadow entries with no body fields that get silently dropped at `news_bot.py:1510` paragraphs gate. Adding a filter to `_fetch_rss_entries` touches the shared function used by 3 existing sources (Alternative A, rejected). Constant-in-module mirrors the `mattel_news_source` pattern — Mattel's `NEWS_URL` is hardcoded too. If Brad ever changes the feed URL, operator edits one constant + redeploys. Same operational pattern as for any other source.
 **Alternatives considered:**
 - (A) Modify shared `_fetch_rss_entries` with optional aggregator parameter. Rejected — touches shared function used by 3 existing sources.
 - (B) Module-level `_active_aggregator` singleton spanning b1 → b3. Rejected — global mutable state, concurrency risk, cleanup-on-exception fragility.
@@ -189,12 +194,13 @@ Format spec (matches user-spec AC6):
   • <CODE> (<count>×) — <link>
 ```
 - N is the number of distinct (code, link) pairs (not raw add() count).
-- Codes ordered: `FEED_*` group before `ART_*` group; alphabetical within each group (with status-suffix codes treated as full strings — `FEED_HTTP_429` comes before `FEED_HTTP_503` alphabetically and both are distinct entries from `FEED_TIMEOUT`).
+- Full code taxonomy: `FEED_HTTP_<status>`, `FEED_TIMEOUT`, `FEED_XML_PARSE` (feed-level); `ENTRY_HOST_REJECTED` (Decision 13 entry-level guard, primary-path SSRF defense); `ART_FALLBACK_HTTP_<status>`, `ART_FALLBACK_TIMEOUT`, `ART_FALLBACK_HOST_REJECTED` (Decision 13 fallback-level guard), `ART_FALLBACK_REDIRECT_<status>` (Decision 1 — redirect rejected), `ART_FALLBACK_TOO_LARGE` (Decision 1 — body exceeded 5 MB cap), `ART_FALLBACK_PARSE_EMPTY`, `ART_PARSE_EXCEPTION`.
+- Codes ordered: `FEED_*` group before `ENTRY_*` before `ART_*`; alphabetical within each group (with status-suffix codes treated as full strings — `FEED_HTTP_429` comes before `FEED_HTTP_503` alphabetically and both are distinct entries from `FEED_TIMEOUT`).
 - `<INSTANCE_LABEL>` prefix omitted when env var `INSTANCE_LABEL` is unset / empty.
 
-**Sanitization:** `add()` runs each `code` and `link` through a `_safe_for_ping(s)` helper that strips ASCII control chars (`\r`, `\n`, `\t`, `\x00`-`\x1f`), truncates link to 200 chars, and replaces non-printable bytes with `?`. Prevents log/admin-ping spoofing via crafted feed link strings.
+**Sanitization:** `add()` runs each `code` and `link` through a `_safe_for_ping(s)` helper. Order of operations: (1) strip ASCII control chars (`\r`, `\n`, `\t`, `\x00`-`\x1f`); (2) replace any remaining non-printable bytes with `?`; (3) truncate to 200 chars (with `…` suffix when truncated). Strict order so a malicious string can't smuggle a control byte by being just under 200 chars before sanitization. Prevents log/admin-ping spoofing via crafted feed link strings.
 
-`emit(send_fn)`: calls `send_fn(format_summary())`. If `send_fn` raises, the exception is logged at ERROR level and **swallowed** (do not propagate — admin-ping failure must not break the cron tick).
+`emit(send_fn)`: calls `send_fn(format_summary())`. If `send_fn` raises, the exception is **logged at ERROR level via the module logger** (so journalctl shows the failure with full traceback) and then **swallowed** — do not propagate. Admin-ping send failure must not break the cron tick. The ERROR log line is the operator's only signal of admin-ping delivery failure (the channel still publishes; the user-spec already accepts that admin-ping failure is non-fatal).
 
 **Rationale:** Operator wants ONE message per tick with codes for fast triage (Q11). Bounds prevent feed-bug-induced ping flood and Telegram message-size overflow. Sanitization prevents attacker-controlled link strings from spoofing fake ping lines. Emit-swallows-error keeps the cron tick robust.
 **Alternatives considered:**
@@ -218,7 +224,7 @@ Format spec (matches user-spec AC6):
 **Supports user-spec:** "Ограничения" — "Нет новых зависимостей".
 
 ### Decision 8: YouTube embed wrapper with hostname allowlist
-**Decision:** Replicate the YouTube ID regex + `https://telegra.ph/embed/youtube?url=<urlencoded>` wrapper inside `orangetrack_source.py`. **Critical addition over the autoevolution copy:** before applying the YouTube ID regex, the iframe `src` attribute is parsed via `urlparse()` and its hostname must be in the allowlist `('youtube.com', 'www.youtube.com', 'youtu.be', 'www.youtu.be')`. Iframes from other hostnames (e.g. attacker-controlled URL containing the substring `youtube.com/embed/`) are dropped from the blocks list entirely.
+**Decision:** Replicate the YouTube ID regex + `https://telegra.ph/embed/youtube?url=<urlencoded>` wrapper inside `orangetrack_source.py`. **Critical addition over the autoevolution copy:** before applying the YouTube ID regex, the iframe `src` attribute is parsed via `urlparse()` and its hostname must be in the allowlist `('youtube.com', 'www.youtube.com', 'm.youtube.com', 'music.youtube.com', 'youtube-nocookie.com', 'www.youtube-nocookie.com', 'youtu.be')`. (Note: `youtu.be` is the canonical short-link host with no www variant. `youtube-nocookie.com` is YouTube's privacy-enhanced embed domain and is commonly used by WordPress YouTube plugins.) Iframes from other hostnames (e.g. attacker-controlled URL containing the substring `youtube.com/embed/`) are dropped from the blocks list entirely.
 **Rationale:** Cross-importing private-prefixed `_video_embed_url` from autoevolution is a private-API violation. Five lines duplication is cheaper than introducing a shared module. The hostname allowlist gate is the security upgrade — autoevolution's `.search()` matches anywhere in the string, so a non-YouTube URL containing the substring would be falsely wrapped. Adding the allowlist closes the content-spoofing primitive identified by security audit.
 **Alternatives considered:**
 - (A) Import `autoevolution_source._video_embed_url`. Rejected — private-API + same security gap.
@@ -259,8 +265,12 @@ Format spec (matches user-spec AC6):
 
 **Supports user-spec:** Q5 = I, AC8, AC10.
 
-### Decision 13: SSRF allowlist guard `_is_allowed_orangetrack_url`
-**Decision:** Inside `orangetrack_source.py`, function `_is_allowed_orangetrack_url(link: str) -> bool` performs an exact-host-match check against `_ALLOWED_HOSTS = ('orangetrackdiecast.com', 'www.orangetrackdiecast.com')`. Returns False for non-http(s) schemes, malformed URLs, or hosts that aren't an exact allowlist match. Called as the FIRST check inside `fetch_orangetrack_article` BEFORE any HTTP fetch. Failure path: notifier called with `'ART_FALLBACK_HOST_REJECTED'` code; return None.
+### Decision 13: SSRF allowlist guard `_is_allowed_orangetrack_url` (TWO call sites)
+**Decision:** Inside `orangetrack_source.py`, function `_is_allowed_orangetrack_url(link: str) -> bool` performs an exact-host-match check against `_ALLOWED_HOSTS = ('orangetrackdiecast.com', 'www.orangetrackdiecast.com')`. Returns False for non-http(s) schemes, malformed URLs, or hosts that aren't an exact allowlist match.
+
+**Two call sites:**
+1. **Entry-level guard in `_fetch_orangetrack_entries`** — called for EACH entry's `link` field BEFORE the entry enters parsing. If rejected: notifier called with `'ENTRY_HOST_REJECTED'` code; entry skipped (not added to results, never reaches `pending_articles`). Closes content-spoofing risk: a poisoned feed entry with `link='https://attacker.example/x'` cannot be published to the channel even via the primary content:encoded path.
+2. **Fallback-HTTP guard in `fetch_orangetrack_article`** — called BEFORE issuing the fallback HTTP GET when content:encoded is missing/empty. If rejected: notifier called with `'ART_FALLBACK_HOST_REJECTED'` code; return None.
 
 Mirrors the lamley pattern at [`lamley_source.py:212-225`](../../../lamley_source.py#L212-L225). `news_bot.fetch_full_article` dispatcher continues to use substring `in` for routing (existing convention) — but the parser MUST do its own exact-host check before HTTP, since the dispatcher's substring match is exploitable (e.g. `https://orangetrackdiecast.com.attacker.example/payload` would route to orangetrack despite being attacker-controlled).
 
@@ -365,7 +375,9 @@ In `tests/test_orangetrack_source.py` (~40-50 cases, organized into classes mirr
 - `_is_allowed_orangetrack_url('http://169.254.169.254/latest/meta-data/')` → False (cloud metadata).
 - `_is_allowed_orangetrack_url('javascript:alert(1)')` → False (non-http scheme).
 - `_is_allowed_orangetrack_url('not a url')` → False (malformed).
-- `fetch_orangetrack_article(entry={'link': 'https://attacker.example/x', ...content:encoded missing})` → notifier called with `('ART_FALLBACK_HOST_REJECTED', 'https://attacker.example/x')`; returns None; `requests.get` NOT called.
+- `_is_allowed_orangetrack_url('//evil.example/x')` → False (scheme-relative).
+- Entry-level guard: feed has entry with `link='https://attacker.example/x'` (poisoned but content:encoded valid) → `_fetch_orangetrack_entries` calls `aggregator.add('ENTRY_HOST_REJECTED', ...)` and skips entry; entry NEVER reaches `pending_articles`. Verifies the primary-path SSRF guard.
+- Fallback-level guard: `fetch_orangetrack_article(entry={'link': 'https://attacker.example/x', ...content:encoded missing})` → notifier `('ART_FALLBACK_HOST_REJECTED', ...)`; returns None; `requests.get` NOT called.
 
 **`TestFallbackPath`** (HTTP scrape):
 - content:encoded missing → HTTP GET 200 + parse → returns canonical dict (silent — successful fallback).
@@ -481,26 +493,26 @@ Layer 4 — production after main merge:
 
 ## User-Spec Deviations
 
-- **Extends user-spec AC1 (where orangetrack feed is fetched):** user-spec says "фетчит `https://orangetrackdiecast.com/feed/` через `_fetch_rss_entries`". Tech-spec routes it through a new `_fetch_orangetrack_entries` in the `SOURCES` registry, doing the FULL parse cycle in one place (Decision 4). Reason: admin-ping aggregator (AC6) needs to span both feed-level and per-article events; isolating in a per-source fetcher avoids global state and prevents the lifecycle-timing bug that would silently drop ART_* events. Existing autoevolution / lamley / mattel paths untouched; per-feed isolation preserved. → **[PENDING USER APPROVAL]**
+- **Extends user-spec AC1 (where orangetrack feed is fetched + how the URL is configured):** user-spec implies orangetrack feed URL goes into `feeds.json` and is fetched through shared `_fetch_rss_entries`. Tech-spec instead: (a) routes orangetrack through a NEW `_fetch_orangetrack_entries` in the `SOURCES` registry (Decision 4), and (b) hardcodes the feed URL as a module-level constant `_FEED_URL` in `orangetrack_source.py` rather than adding it to `feeds.json`. Reasons: (a) admin-ping aggregator (AC6) requires lifecycle isolation that shared `_fetch_rss_entries` can't provide; (b) putting the URL in `feeds.json` would make `_fetch_rss_entries` fetch it as well (no per-URL filter exists), causing duplicate fetch + silent-drop bug. Mirrors the `mattel_news_source.NEWS_URL` precedent (Mattel's URL is also hardcoded, not in feeds.json). Operationally identical from operator's perspective: if Brad ever changes the feed URL, operator edits one constant + redeploys (same as if the URL were in feeds.json). Existing autoevolution / lamley / mattel paths untouched; per-feed isolation preserved. → **[PENDING USER APPROVAL]**
 
 ## Acceptance Criteria
 
 Технические критерии приёмки (дополняют пользовательские из user-spec):
 
-- [ ] `orangetrack_source.py` создан с публичной функцией `fetch_orangetrack_article(entry, notifier=None)`.
-- [ ] `_is_allowed_orangetrack_url` реализован, тестирован на subdomain-attack, cloud metadata IP, malformed URL, non-http scheme.
+- [ ] `orangetrack_source.py` создан с публичной функцией `fetch_orangetrack_article(entry, notifier=None)` и module-level constant `_FEED_URL`.
+- [ ] `_is_allowed_orangetrack_url` реализован, ВЫЗЫВАЕТСЯ В ДВУХ МЕСТАХ — на entry-level в `_fetch_orangetrack_entries` (отбраковка poisoned link до парсинга) и перед HTTP fallback. Тестирован на subdomain-attack, cloud metadata IP, malformed URL, non-http scheme, scheme-relative URL.
 - [ ] Парсер возвращает `{title, subtitle, paragraphs, images, blocks}`. `blocks` непустой для не-empty постов; `paragraphs` непустой (синтез из `entry.title` для video-only).
 - [ ] H5 в `blocks` как `heading` (Decision 15), не в `paragraphs`.
 - [ ] href с `javascript:` / `data:` / scheme-relative — drop с сохранением plain text (Decision 2).
 - [ ] `<img src=>` принимается только `http://` / `https://`.
 - [ ] HTTP fallback с `allow_redirects=False`, bounded streaming, 5 MB cap.
-- [ ] YouTube wrapper с hostname allowlist (только `youtube.com` / `www.youtube.com` / `youtu.be` / `www.youtu.be`).
+- [ ] YouTube wrapper с hostname allowlist (`youtube.com` / `www.youtube.com` / `m.youtube.com` / `music.youtube.com` / `youtube-nocookie.com` / `www.youtube-nocookie.com` / `youtu.be`).
 - [ ] `news_bot.NETLOC_TO_SOURCE`, `SOURCE_EMOJI`, `SOURCE_LABEL` дополнены ключами orangetrack.
 - [ ] `news_bot.fetch_full_article` имеет ветку для orangetrack (pass-through).
 - [ ] `news_bot._fetch_orangetrack_entries` создан, добавлен в `news_bot.SOURCES`, владеет `OrangetrackPingAggregator` (function-local).
 - [ ] `OrangetrackPingAggregator` в `orangetrack_source.py` реализован с bounds (50/500/3500), `_safe_for_ping` sanitization, swallow-on-emit-error.
 - [ ] `boilerplate_filter._BOILERPLATE_PATTERNS` дополнен 1-3 ReDoS-safe affiliate-паттернами (анкера `^`, без `(.+)+`).
-- [ ] `feeds.json` содержит `https://orangetrackdiecast.com/feed/`. URL итерируется через `_fetch_orangetrack_entries`, не через `_fetch_rss_entries`.
+- [ ] `feeds.json` НЕ модифицирован (остаётся 3 URL — autoevolution × 2 + lamley). Orangetrack feed URL — module-level constant `_FEED_URL` в `orangetrack_source.py`.
 - [ ] `deploy.sh` FILES list содержит `orangetrack_source.py`.
 - [ ] `.github/workflows/deploy.yml` FILES list содержит `orangetrack_source.py` и побайтно совпадает с `deploy.sh` FILES.
 - [ ] `tests/test_orangetrack_source.py` создан, ~40-50 тестов в классах `TestPrimaryPath`, `TestSSRFAllowlist`, `TestFallbackPath`, `TestWPBlockDriftMitigation`, `TestYouTubeEmbedWrapping`, `TestOrangetrackPingAggregator`, `TestDispatcherIntegration` — все зелёные.
@@ -515,7 +527,7 @@ Layer 4 — production after main merge:
 ### Wave 1 (независимые)
 
 #### Task 1: Create `orangetrack_source.py` parser module
-- **Description:** Создать `orangetrack_source.py` с публичной функцией `fetch_orangetrack_article(entry, notifier=None)`, классом `OrangetrackPingAggregator`, helper-ами `_is_allowed_orangetrack_url`, `_video_embed_url` (с hostname allowlist), `_safe_for_ping`. Реализует Decisions 1, 2, 3, 5, 8, 13, 15. Unit-тесты в `tests/test_orangetrack_source.py` по классам из Testing Strategy.
+- **Description:** Создать `orangetrack_source.py` с публичной функцией `fetch_orangetrack_article(entry, notifier=None)`, классом `OrangetrackPingAggregator`, helper-ами `_is_allowed_orangetrack_url`, `_video_embed_url` (с hostname allowlist), `_safe_for_ping`. Module-level constant `_FEED_URL = 'https://orangetrackdiecast.com/feed/'`. Реализует Decisions 1, 2, 3, 5, 8, 13, 15. Unit-тесты в `tests/test_orangetrack_source.py` по классам из Testing Strategy.
 - **Skill:** code-writing
 - **Reviewers:** code-reviewer, security-auditor, test-reviewer
 - **Verify-smoke:** `python3 -c "import orangetrack_source as o; print(o.fetch_orangetrack_article, o.OrangetrackPingAggregator); a = o.OrangetrackPingAggregator('test'); a.add('FEED_HTTP_503', 'https://x/y'); print(a.format_summary())"` → prints non-None symbols and aggregator format
@@ -539,12 +551,12 @@ Layer 4 — production after main merge:
 - **Files to modify:** `news_bot.py`
 - **Files to read:** `news_bot.py`, `orangetrack_source.py` (Task 1 result), `work/orangetrack-source/code-research.md`
 
-#### Task 4: feeds.json + sources registry test update
-- **Description:** В `feeds.json` добавить `https://orangetrackdiecast.com/feed/`. Обновить `tests/test_sources_registry.py` set-assertion на 4 источника (Decision 11).
+#### Task 4: sources registry test update
+- **Description:** Обновить `tests/test_sources_registry.py` set-assertion на 4 источника (Decision 11). `feeds.json` НЕ модифицируется (Decision 4 — orangetrack URL живёт как module-level constant).
 - **Skill:** code-writing
 - **Reviewers:** code-reviewer, test-reviewer
-- **Files to modify:** `feeds.json`, `tests/test_sources_registry.py`
-- **Files to read:** `feeds.json`, `tests/test_sources_registry.py`, `news_bot.py` (load_feeds for cap check)
+- **Files to modify:** `tests/test_sources_registry.py`
+- **Files to read:** `tests/test_sources_registry.py`
 
 #### Task 5: Deploy FILES list synchronization
 - **Description:** Добавить `orangetrack_source.py` в FILES list **обоих** файлов: `deploy.sh` и `.github/workflows/deploy.yml`. INVARIANT: побайтное совпадение между двумя файлами. Без этого прод падает с ImportError при следующем рестарте.
