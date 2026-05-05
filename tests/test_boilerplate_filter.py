@@ -60,6 +60,12 @@ class TestIsBoilerplatePositive:
             "Categories: cars",
             "Comments",
             "Comment",
+            # Affiliate / "Quick Link" promo lines (orangetrack-source).
+            "*QUICK LINK!* Buy from 1 Stop Diecast now.",
+            "QUICK LINK! Buy from 1 Stop Diecast now.",
+            "Quick link: order from CollectorClub today.",
+            "Buy now from 1 Stop Diecast",
+            "Buy from CollectorZone.",
         ],
     )
     def test_english_patterns_filtered(self, text):
@@ -107,6 +113,10 @@ class TestIsBoilerplateNegative:
             "Hot Wheels Legends Tour 2026.",
             "Mattel announced today.",
             "New chase car released.",
+            # Affiliate-like words inline are NOT filtered (Decision 12 —
+            # only standalone short promo lines).
+            "I'd buy that for $1",
+            "The collector loves to shop for rare castings on weekends.",
         ],
     )
     def test_real_content_preserved(self, text):
@@ -135,6 +145,54 @@ class TestLengthThreshold:
         )
         assert len(long_text) > _MAX_BOILERPLATE_LEN
         assert is_boilerplate(long_text) is False
+
+
+# ---------------------------------------------------------------------------
+# Affiliate-line length-bound boundary cases (orangetrack-source).
+# ---------------------------------------------------------------------------
+
+
+class TestAffiliateLengthBound:
+    def test_affiliate_at_120_chars_filtered(self):
+        # Build an affiliate-shape line of EXACTLY 120 chars — must be
+        # caught (`_MAX_BOILERPLATE_LEN` is inclusive).
+        prefix = "Buy now from "
+        # Pad with 'a's to hit exactly 120 chars total.
+        line = prefix + "a" * (_MAX_BOILERPLATE_LEN - len(prefix))
+        assert len(line) == _MAX_BOILERPLATE_LEN
+        assert is_boilerplate(line) is True
+
+    def test_affiliate_at_121_chars_preserved(self):
+        # 121 chars → over the threshold, treated as real prose even
+        # though the prefix matches an affiliate pattern.
+        prefix = "Buy now from "
+        line = prefix + "a" * (_MAX_BOILERPLATE_LEN + 1 - len(prefix))
+        assert len(line) == _MAX_BOILERPLATE_LEN + 1
+        assert is_boilerplate(line) is False
+
+    def test_quick_link_at_120_chars_filtered(self):
+        # *QUICK LINK!* shape, padded to 120 chars total.
+        prefix = "*QUICK LINK!* Buy "
+        line = prefix + "a" * (_MAX_BOILERPLATE_LEN - len(prefix) - len(" from x"))
+        line = line + " from x"
+        # Pad to exactly 120 if needed.
+        if len(line) < _MAX_BOILERPLATE_LEN:
+            line = line + "x" * (_MAX_BOILERPLATE_LEN - len(line))
+        line = line[:_MAX_BOILERPLATE_LEN]
+        assert len(line) == _MAX_BOILERPLATE_LEN
+        assert is_boilerplate(line) is True
+
+    def test_redos_safety_long_buy_pattern(self):
+        # Pathological-shape input that would catastrophically backtrack
+        # in a vulnerable regex. Must complete fast (<100ms).
+        import time
+        s = "a" * 60 + "buy" * 20 + " shop now"
+        t0 = time.monotonic()
+        out = is_boilerplate(s)
+        elapsed = time.monotonic() - t0
+        # Shape doesn't match Aff1/Aff2 anchored at start; expected False.
+        assert out is False
+        assert elapsed < 0.1, f"is_boilerplate too slow: {elapsed:.3f}s"
 
 
 # ---------------------------------------------------------------------------

@@ -97,6 +97,25 @@ _BOILERPLATE_PATTERNS = [
         re.I,
     ),
     # ------------------------------------------------------------------
+    # Affiliate / "Quick Link" promo lines (orangetrack-source feature,
+    # Decision 12). Standalone short paragraphs only — length is bounded
+    # by ``_MAX_BOILERPLATE_LEN`` (120). All anchored at ``^``, no nested
+    # greedy quantifiers (ReDoS-safe).
+    # ------------------------------------------------------------------
+    # Aff1 — "*QUICK LINK!*" / "Quick link:" affiliate header followed by
+    # a verb (buy/order/grab/shop) somewhere in the line.
+    re.compile(
+        r'^\s*\*?quick\s+link[!:].*\b(buy|order|grab|shop)\b',
+        re.I,
+    ),
+    # Aff2 — "Buy [now] from <store>" shape. Requires a non-space token
+    # after "from" (so a generic short paragraph "Buy from us." also
+    # matches; that's intentional — these are short standalone lines).
+    re.compile(
+        r'^buy\s+(now\s+)?from\s+\S',
+        re.I,
+    ),
+    # ------------------------------------------------------------------
     # Russian — defence in depth in case translated text ever reaches us.
     re.compile(
         r'^поделит(ь(ся)?|есь)\s+(на|в|через)\s+'
