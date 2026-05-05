@@ -1,0 +1,845 @@
+#!/usr/bin/env python3
+"""Orange Track Diecast news source.
+
+orangetrackdiecast.com is Brad Bannach's solo Hot Wheels blog hosted on
+WordPress.com. RSS carries the full article body inside ``<content:encoded>``
+so the primary path parses the feed entry directly. When ``content:encoded``
+is missing or empty, the parser falls back to a bounded-streaming HTTP GET
+of the article page.
+
+Hard-won security defaults (per project recipe / tech-spec Decisions):
+  * ``_is_allowed_orangetrack_url`` exact-host allowlist before any HTTP fetch.
+  * ``allow_redirects=False`` on fallback GET (no redirect-bypass SSRF).
+  * Bounded streaming via ``iter_content`` + 5 MB cap (lying-server safe).
+  * YouTube wrapper gated by hostname allowlist before the ID regex.
+  * Anchor href / image src scheme filter (``http``/``https``/``mailto``).
+  * Walk DOM by HTML tag, not by Gutenberg ``wp-block-*`` classes.
+
+The aggregator collects ``(code, link)`` events during one cron-tick lifetime
+and emits a single admin-ping message at the end via ``emit(send_fn)``.
+"""
+
+from __future__ import annotations
+
+import logging
+import re
+import urllib.parse
+from typing import Callable, Dict, List, Optional, Tuple
+from urllib.parse import urlparse
+
+import requests
+from bs4 import BeautifulSoup
+
+from boilerplate_filter import filter_blocks, filter_boilerplate
+
+logger = logging.getLogger(__name__)
+
+#: Canonical RSS feed URL for orangetrackdiecast.com. Lives as a module
+#: constant (not in feeds.json) so the shared ``_fetch_rss_entries``
+#: iteration path stays untouched. Mirrors mattel_news_source.NEWS_URL.
+_FEED_URL = "https://orangetrackdiecast.com/feed/"
+
+#: Exact-host allowlist for both entry-level (poisoned-link) and
+#: fallback-HTTP guards. Subdomain attacks like
+#: ``orangetrackdiecast.com.attacker.example`` would pass the
+#: dispatcher's substring ``in`` check; this allowlist closes that hole.
+_ALLOWED_HOSTS = ("orangetrackdiecast.com", "www.orangetrackdiecast.com")
+
+#: Hostname allowlist for the YouTube embed wrapper. Without this, an
+#: attacker URL containing the substring ``youtube.com/embed/abc`` would
+#: be falsely wrapped to a Telegra.ph YouTube proxy URL.
+_YOUTUBE_HOSTS = (
+    "youtube.com",
+    "www.youtube.com",
+    "m.youtube.com",
+    "music.youtube.com",
+    "youtube-nocookie.com",
+    "www.youtube-nocookie.com",
+    "youtu.be",
+)
+
+REQUEST_TIMEOUT = 15
+MAX_RESPONSE_SIZE = 5 * 1024 * 1024  # 5 MB
+IMAGE_LIMIT = 10
+_CHUNK_SIZE = 8 * 1024  # 8 KB chunks for iter_content
+
+#: Schemes that survive the href filter. Anything else (``javascript:``,
+#: ``data:``, ``file:``, scheme-relative ``//evil/x``) drops the href and
+#: the anchor degenerates to plain text.
+_ALLOWED_HREF_SCHEMES = frozenset(("http", "https", "mailto"))
+
+#: Schemes accepted on ``<img src>``. ``data:`` SVGs and ``file:`` paths
+#: are dropped (defense-in-depth — Telegraph filters too, but the parser
+#: must not emit them in the first place).
+_ALLOWED_IMG_SCHEMES = frozenset(("http", "https"))
+
+#: YouTube video ID regex (after the hostname allowlist gate has accepted
+#: the iframe src). Captures the 11-char ID from common URL shapes.
+_YOUTUBE_ID_RE = re.compile(
+    r"(?:youtu\.be/|/embed/|/watch\?v=|/v/|/shorts/)"
+    r"([A-Za-z0-9_-]{6,})"
+)
+
+#: Per-aggregator caps. 50 links/code keeps the per-bullet line readable;
+#: 500 total events caps memory in the pathological case of a feed bug
+#: producing 10000 errors; 3500-char output stays well under Telegram's
+#: 4096 limit with margin for the [INSTANCE_LABEL] prefix.
+_MAX_LINKS_PER_CODE = 50
+_MAX_TOTAL_EVENTS = 500
+_MAX_SUMMARY_CHARS = 3500
+
+#: Sanitization output bound for the (code, link) strings rendered in
+#: the admin ping. Keeps a long crafted link from filling the bullet line.
+_SAFE_FOR_PING_MAX = 200
+
+
+# ---------------------------------------------------------------------------
+# Helper: SSRF allowlist guard
+# ---------------------------------------------------------------------------
+
+
+def _is_allowed_orangetrack_url(link: str) -> bool:
+    """Return True iff ``link`` is an http(s) URL with an exact-allowlist host.
+
+    Mirrors lamley_source._is_allowed_lamley_url. Rejects:
+      * non-string / None input,
+      * non-http(s) schemes (``javascript:``, ``data:``, ``file:``),
+      * scheme-relative URLs (``//evil/x``),
+      * malformed URLs that urlparse can't parse,
+      * any host outside ``_ALLOWED_HOSTS`` (subdomain attacks closed).
+    """
+    if not isinstance(link, str) or not link:
+        return False
+    try:
+        parsed = urlparse(link)
+    except (ValueError, AttributeError):
+        return False
+    if parsed.scheme not in ("http", "https"):
+        return False
+    host = (parsed.hostname or "").lower()
+    return host in _ALLOWED_HOSTS
+
+
+# ---------------------------------------------------------------------------
+# Helper: YouTube embed wrapper (with hostname allowlist gate)
+# ---------------------------------------------------------------------------
+
+
+def _video_embed_url(youtube_url: str) -> Optional[str]:
+    """Wrap a YouTube URL into Telegra.ph's iframe-embed proxy form.
+
+    The hostname allowlist gate runs BEFORE the ID regex — without it,
+    a non-YouTube URL containing the substring ``youtube.com/embed/abc``
+    would be falsely wrapped (autoevolution's regex-only path has this
+    gap; we close it here per Decision 8).
+
+    Returns ``None`` when the URL is not a YouTube link or has no
+    extractable video ID. Telegra.ph validates ``iframe.src`` at
+    create-page time and accepts ONLY ``/embed/<provider>?url=…`` proxy
+    URLs, so raw YouTube URLs would be silently stripped to an empty
+    ``/embed/`` (breaking Instant View).
+    """
+    if not isinstance(youtube_url, str) or not youtube_url:
+        return None
+    try:
+        parsed = urlparse(youtube_url)
+    except (ValueError, AttributeError):
+        return None
+    host = (parsed.hostname or "").lower()
+    if host not in _YOUTUBE_HOSTS:
+        return None
+    m = _YOUTUBE_ID_RE.search(youtube_url)
+    if not m:
+        return None
+    video_id = m.group(1)
+    watch = f"https://www.youtube.com/watch?v={video_id}"
+    return (
+        "https://telegra.ph/embed/youtube?url="
+        + urllib.parse.quote(watch, safe="")
+    )
+
+
+# ---------------------------------------------------------------------------
+# Helper: sanitization for admin-ping strings
+# ---------------------------------------------------------------------------
+
+#: Strip ASCII control chars (\r \n \t \x00-\x1f). Order: control-strip
+#: BEFORE truncate so a malicious link that's just under 200 chars can't
+#: smuggle a control byte by being trimmed after.
+_CONTROL_CHAR_RE = re.compile(r"[\x00-\x1f\x7f]")
+
+
+def _safe_for_ping(s: str) -> str:
+    """Sanitize a string for inclusion in an admin-ping message.
+
+    Steps in order (Decision 5):
+      1. Strip ASCII control chars (\\r, \\n, \\t, \\x00-\\x1f, \\x7f).
+      2. Replace any remaining non-printable byte with '?'.
+      3. Truncate to ``_SAFE_FOR_PING_MAX`` chars (with '…' suffix).
+
+    Prevents log/admin-ping spoofing via crafted feed link strings.
+    """
+    if not isinstance(s, str):
+        s = str(s) if s is not None else ""
+    s = _CONTROL_CHAR_RE.sub("", s)
+    # Replace remaining non-printable (e.g. unpaired surrogates would be
+    # caught here if any survived). ``str.isprintable`` is the test.
+    s = "".join(c if c.isprintable() else "?" for c in s)
+    if len(s) > _SAFE_FOR_PING_MAX:
+        s = s[: _SAFE_FOR_PING_MAX - 1] + "…"
+    return s
+
+
+# ---------------------------------------------------------------------------
+# Helper: anchor href filter
+# ---------------------------------------------------------------------------
+
+
+def _safe_href(href: Optional[str]) -> Optional[str]:
+    """Return ``href`` iff it's a safe scheme; else None.
+
+    Allowed: http, https, mailto (for editorial mailto links).
+    Dropped: javascript:, data:, file:, scheme-relative ``//evil/x``,
+    relative paths, malformed strings.
+    """
+    if not href or not isinstance(href, str):
+        return None
+    href = href.strip()
+    if not href:
+        return None
+    # Scheme-relative URLs (``//evil/x``) have no parsed scheme; reject.
+    if href.startswith("//"):
+        return None
+    try:
+        parsed = urlparse(href)
+    except (ValueError, AttributeError):
+        return None
+    scheme = (parsed.scheme or "").lower()
+    if scheme in _ALLOWED_HREF_SCHEMES:
+        return href
+    return None
+
+
+def _safe_img_src(src: Optional[str]) -> Optional[str]:
+    """Return ``src`` iff it's an http(s) URL; else None."""
+    if not src or not isinstance(src, str):
+        return None
+    src = src.strip()
+    if not src:
+        return None
+    if src.startswith("//"):
+        return None
+    try:
+        parsed = urlparse(src)
+    except (ValueError, AttributeError):
+        return None
+    if (parsed.scheme or "").lower() not in _ALLOWED_IMG_SCHEMES:
+        return None
+    return src
+
+
+# ---------------------------------------------------------------------------
+# Internal: text-runs walker (paragraph children → ordered text+href runs)
+# ---------------------------------------------------------------------------
+
+
+def _runs_from_tag(tag) -> List[Dict]:
+    """Walk a tag's contents and return ordered ``{'text', ['href']}`` runs.
+
+    Anchors with safe schemes preserve the ``href``; anchors with
+    dropped/unsafe href degenerate to plain text. Nested formatting
+    (``<strong>``, ``<em>``) is flattened.
+    """
+    runs: List[Dict] = []
+    buf: List[str] = []
+
+    def flush():
+        if not buf:
+            return
+        combined = "".join(buf)
+        if combined:
+            runs.append({"text": combined})
+        buf.clear()
+
+    def walk(element):
+        for child in element.children:
+            if isinstance(child, str):
+                buf.append(str(child))
+            elif getattr(child, "name", None) == "a":
+                href = _safe_href(child.get("href"))
+                link_text = child.get_text(" ", strip=False)
+                if href and link_text:
+                    flush()
+                    runs.append({"text": link_text, "href": href})
+                elif link_text:
+                    # Drop unsafe href, keep plain text inline.
+                    buf.append(link_text)
+            else:
+                walk(child)
+
+    walk(tag)
+    flush()
+    # Normalize whitespace inside each run; trim leading/trailing on edges.
+    for r in runs:
+        r["text"] = re.sub(r"\s+", " ", r["text"])
+    if runs:
+        runs[0]["text"] = runs[0]["text"].lstrip()
+        runs[-1]["text"] = runs[-1]["text"].rstrip()
+    return [r for r in runs if r["text"]]
+
+
+# ---------------------------------------------------------------------------
+# Internal: extract images from a <figure> / <img> element
+# ---------------------------------------------------------------------------
+
+
+def _best_img_src(img) -> Optional[str]:
+    """Pick the best ``src`` from an ``<img>`` element.
+
+    Prefers ``srcset`` ``?w=1024`` if present; else ``src``. Returns
+    None if neither yields a safe http(s) URL.
+    """
+    # srcset format: "url1 300w, url2 600w, url3 1024w" — pick a 1024 if
+    # available (Brad's WordPress.com default lays out 300/600/1024).
+    srcset = img.get("srcset") or ""
+    if srcset:
+        candidates: List[Tuple[str, int]] = []
+        for part in srcset.split(","):
+            part = part.strip()
+            if not part:
+                continue
+            tokens = part.split()
+            url = tokens[0]
+            width = 0
+            for tok in tokens[1:]:
+                if tok.endswith("w"):
+                    try:
+                        width = int(tok[:-1])
+                    except ValueError:
+                        width = 0
+            candidates.append((url, width))
+        # Pick the largest <= 1024, else the largest overall.
+        if candidates:
+            preferred = [c for c in candidates if c[1] and c[1] <= 1024]
+            picks = preferred if preferred else candidates
+            picks.sort(key=lambda c: c[1] or 0, reverse=True)
+            url = _safe_img_src(picks[0][0])
+            if url:
+                return url
+    src = _safe_img_src(img.get("src"))
+    if src:
+        return src
+    return None
+
+
+# ---------------------------------------------------------------------------
+# Internal: parse <content:encoded> HTML body → canonical dict
+# ---------------------------------------------------------------------------
+
+
+def _parse_content_encoded(html_str: str, link: str) -> Optional[Dict]:
+    """Parse a content:encoded HTML body into the canonical contract dict.
+
+    Returns ``{'title', 'subtitle', 'paragraphs', 'images', 'blocks'}``
+    or None if no extractable content survives the filters.
+
+    ``title`` comes from the first ``<h1>`` if present (else empty —
+    callers usually have ``entry.title`` to fall back to).
+
+    ``blocks`` preserves DOM order: paragraph / image / video / heading
+    entries. h5 headings go to blocks-only (not flat ``paragraphs``).
+    """
+    if not html_str or not isinstance(html_str, str):
+        return None
+
+    soup = BeautifulSoup(html_str, "html.parser")
+
+    # Strip script/style/noscript so JS doesn't leak into paragraph text.
+    for junk in soup(["script", "style", "noscript"]):
+        junk.decompose()
+
+    # Title: take the first <h1> if any (content:encoded usually doesn't
+    # carry one — title comes from RSS entry).
+    title_tag = soup.find("h1")
+    title = title_tag.get_text(" ", strip=True) if title_tag else ""
+
+    blocks: List[Dict] = []
+    seen_image_bases = set()
+
+    # Walk top-level descendants. We use ``find_all(recursive=True)`` for
+    # primary tag types, then traverse them in document order via
+    # ``soup.descendants`` filter — but to stay simple and predictable,
+    # iterate over the direct children of the root and recurse manually
+    # when we hit a wrapper (<div>, <article>, <section>).
+    def _emit_paragraph(p_tag):
+        runs = _runs_from_tag(p_tag)
+        if not runs:
+            return
+        text = " ".join(r["text"] for r in runs).strip()
+        if not text:
+            return
+        blocks.append({"type": "paragraph", "text": text, "runs": runs})
+
+    def _emit_heading(h_tag, level):
+        runs = _runs_from_tag(h_tag)
+        if not runs:
+            return
+        text = " ".join(r["text"] for r in runs).strip()
+        if not text:
+            return
+        blocks.append({
+            "type": "heading",
+            "level": level,
+            "text": text,
+            "runs": runs,
+        })
+
+    def _emit_image(img_tag, caption: str = ""):
+        src = _best_img_src(img_tag)
+        if not src:
+            return
+        base = src.split("?", 1)[0]
+        if base in seen_image_bases:
+            return
+        seen_image_bases.add(base)
+        block: Dict = {"type": "image", "src": src}
+        if caption:
+            block["caption"] = caption
+        blocks.append(block)
+
+    def _emit_iframe(iframe_tag):
+        raw_src = iframe_tag.get("src") or ""
+        embed = _video_embed_url(raw_src)
+        if not embed:
+            return
+        blocks.append({"type": "video", "src": embed})
+
+    # Walk: BS4's ``descendants`` yields ALL nodes in DOM order, which
+    # would double-count <p> nested under <figure>. Instead, walk top
+    # children and recurse selectively — known content tags get emitted
+    # once. We process by tag name (Decision 3 — no Gutenberg classes).
+    handled_tags = {"p", "h1", "h2", "h3", "h4", "h5", "h6", "figure", "img", "iframe"}
+
+    def _walk(node):
+        for child in list(node.children):
+            name = getattr(child, "name", None)
+            if not name:
+                continue  # NavigableString — skip; <p> walker handles text.
+            if name == "p":
+                # Check if the paragraph wraps an iframe / img only — those
+                # take precedence so we don't get a run with an empty
+                # ``text`` from BS4's get_text on the iframe.
+                inner_iframes = child.find_all("iframe")
+                inner_imgs = child.find_all("img")
+                if inner_iframes and not child.get_text(strip=True):
+                    for iframe in inner_iframes:
+                        _emit_iframe(iframe)
+                    continue
+                # Mixed paragraph: emit text first, then nested media.
+                _emit_paragraph(child)
+                for iframe in inner_iframes:
+                    _emit_iframe(iframe)
+                for img in inner_imgs:
+                    if img.find_parent("figure"):
+                        # Will be picked up by the figure walker.
+                        continue
+                    _emit_image(img)
+                continue
+            if name in ("h2", "h3", "h4"):
+                _emit_heading(child, int(name[1]))
+                continue
+            if name == "h5":
+                # Decision 15: h5 → blocks only (not flat paragraphs).
+                _emit_heading(child, 5)
+                continue
+            if name in ("h1", "h6"):
+                # h1 already used for title; h6 is rare/decorative.
+                continue
+            if name == "figure":
+                img = child.find("img")
+                if img:
+                    cap_tag = child.find("figcaption")
+                    caption = cap_tag.get_text(" ", strip=True) if cap_tag else ""
+                    _emit_image(img, caption=caption)
+                # Nested figures (carousel / gallery) — recurse to grab
+                # additional <img> inside.
+                for nested in child.find_all("figure"):
+                    if nested is child:
+                        continue
+                    nested_img = nested.find("img")
+                    if not nested_img:
+                        continue
+                    cap = nested.find("figcaption")
+                    cap_text = cap.get_text(" ", strip=True) if cap else ""
+                    _emit_image(nested_img, caption=cap_text)
+                continue
+            if name == "img":
+                _emit_image(child)
+                continue
+            if name == "iframe":
+                _emit_iframe(child)
+                continue
+            # Wrapper tag (div / section / article / ul / li / etc.):
+            # recurse so the inner <p>/<figure>/<iframe> get walked.
+            if name not in handled_tags:
+                _walk(child)
+
+    _walk(soup)
+
+    # ----------------------------------------------------------------
+    # Post-process: filter, dedup, derive flat fields, synthesize
+    # paragraphs from title for video-only posts.
+    # ----------------------------------------------------------------
+    blocks = filter_blocks(blocks)
+
+    paragraphs_flat: List[str] = [
+        b["text"] for b in blocks if b["type"] == "paragraph"
+    ]
+    paragraphs_flat = filter_boilerplate(paragraphs_flat)
+
+    # Subtitle: first paragraph text. Then drop it from paragraphs_flat
+    # so the body doesn't repeat below the decorated lead. (Mirrors the
+    # lamley convention.)
+    subtitle = paragraphs_flat[0] if paragraphs_flat else ""
+    body_paragraphs = paragraphs_flat[1:] if paragraphs_flat else []
+
+    # If the post is video-only (no usable paragraphs) but has a title,
+    # synthesize paragraphs from the title (gating field at news_bot.py:1510).
+    has_video = any(b["type"] == "video" for b in blocks)
+    if not body_paragraphs and not subtitle and has_video and title:
+        body_paragraphs = [title]
+
+    images_flat: List[str] = [
+        b["src"] for b in blocks if b["type"] == "image"
+    ][:IMAGE_LIMIT]
+
+    if not blocks and not body_paragraphs and not subtitle and not images_flat:
+        return None
+
+    return {
+        "title": title,
+        "subtitle": subtitle,
+        "paragraphs": body_paragraphs,
+        "images": images_flat,
+        "blocks": blocks,
+    }
+
+
+# ---------------------------------------------------------------------------
+# Internal: bounded-stream HTTP fallback fetch
+# ---------------------------------------------------------------------------
+
+
+def _fetch_article_html(
+    url: str,
+    notifier: Optional[Callable[[str, str], None]],
+    link: str,
+) -> Optional[str]:
+    """Bounded-stream HTTP GET of the article URL. Returns body str or None.
+
+    On any failure mode emits one notifier event with the appropriate
+    code (``ART_FALLBACK_HTTP_<status>``, ``ART_FALLBACK_REDIRECT_<status>``,
+    ``ART_FALLBACK_TIMEOUT``, ``ART_FALLBACK_TOO_LARGE``) and returns None.
+
+    Mandatory: ``allow_redirects=False`` (no redirect-bypass SSRF) and
+    streamed body via ``iter_content`` capped at ``MAX_RESPONSE_SIZE``.
+    """
+    def _ping(code: str) -> None:
+        if notifier is not None:
+            try:
+                notifier(code, link)
+            except Exception:
+                logger.exception("orangetrack notifier raised in fallback fetch")
+
+    try:
+        response = requests.get(
+            url,
+            timeout=REQUEST_TIMEOUT,
+            stream=True,
+            allow_redirects=False,
+        )
+    except requests.Timeout:
+        _ping("ART_FALLBACK_TIMEOUT")
+        return None
+    except requests.RequestException as exc:
+        logger.warning("orangetrack fallback transport error for %s: %s", url, exc)
+        _ping("ART_FALLBACK_TIMEOUT")
+        return None
+
+    status = response.status_code
+    # 3xx — reject redirects (SSRF hardening).
+    if 300 <= status < 400:
+        try:
+            response.close()
+        except Exception:
+            pass
+        _ping(f"ART_FALLBACK_REDIRECT_{status}")
+        return None
+    # 4xx / 5xx — surface status.
+    if status >= 400:
+        try:
+            response.close()
+        except Exception:
+            pass
+        _ping(f"ART_FALLBACK_HTTP_{status}")
+        return None
+
+    # 200 — stream body with cap.
+    buf = bytearray()
+    try:
+        for chunk in response.iter_content(chunk_size=_CHUNK_SIZE):
+            if not chunk:
+                continue
+            buf.extend(chunk)
+            if len(buf) > MAX_RESPONSE_SIZE:
+                _ping("ART_FALLBACK_TOO_LARGE")
+                try:
+                    response.close()
+                except Exception:
+                    pass
+                return None
+    except requests.Timeout:
+        _ping("ART_FALLBACK_TIMEOUT")
+        return None
+    except requests.RequestException as exc:
+        logger.warning(
+            "orangetrack fallback streaming error for %s: %s", url, exc,
+        )
+        _ping("ART_FALLBACK_TIMEOUT")
+        return None
+    finally:
+        try:
+            response.close()
+        except Exception:
+            pass
+
+    # Decode response. Use response.encoding if set, else utf-8 fallback.
+    encoding = response.encoding or "utf-8"
+    try:
+        return bytes(buf).decode(encoding, errors="replace")
+    except (LookupError, UnicodeDecodeError):
+        return bytes(buf).decode("utf-8", errors="replace")
+
+
+# ---------------------------------------------------------------------------
+# Public: parse one feed entry
+# ---------------------------------------------------------------------------
+
+
+def fetch_orangetrack_article(
+    entry: dict,
+    notifier: Optional[Callable[[str, str], None]] = None,
+) -> Optional[Dict]:
+    """Get the article body for an orangetrackdiecast feed entry.
+
+    Primary path: parse ``content:encoded`` if present and non-empty (silent
+    on success). Fallback: ``_is_allowed_orangetrack_url`` → bounded-stream
+    HTTP GET → parse.
+
+    ``notifier`` signature is ``Callable[[str, str], None]`` — pair
+    ``(code, link)``. Wired in ``_fetch_orangetrack_entries`` to
+    ``OrangetrackPingAggregator.add``.
+    """
+    link = entry.get("link") or ""
+
+    # Primary: content:encoded carries the full body.
+    raw_html = ""
+    # feedparser often exposes content:encoded as ``entry.content`` (a
+    # list of dicts with 'value'); also check ``content_encoded`` as a
+    # plain string fallback.
+    content_field = entry.get("content")
+    if content_field:
+        if isinstance(content_field, list):
+            for c in content_field:
+                if isinstance(c, dict) and c.get("value"):
+                    raw_html = c["value"]
+                    break
+        elif isinstance(content_field, str):
+            raw_html = content_field
+    if not raw_html:
+        raw_html = entry.get("content_encoded") or ""
+    if not raw_html:
+        # feedparser sometimes provides via ``summary`` if config differs;
+        # for orangetrack the canonical field is ``content``.
+        raw_html = ""
+
+    if raw_html:
+        try:
+            parsed = _parse_content_encoded(raw_html, link)
+        except Exception:
+            logger.exception(
+                "orangetrack content:encoded parse failed for %s", link,
+            )
+            if notifier is not None:
+                try:
+                    notifier("ART_PARSE_EXCEPTION", link)
+                except Exception:
+                    logger.exception("orangetrack notifier raised after parse exc")
+            return None
+        if parsed:
+            # Successful primary path — silent.
+            # Fall back to RSS title when content:encoded didn't carry h1.
+            if not parsed.get("title"):
+                parsed["title"] = entry.get("title") or ""
+            # Re-run the video-only synthesis using the now-filled title:
+            # _parse_content_encoded couldn't synthesize when its h1 was
+            # empty (content:encoded rarely carries one).
+            has_video = any(
+                b.get("type") == "video" for b in (parsed.get("blocks") or [])
+            )
+            if (
+                not parsed.get("paragraphs")
+                and not parsed.get("subtitle")
+                and has_video
+                and parsed.get("title")
+            ):
+                parsed["paragraphs"] = [parsed["title"]]
+            return parsed
+        # Empty parse → fall through to fallback (notifier called below
+        # only if HTTP fallback also fails).
+
+    # Fallback: HTTP GET. Allowlist guard FIRST.
+    if not link:
+        return None
+    if not _is_allowed_orangetrack_url(link):
+        if notifier is not None:
+            try:
+                notifier("ART_FALLBACK_HOST_REJECTED", link)
+            except Exception:
+                logger.exception("orangetrack notifier raised on host-rejected")
+        return None
+
+    body = _fetch_article_html(link, notifier, link)
+    if body is None:
+        return None
+
+    try:
+        parsed = _parse_content_encoded(body, link)
+    except Exception:
+        logger.exception(
+            "orangetrack fallback parse exception for %s", link,
+        )
+        if notifier is not None:
+            try:
+                notifier("ART_PARSE_EXCEPTION", link)
+            except Exception:
+                logger.exception("orangetrack notifier raised after parse exc")
+        return None
+
+    if not parsed:
+        if notifier is not None:
+            try:
+                notifier("ART_FALLBACK_PARSE_EMPTY", link)
+            except Exception:
+                logger.exception("orangetrack notifier raised on parse-empty")
+        return None
+
+    if not parsed.get("title"):
+        parsed["title"] = entry.get("title") or ""
+    return parsed
+
+
+# ---------------------------------------------------------------------------
+# Aggregator
+# ---------------------------------------------------------------------------
+
+
+def _code_sort_key(code: str) -> Tuple[int, str]:
+    """Group codes: FEED_* < ENTRY_* < ART_* — alphabetical within."""
+    if code.startswith("FEED_"):
+        return (0, code)
+    if code.startswith("ENTRY_"):
+        return (1, code)
+    if code.startswith("ART_"):
+        return (2, code)
+    return (3, code)
+
+
+class OrangetrackPingAggregator:
+    """Collects (code, link) tuples during one cron tick and emits a single
+    aggregated admin-ping at end via ``emit(send_fn)``.
+
+    Bounds (Decision 5):
+      * per-code link list capped at ``_MAX_LINKS_PER_CODE`` (50) entries;
+      * total ``add()`` calls capped at ``_MAX_TOTAL_EVENTS`` (500) — past
+        that, calls are silent no-ops (NOT raises);
+      * ``format_summary()`` truncates rendered output to
+        ``_MAX_SUMMARY_CHARS`` (3500).
+
+    Each ``add()`` runs ``code`` and ``link`` through ``_safe_for_ping``
+    so attacker-controlled control chars can't smuggle fake summary
+    lines into the admin-ping.
+    """
+
+    def __init__(self, instance_label: Optional[str] = None) -> None:
+        self.instance_label = (instance_label or "").strip()
+        # {code: {link: count}} preserving insertion order via dict semantics.
+        self._events: Dict[str, Dict[str, int]] = {}
+        self._total_calls = 0
+        # Per-code link-list-truncated flag — for the "… N more truncated"
+        # marker. Stored separately so we don't grow the dict past cap.
+        self._truncated_count: Dict[str, int] = {}
+
+    def add(self, code: str, link: str) -> None:
+        if self._total_calls >= _MAX_TOTAL_EVENTS:
+            # Silent no-op — pathological flood guard.
+            return
+        self._total_calls += 1
+        safe_code = _safe_for_ping(code)
+        safe_link = _safe_for_ping(link)
+        bucket = self._events.setdefault(safe_code, {})
+        if safe_link in bucket:
+            bucket[safe_link] += 1
+            return
+        if len(bucket) >= _MAX_LINKS_PER_CODE:
+            self._truncated_count[safe_code] = (
+                self._truncated_count.get(safe_code, 0) + 1
+            )
+            return
+        bucket[safe_link] = 1
+
+    def is_empty(self) -> bool:
+        return not self._events
+
+    def format_summary(self) -> str:
+        if self.is_empty():
+            return ""
+        # N = number of distinct (code, link) pairs.
+        distinct = sum(len(b) for b in self._events.values())
+        prefix = f"[{self.instance_label}] " if self.instance_label else ""
+        header = f"{prefix}orangetrack: {distinct} issues this tick"
+        lines = [header]
+        for code in sorted(self._events.keys(), key=_code_sort_key):
+            bucket = self._events[code]
+            count_total = sum(bucket.values())
+            link_list = list(bucket.keys())
+            extra_truncated = self._truncated_count.get(code, 0)
+            link_str = ", ".join(link_list)
+            if extra_truncated:
+                link_str += f" … {extra_truncated} more truncated"
+            lines.append(
+                f"  • {code} ({count_total}×) — {link_str}"
+            )
+        out = "\n".join(lines)
+        if len(out) > _MAX_SUMMARY_CHARS:
+            # Truncate with marker so operator sees it was clipped.
+            ellipsis = "\n… [truncated]"
+            cut = _MAX_SUMMARY_CHARS - len(ellipsis)
+            out = out[:cut] + ellipsis
+        return out
+
+    def emit(self, send_fn: Callable[[str], None]) -> None:
+        """Send the formatted summary via ``send_fn``. Swallows + logs any
+        exception so admin-ping delivery failure doesn't break the cron tick.
+        """
+        if self.is_empty():
+            return
+        text = self.format_summary()
+        if not text:
+            return
+        try:
+            send_fn(text)
+        except Exception:
+            logger.exception(
+                "OrangetrackPingAggregator.emit: send_fn raised; swallowing"
+            )
