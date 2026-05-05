@@ -53,7 +53,9 @@ my-hw/
 ├── pending_articles_repo.py # DAO owning all SQLite tables (DDL + CRUD + transactional moves);
 │                              init_schema() now also creates bot_state(key, value) idempotently.
 ├── preview_renderer.py      # Local HTML preview builder (CSP + tag/URL allowlists)
+│                              Archived 2026-04-30 — used only by the dormant hw_review preview flow.
 ├── hw_review.py             # Operator-facing CLI (list/show/stage/skip/preview/publish/take/retry).
+│                              Archived 2026-04-30 — code + tests preserved, dormant in production.
 │                              Runs in Claude Code session, NOT on production cron server.
 ├── telegraph_publisher.py   # Telegra.ph API client + public preview_nodes() node-tree builder
 ├── autoevolution_source.py  # RSS + Cloudflare-bypass scrape (curl_cffi)
@@ -77,7 +79,7 @@ my-hw/
 ```
 
 **Operator-side vs cron-side split:**
-- **Operator-side only** (operator's local Claude Code session, NOT deployed): `hw_review.py`, `preview_renderer.py` — manual-review-workflow CLI.
+- **Operator-side only — archived 2026-04-30** (code preserved, dormant): `hw_review.py`, `preview_renderer.py`. Never deployed to the VPS; was meant for the operator's local Claude Code session. The auto-LLM path replaced this in production. Files stay on disk + tests remain green so the path can be revived ad-hoc.
 - **Cron-side only** (deployed to VPS): `news_bot.py`, `pending_articles_repo.py`, `telegraph_publisher.py`, source parsers (`autoevolution_source.py`, `mattel_news_source.py`, `lamley_source.py`), and the four files added by the `llm-transcreation-and-distributed-publishing` feature:
   - `claude_transcreation.py` — Anthropic SDK wrapper, imported by `news_bot.py`.
   - `compute_publish_slots.py` — distributed-publish algorithm, imported by `news_bot.py`.
@@ -185,7 +187,9 @@ my-hw/
 
 ## Data Flow
 
-The pipeline is split into a **cron prep + distributed-publish phase** (no operator, daily at 10:00 МСК) and a **manual review loop** (operator in Claude Code session). Both paths converge on the same `publish_article` + `send_telegraph_teaser` output. Production uses OpenRouter (`openai/gpt-5.4-mini`) as the primary translator with Google Translate as per-article + global fallback.
+The pipeline is the **cron prep + distributed-publish phase** (no operator, daily at 10:00 МСК) — auto-LLM transcreation → Telegra.ph → Telegram. Production uses OpenRouter (`openai/gpt-5.4-mini`) as the primary translator with Google Translate as per-article + global fallback.
+
+A second loop — the **manual review loop** (`hw_review.py` CLI in operator's Claude Code session) — is documented below for completeness but **archived as of 2026-04-30**: the auto path produces 100 % of channel posts in production. The manual loop's code is preserved (740 tests stay green) so it can be revived ad-hoc for one-off articles.
 
 ### Cron prep + distributed-publish phase — `news_bot.job()` daily at 10:00 МСК
 
@@ -203,7 +207,9 @@ The pipeline is split into a **cron prep + distributed-publish phase** (no opera
    - On `OutageError` (state-machine signal): the state machine already recorded the event and routed this article through Google. Continue to next slot.
    - On unexpected exception: standard 3-strikes attempt counter → `move_to_failed`.
 
-### Manual review loop — `hw_review.py` (operator + Claude Code session)
+### Manual review loop — `hw_review.py` (archived 2026-04-30)
+
+> **Status:** dormant. Operator declared production ready on 2026-04-30 EOD and stopped exercising this path. `hw_review.py` + tests are preserved verbatim — the workflow below still works if revived for a specific article.
 
 1. Operator opens Claude Code → `hw_review list` shows the queue + `⚠️` failed-footer.
 2. Claude loads `ux-guidelines.md` (mandatory), reads `hw_review show N`.
@@ -217,12 +223,12 @@ The pipeline is split into a **cron prep + distributed-publish phase** (no opera
    - On both success: `move_to_published(link, via_review=True)` (single repo transaction: INSERT published + INSERT OR IGNORE processed + DELETE pending) + `_cleanup_preview_html`.
 7. `hw_review skip N` (with y/N prompt if staged) / `hw_review take N` (clear_notified) / `hw_review retry N` (re-queue from failed).
 
-### Channel post output (identical for manual and fallback paths)
+### Channel post output (identical for all paths)
 
-- Message body: `#{source_hashtag}` — `autoevolution` / `mattel` / `lamleygroup` per `_source_hashtag`. Single-line, byte-identical for manual and auto paths (Decision 14).
+- Message body: `#{source_hashtag}` — `autoevolution` / `mattel` / `lamleygroup` per `_source_hashtag`. Single-line, byte-identical regardless of which translation engine produced the RU text (Decision 14). Holds even if the archived manual path is revived.
 - `LinkPreviewOptions(url=telegraph_url, show_above_text=True)` triggers Instant View card.
 - Telegra.ph page: hero figure + italic subtitle with `💬 «…»` + bold lead + body blocks (paragraphs, images, iframes) + `Источник:` footer.
-- Auto-fallback (`via_review=False`) additionally injects a plain `<p>` paragraph `↳ автоперевод` IMMEDIATELY BEFORE the `Источник:` footer — a path differentiator visible only to readers who open the article. See `patterns.md` § "Channel post format" for rationale and wiring.
+- The `↳ автоперевод` marker on the Telegra.ph page (plain `<p>` IMMEDIATELY BEFORE the `Источник:` footer) marks a quality warning for readers, **not a path differentiator**. It fires only when `_fallback_publish` translated the article via Google Translate (per-article LLM failure or global outage fallback) — wired as `auto_marker=used_google_fallback and not via_review` in [`news_bot.py:1195`](../../../../news_bot.py#L1195). LLM-translated auto publishes don't carry it. The dormant manual path also wouldn't carry it (`via_review=True`). See `patterns.md` § "Channel post format" for rationale and wiring.
 
 ---
 
@@ -244,7 +250,7 @@ The pipeline is split into a **cron prep + distributed-publish phase** (no opera
 - Bookkeeping: `fetched_at`, `notified_at`, `attempt_count`, `last_error`, `pub_date`
 
 **published_articles** — audit of real publishes
-- `link` PK, `title`, `telegraph_url`, `telegraph_path`, `via_review` (1=manual, 0=fallback), `published_at`
+- `link` PK, `title`, `telegraph_url`, `telegraph_path`, `via_review` (1=manual, 0=auto-LLM), `published_at`. Since the manual path was archived on 2026-04-30 every new row carries `via_review=0`; existing `via_review=1` rows in `published_articles` are historical (manual-review-workflow era).
 
 **failed_articles** — dead letter after 3 GT attempts
 - `link` PK, `title`, `last_error`, `attempt_count`, `failed_at`

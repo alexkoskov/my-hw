@@ -31,7 +31,7 @@ All documentation is in the `references/` folder:
 
 ## Required references (project-specific)
 
-- **[ux-guidelines.md](references/ux-guidelines.md)** — **MANDATORY** before any `hw_review stage` / translation work. Contains the full transcreation system prompt (role: ведущий редактор/локализатор) and the tone-of-voice rules for `@myhwchannel123`. Every Russian text that reaches the channel must be produced under this prompt.
+- **[ux-guidelines.md](references/ux-guidelines.md)** — **MANDATORY** for any LLM transcreation work (production runtime: loaded as system prompt by every LLM engine via `_llm_common._build_system_prompt`). Contains the full transcreation system prompt (role: ведущий редактор/локализатор) and the tone-of-voice rules for `@myhwchannel123`. Every Russian text that reaches the channel is produced under this prompt — the auto-LLM `_fallback_publish` path is the sole production route (manual `hw_review` path archived 2026-04-30, code preserved).
 
 ## Optional references
 
@@ -43,7 +43,7 @@ Read specific guides as needed for your task:
 
 - Starting feature development - read [project.md](references/project.md), [architecture.md](references/architecture.md), [patterns.md](references/patterns.md)
 - Implementing database changes - read [architecture.md](references/architecture.md) (Data Model section)
-- Translating news for Telegram channel (any `hw_review stage` call) - **MUST read [ux-guidelines.md](references/ux-guidelines.md) first**
+- Working on LLM transcreation (engine modules, system prompt, per-source tone, EN-leak guard) - **MUST read [ux-guidelines.md](references/ux-guidelines.md) first** — it's the system prompt loaded by every engine at runtime
 - Working on UI/UX - read [ux-guidelines.md](references/ux-guidelines.md)
 - Setting up deployment - read [deployment.md](references/deployment.md)
 - Creating branches or PRs - read [patterns.md](references/patterns.md) (Git Workflow section)

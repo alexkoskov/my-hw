@@ -1,18 +1,19 @@
 # UX guidelines: tone of voice for Telegram channel
 
-This file is the **single source of truth** for how English-language Hot Wheels news is transformed into Russian channel content. It applies to **every** translation / transcreation performed for `@myhwchannel123`, regardless of which path produces the Russian text.
+This file is the **single source of truth** for how English-language Hot Wheels news is transformed into Russian channel content. It is loaded as the **system prompt** by every LLM transcreation engine (Claude / OpenRouter / Gemini / OpenAI) at runtime — see [`_llm_common.py:114`](../../../../_llm_common.py#L114) `_build_system_prompt`. Editing this file changes how the channel sounds.
 
 ## Scope — where this applies
 
 | Path | Who translates | This guide applies? |
 |---|---|---|
-| `hw_review stage N` — manual review (Claude Code session) | Claude in operator's session | **YES — mandatory.** Load this file before any `stage` call. |
-| `_fallback_publish` — auto-fallback after idle timeout or overflow fast-track | `transcreate_text` (Google Translate + regex post-processing) | Historical: current code uses regex rules. See *Known drift* below. |
+| `_fallback_publish` — auto-LLM (production default since 2026-04-30) | LLM via `claude_transcreation` / `openrouter_transcreation` / etc. — `_load_prompt` reads this file as system prompt | **YES — runtime dependency.** Deploy bundle ships it to the server (see Decision 8 in `architecture.md`). Missing or empty file → bot sits in Google fallback all day. |
+| `_fallback_publish` — Google Translate fallback | `transcreate_text` (Google Translate + emoji/glossary safety net) | Indirectly — the safety net is calibrated to this guide, but Google Translate doesn't read prose instructions. The `↳ автоперевод` marker on the Telegra.ph page warns readers about reduced quality on this branch. |
+| `hw_review stage N` — **archived 2026-04-30** | Was Claude in operator's session | Code preserved (`hw_review.py` + tests green), but path is dormant in production: 100 % of channel posts go through auto-LLM. If revived, this file is the prompt to load. |
 | Admin-ping composition (`build_admin_ping`) | `news_bot` code | No — admin pings are operator-internal, not reader-facing. |
 
-The **manual review path is the primary path**. Fallback is rare (operator ignored queue >2 h, or queue overflow). So > 95 % of channel posts should come through `hw_review publish`, which means through this guide.
+So in practice the **auto-LLM path is the primary (and currently sole) path**. The LLM reads this file as its system prompt on every article — no operator review in between.
 
-## The system prompt (load this before any `hw_review stage`)
+## The system prompt (loaded by every LLM engine at runtime)
 
 Treat the text below as your role for the duration of any translation work in this project. Do not paraphrase, summarise, or omit any instruction.
 
@@ -39,7 +40,9 @@ Treat the text below as your role for the duration of any translation work in th
 > - Не используй вводные фразы вроде «Вот ваш перевод» или «Я перевел текст».
 > - В конце добавь 2–3 альтернативных варианта самого цепляющего заголовка (Clickbait-style, но без желтухи).
 
-## Operational checklist — before running `hw_review stage N`
+## Operational checklist — `hw_review stage N` (archived path)
+
+> **Status (2026-04-30):** dormant. The auto-LLM path produces 100 % of channel posts in production. The checklist below is preserved verbatim in case the manual path is revived (e.g. for a one-off article the operator wants to hand-craft). `hw_review.py` + its tests stay green; nothing here is deleted.
 
 1. Read this file in full.
 2. Re-read the EN paragraphs from `hw_review show N`.
@@ -57,7 +60,7 @@ Treat the text below as your role for the duration of any translation work in th
 
 ## Length + structure — "translate everything, drop only noise"
 
-This is a hard rule, not a judgment call. Violating it produces inconsistency between sources (an autoevolution post reads full-length, a mattel post reads as an abstract — same channel, same reader, different experience).
+This is a hard rule for the LLM, not a judgment call. Violating it produces inconsistency between sources (an autoevolution post reads full-length, a mattel post reads as an abstract — same channel, same reader, different experience).
 
 - **Транскреация каждого параграфа оригинала. 1-к-1 структурное соответствие.**
 - Не мёрджить параграфы. Не сворачивать списки в один параграф. Не сжимать «для читабельности». Структура оригинала сохраняется как есть — автор уже решил, где абзац, а где список.
@@ -109,14 +112,21 @@ If any of these are true, **stop and rework** — you're breaking the prompt:
 - Sentences are uniformly long (>20 words each) — no rhythm
 - Body reads like a news-agency brief, not a friend telling you something
 
-## Known drift — auto-fallback path
+## Quality drift — what the auto path can and can't do
 
-`news_bot.transcreate_text` (used by `_fallback_publish` during idle-fallback and overflow fast-track) currently runs Google Translate + a regex post-processing pass (see `patterns.md § Transcreation, not plain translation`). **This produces a different quality** than the prompt above. Auto-fallback is the *safety net*, not the *primary path* — it fires only when the operator ignored the queue past the grace window. For channel consistency, rely on the manual path.
+The drift between manual and auto paths that this section used to describe is **closed as of the `llm-transcreation-and-distributed-publishing` feature**: auto-LLM transcreation now reads the same prompt above as its system prompt, on every article, on every engine. There is no second-class «Google Translate + regex» track anymore for the primary route — Google Translate only fires as a per-article fallback when the LLM refuses / times out / is globally down, and the Telegra.ph page carries the `↳ автоперевод` marker so readers know to expect reduced quality.
 
-Future feature work on `llm-transcreation` (currently archived, see memory) would route auto-fallback through an LLM with this same prompt to close the drift.
+What the auto path **cannot** do, and what manual review used to handle:
+
+- **Operator sign-off on titles.** The LLM picks one primary; the 2–3 alts requested by the prompt are emitted but currently unused (no human-in-the-loop). If a particular title is bad enough to warrant rework, the operator can either hand-edit the Telegra.ph page after publish or revive the manual path for that one article (`hw_review.py` is dormant, not deleted).
+- **Real-time judgment on edge cases.** «Drop this paragraph?» / «Merge these two lists?» — the LLM operates within the prompt's hard rules but can't ask the operator. So the prompt errs on the side of *translate everything, drop only noise* (allowed-drops list above) — over-translating beats under-translating.
+
+If the auto path's quality regresses (operator notices off-tone titles, dropped paragraphs, misapplied tone dial for a source), the fix is to tighten **this prompt** — not to revive the manual path.
 
 ## Provenance
 
 - Prompt authored by the operator in an earlier Roo Code session (task `019d9668-…`, April 2026).
 - Discovered and imported into project-knowledge on 2026-04-23 during live end-to-end QA of `manual-review-workflow`, after a test publish (Mercedes-Benz 300 SL) revealed the prompt had never been loaded by Claude during translation.
-- Any edit to this file must preserve the prompt text verbatim inside the blockquote. The blockquote is what Claude reads as its role.
+- Wired into the auto-LLM path on 2026-04-26 by the `llm-transcreation-and-distributed-publishing` feature — `_load_prompt` reads this exact file at runtime. The deploy bundle MUST ship it; on the server the file lands flat at `$DEPLOY_PATH/ux-guidelines.md` (Decision 8 in the tech-spec).
+- Manual path archived on 2026-04-30 — operator declared production ready and stopped exercising `hw_review`. This file's role flipped from «prompt for the operator's Claude session» to «prompt for the production LLM», but the body is the same.
+- Any edit to this file must preserve the prompt text verbatim inside the blockquote. The blockquote is what every LLM engine reads as its role.

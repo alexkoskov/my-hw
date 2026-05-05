@@ -44,7 +44,7 @@ Deployment process, infrastructure, and production operations for AI agents.
 - `ANTHROPIC_MODEL` (default `claude-haiku-4-5`) — Claude model name. Override to `claude-sonnet-4-6` for higher quality at ~5× cost. Best stored as a GitHub Actions repo `var` rather than a secret; safe to log.
 - `INSTANCE_LABEL` — short label distinguishing this bot instance in admin pings. When set (e.g. `prod` or `test`), `send_admin_notification` prepends `[<label>] ` to every admin-bound message. Empty / unset → no prefix (backward-compatible). Set ONCE manually in each instance's `.env` on the server; the deploy workflows do NOT manage this var (their regex strips only LLM-related keys + TZ, leaving INSTANCE_LABEL untouched). Used by the two-instance topology (see below).
 
-These must be present on the production server (systemd EnvironmentFile or `source .env` in the cron wrapper). Operator-side `hw_review.py` also reads them locally from `.env` when publishing manually. The deploy workflow (`.github/workflows/deploy.yml` step "Write runtime env vars to server `.env`") writes `ANTHROPIC_API_KEY`, `ANTHROPIC_MODEL`, and `TZ` to the server's `.env` idempotently on every deploy — repeated deploys do not duplicate lines, and any pre-existing keys (TELEGRAM_*, TELEGRAPH_ACCESS_TOKEN) are preserved verbatim.
+These must be present on the production server (systemd EnvironmentFile or `source .env` in the cron wrapper). The archived operator-side `hw_review.py` would also read these from a local `.env` if revived — currently dormant. The deploy workflow (`.github/workflows/deploy.yml` step "Write runtime env vars to server `.env`") writes `ANTHROPIC_API_KEY`, `ANTHROPIC_MODEL`, and `TZ` to the server's `.env` idempotently on every deploy — repeated deploys do not duplicate lines, and any pre-existing keys (TELEGRAM_*, TELEGRAPH_ACCESS_TOKEN) are preserved verbatim.
 
 ---
 
@@ -97,7 +97,7 @@ Both are stored as `vars` (not `secrets`) because they aren't sensitive — visi
 
 The list lives in two places — `.github/workflows/deploy.yml` and `deploy.sh` — and is asserted byte-for-byte identical by the headline comments. **INVARIANT:** any new first-party import added to `news_bot.py` MUST be mirrored into both FILES arrays. Otherwise the server hits `ImportError` on the next cron tick with no CI signal beforehand.
 
-**Files NOT deployed**: `hw_review.py`, `preview_renderer.py` — operator runs these locally in Claude Code session, not on the VPS.
+**Files NOT deployed**: `hw_review.py`, `preview_renderer.py` — manual review path archived 2026-04-30, code preserved + tests green for ad-hoc revival, but never deployed (would run in operator's local Claude Code session, not on the VPS).
 
 **Service auto-restart:** the deploy workflow ends with `ssh ... "sudo systemctl restart news_bot.service"` — code changes go live immediately, NOT deferred to the next 10:00 МСК cron tick. The SSH step depends on the sudoers NOPASSWD rule below; if it's missing, the deploy step prints a `::error::` hint pointing at `/etc/sudoers.d/news_bot`.
 
