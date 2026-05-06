@@ -459,11 +459,35 @@ def _parse_content_encoded(html_str: str, link: str) -> Optional[Dict]:
     # once. We process by tag name (Decision 3 — no Gutenberg classes).
     handled_tags = {"p", "h1", "h2", "h3", "h4", "h5", "h6", "figure", "img", "iframe"}
 
+    # WordPress chrome class markers — when we encounter a div/section
+    # with one of these classes, skip it entirely (don't recurse into
+    # it). These are the "Share this:" buttons (sharedaddy), the
+    # tag/category list (taxonomies), JetPack related posts (jp-related),
+    # comment forms, etc. Discovered 2026-05-06 on the Porsche Targa
+    # Turbo republish — test channel showed these blocks bleeding into
+    # the Telegraph article. Genuine content like the "Original listing
+    # on Mattel Creations: …" paragraph stays (operator wants it).
+    _CHROME_CLASS_MARKERS = (
+        "sharedaddy", "sd-", "taxonomies", "jp-related",
+        "post-comments", "comment-form",
+    )
+
+    def _has_chrome_class(child) -> bool:
+        classes = child.get("class") or []
+        for c in classes:
+            cl = c.lower()
+            for marker in _CHROME_CLASS_MARKERS:
+                if marker in cl:
+                    return True
+        return False
+
     def _walk(node):
         for child in list(node.children):
             name = getattr(child, "name", None)
             if not name:
                 continue  # NavigableString — skip; <p> walker handles text.
+            if _has_chrome_class(child):
+                continue  # WordPress footer chrome — drop.
             if name == "p":
                 # Check if the paragraph wraps an iframe / img only — those
                 # take precedence so we don't get a run with an empty
