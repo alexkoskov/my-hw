@@ -105,9 +105,16 @@ class TestPrimaryPath:
     def test_standard_post_with_paragraphs_and_image(self):
         out = fetch_orangetrack_article(_make_entry(SAMPLE_STANDARD_HTML))
         assert out is not None
-        # Subtitle is the first paragraph (lamley convention).
-        assert out["subtitle"] == "The first paragraph introduces the casting."
-        # Body paragraphs are the rest.
+        # Subtitle is empty by design — preserves alignment between
+        # `paragraphs` and the paragraph-type entries in `blocks` so the
+        # `_patch_text_with_ru_paragraphs` fallback splices RU translations
+        # one-to-one without leaving trailing blocks in English.
+        # See SESSION-2026-05-06.md.
+        assert out["subtitle"] == ""
+        # First paragraph stays in body (Telegraph just won't render the
+        # italic `💬 «…»` lead).
+        assert "The first paragraph introduces the casting." in out["paragraphs"]
+        # Body paragraphs include the rest too.
         assert "The second paragraph explains its rarity." in out["paragraphs"]
         assert any("third paragraph" in p for p in out["paragraphs"])
         # Image present in flat list and in blocks.
@@ -115,6 +122,10 @@ class TestPrimaryPath:
         types = [b["type"] for b in out["blocks"]]
         assert "paragraph" in types
         assert "image" in types
+        # Paragraphs and blocks-paragraphs counts must match — this is
+        # the alignment invariant the fix protects.
+        block_paragraph_count = sum(1 for t in types if t == "paragraph")
+        assert len(out["paragraphs"]) == block_paragraph_count
 
     def test_post_with_video_block(self):
         out = fetch_orangetrack_article(_make_entry(SAMPLE_WITH_VIDEO_HTML))
@@ -472,7 +483,10 @@ class TestWPBlockDriftMitigation:
         """
         out = fetch_orangetrack_article(_make_entry(minimal))
         assert out is not None
-        assert out["subtitle"] == "First para no class."
+        # Subtitle stays empty by design (see TestPrimaryPath note).
+        assert out["subtitle"] == ""
+        # Both paragraphs in body — first is no longer extracted as subtitle.
+        assert "First para no class." in out["paragraphs"]
         assert "Second para no class." in out["paragraphs"]
         assert any("x.jpg" in i for i in out["images"])
 

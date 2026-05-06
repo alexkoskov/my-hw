@@ -497,16 +497,23 @@ def _parse_content_encoded(html_str: str, link: str) -> Optional[Dict]:
     ]
     paragraphs_flat = filter_boilerplate(paragraphs_flat)
 
-    # Subtitle: first paragraph text. Then drop it from paragraphs_flat
-    # so the body doesn't repeat below the decorated lead. (Mirrors the
-    # lamley convention.)
-    subtitle = paragraphs_flat[0] if paragraphs_flat else ""
-    body_paragraphs = paragraphs_flat[1:] if paragraphs_flat else []
+    # Subtitle stays empty — orangetrack RSS doesn't ship a separate
+    # subtitle field, and extracting the first paragraph as subtitle
+    # caused an off-by-one mismatch between `paragraphs` and `blocks`:
+    # body_paragraphs had K-1 entries, blocks had K paragraph-type
+    # entries, so `_llm_common._patch_text_with_ru_paragraphs` consumed
+    # ru translations sequentially and left the trailing block(s) in
+    # English. The first paragraph stays in body_paragraphs and is
+    # translated as part of the body — Telegraph just doesn't render
+    # the italic `💬 «…»` lead decoration, which is acceptable.
+    # See SESSION-2026-05-06.md for the incident.
+    subtitle = ""
+    body_paragraphs = paragraphs_flat
 
     # If the post is video-only (no usable paragraphs) but has a title,
     # synthesize paragraphs from the title (gating field at news_bot.py:1510).
     has_video = any(b["type"] == "video" for b in blocks)
-    if not body_paragraphs and not subtitle and has_video and title:
+    if not body_paragraphs and has_video and title:
         body_paragraphs = [title]
 
     images_flat: List[str] = [
