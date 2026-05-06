@@ -28,8 +28,14 @@ jobs:
     runs-on: ubuntu-latest
 
     steps:
+      # Explicit ref — without this, workflow_run-triggered runs default
+      # to the repo's default branch (main) instead of the SHA that the CI
+      # workflow ran on. That silently SCPs main's stale code to the test
+      # instance even when CI on dev was green. See incident 2026-05-06.
       - name: Checkout
         uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.workflow_run.head_sha || github.ref }}
 
       - name: Verify required secrets
         env:

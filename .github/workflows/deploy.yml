@@ -32,8 +32,14 @@ jobs:
     runs-on: ubuntu-latest
 
     steps:
+      # Explicit ref — for symmetry with deploy_test.yml. Prod-side this
+      # is currently a no-op (main = default branch, so checkout already
+      # picks up main), but the explicit form documents the intent and
+      # protects against a future default-branch change.
       - name: Checkout
         uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.workflow_run.head_sha || github.ref }}
 
       - name: Verify required secrets
         env:
