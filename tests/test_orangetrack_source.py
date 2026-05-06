@@ -140,28 +140,26 @@ class TestPrimaryPath:
         # Flat paragraphs do NOT include the video.
         assert all("iframe" not in p for p in out["paragraphs"])
 
-    def test_h5_in_blocks_and_in_paragraphs(self):
+    def test_h5_emitted_as_paragraph_block(self):
+        # h5 elements are emitted as paragraph-type blocks (NOT heading).
+        # Telegraph renders heading blocks with prominent bold/larger
+        # typography which looked uneven for orangetrack articles where
+        # h5 carries long content. We trade section visual separation
+        # for uniform typography. See SESSION-2026-05-06.md.
         out = fetch_orangetrack_article(_make_entry(SAMPLE_WITH_H5_HTML))
         assert out is not None
         types = [b["type"] for b in out["blocks"]]
-        assert "heading" in types
-        # h5 captured at level 5 in blocks.
-        h5_blocks = [b for b in out["blocks"] if b["type"] == "heading"]
-        assert all(b["level"] == 5 for b in h5_blocks)
-        assert any("Case A" in b["text"] for b in h5_blocks)
-        # Heading text IS in flat paragraphs too — supersedes original
-        # Decision 15. Reason: _patch_text_with_ru_paragraphs consumes
-        # ru_paragraphs for any block of type paragraph/lead/heading,
-        # and _translate_block_strings skips heading text. If headings
-        # were excluded from paragraphs, ru_paragraphs would be shorter
-        # than count of patchable blocks → trailing blocks left in
-        # English. See SESSION-2026-05-06.md.
+        # No heading-type blocks emitted by orangetrack parser anymore.
+        assert "heading" not in types
+        # h5 text appears as paragraph-type blocks in original DOM order.
+        assert any("Case A" in b["text"] for b in out["blocks"] if b["type"] == "paragraph")
+        assert any("Case B" in b["text"] for b in out["blocks"] if b["type"] == "paragraph")
+        # h5 text also in flat paragraphs (alignment invariant).
         assert any("Case A" in p for p in out["paragraphs"])
         assert any("Case B" in p for p in out["paragraphs"])
-        # Alignment invariant: paragraphs count == count of patchable
-        # blocks (paragraph + heading types).
-        patchable_count = sum(1 for t in types if t in ("paragraph", "heading"))
-        assert len(out["paragraphs"]) == patchable_count
+        # paragraphs count == count of paragraph-type blocks.
+        paragraph_count = sum(1 for t in types if t == "paragraph")
+        assert len(out["paragraphs"]) == paragraph_count
 
     def test_affiliate_standalone_short_paragraph_filtered(self):
         out = fetch_orangetrack_article(_make_entry(SAMPLE_AFFILIATE_HTML))

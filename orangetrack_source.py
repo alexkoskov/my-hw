@@ -381,6 +381,14 @@ def _parse_content_encoded(html_str: str, link: str) -> Optional[Dict]:
         blocks.append({"type": "paragraph", "text": text, "runs": runs})
 
     def _emit_heading(h_tag, level):
+        # Emit h-tags as paragraph-type blocks (NOT heading-type). Reason:
+        # Telegraph renders heading blocks with prominent bold/larger
+        # typography, which looks uneven on orangetrack articles where
+        # h5 section markers are translated to longer Russian phrases or
+        # the source author uses h5 for long descriptive text. Uniform
+        # paragraph rendering reads better. Section visual separation can
+        # be reconsidered later if operator wants distinct styling.
+        # See SESSION-2026-05-06.md.
         runs = _runs_from_tag(h_tag)
         if not runs:
             return
@@ -388,8 +396,7 @@ def _parse_content_encoded(html_str: str, link: str) -> Optional[Dict]:
         if not text:
             return
         blocks.append({
-            "type": "heading",
-            "level": level,
+            "type": "paragraph",
             "text": text,
             "runs": runs,
         })
