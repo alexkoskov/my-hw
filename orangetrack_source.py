@@ -679,9 +679,36 @@ def _fetch_article_html(
     # Decode response. Use response.encoding if set, else utf-8 fallback.
     encoding = response.encoding or "utf-8"
     try:
-        return bytes(buf).decode(encoding, errors="replace")
+        full_html = bytes(buf).decode(encoding, errors="replace")
     except (LookupError, UnicodeDecodeError):
-        return bytes(buf).decode("utf-8", errors="replace")
+        full_html = bytes(buf).decode("utf-8", errors="replace")
+
+    # Scope to article body — full page contains site chrome (header,
+    # nav, sidebar, footer, comment form, related posts, affiliate
+    # banners) which the parser would otherwise drag into Telegraph
+    # output. orangetrack uses HTML5 `<article>` element; selector chain
+    # below is defensive in case of theme drift.
+    try:
+        page = BeautifulSoup(full_html, "html.parser")
+    except Exception:
+        return full_html  # last-resort: return full page if BS4 chokes
+    article_node = (
+        page.find("article")
+        or page.find("div", class_="entry-content")
+        or page.find("main")
+    )
+    if article_node is not None:
+        return str(article_node)
+    # No recognizable article container — log and return full page so
+    # at least *something* gets parsed (downstream will likely produce
+    # noisy output but it won't crash). Operator sees noisy fallback as
+    # signal that the theme changed.
+    logger.warning(
+        "orangetrack fallback: no <article>/entry-content/<main> found "
+        "for %s; passing full page to parser",
+        url,
+    )
+    return full_html
 
 
 # ---------------------------------------------------------------------------
