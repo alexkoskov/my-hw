@@ -337,6 +337,38 @@ def _best_img_src(img) -> Optional[str]:
 # ---------------------------------------------------------------------------
 
 
+def _has_empty_embed_wrapper(html_str: str) -> bool:
+    """Detect WordPress empty `wp-block-embed` wrapper.
+
+    WordPress.com RSS sometimes strips the actual ``<iframe>``/``<video>``
+    element from ``content:encoded`` but leaves the surrounding
+    ``<figure class="wp-block-embed ...">`` / ``<div class="wp-block-embed__wrapper">``.
+    The live HTML page DOES carry the iframe — the RSS export is the lossy
+    layer. When we see this empty-wrapper marker we treat the feed body as
+    incomplete and trigger the HTTP-scrape fallback, which fetches the live
+    page and recovers the embedded video.
+
+    Discovered 2026-05-06 on
+    `https://orangetrackdiecast.com/2026/04/23/unboxing-hot-wheels-2026-red-line-club-1988-porsche-911-targa-turbo-will-i-get-the-chase/`
+    where the article's centerpiece YouTube unboxing was missing on Telegraph.
+    """
+    if not html_str:
+        return False
+    try:
+        soup = BeautifulSoup(html_str, "html.parser")
+    except Exception:
+        return False
+    # Look for the wrapper element specifically.
+    for wrapper in soup.find_all(
+        class_=lambda c: c and "wp-block-embed__wrapper" in c
+    ):
+        # If the wrapper has no iframe / video child, it's empty —
+        # WordPress stripped the actual embed during RSS export.
+        if not wrapper.find("iframe") and not wrapper.find("video"):
+            return True
+    return False
+
+
 def _parse_content_encoded(html_str: str, link: str) -> Optional[Dict]:
     """Parse a content:encoded HTML body into the canonical contract dict.
 
@@ -468,6 +500,14 @@ def _parse_content_encoded(html_str: str, link: str) -> Optional[Dict]:
                     cap_tag = child.find("figcaption")
                     caption = cap_tag.get_text(" ", strip=True) if cap_tag else ""
                     _emit_image(img, caption=caption)
+                # Video embed wrapped in <figure> (typical WP output:
+                # <figure class="wp-block-embed"><div><iframe>...). Pick up
+                # iframes nested anywhere inside the figure — the figure
+                # handler runs ONCE per figure, so we look for iframe
+                # children that the top-level walk wouldn't reach
+                # (figure isn't a wrapper-tag in the recurse-list).
+                for inner_iframe in child.find_all("iframe"):
+                    _emit_iframe(inner_iframe)
                 # Nested figures (carousel / gallery) — recurse to grab
                 # additional <img> inside.
                 for nested in child.find_all("figure"):
@@ -687,6 +727,12 @@ def fetch_orangetrack_article(
         raw_html = ""
 
     if raw_html:
+        # WordPress.com RSS sometimes strips iframe/video from content:encoded
+        # but leaves the empty wrapper. Detect this BEFORE accepting parse
+        # results, so we trigger the HTTP fallback which pulls the live page
+        # (where the iframe is intact) instead of returning a video-less
+        # parse from feed-only data. See `_has_empty_embed_wrapper` docstring.
+        feed_incomplete = _has_empty_embed_wrapper(raw_html)
         try:
             parsed = _parse_content_encoded(raw_html, link)
         except Exception:
@@ -699,7 +745,7 @@ def fetch_orangetrack_article(
                 except Exception:
                     logger.exception("orangetrack notifier raised after parse exc")
             return None
-        if parsed:
+        if parsed and not feed_incomplete:
             # Successful primary path — silent.
             # Fall back to RSS title when content:encoded didn't carry h1.
             if not parsed.get("title"):
@@ -718,8 +764,14 @@ def fetch_orangetrack_article(
             ):
                 parsed["paragraphs"] = [parsed["title"]]
             return parsed
-        # Empty parse → fall through to fallback (notifier called below
-        # only if HTTP fallback also fails).
+        if feed_incomplete:
+            logger.info(
+                "orangetrack feed has empty wp-block-embed wrapper for %s; "
+                "falling back to HTTP scrape to recover stripped iframe",
+                link,
+            )
+        # Empty parse OR incomplete feed → fall through to HTTP fallback
+        # (notifier called below only if HTTP fallback also fails).
 
     # Fallback: HTTP GET. Allowlist guard FIRST.
     if not link:

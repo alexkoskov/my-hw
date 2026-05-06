@@ -21,6 +21,7 @@ import requests
 import orangetrack_source as ots
 from orangetrack_source import (
     OrangetrackPingAggregator,
+    _has_empty_embed_wrapper,
     _is_allowed_orangetrack_url,
     _safe_for_ping,
     _video_embed_url,
@@ -373,6 +374,99 @@ def _make_streaming_response(status=200, body: bytes = b"", chunks=None, raise_o
     resp.iter_content = MagicMock(return_value=iter(chunks_list))
     resp.close = MagicMock()
     return resp
+
+
+class TestEmptyEmbedWrapperDetection:
+    """WordPress.com RSS strips iframes/videos from content:encoded for some
+    articles, leaving only an empty `wp-block-embed__wrapper` div. Detecting
+    that marker triggers HTTP-scrape fallback so the live page's intact
+    iframe gets recovered. Discovered 2026-05-06 on the Porsche 911 Targa
+    Turbo unboxing article.
+    """
+
+    def test_empty_wrapper_detected_in_content_encoded(self):
+        # Empty wrapper — no iframe/video child. The exact pattern WordPress
+        # produces for a YouTube video block when iframe was stripped.
+        html = """
+        <p>Some intro text.</p>
+        <figure class="wp-block-embed is-type-video is-provider-youtube wp-block-embed-youtube wp-embed-aspect-16-9 wp-has-aspect-ratio">
+          <div class="wp-block-embed__wrapper">
+
+          </div>
+          <figcaption class="wp-element-caption"><em>Caption text</em></figcaption>
+        </figure>
+        <p>More body text.</p>
+        """
+        assert _has_empty_embed_wrapper(html) is True
+
+    def test_wrapper_with_iframe_NOT_detected(self):
+        html = """
+        <figure class="wp-block-embed is-type-video">
+          <div class="wp-block-embed__wrapper">
+            <iframe src="https://www.youtube.com/embed/abc123"></iframe>
+          </div>
+        </figure>
+        """
+        assert _has_empty_embed_wrapper(html) is False
+
+    def test_wrapper_with_video_NOT_detected(self):
+        # <video> tag should also satisfy "has media child"
+        html = """
+        <figure class="wp-block-embed">
+          <div class="wp-block-embed__wrapper">
+            <video src="https://x/y.mp4"></video>
+          </div>
+        </figure>
+        """
+        assert _has_empty_embed_wrapper(html) is False
+
+    def test_no_wrapper_at_all_NOT_detected(self):
+        html = "<p>Just text.</p><figure><img src='x.jpg'/></figure>"
+        assert _has_empty_embed_wrapper(html) is False
+
+    def test_empty_string_NOT_detected(self):
+        assert _has_empty_embed_wrapper("") is False
+
+    def test_empty_wrapper_triggers_http_fallback(self):
+        # Integration: feed entry has content:encoded with empty embed wrapper;
+        # parser should fall through to HTTP fetch where iframe is intact.
+        feed_html = """
+        <p>Intro.</p>
+        <figure class="wp-block-embed is-provider-youtube">
+          <div class="wp-block-embed__wrapper"></div>
+        </figure>
+        <p>Body.</p>
+        """
+        # HTTP-scraped page has the actual iframe.
+        live_html = """
+        <p>Intro.</p>
+        <figure class="wp-block-embed">
+          <div class="wp-block-embed__wrapper">
+            <iframe src="https://www.youtube.com/embed/RECOVERED_VIDEO_ID"></iframe>
+          </div>
+        </figure>
+        <p>Body.</p>
+        """
+        entry = {
+            "link": "https://orangetrackdiecast.com/some-post",
+            "title": "Test Post",
+            "content": [{"value": feed_html}],
+        }
+        with patch("orangetrack_source.requests.get") as mock_get:
+            mock_get.return_value = _make_streaming_response(
+                200, live_html.encode("utf-8")
+            )
+            out = fetch_orangetrack_article(entry, notifier=None)
+        assert out is not None
+        # Video block must come from HTTP fallback (live HTML had iframe).
+        block_types = [b.get("type") for b in out.get("blocks") or []]
+        assert "video" in block_types, (
+            f"Expected video block from HTTP fallback, got types: {block_types}"
+        )
+        videos = [b for b in out["blocks"] if b.get("type") == "video"]
+        assert any(
+            "RECOVERED_VIDEO_ID" in (v.get("src") or "") for v in videos
+        )
 
 
 class TestFallbackPath:
