@@ -140,7 +140,7 @@ class TestPrimaryPath:
         # Flat paragraphs do NOT include the video.
         assert all("iframe" not in p for p in out["paragraphs"])
 
-    def test_h5_goes_to_blocks_only(self):
+    def test_h5_in_blocks_and_in_paragraphs(self):
         out = fetch_orangetrack_article(_make_entry(SAMPLE_WITH_H5_HTML))
         assert out is not None
         types = [b["type"] for b in out["blocks"]]
@@ -149,9 +149,19 @@ class TestPrimaryPath:
         h5_blocks = [b for b in out["blocks"] if b["type"] == "heading"]
         assert all(b["level"] == 5 for b in h5_blocks)
         assert any("Case A" in b["text"] for b in h5_blocks)
-        # Heading text NOT in flat paragraphs (Decision 15).
-        assert all("Case A" not in p for p in out["paragraphs"])
-        assert all("Case B" not in p for p in out["paragraphs"])
+        # Heading text IS in flat paragraphs too — supersedes original
+        # Decision 15. Reason: _patch_text_with_ru_paragraphs consumes
+        # ru_paragraphs for any block of type paragraph/lead/heading,
+        # and _translate_block_strings skips heading text. If headings
+        # were excluded from paragraphs, ru_paragraphs would be shorter
+        # than count of patchable blocks → trailing blocks left in
+        # English. See SESSION-2026-05-06.md.
+        assert any("Case A" in p for p in out["paragraphs"])
+        assert any("Case B" in p for p in out["paragraphs"])
+        # Alignment invariant: paragraphs count == count of patchable
+        # blocks (paragraph + heading types).
+        patchable_count = sum(1 for t in types if t in ("paragraph", "heading"))
+        assert len(out["paragraphs"]) == patchable_count
 
     def test_affiliate_standalone_short_paragraph_filtered(self):
         out = fetch_orangetrack_article(_make_entry(SAMPLE_AFFILIATE_HTML))

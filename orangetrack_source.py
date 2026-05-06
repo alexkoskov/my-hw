@@ -492,8 +492,17 @@ def _parse_content_encoded(html_str: str, link: str) -> Optional[Dict]:
     # ----------------------------------------------------------------
     blocks = filter_blocks(blocks)
 
+    # Include both paragraph AND heading text in the flat list. Reason:
+    # `_llm_common._patch_text_with_ru_paragraphs` consumes ru_paragraphs
+    # sequentially for ANY block of type paragraph/lead/heading, and
+    # `_translate_block_strings` (variant B+) explicitly skips text fields
+    # of patchable types (relying on _patch to fill them). If headings
+    # were excluded here, ru_paragraphs would be shorter than the count
+    # of patchable blocks, and trailing paragraph-blocks would stay in
+    # English. See SESSION-2026-05-06.md (overrides tech-spec Decision 15
+    # which originally said "h5 heading goes to blocks-only").
     paragraphs_flat: List[str] = [
-        b["text"] for b in blocks if b["type"] == "paragraph"
+        b["text"] for b in blocks if b["type"] in ("paragraph", "heading")
     ]
     paragraphs_flat = filter_boilerplate(paragraphs_flat)
 
