@@ -103,7 +103,7 @@ _JSON_FENCE_RE = re.compile(
     r"^\s*```(?:json)?\s*(?P<body>.*?)\s*```\s*$", re.DOTALL
 )
 
-_PATCHED_TEXT_BLOCK_TYPES = ("lead", "paragraph", "heading")
+_PATCHED_TEXT_BLOCK_TYPES = ("lead", "paragraph", "heading", "list_item")
 
 
 # --------------------------------------------------------------------------- #
