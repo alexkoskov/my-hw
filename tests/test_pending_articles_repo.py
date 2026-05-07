@@ -620,6 +620,79 @@ class TestMoves(_TmpDbCase):
         pub = repo.get_published(entry['link'])
         self.assertEqual(pub['via_review'], 0)
 
+    def test_move_to_published_idempotent_on_duplicate_link(self):
+        # Contract (Task 2): a second move_to_published with the same link
+        # must NOT raise IntegrityError on the published_articles UNIQUE/PK,
+        # and must preserve the FIRST publication's values
+        # (INSERT OR IGNORE — not INSERT OR REPLACE).
+        link = 'http://m/idem'
+
+        # Setup A: first pending row + first publish (via_review=False).
+        entry = _sample_entry(link=link)
+        repo.insert_pending(entry)
+        self._stage(entry)
+
+        repo.move_to_published(
+            link,
+            telegraph_url='https://telegra.ph/first',
+            telegraph_path='first',
+            via_review=False,
+        )
+
+        # Pre-conditions for the second call:
+        self.assertIsNone(repo.get_pending(link))
+        first_pub = repo.get_published(link)
+        self.assertIsNotNone(first_pub)
+        self.assertEqual(first_pub['telegraph_url'], 'https://telegra.ph/first')
+        self.assertEqual(first_pub['telegraph_path'], 'first')
+        self.assertEqual(first_pub['via_review'], 0)
+
+        # Re-stage: pending PK on `link` was deleted by the first call.
+        # Insert a fresh pending row with the SAME link via raw SQL.
+        # ru_title must be a non-empty string — published_articles.ru_title
+        # is NOT NULL, and step 0 of move_to_published copies it from pending.
+        with self._conn() as c:
+            c.execute(
+                "INSERT INTO pending_articles "
+                "(link, source_name, title, ru_title, paragraphs) "
+                "VALUES (?, ?, ?, ?, ?)",
+                (link, 'mattel', 'title2', 'РуТ2', '[]'),
+            )
+            c.commit()
+
+        # Second call: must NOT raise IntegrityError thanks to INSERT OR IGNORE.
+        repo.move_to_published(
+            link,
+            telegraph_url='https://telegra.ph/second',
+            telegraph_path='second',
+            via_review=True,
+        )
+
+        # Exactly one published row for this link.
+        with self._conn() as c:
+            n_pub = c.execute(
+                "SELECT COUNT(*) FROM published_articles WHERE link=?",
+                (link,),
+            ).fetchone()[0]
+        self.assertEqual(n_pub, 1)
+
+        # Values are still those of the FIRST publication (litmus for
+        # accidental INSERT OR REPLACE — that would have flipped these to
+        # 'second'/'second'/1).
+        pub = repo.get_published(link)
+        self.assertIsNotNone(pub)
+        self.assertEqual(pub['telegraph_url'], 'https://telegra.ph/first')
+        self.assertEqual(pub['telegraph_path'], 'first')
+        self.assertEqual(pub['via_review'], 0)
+
+        # Pending was cleaned up by step 3 of the second call.
+        self.assertIsNone(repo.get_pending(link))
+        with self._conn() as c:
+            n_pending = c.execute(
+                "SELECT COUNT(*) FROM pending_articles"
+            ).fetchone()[0]
+        self.assertEqual(n_pending, 0)
+
     def test_move_to_published_rollback_on_error(self):
         entry = _sample_entry(link='http://m/rollback')
         repo.insert_pending(entry)
