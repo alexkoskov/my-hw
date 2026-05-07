@@ -579,7 +579,7 @@ def move_to_published(link: str, telegraph_url: str, telegraph_path: str,
 
         # Step 1
         conn.execute(
-            "INSERT INTO published_articles "
+            "INSERT OR IGNORE INTO published_articles "
             "(link, title, ru_title, telegraph_url, telegraph_path, "
             " source_name, via_review) "
             "VALUES (?, ?, ?, ?, ?, ?, ?)",
