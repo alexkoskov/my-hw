@@ -689,6 +689,184 @@ class TestDistributedSchedule(unittest.TestCase):
             f"unexpected error-shaped admin ping: {msgs!r}",
         )
 
+    # ======================================================================
+    # Scenario 5 (T7, publish-idempotency-fix): slot-loop guard end-to-end.
+    # Mixed pre-stage — 1 published row + 1 zombie pending (carry-over
+    # tier, attempt_count=2) + 1 fresh pending. Verifies the Task-1 guard
+    # in ``_fallback_publish`` short-circuits the zombie BEFORE any
+    # Telegraph/Telegram side-effect, leaves ``failed_articles`` empty
+    # (litmus AC6), and lets the fresh row publish exactly once.
+    # ======================================================================
+
+    def test_slot_loop_does_not_repost_already_published(self):
+        """Pre-stage 1 published-row + 1 zombie pending (carry-over tier,
+        ``attempt_count=2``) + 1 fresh pending. Run ``job()``. Assert that
+        the guard short-circuits the zombie row (no re-publish, no strike)
+        and the fresh row publishes exactly once.
+
+        AC6 litmus rationale: zombie pending row carries ``attempt_count=2``.
+        Without the guard from Task 1, the slot loop would have hit the
+        UNIQUE constraint on ``INSERT INTO published_articles`` (or the
+        Task-2 ``INSERT OR IGNORE`` would silently skip the published-row
+        write but still try Telegram), and ``attempt_count`` would tick to
+        3 — pushing the row to ``failed_articles`` via ``move_to_failed``.
+        With the guard active, the zombie is intercepted before any side
+        effect, ``skip_pending`` cleans it, and ``failed_articles`` stays
+        empty. Therefore an empty ``failed_articles`` AT THIS attempt_count
+        is direct evidence that the guard intercepted before the strike
+        machinery ran (AC6).
+        """
+        link_zombie = 'http://example.com/zombie'
+        link_fresh = 'http://example.com/fresh'
+
+        # Pre-stage 1: published_articles row for link_zombie (raw SQL,
+        # canonical pattern from tests/test_hw_review_publish_flow.py:271).
+        # via_review=0 confirms zombie scenario is auto-bot, not operator.
+        conn = sqlite3.connect(self.db_path)
+        try:
+            conn.execute(
+                "INSERT INTO published_articles "
+                "(link, title, ru_title, telegraph_url, telegraph_path, "
+                " source_name, via_review) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?)",
+                (
+                    link_zombie, 'Zombie EN', 'Зомби РУ',
+                    'https://telegra.ph/zombie-page', 'zombie-page',
+                    'autoevolution', 0,
+                ),
+            )
+            conn.commit()
+        finally:
+            conn.close()
+
+        # Pre-stage 2: zombie pending row for link_zombie via repo helper,
+        # then raw UPDATE to set carry-over tier markers (fetched_at 2 days
+        # ago) + cached telegraph_url + attempt_count=2 (litmus level).
+        ok = pending_articles_repo.insert_pending(
+            _create_mock_full_article(link_zombie, title='Zombie EN')
+        )
+        self.assertTrue(ok)
+        conn = sqlite3.connect(self.db_path)
+        try:
+            conn.execute(
+                "UPDATE pending_articles "
+                "SET fetched_at = datetime('now', '-2 days'), "
+                "    telegraph_url = ?, "
+                "    telegraph_path = ?, "
+                "    attempt_count = 2 "
+                "WHERE link = ?",
+                ('https://telegra.ph/zombie-cached', 'zombie-cached',
+                 link_zombie),
+            )
+            conn.commit()
+        finally:
+            conn.close()
+
+        # Pre-stage 3: fresh pending row for link_fresh — fetched_at
+        # defaults to CURRENT_TIMESTAMP (today's batch / fresh tier).
+        ok = pending_articles_repo.insert_pending(
+            _create_mock_full_article(link_fresh, title='Fresh EN')
+        )
+        self.assertTrue(ok)
+
+        # Empty RSS — slot loop must process exactly the two pre-staged
+        # pending rows, not pull in fresh fetches mid-test.
+        self._set_rss_entries([])
+
+        with freeze_time('2026-04-27 09:00:00'):  # 09:00 UTC == 12:00 МСК
+            with patch('news_bot.transcreate_via_claude') as mock_claude:
+                # ONE element — only link_fresh should reach Claude. The
+                # zombie row is short-circuited by the guard before Claude.
+                mock_claude.side_effect = [
+                    _make_claude_result(
+                        ['First paragraph.', 'Second paragraph.'],
+                        title_prefix='Fresh',
+                    ),
+                ]
+                news_bot.job()
+
+                # Claude was invoked exactly once — for link_fresh only.
+                # The zombie row never reached translation.
+                self.assertEqual(
+                    mock_claude.call_count, 1,
+                    f"expected 1 Claude call (fresh only), got "
+                    f"{mock_claude.call_count}"
+                )
+
+        # Litmus assertion: send_telegraph_teaser called exactly once,
+        # and the second positional arg (source_url) is link_fresh — NOT
+        # link_zombie. send_telegraph_teaser(telegraph_url, source_url) is
+        # invoked positional from _fallback_publish (news_bot.py:1237).
+        # call_args.kwargs is empty for positional calls; we explicitly
+        # check call_args.args[1] to defeat a count-only false positive.
+        self.mock_teaser.assert_called_once()
+        self.assertEqual(
+            self.mock_teaser.call_args.args[1], link_fresh,
+            f"teaser must be sent for link_fresh, not link_zombie; "
+            f"got call_args={self.mock_teaser.call_args!r}"
+        )
+
+        # published_articles: 2 rows total (pre-existing zombie + fresh).
+        published = self._published_links()
+        self.assertEqual(
+            set(published), {link_zombie, link_fresh},
+            f"expected {{link_zombie, link_fresh}}, got {published}"
+        )
+        self.assertEqual(
+            len(published), 2,
+            f"expected 2 published rows (no duplicate of link_zombie), "
+            f"got {published}"
+        )
+
+        # AC6 litmus: failed_articles empty. Without the guard, the zombie
+        # row at attempt_count=2 would have ticked to 3 on UNIQUE failure
+        # → move_to_failed → failed_articles=1. Empty failed_articles ⇒
+        # guard intercepted before the strike machinery ran.
+        conn = sqlite3.connect(self.db_path)
+        try:
+            failed_count = conn.execute(
+                "SELECT COUNT(*) FROM failed_articles"
+            ).fetchone()[0]
+        finally:
+            conn.close()
+        self.assertEqual(
+            failed_count, 0,
+            "AC6 litmus: failed_articles must be empty — guard "
+            "intercepted before the slot's strike machinery ran"
+        )
+
+        # Admin ping: at least one message contains link_zombie AND the
+        # guard marker "Skipped re-publish" (matches news_bot.py:998).
+        msgs = self._admin_messages()
+        self.assertTrue(
+            any((link_zombie in m and 'Skipped re-publish' in m)
+                for m in msgs),
+            f"expected guard ping with link_zombie and 'Skipped re-publish' "
+            f"marker; got: {msgs!r}"
+        )
+
+        # processed_news contains both links: link_zombie via the guard's
+        # skip_pending cleanup, link_fresh via move_to_published.
+        conn = sqlite3.connect(self.db_path)
+        try:
+            rows = conn.execute(
+                "SELECT link FROM processed_news WHERE link IN (?, ?)",
+                (link_zombie, link_fresh),
+            ).fetchall()
+        finally:
+            conn.close()
+        self.assertEqual(
+            {r[0] for r in rows}, {link_zombie, link_fresh},
+            f"processed_news must contain both links; got {rows!r}"
+        )
+
+        # pending_articles is empty — both rows cleared (zombie via
+        # skip_pending, fresh via move_to_published).
+        self.assertEqual(
+            self._pending_links(), [],
+            "pending_articles must be empty after job()"
+        )
+
 
 if __name__ == '__main__':
     unittest.main()
