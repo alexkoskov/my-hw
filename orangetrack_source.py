@@ -413,20 +413,35 @@ def _parse_content_encoded(html_str: str, link: str) -> Optional[Dict]:
         blocks.append({"type": "paragraph", "text": text, "runs": runs})
 
     def _emit_heading(h_tag, level):
-        # Emit h-tags as paragraph-type blocks (NOT heading-type). Reason:
-        # Telegraph renders heading blocks with prominent bold/larger
-        # typography, which looks uneven on orangetrack articles where
-        # h5 section markers are translated to longer Russian phrases or
-        # the source author uses h5 for long descriptive text. Uniform
-        # paragraph rendering reads better. Section visual separation can
-        # be reconsidered later if operator wants distinct styling.
-        # See SESSION-2026-05-06.md.
+        # Emit h-tags with level-aware dispatch (Decisions 2 + 3 of
+        # orangetrack-rendering-fixes):
+        #   - h2 / h3 / h4 → ``type: "heading", level: 3``. orangetrack uses
+        #     these as full section headers (model name = section), so a
+        #     prominent Telegraph heading conveys the right hierarchy.
+        #     All three are normalised to ``level=3`` (single visual
+        #     treatment) — orangetrack typically has one section level.
+        #   - h5 → ``type: "paragraph"`` (carve-out preserves commit
+        #     ``babc67c`` from SESSION-2026-05-06.md break 3). On
+        #     orangetrack ``<h5>`` is used as in-paragraph section marker
+        #     with long descriptive text; rendering it as a Telegraph
+        #     heading looked uneven. Keep paragraph typography here.
+        #   - h1 / h6 are dropped earlier in ``_walk`` and never reach
+        #     this helper.
         runs = _runs_from_tag(h_tag)
         if not runs:
             return
         text = " ".join(r["text"] for r in runs).strip()
         if not text:
             return
+        if level in (2, 3, 4):
+            blocks.append({
+                "type": "heading",
+                "level": 3,
+                "text": text,
+                "runs": runs,
+            })
+            return
+        # level == 5 (and any other unexpected level): paragraph.
         blocks.append({
             "type": "paragraph",
             "text": text,
@@ -457,7 +472,17 @@ def _parse_content_encoded(html_str: str, link: str) -> Optional[Dict]:
     # would double-count <p> nested under <figure>. Instead, walk top
     # children and recurse selectively — known content tags get emitted
     # once. We process by tag name (Decision 3 — no Gutenberg classes).
-    handled_tags = {"p", "h1", "h2", "h3", "h4", "h5", "h6", "figure", "img", "iframe"}
+    handled_tags = {
+        "p", "h1", "h2", "h3", "h4", "h5", "h6",
+        "figure", "img", "iframe",
+        # ``ul`` / ``ol`` stay out of ``handled_tags`` so the wrapper
+        # fallback recurses into them and reaches their ``<li>`` children
+        # — the explicit ``li`` branch below handles emission. Including
+        # ``"li"`` here is documentation: it pins that ``<li>`` is
+        # processed by its own branch and does NOT fall through to
+        # generic recursion.
+        "li",
+    }
 
     # WordPress chrome class markers — when we encounter a div/section
     # with one of these classes, skip it entirely (don't recurse into
@@ -550,8 +575,30 @@ def _parse_content_encoded(html_str: str, link: str) -> Optional[Dict]:
             if name == "iframe":
                 _emit_iframe(child)
                 continue
-            # Wrapper tag (div / section / article / ul / li / etc.):
-            # recurse so the inner <p>/<figure>/<iframe> get walked.
+            if name == "li":
+                # <li> children of <ul>/<ol> emit a dedicated
+                # ``list_item`` block (Decisions 1, 8 of
+                # orangetrack-rendering-fixes). Bullet "• " is NOT
+                # inserted here — it is prepended in
+                # ``telegraph_publisher`` after LLM translation, so the
+                # bullet survives any LLM stripping/translation (AC2).
+                # ``<ul>`` and ``<ol>`` are treated identically per
+                # Decision 8. Empty / whitespace-only ``<li>`` is
+                # dropped (no block emitted).
+                li_runs = _runs_from_tag(child)
+                if not li_runs:
+                    continue
+                li_text = " ".join(r["text"] for r in li_runs).strip()
+                if not li_text:
+                    continue
+                blocks.append({
+                    "type": "list_item",
+                    "text": li_text,
+                    "runs": li_runs,
+                })
+                continue
+            # Wrapper tag (div / section / article / ul / ol / etc.):
+            # recurse so the inner <p>/<figure>/<iframe>/<li> get walked.
             if name not in handled_tags:
                 _walk(child)
 
@@ -563,17 +610,21 @@ def _parse_content_encoded(html_str: str, link: str) -> Optional[Dict]:
     # ----------------------------------------------------------------
     blocks = filter_blocks(blocks)
 
-    # Include both paragraph AND heading text in the flat list. Reason:
-    # `_llm_common._patch_text_with_ru_paragraphs` consumes ru_paragraphs
-    # sequentially for ANY block of type paragraph/lead/heading, and
-    # `_translate_block_strings` (variant B+) explicitly skips text fields
-    # of patchable types (relying on _patch to fill them). If headings
-    # were excluded here, ru_paragraphs would be shorter than the count
-    # of patchable blocks, and trailing paragraph-blocks would stay in
-    # English. See SESSION-2026-05-06.md (overrides tech-spec Decision 15
-    # which originally said "h5 heading goes to blocks-only").
+    # Include paragraph, heading AND list_item text in the flat list.
+    # Reason: ``_llm_common._patch_text_with_ru_paragraphs`` consumes
+    # ru_paragraphs sequentially for any block whose type is in
+    # ``_PATCHED_TEXT_BLOCK_TYPES`` (lead/paragraph/heading/list_item —
+    # see Task 2 of orangetrack-rendering-fixes which extends that
+    # tuple), and ``_translate_block_strings`` (variant B+) explicitly
+    # skips text fields of patchable types (relying on _patch to fill
+    # them). If list_item / heading were excluded here, ru_paragraphs
+    # would be shorter than the count of patchable blocks, and trailing
+    # blocks would stay in English. See SESSION-2026-05-06.md (overrides
+    # tech-spec Decision 15 which originally said "h5 heading goes to
+    # blocks-only").
     paragraphs_flat: List[str] = [
-        b["text"] for b in blocks if b["type"] in ("paragraph", "heading")
+        b["text"] for b in blocks
+        if b["type"] in ("paragraph", "heading", "list_item")
     ]
     paragraphs_flat = filter_boilerplate(paragraphs_flat)
 
