@@ -23,6 +23,7 @@ from orangetrack_source import (
     OrangetrackPingAggregator,
     _has_empty_embed_wrapper,
     _is_allowed_orangetrack_url,
+    _parse_content_encoded,
     _safe_for_ping,
     _video_embed_url,
     fetch_orangetrack_article,
@@ -933,3 +934,246 @@ class TestSafeForPing:
         # Defensive: None becomes empty string.
         out = _safe_for_ping(None)
         assert out == ""
+
+
+# ---------------------------------------------------------------------------
+# TestListItemParsing — `<li>` parsing + heading dispatch (Wave 1, Task 1)
+# ---------------------------------------------------------------------------
+
+
+class TestListItemParsing:
+    """Unit coverage for the parser changes in
+    ``orangetrack_source._parse_content_encoded`` (Task 1, Wave 1):
+    the explicit ``<li>`` branch in ``_walk`` and the level-aware
+    ``_emit_heading`` dispatch.
+    """
+
+    LINK = "https://orangetrackdiecast.com/post-x"
+
+    def test_li_parsed_as_list_item_block(self):
+        # AC1 / AC2: `<ul><li>...</li></ul>` emits a list_item block with
+        # the raw text + runs.
+        html = "<ul><li>Ferrari Testarossa</li></ul>"
+        out = _parse_content_encoded(html, self.LINK)
+        assert out is not None
+        list_items = [b for b in out["blocks"] if b["type"] == "list_item"]
+        assert len(list_items) == 1
+        block = list_items[0]
+        assert block["type"] == "list_item"
+        assert block["text"] == "Ferrari Testarossa"
+        # ``runs`` must be present (helper attaches a list of {text, [href]}).
+        assert isinstance(block.get("runs"), list)
+        assert len(block["runs"]) >= 1
+
+    def test_ol_parsed_as_list_item_block(self):
+        # Same emission for `<ol>` parent — Decision 8 treats `<ul>`/`<ol>`
+        # identically.
+        html = "<ol><li>Ferrari Testarossa</li></ol>"
+        out = _parse_content_encoded(html, self.LINK)
+        assert out is not None
+        list_items = [b for b in out["blocks"] if b["type"] == "list_item"]
+        assert len(list_items) == 1
+        assert list_items[0]["type"] == "list_item"
+        assert list_items[0]["text"] == "Ferrari Testarossa"
+
+    def test_li_with_inline_anchor(self):
+        # `<li><a href="...">Mercedes</a></li>` → block.text contains the
+        # anchor text, block.runs carries a run with the safe href.
+        html = (
+            '<ul><li><a href="https://orangetrackdiecast.com/x">Mercedes</a>'
+            ' is fast</li></ul>'
+        )
+        out = _parse_content_encoded(html, self.LINK)
+        assert out is not None
+        list_items = [b for b in out["blocks"] if b["type"] == "list_item"]
+        assert len(list_items) == 1
+        block = list_items[0]
+        assert "Mercedes" in block["text"]
+        # At least one run carries the href.
+        hrefs = [r.get("href") for r in block["runs"] if "href" in r]
+        assert "https://orangetrackdiecast.com/x" in hrefs
+
+    def test_li_with_strong(self):
+        # `<li><strong>X</strong></li>` → block.text == "X" (nested
+        # formatting flattened by `_runs_from_tag`).
+        html = "<ul><li><strong>X</strong></li></ul>"
+        out = _parse_content_encoded(html, self.LINK)
+        assert out is not None
+        list_items = [b for b in out["blocks"] if b["type"] == "list_item"]
+        assert len(list_items) == 1
+        assert list_items[0]["text"] == "X"
+
+    def test_empty_li_dropped(self):
+        # Empty `<li></li>` MUST NOT emit a block.
+        html = "<ul><li></li></ul>"
+        out = _parse_content_encoded(html, self.LINK)
+        # Either out is None (no extractable content) or no list_item block.
+        if out is not None:
+            list_items = [b for b in out["blocks"] if b["type"] == "list_item"]
+            assert list_items == []
+
+    def test_li_block_text_does_not_contain_bullet(self):
+        # CRITICAL AC2 litmus: parser MUST NOT prepend "• " to block.text.
+        # Bullet rendering is the publisher's responsibility (Decision 1).
+        html = "<ul><li>Ferrari</li></ul>"
+        out = _parse_content_encoded(html, self.LINK)
+        assert out is not None
+        list_items = [b for b in out["blocks"] if b["type"] == "list_item"]
+        assert len(list_items) == 1
+        block = list_items[0]
+        assert block["text"] == "Ferrari"
+        assert "•" not in block["text"]
+        assert not block["text"].startswith("• ")
+
+    @pytest.mark.parametrize("tag", ["h2", "h3", "h4"])
+    def test_h2_h3_h4_parsed_as_heading_level_3(self, tag):
+        # h2 / h3 / h4 → heading-type block normalised to level=3
+        # (Decisions 2, 3).
+        html = f"<{tag}>Section title</{tag}>"
+        out = _parse_content_encoded(html, self.LINK)
+        assert out is not None
+        headings = [b for b in out["blocks"] if b["type"] == "heading"]
+        assert len(headings) == 1
+        assert headings[0]["type"] == "heading"
+        assert headings[0]["level"] == 3
+        assert headings[0]["text"] == "Section title"
+
+    def test_h5_remains_paragraph(self):
+        # Regression for `babc67c` (SESSION-2026-05-06.md break 3): h5
+        # stays a paragraph-type block, not a heading.
+        html = "<h5>Section</h5>"
+        out = _parse_content_encoded(html, self.LINK)
+        assert out is not None
+        types = [b["type"] for b in out["blocks"]]
+        assert "heading" not in types
+        paragraphs = [b for b in out["blocks"] if b["type"] == "paragraph"]
+        assert any(b["text"] == "Section" for b in paragraphs)
+
+    def test_h1_h6_ignored(self):
+        # h1 is consumed as title; h6 is rare/decorative — neither emits
+        # a body block.
+        html = "<h1>Title only</h1><h6>Footer-ish</h6><p>Body para.</p>"
+        out = _parse_content_encoded(html, self.LINK)
+        assert out is not None
+        for b in out["blocks"]:
+            # No block.text equals the h1/h6 content (h1 → title field;
+            # h6 → dropped).
+            if b.get("type") in ("paragraph", "heading", "list_item"):
+                assert b.get("text") not in ("Title only", "Footer-ish")
+        # Title field captures h1.
+        assert out["title"] == "Title only"
+
+    def test_paragraphs_flat_includes_list_item(self):
+        # Flat `paragraphs` field must include list_item text in DOM order
+        # so `_patch_text_with_ru_paragraphs` keeps alignment with patchable
+        # blocks (extension protected by Task 1).
+        html = (
+            "<p>Lead paragraph text.</p>"
+            "<ul><li>First item</li><li>Second item</li></ul>"
+            "<p>Trailing paragraph.</p>"
+        )
+        out = _parse_content_encoded(html, self.LINK)
+        assert out is not None
+        # `paragraphs` is the external key (internal var name is
+        # `paragraphs_flat`).
+        assert "First item" in out["paragraphs"]
+        assert "Second item" in out["paragraphs"]
+        # Order matches DOM: lead → first → second → trailing.
+        idx_lead = out["paragraphs"].index("Lead paragraph text.")
+        idx_first = out["paragraphs"].index("First item")
+        idx_second = out["paragraphs"].index("Second item")
+        idx_trailing = out["paragraphs"].index("Trailing paragraph.")
+        assert idx_lead < idx_first < idx_second < idx_trailing
+
+
+# ---------------------------------------------------------------------------
+# TestOrangetrackRenderingEndToEnd — synthetic HTML → parser → patch →
+# preview_nodes → exact dict-tree assertions (Wave 1 integration gate).
+# ---------------------------------------------------------------------------
+
+
+class TestOrangetrackRenderingEndToEnd:
+    """Integration: parser (Task 1) + LLM-patch types (Task 2) + publisher
+    helper / list_item rendering (Task 3) wired end-to-end on a synthetic
+    HTML fragment. Asserts the EXACT Telegra.ph node-tree structure for
+    the four target nodes (heading + paragraph-with-anchor + 2 bulleted
+    list items).
+    """
+
+    def test_orangetrack_rendering_end_to_end(self):
+        import telegraph_publisher
+
+        link = "https://orangetrackdiecast.com/article"
+        html = (
+            "<article>"
+            "<h3>Section</h3>"
+            '<p>The <a href="https://orangetrackdiecast.com/x">Mercedes</a> '
+            "is fast.</p>"
+            "<ul><li>Ferrari</li><li>Porsche</li></ul>"
+            "</article>"
+        )
+
+        parsed = _parse_content_encoded(html, link)
+        assert parsed is not None
+
+        blocks = parsed["blocks"]
+        # Confirm the parser produced the expected block types in DOM order
+        # before we patch RU strings — this is the foundation the integration
+        # rests on.
+        types = [b["type"] for b in blocks]
+        assert types == ["heading", "paragraph", "list_item", "list_item"]
+
+        # Manual LLM-patch: write RU strings into block.text in fetch order.
+        # We deliberately avoid invoking the real `_patch_text_with_ru_paragraphs`
+        # to keep this test isolated from Task 2 (per task hint).
+        ru_texts = ["Раздел", "Mercedes — быстрая машина.", "Ferrari", "Porsche"]
+        for block, ru in zip(blocks, ru_texts):
+            block["text"] = ru
+
+        nodes = telegraph_publisher.preview_nodes(
+            "dummy",
+            paragraphs=parsed["paragraphs"],
+            images=parsed["images"],
+            source_url=link,
+            subtitle=parsed["subtitle"],
+            blocks=blocks,
+        )
+
+        # Exact-equality assertions for the four target nodes (no substring
+        # match — AC requirement). preview_nodes also appends a footer; we
+        # filter to the first four block-derived nodes.
+        # Order assertion: heading → paragraph → list_item → list_item.
+        # Find the heading by tag (h3) — it's the first non-figure node.
+        h3_nodes = [n for n in nodes if isinstance(n, dict) and n.get("tag") == "h3"]
+        p_nodes = [n for n in nodes if isinstance(n, dict) and n.get("tag") == "p"]
+
+        assert h3_nodes == [{"tag": "h3", "children": ["Раздел"]}]
+
+        # Exact paragraph-with-anchor node.
+        expected_para_with_anchor = {
+            "tag": "p",
+            "children": [
+                {
+                    "tag": "a",
+                    "attrs": {"href": "https://orangetrackdiecast.com/x"},
+                    "children": ["Mercedes"],
+                },
+                " — быстрая машина.",
+            ],
+        }
+        # Exact bulleted list_item nodes.
+        expected_li_ferrari = {"tag": "p", "children": ["• ", "Ferrari"]}
+        expected_li_porsche = {"tag": "p", "children": ["• ", "Porsche"]}
+
+        assert expected_para_with_anchor in p_nodes
+        assert expected_li_ferrari in p_nodes
+        assert expected_li_porsche in p_nodes
+
+        # Order assertion: heading first, then paragraph-with-anchor, then
+        # the two list_items (footer paragraph follows them but doesn't
+        # affect the relative order of the four target nodes).
+        idx_h3 = nodes.index(h3_nodes[0])
+        idx_para = nodes.index(expected_para_with_anchor)
+        idx_li1 = nodes.index(expected_li_ferrari)
+        idx_li2 = nodes.index(expected_li_porsche)
+        assert idx_h3 < idx_para < idx_li1 < idx_li2
