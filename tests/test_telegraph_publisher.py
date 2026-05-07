@@ -2,6 +2,7 @@
 """Unit tests for telegraph_publisher."""
 
 import json
+import logging
 import os
 import tempfile
 from unittest.mock import MagicMock, patch
@@ -621,6 +622,299 @@ class TestPreviewNodes:
         assert "Привет 🚗 <b>&amp;</b>" in collected
         assert "Второй абзац 💬" in collected
         assert "💬 «Лид 🎉»" in collected
+
+
+SOURCE_URL = "https://orangetrackdiecast.com/article"
+
+
+class TestRenderParagraphWithRuns:
+    """Direct unit tests for ``_render_paragraph_with_runs`` helper.
+
+    Same-site runs are wrapped in ``<a>`` nodes; off-domain / malformed /
+    missing runs fall through to plain text. EXACT children-list assertions
+    are used throughout (no substring matching), per task spec.
+    """
+
+    def test_render_paragraph_with_same_site_link(self):
+        text = "A B C"
+        runs = [{"text": "B", "href": "https://orangetrackdiecast.com/x"}]
+        children = tp._render_paragraph_with_runs(text, runs, SOURCE_URL)
+        assert children == [
+            "A ",
+            {
+                "tag": "a",
+                "attrs": {"href": "https://orangetrackdiecast.com/x"},
+                "children": ["B"],
+            },
+            " C",
+        ]
+
+    def test_render_paragraph_with_external_link_dropped(self):
+        text = "See Mattel for more"
+        runs = [{"text": "Mattel", "href": "https://mattel.com/news"}]
+        children = tp._render_paragraph_with_runs(text, runs, SOURCE_URL)
+        assert children == [text]
+
+    def test_run_text_not_in_paragraph_text_dropped(self):
+        text = "Plain paragraph body"
+        runs = [{"text": "Ferrari", "href": "https://orangetrackdiecast.com/f"}]
+        children = tp._render_paragraph_with_runs(text, runs, SOURCE_URL)
+        assert children == [text]
+
+    def test_run_text_repeated_first_only_wrapped(self):
+        text = "Ferrari and Ferrari again"
+        runs = [{"text": "Ferrari", "href": "https://orangetrackdiecast.com/f"}]
+        children = tp._render_paragraph_with_runs(text, runs, SOURCE_URL)
+        assert children == [
+            {
+                "tag": "a",
+                "attrs": {"href": "https://orangetrackdiecast.com/f"},
+                "children": ["Ferrari"],
+            },
+            " and Ferrari again",
+        ]
+
+    def test_overlapping_runs_first_wins_second_appears_plain(self):
+        text = "ABCDE"
+        runs = [
+            {"text": "BCD", "href": "https://orangetrackdiecast.com/a"},
+            {"text": "CDE", "href": "https://orangetrackdiecast.com/b"},
+        ]
+        children = tp._render_paragraph_with_runs(text, runs, SOURCE_URL)
+        assert children == [
+            "A",
+            {
+                "tag": "a",
+                "attrs": {"href": "https://orangetrackdiecast.com/a"},
+                "children": ["BCD"],
+            },
+            "E",
+        ]
+
+    def test_two_runs_same_href_independent_wrapping(self):
+        text = "X Y"
+        runs = [
+            {"text": "X", "href": "https://orangetrackdiecast.com/a"},
+            {"text": "Y", "href": "https://orangetrackdiecast.com/a"},
+        ]
+        children = tp._render_paragraph_with_runs(text, runs, SOURCE_URL)
+        assert children == [
+            {
+                "tag": "a",
+                "attrs": {"href": "https://orangetrackdiecast.com/a"},
+                "children": ["X"],
+            },
+            " ",
+            {
+                "tag": "a",
+                "attrs": {"href": "https://orangetrackdiecast.com/a"},
+                "children": ["Y"],
+            },
+        ]
+
+    def test_run_text_with_regex_meta_chars(self):
+        # str.find (not re.search) — `.?*()` should match literally
+        text = "Look at .?*() in this text"
+        runs = [{"text": ".?*()", "href": "https://orangetrackdiecast.com/r"}]
+        children = tp._render_paragraph_with_runs(text, runs, SOURCE_URL)
+        assert children == [
+            "Look at ",
+            {
+                "tag": "a",
+                "attrs": {"href": "https://orangetrackdiecast.com/r"},
+                "children": [".?*()"],
+            },
+            " in this text",
+        ]
+
+    def test_run_with_empty_text_skipped(self):
+        text = "ABCDE"
+        runs = [{"text": "", "href": "https://orangetrackdiecast.com/x"}]
+        children = tp._render_paragraph_with_runs(text, runs, SOURCE_URL)
+        assert children == [text]
+
+    def test_run_with_none_href_skipped(self):
+        text = "ABCDE"
+        runs = [{"text": "BCD", "href": None}]
+        children = tp._render_paragraph_with_runs(text, runs, SOURCE_URL)
+        assert children == [text]
+
+    def test_run_with_malformed_href_skipped(self):
+        text = "ABCDE"
+        runs = [{"text": "BCD", "href": "not a url://!!"}]
+        children = tp._render_paragraph_with_runs(text, runs, SOURCE_URL)
+        assert children == [text]
+
+
+@pytest.mark.parametrize("runs", [[], None])
+def test_no_runs_renders_plain_text(runs):
+    text = "Some plain paragraph text"
+    children = tp._render_paragraph_with_runs(text, runs, SOURCE_URL)
+    assert children == [text]
+
+
+class TestSchemesAndDomainEdges:
+    """Scheme filtering and domain normalisation edge cases (Decision 4)."""
+
+    def test_mailto_scheme_dropped(self):
+        text = "Email admin for help"
+        runs = [{"text": "admin", "href": "mailto:admin@orangetrackdiecast.com"}]
+        children = tp._render_paragraph_with_runs(text, runs, SOURCE_URL)
+        assert children == [text]
+
+    def test_javascript_scheme_dropped(self):
+        text = "Click here for fun"
+        runs = [{"text": "Click", "href": "javascript:alert(1)"}]
+        children = tp._render_paragraph_with_runs(text, runs, SOURCE_URL)
+        assert children == [text]
+
+    def test_empty_netloc_dropped_when_source_also_empty(self):
+        text = "Email admin for help"
+        runs = [{"text": "admin", "href": "mailto:x@orangetrackdiecast.com"}]
+        children = tp._render_paragraph_with_runs(text, runs, "")
+        assert children == [text]
+
+    def test_www_prefix_normalized_for_same_site(self):
+        # source has www., href has none → match
+        text = "See Ferrari news"
+        runs = [{"text": "Ferrari", "href": "https://orangetrackdiecast.com/f"}]
+        children = tp._render_paragraph_with_runs(
+            text, runs, "https://www.orangetrackdiecast.com/article",
+        )
+        assert children == [
+            "See ",
+            {
+                "tag": "a",
+                "attrs": {"href": "https://orangetrackdiecast.com/f"},
+                "children": ["Ferrari"],
+            },
+            " news",
+        ]
+
+        # opposite direction: source has none, href has www. → match
+        runs2 = [{"text": "Ferrari", "href": "https://www.orangetrackdiecast.com/f"}]
+        children2 = tp._render_paragraph_with_runs(
+            text, runs2, "https://orangetrackdiecast.com/article",
+        )
+        assert children2 == [
+            "See ",
+            {
+                "tag": "a",
+                "attrs": {"href": "https://www.orangetrackdiecast.com/f"},
+                "children": ["Ferrari"],
+            },
+            " news",
+        ]
+
+    def test_lookalike_domain_not_matched_negative(self):
+        # `removeprefix("www.")` precision — wwwfake-... must NOT match
+        text = "See Ferrari news"
+        runs = [{"text": "Ferrari", "href": "https://wwwfake-orangetrackdiecast.com/f"}]
+        children = tp._render_paragraph_with_runs(text, runs, SOURCE_URL)
+        assert children == [text]
+
+    def test_case_sensitive_match_negative(self):
+        # AC6 — case is NOT normalised; "Mercedes" != "mercedes"
+        text = "I love mercedes cars"
+        runs = [{"text": "Mercedes", "href": "https://orangetrackdiecast.com/m"}]
+        children = tp._render_paragraph_with_runs(text, runs, SOURCE_URL)
+        assert children == [text]
+
+
+class TestListItemRendering:
+    """list_item block rendering through _build_content_from_blocks."""
+
+    def test_list_item_renders_with_bullet_prefix(self):
+        blocks = [{"type": "list_item", "text": "Ferrari", "runs": []}]
+        nodes = tp._build_content_from_blocks("", blocks, None)
+        assert nodes == [{"tag": "p", "children": ["• ", "Ferrari"]}]
+
+    def test_list_item_with_same_site_link_combines(self):
+        blocks = [{
+            "type": "list_item",
+            "text": "Ferrari news",
+            "runs": [{"text": "Ferrari", "href": "https://orangetrackdiecast.com/f"}],
+        }]
+        nodes = tp._build_content_from_blocks("", blocks, SOURCE_URL)
+        # nodes[0] = list_item rendering; nodes[-1] = source-url footer (unrelated)
+        assert nodes[0] == {
+            "tag": "p",
+            "children": [
+                "• ",
+                {
+                    "tag": "a",
+                    "attrs": {"href": "https://orangetrackdiecast.com/f"},
+                    "children": ["Ferrari"],
+                },
+                " news",
+            ],
+        }
+
+    def test_list_item_strips_leading_bullet_in_text(self):
+        # Decision 10 — bullet-doubling guard: "• " must not appear twice
+        blocks = [{"type": "list_item", "text": "• Ferrari", "runs": []}]
+        nodes = tp._build_content_from_blocks("", blocks, None)
+        assert nodes == [{"tag": "p", "children": ["• ", "Ferrari"]}]
+
+
+class TestHeadingRendering:
+    """heading block rendering through _build_content_from_blocks."""
+
+    def test_heading_block_renders_h3(self):
+        blocks = [{"type": "heading", "level": 3, "text": "Section"}]
+        nodes = tp._build_content_from_blocks("", blocks, None)
+        assert nodes == [{"tag": "h3", "children": ["Section"]}]
+
+    def test_heading_block_with_link_combines(self):
+        blocks = [{
+            "type": "heading",
+            "level": 3,
+            "text": "About Ferrari today",
+            "runs": [{"text": "Ferrari", "href": "https://orangetrackdiecast.com/f"}],
+        }]
+        nodes = tp._build_content_from_blocks("", blocks, SOURCE_URL)
+        # nodes[0] = heading rendering; nodes[-1] = source-url footer (unrelated)
+        assert nodes[0] == {
+            "tag": "h3",
+            "children": [
+                "About ",
+                {
+                    "tag": "a",
+                    "attrs": {"href": "https://orangetrackdiecast.com/f"},
+                    "children": ["Ferrari"],
+                },
+                " today",
+            ],
+        }
+
+
+class TestDoSBounds:
+    """DoS-bound fall-through (Decision 10) with WARNING log assertion."""
+
+    def test_dos_bound_skips_helper_on_huge_text(self, caplog):
+        text = "A" * (tp._MAX_TEXT_FOR_RUNS + 1)
+        runs = [{"text": "A", "href": "https://orangetrackdiecast.com/x"}]
+        with caplog.at_level(logging.WARNING, logger="telegraph_publisher"):
+            children = tp._render_paragraph_with_runs(text, runs, SOURCE_URL)
+        assert children == [text]
+        assert any(
+            "DoS bound" in r.message and r.levelno == logging.WARNING
+            for r in caplog.records
+        )
+
+    def test_dos_bound_skips_helper_on_too_many_runs(self, caplog):
+        text = "Some short text"
+        runs = [
+            {"text": "x", "href": "https://orangetrackdiecast.com/x"}
+            for _ in range(tp._MAX_RUNS_PER_BLOCK + 1)
+        ]
+        with caplog.at_level(logging.WARNING, logger="telegraph_publisher"):
+            children = tp._render_paragraph_with_runs(text, runs, SOURCE_URL)
+        assert children == [text]
+        assert any(
+            "DoS bound" in r.message and r.levelno == logging.WARNING
+            for r in caplog.records
+        )
 
 
 if __name__ == "__main__":
