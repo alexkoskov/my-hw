@@ -464,5 +464,367 @@ class TestOutageDegradedThenReraises(_FallbackPublishPathsCase):
                         f"record_outage_event must precede Telegraph publish; got {names}")
 
 
+# ============================================================================
+# Idempotency-guard tests (publish-idempotency-fix Task 3, T1–T5)
+# ============================================================================
+
+
+class TestIdempotencyGuard(_FallbackPublishPathsCase):
+    """Guard at top of ``_fallback_publish``: if the link is already in
+    ``published_articles`` (zombie pending row), short-circuit BEFORE any
+    LLM/Telegraph/Telegram side-effect, ping the admin, and clean up via
+    ``skip_pending``. See news_bot.py ~line 985 (commit c1a8076).
+    """
+
+    def _pre_stage_published(self, link, *, ru_title='РУ',
+                             telegraph_url='https://telegra.ph/OLD-URL',
+                             telegraph_path='OLD-URL'):
+        """Insert a row into ``published_articles`` via raw SQL.
+
+        Pattern from ``tests/test_hw_review_publish_flow.py:271``. We need
+        raw SQL (not ``move_to_published``) because the latter DELETEs the
+        pending row, and the whole point of the zombie scenario is to have
+        the link present in BOTH tables simultaneously.
+        """
+        conn = sqlite3.connect(self.db_path)
+        try:
+            conn.execute(
+                "INSERT INTO published_articles "
+                "(link, title, ru_title, telegraph_url, telegraph_path, "
+                " source_name, via_review) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?)",
+                (link, 'EN', ru_title, telegraph_url, telegraph_path,
+                 'autoevolution', 0),
+            )
+            conn.commit()
+        finally:
+            conn.close()
+
+    def _processed_news_has(self, link):
+        conn = sqlite3.connect(self.db_path)
+        try:
+            row = conn.execute(
+                "SELECT 1 FROM processed_news WHERE link=?", (link,),
+            ).fetchone()
+            return row is not None
+        finally:
+            conn.close()
+
+    # ---- T1 ----------------------------------------------------------------
+
+    def test_skip_if_link_already_published_claude_path(self):
+        """Default Claude path: zombie row + already-published link →
+        guard fires before any side-effect. Asserts cleanup, return True,
+        and the ``[idempotency-guard]`` INFO marker (user-spec AC10).
+        """
+        link = 'http://a/zombie-claude'
+        entry = self._insert(link=link, title='EN T-zombie')
+        self._pre_stage_published(link)
+        row = repo.get_pending(link)
+
+        # Side-effects MUST NOT fire — wire each as AssertionError.
+        mock_claude = MagicMock(side_effect=AssertionError(
+            "transcreate_via_claude must NOT fire when guard short-circuits"
+        ))
+        mock_google = MagicMock(side_effect=AssertionError(
+            "transcreate_text must NOT fire when guard short-circuits"
+        ))
+        mock_publish = MagicMock(side_effect=AssertionError(
+            "publish_article must NOT fire when guard short-circuits"
+        ))
+        mock_mark = MagicMock(side_effect=AssertionError(
+            "mark_telegraph_published must NOT fire when guard short-circuits"
+        ))
+        mock_teaser = MagicMock(side_effect=AssertionError(
+            "send_telegraph_teaser must NOT fire when guard short-circuits"
+        ))
+        mock_update = MagicMock(side_effect=AssertionError(
+            "update_staged must NOT fire when guard short-circuits"
+        ))
+        mock_move = MagicMock(side_effect=AssertionError(
+            "move_to_published must NOT fire when guard short-circuits"
+        ))
+        mock_notify = MagicMock(return_value=True)
+
+        with patch('news_bot.transcreate_via_claude', mock_claude), \
+             patch('news_bot.transcreate_text', mock_google), \
+             patch('news_bot.outage_state.is_fallback_active',
+                   return_value=False), \
+             patch('news_bot.telegraph_publisher.publish_article',
+                   mock_publish), \
+             patch('news_bot.pending_repo.mark_telegraph_published',
+                   mock_mark), \
+             patch('news_bot.send_telegraph_teaser', mock_teaser), \
+             patch('news_bot.pending_repo.update_staged', mock_update), \
+             patch('news_bot.pending_repo.move_to_published', mock_move), \
+             patch('news_bot.send_admin_notification', mock_notify):
+            with self.assertLogs('news_bot', level='INFO') as logs:
+                ok = news_bot._fallback_publish(row, via_review=False)
+
+        # Return path.
+        self.assertTrue(ok)
+
+        # Negative side-effect asserts (positive proof of dominator-position
+        # semantics: guard fires before LLM, Telegraph, and bookkeeping).
+        mock_claude.assert_not_called()
+        mock_google.assert_not_called()
+        mock_publish.assert_not_called()
+        mock_mark.assert_not_called()
+        mock_teaser.assert_not_called()
+        mock_update.assert_not_called()
+        mock_move.assert_not_called()
+
+        # Cleanup: pending row removed, link in processed_news.
+        self.assertIsNone(repo.get_pending(link))
+        self.assertTrue(self._processed_news_has(link))
+
+        # AC10 log marker — exactly one INFO entry containing both the
+        # marker and the link.
+        marker_lines = [
+            line for line in logs.output
+            if line.startswith('INFO')
+            and '[idempotency-guard]' in line
+            and link in line
+        ]
+        self.assertEqual(len(marker_lines), 1,
+                         f"expected exactly one [idempotency-guard] INFO line "
+                         f"with the link; got {logs.output!r}")
+
+        # Original entry dict was used (sanity).
+        self.assertEqual(entry['link'], link)
+
+    # ---- T2 ----------------------------------------------------------------
+
+    def test_skip_if_link_already_published_outage_shortcut_path(self):
+        """``is_fallback_active() == True`` shortcut (line 1045) MUST be
+        guarded too: the zombie row never reaches the Google branch.
+        Regression test against any refactor that places the guard AFTER
+        the outage shortcut.
+        """
+        link = 'http://a/zombie-outage'
+        self._insert(link=link, title='EN T-zombie-outage')
+        self._pre_stage_published(link)
+        row = repo.get_pending(link)
+
+        mock_claude = MagicMock(side_effect=AssertionError(
+            "transcreate_via_claude must NOT fire on outage-shortcut guard skip"
+        ))
+        mock_google = MagicMock(side_effect=AssertionError(
+            "transcreate_text must NOT fire on outage-shortcut guard skip"
+        ))
+        mock_publish = MagicMock(side_effect=AssertionError(
+            "publish_article must NOT fire on outage-shortcut guard skip"
+        ))
+        mock_mark = MagicMock(side_effect=AssertionError(
+            "mark_telegraph_published must NOT fire on outage-shortcut guard skip"
+        ))
+        mock_teaser = MagicMock(side_effect=AssertionError(
+            "send_telegraph_teaser must NOT fire on outage-shortcut guard skip"
+        ))
+        mock_update = MagicMock(side_effect=AssertionError(
+            "update_staged must NOT fire on outage-shortcut guard skip"
+        ))
+        mock_move = MagicMock(side_effect=AssertionError(
+            "move_to_published must NOT fire on outage-shortcut guard skip"
+        ))
+        mock_notify = MagicMock(return_value=True)
+
+        with patch('news_bot.transcreate_via_claude', mock_claude), \
+             patch('news_bot.transcreate_text', mock_google), \
+             patch('news_bot.outage_state.is_fallback_active',
+                   return_value=True), \
+             patch('news_bot.telegraph_publisher.publish_article',
+                   mock_publish), \
+             patch('news_bot.pending_repo.mark_telegraph_published',
+                   mock_mark), \
+             patch('news_bot.send_telegraph_teaser', mock_teaser), \
+             patch('news_bot.pending_repo.update_staged', mock_update), \
+             patch('news_bot.pending_repo.move_to_published', mock_move), \
+             patch('news_bot.send_admin_notification', mock_notify):
+            with self.assertLogs('news_bot', level='INFO') as logs:
+                ok = news_bot._fallback_publish(row, via_review=False)
+
+        self.assertTrue(ok)
+        mock_claude.assert_not_called()
+        mock_google.assert_not_called()  # Google path also blocked.
+        mock_publish.assert_not_called()
+        mock_mark.assert_not_called()
+        mock_teaser.assert_not_called()
+        mock_update.assert_not_called()
+        mock_move.assert_not_called()
+
+        self.assertIsNone(repo.get_pending(link))
+        self.assertTrue(self._processed_news_has(link))
+
+        marker_lines = [
+            line for line in logs.output
+            if '[idempotency-guard]' in line and link in line
+        ]
+        self.assertGreaterEqual(len(marker_lines), 1)
+
+    # ---- T3 ----------------------------------------------------------------
+
+    def test_skip_if_link_already_published_no_telegraph_url(self):
+        """Zombie pending row whose ``telegraph_url`` is NULL: guard must
+        still short-circuit. Specifically asserts the Telegraph CREATE
+        branch (``publish_article``) is NEVER called — the guard sits
+        BEFORE Telegraph-create, not just before Telegraph-reuse.
+        """
+        link = 'http://a/zombie-no-tg'
+        # _sample_entry / insert_pending leave telegraph_url=NULL by default.
+        self._insert(link=link, title='EN T-zombie-no-tg')
+        self._pre_stage_published(link)
+        row = repo.get_pending(link)
+        # Sanity: pending row really has telegraph_url=NULL.
+        self.assertIsNone(row.get('telegraph_url'))
+
+        mock_claude = MagicMock(side_effect=AssertionError(
+            "transcreate_via_claude must NOT fire on no-tg-url guard skip"
+        ))
+        mock_google = MagicMock(side_effect=AssertionError(
+            "transcreate_text must NOT fire on no-tg-url guard skip"
+        ))
+        mock_publish = MagicMock(side_effect=AssertionError(
+            "publish_article (Telegraph CREATE) must NOT fire on guard skip"
+        ))
+        mock_mark = MagicMock(side_effect=AssertionError(
+            "mark_telegraph_published must NOT fire on no-tg-url guard skip"
+        ))
+        mock_teaser = MagicMock(side_effect=AssertionError(
+            "send_telegraph_teaser must NOT fire on no-tg-url guard skip"
+        ))
+        mock_update = MagicMock(side_effect=AssertionError(
+            "update_staged must NOT fire on no-tg-url guard skip"
+        ))
+        mock_move = MagicMock(side_effect=AssertionError(
+            "move_to_published must NOT fire on no-tg-url guard skip"
+        ))
+        mock_notify = MagicMock(return_value=True)
+
+        with patch('news_bot.transcreate_via_claude', mock_claude), \
+             patch('news_bot.transcreate_text', mock_google), \
+             patch('news_bot.outage_state.is_fallback_active',
+                   return_value=False), \
+             patch('news_bot.telegraph_publisher.publish_article',
+                   mock_publish), \
+             patch('news_bot.pending_repo.mark_telegraph_published',
+                   mock_mark), \
+             patch('news_bot.send_telegraph_teaser', mock_teaser), \
+             patch('news_bot.pending_repo.update_staged', mock_update), \
+             patch('news_bot.pending_repo.move_to_published', mock_move), \
+             patch('news_bot.send_admin_notification', mock_notify):
+            ok = news_bot._fallback_publish(row, via_review=False)
+
+        self.assertTrue(ok)
+        # Specific assertion this test owns: Telegraph CREATE was not called.
+        mock_publish.assert_not_called()
+        # Plus the rest, for completeness.
+        mock_claude.assert_not_called()
+        mock_google.assert_not_called()
+        mock_mark.assert_not_called()
+        mock_teaser.assert_not_called()
+        mock_update.assert_not_called()
+        mock_move.assert_not_called()
+
+        self.assertIsNone(repo.get_pending(link))
+        self.assertTrue(self._processed_news_has(link))
+
+    # ---- T4 ----------------------------------------------------------------
+
+    def test_admin_ping_fires_when_guard_skips(self):
+        """Guard must dispatch exactly one admin notification with the
+        canonical ``"⚠️ Skipped re-publish of "`` prefix and the link."""
+        link = 'http://a/zombie-ping'
+        self._insert(link=link, title='EN T-zombie-ping')
+        self._pre_stage_published(link)
+        row = repo.get_pending(link)
+
+        mock_claude = MagicMock(side_effect=AssertionError("guard must short-circuit"))
+        mock_google = MagicMock(side_effect=AssertionError("guard must short-circuit"))
+        mock_publish = MagicMock(side_effect=AssertionError("guard must short-circuit"))
+        mock_mark = MagicMock(side_effect=AssertionError("guard must short-circuit"))
+        mock_teaser = MagicMock(side_effect=AssertionError("guard must short-circuit"))
+        mock_update = MagicMock(side_effect=AssertionError("guard must short-circuit"))
+        mock_move = MagicMock(side_effect=AssertionError("guard must short-circuit"))
+        mock_notify = MagicMock(return_value=True)
+
+        with patch('news_bot.transcreate_via_claude', mock_claude), \
+             patch('news_bot.transcreate_text', mock_google), \
+             patch('news_bot.outage_state.is_fallback_active',
+                   return_value=False), \
+             patch('news_bot.telegraph_publisher.publish_article',
+                   mock_publish), \
+             patch('news_bot.pending_repo.mark_telegraph_published',
+                   mock_mark), \
+             patch('news_bot.send_telegraph_teaser', mock_teaser), \
+             patch('news_bot.pending_repo.update_staged', mock_update), \
+             patch('news_bot.pending_repo.move_to_published', mock_move), \
+             patch('news_bot.send_admin_notification', mock_notify):
+            ok = news_bot._fallback_publish(row, via_review=False)
+
+        self.assertTrue(ok)
+        mock_notify.assert_called_once()
+        # ``send_admin_notification(text)`` — first positional arg is the
+        # message body. Use assertIn (not assertEqual) per task hint —
+        # exact wording may evolve (instance prefix, emoji variants).
+        ping_text = mock_notify.call_args.args[0]
+        self.assertIn("⚠️ Skipped re-publish of ", ping_text)
+        self.assertIn(link, ping_text)
+
+    # ---- T5 ----------------------------------------------------------------
+
+    def test_guard_continues_when_admin_ping_returns_false(self):
+        """``send_admin_notification`` returned ``False`` (Telegram down,
+        no credentials, etc.). Guard MUST still:
+          * call ``skip_pending`` (cleanup runs regardless),
+          * return ``True`` (never strike the slot loop just because the
+            admin channel is broken),
+          * emit a WARNING describing the failed admin ping.
+        """
+        link = 'http://a/zombie-ping-false'
+        self._insert(link=link, title='EN T-zombie-ping-false')
+        self._pre_stage_published(link)
+        row = repo.get_pending(link)
+
+        mock_claude = MagicMock(side_effect=AssertionError("guard must short-circuit"))
+        mock_google = MagicMock(side_effect=AssertionError("guard must short-circuit"))
+        mock_publish = MagicMock(side_effect=AssertionError("guard must short-circuit"))
+        mock_mark = MagicMock(side_effect=AssertionError("guard must short-circuit"))
+        mock_teaser = MagicMock(side_effect=AssertionError("guard must short-circuit"))
+        mock_update = MagicMock(side_effect=AssertionError("guard must short-circuit"))
+        mock_move = MagicMock(side_effect=AssertionError("guard must short-circuit"))
+        # Ping returns False — function must NOT raise, must NOT return False.
+        mock_notify = MagicMock(return_value=False)
+
+        with patch('news_bot.transcreate_via_claude', mock_claude), \
+             patch('news_bot.transcreate_text', mock_google), \
+             patch('news_bot.outage_state.is_fallback_active',
+                   return_value=False), \
+             patch('news_bot.telegraph_publisher.publish_article',
+                   mock_publish), \
+             patch('news_bot.pending_repo.mark_telegraph_published',
+                   mock_mark), \
+             patch('news_bot.send_telegraph_teaser', mock_teaser), \
+             patch('news_bot.pending_repo.update_staged', mock_update), \
+             patch('news_bot.pending_repo.move_to_published', mock_move), \
+             patch('news_bot.send_admin_notification', mock_notify):
+            with self.assertLogs('news_bot', level='WARNING') as logs:
+                ok = news_bot._fallback_publish(row, via_review=False)
+
+        # Returned True even though ping failed.
+        self.assertTrue(ok)
+        # Cleanup ran (skip_pending was invoked) — proven via DB state.
+        self.assertIsNone(repo.get_pending(link))
+        self.assertTrue(self._processed_news_has(link))
+        # WARNING log entry mentioning the failed admin ping.
+        warn_lines = [
+            line for line in logs.output
+            if line.startswith('WARNING') and 'admin ping' in line and link in line
+        ]
+        self.assertGreaterEqual(len(warn_lines), 1,
+                                f"expected WARNING about failed admin ping; "
+                                f"got {logs.output!r}")
+
+
 if __name__ == '__main__':
     unittest.main()
