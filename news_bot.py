@@ -983,6 +983,42 @@ def _fallback_publish(row, via_review=False):
     """
     link = row['link']
 
+    # Idempotency guard (publish-idempotency-fix, Decisions 1, 2, 3, 4, 8).
+    # If this link is already in ``published_articles``, the pending row is a
+    # zombie — short-circuit before any Telegraph/Telegram side-effect, ping
+    # the admin, clean the zombie via ``skip_pending``, and return True so the
+    # slot loop does not strike the row toward ``failed_articles``.
+    existing = pending_repo.get_published(link)
+    if existing is not None:
+        logger.info(
+            f"[idempotency-guard] {link} already in published_articles — "
+            f"skipping re-publish of stale pending row"
+        )
+        ping_text = (
+            f"⚠️ Skipped re-publish of {link} — already in "
+            f"published_articles. Investigate stale pending row."
+        )
+        ping_ok = send_admin_notification(ping_text)
+        if not ping_ok:
+            logger.warning(
+                f"admin ping for [idempotency-guard] skip of {link} failed "
+                f"(Telegram down or credentials missing) — continuing cleanup"
+            )
+        try:
+            pending_repo.skip_pending(link)
+        except Exception as cleanup_err:
+            logger.error(
+                f"[idempotency-guard] skip_pending failed for {link}: "
+                f"{cleanup_err!r} — leaving row in pending; next slot's guard "
+                f"will retry cleanup"
+            )
+            send_admin_notification(
+                f"⚠️ Idempotency-guard cleanup failed for {link}: "
+                f"{type(cleanup_err).__name__}. Pending row will retry on "
+                f"next slot."
+            )
+        return True
+
     # Step 1: EN → RU. Two-tier translation engine — see comment header.
     en_title = row.get('title') or ''
     en_subtitle = row.get('subtitle') or ''
