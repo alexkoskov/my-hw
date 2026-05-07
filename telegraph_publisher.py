@@ -18,6 +18,7 @@ import json
 import logging
 import os
 from typing import List, Optional
+from urllib.parse import urlparse
 
 import requests
 
@@ -111,6 +112,124 @@ def _auto_marker_node() -> dict:
     return {"tag": "p", "children": [AUTO_MARKER_TEXT]}
 
 
+def _strip_www(netloc: str) -> str:
+    """Return ``netloc`` lower-cased and with a leading ``www.`` removed.
+
+    Uses ``str.removeprefix`` (Python 3.9+) — NOT ``str.lstrip("www.")``,
+    which is a character-set strip and would also match ``wwwfake-…``
+    lookalike domains (security audit critical finding).
+    """
+    n = (netloc or "").lower()
+    return n.removeprefix("www.")
+
+
+def _is_same_site(href, source_netloc):
+    """Return True iff ``href`` points to the same site as ``source_netloc``.
+
+    Contract: ``source_netloc`` is the already-parsed netloc string from
+    ``urlparse(source_url).netloc`` — caller computes once per render to
+    avoid re-parsing on every run.
+
+    Returns False for: empty/falsy ``href`` or ``source_netloc``,
+    non-http(s) schemes (drops ``mailto:``, ``javascript:``, ``data:``),
+    empty parsed netloc, ``urlparse`` exceptions (logged), or netloc
+    mismatch after ``www.`` prefix normalisation. See Decision 4.
+    """
+    if not href or not source_netloc:
+        return False
+    try:
+        u = urlparse(href)
+    except Exception as exc:
+        logger.warning(
+            "[orangetrack-render] urlparse failed for %s...: %s",
+            str(href)[:50],
+            type(exc).__name__,
+        )
+        return False
+    if u.scheme.lower() not in ("http", "https"):
+        return False
+    if not u.netloc:
+        return False
+    return _strip_www(u.netloc) == _strip_www(source_netloc)
+
+
+_MAX_TEXT_FOR_RUNS = 100_000
+_MAX_RUNS_PER_BLOCK = 100
+
+
+def _render_paragraph_with_runs(text, runs, source_url):
+    """Return list of children (string + a-nodes interleaved) for the given
+    block text and runs metadata.
+
+    Same-site runs (per :func:`_is_same_site`) are wrapped in ``<a>`` nodes
+    inside the resulting children list. The list is suitable for unpacking
+    into ``p(*children)`` or ``heading(level, *children)``.
+
+    Behaviour:
+    * Empty/None ``runs`` or empty/None ``source_url`` → returns ``[text]``.
+    * DoS bounds (Decision 10): ``len(text) > 100000`` or ``len(runs) > 100``
+      → falls through to ``[text]`` with a single WARNING.
+    * Each run's ``text`` field is located via case-sensitive ``str.find``;
+      runs whose text is missing or whitespace-only are skipped BEFORE the
+      ``find`` call (Decision 9 zero-width guard).
+    * Overlapping spans: first-wrap-wins (Decision 5) — later overlapping
+      runs render as plain text within the rebuilt segment.
+    """
+    if not runs:
+        return [text]
+    # DoS bounds (Decision 10)
+    if len(text) > _MAX_TEXT_FOR_RUNS or len(runs) > _MAX_RUNS_PER_BLOCK:
+        logger.warning(
+            "[orangetrack-render] DoS bound: text=%d runs=%d — falling through to plain text",
+            len(text),
+            len(runs),
+        )
+        return [text]
+    # Compute source netloc once (Decision 7 — symmetric helper invocation)
+    try:
+        source_netloc = urlparse(source_url).netloc if source_url else ""
+    except Exception:
+        source_netloc = ""
+    # If source_netloc is empty, _is_same_site will return False for every
+    # run → no spans collected → fall through to plain text.
+    # Find spans for same-site runs
+    spans = []  # list of (start, end, href)
+    for run in runs:
+        run_text = run.get("text") if isinstance(run, dict) else None
+        if not run_text or not run_text.strip():
+            continue  # Decision 9 — empty/whitespace skip BEFORE str.find
+        href = run.get("href")
+        if not _is_same_site(href, source_netloc):
+            continue
+        pos = text.find(run_text)
+        if pos < 0:
+            continue
+        spans.append((pos, pos + len(run_text), href))
+    # Decision 5 — first-wrap-wins (sort by start, drop overlapping with already-accepted)
+    spans.sort(key=lambda s: s[0])
+    accepted = []
+    last_end = -1
+    for start, end, href in spans:
+        if start >= last_end:
+            accepted.append((start, end, href))
+            last_end = end
+        # else: overlap with earlier span → skip; the substring still appears
+        # as plain text in the rebuilt segment.
+    if not accepted:
+        return [text]
+    # Build children: alternating text segments and <a> nodes
+    children = []
+    cursor = 0
+    for start, end, href in accepted:
+        if start > cursor:
+            children.append(text[cursor:start])
+        children.append({"tag": "a", "attrs": {"href": href}, "children": [text[start:end]]})
+        cursor = end
+    if cursor < len(text):
+        children.append(text[cursor:])
+    return children
+
+
 def _build_content_from_blocks(
     subtitle: str,
     blocks: List[dict],
@@ -121,14 +240,21 @@ def _build_content_from_blocks(
     image/video positions from the source article.
 
     Block shapes:
-        {'type': 'paragraph', 'text': str}
-        {'type': 'lead', 'text': str}          # bold intro
-        {'type': 'heading', 'text': str, 'level': 3|4}
+        {'type': 'paragraph', 'text': str, 'runs': list}
+        {'type': 'lead', 'text': str}                  # bold intro
+        {'type': 'heading', 'text': str, 'level': 3|4, 'runs': list}
+        {'type': 'list_item', 'text': str, 'runs': list}  # rendered as <p>• …</p>
         {'type': 'image', 'src': str}
-        {'type': 'video', 'src': str}          # embed URL
+        {'type': 'video', 'src': str}                  # embed URL
 
     The first ``image`` block becomes the hero figure so it drives the
     Telegram preview thumbnail; the rest appear in their original positions.
+
+    Paragraph, heading, and list_item blocks flow through
+    :func:`_render_paragraph_with_runs` so same-site ``<a>`` runs from
+    ``block["runs"]`` are rendered inline. List_item blocks have their
+    leading bullet/whitespace stripped before the publisher prepends
+    ``"• "`` (Decision 10 bullet-doubling guard).
     """
     def p(*children): return {"tag": "p", "children": list(children)}
 
@@ -142,9 +268,9 @@ def _build_content_from_blocks(
     def a(href, text): return {"tag": "a", "attrs": {"href": href}, "children": [text]}
     def i_(text): return {"tag": "i", "children": [text]}
     def b_(text): return {"tag": "b", "children": [text]}
-    def heading(level, text):
+    def heading(level, *children):
         lvl = level if level in (3, 4) else 3
-        return {"tag": f"h{lvl}", "children": [text]}
+        return {"tag": f"h{lvl}", "children": list(children)}
 
     first_image_idx = next(
         (i for i, b in enumerate(blocks) if b.get("type") == "image"),
@@ -160,21 +286,33 @@ def _build_content_from_blocks(
         nodes.append(p(i_(f"💬 «{subtitle}»")))
         nodes.append({"tag": "hr"})
 
-    # Block-level rendering uses only the flat `text` field for now.
-    # External `<a>` hrefs live in block["runs"] as metadata so Phase 2
-    # (cross-article linking to our own Telegraph pages) can consume them —
-    # we do NOT emit them here, because rendering raw source links ruined
-    # the reading flow in early attempts (commit a984505).
+    # Block-level rendering: paragraph/heading/list_item flow through the
+    # same-site link helper so `<a href>` runs from block["runs"] become
+    # inline ``<a>`` nodes when they point back to ``source_url``'s netloc.
+    # Off-domain hrefs are still dropped by design (rendering raw external
+    # links ruined the reading flow in early attempts, commit a984505).
     for i, block in enumerate(blocks):
         if i == first_image_idx:
             continue
         t = block.get("type")
         if t == "paragraph":
-            nodes.append(p(block["text"]))
+            nodes.append(p(*_render_paragraph_with_runs(
+                block["text"], block.get("runs"), source_url,
+            )))
         elif t == "lead":
             nodes.append(p(b_(block["text"])))
         elif t == "heading":
-            nodes.append(heading(block.get("level", 3), block["text"]))
+            nodes.append(heading(
+                block.get("level", 3),
+                *_render_paragraph_with_runs(
+                    block["text"], block.get("runs"), source_url,
+                ),
+            ))
+        elif t == "list_item":
+            text = (block.get("text") or "").lstrip(" •\t\n")  # Decision 10 — strip leading bullet/whitespace before prepending
+            nodes.append(p("• ", *_render_paragraph_with_runs(
+                text, block.get("runs"), source_url,
+            )))
         elif t == "image":
             nodes.append(figure_img(block["src"], block.get("caption", "")))
         elif t == "video":
