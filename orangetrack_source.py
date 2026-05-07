@@ -537,7 +537,10 @@ def _parse_content_encoded(html_str: str, link: str) -> Optional[Dict]:
                 _emit_heading(child, int(name[1]))
                 continue
             if name == "h5":
-                # Decision 15: h5 → blocks only (not flat paragraphs).
+                # h5 keeps `type: paragraph` (babc67c carve-out from SESSION-2026-05-06.md
+                # break 3 — h5 used as in-paragraph markers, big-bold styling looked uneven).
+                # Now also flows into paragraphs_flat alongside paragraph/heading/list_item
+                # (orangetrack-rendering-fixes Decision 2 keeps h5 as paragraph-typed block).
                 _emit_heading(child, 5)
                 continue
             if name in ("h1", "h6"):
