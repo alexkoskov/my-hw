@@ -203,6 +203,7 @@ A second loop — the **manual review loop** (`hw_review.py` CLI in operator's C
    - Window-end guard: if `slot > 20:00 МСК`, break (excess becomes carry-over).
    - `time.sleep((slot - now).total_seconds())` until slot arrives.
    - Pop next row via `list_pending()` two-tier ordering: today's freshly-fetched batch first (in fetch order), then carry-over backlog drained oldest-first.
+   - **Idempotency guard (publish-idempotency-fix, 2026-05-07):** at the very top of `_fallback_publish`, BEFORE any side effect, check `pending_articles_repo.get_published(link)`. If non-`None`, the pending row is a zombie (some prior `move_to_published` left an inconsistent state, or fetch loop re-staged a published link). Log INFO with `[idempotency-guard]` tag, send admin-ping `«⚠️ Пропущен дубль публикации»`, call `skip_pending(link)` (atomic `INSERT OR IGNORE → processed_news` + `DELETE → pending_articles`), return `True`. Slot loop treats as success — no `attempt_count` strike, no `move_to_failed`. If `skip_pending` itself raises (DB-level), log ERROR + send a second admin-ping `«⚠️ Не удалось снять зомби-строку»` and STILL return `True` (subscriber-visible duplicate prevention is the primary contract).
    - If `outage_state.is_fallback_active()`, route directly to Google Translate; otherwise call `_fallback_publish` (Claude primary, Google per-article fallback).
    - On `OutageError` (state-machine signal): the state machine already recorded the event and routed this article through Google. Continue to next slot.
    - On unexpected exception: standard 3-strikes attempt counter → `move_to_failed`.
@@ -248,9 +249,12 @@ A second loop — the **manual review loop** (`hw_review.py` CLI in operator's C
 - RU content (NULL until staged): `ru_title`, `ru_subtitle`, `ru_paragraphs`, `ru_blocks`
 - Publish state: `telegraph_url`, `telegraph_path`, `preview_html_path`
 - Bookkeeping: `fetched_at`, `notified_at`, `attempt_count`, `last_error`, `pub_date`
+- **Block types** (in `blocks` / `ru_blocks` JSON): `paragraph`, `lead`, `heading` (with `level: 3` or `4`), `image`, `video`, and `list_item` (added 2026-05-08 by orangetrack-rendering-fixes — children of `<ul>`/`<ol>` from orangetrack content). Text-bearing types (`paragraph`/`lead`/`heading`/`list_item`) all carry an optional `runs` field with inline metadata: `[{text, [href], [formats]}]` where `formats` is a list of `bold`/`italic`/`underline`/`strikethrough` markers. `_PATCHED_TEXT_BLOCK_TYPES` in `_llm_common.py` lists the 4 patchable types — `_patch_text_with_ru_paragraphs` rewrites their `text` from LLM output and preserves `type`, `runs`, `level`.
 
 **published_articles** — audit of real publishes
 - `link` PK, `title`, `telegraph_url`, `telegraph_path`, `via_review` (1=manual, 0=auto-LLM), `published_at`. Since the manual path was archived on 2026-04-30 every new row carries `via_review=0`; existing `via_review=1` rows in `published_articles` are historical (manual-review-workflow era).
+- **Insert is idempotent** (publish-idempotency-fix, 2026-05-07): `move_to_published` step 1 uses `INSERT OR IGNORE` so a second move with the same `link` is a no-op rather than `IntegrityError`. Original values (telegraph_url, via_review, published_at) are preserved from the first move. Step 2 (`processed_news`) and step 3 (`DELETE pending_articles`) execute unconditionally.
+- **Post-commit defensive verification** (2026-05-08, after a prod incident where `published_articles` had rows but `processed_news` did not): `move_to_published` re-queries `processed_news` after the main commit. If the entry is missing, dozapis with `INSERT OR IGNORE` and emits a WARNING log. Self-healing — closes the zombie-row recurrence loop where `is_processed(link)` returns False on next fetch and re-stages an already-published link.
 
 **failed_articles** — dead letter after 3 GT attempts
 - `link` PK, `title`, `last_error`, `attempt_count`, `failed_at`

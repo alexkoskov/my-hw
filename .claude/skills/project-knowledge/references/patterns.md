@@ -12,6 +12,38 @@ For universal coding standards, see `~/.claude/skills/code-writing/references/un
 - Before processing any RSS entry, `is_processed(link)` checks the database; if present, the entry is skipped.
 - The table also stores `title` and `pub_date` for reference, but only `link` is essential for deduplication.
 
+### Publish-path idempotency (publish-idempotency-fix, 2026-05-07/08)
+
+Three-layer defense against duplicate Telegram posts on stale-state:
+
+1. **Function-entry guard** in `_fallback_publish` — read-only check
+   `pending_repo.get_published(link)` BEFORE any side effect (Telegraph
+   create, Telegram teaser, repo writes). On hit: log INFO, admin-ping,
+   `skip_pending`, return True. Slot loop counts the row as a successful
+   slot — no `attempt_count` strike. The guard dominates all 4 entry
+   conditions of `_fallback_publish` (Claude success, per-article
+   fallback, ClaudeOutageError, `is_fallback_active()` shortcut).
+
+2. **Idempotent `move_to_published`** — Step 1 uses `INSERT OR IGNORE
+   INTO published_articles` (NOT plain `INSERT`). Defense-in-depth: if
+   guard misses or a future caller bypasses it, a second move on the
+   same link is a no-op rather than `UNIQUE constraint failed`. Steps 2
+   (processed_news) and 3 (DELETE pending) execute unconditionally.
+   Original values from first publish are preserved.
+
+3. **Post-commit defensive dozapis** — after the main transaction commits,
+   `move_to_published` re-queries `processed_news`. If missing, dozapis
+   with `INSERT OR IGNORE` and emits a WARNING log. Closes a historical
+   anomaly where `published_articles` had rows but `processed_news` did
+   not — root cause unrecoverable from logs but the code is now
+   self-healing regardless of how the inconsistency arose.
+
+**Cleanup-failure semantics:** if `skip_pending` itself raises during
+guard activation (DB-level error), the guard logs ERROR + sends a SECOND
+admin-ping `«⚠️ Не удалось снять зомби-строку»` + STILL returns `True`.
+Subscriber-visible duplicate prevention is the primary contract;
+cleanup-failure is degraded mode the operator must investigate.
+
 ### Source-Parser Contract
 - Every per-source module exposes a `fetch_*_article(link_or_entry)` function
   that returns `{title, subtitle, paragraphs, images}` — or `None` on failure.
@@ -59,6 +91,48 @@ For universal coding standards, see `~/.claude/skills/code-writing/references/un
   net (AC11).
 - On translator failure of BOTH engines, the row's `attempt_count`
   increments; after 3 strikes, `move_to_failed`.
+
+### Orangetrack rendering specifics (orangetrack-rendering-fixes, 2026-05-08)
+
+- **`<li>` parsing.** `_walk` in `orangetrack_source.py` handles `<li>` children of `<ul>` and `<ol>` uniformly — emits a `list_item` block via `_runs_from_tag`. Empty `<li>` skipped. Bullet `«• »` is NOT inserted at parse time — it's prepended in `_build_content_from_blocks` AFTER the LLM has run, immune to LLM stripping or translation.
+- **Heading dispatch.** `<h2>`/`<h3>`/`<h4>` → `type: heading, level: 3`. `<h5>` stays `type: paragraph` (preserves `babc67c` carve-out from SESSION-2026-05-06.md break 3 — h5 is used as in-paragraph section marker on orangetrack, big-bold rendering looked uneven). `<h1>`/`<h6>` ignored. Telegraph supports only `<h3>` and `<h4>`; we use a single visual treatment.
+- **Inline format markers.** `_runs_from_tag` captures `formats: ["bold"|"italic"|"underline"|"strikethrough"]` for `<strong>`/`<b>`/`<em>`/`<i>`/`<u>`/`<s>`/`<del>` AND any element with a WordPress Gutenberg `has-*-color` class (color → bold mapping; Telegraph rejects color attributes, so we preserve the «обрати внимание» semantic).
+
+### Telegraph paragraph rendering with runs metadata (orangetrack-rendering-fixes, 2026-05-08)
+
+`_render_paragraph_with_runs(text, runs, source_url)` in `telegraph_publisher.py` is invoked from `_build_content_from_blocks` for `paragraph`/`heading`/`list_item` blocks. It walks `runs` metadata, finds each run's `text` substring inside (post-LLM) `block.text` via case-sensitive `str.find`, and wraps the matched substring in Telegraph nodes:
+
+- **Same-site links** (`run.href` to the article's source domain): wrapped in `<a>`. Same-site is netloc-equality with `removeprefix("www.")` on both sides (NOT `lstrip` — character-set strip is a phishing vector, would match `worangetrackdiecast.com`). Strict scheme `http`/`https` only — `mailto:`, `javascript:`, `data:` rejected. Empty/malformed URLs silently dropped.
+- **Inline formats**: wrapped in `<strong>`/`<i>`/`<u>`/`<s>` per `run.formats`. Multiple formats nest in deterministic order: bold > italic > underline > strikethrough.
+- **Anchor + format combo**: anchor is the OUTERMOST wrapper (`<a><strong>X</strong></a>`, NOT the reverse — Telegraph requires this nesting).
+- **Overlapping spans**: first-wrap-wins (sort by start position, drop overlapping later spans). The dropped span's text still appears in the rendered children as plain text (it's part of the original `block.text`, just not wrapped).
+- **DoS bounds**: if `len(text) > 100000` or `len(runs) > 100`, fall through to plain text and log WARNING.
+- **Empty/whitespace `run.text`**: skip BEFORE `str.find` (avoids zero-width wrap at position 0).
+- **`run.text` not in `block.text` after translation** (LLM translated the phrase): silently drop.
+
+The substring approach is MVP — works for Latin proper nouns (model names, brand names) that survive translation unchanged. The sentinel-token alternative (replace `run.text` with marker before LLM, restore after) is documented as Phase-2 deferred.
+
+### Affiliate / promo line filter (boilerplate_filter.py, expanded 2026-05-08)
+
+`is_boilerplate(s)` drops short standalone paragraphs (≤ 120 chars) that match known UI/affiliate patterns. Applied at the parser level on EN content via `filter_blocks` and `filter_boilerplate`.
+
+- **Aff1**: `^*?quick\s+link[!:]` prefix — drops `*QUICK LINK!*`-prefixed lines unconditionally (verb-gate dropped 2026-05-08 after `«*QUICK LINK!* Find ... on eBay»` slipped through).
+- **Aff3**: `^find ... on/at (ebay|amazon|aliexpress|mattel|walmart)` — direct CTA without QUICK LINK prefix.
+- **RU defense-in-depth** (added 2026-05-08): patterns for `«Быстрая ссылка»` and `«Найти/Купить ... на eBay/Amazon/...»`. Activated via post-LLM filter pass in `news_bot._fallback_publish` immediately after `_strip_plugs`. Drops matching `ru_paragraphs` and `ru_blocks` of type `paragraph`/`lead`/`heading`/`list_item`.
+
+When extending: keep length-bounded (`_MAX_BOILERPLATE_LEN = 120`) and anchored at `^`. ReDoS-safe — no nested greedy quantifiers.
+
+### Admin-ping format (multi-line columnar Russian, 2026-05-08)
+
+Admin-bound notifications use multi-line column layout for readability:
+
+- **Plan-of-day busy** — `🟢 План на сегодня` + `Принято свежих:` / `Всего в очереди:` / `Слоты сегодня:` / `Перенесено на завтра:`.
+- **Plan-of-day quiet** — single-line `🟢 Бот сработал, новых статей нет.`
+- **Idempotency-guard hit** — `⚠️ Пропущен дубль публикации` + `Ссылка:` / `Что произошло:` / `Что сделать:`.
+- **Idempotency-guard cleanup failure** — `⚠️ Не удалось снять зомби-строку` + `Ссылка:` / `Ошибка:` / `Что сделать:`.
+- **Outage state-machine pings** — older single-line format, untouched (separate domain).
+
+Operator preference: pure Russian, no English mixing in operational pings.
 
 ### Channel post format (locked 2026-04-21, auto-marker relocated 2026-04-27, `#news` tag added 2026-04-24)
 - **Channel teaser is byte-identical for every path** — single-line `#<source> #news` (e.g. `#autoevolution #news`, `#mattel #news`, `#lamleygroup #news`). The source hashtag is derived from the source URL's second-level domain by `news_bot._source_hashtag`; the trailing `#news` is a static tag hardcoded in `send_telegraph_teaser` (NOT derived from source) so subscribers can filter the channel by topic. Decision 14 (manual-review-workflow tech-spec) holds at the visible-feed level: subscribers see no difference between auto-LLM publishes and the dormant manual path (if revived). Edge case: when `_source_hashtag` returns the bare `#` (unknown / malformed `source_url`), `send_telegraph_teaser` falls back to the legacy bare hashtag and skips the `#news` append — emitting a lone `#news` would lose source attribution without compensating value.
