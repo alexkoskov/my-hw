@@ -102,10 +102,15 @@ _BOILERPLATE_PATTERNS = [
     # by ``_MAX_BOILERPLATE_LEN`` (120). All anchored at ``^``, no nested
     # greedy quantifiers (ReDoS-safe).
     # ------------------------------------------------------------------
-    # Aff1 — "*QUICK LINK!*" / "Quick link:" affiliate header followed by
-    # a verb (buy/order/grab/shop) somewhere in the line.
+    # Aff1 — "*QUICK LINK!*" / "Quick link:" affiliate header. Verb-gate
+    # dropped 2026-05-08 after a paragraph starting "*QUICK LINK!* Find ..."
+    # slipped through (no buy/order/grab/shop verb, but Brad's affiliate
+    # markers still produced a clear ad line in the channel). The prefix
+    # is distinctive enough on its own — false positives on legitimate
+    # prose using "Quick link!" / "Quick link:" as a sentence opener are
+    # vanishingly rare in news-article body content (length-bounded at 120 chars).
     re.compile(
-        r'^\s*\*?quick\s+link[!:].*\b(buy|order|grab|shop)\b',
+        r'^\s*\*?quick\s+link[!:]',
         re.I,
     ),
     # Aff2 — "Buy [now] from <store>" shape. Requires a non-space token
@@ -113,6 +118,14 @@ _BOILERPLATE_PATTERNS = [
     # matches; that's intentional — these are short standalone lines).
     re.compile(
         r'^buy\s+(now\s+)?from\s+\S',
+        re.I,
+    ),
+    # Aff3 — "Find ... on eBay" / "Find ... at <store>" — direct affiliate
+    # call-to-action without the QUICK LINK prefix. Length-bounded by
+    # _MAX_BOILERPLATE_LEN (120); false positives ("find ... on the map")
+    # are unlikely in standalone short paragraphs.
+    re.compile(
+        r'^\s*\*?find\b.*\b(on|at)\s+(ebay|amazon|aliexpress|mattel|walmart)\b',
         re.I,
     ),
     # ------------------------------------------------------------------
@@ -127,6 +140,21 @@ _BOILERPLATE_PATTERNS = [
     re.compile(r'^(читайте|смотрите) (также|далее)$', re.I),
     re.compile(r'^(тэги|теги|категории|метки):', re.I),
     re.compile(r'^комментари(и|й)$', re.I),
+    # RU affiliate / "Quick Link" — defense-in-depth catch on the post-LLM
+    # side in case any EN affiliate variant slips through Aff1/Aff3 above.
+    # Russian translation of "QUICK LINK!" varies (быстрая ссылка / быстрая
+    # ссылочка / etc.); we anchor on the most stable forms. Added 2026-05-08
+    # after "*QUICK LINK!* Find ... on eBay" → «БЫСТРАЯ ССЫЛКА! Найти ...
+    # на eBay» reached the channel.
+    re.compile(
+        r'^\s*\*?быстр(ая|ой)\s+ссылк(а|у|и)[!:]',
+        re.I,
+    ),
+    # RU "Найти ... на eBay" / "Купить ... на Amazon" — direct CTA shape.
+    re.compile(
+        r'^\s*(найти|купить)\b.*\bна\s+(ebay|amazon|aliexpress|mattel|walmart)\b',
+        re.I,
+    ),
 ]
 
 

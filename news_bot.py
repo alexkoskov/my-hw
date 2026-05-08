@@ -38,6 +38,8 @@ import orangetrack_source
 import telegraph_publisher
 from telegraph_publisher import TelegraphError
 
+from boilerplate_filter import is_boilerplate
+
 # Late-binding DAO for the manual-review-workflow queue tables
 # (``pending_articles``, ``published_articles``, ``failed_articles``).
 # Imported under a short alias so the prep-phase ``job()`` body reads
@@ -1193,7 +1195,28 @@ def _fallback_publish(row, via_review=False):
                 p for p in (_strip_plugs(p) for p in ru_paragraphs)
                 if isinstance(p, str) and p.strip()
             ]
+            # RU-side boilerplate filter (defense-in-depth, 2026-05-08).
+            # Catches affiliate / promo lines that the EN-side parser
+            # filter (orangetrack_source.py → boilerplate_filter) missed
+            # because the EN variant didn't match a known pattern but the
+            # RU translation matches an explicit RU pattern. Drop empty
+            # paragraphs after the filter; if all RU paragraphs were
+            # boilerplate the article still has title + RU subtitle, so
+            # downstream rendering does not crash on empty list.
+            ru_paragraphs = [
+                p for p in ru_paragraphs if not is_boilerplate(p)
+            ]
         ru_blocks = _strip_plugs_in_blocks(ru_blocks)
+        if isinstance(ru_blocks, list):
+            ru_blocks = [
+                b for b in ru_blocks
+                if not (
+                    isinstance(b, dict)
+                    and b.get('type') in ('paragraph', 'lead', 'heading', 'list_item')
+                    and isinstance(b.get('text'), str)
+                    and is_boilerplate(b['text'])
+                )
+            ]
         cleaned_pieces = (
             [ru_title or '', ru_subtitle or '']
             + list(ru_paragraphs or [])

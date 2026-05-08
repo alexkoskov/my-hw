@@ -195,6 +195,74 @@ class TestAffiliateLengthBound:
         assert elapsed < 0.1, f"is_boilerplate too slow: {elapsed:.3f}s"
 
 
+class TestQuickLinkVerbGateRemoved:
+    """Aff1 dropped its (buy|order|grab|shop) verb gate 2026-05-08 after
+    «*QUICK LINK!* Find the 2026 Fast & Furious ... case on eBay» slipped
+    through. Prefix alone is now sufficient."""
+
+    def test_quick_link_find_on_ebay_filtered(self):
+        # Real-world case from prod 2026-05-08: «find» wasn't in the verb
+        # list, ad slipped through, got translated, hit the channel.
+        line = "*QUICK LINK!* Find the 2026 Fast & Furious case on eBay"
+        assert is_boilerplate(line) is True
+
+    def test_quick_link_no_verb_at_all_filtered(self):
+        # Bare prefix is sufficient signal.
+        line = "Quick link: Hot Wheels Mainline 2026 Treasure Hunts"
+        assert is_boilerplate(line) is True
+
+    def test_quick_link_with_buy_still_filtered(self):
+        # Existing behaviour preserved — verb-having lines still match.
+        line = "*QUICK LINK!* Buy the case on eBay now"
+        assert is_boilerplate(line) is True
+
+    def test_aff3_find_on_ebay_filtered(self):
+        # New Aff3 — direct «Find ... on eBay» CTA without QUICK LINK prefix.
+        line = "Find the Modern Classics S case on eBay"
+        assert is_boilerplate(line) is True
+
+    def test_aff3_find_at_amazon_filtered(self):
+        line = "Find the 2026 Pop Culture set at Amazon"
+        assert is_boilerplate(line) is True
+
+    def test_aff3_find_in_random_context_preserved(self):
+        # «find ... on the map» / «find ... on hand» — not affiliate; should
+        # NOT match (no allowlisted store name follows). Length-bounded.
+        line = "Find the rare casting on the back of the case wall"
+        assert is_boilerplate(line) is False
+
+
+class TestRussianAffiliateDefenseInDepth:
+    """RU-side defense-in-depth (added 2026-05-08): post-LLM filter pass
+    in news_bot._fallback_publish runs `is_boilerplate` on RU paragraphs
+    too. These patterns activate when an EN affiliate variant slips
+    through the parser-side filter and the LLM translates it."""
+
+    def test_bystryaya_ssylka_filtered(self):
+        # The exact RU shape that reached prod 2026-05-08.
+        line = "БЫСТРАЯ ССЫЛКА! Найти кейс 2026 Fast & Furious на eBay"
+        assert is_boilerplate(line) is True
+
+    def test_bystraya_ssylka_lowercase_filtered(self):
+        line = "Быстрая ссылка: Hot Wheels Mainline"
+        assert is_boilerplate(line) is True
+
+    def test_naiti_na_ebay_filtered(self):
+        # «Найти ... на eBay» CTA shape.
+        line = "Найти кейс Car Culture на eBay"
+        assert is_boilerplate(line) is True
+
+    def test_kupit_na_amazon_filtered(self):
+        line = "Купить набор 2026 Pop Culture на Amazon"
+        assert is_boilerplate(line) is True
+
+    def test_normal_russian_prose_preserved(self):
+        # No false positives on regular content prose mentioning «найти» /
+        # «купить» without an allowlisted store keyword.
+        line = "Можно найти этот редкий вариант в коллекциях фанатов"
+        assert is_boilerplate(line) is False
+
+
 # ---------------------------------------------------------------------------
 # Author social-media plug patterns (variant A of the author-plug-filter
 # feature). Standalone-paragraph plugs from authors of source articles,
