@@ -558,6 +558,17 @@ def move_to_published(link: str, telegraph_url: str, telegraph_path: str,
     states"). ``telegraph_url`` / ``telegraph_path`` are passed by the caller
     because they've already been persisted via ``mark_telegraph_published``
     (Decision 9) and passing them explicitly avoids a hidden read.
+
+    **Post-commit defensive verification (added 2026-05-08):** after the
+    main transaction commits, re-query ``processed_news`` for the link.
+    If missing, dozapis with ``INSERT OR IGNORE``. This guards against a
+    historical anomaly where ``published_articles`` ended up populated but
+    ``processed_news`` did not (root cause unknown — possibly a transient
+    SQLite issue, an older code path that lacked Step 2, or a manual
+    ``ATTACH``-merge that overwrote ``processed_news``). The defensive
+    check makes the eventual state idempotent regardless of how it was
+    reached. A WARNING is emitted iff the dozapis actually inserts —
+    surface to operator for investigation. See SESSION-2026-05-08.md.
     """
     conn = _connect()
     try:
@@ -600,6 +611,30 @@ def move_to_published(link: str, telegraph_url: str, telegraph_path: str,
             (link,),
         )
         conn.commit()
+
+        # Post-commit defensive verification: ensure processed_news has
+        # the entry. In the happy path this is a no-op (Step 2 already
+        # inserted). The historical anomaly case (May 2026 production
+        # incident) had published_articles populated but processed_news
+        # missing — this re-query + dozapis closes that loophole regardless
+        # of how the inconsistency arose.
+        check = conn.execute(
+            "SELECT 1 FROM processed_news WHERE link=?",
+            (link,),
+        ).fetchone()
+        if check is None:
+            logger.warning(
+                "[move_to_published] post-commit defensive: processed_news "
+                "missing entry for %s after main transaction; dozapis with "
+                "INSERT OR IGNORE — investigate why Step 2 did not persist",
+                link,
+            )
+            conn.execute(
+                "INSERT OR IGNORE INTO processed_news (link, title, pub_date) "
+                "VALUES (?, ?, ?)",
+                (link, title, pub_date),
+            )
+            conn.commit()
     except Exception:
         conn.rollback()
         raise
