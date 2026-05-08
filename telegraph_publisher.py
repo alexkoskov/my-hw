@@ -156,17 +156,56 @@ def _is_same_site(href, source_netloc):
 _MAX_TEXT_FOR_RUNS = 100_000
 _MAX_RUNS_PER_BLOCK = 100
 
+#: Inline-format → Telegraph tag mapping. Wrapping order (outer → inner)
+#: when multiple formats apply to the same span: bold > italic >
+#: underline > strikethrough.  ``"<a>"`` is handled separately as the
+#: outermost wrapper around any formats.
+_FORMAT_TAGS = (
+    ("bold", "strong"),
+    ("italic", "i"),
+    ("underline", "u"),
+    ("strikethrough", "s"),
+)
+
+
+def _wrap_with_formats(child_text, formats):
+    """Wrap a plain text segment in nested format nodes per ``formats`` list.
+
+    The order in :data:`_FORMAT_TAGS` defines outer → inner nesting. A
+    string is returned unchanged if ``formats`` is empty.
+    """
+    if not formats:
+        return child_text
+    node_text = child_text
+    # Build inside-out so the outermost format from _FORMAT_TAGS ends up at
+    # the top. Iterate REVERSE order so we wrap inner formats first.
+    for fmt_name, tag in reversed(_FORMAT_TAGS):
+        if fmt_name in formats:
+            node_text = {"tag": tag, "children": [node_text]}
+    return node_text
+
 
 def _render_paragraph_with_runs(text, runs, source_url):
-    """Return list of children (string + a-nodes interleaved) for the given
-    block text and runs metadata.
+    """Return list of children for the given block text and runs metadata.
 
-    Same-site runs (per :func:`_is_same_site`) are wrapped in ``<a>`` nodes
-    inside the resulting children list. The list is suitable for unpacking
-    into ``p(*children)`` or ``heading(level, *children)``.
+    Each run can carry:
+    * ``href`` — if same-site (per :func:`_is_same_site`), the matched
+      substring is wrapped in an ``<a>`` node.
+    * ``formats`` — a list of inline format markers (``"bold"``,
+      ``"italic"``, ``"underline"``, ``"strikethrough"``) that wrap the
+      matched substring in corresponding Telegraph-supported tags.
+      Color-class spans are mapped upstream to ``"bold"`` (Telegraph
+      rejects color attributes).
+
+    When BOTH ``href`` and ``formats`` apply, the ``<a>`` is the outermost
+    wrapper (Telegraph allows ``<a><strong>...</strong></a>`` but not the
+    reverse — anchors must dominate).
+
+    The list is suitable for unpacking into ``p(*children)`` or
+    ``heading(level, *children)``.
 
     Behaviour:
-    * Empty/None ``runs`` or empty/None ``source_url`` → returns ``[text]``.
+    * Empty/None ``runs`` → returns ``[text]``.
     * DoS bounds (Decision 10): ``len(text) > 100000`` or ``len(runs) > 100``
       → falls through to ``[text]`` with a single WARNING.
     * Each run's ``text`` field is located via case-sensitive ``str.find``;
@@ -190,40 +229,62 @@ def _render_paragraph_with_runs(text, runs, source_url):
         source_netloc = urlparse(source_url).netloc if source_url else ""
     except Exception:
         source_netloc = ""
-    # If source_netloc is empty, _is_same_site will return False for every
-    # run → no spans collected → fall through to plain text.
-    # Find spans for same-site runs
-    spans = []  # list of (start, end, href)
+    # Find spans for runs with href (same-site only) OR formats. A run with
+    # href to an external domain AND no formats is dropped; a run with
+    # formats but no/external href still contributes the format wrapping.
+    spans = []  # list of (start, end, href|None, formats|None)
     for run in runs:
-        run_text = run.get("text") if isinstance(run, dict) else None
+        if not isinstance(run, dict):
+            continue
+        run_text = run.get("text")
         if not run_text or not run_text.strip():
             continue  # Decision 9 — empty/whitespace skip BEFORE str.find
         href = run.get("href")
-        if not _is_same_site(href, source_netloc):
-            continue
+        # href is preserved only for same-site links; otherwise dropped.
+        href_val = href if (href and _is_same_site(href, source_netloc)) else None
+        formats = run.get("formats")
+        # Filter formats to known mapping; ignore unknown values defensively.
+        if formats:
+            known = {name for name, _ in _FORMAT_TAGS}
+            formats = [f for f in formats if f in known]
+        if not formats and not href_val:
+            continue  # nothing to render for this run
         pos = text.find(run_text)
         if pos < 0:
             continue
-        spans.append((pos, pos + len(run_text), href))
+        spans.append((pos, pos + len(run_text), href_val, formats or None))
     # Decision 5 — first-wrap-wins (sort by start, drop overlapping with already-accepted)
     spans.sort(key=lambda s: s[0])
     accepted = []
     last_end = -1
-    for start, end, href in spans:
+    for start, end, href, fmts in spans:
         if start >= last_end:
-            accepted.append((start, end, href))
+            accepted.append((start, end, href, fmts))
             last_end = end
         # else: overlap with earlier span → skip; the substring still appears
         # as plain text in the rebuilt segment.
     if not accepted:
         return [text]
-    # Build children: alternating text segments and <a> nodes
+    # Build children: alternating text segments and formatted nodes
     children = []
     cursor = 0
-    for start, end, href in accepted:
+    for start, end, href, fmts in accepted:
         if start > cursor:
             children.append(text[cursor:start])
-        children.append({"tag": "a", "attrs": {"href": href}, "children": [text[start:end]]})
+        span_text = text[start:end]
+        # Inner: apply format wrapping (strong > i > u > s).
+        node = _wrap_with_formats(span_text, fmts) if fmts else span_text
+        # Outer: anchor wraps the formatted node so Telegraph accepts the
+        # nesting order (a > strong, NEVER strong > a).
+        if href:
+            inner = node if isinstance(node, dict) else node
+            children.append({
+                "tag": "a",
+                "attrs": {"href": href},
+                "children": [inner],
+            })
+        else:
+            children.append(node)
         cursor = end
     if cursor < len(text):
         children.append(text[cursor:])

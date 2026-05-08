@@ -243,37 +243,151 @@ def _safe_img_src(src: Optional[str]) -> Optional[str]:
 # ---------------------------------------------------------------------------
 
 
-def _runs_from_tag(tag) -> List[Dict]:
-    """Walk a tag's contents and return ordered ``{'text', ['href']}`` runs.
+#: Inline-formatting tags that map to Telegraph-supported nodes. Order in
+#: each value is ALSO the nesting order when multiple formats apply to the
+#: same span (outer → inner): bold > italic > underline > strikethrough.
+_INLINE_FORMAT_TAGS = {
+    "strong": "bold",
+    "b": "bold",
+    "em": "italic",
+    "i": "italic",
+    "u": "underline",
+    "s": "strikethrough",
+    "del": "strikethrough",
+}
 
-    Anchors with safe schemes preserve the ``href``; anchors with
-    dropped/unsafe href degenerate to plain text. Nested formatting
-    (``<strong>``, ``<em>``) is flattened.
+
+def _has_color_class(node) -> bool:
+    """True if this BS4 element carries any WordPress-Gutenberg color class.
+
+    Telegraph API does not support text color, so we map colored text to
+    bold (visual emphasis preserved) — see ``_render_paragraph_with_runs``
+    in ``telegraph_publisher.py``. We accept ANY class containing the
+    substring ``-color`` (e.g. ``has-vivid-red-color``,
+    ``has-vivid-cyan-blue-color``, ``has-text-color``) as a signal of
+    "this span is visually emphasised".
+    """
+    classes = node.get("class") or []
+    return any("-color" in (c or "") for c in classes)
+
+
+def _runs_from_tag(tag) -> List[Dict]:
+    """Walk a tag's contents and return ordered runs.
+
+    Run shape: ``{'text': str, ['href': str], ['formats': list[str]]}``.
+
+    * Anchors (``<a>``) with safe schemes preserve the ``href``;
+      anchors with dropped/unsafe href degenerate to plain text.
+    * Inline formatting tags (``<strong>``, ``<b>``, ``<em>``, ``<i>``,
+      ``<u>``, ``<s>``, ``<del>``) and any element with a WordPress
+      ``has-*-color`` class accumulate format markers in the ``formats``
+      list (cumulative across nested elements). Color classes are mapped
+      to ``"bold"`` since Telegraph rejects color attributes.
+    * Sibling runs with the same ``href``/``formats`` are NOT merged —
+      they stay separate (downstream renderer picks first occurrence per
+      run, so adjacent identical runs are harmless).
     """
     runs: List[Dict] = []
     buf: List[str] = []
+    fmt_stack: List[str] = []
 
-    def flush():
+    def current_formats():
+        # Preserve order of accumulation, dedup while keeping first-seen order.
+        seen: List[str] = []
+        for f in fmt_stack:
+            if f not in seen:
+                seen.append(f)
+        return seen
+
+    def flush(href=None):
         if not buf:
             return
         combined = "".join(buf)
         if combined:
-            runs.append({"text": combined})
+            run: Dict = {"text": combined}
+            if href:
+                run["href"] = href
+            fmts = current_formats()
+            if fmts:
+                run["formats"] = list(fmts)
+            runs.append(run)
         buf.clear()
 
     def walk(element):
         for child in element.children:
             if isinstance(child, str):
                 buf.append(str(child))
-            elif getattr(child, "name", None) == "a":
+                continue
+            name = getattr(child, "name", None)
+            if name == "a":
                 href = _safe_href(child.get("href"))
-                link_text = child.get_text(" ", strip=False)
+                # Recurse into anchor children to capture nested <strong>/etc.
+                # and emit a single run per anchor; if an inner format applies,
+                # we attach it to the run alongside the href.
+                inner_buf: List[str] = []
+                inner_fmts: List[str] = []
+
+                def collect(el):
+                    inner_name = getattr(el, "name", None)
+                    if isinstance(el, str):
+                        inner_buf.append(str(el))
+                        return
+                    fmt = _INLINE_FORMAT_TAGS.get(inner_name)
+                    color_fmt = "bold" if _has_color_class(el) else None
+                    pushed = []
+                    if fmt:
+                        inner_fmts.append(fmt)
+                        pushed.append(fmt)
+                    if color_fmt and color_fmt not in inner_fmts:
+                        inner_fmts.append(color_fmt)
+                        pushed.append(color_fmt)
+                    for sub in getattr(el, "children", []):
+                        collect(sub)
+                    for _ in pushed:
+                        inner_fmts.pop()
+
+                for sub in child.children:
+                    collect(sub)
+                link_text = "".join(inner_buf).strip()
+                # Re-derive a deduped format list (collect could push the same
+                # format twice across siblings — keep first occurrence order).
+                seen_inner: List[str] = []
+                for f in current_formats():
+                    seen_inner.append(f)
+                # Note: anchor inner formats only matter if anchor itself or
+                # ancestors are formatted. We use the OUTER fmt_stack to attach
+                # ambient formatting to anchors (e.g., paragraph-wide <strong>).
                 if href and link_text:
                     flush()
-                    runs.append({"text": link_text, "href": href})
+                    run: Dict = {"text": link_text, "href": href}
+                    fmts = current_formats()
+                    if fmts:
+                        run["formats"] = list(fmts)
+                    runs.append(run)
                 elif link_text:
                     # Drop unsafe href, keep plain text inline.
                     buf.append(link_text)
+                continue
+            # Inline-format tag handling: push format marker(s) onto stack,
+            # walk children, pop. Color class is treated as "bold" emphasis.
+            fmt = _INLINE_FORMAT_TAGS.get(name)
+            color_fmt = "bold" if _has_color_class(child) else None
+            pushed: List[str] = []
+            if fmt:
+                fmt_stack.append(fmt)
+                pushed.append(fmt)
+            if color_fmt and color_fmt not in fmt_stack:
+                fmt_stack.append(color_fmt)
+                pushed.append(color_fmt)
+            if pushed:
+                # Flush any pending plain-text buffer BEFORE we descend into
+                # the formatted span — otherwise the unformatted prefix would
+                # incorrectly get this format attached when flushed later.
+                flush()
+                walk(child)
+                flush()
+                for _ in pushed:
+                    fmt_stack.pop()
             else:
                 walk(child)
 

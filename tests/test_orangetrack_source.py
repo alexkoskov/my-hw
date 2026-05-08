@@ -1087,6 +1087,107 @@ class TestListItemParsing:
 
 
 # ---------------------------------------------------------------------------
+# TestInlineFormatRuns — _runs_from_tag captures bold/italic/underline/
+# strikethrough format markers for inline tags + has-*-color WordPress
+# classes (color → bold per Telegraph color limitation).
+# ---------------------------------------------------------------------------
+
+
+class TestInlineFormatRuns:
+    """`_runs_from_tag` should attach a ``formats`` list to runs whose text
+    is wrapped in inline formatting tags or carries a WP color class."""
+
+    LINK = "https://orangetrackdiecast.com/2026/05/inline-formats/"
+
+    def _runs_for(self, html_fragment):
+        """Wrap fragment in <p> + parse via _parse_content_encoded; return
+        the runs list of the first paragraph block."""
+        html = f"<article>{html_fragment}</article>"
+        out = _parse_content_encoded(html, self.LINK)
+        assert out is not None, "parser returned None for fragment"
+        paragraphs = [b for b in out["blocks"] if b["type"] == "paragraph"]
+        assert paragraphs, "no paragraph block emitted"
+        return paragraphs[0]["runs"]
+
+    def test_strong_tag_emits_bold_format(self):
+        runs = self._runs_for("<p>Plain <strong>bold</strong> tail.</p>")
+        bold_runs = [r for r in runs if "bold" in (r.get("formats") or [])]
+        assert any("bold" in r["text"] for r in bold_runs)
+
+    def test_b_tag_emits_bold_format(self):
+        runs = self._runs_for("<p>Plain <b>bold</b> tail.</p>")
+        bold_runs = [r for r in runs if "bold" in (r.get("formats") or [])]
+        assert any("bold" in r["text"] for r in bold_runs)
+
+    def test_em_tag_emits_italic_format(self):
+        runs = self._runs_for("<p>Plain <em>italic</em> tail.</p>")
+        i_runs = [r for r in runs if "italic" in (r.get("formats") or [])]
+        assert any("italic" in r["text"] for r in i_runs)
+
+    def test_i_tag_emits_italic_format(self):
+        runs = self._runs_for("<p>Plain <i>italic</i> tail.</p>")
+        i_runs = [r for r in runs if "italic" in (r.get("formats") or [])]
+        assert any("italic" in r["text"] for r in i_runs)
+
+    def test_u_tag_emits_underline_format(self):
+        runs = self._runs_for("<p>Plain <u>under</u> tail.</p>")
+        u_runs = [r for r in runs if "underline" in (r.get("formats") or [])]
+        assert any("under" in r["text"] for r in u_runs)
+
+    def test_s_tag_emits_strikethrough_format(self):
+        runs = self._runs_for("<p>Plain <s>cross</s> tail.</p>")
+        s_runs = [r for r in runs if "strikethrough" in (r.get("formats") or [])]
+        assert any("cross" in r["text"] for r in s_runs)
+
+    def test_color_class_emits_bold_format(self):
+        # WordPress Gutenberg color: any class containing "-color" → bold.
+        runs = self._runs_for(
+            '<p>Plain <span class="has-inline-color has-vivid-red-color">red text</span> tail.</p>'
+        )
+        bold_runs = [r for r in runs if "bold" in (r.get("formats") or [])]
+        assert any("red text" in r["text"] for r in bold_runs)
+
+    def test_color_class_with_other_color_name(self):
+        # Different color → still maps to bold.
+        runs = self._runs_for(
+            '<p>Plain <span class="has-vivid-cyan-blue-color">cyan</span> tail.</p>'
+        )
+        bold_runs = [r for r in runs if "bold" in (r.get("formats") or [])]
+        assert any("cyan" in r["text"] for r in bold_runs)
+
+    def test_nested_strong_in_anchor_carries_bold_via_anchor(self):
+        # <a href><strong>X</strong></a> — anchor run includes both href
+        # and (if anchor itself or ancestors are formatted) format markers.
+        runs = self._runs_for(
+            '<p>See <a href="https://orangetrackdiecast.com/x">'
+            '<strong>Mercedes</strong></a> here.</p>'
+        )
+        anchor_runs = [r for r in runs if r.get("href")]
+        assert anchor_runs, "no anchor run emitted"
+        # Inner <strong> is collapsed into anchor text — anchor run carries
+        # plain text "Mercedes". Format on anchor itself depends on outer
+        # context (none in this fragment). The downstream renderer handles
+        # link + bold combo when both apply.
+        assert "Mercedes" in anchor_runs[0]["text"]
+
+    def test_plain_text_run_has_no_formats_key(self):
+        runs = self._runs_for("<p>Just plain text without formatting.</p>")
+        for r in runs:
+            assert "formats" not in r or r["formats"] == []
+
+    def test_li_with_strong_carries_bold_format(self):
+        # `<li><strong>X</strong></li>` — list_item run should include bold.
+        html = "<article><ul><li><strong>BoldItem</strong></li></ul></article>"
+        out = _parse_content_encoded(html, self.LINK)
+        assert out is not None
+        items = [b for b in out["blocks"] if b["type"] == "list_item"]
+        assert items
+        item_runs = items[0]["runs"]
+        bold_runs = [r for r in item_runs if "bold" in (r.get("formats") or [])]
+        assert any("BoldItem" in r["text"] for r in bold_runs)
+
+
+# ---------------------------------------------------------------------------
 # TestOrangetrackRenderingEndToEnd — synthetic HTML → parser → patch →
 # preview_nodes → exact dict-tree assertions (Wave 1 integration gate).
 # ---------------------------------------------------------------------------

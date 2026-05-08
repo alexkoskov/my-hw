@@ -753,6 +753,153 @@ def test_no_runs_renders_plain_text(runs):
     assert children == [text]
 
 
+class TestInlineFormats:
+    """Inline format wrapping (Decisions 11-12 — orangetrack-inline-formats):
+    `formats` metadata in runs maps to <strong>/<i>/<u>/<s> Telegraph nodes.
+    Color classes upstream → bold. <a> dominates formats (a > strong nesting).
+    """
+
+    def test_bold_run_wraps_in_strong(self):
+        text = "This is bold text in a sentence"
+        runs = [{"text": "bold text", "formats": ["bold"]}]
+        children = tp._render_paragraph_with_runs(text, runs, SOURCE_URL)
+        assert children == [
+            "This is ",
+            {"tag": "strong", "children": ["bold text"]},
+            " in a sentence",
+        ]
+
+    def test_italic_run_wraps_in_i(self):
+        text = "This is italic phrase here"
+        runs = [{"text": "italic phrase", "formats": ["italic"]}]
+        children = tp._render_paragraph_with_runs(text, runs, SOURCE_URL)
+        assert children == [
+            "This is ",
+            {"tag": "i", "children": ["italic phrase"]},
+            " here",
+        ]
+
+    def test_underline_run_wraps_in_u(self):
+        text = "Look at the underlined word now"
+        runs = [{"text": "underlined word", "formats": ["underline"]}]
+        children = tp._render_paragraph_with_runs(text, runs, SOURCE_URL)
+        assert children == [
+            "Look at the ",
+            {"tag": "u", "children": ["underlined word"]},
+            " now",
+        ]
+
+    def test_strikethrough_run_wraps_in_s(self):
+        text = "Old crossed out content removed"
+        runs = [{"text": "crossed out", "formats": ["strikethrough"]}]
+        children = tp._render_paragraph_with_runs(text, runs, SOURCE_URL)
+        assert children == [
+            "Old ",
+            {"tag": "s", "children": ["crossed out"]},
+            " content removed",
+        ]
+
+    def test_combined_bold_italic_outer_strong_inner_i(self):
+        """Multiple formats nest: bold outer, italic inner (per _FORMAT_TAGS order)."""
+        text = "Both formats applied here"
+        runs = [{"text": "formats applied", "formats": ["bold", "italic"]}]
+        children = tp._render_paragraph_with_runs(text, runs, SOURCE_URL)
+        # _FORMAT_TAGS order: bold > italic — bold is outermost, italic inside.
+        assert children == [
+            "Both ",
+            {"tag": "strong", "children": [
+                {"tag": "i", "children": ["formats applied"]},
+            ]},
+            " here",
+        ]
+
+    def test_same_site_link_with_bold_format_a_wraps_strong(self):
+        """Link + bold: <a> outermost, <strong> inside (Telegraph nesting rule)."""
+        text = "Visit Mercedes-Benz today"
+        runs = [{
+            "text": "Mercedes-Benz",
+            "href": "https://orangetrackdiecast.com/mercedes",
+            "formats": ["bold"],
+        }]
+        children = tp._render_paragraph_with_runs(text, runs, SOURCE_URL)
+        assert children == [
+            "Visit ",
+            {
+                "tag": "a",
+                "attrs": {"href": "https://orangetrackdiecast.com/mercedes"},
+                "children": [
+                    {"tag": "strong", "children": ["Mercedes-Benz"]},
+                ],
+            },
+            " today",
+        ]
+
+    def test_external_link_with_bold_drops_link_keeps_format(self):
+        """External href dropped (per AC7), but bold format preserved."""
+        text = "See external resource here"
+        runs = [{
+            "text": "external resource",
+            "href": "https://other-site.com/x",
+            "formats": ["bold"],
+        }]
+        children = tp._render_paragraph_with_runs(text, runs, SOURCE_URL)
+        assert children == [
+            "See ",
+            {"tag": "strong", "children": ["external resource"]},
+            " here",
+        ]
+
+    def test_run_with_only_formats_no_href_renders(self):
+        """Run with formats but no href at all renders the format wrapping."""
+        text = "Plain bold word here"
+        runs = [{"text": "bold word", "formats": ["bold"]}]
+        children = tp._render_paragraph_with_runs(text, runs, SOURCE_URL)
+        assert children == [
+            "Plain ",
+            {"tag": "strong", "children": ["bold word"]},
+            " here",
+        ]
+
+    def test_unknown_format_silently_ignored(self):
+        """Unknown format markers (defensive) are filtered out."""
+        text = "Mixed signal example shown"
+        runs = [{"text": "Mixed signal", "formats": ["bold", "rainbow"]}]
+        children = tp._render_paragraph_with_runs(text, runs, SOURCE_URL)
+        assert children == [
+            {"tag": "strong", "children": ["Mixed signal"]},
+            " example shown",
+        ]
+
+    def test_format_run_text_not_in_paragraph_dropped(self):
+        """If run.text not found in block.text, format is silently dropped."""
+        text = "Russian translated paragraph"
+        runs = [{"text": "BoldEnglishWord", "formats": ["bold"]}]
+        children = tp._render_paragraph_with_runs(text, runs, SOURCE_URL)
+        assert children == [text]
+
+    def test_overlapping_format_runs_first_wins(self):
+        """Overlapping spans: first wins, second appears plain (Decision 5)."""
+        text = "ABCDE"
+        runs = [
+            {"text": "ABCD", "formats": ["bold"]},
+            {"text": "BCDE", "formats": ["italic"]},
+        ]
+        children = tp._render_paragraph_with_runs(text, runs, SOURCE_URL)
+        # First run wins: "ABCD" wrapped in bold, "E" plain. Second's "BCDE"
+        # span overlaps, dropped — text still appears via segments.
+        assert children == [
+            {"tag": "strong", "children": ["ABCD"]},
+            "E",
+        ]
+
+    def test_run_with_empty_formats_list_no_href_skipped(self):
+        """Run with empty formats AND no href contributes nothing."""
+        text = "Just plain text here"
+        runs = [{"text": "plain text", "formats": []}]
+        children = tp._render_paragraph_with_runs(text, runs, SOURCE_URL)
+        assert children == [text]
+
+
 class TestSchemesAndDomainEdges:
     """Scheme filtering and domain normalisation edge cases (Decision 4)."""
 
