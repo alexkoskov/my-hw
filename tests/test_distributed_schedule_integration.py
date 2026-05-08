@@ -336,7 +336,7 @@ class TestDistributedSchedule(unittest.TestCase):
         # Plan-of-day admin ping was fired with the schedule fragment.
         msgs = self._admin_messages()
         self.assertTrue(
-            any('расписание' in m or 'Зафетчил' in m for m in msgs),
+            any('План на сегодня' in m or 'Принято свежих' in m for m in msgs),
             f"expected plan-of-day ping, got: {msgs!r}",
         )
 
@@ -836,12 +836,12 @@ class TestDistributedSchedule(unittest.TestCase):
         )
 
         # Admin ping: at least one message contains link_zombie AND the
-        # guard marker "Skipped re-publish" (matches news_bot.py:998).
+        # guard marker «Пропущен дубль публикации» (Russian columnar format).
         msgs = self._admin_messages()
         self.assertTrue(
-            any((link_zombie in m and 'Skipped re-publish' in m)
+            any((link_zombie in m and 'Пропущен дубль публикации' in m)
                 for m in msgs),
-            f"expected guard ping with link_zombie and 'Skipped re-publish' "
+            f"expected guard ping with link_zombie and «Пропущен дубль публикации» "
             f"marker; got: {msgs!r}"
         )
 

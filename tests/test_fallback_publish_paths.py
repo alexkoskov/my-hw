@@ -733,7 +733,7 @@ class TestIdempotencyGuard(_FallbackPublishPathsCase):
 
     def test_admin_ping_fires_when_guard_skips(self):
         """Guard must dispatch exactly one admin notification with the
-        canonical ``"⚠️ Skipped re-publish of "`` prefix and the link."""
+        Russian header «⚠️ Пропущен дубль публикации» and the link."""
         link = 'http://a/zombie-ping'
         self._insert(link=link, title='EN T-zombie-ping')
         self._pre_stage_published(link)
@@ -768,7 +768,7 @@ class TestIdempotencyGuard(_FallbackPublishPathsCase):
         # message body. Use assertIn (not assertEqual) per task hint —
         # exact wording may evolve (instance prefix, emoji variants).
         ping_text = mock_notify.call_args.args[0]
-        self.assertIn("⚠️ Skipped re-publish of ", ping_text)
+        self.assertIn("⚠️ Пропущен дубль публикации", ping_text)
         self.assertIn(link, ping_text)
 
     # ---- T5 ----------------------------------------------------------------

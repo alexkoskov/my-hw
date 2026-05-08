@@ -564,10 +564,11 @@ class TestDistributedPublishLoop(_DistribLoopBase):
                 news_bot.job()
 
         ping_msgs = [c.args[0] for c in mock_admin.call_args_list if c.args]
-        # No "расписание" / "schedule" plan-of-day style ping when N=0.
+        # No multi-line plan-of-day ping when N=0 — only the quiet-day
+        # «🟢 Бот сработал, новых статей нет.» single-line ping should fire.
         self.assertFalse(
-            any(('расписан' in m) or ('schedule' in m.lower()) or
-                ('Зафетчил' in m) or ('queued' in m.lower())
+            any(('План на сегодня' in m) or ('Принято свежих' in m) or
+                ('schedule' in m.lower()) or ('queued' in m.lower())
                 for m in ping_msgs),
             f"unexpected plan-of-day ping on N=0: {ping_msgs!r}",
         )

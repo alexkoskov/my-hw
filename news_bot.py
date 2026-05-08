@@ -995,8 +995,14 @@ def _fallback_publish(row, via_review=False):
             f"skipping re-publish of stale pending row"
         )
         ping_text = (
-            f"⚠️ Skipped re-publish of {link} — already in "
-            f"published_articles. Investigate stale pending row."
+            f"⚠️ Пропущен дубль публикации\n\n"
+            f"Ссылка:\n{link}\n\n"
+            f"Что произошло:\n"
+            f"статья уже опубликована,\n"
+            f"зомби-строка убрана из очереди.\n\n"
+            f"Что сделать:\n"
+            f"расследовать, откуда взялась зомби-строка\n"
+            f"(crontab, backup_db.sh, journalctl)."
         )
         ping_ok = send_admin_notification(ping_text)
         if not ping_ok:
@@ -1013,9 +1019,11 @@ def _fallback_publish(row, via_review=False):
                 f"will retry cleanup"
             )
             send_admin_notification(
-                f"⚠️ Idempotency-guard cleanup failed for {link}: "
-                f"{type(cleanup_err).__name__}. Pending row will retry on "
-                f"next slot."
+                f"⚠️ Не удалось снять зомби-строку\n\n"
+                f"Ссылка:\n{link}\n\n"
+                f"Ошибка: {type(cleanup_err).__name__}\n\n"
+                f"Что сделать:\n"
+                f"ничего — повторим на следующем слоте."
             )
         return True
 
@@ -1696,18 +1704,20 @@ def job():
     # Step (d): admin ping with plan-of-day. Always sent — operator wants a
     # heartbeat that confirms the cron tick fired, even on quiet days when
     # there are no new articles and the queue is empty.
-    # Quiet day: «🟢 Бот сработал, новых статей нет.»
-    # Busy day:  «Зафетчил N новых, в очереди M, расписание сегодня: …; carry-over: K»
+    # Quiet day: single-line «🟢 Бот сработал, новых статей нет.»
+    # Busy day:  multi-line columnar «🟢 План на сегодня — …»
     # Backlog warning fires as a separate ping at queue_size > 50 (AC20).
     # ------------------------------------------------------------------
     if queue_size == 0 and inserted == 0:
         plan_msg = "🟢 Бот сработал, новых статей нет."
     else:
-        slot_strs = ", ".join(s.strftime("%H:%M") for s in slots)
+        slot_strs = ", ".join(s.strftime("%H:%M") for s in slots) or "—"
         plan_msg = (
-            f"Зафетчил {inserted} новых, в очереди {queue_size}, "
-            f"расписание сегодня: {slot_strs or '—'}; "
-            f"carry-over: {carry_over}"
+            f"🟢 План на сегодня\n\n"
+            f"Принято свежих: {inserted}\n"
+            f"Всего в очереди: {queue_size}\n"
+            f"Слоты сегодня: {slot_strs}\n"
+            f"Перенесено на завтра: {carry_over}"
         )
     try:
         send_admin_notification(plan_msg)

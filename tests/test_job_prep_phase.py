@@ -189,8 +189,8 @@ class TestPrepDoesNotPublish(PrepPhaseBase):
 
 class TestAdminPing(PrepPhaseBase):
     """AC: admin-ping always fires (heartbeat on quiet days). Format
-    differs by branch: «Зафетчил N новых, …» on busy days, «🟢 Бот
-    сработал, новых статей нет.» on quiet days."""
+    differs by branch: multi-line «🟢 План на сегодня — …» on busy days,
+    single-line «🟢 Бот сработал, новых статей нет.» on quiet days."""
 
     @patch('news_bot.send_admin_notification')
     @patch('news_bot.send_telegraph_teaser')
@@ -200,8 +200,8 @@ class TestAdminPing(PrepPhaseBase):
         self, mock_fetch_article, mock_publish, mock_teaser, mock_admin,
     ):
         """When new articles are inserted, plan-of-day ping has the
-        ``Зафетчил X новых, в очереди M, расписание сегодня: …;
-        carry-over: K`` shape."""
+        multi-line columnar shape «🟢 План на сегодня» with «Принято свежих:»,
+        «Всего в очереди:», «Слоты сегодня:», «Перенесено на завтра:»."""
         mock_fetch_article.return_value = self._article_payload()
 
         with _patch_sources(rss_return=[
@@ -215,8 +215,8 @@ class TestAdminPing(PrepPhaseBase):
         plan_calls = [
             c for c in mock_admin.call_args_list
             if c.args and isinstance(c.args[0], str)
-            and 'Зафетчил' in c.args[0]
-            and 'расписание' in c.args[0]
+            and 'План на сегодня' in c.args[0]
+            and 'Принято свежих' in c.args[0]
         ]
         self.assertEqual(
             len(plan_calls), 1,
