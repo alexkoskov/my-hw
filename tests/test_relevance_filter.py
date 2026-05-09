@@ -10,7 +10,11 @@ from unittest.mock import patch
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from news_bot import _is_hot_wheels_relevant, filter_new_entries
+from news_bot import (
+    _is_hot_wheels_relevant,
+    _is_text_only_checklist,
+    filter_new_entries,
+)
 
 
 class TestIsHotWheelsRelevant(unittest.TestCase):
@@ -85,6 +89,73 @@ class TestFilterNewEntriesIntegration(unittest.TestCase):
         ]
         out = filter_new_entries(entries)
         self.assertEqual(len(out), 1)
+
+
+class TestIsTextOnlyChecklist(unittest.TestCase):
+    """Two-condition rule: title says "checklist" AND body has < 500
+    chars of paragraph text → drop. Subscribers don't want bare
+    bullet-list posts; review articles that mention "checklist" with
+    real editorial body still pass through.
+    """
+
+    def test_bare_checklist_dropped(self):
+        entry = {'title': '2026 Hot Wheels Mainline Checklist Q3 Update'}
+        article = {
+            # Empty / list-only body — barely any prose.
+            'paragraphs': [
+                'Mainline 2026', 'Q3 release wave',
+            ],
+        }
+        self.assertTrue(_is_text_only_checklist(entry, article))
+
+    def test_review_article_with_checklist_in_title_kept(self):
+        """Real review article mentions checklist in title but has
+        substantive body text — must NOT trigger the filter."""
+        entry = {'title': 'Brad reviews the 2026 Hot Wheels checklist'}
+        # 600+ chars of body text → above the 500-char floor.
+        long_paragraph = 'A' * 600
+        article = {'paragraphs': [long_paragraph]}
+        self.assertFalse(_is_text_only_checklist(entry, article))
+
+    def test_no_checklist_in_title_passes_regardless_of_body(self):
+        # Even with empty body, no "checklist" word in title → False.
+        entry = {'title': 'New Hot Wheels Treasure Hunt revealed'}
+        article = {'paragraphs': []}
+        self.assertFalse(_is_text_only_checklist(entry, article))
+
+    def test_check_list_with_space_matches(self):
+        entry = {'title': "Brad's Check List of Q3 releases"}
+        article = {'paragraphs': ['short']}
+        self.assertTrue(_is_text_only_checklist(entry, article))
+
+    def test_check_list_with_hyphen_matches(self):
+        entry = {'title': "Q3 Check-List drop"}
+        article = {'paragraphs': ['short']}
+        self.assertTrue(_is_text_only_checklist(entry, article))
+
+    def test_word_boundary_avoids_false_match(self):
+        """Substring "checklist" inside another word should NOT trigger
+        — only whole-word matches count."""
+        # 'checklister' or 'unchecklisted' — neither should match.
+        entry = {'title': 'The Checklister organization announces partnership'}
+        article = {'paragraphs': ['short']}
+        self.assertFalse(_is_text_only_checklist(entry, article))
+
+    def test_case_insensitive_title_match(self):
+        entry = {'title': 'BRAD\'S 2026 HOT WHEELS CHECKLIST'}
+        article = {'paragraphs': []}
+        self.assertTrue(_is_text_only_checklist(entry, article))
+
+    def test_missing_paragraphs_treated_as_zero_length(self):
+        entry = {'title': '2026 Hot Wheels Checklist'}
+        article = {}  # no paragraphs at all
+        self.assertTrue(_is_text_only_checklist(entry, article))
+
+    def test_none_article_handled(self):
+        entry = {'title': '2026 Hot Wheels Checklist'}
+        # Defensive — _is_text_only_checklist tolerates None / missing
+        # article without crashing.
+        self.assertTrue(_is_text_only_checklist(entry, None))
 
 
 if __name__ == '__main__':

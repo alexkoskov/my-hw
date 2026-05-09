@@ -169,6 +169,19 @@ The auto-publish path is the cron-side route that lands articles in the channel 
   keyword is "include" — over-publishing is preferred to dropping
   legitimate cross-over articles.
 
+### Bare-checklist filter
+- `_is_text_only_checklist(entry, article)` rejects articles whose
+  title contains the whole word "checklist" / "check list" /
+  "check-list" AND whose body paragraph text totals < 500 chars.
+  Two-condition rule: a real review article that mentions a
+  checklist in its title but has substantive body content stays in;
+  only bare bullet-list posts (orangetrack's typical "Q3 mainline
+  checklist" template — title + image grid + no prose) are dropped.
+- Runs in `job()` step (b3) AFTER `fetch_full_article` because the
+  body content is the second condition. On a True return the row
+  never enters `pending_articles`, also saving the LLM-translation
+  API call. Source-agnostic.
+
 ### Channel post layout (single-message IV preview)
 - One `send_message` call: text = hashtag line (`#source #news`),
   `LinkPreviewOptions(url=telegraph_url, show_above_text=True,
