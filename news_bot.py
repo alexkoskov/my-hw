@@ -618,6 +618,47 @@ def _is_hot_wheels_relevant(entry):
     return True
 
 
+#: Word-bounded match for "checklist", "check list", "check-list" — used
+#: by ``_is_text_only_checklist`` to detect the title side of the
+#: two-condition rule. Word-boundaries prevent false matches like
+#: "checklister" or substring hits on unrelated tokens.
+_CHECKLIST_TITLE_RE = re.compile(r'\bcheck[\s-]?list\b', re.IGNORECASE)
+
+#: Threshold (in characters) below which a "checklist"-titled article's
+#: paragraph body counts as "no real text" — i.e. a bare list with no
+#: editorial content. A real review article on orangetrack /
+#: autoevolution typically has 2000-10000 chars of paragraph text;
+#: 500 sits well below that floor and well above any sensible
+#: list-only post (which usually has a 50-200 char header + bullets
+#: that don't end up in ``paragraphs``).
+_CHECKLIST_BODY_TEXT_FLOOR = 500
+
+
+def _is_text_only_checklist(entry, article):
+    """True iff the article looks like a bare checklist post with no
+    editorial body text. Triggers on TWO conditions together:
+
+      1. Title matches ``_CHECKLIST_TITLE_RE`` (whole-word "checklist").
+      2. Total paragraph text length < ``_CHECKLIST_BODY_TEXT_FLOOR``.
+
+    Source-agnostic — orangetrack publishes these most often, but the
+    rule applies wherever a title contains "checklist" and the body is
+    near-empty. Articles with "checklist" in the title AND a real
+    review body (≥ 500 chars) are kept (it's a review *of* a
+    checklist, not a bare list).
+
+    Called from ``job()`` step (b3) AFTER ``fetch_full_article`` so the
+    body content is available; on a True return the row never enters
+    ``pending_articles``, saving the LLM-translation API call too.
+    """
+    title = entry.get('title') or (article or {}).get('title') or ''
+    if not _CHECKLIST_TITLE_RE.search(title):
+        return False
+    paragraphs = (article or {}).get('paragraphs') or []
+    total_text = sum(len(p) for p in paragraphs if isinstance(p, str))
+    return total_text < _CHECKLIST_BODY_TEXT_FLOOR
+
+
 def filter_new_entries(entries):
     """Filter entries that are not already processed AND that look
     Hot-Wheels-relevant (see ``_is_hot_wheels_relevant`` for the
@@ -1687,6 +1728,17 @@ def job():
         article = fetch_full_article(entry)
         if not article or not article.get('paragraphs'):
             logger.warning(f"No article data for {link}, skipping")
+            continue
+
+        # Reject bare "checklist" posts (title says checklist + body is
+        # near-empty). Orangetrack publishes these often; subscribers
+        # don't want a translated bullet list. Reviews that mention a
+        # checklist in the title but have substantive body text pass.
+        if _is_text_only_checklist(entry, article):
+            logger.info(
+                "Skipping checklist-only article (no editorial body): %s",
+                link,
+            )
             continue
 
         row = {
