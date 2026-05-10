@@ -62,6 +62,7 @@ from llm_transcreation import (
     ClaudeOutageError,
 )
 import outage_state
+import admin_alerts
 
 # Pure scheduling helper (Task 02) — produces today's publish slots from a
 # pending count + tz-aware ``now``. Imported at module level so ``job()``
@@ -158,7 +159,7 @@ def _feeds_fallback(reason):
     """Log + admin-ping a feeds.json failure and return the default list."""
     logging.warning(f"{reason}. Falling back to default RSS URL.")
     try:
-        send_admin_notification(f"⚠️ {reason}. Bot has no RSS feed to process.")
+        send_admin_notification(admin_alerts.alert_no_rss_feeds(reason))
     except Exception as notify_err:
         logging.error(f"Failed to send admin notification: {notify_err}")
     return [RSS_URL]
@@ -1037,16 +1038,7 @@ def _fallback_publish(row, via_review=False):
             f"[idempotency-guard] {link} already in published_articles — "
             f"skipping re-publish of stale pending row"
         )
-        ping_text = (
-            f"⚠️ Пропущен дубль публикации\n\n"
-            f"Ссылка:\n{link}\n\n"
-            f"Что произошло:\n"
-            f"статья уже опубликована,\n"
-            f"зомби-строка убрана из очереди.\n\n"
-            f"Что сделать:\n"
-            f"расследовать, откуда взялась зомби-строка\n"
-            f"(crontab, backup_db.sh, journalctl)."
-        )
+        ping_text = admin_alerts.alert_duplicate_publish_skipped(link)
         ping_ok = send_admin_notification(ping_text)
         if not ping_ok:
             logger.warning(
@@ -1062,11 +1054,9 @@ def _fallback_publish(row, via_review=False):
                 f"will retry cleanup"
             )
             send_admin_notification(
-                f"⚠️ Не удалось снять зомби-строку\n\n"
-                f"Ссылка:\n{link}\n\n"
-                f"Ошибка: {type(cleanup_err).__name__}\n\n"
-                f"Что сделать:\n"
-                f"ничего — повторим на следующем слоте."
+                admin_alerts.alert_zombie_cleanup_failed(
+                    link, type(cleanup_err).__name__
+                )
             )
         return True
 
@@ -1688,7 +1678,7 @@ def job():
             logger.error(f"Source fetcher {fetcher_name} failed: {safe}")
             try:
                 send_admin_notification(
-                    f"⚠️ Source {fetcher_name} failed: {safe}"
+                    admin_alerts.alert_source_fetch_failed(fetcher_name, safe)
                 )
             except Exception as notify_err:
                 logger.error(f"Failed to send admin notification: {notify_err}")
@@ -1784,15 +1774,10 @@ def job():
     # Backlog warning fires as a separate ping at queue_size > 50 (AC20).
     # ------------------------------------------------------------------
     if queue_size == 0 and inserted == 0:
-        plan_msg = "🟢 Бот сработал, новых статей нет."
+        plan_msg = admin_alerts.alert_quiet_day()
     else:
-        slot_strs = ", ".join(s.strftime("%H:%M") for s in slots) or "—"
-        plan_msg = (
-            f"🟢 План на сегодня\n\n"
-            f"Принято свежих: {inserted}\n"
-            f"Всего в очереди: {queue_size}\n"
-            f"Слоты сегодня: {slot_strs}\n"
-            f"Перенесено на завтра: {carry_over}"
+        plan_msg = admin_alerts.alert_plan_of_day(
+            inserted, queue_size, slots, carry_over
         )
     try:
         send_admin_notification(plan_msg)
@@ -1803,10 +1788,8 @@ def job():
         )
 
     if queue_size > BACKLOG_WARNING_THRESHOLD:
-        backlog_msg = (
-            f"⚠️ Backlog warning: queue size {queue_size} "
-            f"exceeds threshold {BACKLOG_WARNING_THRESHOLD}; "
-            f"carry-over today: {carry_over}"
+        backlog_msg = admin_alerts.alert_backlog_warning(
+            queue_size, BACKLOG_WARNING_THRESHOLD, carry_over
         )
         try:
             send_admin_notification(backlog_msg)
@@ -1945,8 +1928,7 @@ def main():
         )
         try:
             send_admin_notification(
-                "Claude probe failed at startup, switching to "
-                "Google-only for the day"
+                admin_alerts.alert_claude_probe_failed_at_startup()
             )
         except Exception as notify_err:
             logger.error(
@@ -1977,11 +1959,7 @@ def main():
             f"review the container deploy config."
         )
         try:
-            send_admin_notification(
-                f"⚠️ TZ env var = {tz_env!r}, expected 'Europe/Moscow'. "
-                f"Cron is correct via explicit pytz; please review container "
-                f"timezone config."
-            )
+            send_admin_notification(admin_alerts.alert_tz_mismatch(tz_env))
         except Exception as notify_err:
             logger.error(
                 f"[startup] failed to send TZ-warning ping: "
