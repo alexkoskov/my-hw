@@ -37,6 +37,12 @@ out/
 .DS_Store
 Thumbs.db
 
+# Local SQLite database (per-machine; prod/test instances each maintain their own)
+news.db
+news.db-wal
+news.db-shm
+news.db-journal
+
 # Logs
 *.log
 logs/
