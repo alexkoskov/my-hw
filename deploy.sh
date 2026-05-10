@@ -50,6 +50,7 @@ FILES=(
     "_llm_common.py"
     "compute_publish_slots.py"
     "outage_state.py"
+    "admin_alerts.py"
     "boilerplate_filter.py"
     "feeds.json"
     "requirements.txt"

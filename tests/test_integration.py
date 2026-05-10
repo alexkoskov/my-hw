@@ -423,14 +423,14 @@ class TestOutageStateIntegration(_IntegrationBase):
         self.assertFalse(outage_state.is_fallback_active())
 
         # Admin received the canonical ping #1. We pin to the
-        # outage_state._PING_1_TEXT prefix instead of just 'Claude' — that
+        # outage_state._ping_1_text() prefix instead of just 'Claude' — that
         # rules out an unrelated admin notification (e.g. a source-fetcher
         # error message that happens to contain the word "Claude") from
         # accidentally satisfying this assertion.
-        from outage_state import _PING_1_TEXT  # private — pinned contract
+        from outage_state import _ping_1_text  # private — pinned contract
         ping_msgs = [c.args[0] for c in mock_admin.call_args_list if c.args]
         self.assertIn(
-            _PING_1_TEXT, ping_msgs,
+            _ping_1_text(), ping_msgs,
             msg=f"expected ping #1 verbatim; got admin pings: {ping_msgs!r}",
         )
 

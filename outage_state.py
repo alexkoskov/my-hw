@@ -47,24 +47,29 @@ logger = logging.getLogger(__name__)
 
 
 # ---------------------------------------------------------------------------
-# Admin ping texts (Russian, production-ready). Kept as module-level constants
-# so they're testable and translatable.
+# Admin ping texts — fetched lazily from admin_alerts so the wording lives in
+# one place. Defined as module-level functions (not constants) so that future
+# edits to admin_alerts don't require restarting interactive sessions, and so
+# that tests can patch admin_alerts builders directly.
 # ---------------------------------------------------------------------------
 
-_PING_1_TEXT = (
-    "⚠️ Claude API недоступна. Через 1 час пришлю повторный пинг, "
-    "через 2 часа переключусь на Google Translate, если не восстановится."
-)
-_PING_2_TEXT = (
-    "⚠️ Claude API всё ещё недоступна (1 час). Через ещё 1 час "
-    "переключусь на Google Translate."
-)
-_PING_3_TEXT = (
-    "🔁 Переключился на Google Translate — Claude API недоступна более 2 часов."
-)
-_RECOVERY_TEXT = (
-    "✓ Claude API recovered, switching back from Google Translate fallback."
-)
+import admin_alerts
+
+
+def _ping_1_text() -> str:
+    return admin_alerts.alert_outage_first_ping()
+
+
+def _ping_2_text() -> str:
+    return admin_alerts.alert_outage_second_ping()
+
+
+def _ping_3_text() -> str:
+    return admin_alerts.alert_outage_fallback_engaged()
+
+
+def _recovery_text() -> str:
+    return admin_alerts.alert_outage_recovery()
 
 # State-transition thresholds. Named so future tuning is one-place and the
 # transition table reads in plain language (`elapsed >= _PING_2_THRESHOLD`).
@@ -300,7 +305,7 @@ def _compute_next_state(
             _KEY_PING_COUNT: '1',
             _KEY_LAST_PING_SENT_AT: _serialise_dt(now),
         }
-        return writes, [_PING_1_TEXT], False, 'ping_1_sent'
+        return writes, [_ping_1_text()], False, 'ping_1_sent'
 
     elapsed = now - started_at
 
@@ -311,7 +316,7 @@ def _compute_next_state(
                 _KEY_PING_COUNT: '2',
                 _KEY_LAST_PING_SENT_AT: _serialise_dt(now),
             }
-            return writes, [_PING_2_TEXT], True, 'ping_2_sent'
+            return writes, [_ping_2_text()], True, 'ping_2_sent'
         return {}, [], True, 'ping_1_sent'
 
     if ping_count == 2:
@@ -322,7 +327,7 @@ def _compute_next_state(
                 _KEY_LAST_PING_SENT_AT: _serialise_dt(now),
                 _KEY_FALLBACK_ACTIVE: '1',
             }
-            return writes, [_PING_3_TEXT], True, 'google_fallback_active'
+            return writes, [_ping_3_text()], True, 'google_fallback_active'
         return {}, [], True, 'ping_2_sent'
 
     # ping_count >= 3 — steady-state google_fallback_active.
@@ -451,4 +456,4 @@ def record_recovery_event(now: datetime) -> dict:
     finally:
         conn.close()
 
-    return {'was_active': True, 'pings_to_send': [_RECOVERY_TEXT]}
+    return {'was_active': True, 'pings_to_send': [_recovery_text()]}
