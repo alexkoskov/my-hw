@@ -31,6 +31,7 @@ import requests
 from bs4 import BeautifulSoup
 
 from boilerplate_filter import filter_blocks, filter_boilerplate
+import admin_alerts
 
 logger = logging.getLogger(__name__)
 
@@ -1119,7 +1120,7 @@ class OrangetrackPingAggregator:
         # per-code link cap (50) drops some entries from the bullet list.
         total_events = self._total_added
         prefix = f"[{self.instance_label}] " if self.instance_label else ""
-        header = f"{prefix}orangetrack: {total_events} issues this tick"
+        header = f"{prefix}{admin_alerts.alert_orangetrack_summary_header(total_events)}"
         lines = [header]
         for code in sorted(self._events.keys(), key=_code_sort_key):
             bucket = self._events[code]

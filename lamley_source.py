@@ -24,6 +24,7 @@ import requests
 from bs4 import BeautifulSoup
 
 from boilerplate_filter import filter_boilerplate
+import admin_alerts
 
 logger = logging.getLogger(__name__)
 
@@ -250,7 +251,7 @@ def fetch_lamley_article(
         logger.warning(
             "Lamley fetch rejected (hostname not in allowlist): %r", link,
         )
-        _notify(notifier, f"Lamley fetch rejected (host allowlist): {link}")
+        _notify(notifier, admin_alerts.alert_lamley_host_rejected(link))
         return None
 
     if session is not None:
@@ -302,7 +303,9 @@ def fetch_lamley_article(
             response = _do_fetch()
         response.raise_for_status()
         if len(response.content) > MAX_RESPONSE_SIZE:
-            _notify(notifier, f"Lamley article too large: {len(response.content)}")
+            _notify(notifier, admin_alerts.alert_lamley_article_too_large(
+                len(response.content)
+            ))
             return None
     except requests.HTTPError as exc:
         # 429 after retry → record both the per-URL blacklist and the
@@ -310,13 +313,13 @@ def fetch_lamley_article(
         resp = getattr(exc, "response", None)
         if resp is not None and resp.status_code == 429:
             _record_429(link)
-        _notify(notifier, f"Lamley fetch error ({link}): {exc}")
+        _notify(notifier, admin_alerts.alert_lamley_fetch_error(link, str(exc)))
         return None
     except requests.RequestException as exc:
         # Other transport-level errors (timeout, connection refused,
         # DNS) — don't blacklist the URL or trip the counter; they're
         # not WAF-shaped.
-        _notify(notifier, f"Lamley fetch error ({link}): {exc}")
+        _notify(notifier, admin_alerts.alert_lamley_fetch_error(link, str(exc)))
         return None
 
     # Successful response — reset the consecutive-429 counter.
@@ -335,7 +338,7 @@ def fetch_lamley_article(
         or soup.find("article")
     )
     if body is None:
-        _notify(notifier, f"Lamley article has no recognizable body: {link}")
+        _notify(notifier, admin_alerts.alert_lamley_no_body(link))
         return None
 
     paragraphs: List[str] = []

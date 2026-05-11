@@ -142,6 +142,77 @@ class TestAdminAlerts(unittest.TestCase):
         self.assertIn("🟢", msg)
         self.assertIn("восстановилась", msg)
 
+    # ------------------------------------------------------------------
+    # Source-fetcher alerts (E020-E030)
+    # ------------------------------------------------------------------
+
+    def test_e020_mattel_news_http_error(self):
+        msg = admin_alerts.alert_mattel_news_http_error("ConnectionError")
+        self.assertIn("[E020]", msg)
+        self.assertIn("🟡", msg)
+        self.assertIn("Mattel", msg)
+        self.assertIn("ConnectionError", msg)
+
+    def test_e021_mattel_news_parsing_error(self):
+        msg = admin_alerts.alert_mattel_news_parsing_error(
+            "article2.entries not found"
+        )
+        self.assertIn("[E021]", msg)
+        self.assertIn("🔴", msg)
+        self.assertIn("article2.entries not found", msg)
+        self.assertIn("mattel_news_source.py", msg)
+
+    def test_e022_mattel_news_generic(self):
+        msg = admin_alerts.alert_mattel_news_generic("response too large: 9999")
+        self.assertIn("[E022]", msg)
+        self.assertIn("response too large", msg)
+
+    def test_e023_mattel_article_invalid_link(self):
+        msg = admin_alerts.alert_mattel_article_invalid_link()
+        self.assertIn("[E023]", msg)
+        self.assertIn("allowlist", msg)
+
+    def test_e024_mattel_article_fetch_error(self):
+        msg = admin_alerts.alert_mattel_article_fetch_error(
+            "https://corporate.mattel.com/news/x", "Timeout"
+        )
+        self.assertIn("[E024]", msg)
+        self.assertIn("https://corporate.mattel.com/news/x", msg)
+        self.assertIn("Timeout", msg)
+
+    def test_e025_lamley_host_rejected(self):
+        msg = admin_alerts.alert_lamley_host_rejected("https://evil.example.com/")
+        self.assertIn("[E025]", msg)
+        self.assertIn("https://evil.example.com/", msg)
+        self.assertIn("allowlist", msg)
+
+    def test_e026_lamley_article_too_large(self):
+        msg = admin_alerts.alert_lamley_article_too_large(5_000_000)
+        self.assertIn("[E026]", msg)
+        self.assertIn("5000000", msg)
+
+    def test_e027_lamley_fetch_error(self):
+        msg = admin_alerts.alert_lamley_fetch_error(
+            "https://lamleygroup.com/p/x", "HTTP 503"
+        )
+        self.assertIn("[E027]", msg)
+        self.assertIn("https://lamleygroup.com/p/x", msg)
+        self.assertIn("HTTP 503", msg)
+
+    def test_e028_lamley_no_body(self):
+        msg = admin_alerts.alert_lamley_no_body("https://lamleygroup.com/p/y")
+        self.assertIn("[E028]", msg)
+        self.assertIn("entry-content", msg)
+
+    def test_e030_orangetrack_summary_header(self):
+        msg = admin_alerts.alert_orangetrack_summary_header(7)
+        self.assertIn("[E030]", msg)
+        self.assertIn("🟡", msg)
+        self.assertIn("Orangetrack", msg)
+        self.assertIn("7", msg)
+        # Backwards-compat: integration tests могут полагаться на формат
+        # с числом проблем.
+
     def test_all_alerts_have_unique_codes(self):
         """Sanity check: no two alerts share the same [E0XX] code."""
         slots = [datetime(2026, 5, 10, 10, 0, tzinfo=MSK)]
@@ -159,6 +230,16 @@ class TestAdminAlerts(unittest.TestCase):
             admin_alerts.alert_outage_second_ping(),
             admin_alerts.alert_outage_fallback_engaged(),
             admin_alerts.alert_outage_recovery(),
+            admin_alerts.alert_mattel_news_http_error("x"),
+            admin_alerts.alert_mattel_news_parsing_error("x"),
+            admin_alerts.alert_mattel_news_generic("x"),
+            admin_alerts.alert_mattel_article_invalid_link(),
+            admin_alerts.alert_mattel_article_fetch_error("x", "y"),
+            admin_alerts.alert_lamley_host_rejected("x"),
+            admin_alerts.alert_lamley_article_too_large(1),
+            admin_alerts.alert_lamley_fetch_error("x", "y"),
+            admin_alerts.alert_lamley_no_body("x"),
+            admin_alerts.alert_orangetrack_summary_header(1),
         ]
         codes = [m[:6] for m in all_messages]  # "[E0XX]"
         self.assertEqual(len(codes), len(set(codes)),
