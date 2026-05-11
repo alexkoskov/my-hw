@@ -229,7 +229,8 @@ class TestFetchMattelNews:
         assert entries == []
         notifier.assert_called_once()
         msg = notifier.call_args[0][0]
-        assert "Mattel news HTTP error" in msg
+        assert "[E020]" in msg
+        assert "Mattel" in msg
         # Sanitised: no raw exception string
         assert "500 server error" not in msg
 
@@ -585,7 +586,8 @@ class TestSsrfGuard:
         session.get.assert_not_called()
         notifier.assert_called_once()
         msg = notifier.call_args[0][0]
-        assert "invalid article link prefix" in msg
+        assert "[E023]" in msg
+        assert "Mattel" in msg
         assert "evil.example.com" not in msg
 
 

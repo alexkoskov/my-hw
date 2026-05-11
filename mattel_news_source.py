@@ -34,6 +34,7 @@ import requests
 from bs4 import BeautifulSoup
 
 from boilerplate_filter import filter_boilerplate
+import admin_alerts
 
 logger = logging.getLogger(__name__)
 
@@ -402,14 +403,16 @@ def fetch_mattel_news(
         raw_entries = _extract_listing_entries(response.text)
     except requests.RequestException as exc:
         # Sanitised: type only, no str(exc) (Decision 8 control 5).
-        _notify(notifier, f"Mattel news HTTP error: {type(exc).__name__}")
+        _notify(notifier, admin_alerts.alert_mattel_news_http_error(
+            type(exc).__name__
+        ))
         return []
     except MattelNewsError as exc:
         msg = str(exc)
         if msg.startswith("response too large:"):
-            _notify(notifier, f"Mattel news {msg}")
+            _notify(notifier, admin_alerts.alert_mattel_news_generic(msg))
         else:
-            _notify(notifier, f"Mattel news parsing error: {msg}")
+            _notify(notifier, admin_alerts.alert_mattel_news_parsing_error(msg))
         return []
 
     entries = []
@@ -448,7 +451,7 @@ def fetch_mattel_article(
     # Note: link is intentionally NOT echoed in the notifier message to avoid
     # amplifying a malicious URL into the admin chat.
     if not isinstance(link, str) or not link.startswith(ARTICLE_URL_PREFIX):
-        _notify(notifier, "Mattel article fetch error: invalid article link prefix")
+        _notify(notifier, admin_alerts.alert_mattel_article_invalid_link())
         return None
 
     http = session or requests
@@ -466,17 +469,20 @@ def fetch_mattel_article(
             )
         entry, concat = _extract_article_entry(response.text, link)
     except requests.RequestException as exc:
-        _notify(
-            notifier,
-            f"Mattel article fetch error ({link}): {type(exc).__name__}",
-        )
+        _notify(notifier, admin_alerts.alert_mattel_article_fetch_error(
+            link, type(exc).__name__
+        ))
         return None
     except MattelNewsError as exc:
         msg = str(exc)
         if msg.startswith("response too large:"):
-            _notify(notifier, f"Mattel article {msg}")
+            _notify(notifier, admin_alerts.alert_mattel_article_fetch_error(
+                link, msg
+            ))
         else:
-            _notify(notifier, f"Mattel article fetch error ({link}): {msg}")
+            _notify(notifier, admin_alerts.alert_mattel_article_fetch_error(
+                link, msg
+            ))
         return None
 
     # Body resolution — content-empty failures are NOT notified (AC9 / ES9c).
