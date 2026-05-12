@@ -58,7 +58,20 @@ _FLIGHT_PUSH_RE = re.compile(
     r'self\.__next_f\.push\(\[\s*1\s*,\s*"((?:[^"\\]|\\.)*)"\s*\]\)'
 )
 
-_ARTICLE2_ANCHOR = '"article2":{"entries":['
+# Anchor regex for the ``article2.entries`` array.
+#
+# Historical live shape (pre-2026-05): ``"article2":{"entries":[…``.
+# Current live shape (verified 2026-05-12): Mattel interpolates a count field —
+# ``"article2":{"count":440,"entries":[…``. The regex permits up to 5 simple
+# scalar-valued prefix pairs (e.g. ``"count":N,``, ``"version":"v2",``) before
+# the ``"entries":`` key so we can absorb a similar shape change without
+# another emergency parser patch. Synthetic fixtures produce the no-prefix
+# form and continue to match because the prefix block accepts zero repeats.
+_ARTICLE2_ANCHOR_RE = re.compile(
+    r'"article2"\s*:\s*\{'
+    r'(?:"\w+"\s*:\s*(?:\d+|"[^"]*")\s*,\s*){0,5}'
+    r'"entries"\s*:\s*\['
+)
 
 
 class MattelNewsError(Exception):
@@ -155,14 +168,13 @@ def _find_entries_slice(unescaped: str) -> Tuple[int, int]:
     Raises ``MattelNewsError("article2.entries not found")`` if the anchor
     is missing or the array is unterminated.
     """
-    anchor_pos = unescaped.find(_ARTICLE2_ANCHOR)
-    if anchor_pos < 0:
+    m = _ARTICLE2_ANCHOR_RE.search(unescaped)
+    if m is None:
         raise MattelNewsError("article2.entries not found")
 
-    # The bracket of the array starts at the last char of the anchor.
-    arr_start = anchor_pos + len(_ARTICLE2_ANCHOR) - 1
-    if arr_start >= len(unescaped) or unescaped[arr_start] != "[":
-        raise MattelNewsError("article2.entries not found")
+    # The regex's final char is the array's opening ``[``; back up one to
+    # include it in the bracket-walker's range.
+    arr_start = m.end() - 1
 
     depth = 0
     in_string = False
@@ -226,7 +238,7 @@ def _extract_listing_entries(html: str) -> List[dict]:
     # Anchor on a semantic marker, not the largest chunk (Decision 2).
     last_error: Optional[MattelNewsError] = None
     for payload in payloads:
-        if _ARTICLE2_ANCHOR not in payload:
+        if _ARTICLE2_ANCHOR_RE.search(payload) is None:
             continue
         try:
             return _decode_entries(payload)

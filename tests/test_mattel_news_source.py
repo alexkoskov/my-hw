@@ -168,6 +168,17 @@ class TestExtractEntries:
         with pytest.raises(MattelNewsError, match="article2.entries not found"):
             _extract_entries(html)
 
+    def test_extracts_entries_when_article2_has_count_prefix(self):
+        # Live 2026-05 shape: Mattel inserts "count":N, between the article2
+        # opening brace and "entries":[. Regression for prod incident on
+        # 2026-05-12 where the literal-string anchor stopped matching.
+        e1 = _hw_entry(handle="hot-wheels-with-count", title="HW With Count")
+        e2 = _non_hw_entry(handle="other-counted", title="Other Counted")
+        html = _make_flight_listing([e1, e2], count_field=440)
+        entries = _extract_entries(html)
+        assert len(entries) == 2
+        assert entries[0]["handle"] == "hot-wheels-with-count"
+
 
 # ---------------------------------------------------------------------------
 # fetch_mattel_news
