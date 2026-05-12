@@ -168,6 +168,17 @@ class TestExtractEntries:
         with pytest.raises(MattelNewsError, match="article2.entries not found"):
             _extract_entries(html)
 
+    def test_extracts_entries_when_article2_has_count_prefix(self):
+        # Live 2026-05 shape: Mattel inserts "count":N, between the article2
+        # opening brace and "entries":[. Regression for prod incident on
+        # 2026-05-12 where the literal-string anchor stopped matching.
+        e1 = _hw_entry(handle="hot-wheels-with-count", title="HW With Count")
+        e2 = _non_hw_entry(handle="other-counted", title="Other Counted")
+        html = _make_flight_listing([e1, e2], count_field=440)
+        entries = _extract_entries(html)
+        assert len(entries) == 2
+        assert entries[0]["handle"] == "hot-wheels-with-count"
+
 
 # ---------------------------------------------------------------------------
 # fetch_mattel_news
@@ -229,7 +240,8 @@ class TestFetchMattelNews:
         assert entries == []
         notifier.assert_called_once()
         msg = notifier.call_args[0][0]
-        assert "Mattel news HTTP error" in msg
+        assert "[E020]" in msg
+        assert "Mattel" in msg
         # Sanitised: no raw exception string
         assert "500 server error" not in msg
 
@@ -585,7 +597,8 @@ class TestSsrfGuard:
         session.get.assert_not_called()
         notifier.assert_called_once()
         msg = notifier.call_args[0][0]
-        assert "invalid article link prefix" in msg
+        assert "[E023]" in msg
+        assert "Mattel" in msg
         assert "evil.example.com" not in msg
 
 

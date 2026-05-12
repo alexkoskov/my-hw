@@ -50,24 +50,25 @@ def _push(content: str) -> str:
     return f'<script>self.__next_f.push([1,"{body}"])</script>'
 
 
-def _make_flight_listing(entries: List[dict]) -> str:
+def _make_flight_listing(entries: List[dict], count_field: Optional[int] = None) -> str:
     """Build a synthetic listing HTML containing one push with all entries.
 
     The push is row 6 (matching the live 2026-04-24 layout). Its content is
-    a JSON envelope wrapping ``article2.entries`` — the parser only anchors
-    on the substring ``"article2":{"entries":[`` so the surrounding object is
-    filler. Each entry dict is encoded via ``json.dumps`` so callers can pass
-    plain Python data and let the builder do all escaping.
+    a JSON envelope wrapping ``article2.entries``. ``count_field`` simulates
+    the live 2026-05 shape where Mattel inserts ``"count":N,`` between the
+    ``article2`` opening brace and ``entries`` (verified 2026-05-12).
     """
+    article2: dict = {}
+    if count_field is not None:
+        article2["count"] = count_field
+    article2["entries"] = entries
     envelope = {
         "props": {
             "pageProps": {
                 "page": {
                     "data": {
                         "state": {
-                            "article2": {
-                                "entries": entries,
-                            },
+                            "article2": article2,
                         },
                     },
                 },

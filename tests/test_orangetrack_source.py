@@ -670,7 +670,7 @@ class TestOrangetrackPingAggregator:
         a.add("ART_FALLBACK_HTTP_404", "https://orangetrackdiecast.com/a")
         a.add("ART_FALLBACK_HTTP_404", "https://orangetrackdiecast.com/b")
         out = a.format_summary()
-        assert out.startswith("[test] orangetrack: 3 issues this tick")
+        assert out.startswith("[test] [E030] 🟡 Orangetrack: 3 проблем за тик")
         assert "FEED_HTTP_503" in out
         assert "ART_FALLBACK_HTTP_404" in out
         # FEED_* group comes before ART_*.
@@ -684,7 +684,7 @@ class TestOrangetrackPingAggregator:
         assert "(2×)" in out
         # Header reflects total events fired (2 add() calls), not just
         # distinct (code, link) pairs — operator-severity semantic.
-        assert "2 issues this tick" in out
+        assert "2 проблем за тик" in out
 
     def test_distinct_status_codes_separate_lines(self):
         a = OrangetrackPingAggregator("test")
@@ -718,20 +718,23 @@ class TestOrangetrackPingAggregator:
         a = OrangetrackPingAggregator("test")
         a.add("FEED_HTTP_503", "https://x/y")
         out = a.format_summary()
-        assert out.startswith("[test] orangetrack:")
+        assert out.startswith("[test] [E030] 🟡 Orangetrack:")
 
     def test_instance_label_empty(self):
         a = OrangetrackPingAggregator("")
         a.add("FEED_HTTP_503", "https://x/y")
         out = a.format_summary()
-        assert not out.startswith("[")
-        assert out.startswith("orangetrack:")
+        # No instance label → no [test]/[prod] prefix before the [E030] code.
+        assert not out.startswith("[test]")
+        assert not out.startswith("[prod]")
+        assert out.startswith("[E030] 🟡 Orangetrack:")
 
     def test_instance_label_none(self):
         a = OrangetrackPingAggregator(None)
         a.add("FEED_HTTP_503", "https://x/y")
         out = a.format_summary()
-        assert not out.startswith("[")
+        assert not out.startswith("[test]")
+        assert not out.startswith("[prod]")
 
     def test_per_code_link_cap_50(self):
         a = OrangetrackPingAggregator("test")
@@ -751,7 +754,7 @@ class TestOrangetrackPingAggregator:
             a.add("FEED_HTTP_503", f"https://orangetrackdiecast.com/post-{i}")
         out = a.format_summary()
         # Header reports the TRUE total (events fired), not stored count.
-        assert "60 issues this tick" in out
+        assert "60 проблем за тик" in out
         # Per-bucket count also reflects the truncated overflow.
         assert "FEED_HTTP_503 (60×)" in out
         # Truncation marker for the link list itself stays at the tail.
@@ -774,9 +777,9 @@ class TestOrangetrackPingAggregator:
         # Header reflects the TRUE event volume (600), not just stored
         # count — operator severity signal must not be muted by the
         # internal storage cap.
-        assert "600 issues this tick" in out
+        assert "600 проблем за тик" in out
         # Format summary still emits — must not raise.
-        assert "issues this tick" in out
+        assert "проблем за тик" in out
 
     def test_summary_truncated_at_3500_chars(self):
         a = OrangetrackPingAggregator("test")
@@ -790,11 +793,11 @@ class TestOrangetrackPingAggregator:
     def test_control_char_sanitization(self):
         a = OrangetrackPingAggregator("test")
         # Newline-injection attempt — must not produce a fake summary line.
-        crafted = "https://x/\n[prod] orangetrack: 0 issues this tick"
+        crafted = "https://x/\n[prod] [E030] 🟡 Orangetrack: 0 проблем за тик"
         a.add("FEED_HTTP_503", crafted)
         out = a.format_summary()
         # Original [test] header still on line 1.
-        assert out.split("\n")[0] == "[test] orangetrack: 1 issues this tick"
+        assert out.split("\n")[0] == "[test] [E030] 🟡 Orangetrack: 1 проблем за тик"
         # Newline injection neutralized — output structure has only TWO
         # lines (header + one bullet), not three (header + bullet +
         # injected fake header).
@@ -804,7 +807,7 @@ class TestOrangetrackPingAggregator:
         # bullet line as plain text rather than starting a new line.
         lines = out.split("\n")
         assert len(lines) == 2
-        assert lines[0].startswith("[test] orangetrack:")
+        assert lines[0].startswith("[test] [E030] 🟡 Orangetrack:")
         assert lines[1].lstrip().startswith("• FEED_HTTP_503")
 
     def test_emit_swallows_send_fn_error(self, caplog):

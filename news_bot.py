@@ -634,24 +634,41 @@ _CHECKLIST_TITLE_RE = re.compile(r'\bcheck[\s-]?list\b', re.IGNORECASE)
 #: that don't end up in ``paragraphs``).
 _CHECKLIST_BODY_TEXT_FLOOR = 500
 
+#: URL-slug match (case-insensitive) for orangetrack's recurring
+#: "case-contents-checklist" posts (e.g. ``/hot-wheels-basics-2026-j-
+#: case-contents-checklist-for-mainline/``). These are always bare
+#: lists of car names — orangetrack pads them with per-car blurbs so
+#: the body floor (_CHECKLIST_BODY_TEXT_FLOOR) doesn't trip, but the
+#: prose is ~80% proper nouns, which makes the LLM produce English-
+#: leaking output and triggers the EN-leak guard. Verified prod
+#: incident 2026-05-12: J Case Contents Checklist failed translation,
+#: held up the only publish slot of the day, and left the channel
+#: silent. URL-slug trigger is independent of title/body length.
+_CHECKLIST_URL_RE = re.compile(r'case-contents-checklist', re.IGNORECASE)
+
 
 def _is_text_only_checklist(entry, article):
     """True iff the article looks like a bare checklist post with no
-    editorial body text. Triggers on TWO conditions together:
+    real editorial body. Two independent triggers, either is enough:
 
-      1. Title matches ``_CHECKLIST_TITLE_RE`` (whole-word "checklist").
-      2. Total paragraph text length < ``_CHECKLIST_BODY_TEXT_FLOOR``.
+      A. ``entry['link']`` URL slug matches ``_CHECKLIST_URL_RE``
+         (orangetrack's "case-contents-checklist" pattern — always a
+         list of model names regardless of body length).
+      B. Title matches ``_CHECKLIST_TITLE_RE`` (whole-word "checklist")
+         AND total paragraph text length < ``_CHECKLIST_BODY_TEXT_FLOOR``.
 
-    Source-agnostic — orangetrack publishes these most often, but the
-    rule applies wherever a title contains "checklist" and the body is
-    near-empty. Articles with "checklist" in the title AND a real
-    review body (≥ 500 chars) are kept (it's a review *of* a
-    checklist, not a bare list).
+    Source-agnostic on trigger B; trigger A targets a specific
+    orangetrack URL pattern. Articles with "checklist" in the title
+    AND a real review body (≥ 500 chars) and no matching URL slug are
+    kept (it's a review *of* a checklist, not a bare list).
 
     Called from ``job()`` step (b3) AFTER ``fetch_full_article`` so the
     body content is available; on a True return the row never enters
     ``pending_articles``, saving the LLM-translation API call too.
     """
+    link = entry.get('link') or ''
+    if _CHECKLIST_URL_RE.search(link):
+        return True
     title = entry.get('title') or (article or {}).get('title') or ''
     if not _CHECKLIST_TITLE_RE.search(title):
         return False

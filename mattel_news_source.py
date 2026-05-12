@@ -34,6 +34,7 @@ import requests
 from bs4 import BeautifulSoup
 
 from boilerplate_filter import filter_boilerplate
+import admin_alerts
 
 logger = logging.getLogger(__name__)
 
@@ -57,7 +58,20 @@ _FLIGHT_PUSH_RE = re.compile(
     r'self\.__next_f\.push\(\[\s*1\s*,\s*"((?:[^"\\]|\\.)*)"\s*\]\)'
 )
 
-_ARTICLE2_ANCHOR = '"article2":{"entries":['
+# Anchor regex for the ``article2.entries`` array.
+#
+# Historical live shape (pre-2026-05): ``"article2":{"entries":[…``.
+# Current live shape (verified 2026-05-12): Mattel interpolates a count field —
+# ``"article2":{"count":440,"entries":[…``. The regex permits up to 5 simple
+# scalar-valued prefix pairs (e.g. ``"count":N,``, ``"version":"v2",``) before
+# the ``"entries":`` key so we can absorb a similar shape change without
+# another emergency parser patch. Synthetic fixtures produce the no-prefix
+# form and continue to match because the prefix block accepts zero repeats.
+_ARTICLE2_ANCHOR_RE = re.compile(
+    r'"article2"\s*:\s*\{'
+    r'(?:"\w+"\s*:\s*(?:\d+|"[^"]*")\s*,\s*){0,5}'
+    r'"entries"\s*:\s*\['
+)
 
 
 class MattelNewsError(Exception):
@@ -154,14 +168,13 @@ def _find_entries_slice(unescaped: str) -> Tuple[int, int]:
     Raises ``MattelNewsError("article2.entries not found")`` if the anchor
     is missing or the array is unterminated.
     """
-    anchor_pos = unescaped.find(_ARTICLE2_ANCHOR)
-    if anchor_pos < 0:
+    m = _ARTICLE2_ANCHOR_RE.search(unescaped)
+    if m is None:
         raise MattelNewsError("article2.entries not found")
 
-    # The bracket of the array starts at the last char of the anchor.
-    arr_start = anchor_pos + len(_ARTICLE2_ANCHOR) - 1
-    if arr_start >= len(unescaped) or unescaped[arr_start] != "[":
-        raise MattelNewsError("article2.entries not found")
+    # The regex's final char is the array's opening ``[``; back up one to
+    # include it in the bracket-walker's range.
+    arr_start = m.end() - 1
 
     depth = 0
     in_string = False
@@ -225,7 +238,7 @@ def _extract_listing_entries(html: str) -> List[dict]:
     # Anchor on a semantic marker, not the largest chunk (Decision 2).
     last_error: Optional[MattelNewsError] = None
     for payload in payloads:
-        if _ARTICLE2_ANCHOR not in payload:
+        if _ARTICLE2_ANCHOR_RE.search(payload) is None:
             continue
         try:
             return _decode_entries(payload)
@@ -402,14 +415,16 @@ def fetch_mattel_news(
         raw_entries = _extract_listing_entries(response.text)
     except requests.RequestException as exc:
         # Sanitised: type only, no str(exc) (Decision 8 control 5).
-        _notify(notifier, f"Mattel news HTTP error: {type(exc).__name__}")
+        _notify(notifier, admin_alerts.alert_mattel_news_http_error(
+            type(exc).__name__
+        ))
         return []
     except MattelNewsError as exc:
         msg = str(exc)
         if msg.startswith("response too large:"):
-            _notify(notifier, f"Mattel news {msg}")
+            _notify(notifier, admin_alerts.alert_mattel_news_generic(msg))
         else:
-            _notify(notifier, f"Mattel news parsing error: {msg}")
+            _notify(notifier, admin_alerts.alert_mattel_news_parsing_error(msg))
         return []
 
     entries = []
@@ -448,7 +463,7 @@ def fetch_mattel_article(
     # Note: link is intentionally NOT echoed in the notifier message to avoid
     # amplifying a malicious URL into the admin chat.
     if not isinstance(link, str) or not link.startswith(ARTICLE_URL_PREFIX):
-        _notify(notifier, "Mattel article fetch error: invalid article link prefix")
+        _notify(notifier, admin_alerts.alert_mattel_article_invalid_link())
         return None
 
     http = session or requests
@@ -466,17 +481,20 @@ def fetch_mattel_article(
             )
         entry, concat = _extract_article_entry(response.text, link)
     except requests.RequestException as exc:
-        _notify(
-            notifier,
-            f"Mattel article fetch error ({link}): {type(exc).__name__}",
-        )
+        _notify(notifier, admin_alerts.alert_mattel_article_fetch_error(
+            link, type(exc).__name__
+        ))
         return None
     except MattelNewsError as exc:
         msg = str(exc)
         if msg.startswith("response too large:"):
-            _notify(notifier, f"Mattel article {msg}")
+            _notify(notifier, admin_alerts.alert_mattel_article_fetch_error(
+                link, msg
+            ))
         else:
-            _notify(notifier, f"Mattel article fetch error ({link}): {msg}")
+            _notify(notifier, admin_alerts.alert_mattel_article_fetch_error(
+                link, msg
+            ))
         return None
 
     # Body resolution — content-empty failures are NOT notified (AC9 / ES9c).
