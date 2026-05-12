@@ -157,6 +157,47 @@ class TestIsTextOnlyChecklist(unittest.TestCase):
         # article without crashing.
         self.assertTrue(_is_text_only_checklist(entry, None))
 
+    def test_orangetrack_case_contents_checklist_slug_dropped_regardless_of_body(self):
+        """URL-slug trigger (A): orangetrack's recurring 'case-contents-
+        checklist' posts pad the body with per-car blurbs so the
+        500-char floor doesn't fire, but the prose is ~80% proper
+        nouns and the LLM produces English-leaking output. Drop on
+        URL pattern alone — body length irrelevant. Regression for
+        the 2026-05-12 prod silence."""
+        entry = {
+            'title': 'Hot Wheels Basics 2026 J Case Contents Checklist for Mainline',
+            'link': 'https://orangetrackdiecast.com/2026/05/11/'
+                    'hot-wheels-basics-2026-j-case-contents-checklist-for-mainline/',
+        }
+        article = {'paragraphs': ['x' * 4000]}  # well above the body floor
+        self.assertTrue(_is_text_only_checklist(entry, article))
+
+    def test_orangetrack_h_case_contents_checklist_also_dropped(self):
+        """The pattern repeats monthly with a different letter — H, G, J,
+        and onward. URL match is case-insensitive."""
+        entry = {
+            'title': 'Hot Wheels Basics 2026 H Case Contents Checklist for Mainline',
+            'link': 'https://orangetrackdiecast.com/2026/04/19/'
+                    'Hot-Wheels-Basics-2026-H-Case-Contents-Checklist-For-Mainline/',
+        }
+        article = {'paragraphs': ['x' * 4000]}
+        self.assertTrue(_is_text_only_checklist(entry, article))
+
+    def test_case_report_slug_is_not_caught_by_url_trigger(self):
+        """'Case-report' (not 'case-contents-checklist') stays in — those
+        posts have real editorial content (e.g. team-transport-K
+        report that successfully shipped 2026-05-06). Only the
+        narrow 'case-contents-checklist' slug is filtered. Body
+        below floor still wouldn't trigger trigger B because the
+        title has no 'checklist' word."""
+        entry = {
+            'title': 'Hot Wheels 2026 Car Culture Team Transport K Case Report',
+            'link': 'https://orangetrackdiecast.com/2026/05/02/'
+                    'hot-wheels-2026-car-culture-team-transport-k-case-report/',
+        }
+        article = {'paragraphs': ['short']}
+        self.assertFalse(_is_text_only_checklist(entry, article))
+
 
 if __name__ == '__main__':
     unittest.main()
