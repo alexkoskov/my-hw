@@ -102,15 +102,12 @@ cleanup-failure is degraded mode the operator must investigate.
 
 `_render_paragraph_with_runs(text, runs, source_url)` in `telegraph_publisher.py` is invoked from `_build_content_from_blocks` for `paragraph`/`heading`/`list_item` blocks. It walks `runs` metadata, finds each run's `text` substring inside (post-LLM) `block.text` via case-sensitive `str.find`, and wraps the matched substring in Telegraph nodes:
 
-- **Same-site links** (`run.href` to the article's source domain): wrapped in `<a>`. Same-site is netloc-equality with `removeprefix("www.")` on both sides (NOT `lstrip` — character-set strip is a phishing vector, would match `worangetrackdiecast.com`). Strict scheme `http`/`https` only — `mailto:`, `javascript:`, `data:` rejected. Empty/malformed URLs silently dropped.
+- **Inline links — disabled** (product decision 2026-05-13). `_render_paragraph_with_runs` always sets `href_val = None`. Rationale: subscribers reading the Russian translation shouldn't be hyperlinked to English source pages mid-prose; the page footer «Источник: …» still carries the original URL for readers who want it. `_is_same_site` and the href branch are preserved (dormant) so the planned cross-article-linking feature (mapping same-site hrefs to OUR Telegra.ph URLs when target is already published — see architecture.md "Cross-article linking") can flip this back on without re-implementing the machinery. `runs[].href` metadata still flows through the parser and survives translation untouched.
 - **Inline formats**: wrapped in `<strong>`/`<i>`/`<u>`/`<s>` per `run.formats`. Multiple formats nest in deterministic order: bold > italic > underline > strikethrough.
-- **Anchor + format combo**: anchor is the OUTERMOST wrapper (`<a><strong>X</strong></a>`, NOT the reverse — Telegraph requires this nesting).
 - **Overlapping spans**: first-wrap-wins (sort by start position, drop overlapping later spans). The dropped span's text still appears in the rendered children as plain text (it's part of the original `block.text`, just not wrapped).
 - **DoS bounds**: if `len(text) > 100000` or `len(runs) > 100`, fall through to plain text and log WARNING.
 - **Empty/whitespace `run.text`**: skip BEFORE `str.find` (avoids zero-width wrap at position 0).
-- **`run.text` not in `block.text` after translation** (LLM translated the phrase): silently drop.
-
-The substring approach is MVP — works for Latin proper nouns (model names, brand names) that survive translation unchanged. The sentinel-token alternative (replace `run.text` with marker before LLM, restore after) is documented as Phase-2 deferred.
+- **`run.text` not in `block.text` after translation** (LLM translated the phrase): silently drop the format wrap — text still appears unstyled.
 
 ### Affiliate / promo line filter (boilerplate_filter.py, expanded 2026-05-08)
 
@@ -226,6 +223,10 @@ Different source parsers take different paths to image URLs. Each is tuned to ma
 - If `curl_cffi` isn't installed or the scrape fails for any reason, the
   pipeline falls back to `enrich_entry` (RSS-only path) so we still post
   something — truncated is better than silent.
+
+### Autoevolution quirks
+- **Invalid HTML — `<h2>` nested inside `<p>`.** Section titles (e.g. "BMW M1 Procar") are emitted as `<p><h2 class="bold dispblock">…</h2>…body…</p>`. `_scrape_article_page` detects this in the `<p>` branch via `child.find_all([h2,h3,h4])` and emits each nested heading as its own `heading` block before reading the paragraph's residual runs. Without the detach the heading text leaked into the paragraph prefix on Telegraph and the structural `<h3>` was lost (verified live 2026-05-13, article 269773). Regression test: `tests/test_autoevolution_source.py::test_extracts_heading_nested_inside_paragraph`.
+- **JS-rendered brand links are NOT captured.** Autoevolution auto-links brand mentions ("Porsches", "BMWs") client-side via JavaScript after page load. `curl_cffi` returns raw HTML without running JS, so only the links that the editor inserted manually as `<a href>` (e.g. "Audi") survive into our `runs` metadata. Out-of-scope by design: subscribers still get a readable article; the alternative (Playwright + chromium) costs 200 MB deps + 5–15 s per article. If a future article loses load-bearing context because of this, the right fix is a local brand-auto-linker (small regex map "BMW → /bmw/", "Audi → /audi/", etc. applied post-parse) rather than full JS rendering.
 
 ### Scheduling
 - Daily fixed-time cron via `schedule.every().day.at("10:00", tz=pytz.timezone("Europe/Moscow")).do(job)` in `news_bot.main()`. The `tz=` argument requires `pytz` — `schedule==1.2.1` rejects stdlib `zoneinfo.ZoneInfo` with `ScheduleValueError` (verified via `inspect.getsource(schedule.Job.at)`). `pytz>=2024.1` is a hard runtime dep.

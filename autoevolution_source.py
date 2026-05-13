@@ -244,6 +244,30 @@ def _scrape_article_page(link: str, fetcher=None) -> Optional[Dict]:
         # Paragraph / heading text — extract runs so inline <a href> external
         # links survive translation and land on Telegraph as real <a> nodes.
         if child.name == "p":
+            # Autoevolution often emits *invalid* HTML where section titles
+            # are wrapped in <h2> (sometimes <h3>/<h4>) NESTED inside <p>
+            # (e.g. `<p><h2 class="bold dispblock">BMW M1 Procar</h2>
+            # …image…ad…body text…</p>`). Without this detach pass the
+            # heading text would leak into the paragraph block via
+            # `_runs_from_tag`, producing `"BMW M1 Procar Here's a tough
+            # question…"` as a single paragraph and losing the structural
+            # heading entirely. Emit each nested heading as its own block
+            # in DOM order, then strip them from the tree before reading
+            # the paragraph's residual text. Verified live 2026-05-13:
+            # autoevolution article 269773 produced 9 inline-h2 sections
+            # ("BMW M1 Procar", "Porsche 914 Safari", etc.) which all
+            # appeared as paragraph-prefix text on the Telegraph page.
+            for nested_h in list(child.find_all(["h2", "h3", "h4"])):
+                h_runs = _runs_from_tag(nested_h)
+                if h_runs:
+                    h_text = " ".join(r["text"] for r in h_runs).strip()
+                    blocks.append({
+                        "type": "heading",
+                        "text": h_text,
+                        "level": int(nested_h.name[1]),
+                        "runs": h_runs,
+                    })
+                nested_h.extract()
             runs = _runs_from_tag(child)
             if runs:
                 text = " ".join(r["text"] for r in runs).strip()
