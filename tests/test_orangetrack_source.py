@@ -1253,31 +1253,23 @@ class TestOrangetrackRenderingEndToEnd:
 
         assert h3_nodes == [{"tag": "h3", "children": ["Раздел"]}]
 
-        # Exact paragraph-with-anchor node.
-        expected_para_with_anchor = {
+        # 2026-05-13: inline links no longer rendered as <a>. The
+        # paragraph's text content is preserved as a single string
+        # without anchor wrapping. href still lives in `runs` metadata
+        # for the dormant cross-article linking feature.
+        expected_para_plain = {
             "tag": "p",
-            "children": [
-                {
-                    "tag": "a",
-                    "attrs": {"href": "https://orangetrackdiecast.com/x"},
-                    "children": ["Mercedes"],
-                },
-                " — быстрая машина.",
-            ],
+            "children": ["Mercedes — быстрая машина."],
         }
-        # Exact bulleted list_item nodes.
         expected_li_ferrari = {"tag": "p", "children": ["• ", "Ferrari"]}
         expected_li_porsche = {"tag": "p", "children": ["• ", "Porsche"]}
 
-        assert expected_para_with_anchor in p_nodes
+        assert expected_para_plain in p_nodes
         assert expected_li_ferrari in p_nodes
         assert expected_li_porsche in p_nodes
 
-        # Order assertion: heading first, then paragraph-with-anchor, then
-        # the two list_items (footer paragraph follows them but doesn't
-        # affect the relative order of the four target nodes).
         idx_h3 = nodes.index(h3_nodes[0])
-        idx_para = nodes.index(expected_para_with_anchor)
+        idx_para = nodes.index(expected_para_plain)
         idx_li1 = nodes.index(expected_li_ferrari)
         idx_li2 = nodes.index(expected_li_porsche)
         assert idx_h3 < idx_para < idx_li1 < idx_li2

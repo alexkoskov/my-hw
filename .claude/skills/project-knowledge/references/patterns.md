@@ -102,15 +102,12 @@ cleanup-failure is degraded mode the operator must investigate.
 
 `_render_paragraph_with_runs(text, runs, source_url)` in `telegraph_publisher.py` is invoked from `_build_content_from_blocks` for `paragraph`/`heading`/`list_item` blocks. It walks `runs` metadata, finds each run's `text` substring inside (post-LLM) `block.text` via case-sensitive `str.find`, and wraps the matched substring in Telegraph nodes:
 
-- **Same-site links** (`run.href` to the article's source domain): wrapped in `<a>`. Same-site is netloc-equality with `removeprefix("www.")` on both sides (NOT `lstrip` — character-set strip is a phishing vector, would match `worangetrackdiecast.com`). Strict scheme `http`/`https` only — `mailto:`, `javascript:`, `data:` rejected. Empty/malformed URLs silently dropped.
+- **Inline links — disabled** (product decision 2026-05-13). `_render_paragraph_with_runs` always sets `href_val = None`. Rationale: subscribers reading the Russian translation shouldn't be hyperlinked to English source pages mid-prose; the page footer «Источник: …» still carries the original URL for readers who want it. `_is_same_site` and the href branch are preserved (dormant) so the planned cross-article-linking feature (mapping same-site hrefs to OUR Telegra.ph URLs when target is already published — see architecture.md "Cross-article linking") can flip this back on without re-implementing the machinery. `runs[].href` metadata still flows through the parser and survives translation untouched.
 - **Inline formats**: wrapped in `<strong>`/`<i>`/`<u>`/`<s>` per `run.formats`. Multiple formats nest in deterministic order: bold > italic > underline > strikethrough.
-- **Anchor + format combo**: anchor is the OUTERMOST wrapper (`<a><strong>X</strong></a>`, NOT the reverse — Telegraph requires this nesting).
 - **Overlapping spans**: first-wrap-wins (sort by start position, drop overlapping later spans). The dropped span's text still appears in the rendered children as plain text (it's part of the original `block.text`, just not wrapped).
 - **DoS bounds**: if `len(text) > 100000` or `len(runs) > 100`, fall through to plain text and log WARNING.
 - **Empty/whitespace `run.text`**: skip BEFORE `str.find` (avoids zero-width wrap at position 0).
-- **`run.text` not in `block.text` after translation** (LLM translated the phrase): silently drop.
-
-The substring approach is MVP — works for Latin proper nouns (model names, brand names) that survive translation unchanged. The sentinel-token alternative (replace `run.text` with marker before LLM, restore after) is documented as Phase-2 deferred.
+- **`run.text` not in `block.text` after translation** (LLM translated the phrase): silently drop the format wrap — text still appears unstyled.
 
 ### Affiliate / promo line filter (boilerplate_filter.py, expanded 2026-05-08)
 

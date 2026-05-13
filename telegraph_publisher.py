@@ -224,14 +224,17 @@ def _render_paragraph_with_runs(text, runs, source_url):
             len(runs),
         )
         return [text]
-    # Compute source netloc once (Decision 7 — symmetric helper invocation)
-    try:
-        source_netloc = urlparse(source_url).netloc if source_url else ""
-    except Exception:
-        source_netloc = ""
-    # Find spans for runs with href (same-site only) OR formats. A run with
-    # href to an external domain AND no formats is dropped; a run with
-    # formats but no/external href still contributes the format wrapping.
+    # `source_url` is accepted for signature stability + future cross-
+    # article linking; not consumed in the current link-disabled render.
+    _ = source_url
+    # Find spans for runs with formats. Inline links are intentionally
+    # NOT rendered (product decision 2026-05-13): subscribers reading the
+    # Russian translation should not be hyperlinked to English source
+    # pages mid-prose. The source-footer at the bottom of the page
+    # still carries «Источник: …» for readers who want the original.
+    # `_is_same_site` is preserved (dormant) for the planned cross-article
+    # linking feature where same-site hrefs would be re-mapped to our
+    # own Telegraph URLs — at that point flip `href_val` back on.
     spans = []  # list of (start, end, href|None, formats|None)
     for run in runs:
         if not isinstance(run, dict):
@@ -239,9 +242,7 @@ def _render_paragraph_with_runs(text, runs, source_url):
         run_text = run.get("text")
         if not run_text or not run_text.strip():
             continue  # Decision 9 — empty/whitespace skip BEFORE str.find
-        href = run.get("href")
-        # href is preserved only for same-site links; otherwise dropped.
-        href_val = href if (href and _is_same_site(href, source_netloc)) else None
+        href_val = None  # 2026-05-13: inline links disabled by product decision
         formats = run.get("formats")
         # Filter formats to known mapping; ignore unknown values defensively.
         if formats:

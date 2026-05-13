@@ -630,102 +630,32 @@ SOURCE_URL = "https://orangetrackdiecast.com/article"
 class TestRenderParagraphWithRuns:
     """Direct unit tests for ``_render_paragraph_with_runs`` helper.
 
-    Same-site runs are wrapped in ``<a>`` nodes; off-domain / malformed /
-    missing runs fall through to plain text. EXACT children-list assertions
-    are used throughout (no substring matching), per task spec.
+    Inline links are intentionally NOT rendered (2026-05-13 product
+    decision — subscribers reading the Russian translation should not
+    be hyperlinked to English source pages mid-prose; Telegra.ph page
+    still carries the «Источник: …» footer with the original URL).
+    href metadata is preserved in `runs` for the future cross-article-
+    linking feature (dormant). Inline formats (bold/italic/underline/
+    strikethrough) DO render — see ``TestInlineFormats``.
     """
 
-    def test_render_paragraph_with_same_site_link(self):
+    def test_same_site_href_not_rendered(self):
         text = "A B C"
         runs = [{"text": "B", "href": "https://orangetrackdiecast.com/x"}]
         children = tp._render_paragraph_with_runs(text, runs, SOURCE_URL)
-        assert children == [
-            "A ",
-            {
-                "tag": "a",
-                "attrs": {"href": "https://orangetrackdiecast.com/x"},
-                "children": ["B"],
-            },
-            " C",
-        ]
+        assert children == [text]
 
-    def test_render_paragraph_with_external_link_dropped(self):
+    def test_external_href_not_rendered(self):
         text = "See Mattel for more"
         runs = [{"text": "Mattel", "href": "https://mattel.com/news"}]
         children = tp._render_paragraph_with_runs(text, runs, SOURCE_URL)
         assert children == [text]
 
-    def test_run_text_not_in_paragraph_text_dropped(self):
+    def test_run_text_not_in_paragraph_text_falls_through(self):
         text = "Plain paragraph body"
         runs = [{"text": "Ferrari", "href": "https://orangetrackdiecast.com/f"}]
         children = tp._render_paragraph_with_runs(text, runs, SOURCE_URL)
         assert children == [text]
-
-    def test_run_text_repeated_first_only_wrapped(self):
-        text = "Ferrari and Ferrari again"
-        runs = [{"text": "Ferrari", "href": "https://orangetrackdiecast.com/f"}]
-        children = tp._render_paragraph_with_runs(text, runs, SOURCE_URL)
-        assert children == [
-            {
-                "tag": "a",
-                "attrs": {"href": "https://orangetrackdiecast.com/f"},
-                "children": ["Ferrari"],
-            },
-            " and Ferrari again",
-        ]
-
-    def test_overlapping_runs_first_wins_second_appears_plain(self):
-        text = "ABCDE"
-        runs = [
-            {"text": "BCD", "href": "https://orangetrackdiecast.com/a"},
-            {"text": "CDE", "href": "https://orangetrackdiecast.com/b"},
-        ]
-        children = tp._render_paragraph_with_runs(text, runs, SOURCE_URL)
-        assert children == [
-            "A",
-            {
-                "tag": "a",
-                "attrs": {"href": "https://orangetrackdiecast.com/a"},
-                "children": ["BCD"],
-            },
-            "E",
-        ]
-
-    def test_two_runs_same_href_independent_wrapping(self):
-        text = "X Y"
-        runs = [
-            {"text": "X", "href": "https://orangetrackdiecast.com/a"},
-            {"text": "Y", "href": "https://orangetrackdiecast.com/a"},
-        ]
-        children = tp._render_paragraph_with_runs(text, runs, SOURCE_URL)
-        assert children == [
-            {
-                "tag": "a",
-                "attrs": {"href": "https://orangetrackdiecast.com/a"},
-                "children": ["X"],
-            },
-            " ",
-            {
-                "tag": "a",
-                "attrs": {"href": "https://orangetrackdiecast.com/a"},
-                "children": ["Y"],
-            },
-        ]
-
-    def test_run_text_with_regex_meta_chars(self):
-        # str.find (not re.search) — `.?*()` should match literally
-        text = "Look at .?*() in this text"
-        runs = [{"text": ".?*()", "href": "https://orangetrackdiecast.com/r"}]
-        children = tp._render_paragraph_with_runs(text, runs, SOURCE_URL)
-        assert children == [
-            "Look at ",
-            {
-                "tag": "a",
-                "attrs": {"href": "https://orangetrackdiecast.com/r"},
-                "children": [".?*()"],
-            },
-            " in this text",
-        ]
 
     def test_run_with_empty_text_skipped(self):
         text = "ABCDE"
@@ -813,8 +743,10 @@ class TestInlineFormats:
             " here",
         ]
 
-    def test_same_site_link_with_bold_format_a_wraps_strong(self):
-        """Link + bold: <a> outermost, <strong> inside (Telegraph nesting rule)."""
+    def test_same_site_href_with_bold_drops_link_keeps_format(self):
+        """2026-05-13: links no longer render. href is silently dropped;
+        the bold format wrapper is preserved (text still appears bold,
+        just not hyperlinked)."""
         text = "Visit Mercedes-Benz today"
         runs = [{
             "text": "Mercedes-Benz",
@@ -824,13 +756,7 @@ class TestInlineFormats:
         children = tp._render_paragraph_with_runs(text, runs, SOURCE_URL)
         assert children == [
             "Visit ",
-            {
-                "tag": "a",
-                "attrs": {"href": "https://orangetrackdiecast.com/mercedes"},
-                "children": [
-                    {"tag": "strong", "children": ["Mercedes-Benz"]},
-                ],
-            },
+            {"tag": "strong", "children": ["Mercedes-Benz"]},
             " today",
         ]
 
@@ -921,50 +847,16 @@ class TestSchemesAndDomainEdges:
         children = tp._render_paragraph_with_runs(text, runs, "")
         assert children == [text]
 
-    def test_www_prefix_normalized_for_same_site(self):
-        # source has www., href has none → match
+    def test_no_special_handling_for_same_site_href(self):
+        # 2026-05-13: same-site links no longer rendered. www-prefix
+        # normalisation in `_is_same_site` is still tested in isolation
+        # (dormant feature, ready for cross-article linking), but at the
+        # paragraph-render level the href is always dropped.
         text = "See Ferrari news"
         runs = [{"text": "Ferrari", "href": "https://orangetrackdiecast.com/f"}]
         children = tp._render_paragraph_with_runs(
             text, runs, "https://www.orangetrackdiecast.com/article",
         )
-        assert children == [
-            "See ",
-            {
-                "tag": "a",
-                "attrs": {"href": "https://orangetrackdiecast.com/f"},
-                "children": ["Ferrari"],
-            },
-            " news",
-        ]
-
-        # opposite direction: source has none, href has www. → match
-        runs2 = [{"text": "Ferrari", "href": "https://www.orangetrackdiecast.com/f"}]
-        children2 = tp._render_paragraph_with_runs(
-            text, runs2, "https://orangetrackdiecast.com/article",
-        )
-        assert children2 == [
-            "See ",
-            {
-                "tag": "a",
-                "attrs": {"href": "https://www.orangetrackdiecast.com/f"},
-                "children": ["Ferrari"],
-            },
-            " news",
-        ]
-
-    def test_lookalike_domain_not_matched_negative(self):
-        # `removeprefix("www.")` precision — wwwfake-... must NOT match
-        text = "See Ferrari news"
-        runs = [{"text": "Ferrari", "href": "https://wwwfake-orangetrackdiecast.com/f"}]
-        children = tp._render_paragraph_with_runs(text, runs, SOURCE_URL)
-        assert children == [text]
-
-    def test_case_sensitive_match_negative(self):
-        # AC6 — case is NOT normalised; "Mercedes" != "mercedes"
-        text = "I love mercedes cars"
-        runs = [{"text": "Mercedes", "href": "https://orangetrackdiecast.com/m"}]
-        children = tp._render_paragraph_with_runs(text, runs, SOURCE_URL)
         assert children == [text]
 
 
@@ -976,25 +868,20 @@ class TestListItemRendering:
         nodes = tp._build_content_from_blocks("", blocks, None)
         assert nodes == [{"tag": "p", "children": ["• ", "Ferrari"]}]
 
-    def test_list_item_with_same_site_link_combines(self):
+    def test_list_item_with_href_run_renders_plain_text(self):
+        # 2026-05-13: inline links no longer rendered. The bullet prefix
+        # and plain item text are preserved; the href is silently
+        # dropped (still kept in `runs` metadata for the dormant cross-
+        # article linking feature).
         blocks = [{
             "type": "list_item",
             "text": "Ferrari news",
             "runs": [{"text": "Ferrari", "href": "https://orangetrackdiecast.com/f"}],
         }]
         nodes = tp._build_content_from_blocks("", blocks, SOURCE_URL)
-        # nodes[0] = list_item rendering; nodes[-1] = source-url footer (unrelated)
         assert nodes[0] == {
             "tag": "p",
-            "children": [
-                "• ",
-                {
-                    "tag": "a",
-                    "attrs": {"href": "https://orangetrackdiecast.com/f"},
-                    "children": ["Ferrari"],
-                },
-                " news",
-            ],
+            "children": ["• ", "Ferrari news"],
         }
 
     def test_list_item_strips_leading_bullet_in_text(self):
@@ -1012,7 +899,9 @@ class TestHeadingRendering:
         nodes = tp._build_content_from_blocks("", blocks, None)
         assert nodes == [{"tag": "h3", "children": ["Section"]}]
 
-    def test_heading_block_with_link_combines(self):
+    def test_heading_block_with_href_run_renders_plain_text(self):
+        # 2026-05-13: inline links no longer rendered. The heading
+        # type/level/text are preserved; href in runs is silently dropped.
         blocks = [{
             "type": "heading",
             "level": 3,
@@ -1020,18 +909,9 @@ class TestHeadingRendering:
             "runs": [{"text": "Ferrari", "href": "https://orangetrackdiecast.com/f"}],
         }]
         nodes = tp._build_content_from_blocks("", blocks, SOURCE_URL)
-        # nodes[0] = heading rendering; nodes[-1] = source-url footer (unrelated)
         assert nodes[0] == {
             "tag": "h3",
-            "children": [
-                "About ",
-                {
-                    "tag": "a",
-                    "attrs": {"href": "https://orangetrackdiecast.com/f"},
-                    "children": ["Ferrari"],
-                },
-                " today",
-            ],
+            "children": ["About Ferrari today"],
         }
 
 
