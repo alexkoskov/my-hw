@@ -188,6 +188,45 @@ class TestScrapeArticlePage:
         # Hero + inline body image + 2 gallery images (dedup removed duplicate _1).
         assert len(out["images"]) == 4
 
+    def test_extracts_heading_nested_inside_paragraph(self):
+        """Regression for 2026-05-13: autoevolution article 269773 wrapped
+        every section title in `<h2 class="bold dispblock">` *nested
+        inside* `<p>` (invalid HTML, but consistent across their CMS).
+        Without the detach pass these headings disappeared into the
+        paragraph text — e.g. block emitted `"BMW M1 Procar Here's a
+        tough question…"` instead of separate heading + paragraph."""
+        html = """
+        <html><body>
+        <h1>Test title</h1>
+        <div class="mgtop_10 mgbot_10 fsz19">Lead.</div>
+        <div class="newstext">
+        <p><h2 class="bold dispblock mgtop_20 mgbot_10">BMW M1 Procar</h2>
+        Here's a tough question for you about the BMW.</p>
+        <p>Standalone paragraph without nested heading.</p>
+        <p><h3>Inline H3 Section</h3>Body for the h3 section.</p>
+        </div>
+        </body></html>
+        """
+        fetcher = lambda url: _fake_response(html)
+        out = _scrape_article_page(
+            "https://www.autoevolution.com/news/x-100.html",
+            fetcher=fetcher,
+        )
+        assert out is not None
+        types_and_texts = [(b["type"], b.get("text"), b.get("level"))
+                           for b in out["blocks"]
+                           if b["type"] in ("lead", "paragraph", "heading")]
+        # DOM order: lead, then h2 + its paragraph, plain paragraph,
+        # h3 + its paragraph.
+        assert types_and_texts == [
+            ("lead", "Lead.", None),
+            ("heading", "BMW M1 Procar", 2),
+            ("paragraph", "Here's a tough question for you about the BMW.", None),
+            ("paragraph", "Standalone paragraph without nested heading.", None),
+            ("heading", "Inline H3 Section", 3),
+            ("paragraph", "Body for the h3 section.", None),
+        ]
+
     def test_http_error_returns_none(self):
         fetcher = lambda url: _fake_response("", status=403)
         out = _scrape_article_page("https://x-268757.html", fetcher=fetcher)
