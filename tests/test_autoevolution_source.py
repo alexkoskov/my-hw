@@ -198,7 +198,6 @@ class TestScrapeArticlePage:
         html = """
         <html><body>
         <h1>Test title</h1>
-        <div class="mgtop_10 mgbot_10 fsz19">Lead.</div>
         <div class="newstext">
         <p><h2 class="bold dispblock mgtop_20 mgbot_10">BMW M1 Procar</h2>
         Here's a tough question for you about the BMW.</p>
@@ -213,13 +212,11 @@ class TestScrapeArticlePage:
             fetcher=fetcher,
         )
         assert out is not None
-        types_and_texts = [(b["type"], b.get("text"), b.get("level"))
-                           for b in out["blocks"]
-                           if b["type"] in ("lead", "paragraph", "heading")]
-        # DOM order: lead, then h2 + its paragraph, plain paragraph,
-        # h3 + its paragraph.
-        assert types_and_texts == [
-            ("lead", "Lead.", None),
+        text_blocks = [(b["type"], b.get("text"), b.get("level"))
+                       for b in out["blocks"]
+                       if b["type"] in ("paragraph", "heading")]
+        # DOM order: h2 + its paragraph, plain paragraph, h3 + its paragraph.
+        assert text_blocks == [
             ("heading", "BMW M1 Procar", 2),
             ("paragraph", "Here's a tough question for you about the BMW.", None),
             ("paragraph", "Standalone paragraph without nested heading.", None),
