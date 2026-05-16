@@ -366,8 +366,12 @@ class TestDistributedSchedule(unittest.TestCase):
         expected_offsets = [
             (s - now_msk).total_seconds() for s in slots
         ]
+        # Filter out the constant-3s Telegra.ph cache-warmup sleeps so
+        # they don't pollute the slot-wait count (one warmup per freshly-
+        # published article).
         sleep_args = [c.args[0] for c in self.mock_sleep.call_args_list
-                      if c.args and isinstance(c.args[0], (int, float))]
+                      if c.args and isinstance(c.args[0], (int, float))
+                      and c.args[0] != news_bot.TELEGRAPH_CACHE_WARMUP_SECONDS]
         # The publish-loop emits ONE sleep per in-window slot whose
         # offset > 0. With WINDOW_START=10:00 and now=12:00, the first
         # slot lands at 12:00 itself (offset 0) and is published without
@@ -561,8 +565,12 @@ class TestDistributedSchedule(unittest.TestCase):
         # (MIN_INTERVAL_MINUTES * 60) - 10*60 = 1800s. Allow ±5% slack
         # for any wall-clock drift between freeze_time setup and the
         # guard's `now_utc`.
+        # Crash-loop guard sleep is large (~1800s) and unambiguous — but
+        # filter the constant-3s Telegra.ph warmup sleeps so we don't pick
+        # one of them up if order-of-call ever shifts.
         sleep_args = [c.args[0] for c in self.mock_sleep.call_args_list
-                      if c.args and isinstance(c.args[0], (int, float))]
+                      if c.args and isinstance(c.args[0], (int, float))
+                      and c.args[0] != news_bot.TELEGRAPH_CACHE_WARMUP_SECONDS]
         self.assertTrue(sleep_args, "expected at least one time.sleep call")
         first_sleep = sleep_args[0]
         # Threshold = 40 min - 10 min = 30 min = 1800s.

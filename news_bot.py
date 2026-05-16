@@ -94,6 +94,15 @@ WINDOW_END_TIME = datetime.strptime("20:00", "%H:%M").time()
 BACKLOG_WARNING_THRESHOLD = 50
 MSK_TZ = pytz.timezone("Europe/Moscow")
 
+#: Seconds to sleep between Telegra.ph page creation and the Telegram
+#: teaser send. Lets Telegra.ph's edge cache populate OG tags before the
+#: Telegram IV worker fetches the URL — without this gap Telegram has been
+#: observed to negative-cache "no preview" for the freshly-created page
+#: (incident 2026-05-16: prod post lost hero image while test-instance
+#: post for the same article kept it). Tests filter sleep calls by this
+#: exact value to ignore the warmup pause when counting slot-wait sleeps.
+TELEGRAPH_CACHE_WARMUP_SECONDS = 3
+
 #: Per-article LLM retry tuning — applies to ClaudeTranscreationError
 #: only (refusal / malformed JSON / too-short / etc). True outages
 #: (ClaudeOutageError) still route through the existing 2-ping + 2h
@@ -1325,6 +1334,10 @@ def _fallback_publish(row, via_review=False):
         # from the row — so the pending-row copy is the idempotency
         # anchor, not an input to the move.
         pending_repo.mark_telegraph_published(link, telegraph_url, telegraph_path)
+
+        # Let Telegra.ph's edge cache settle before Telegram's IV worker
+        # fetches the page (see ``TELEGRAPH_CACHE_WARMUP_SECONDS`` docstring).
+        time.sleep(TELEGRAPH_CACHE_WARMUP_SECONDS)
 
     # Step 3: persist RU fields. Required for the ``published_articles``
     # NOT NULL ``ru_title`` copy inside ``move_to_published``. Writes
