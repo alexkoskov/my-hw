@@ -323,9 +323,11 @@ class TestSourcesRegistry:
 
     def test_sources_registry_shape(self):
         assert isinstance(SOURCES, list)
+        # Mattel disabled 2026-05-24 — corporate.mattel.com migrated to a
+        # client-side-rendered shell; article body unreachable without a
+        # headless browser. See news_bot.SOURCES comment.
         assert [f.__name__ for f in SOURCES] == [
             '_fetch_rss_entries',
-            '_fetch_mattel_entries',
             '_fetch_orangetrack_entries',
         ]
 
