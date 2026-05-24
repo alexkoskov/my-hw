@@ -700,9 +700,10 @@ class TestRestartMidWindow(_IntegrationBase):
         self.assertEqual(captured['kwargs'].get('window_end'),
                          news_bot.WINDOW_END_TIME)
 
-        # _fallback_publish was called for every slot (5 calls, since
-        # compute returned 5 slots all within the window).
-        self.assertEqual(mock_publish.call_count, 5)
+        # _fallback_publish was called for every slot. compute_publish_slots
+        # returned 5 slots, but news_bot.MAX_DAILY_POSTS (4) trims the tail
+        # so only 4 publishes fire; the 5th row carries over to tomorrow.
+        self.assertEqual(mock_publish.call_count, news_bot.MAX_DAILY_POSTS)
 
         # Already-published row never went through the publish loop.
         for c in mock_publish.call_args_list:

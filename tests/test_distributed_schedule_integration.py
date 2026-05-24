@@ -546,20 +546,28 @@ class TestDistributedSchedule(unittest.TestCase):
                 ]
                 news_bot.job()
 
-        # All 5 pre-seeded rows published; pending is empty.
-        self.assertEqual(self._pending_links(), [])
+        # First 4 of the 5 pre-seeded rows publish (MAX_DAILY_POSTS=4
+        # trims the 5th slot). The remaining row stays in pending and
+        # carries over to the next cron tick.
+        self.assertEqual(
+            self._pending_links(),
+            ['http://example.com/r4'],
+            "expected the 5th seeded row to remain pending under the daily cap",
+        )
         published = self._published_links()
-        # 5 new + 1 pre-existing = 6 total.
-        self.assertEqual(len(published), 6,
-                         f"expected 6 total published (5 new + 1 pre-existing), "
+        # 4 new + 1 pre-existing = 5 total.
+        self.assertEqual(len(published), 5,
+                         f"expected 5 total published (4 new + 1 pre-existing), "
                          f"got {published}")
         # Pre-existing link is still there exactly once.
         self.assertEqual(published.count(already_pub_link), 1,
                          "pre-existing published row must NOT be duplicated")
 
-        # Claude was called exactly 5 times — once per slot, never on the
-        # already-published row.
-        self.assertEqual(mock_claude.call_count, 5)
+        # Claude was called once per published slot, never on the already-
+        # published row. compute_publish_slots returned 5 slots but
+        # ``news_bot.MAX_DAILY_POSTS`` (4) trims the tail, so 4 publishes
+        # fire and the 5th row carries over to tomorrow.
+        self.assertEqual(mock_claude.call_count, news_bot.MAX_DAILY_POSTS)
 
         # Crash-loop guard sanity: the FIRST sleep is the guard wait =
         # (MIN_INTERVAL_MINUTES * 60) - 10*60 = 1800s. Allow ±5% slack

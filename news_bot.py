@@ -94,6 +94,13 @@ WINDOW_END_TIME = datetime.strptime("20:00", "%H:%M").time()
 BACKLOG_WARNING_THRESHOLD = 50
 MSK_TZ = pytz.timezone("Europe/Moscow")
 
+#: Hard cap on publications per day. ``compute_publish_slots`` only enforces
+#: the soft cap that follows from ``MIN_INTERVAL_MINUTES`` × window-length
+#: (currently floor(600/90)+1 = 7). Operator-set ceiling caps it lower for
+#: editorial pacing (set 2026-05-24: 4 posts/day max). Surplus pending
+#: articles go into carry_over and wait for the next cron tick.
+MAX_DAILY_POSTS = 4
+
 #: Seconds to sleep between Telegra.ph page creation and the Telegram
 #: teaser send. Lets Telegra.ph's edge cache populate OG tags before the
 #: Telegram IV worker fetches the URL — without this gap Telegram has been
@@ -1803,6 +1810,12 @@ def job():
         window_start=WINDOW_START_TIME,
         window_end=WINDOW_END_TIME,
     )
+    # Hard daily-post cap (operator pacing, 2026-05-24). Trim surplus
+    # slots and push the overflow into carry_over so it shows up in the
+    # plan-of-day ping and the affected pending rows wait for tomorrow.
+    if len(slots) > MAX_DAILY_POSTS:
+        carry_over += len(slots) - MAX_DAILY_POSTS
+        slots = slots[:MAX_DAILY_POSTS]
 
     # ------------------------------------------------------------------
     # Step (d): admin ping with plan-of-day. Always sent — operator wants a
