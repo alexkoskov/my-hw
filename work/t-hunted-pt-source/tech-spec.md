@@ -27,7 +27,7 @@ Add `t-hunted.blogspot.com` as the 4th news source by extending the existing pip
 
 ### How it works
 
-Cron tick at 10:00 МСК → `_fetch_rss_entries` reads t-hunted RSS via existing `feedparser` path → entries get `source_name='t-hunted'` via `_resolve_source_name` → `fetch_full_article` dispatcher routes blogspot URLs to `t_hunted_source.fetch_t_hunted_article` → BeautifulSoup scrape of `.post-body`/`.entry-content` → `filter_boilerplate` strips PT footer noise → entry staged into `pending_articles` with `source_name='t-hunted'` → publish loop calls `_fallback_publish` → LLM transcreation via existing dispatcher (unchanged code), `source_name` reaches `_build_user_message` payload → LLM applies widened system prompt with t-hunted per-source style + PT glossary → Telegra.ph publishes RU page → `send_telegraph_teaser` emits `#thunted #news` via `SOURCE_HASHTAG_OVERRIDE['t-hunted']='thunted'` → Telegram subscriber sees identical-shape preview card.
+Cron tick at 10:00 МСК → `_fetch_rss_entries` reads t-hunted RSS via existing `feedparser` path → entries get `source_name='t-hunted'` via `_resolve_source_name` → `fetch_full_article` dispatcher routes blogspot URLs to `t_hunted_source.fetch_t_hunted_article` → BeautifulSoup scrape of `.post-body`/`.entry-content` → `filter_boilerplate` strips PT footer noise → entry staged into `pending_articles` with `source_name='t-hunted'` → publish loop calls `_fallback_publish` → LLM transcreation via existing dispatcher (unchanged code), `source_name` reaches `_build_user_message` payload → LLM applies widened system prompt with t-hunted per-source style + PT glossary → existing `_is_mostly_russian` output check (in `_llm_common.py`) determines if Cyrillic-share floor passes; if not, `_fallback_publish` routes this single article through Google Translate with `↳ автоперевод` marker (existing path, Decision 8) → Telegra.ph publishes RU page → `send_telegraph_teaser` emits `#thunted #news` via `SOURCE_HASHTAG_OVERRIDE['t-hunted']='thunted'` → Telegram subscriber sees identical-shape preview card.
 
 ### Shared resources
 
@@ -56,7 +56,7 @@ None. No singleton resources are introduced. Existing shared resources (HTTP ses
 **Alternatives considered:** Per-language tagging (rejected — adds infrastructure for one new language; precedent rejected this in 2026-05-08); per-source filter call (rejected — would couple `boilerplate_filter` to source identity).
 
 ### Decision 5: `ux-guidelines.md` minimum edits — prompt widening + style skeleton + 14-entry glossary baseline
-**Decision:** Three discrete edits to the canonical LLM system prompt file: (a) line 22 wording change from "входящий **английский** текст" to "входящий текст (английский или португальский)"; (b) insert `### 🟤 t-hunted` per-source style block after the Mattel block — Voice / Tone dial / Length / Structure quirks / title-examples fields, all marked `[TBD operator]` to be filled iteratively after first 5-10 publishes (per user-spec deferral); (c) insert new `## Glossary — PT/EN/RU` section between Per-source notes and Red flags, with 14 baseline entries from code-research §E (Caça → Hunt, Super-Caça/Super-T → Super-T, Mainline, Premium, Treasure Hunt, Casting, Pintura, Decalque [VERIFY], Carrinho [VERIFY], etc.). Two `[VERIFY operator]` markers flag entries needing post-deploy refinement.
+**Decision:** Three discrete edits to the canonical LLM system prompt file: (a) widen input-language wording in the system-prompt blockquote (anchor by content: find sentence beginning "Твоя единственная задача: преобразовывать входящий" and replace `английский` segment with `(английский или португальский)` — content-anchored, no line-number drift); (b) insert `### 🟤 t-hunted` per-source style block after the Mattel block — Voice / Tone dial / Length / Structure quirks / title-examples fields, all marked `[TBD operator]` to be filled iteratively after first 5-10 publishes (per user-spec deferral); (c) insert new `## Glossary — PT/EN/RU` section between Per-source notes and Red flags, with 14 baseline entries from code-research §E (Caça → Hunt, Super-Caça/Super-T → Super-T, Mainline, Premium, Treasure Hunt, Casting, Pintura, Decalque [VERIFY], Carrinho [VERIFY], etc.). Two `[VERIFY operator]` markers flag entries needing post-deploy refinement.
 **Rationale:** Supports user-spec AC7. `source_name` already plumbed into `_build_user_message` (no transcreation-engine code change). Style-block content is intentionally minimal — operator owns prose tuning. Glossary at 14 entries exceeds AC7's ≥10 floor without bloating the prompt.
 **Alternatives considered:** Adding a separate PT system prompt (rejected — duplicates 90% of the canonical prompt, drift risk); deferring all PT-style hints to post-deploy (rejected — first publishes need at least a skeleton).
 
@@ -65,10 +65,13 @@ None. No singleton resources are introduced. Existing shared resources (HTTP ses
 **Rationale:** Supports user-spec deploy_approach. Wave-based execution (Waves 1-3) is a parallelisation construct for agent-team, not a delivery split — all waves land in the same PR.
 **Alternatives considered:** MVP (parser only, no prompt update) → Extension (prompt + glossary): rejected because the LLM would translate PT input with the EN-locked prompt — output quality would be poor without the prompt widening, defeating the value of releasing the parser.
 
-### Decision 7: [TECHNICAL] Brown circle 🟤 emoji for `SOURCE_EMOJI['t-hunted']`
-**Decision:** Use Unicode `U+1F7E4` (🟤 brown circle) as the source emoji for archived `hw_review.py` consumer.
-**Rationale:** Only "warm" circle not already used by other sources (🟠 autoevolution / 🔵 lamley / 🟡 mattel / 🟣 orangetrack). Cosmetic — consumed only by the archived `hw_review` CLI, not by admin alerts or channel posts. `[TECHNICAL]` because user-spec doesn't mention SOURCE_EMOJI; this is implementation hygiene to keep the dict consistent.
-**Alternatives considered:** Leave SOURCE_EMOJI entry absent (rejected — dict has all other sources, asymmetry would surprise future maintainers); pick a different emoji (no other warm circles available).
+### Decision 8: Reuse existing LLM non-Russian fallback path for PT input (no new code)
+**Decision:** When the LLM (configured engine) returns output that fails `_is_mostly_russian` Cyrillic ratio check in `_llm_common.py:134-153`, the existing dispatcher already raises a transcreation error → caller `_fallback_publish` already routes that single article through Google Translate with the `↳ автоперевод` marker. No new code added for PT input — the EN-locked check works language-agnostically on output (counts Cyrillic, doesn't care about input language). Verified: PT-input articles that yield non-Russian LLM output (rare: LLM ignores prompt) reuse the same fallback as EN-input articles.
+**Rationale:** Supports user-spec error scenario row 5 ("LLM вернул вывод не на русском"). Code-research §2.C confirmed `_is_mostly_russian` is output-only, input-language-agnostic. No risk of false positive from PT input itself (Portuguese uses Latin script, won't trip the 30% Cyrillic floor on Cyrillic-translated output).
+**Alternatives considered:** Add a PT-input-specific guard before LLM call (rejected — solves a non-existent problem; existing output-check covers all input languages); skip the fallback for t-hunted (rejected — quality regression).
+**Decision:** Add `SOURCE_EMOJI['t-hunted'] = '🟤'` (Unicode U+1F7E4 brown circle) and `SOURCE_LABEL['t-hunted'] = 'T-Hunted'` to the existing dicts in `news_bot.py`.
+**Rationale:** Both dicts are consumed only by the archived `hw_review.py` CLI (not by admin alerts or channel posts). Adding entries for the 4th source keeps the dicts symmetric with the other three (autoevolution / lamley / mattel / orangetrack already have entries). Existing values per code: `SOURCE_EMOJI = {autoevolution: 🟠, lamley: 🟢, mattel: 🟣, orangetrack: 🔵}` (verified against `news_bot.py:857-862`). Brown 🟤 is unused and visually distinguishable. `'T-Hunted'` mirrors the `T-` capitalisation convention used by the source itself. `[TECHNICAL]` because user-spec doesn't mention SOURCE_EMOJI/SOURCE_LABEL; this is implementation hygiene.
+**Alternatives considered:** Leave entries absent (rejected — asymmetric dicts surprise future maintainers); use yellow 🟡 (rejected — too close visually to the orange 🟠 used by autoevolution); use red 🔴 (rejected — semantically associated with errors elsewhere in this codebase).
 
 ## Data Models
 
@@ -116,14 +119,32 @@ None. All required dependencies already in `requirements.txt`:
   - `test_alert_t_hunted_fetch_error_e032`
   - `test_alert_t_hunted_no_body_e033`
 - **`tests/test_sources_registry.py` (extend):**
-  - extend `test_netloc_to_source_map_keys` — assertion includes `t-hunted.blogspot.com`
-  - extend `test_values_are_canonical_source_names` — assertion includes `t-hunted`
-  - extend `test_resolve_source_name_*` — new case for t-hunted netloc
+  - extend `test_has_exactly_the_five_keys` — assertion includes `t-hunted.blogspot.com` (consider rename if it now grows past five keys)
+  - extend `test_values_are_only_the_three_source_names` — assertion includes `t-hunted` (consider rename)
+  - extend `TestResolveSourceName` — new case for t-hunted netloc
 - **`tests/test_telegram.py` (extend):**
   - `test_t_hunted_teaser_uses_thunted_tag` — locks `#thunted #news` byte format
 - **`tests/test_boilerplate_filter.py` (extend):**
   - `TestIsBoilerplatePositive::test_portuguese_patterns_filtered` (parametrised over the 10 PT patterns)
   - `TestIsBoilerplateNegative::test_pt_lookalike_prose_kept` — guards against PT pattern matching real prose
+  - `TestRegexSafety::test_pt_patterns_no_redos_under_120_char_input` — feeds adversarial-shaped 120-char inputs to each PT pattern, asserts execution under timeout (e.g. 100ms each via `signal.alarm` or `pytest-timeout`). Locks ReDoS safety as the pattern list grows.
+- **`tests/test_t_hunted_source.py` (additional SSRF negative cases beyond TestHostAllowlist core methods):**
+  - `TestHostAllowlist::test_rejects_userinfo_attack` — URL `http://t-hunted.blogspot.com@evil.com/x` returns `None` (urlparse hostname extraction handles userinfo correctly)
+  - `TestHostAllowlist::test_rejects_suffix_host_attack` — URL `http://t-hunted.blogspot.com.attacker.example/x` returns `None`
+  - `TestHostAllowlist::test_rejects_subdomain_variants` — `evil.t-hunted.blogspot.com` rejected (allowlist is exact-match)
+- **`tests/test_news_bot_dispatcher.py` (new file OR extend `tests/test_integration.py`):**
+  - `test_fetch_full_article_routes_blogspot_to_t_hunted` — direct unit test of the dispatcher routing logic for blogspot URLs (mocks `t_hunted_source.fetch_t_hunted_article`, asserts called with the link)
+  - `test_fetch_full_article_unknown_domain_returns_none` — regression test that other domains still fall through to existing handlers or return None
+- **`tests/test_ux_guidelines_structure.py` (new file):**
+  - `test_glossary_section_present` — reads `.claude/skills/project-knowledge/references/ux-guidelines.md`, asserts `## Glossary — PT/EN/RU` section exists
+  - `test_glossary_has_at_least_10_entries` — counts table rows in the Glossary section, asserts ≥10
+  - `test_t_hunted_style_block_present` — asserts `### 🟤 t-hunted` heading exists in Per-source notes section
+  - `test_input_language_prompt_widened` — asserts the LLM system-prompt sentence about input language mentions both Russian-language equivalents of "English" AND "Portuguese" (anchor by content, not line number)
+- **`tests/test_deploy_files_invariant.py` (new file — pytest regression for the 3-FILES-list invariant):**
+  - `test_t_hunted_source_in_deploy_sh` — `deploy.sh` FILES array contains `"t_hunted_source.py"`
+  - `test_t_hunted_source_in_deploy_yml` — `.github/workflows/deploy.yml` FILES array contains the same
+  - `test_t_hunted_source_in_deploy_test_yml` — `.github/workflows/deploy_test.yml` FILES array contains the same
+  - These run as part of normal `pytest tests/` — catches the ImportError-on-cron-tick failure mode (Risk R7) at CI time, not at deploy time.
 
 ### Integration tests
 
@@ -215,8 +236,8 @@ Technical criteria supplementing user-spec ACs:
 
 ### Wave 2 (wiring — parallel, depends on Wave 1)
 
-#### Task 3: `news_bot.py` wiring (import + dispatcher + NETLOC_TO_SOURCE + SOURCE_HASHTAG_OVERRIDE)
-- **Description:** Four atomic edits in `news_bot.py`: add `import t_hunted_source`; add `'t-hunted.blogspot.com': 't-hunted'` entry to `NETLOC_TO_SOURCE`; add new module-level `SOURCE_HASHTAG_OVERRIDE = {'t-hunted': 'thunted'}` constant and patch `_source_hashtag` to consult it; add new `elif 'blogspot.com' in domain:` branch in `fetch_full_article` calling `t_hunted_source.fetch_t_hunted_article`. Also add `SOURCE_EMOJI['t-hunted'] = '🟤'` and `SOURCE_LABEL['t-hunted'] = 'T-Hunted'` entries for archived hw_review consumer (cosmetic).
+#### Task 3: `news_bot.py` wiring (import + dispatcher + NETLOC_TO_SOURCE + SOURCE_HASHTAG_OVERRIDE + archived consumer dicts)
+- **Description:** Atomic edits in `news_bot.py` to wire the new parser into existing infrastructure: add module import; add `NETLOC_TO_SOURCE` entry for t-hunted; introduce `SOURCE_HASHTAG_OVERRIDE` map per Decision 2 and patch `_source_hashtag` to consult it; add dispatcher branch in `fetch_full_article` routing blogspot URLs (per Decision 1; note the dispatcher is an if/return chain, not if/elif); add `SOURCE_EMOJI` + `SOURCE_LABEL` entries per Decision 7.
 - **Skill:** code-writing
 - **Reviewers:** code-reviewer, test-reviewer
 - **Verify-smoke:** `python -c "from news_bot import _source_hashtag, _resolve_source_name; print(_source_hashtag('https://t-hunted.blogspot.com/x'), _resolve_source_name('https://t-hunted.blogspot.com/x'))"` → `#thunted t-hunted`
@@ -231,28 +252,29 @@ Technical criteria supplementing user-spec ACs:
 - **Files to modify:** `feeds.json`, `boilerplate_filter.py`, `tests/test_boilerplate_filter.py`
 - **Files to read:** `boilerplate_filter.py` (existing patterns), `tests/test_boilerplate_filter.py`, `work/t-hunted-pt-source/code-research.md` (§4.B)
 
-#### Task 5: Wiring tests (`test_sources_registry.py` + `test_telegram.py`)
-- **Description:** Extend `tests/test_sources_registry.py` — `NETLOC_TO_SOURCE` map test asserts new entry, `_resolve_source_name` test covers t-hunted netloc. Add `tests/test_telegram.py::test_t_hunted_teaser_uses_thunted_tag` that locks `#thunted #news` byte format on `send_telegraph_teaser` output.
+#### Task 5: Wiring tests (`test_sources_registry.py` + `test_telegram.py` + dispatcher unit + ux-guidelines structure)
+- **Description:** Extend `tests/test_sources_registry.py` — `test_has_exactly_the_five_keys` and `test_values_are_only_the_three_source_names` (existing test names, both misleadingly named after our addition; consider renaming) get t-hunted assertions; `TestResolveSourceName` gets new t-hunted case. Add `tests/test_telegram.py::test_t_hunted_teaser_uses_thunted_tag` locking `#thunted #news` byte format. Add direct dispatcher unit tests in `tests/test_integration.py` (or new `test_news_bot_dispatcher.py`): `test_fetch_full_article_routes_blogspot_to_t_hunted` + `test_fetch_full_article_unknown_domain_returns_none` — catches dispatcher-ordering regressions at unit level. Add new `tests/test_ux_guidelines_structure.py` with 4 structural assertions on `.claude/skills/project-knowledge/references/ux-guidelines.md` (glossary section present, ≥10 glossary entries, t-hunted block present, input-language prompt widened — all content-anchored, no line numbers).
 - **Skill:** code-writing
 - **Reviewers:** code-reviewer, test-reviewer
-- **Verify-smoke:** `pytest tests/test_sources_registry.py tests/test_telegram.py -v` → all green
-- **Files to modify:** `tests/test_sources_registry.py`, `tests/test_telegram.py`
+- **Verify-smoke:** `pytest tests/test_sources_registry.py tests/test_telegram.py tests/test_ux_guidelines_structure.py -v` → all green; dispatcher unit test green
+- **Files to modify:** `tests/test_sources_registry.py`, `tests/test_telegram.py`, `tests/test_integration.py` (or new `test_news_bot_dispatcher.py`), `tests/test_ux_guidelines_structure.py` (new)
 - **Files to read:** existing test files, `news_bot.py` (post-Task-3), `work/t-hunted-pt-source/code-research.md` (§C)
 
-#### Task 6: Deploy plumbing (3 FILES lists)
-- **Description:** Add `"t_hunted_source.py"` to FILES arrays in `deploy.sh`, `.github/workflows/deploy.yml`, `.github/workflows/deploy_test.yml` — same alphabetical position in each (after `orangetrack_source.py`, before `outage_state.py` per existing convention). Forgetting any one of the three triggers `ImportError` on next cron tick.
+#### Task 6: Deploy plumbing (3 FILES lists) + pytest invariant test
+- **Description:** Add `"t_hunted_source.py"` to FILES arrays in `deploy.sh`, `.github/workflows/deploy.yml`, `.github/workflows/deploy_test.yml` at the same position (grouped with other source files per existing convention). Also create new `tests/test_deploy_files_invariant.py` that asserts the file appears in all three FILES arrays — turns Risk R7 into a CI-catchable regression rather than relying on shell-grep alone.
 - **Skill:** code-writing
 - **Reviewers:** code-reviewer, deploy-reviewer
-- **Verify-smoke:** `grep -l "t_hunted_source.py" deploy.sh .github/workflows/deploy.yml .github/workflows/deploy_test.yml` → all three files in output
-- **Files to modify:** `deploy.sh`, `.github/workflows/deploy.yml`, `.github/workflows/deploy_test.yml`
-- **Files to read:** all three files (existing FILES arrays), `work/t-hunted-pt-source/code-research.md` (§6)
+- **Verify-smoke:** `pytest tests/test_deploy_files_invariant.py -v` → all 3 assertions green; `grep -l "t_hunted_source.py" deploy.sh .github/workflows/deploy.yml .github/workflows/deploy_test.yml` → all three files in output
+- **Files to modify:** `deploy.sh`, `.github/workflows/deploy.yml`, `.github/workflows/deploy_test.yml`, `tests/test_deploy_files_invariant.py` (new)
+- **Files to read:** all three deploy files (existing FILES arrays), `work/t-hunted-pt-source/code-research.md` (§6)
 
 ### Wave 3 (prompt + integration — parallel)
 
 #### Task 7: `ux-guidelines.md` prompt update (widen + t-hunted block + glossary)
-- **Description:** Three discrete edits to `.claude/skills/project-knowledge/references/ux-guidelines.md`: (a) line 22 wording widen to accept PT input alongside EN; (b) insert `### 🟤 t-hunted` per-source style block after Mattel block — fields Voice / Tone dial / Length / Structure quirks / title-examples, all marked `[TBD operator]` for post-deploy refinement; (c) insert new `## Glossary — PT/EN/RU` section between Per-source notes and Red flags with 14 baseline entries from code-research §E. Preserve verbatim system-prompt blockquote at line 18-42 boundary per the file's contract (LLM reads it as role).
-- **Skill:** code-writing
+- **Description:** Three discrete edits to `.claude/skills/project-knowledge/references/ux-guidelines.md` (content-anchored, no line numbers): (a) widen the LLM system-prompt input-language assertion to accept PT alongside EN (find sentence beginning «Твоя единственная задача: преобразовывать входящий», replace `английский` with `(английский или португальский)`); (b) insert `### 🟤 t-hunted` per-source style block after the Mattel block — fields Voice / Tone dial / Length / Structure quirks / title-examples, all marked `[TBD operator]` for post-deploy refinement; (c) insert new `## Glossary — PT/EN/RU` section between Per-source notes and Red flags with 14 baseline entries from code-research §E. Preserve verbatim the system-prompt blockquote markers per the file's invariant contract (LLM reads the blockquote as its role).
+- **Skill:** prompt-master
 - **Reviewers:** code-reviewer, prompt-reviewer
+- **Verify-smoke:** `pytest tests/test_ux_guidelines_structure.py -v` → all 4 structural assertions pass (glossary ≥10 entries, t-hunted block present, prompt widened, glossary section exists)
 - **Files to modify:** `.claude/skills/project-knowledge/references/ux-guidelines.md`
 - **Files to read:** `.claude/skills/project-knowledge/references/ux-guidelines.md`, `work/t-hunted-pt-source/code-research.md` (§D, §E, §5)
 
@@ -289,7 +311,7 @@ Technical criteria supplementing user-spec ACs:
 - **Reviewers:** none
 
 #### Task 13: Deploy
-- **Description:** Standard project deploy via PR merge sequence. Squash-merge `feature/t-hunted-pt-source` → `dev` → `deploy_test.yml` SCPs files to `/home/hwbot/bot_test/` and restarts `news_bot_test.service`. Operator observes 5-10 first t-hunted publishes on `@myhwchannel123` over 2-7 days. On positive verification: merge `dev` → `main` → `deploy.yml` SCPs to `/home/hwbot/bot/` and restarts `news_bot.service`.
+- **Description:** Standard project deploy via PR merge sequence. Squash-merge `feature/t-hunted-pt-source` → `dev` → `deploy_test.yml` SCPs files to `/home/hwbot/bot_test/` and restarts `news_bot_test.service`. On positive verification from Task 14 (Post-deploy): merge `dev` → `main` → `deploy.yml` SCPs to `/home/hwbot/bot/` and restarts `news_bot.service`.
 - **Skill:** deploy-pipeline
 - **Reviewers:** none
 
