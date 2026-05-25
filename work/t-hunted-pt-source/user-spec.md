@@ -9,14 +9,14 @@ size: M
 
 ## Что делаем
 
-Подключаем **t-hunted.blogspot.com** — бразильский блог про Hot Wheels — четвёртым источником в существующий pipeline. Используем тот же pipeline что и для остальных источников (RSS fetch → article scrape → boilerplate filter → LLM transcreation → Telegraph → Telegram). Единственное структурное отличие: язык оригинала — **португальский** (PT), а не английский. Для подписчика канала результат идентичен: статья на Telegra.ph + хештег-карточка в Telegram с Instant View превью.
+Подключаем **t-hunted.blogspot.com** — бразильский блог про Hot Wheels — четвёртым источником в существующий news-pipeline. Бот ходит за статьями по RSS, скачивает HTML страницы, переводит португальский текст на русский через LLM, публикует на Telegra.ph и постит карточку в Telegram. Pipeline ровно тот же, что и для остальных источников; единственное структурное отличие — язык оригинала португальский, а не английский. Для подписчика канала результат идентичен другим источникам.
 
 ## Зачем
 
-Сейчас у канала 3 EN-источника: autoevolution, lamley, orangetrack. Они хорошо покрывают глобальную HW-сцену, но **пропускают бразильскую перспективу**:
+Сейчас у канала 3 EN-источника. Они хорошо покрывают глобальную HW-сцену, но **пропускают бразильскую перспективу**:
 
-- HW Brasil exclusives — линейки и эксклюзивы для бразильского рынка, которые часто появляются раньше глобального релиза (например, Pop Culture в Бразилии раньше, чем в США).
-- Фото-обзоры региональных выпусков, не освещённые англоязычными блогерами.
+- HW Brasil exclusives — региональные линейки и эксклюзивы, которые часто появляются раньше глобального релиза (например, Pop Culture в Бразилии раньше, чем в США).
+- Фото-обзоры выпусков, не освещённые англоязычными блогерами.
 - Другой редакторский угол на те же события мировой HW-сцены.
 
 Цель — **расширение охвата контента**, а не просто увеличение частоты публикаций. Подписчик получает более полную картину сцены.
@@ -27,83 +27,94 @@ size: M
 
 1. Бразильский блогер публикует на t-hunted пост вида «Mais fotos da série Pop Culture 2026».
 2. В ближайший cron-тик (10:00 МСК) бот по RSS-фиду t-hunted замечает новый URL.
-3. Парсер скачивает HTML-страницу статьи, вытаскивает title, тело, картинки (3-5 типично).
-4. Boilerplate-фильтр сносит Blogger-шаблонный мусор: `Marcadores:`, `Compartilhar no Facebook`, навигацию.
-5. LLM (по умолчанию OpenRouter `openai/gpt-5.4-mini`) переводит PT → RU, применяя системный промпт с расширенной поддержкой PT, per-source style note для t-hunted и PT-EN-RU глоссарий HW-терминологии.
-6. Telegra.ph публикует страницу с hero-картинкой и переводом. Telegram постит в канал карточку: `#thunted #news` + Instant View превью.
-7. Подписчик видит превью в ленте, идентичное другим источникам по форме, и открывает Telegra.ph для чтения. Никакой пометки про PT-источник не делается — атрибуция через хештег.
+3. Парсер скачивает HTML страницы, вытаскивает заголовок, тело, картинки.
+4. Boilerplate-фильтр сносит Blogger-шаблонный мусор (метки, кнопки «Compartilhar», навигационные ссылки).
+5. LLM переводит PT → RU, опираясь на расширенный системный промпт, поддерживающий португальский, и на доменный глоссарий Hot Wheels (Caça → Hunt, Super-T → Super Treasure Hunt, etc).
+6. Telegra.ph публикует страницу с hero-картинкой и переводом. Telegram постит в канал карточку с хештегом источника и Instant View превью.
+7. Подписчик видит превью в ленте, идентичное другим источникам по форме, и открывает Telegra.ph для чтения. Никакой пометки про португальский источник не делается — атрибуция через хештег.
+
+### Поведение при ошибках
+
+| Ситуация | Поведение |
+|---|---|
+| RSS-фид t-hunted недоступен (HTTP 5xx / timeout / DNS) | Источник пропускается в этом тике, админ получает алерт о падении источника, остальные источники работают как обычно |
+| Парсер не нашёл тело статьи в HTML (изменилась вёрстка Blogger) | Статья дропается, админ получает алерт о структурной проблеме |
+| HTTP-ошибка при загрузке конкретной статьи | Статья дропается, админ получает алерт, retry-механизм применяется как у других источников |
+| Запрошенный URL не принадлежит t-hunted.blogspot.com (защита от SSRF) | Запрос блокируется, админ получает алерт |
+| LLM вернул вывод не на русском (мало кириллицы) | Запускается per-article Google Translate fallback с маркером `↳ автоперевод` на Telegra.ph странице |
+| Очень длинный параграф (>4000 символов) | Параграф усекается, в лог пишется WARNING, публикация не падает |
+| Одна и та же модель Hot Wheels освещена t-hunted и другим источником в одну неделю | Не обрабатывается в этой фиче — известное ограничение, отдельная фича `cross-source-content-dedup` запланирована следующей |
 
 ## Критерии приёмки
 
-- [ ] **AC1.** RSS-фид `https://t-hunted.blogspot.com/feeds/posts/default?alt=rss` добавлен в `feeds.json`. После добавления `feeds.json` содержит 4 записи (под cap=5), `feedparser` парсит фид без ошибок, t-hunted entries появляются в `_fetch_rss_entries` output.
-- [ ] **AC2.** Новый модуль `t_hunted_source.py` экспортирует функцию `fetch_t_hunted_article(link, session=None, notifier=None) -> Optional[Dict]`, возвращающую `{title, subtitle, paragraphs, images}` (тот же контракт что у `fetch_lamley_article`) или `None` при ошибке.
-- [ ] **AC3.** SSRF-allowlist в `t_hunted_source` жёстко ограничен `('t-hunted.blogspot.com',)`. Запрос на любой другой netloc возвращает `None` и шлёт админ-алерт.
-- [ ] **AC4.** Article dispatcher в `news_bot.fetch_full_article` (строки 1414-1439) маршрутизирует через ветку `'blogspot.com' in domain` к `t_hunted_source.fetch_t_hunted_article`.
-- [ ] **AC5.** `_resolve_source_name` возвращает `'t-hunted'` для netloc `t-hunted.blogspot.com`. `NETLOC_TO_SOURCE` расширена. `source_name='t-hunted'` доходит до LLM payload (`_llm_common._build_user_message`) без правок в `*_transcreation.py`.
-- [ ] **AC6.** Telegram channel post для t-hunted-статей эмитит ровно `#thunted #news`. `_source_hashtag` патчится спец-кейсом для blogspot-поддомена либо через source-name override map. Регрессионный тест `tests/test_telegram.py::test_t_hunted_teaser_appends_news_tag` фиксирует формат.
-- [ ] **AC7.** `ux-guidelines.md` обновлён в трёх местах: (а) строка 22 расширяет input-language assertion на «английский или португальский»; (б) новый блок `### 🟤 t-hunted` в секции «Per-source style notes» с заметками о тоне, голосе, типичной длине; (в) новая секция `## Glossary — PT/EN/RU` между «Per-source style notes» и «Red flags» с базовым словарём из 10 HW-терминов (Caça → Hunt, Super-T → Super Treasure Hunt, etc.).
-- [ ] **AC8.** Boilerplate-фильтр расширен PT-секцией (~10 паттернов: `Compartilhar no`, `Marcadores:`, `Postado por`, `Leia mais`, `Postagens mais antigas`, etc.) в `_BOILERPLATE_PATTERNS`. Length-bound 120 chars + `^`-anchored regex обеспечивают защиту от false positives на EN/RU.
-- [ ] **AC9.** Три новых admin-алерта в `admin_alerts.py`: `alert_t_hunted_host_rejected` (E031), `alert_t_hunted_fetch_error` (E032), `alert_t_hunted_no_body` (E033). Unit-тесты в `tests/test_admin_alerts.py`.
-- [ ] **AC10.** Все три деплой-FILES-списка обновлены: `deploy.sh`, `.github/workflows/deploy.yml`, `.github/workflows/deploy_test.yml` — каждый содержит `"t_hunted_source.py"`. Pre-deploy QA вручную проверяет лоск-сtep.
-- [ ] **AC11.** После 7 дней работы на test-инстансе оператор субъективно подтверждает: RU-перевод t-hunted-постов не хуже autoevolution baseline (на 5-10 примерах), нет [E031-E033] алертов в админ-чате, нет cross-language багов в выводе.
+- [ ] **AC1.** RSS-фид t-hunted добавлен в конфиг источников. Бот успешно парсит фид через `feedparser` без ошибок, t-hunted записи попадают в очередь pending-статей наравне с другими источниками.
+
+- [ ] **AC2.** Создан новый парсер для Blogger-страниц, возвращающий тот же контракт что и существующие парсеры (заголовок, лид, параграфы, картинки) либо `None` при структурном сбое.
+
+- [ ] **AC3.** Парсер защищён жёстким SSRF-allowlist'ом — принимает только URL с хоста `t-hunted.blogspot.com`, любой другой netloc отбрасывается до сетевого запроса.
+
+- [ ] **AC4.** Article dispatcher маршрутизирует blogspot-URL к новому парсеру; для других источников поведение не меняется.
+
+- [ ] **AC5.** Source name resolution возвращает `'t-hunted'` для записей с этого хоста и передаёт его в LLM payload — этого достаточно, чтобы LLM применил per-source style note из системного промпта без правок в transcreation-модулях.
+
+- [ ] **AC6.** Telegram channel-card для t-hunted-статей содержит ровно `#thunted #news` (без дефиса, потому что Telegram отбрасывает дефис в хештеге и без значения 'blogspot' который дал бы дефолтный механизм). Регрессионный тест лочит этот формат.
+
+- [ ] **AC7.** Системный LLM-промпт расширен поддержкой португальского как языка оригинала; добавлена секция стиля для t-hunted (тональность, типичная длина, особенности структуры — наполнение договаривается с оператором в ходе реализации) и PT-EN-RU глоссарий HW-терминов с базовым набором ≥10 терминов.
+
+- [ ] **AC8.** Boilerplate-фильтр расширен португальскими паттернами Blogger-шаблонов (метки, кнопки шеринга, навигация). Length-bound 120 символов защищает EN/RU потоки от false positives — та же модель что у RU-патернов 2026-05-08.
+
+- [ ] **AC9.** Добавлены админ-алерты на ключевые сбои нового парсера (отказ по allowlist, сетевые ошибки, не найдено тело статьи) — формат алертов согласован с существующим каталогом `[E0XX]` кодов.
+
+- [ ] **AC10.** Все три FILES-списка деплоя (`deploy.sh`, `deploy.yml`, `deploy_test.yml`) одновременно содержат имя нового модуля. Без этого `news_bot.service` упадёт `ImportError` на следующем cron-тике без CI-сигнала. Pre-deploy QA проверяет все три файла.
+
+### Что НЕ в scope фичи
+
+- **Cross-source content dedup.** Если одна и та же модель Hot Wheels освещена t-hunted и autoevolution в одну неделю — оба поста попадут в канал. Это известное ограничение, отдельная фича запланирована следующей.
 
 ## Ограничения
 
 **Хардовые «нет»:**
 
-- **Не вводить headless browser** (Playwright / Selenium). Урок Mattel (PR #9): ~300MB зависимостей, замедление cron-тика, ради источника с редким HW-контентом — не оправдано.
-- **Не вводить новых ENV-переменных.** Текущий `.env` уже плотный; вся конфигурация должна работать на существующем наборе.
-- **Не перетряхивать структуру `SOURCES` registry в `news_bot.py`.** Только новая ветка в article dispatcher.
-- **LLM-бюджет:** текущий ~$3/мес через OpenRouter (`openai/gpt-5.4-mini`). Допустимый рост от добавления t-hunted — до +25% (~$0.75/мес).
-- **Без новых схем БД.** SQLite-таблицы (`processed_news`, `pending_articles`, `published_articles`, `failed_articles`, `bot_state`) остаются нетронутыми.
-- **Без новых зависимостей.** Используем уже установленные `requests`, `beautifulsoup4`, `feedparser`.
-
-**Известные ограничения, выходящие за scope:**
-
-- **Cross-source content dedup** (одна и та же модель Hot Wheels освещена t-hunted и autoevolution в одну неделю) — не обрабатывается в этой фиче. Запланирована отдельная фича `cross-source-content-dedup` с собственным user-spec.
+- **Не вводить headless browser** (Playwright/Selenium). Урок Mattel: ~300 МБ зависимостей, замедление cron-тика. Не оправдано для источника с редким HW-контентом.
+- **Не вводить новых ENV-переменных.** Текущий `.env` уже плотный.
+- **Не перетряхивать архитектуру источников.** Только новая ветка в article dispatcher.
+- **Не менять схему БД** — все SQLite-таблицы остаются нетронутыми.
+- **Не добавлять новых внешних зависимостей** — используем уже установленные пакеты.
+- **LLM-бюджет:** допустимый рост от добавления t-hunted — до +25% от текущей стоимости транскреации (вне зависимости от выбранного LLM-провайдера через `LLM_PROVIDER`).
 
 ## Риски
 
-- **Риск R1 (HIGH): Telegram отбрасывает дефис в хештеге** — `#t-hunted` отрендерится как `#t` + plain text `-hunted`. **Митигация:** хештег зафиксирован как `#thunted` в AC6, регрессионный тест `tests/test_telegram.py::test_t_hunted_teaser_appends_news_tag` лочит формат.
+- **Риск R1 (HIGH): Telegram отбрасывает дефис в хештеге.** `#t-hunted` отрендерится как `#t` + plain text `-hunted`. **Митигация:** хештег зафиксирован как `#thunted` в AC6, регрессионный тест лочит формат.
 
-- **Риск R2 (HIGH): `_source_hashtag` по дефолту возвращает `#blogspot`** для netloc `t-hunted.blogspot.com` (берёт второй сегмент справа). **Митигация:** patch функции спец-кейсом для blogspot-поддомена либо source-name override map. Реализуется как часть AC6.
+- **Риск R2 (HIGH): дефолтный механизм source-hashtag вернёт `#blogspot`** для netloc `t-hunted.blogspot.com` — нерелевантная атрибуция, конфликт с возможными будущими blogspot-источниками. **Митигация:** реализуется как часть AC6 (конкретная техника выбирается на этапе tech-spec).
 
-- **Риск R3 (MED): дедуп картинок** — Blogger хранит size variants в path (`=s1600` vs `=s640`), а lamley-логика дедупит только по query-string. **Митигация:** wait-and-see — стартуем с lamley-логикой, патчим если дубли появятся в первых 10 постах.
+- **Риск R3 (MED): дедуп Blogger-картинок** — Blogger хранит size variants в path сегменте, а не в query string. Существующая логика дедупа может пропускать дубли. **Митигация:** wait-and-see — стартуем с базовой логикой, тюним если в первых 10 публикациях появятся дубли.
 
-- **Риск R7 (MED): забыли модуль в одном из трёх FILES lists** — `news_bot.service` упадёт с ImportError на следующем cron-тике без CI-сигнала. **Митигация:** INVARIANT-комментарии в `deploy.sh` уже предупреждают; pre-deploy чеклист в AC10.
+- **Риск R7 (MED): забыли модуль в одном из трёх FILES lists.** `news_bot.service` упадёт `ImportError` на следующем cron-тике без CI-сигнала заранее. **Митигация:** существующие INVARIANT-комментарии + pre-deploy QA в AC10.
 
-- **Риск R8 (MED): PT-EN-RU глоссарий — baseline-угадайка** до первых реальных публикаций. **Митигация:** code-researcher предложил 10-pattern starter; оператор уточняет после первых 5-10 переводов (как отдельный мини-PR), не блокирует выход фичи.
+- **Риск R8 (MED): PT-EN-RU глоссарий — baseline-предположение** до первых реальных публикаций. **Митигация:** code-research предложил стартер из 10 терминов; оператор уточняет после первых 5-10 переводов отдельным мини-PR, не блокирует выход фичи.
 
-- **Риск R4 (LOW): длинные PT-эссе** в одном параграфе могут упереться в 4000-char per-paragraph cap. **Митигация:** существующий `_truncate_paragraphs` пишет WARN, не падает; мониторим первые 10 постов.
+- **Риск R4 (LOW): длинные PT-эссе** могут упереться в существующий лимит 4000 символов на параграф. **Митигация:** существующий механизм пишет WARNING и продолжает работу — мониторим первые 10 публикаций.
 
-- **Риск R5 (LOW): PT-паттерны в boilerplate применяются глобально** (ко всем источникам) — нет language tagging в `_BOILERPLATE_PATTERNS`. **Митигация:** length-bound 120 chars + `^`-anchored regex дают защиту от false positives — точно та же модель что у RU-патернов с 2026-05-08.
+- **Риск R5 (LOW): PT-патерны boilerplate применяются глобально** ко всем источникам (нет language tagging). **Митигация:** length-bound + word-boundary regex дают защиту от false positives — точно та же модель что у RU-патернов с 2026-05-08.
+
+- **Риск качества (MED): после 7 дней теста RU-качество t-hunted ниже baseline.** **Митигация / abort path:** в этом случае не катим в prod, итерируем системный промпт и глоссарий в отдельном PR; t-hunted остаётся отключённым на проде до подтверждения качества. Опция полного отключения источника (удалить из конфига) сохраняется в любой момент.
 
 ## Технические решения
 
-- **Хештег зафиксирован как `#thunted`**, потому что Telegram не поддерживает дефис в хештеге (рендерится как два отдельных токена), а `#tHunted` неудобен на мобильной клавиатуре, и `#t_hunted` выбивается из стиля канала (`#autoevolution`, `#lamleygroup`).
+- **Хештег зафиксирован как `#thunted`**. Дефис Telegram не поддерживает в хештегах. Альтернативы (`#tHunted`, `#t_hunted`) выбиваются из существующего стиля канала (`#autoevolution`, `#lamleygroup`).
 
-- **Парсер пишем по шаблону `lamley_source.py`** (минус WAF/throttle/cooldown apparatus), потому что HTML-структура Blogger ближе всего к lamley (`<div class="post-body entry-content">`), и Blogger не использует Cloudflare против скрейпинга. Получится ~150 строк против lamley'евских 380. autoevolution overkill (Cloudflare bypass + blocks generation для JS-DOM); orangetrack тяжелее (700+ строк, aggregator pattern, WP-block-embed handling).
+- **Cross-source content dedup вынесен в отдельную фичу** — pilot-стадия 2-4 недели с INFO-логом и админ-пингом, без авто-skip. Решение принято в Cycle 1 интервью.
 
-- **Эмодзи для t-hunted = 🟤** — единственный «тёплый» круг, не конфликтующий с уже используемыми цветами (🟠 autoevolution / 🔵 lamley / 🟡 mattel / 🟣 orangetrack / 🟢 prod-info / 🔴 error / etc.). Используется только в архивном `hw_review.py`, cosmetic.
-
-- **PT-паттерны добавляем глобально в `_BOILERPLATE_PATTERNS`** (без language tagging), потому что length-bound 120 + `^`-anchored regex даёт ту же защиту от false positives что у RU-патернов с 2026-05-08, и операторская точка ввода более легковесная.
-
-- **Не вводим language tagging в `feeds.json`.** `_resolve_source_name` инфериует source из netloc, а LLM сам определяет PT-язык из контента — единственное место где захардкожен EN-input, это `ux-guidelines.md:22`, и оно расширяется.
-
-- **Три dedicated admin-алерта (E031-E033)**, а не один generic `[E002] alert_source_fetch_failed`. Lamley имеет 4 (host/size/fetch/no-body) — три достаточно для триажа без перебора, у нас нет size guard (Blogger не отдаёт огромные страницы) поэтому E028-аналог не нужен.
+- **Базовый набор PT-EN-RU глоссария** — стартер из ≥10 терминов согласован в code-research; оператор уточняет после первых 5-10 публикаций отдельным PR.
 
 ## Тестирование
 
-**Unit-тесты:** делаются всегда, не обсуждаются. Конкретно:
-- Новый файл `tests/test_t_hunted_source.py` (~80 строк, mirror lamley's `TestFetch* + TestHostAllowlist`).
-- Расширение `tests/test_sources_registry.py` (`NETLOC_TO_SOURCE` + `_resolve_source_name`).
-- Расширение `tests/test_telegram.py` (`test_t_hunted_teaser_appends_news_tag` — лочит `#thunted`).
-- Расширение `tests/test_boilerplate_filter.py` (`test_portuguese_patterns_filtered` параметризованный класс).
-- Расширение `tests/test_admin_alerts.py` (builders E031-E033).
+**Unit-тесты:** делаются всегда. Покрытие: новый парсер (заголовок, тело, картинки, обработка HTTP-ошибок), SSRF-allowlist, расширения boilerplate-фильтра под PT, новые админ-алерты.
 
-**Интеграционные тесты:** делаем — smoke pipeline тик с одним EN + одним PT entry в одном `job()` run, проверяет dedup, slot ordering, что обе публикации выходят без cross-language interference.
+**Интеграционные тесты:** делаем — smoke-тест pipeline'а в один cron-тик с микс-набором одна EN + одна PT статья. Проверяем что дедуп работает корректно, slot ordering не страдает, обе публикации проходят без cross-language интерференций.
 
-**E2E тесты:** не делаем — оператор визуально верифицирует первые публикации на test-канале `@myhwchannel123` через стандартный `git push dev` → `deploy_test.yml` цикл. Размер фичи M, нет critical user flows которые требуют автоматизации браузерных проверок.
+**E2E-тесты:** не делаем — размер фичи M, нет critical user flows, требующих браузерной автоматизации. Оператор визуально верифицирует первые публикации на test-канале через стандартный `git push dev` → автодеплой test-инстанса.
 
 ## Как проверить
 
@@ -111,19 +122,19 @@ size: M
 
 | Шаг | Инструмент | Ожидаемый результат |
 |-----|-----------|-------------------|
-| 1. Unit-тесты для t-hunted-парсера | `pytest tests/test_t_hunted_source.py -v` | Все зелёные: TestFetch (parse_title, parse_body, image_limit, http_error) + TestHostAllowlist |
-| 2. Все остальные тесты по-прежнему зелёные | `pytest tests/ -q` | 933+ passed (текущий baseline) + новые тесты |
-| 3. `feedparser` парсит t-hunted RSS | `python -c "import feedparser; print(len(feedparser.parse('https://t-hunted.blogspot.com/feeds/posts/default?alt=rss').entries))"` | ≥ 1 entry, нет critical exception |
-| 4. SSRF-allowlist жёсткий | `pytest tests/test_t_hunted_source.py::TestHostAllowlist -v` | Запрос на `evil.example.com` возвращает None + ping |
-| 5. Хештег зафиксирован | `pytest tests/test_telegram.py::test_t_hunted_teaser_appends_news_tag` | Зелёный, формат `#thunted #news` |
-| 6. Все три FILES-списка содержат модуль | `grep -l "t_hunted_source.py" deploy.sh .github/workflows/deploy.yml .github/workflows/deploy_test.yml` | Все три файла в выводе |
-| 7. CI на PR зелёный | GitHub Actions / CI workflow | Зелёный статус CI на PR в `dev` |
+| 1. Unit-тесты нового парсера | `pytest tests/test_t_hunted_source.py -v` | Все зелёные |
+| 2. Весь существующий suite по-прежнему зелёный | `pytest tests/ -q` | Прохождение текущего baseline + новые тесты |
+| 3. `feedparser` парсит t-hunted RSS | `python -c "import feedparser; print(len(feedparser.parse('https://t-hunted.blogspot.com/feeds/posts/default?alt=rss').entries))"` | ≥1 entry, нет critical exception |
+| 4. SSRF-allowlist жёсткий | `pytest -k host_allowlist` для t-hunted-тестов | Запрос на foreign netloc возвращает `None` + пинг |
+| 5. Хештег формата `#thunted #news` | Регрессионный тест на teaser | Зелёный, формат совпадает байт-в-байт |
+| 6. Модуль в трёх FILES-списках | `grep -l "t_hunted_source.py" deploy.sh .github/workflows/deploy.yml .github/workflows/deploy_test.yml` | Все три файла в выводе |
+| 7. CI на PR | GitHub Actions | Зелёный |
 
 ### Пользователь проверяет (post-deploy на test-канале)
 
-- **Hero-картинка в превью** — открыть Telegram, найти первую t-hunted публикацию в `@myhwchannel123`, убедиться что preview card отрисован с фотографией. (Зачем: визуальная проверка не покрывается автотестами — Telegram-side рендеринг.)
-- **Хештег рендерится как `#thunted`** (без обрезания) — кликабельный, открывает фильтр по тегу. (Зачем: Telegram-side validation хештег-формата.)
-- **Telegraph-страница на чистом русском** — открыть `⚡ INSTANT VIEW` карточку, прочитать body, убедиться что нет PT-фраз в выводе. (Зачем: real-world проверка LLM PT→RU транскреации, нельзя автоматизировать без человеческого языкового восприятия.)
-- **Emoji prefix на title** — должен быть один из 🏆 / 🏎️ / 🚀 / 💎 / 🤝 / 📢 / 🚗 / 🔥. (Зачем: safety net в `_apply_emoji_safety_net` — визуальная проверка что fallback не сбросил префикс.)
-- **Через 7 дней работы:** оператор спот-чекает 5-10 первых t-hunted переводов против оригиналов на t-hunted.blogspot.com, оценивает RU-качество не хуже autoevolution baseline. (Зачем: AC11 — subjective quality gate перед promotion в prod.)
-- **Нет [E031-E033] алертов** за 7 дней в админ-чате `@sunny413x`. (Зачем: AC11 — стабильность парсера на реальном feed'е.)
+- **Hero-картинка в превью** — открыть Telegram, найти первую t-hunted публикацию в test-канале, убедиться что preview card отрисован с фотографией. (Зачем: Telegram-side рендеринг не покрывается автотестами.)
+- **Хештег рендерится как `#thunted`** (без обрезания), кликабельный. (Зачем: Telegram-side validation формата.)
+- **Telegraph-страница на чистом русском** — открыть Instant View, прочитать body, убедиться что нет PT-фраз в выводе. (Зачем: real-world проверка LLM PT→RU транскреации, нельзя автоматизировать без человеческого языкового восприятия.)
+- **Emoji prefix на title** присутствует. (Зачем: визуальная проверка safety net.)
+- **Через 7 дней:** оператор спот-чекает 5-10 первых t-hunted переводов против оригиналов на t-hunted.blogspot.com и оценивает RU-качество не хуже autoevolution baseline. (Зачем: subjective quality gate перед promotion в prod.) **Если качество ниже baseline:** не катим в prod, итерируем промпт/глоссарий отдельным PR.
+- **Нет алертов от t-hunted-парсера** за 7 дней в админ-чате. (Зачем: стабильность парсера на реальном feed'е.)
