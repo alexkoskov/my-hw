@@ -43,6 +43,7 @@ size: M
 | Запрошенный URL не принадлежит t-hunted.blogspot.com (защита от SSRF) | Запрос блокируется, админ получает алерт |
 | LLM вернул вывод не на русском (мало кириллицы) | Запускается per-article Google Translate fallback с маркером `↳ автоперевод` на Telegra.ph странице |
 | Очень длинный параграф (>4000 символов) | Параграф усекается, в лог пишется WARNING, публикация не падает |
+| Blogger XML с bozo-флагом от feedparser | Существующее поведение: WARN в лог, продолжение работы, без изменений |
 | Одна и та же модель Hot Wheels освещена t-hunted и другим источником в одну неделю | Не обрабатывается в этой фиче — известное ограничение, отдельная фича `cross-source-content-dedup` запланирована следующей |
 
 ## Критерии приёмки
@@ -59,7 +60,7 @@ size: M
 
 - [ ] **AC6.** Telegram channel-card для t-hunted-статей содержит ровно `#thunted #news` (без дефиса, потому что Telegram отбрасывает дефис в хештеге и без значения 'blogspot' который дал бы дефолтный механизм). Регрессионный тест лочит этот формат.
 
-- [ ] **AC7.** Системный LLM-промпт расширен поддержкой португальского как языка оригинала; добавлена секция стиля для t-hunted (тональность, типичная длина, особенности структуры — наполнение договаривается с оператором в ходе реализации) и PT-EN-RU глоссарий HW-терминов с базовым набором ≥10 терминов.
+- [ ] **AC7.** Системный LLM-промпт расширен поддержкой португальского как языка оригинала. В секции per-source стиля присутствует блок про t-hunted (структурное наличие — наполнение блока договаривается с оператором в ходе реализации, не блокирует приёмку). Добавлен PT-EN-RU глоссарий HW-терминов с базовым набором ≥10 терминов — структурное наличие глоссария проверяется тестом.
 
 - [ ] **AC8.** Boilerplate-фильтр расширен португальскими паттернами Blogger-шаблонов (метки, кнопки шеринга, навигация). Length-bound 120 символов защищает EN/RU потоки от false positives — та же модель что у RU-патернов 2026-05-08.
 
@@ -123,12 +124,13 @@ size: M
 | Шаг | Инструмент | Ожидаемый результат |
 |-----|-----------|-------------------|
 | 1. Unit-тесты нового парсера | `pytest tests/test_t_hunted_source.py -v` | Все зелёные |
-| 2. Весь существующий suite по-прежнему зелёный | `pytest tests/ -q` | Прохождение текущего baseline + новые тесты |
-| 3. `feedparser` парсит t-hunted RSS | `python -c "import feedparser; print(len(feedparser.parse('https://t-hunted.blogspot.com/feeds/posts/default?alt=rss').entries))"` | ≥1 entry, нет critical exception |
-| 4. SSRF-allowlist жёсткий | `pytest -k host_allowlist` для t-hunted-тестов | Запрос на foreign netloc возвращает `None` + пинг |
-| 5. Хештег формата `#thunted #news` | Регрессионный тест на teaser | Зелёный, формат совпадает байт-в-байт |
-| 6. Модуль в трёх FILES-списках | `grep -l "t_hunted_source.py" deploy.sh .github/workflows/deploy.yml .github/workflows/deploy_test.yml` | Все три файла в выводе |
-| 7. CI на PR | GitHub Actions | Зелёный |
+| 2. Интеграционный smoke-тест (EN+PT в одном тике) | `pytest -k integration_t_hunted -v` | Зелёный — обе публикации проходят без cross-language интерференций |
+| 3. Весь существующий suite по-прежнему зелёный | `pytest tests/ -q` | Прохождение текущего baseline + новые тесты |
+| 4. `feedparser` парсит t-hunted RSS | `python -c "import feedparser; print(len(feedparser.parse('https://t-hunted.blogspot.com/feeds/posts/default?alt=rss').entries))"` | ≥1 entry, нет critical exception |
+| 5. SSRF-allowlist жёсткий | `pytest -k host_allowlist` для t-hunted-тестов | Запрос на foreign netloc возвращает `None` + пинг |
+| 6. Хештег формата `#thunted #news` | Регрессионный тест на teaser | Зелёный, формат совпадает байт-в-байт |
+| 7. Модуль в трёх FILES-списках | `grep -l "t_hunted_source.py" deploy.sh .github/workflows/deploy.yml .github/workflows/deploy_test.yml` | Все три файла в выводе |
+| 8. CI на PR | GitHub Actions | Зелёный |
 
 ### Пользователь проверяет (post-deploy на test-канале)
 
