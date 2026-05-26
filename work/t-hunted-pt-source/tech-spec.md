@@ -189,6 +189,8 @@ Not required: Playwright MCP, Telegram MCP (operator does visual checks directly
 | **R5 (LOW): PT patterns cross-applied to EN/RU** | Length-bound 120 chars + `^`-anchored regex give the same false-positive protection as the 2026-05-08 RU defence-in-depth precedent (Decision 4). |
 | **R6 (LOW): Blogger XML feedparser bozo flag** | Existing WARN-and-continue behaviour in `fetch_rss` — no change needed. |
 | **Quality regression risk (MED): RU output worse than autoevolution baseline after 7-day watch** | Explicit abort path in user-spec: do not promote dev→main; iterate prompt/glossary as follow-up PR; feature stays on test instance until quality confirmed. Full disable option (drop from `feeds.json`) remains available throughout. |
+| **LLM budget (US-C6: ≤+25% growth)** | Expected t-hunted load is ~2 posts/day, capped further by `MAX_DAILY_POSTS=4` across the four sources (so net new transcreation calls ≤2/day). At the current ~$3/month baseline this is at most +$0.30/month or ~+10% — comfortably under the +25% cap. No additional cost-control mechanism added; existing `MAX_DAILY_POSTS` cap is the hard ceiling. |
+| **RSS feed-level failure for t-hunted (US-E1)** | `news_bot._fetch_rss_entries` already wraps each feed iteration in try/except and emits `[E002] alert_source_fetch_failed(source_name, error)` via `admin_alerts` on `requests.RequestException` / parse failure — generic feed-level alert, source-name-aware via `_resolve_source_name(url)` which now returns `'t-hunted'`. So the t-hunted RSS unavailability case is covered by the existing generic alert; E031-E033 are reserved for article-level failures (host-rejected / fetch-error / no-body) caught downstream in `fetch_t_hunted_article`. No new feed-level alert needed. |
 
 ## User-Spec Deviations
 
@@ -198,6 +200,7 @@ All user-spec ACs are implemented as-is. The items below are explicit refinement
 - **Glossary size 14 entries (Decision 5)** — exceeds AC7's ≥10 floor; stronger satisfaction, not a deviation.
 - **Brown circle 🟤 emoji + 'T-Hunted' label (Decision 7)** — user-spec doesn't mention SOURCE_EMOJI/SOURCE_LABEL; marked `[TECHNICAL]` (implementation hygiene, not derived from any user-spec requirement).
 - **LLM non-Russian fallback path (Decision 8)** — user-spec error scenario row 5 names the behaviour ("LLM вернул вывод не на русском → fallback с маркером ↳ автоперевод"); tech-spec documents that this is already implemented in existing code and requires no PT-specific work. Not a deviation, but flagged explicitly so reviewer doesn't expect new code under that AC.
+- **Blogger image dedup — proactive fix (Risk R3, Task 1 test `test_image_dedup_strips_blogger_size_suffix`)** — user-spec R3 mitigation says "wait-and-see — стартуем с базовой логикой, тюним если в первых 10 публикациях появятся дубли". Tech-spec deviates from this by shipping the `=s\d+(-c)?` size-suffix strip and a unit test in Wave 1, before any production observation. Reason: the lamley `?`-split dedup logic is structurally inadequate for Blogger image URLs (which carry size variants in path, not query) — shipping it untouched would produce known-bad results on the first publishes that contain multiple sized variants. Adding a 5-line helper and one unit test pre-empts a likely-immediate quality regression. → [PENDING USER APPROVAL]
 
 ## Acceptance Criteria
 
