@@ -69,8 +69,10 @@ None. No singleton resources are introduced. Existing shared resources (HTTP ses
 **Decision:** When the LLM (configured engine) returns output that fails `_is_mostly_russian` Cyrillic ratio check in `_llm_common.py:134-153`, the existing dispatcher already raises a transcreation error → caller `_fallback_publish` already routes that single article through Google Translate with the `↳ автоперевод` marker. No new code added for PT input — the EN-locked check works language-agnostically on output (counts Cyrillic, doesn't care about input language). Verified: PT-input articles that yield non-Russian LLM output (rare: LLM ignores prompt) reuse the same fallback as EN-input articles.
 **Rationale:** Supports user-spec error scenario row 5 ("LLM вернул вывод не на русском"). Code-research §2.C confirmed `_is_mostly_russian` is output-only, input-language-agnostic. No risk of false positive from PT input itself (Portuguese uses Latin script, won't trip the 30% Cyrillic floor on Cyrillic-translated output).
 **Alternatives considered:** Add a PT-input-specific guard before LLM call (rejected — solves a non-existent problem; existing output-check covers all input languages); skip the fallback for t-hunted (rejected — quality regression).
+
+### Decision 7: [TECHNICAL] SOURCE_EMOJI / SOURCE_LABEL entries (archived `hw_review` consumer hygiene)
 **Decision:** Add `SOURCE_EMOJI['t-hunted'] = '🟤'` (Unicode U+1F7E4 brown circle) and `SOURCE_LABEL['t-hunted'] = 'T-Hunted'` to the existing dicts in `news_bot.py`.
-**Rationale:** Both dicts are consumed only by the archived `hw_review.py` CLI (not by admin alerts or channel posts). Adding entries for the 4th source keeps the dicts symmetric with the other three (autoevolution / lamley / mattel / orangetrack already have entries). Existing values per code: `SOURCE_EMOJI = {autoevolution: 🟠, lamley: 🟢, mattel: 🟣, orangetrack: 🔵}` (verified against `news_bot.py:857-862`). Brown 🟤 is unused and visually distinguishable. `'T-Hunted'` mirrors the `T-` capitalisation convention used by the source itself. `[TECHNICAL]` because user-spec doesn't mention SOURCE_EMOJI/SOURCE_LABEL; this is implementation hygiene.
+**Rationale:** Both dicts are consumed only by the archived `hw_review.py` CLI (not by admin alerts or channel posts). Adding entries for the 4th source keeps the dicts symmetric with the other three (autoevolution / lamley / mattel / orangetrack already have entries). Existing values verified against `news_bot.SOURCE_EMOJI`: `{autoevolution: 🟠, lamley: 🟢, mattel: 🟣, orangetrack: 🔵}`. Brown 🟤 is unused and visually distinguishable. `'T-Hunted'` mirrors the `T-` capitalisation convention used by the source itself. `[TECHNICAL]` because user-spec doesn't mention SOURCE_EMOJI/SOURCE_LABEL; this is implementation hygiene.
 **Alternatives considered:** Leave entries absent (rejected — asymmetric dicts surprise future maintainers); use yellow 🟡 (rejected — too close visually to the orange 🟠 used by autoevolution); use red 🔴 (rejected — semantically associated with errors elsewhere in this codebase).
 
 ## Data Models
@@ -190,12 +192,12 @@ Not required: Playwright MCP, Telegram MCP (operator does visual checks directly
 
 ## User-Spec Deviations
 
-None.
+All user-spec ACs are implemented as-is. The items below are explicit refinements where user-spec deferred specifics to this phase — they are documented here for traceability, not as contradictions:
 
-All user-spec ACs are implemented as-is. Tech-spec decisions that go beyond user-spec wording are explicit choices that user-spec deferred to this phase:
 - **Hashtag override mechanism (Decision 2)** — user-spec AC6 explicitly deferred the technique to tech-spec; we chose Option (b) SOURCE_HASHTAG_OVERRIDE map over Option (a) special-case-in-helper.
-- **Glossary size 14 entries (Decision 5)** — exceeds AC7's ≥10 floor; not a deviation, just stronger satisfaction.
-- **Brown circle 🟤 emoji (Decision 7)** — user-spec doesn't mention SOURCE_EMOJI; marked `[TECHNICAL]` decision (implementation hygiene, not derived from any user-spec requirement).
+- **Glossary size 14 entries (Decision 5)** — exceeds AC7's ≥10 floor; stronger satisfaction, not a deviation.
+- **Brown circle 🟤 emoji + 'T-Hunted' label (Decision 7)** — user-spec doesn't mention SOURCE_EMOJI/SOURCE_LABEL; marked `[TECHNICAL]` (implementation hygiene, not derived from any user-spec requirement).
+- **LLM non-Russian fallback path (Decision 8)** — user-spec error scenario row 5 names the behaviour ("LLM вернул вывод не на русском → fallback с маркером ↳ автоперевод"); tech-spec documents that this is already implemented in existing code and requires no PT-specific work. Not a deviation, but flagged explicitly so reviewer doesn't expect new code under that AC.
 
 ## Acceptance Criteria
 
@@ -252,12 +254,12 @@ Technical criteria supplementing user-spec ACs:
 - **Files to modify:** `feeds.json`, `boilerplate_filter.py`, `tests/test_boilerplate_filter.py`
 - **Files to read:** `boilerplate_filter.py` (existing patterns), `tests/test_boilerplate_filter.py`, `work/t-hunted-pt-source/code-research.md` (§4.B)
 
-#### Task 5: Wiring tests (`test_sources_registry.py` + `test_telegram.py` + dispatcher unit + ux-guidelines structure)
-- **Description:** Extend `tests/test_sources_registry.py` — `test_has_exactly_the_five_keys` and `test_values_are_only_the_three_source_names` (existing test names, both misleadingly named after our addition; consider renaming) get t-hunted assertions; `TestResolveSourceName` gets new t-hunted case. Add `tests/test_telegram.py::test_t_hunted_teaser_uses_thunted_tag` locking `#thunted #news` byte format. Add direct dispatcher unit tests in `tests/test_integration.py` (or new `test_news_bot_dispatcher.py`): `test_fetch_full_article_routes_blogspot_to_t_hunted` + `test_fetch_full_article_unknown_domain_returns_none` — catches dispatcher-ordering regressions at unit level. Add new `tests/test_ux_guidelines_structure.py` with 4 structural assertions on `.claude/skills/project-knowledge/references/ux-guidelines.md` (glossary section present, ≥10 glossary entries, t-hunted block present, input-language prompt widened — all content-anchored, no line numbers).
+#### Task 5: Wiring tests (`test_sources_registry.py` + `test_telegram.py` + dispatcher unit)
+- **Description:** Extend `tests/test_sources_registry.py` — `test_has_exactly_the_five_keys` and `test_values_are_only_the_three_source_names` (existing test names, both misleadingly named after our addition; consider renaming) get t-hunted assertions; `TestResolveSourceName` gets new t-hunted case. Add `tests/test_telegram.py::test_t_hunted_teaser_uses_thunted_tag` locking `#thunted #news` byte format. Add direct dispatcher unit tests in `tests/test_integration.py` (or new `test_news_bot_dispatcher.py`): `test_fetch_full_article_routes_blogspot_to_t_hunted` + `test_fetch_full_article_unknown_domain_returns_none` — catches dispatcher-ordering regressions at unit level. NOTE: `tests/test_ux_guidelines_structure.py` is created in Task 7 (Wave 3), not here, since the assertions target file edits that land in Task 7.
 - **Skill:** code-writing
 - **Reviewers:** code-reviewer, test-reviewer
-- **Verify-smoke:** `pytest tests/test_sources_registry.py tests/test_telegram.py tests/test_ux_guidelines_structure.py -v` → all green; dispatcher unit test green
-- **Files to modify:** `tests/test_sources_registry.py`, `tests/test_telegram.py`, `tests/test_integration.py` (or new `test_news_bot_dispatcher.py`), `tests/test_ux_guidelines_structure.py` (new)
+- **Verify-smoke:** `pytest tests/test_sources_registry.py tests/test_telegram.py -v` → all green; dispatcher unit test green
+- **Files to modify:** `tests/test_sources_registry.py`, `tests/test_telegram.py`, `tests/test_integration.py` (or new `test_news_bot_dispatcher.py`)
 - **Files to read:** existing test files, `news_bot.py` (post-Task-3), `work/t-hunted-pt-source/code-research.md` (§C)
 
 #### Task 6: Deploy plumbing (3 FILES lists) + pytest invariant test
@@ -270,12 +272,12 @@ Technical criteria supplementing user-spec ACs:
 
 ### Wave 3 (prompt + integration — parallel)
 
-#### Task 7: `ux-guidelines.md` prompt update (widen + t-hunted block + glossary)
-- **Description:** Three discrete edits to `.claude/skills/project-knowledge/references/ux-guidelines.md` (content-anchored, no line numbers): (a) widen the LLM system-prompt input-language assertion to accept PT alongside EN (find sentence beginning «Твоя единственная задача: преобразовывать входящий», replace `английский` with `(английский или португальский)`); (b) insert `### 🟤 t-hunted` per-source style block after the Mattel block — fields Voice / Tone dial / Length / Structure quirks / title-examples, all marked `[TBD operator]` for post-deploy refinement; (c) insert new `## Glossary — PT/EN/RU` section between Per-source notes and Red flags with 14 baseline entries from code-research §E. Preserve verbatim the system-prompt blockquote markers per the file's invariant contract (LLM reads the blockquote as its role).
+#### Task 7: `ux-guidelines.md` prompt update + structural test (widen + t-hunted block + glossary)
+- **Description:** Three discrete edits to `.claude/skills/project-knowledge/references/ux-guidelines.md` (content-anchored, no line numbers): (a) widen the LLM system-prompt input-language assertion to accept PT alongside EN (find sentence beginning «Твоя единственная задача: преобразовывать входящий», replace `английский` with `(английский или португальский)`); (b) insert `### 🟤 t-hunted` per-source style block after the Mattel block — fields Voice / Tone dial / Length / Structure quirks / title-examples, all marked `[TBD operator]` for post-deploy refinement; (c) insert new `## Glossary — PT/EN/RU` section between Per-source notes and Red flags with 14 baseline entries from code-research §E. Preserve verbatim the system-prompt blockquote markers per the file's invariant contract (LLM reads the blockquote as its role). Also create new `tests/test_ux_guidelines_structure.py` with 4 structural assertions on the file (glossary section present, ≥10 glossary entries, t-hunted block present, input-language prompt widened) — all content-anchored, no line numbers; these tests land together with the prompt edits so the structural assertions don't sit red between Wave 2 and Wave 3.
 - **Skill:** prompt-master
 - **Reviewers:** code-reviewer, prompt-reviewer
 - **Verify-smoke:** `pytest tests/test_ux_guidelines_structure.py -v` → all 4 structural assertions pass (glossary ≥10 entries, t-hunted block present, prompt widened, glossary section exists)
-- **Files to modify:** `.claude/skills/project-knowledge/references/ux-guidelines.md`
+- **Files to modify:** `.claude/skills/project-knowledge/references/ux-guidelines.md`, `tests/test_ux_guidelines_structure.py` (new)
 - **Files to read:** `.claude/skills/project-knowledge/references/ux-guidelines.md`, `work/t-hunted-pt-source/code-research.md` (§D, §E, §5)
 
 #### Task 8: Integration smoke test EN+PT mixed tick
