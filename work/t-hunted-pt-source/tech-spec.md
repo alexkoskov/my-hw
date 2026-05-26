@@ -1,6 +1,6 @@
 ---
 created: 2026-05-26
-status: draft
+status: approved
 branch: dev
 size: M
 ---
@@ -200,7 +200,7 @@ All user-spec ACs are implemented as-is. The items below are explicit refinement
 - **Glossary size 14 entries (Decision 5)** — exceeds AC7's ≥10 floor; stronger satisfaction, not a deviation.
 - **Brown circle 🟤 emoji + 'T-Hunted' label (Decision 7)** — user-spec doesn't mention SOURCE_EMOJI/SOURCE_LABEL; marked `[TECHNICAL]` (implementation hygiene, not derived from any user-spec requirement).
 - **LLM non-Russian fallback path (Decision 8)** — user-spec error scenario row 5 names the behaviour ("LLM вернул вывод не на русском → fallback с маркером ↳ автоперевод"); tech-spec documents that this is already implemented in existing code and requires no PT-specific work. Not a deviation, but flagged explicitly so reviewer doesn't expect new code under that AC.
-- **Blogger image dedup — proactive fix (Risk R3, Task 1 test `test_image_dedup_strips_blogger_size_suffix`)** — user-spec R3 mitigation says "wait-and-see — стартуем с базовой логикой, тюним если в первых 10 публикациях появятся дубли". Tech-spec deviates from this by shipping the `=s\d+(-c)?` size-suffix strip and a unit test in Wave 1, before any production observation. Reason: the lamley `?`-split dedup logic is structurally inadequate for Blogger image URLs (which carry size variants in path, not query) — shipping it untouched would produce known-bad results on the first publishes that contain multiple sized variants. Adding a 5-line helper and one unit test pre-empts a likely-immediate quality regression. → [PENDING USER APPROVAL]
+- **Blogger image dedup — proactive fix (Risk R3, Task 1 test `test_image_dedup_strips_blogger_size_suffix`)** — user-spec R3 mitigation says "wait-and-see — стартуем с базовой логикой, тюним если в первых 10 публикациях появятся дубли". Tech-spec deviates from this by shipping the `=s\d+(-c)?` size-suffix strip and a unit test in Wave 1, before any production observation. Reason: the lamley `?`-split dedup logic is structurally inadequate for Blogger image URLs (which carry size variants in path, not query) — shipping it untouched would produce known-bad results on the first publishes that contain multiple sized variants. Adding a 5-line helper and one unit test pre-empts a likely-immediate quality regression. → [APPROVED 2026-05-26]
 
 ## Acceptance Criteria
 
