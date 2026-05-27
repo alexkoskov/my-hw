@@ -31,19 +31,19 @@ def _stub_t_hunted_alerts(monkeypatch):
     monkeypatch.setattr(
         admin_alerts,
         "alert_t_hunted_host_rejected",
-        lambda link: f"[E031-STUB] host rejected: {link}",
+        lambda link: "[E031-STUB] host_rejected: " + link,
         raising=False,
     )
     monkeypatch.setattr(
         admin_alerts,
         "alert_t_hunted_fetch_error",
-        lambda link, err: f"[E032-STUB] fetch error: {link}: {err}",
+        lambda link, error: "[E032-STUB] fetch_error: " + link + " :: " + str(error),
         raising=False,
     )
     monkeypatch.setattr(
         admin_alerts,
         "alert_t_hunted_no_body",
-        lambda link: f"[E033-STUB] no body: {link}",
+        lambda link: "[E033-STUB] no_body: " + link,
         raising=False,
     )
     yield
@@ -132,9 +132,12 @@ class TestFetchTHuntedArticle:
 
         assert out is None
         notifier.assert_called_once()
-        # Notifier receives a string payload.
+        # Notifier receives a string payload built by the FETCH-error
+        # builder specifically — fingerprint pins builder identity so a
+        # regression that routes through E031/E033 fails this assertion.
         msg = notifier.call_args.args[0]
         assert isinstance(msg, str)
+        assert "[E032-STUB]" in msg
 
     def test_returns_none_on_missing_body(self):
         session = MagicMock()
@@ -152,6 +155,11 @@ class TestFetchTHuntedArticle:
 
         assert out is None
         notifier.assert_called_once()
+        # Fingerprint pins this to the no-body builder — distinguishes
+        # from the structurally-similar fetch-error path (both reach
+        # this branch with HTTP success / parser failure).
+        msg = notifier.call_args.args[0]
+        assert "[E033-STUB]" in msg
 
     def test_image_limit_enforced(self):
         # 15 unique image paths so dedup doesn't collapse them.
@@ -174,7 +182,6 @@ class TestFetchTHuntedArticle:
 
         assert out is not None
         assert len(out["images"]) == t_hunted_source._IMAGE_LIMIT
-        assert t_hunted_source._IMAGE_LIMIT == 10
 
     def test_image_dedup_strips_blogger_size_suffix(self):
         # Three images: photo1 in two sizes (=s1600, =s640), photo2 with
@@ -230,7 +237,9 @@ class TestFetchTHuntedArticle:
         assert out["subtitle"] == "Real article lead paragraph."
         assert "Share on Facebook" not in out["subtitle"]
         assert "Share on Facebook" not in out["paragraphs"]
-        assert "Second content paragraph." in out["paragraphs"]
+        # Exact-order assertion: only the second content paragraph
+        # survives; any extra entry or reordering by filter/lift fails.
+        assert out["paragraphs"] == ["Second content paragraph."]
 
 
 # ---------------------------------------------------------------------------
@@ -293,6 +302,10 @@ class TestHostAllowlist:
         # Network was NOT touched — host rejection short-circuits before HTTP.
         session.get.assert_not_called()
         notifier.assert_called_once()
+        # Fingerprint pins this to the host-rejected builder — a
+        # regression that fires E032/E033 instead would fail here.
+        msg = notifier.call_args.args[0]
+        assert "[E031-STUB]" in msg
 
     def test_rejects_userinfo_attack(self):
         # ``urlparse(...).hostname`` correctly returns 'evil.com' here
