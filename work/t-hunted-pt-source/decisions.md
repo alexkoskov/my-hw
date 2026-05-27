@@ -54,3 +54,22 @@ Review details — in JSON files via links. QA report — in logs/working/.
 **Verification:**
 - `pytest tests/test_t_hunted_source.py -v` → 14 passed
 - `pytest tests/ -q` → 947 passed, 2 skipped (no regressions, baseline +12)
+
+## Task 2: Admin alerts E031-E033
+
+**Status:** Done
+**Commit:** a318841b
+**Agent:** teammate (general-purpose, opus)
+**Summary:** Added 3 admin-alert builders to `admin_alerts.py` between E028 (last lamley alert) and E030 (orangetrack aggregator): `alert_t_hunted_host_rejected` (E031, 🟡 SSRF rejection), `alert_t_hunted_fetch_error` (E032, 🟡 HTTP/timeout), `alert_t_hunted_no_body` (E033, 🟡 parser couldn't find body, mentions `<div class="post-body">` selector). Mirrors lamley E025/E027/E028 shape with Russian copy + Ссылка/Ошибка/Что сделать sections. E029 intentionally skipped per code-research §A.5.
+**Deviations:** None.
+
+**Reviews:**
+
+*Round 1:*
+- code-reviewer: approved (2 minor cosmetic optional) → [logs/working/task-2/code-reviewer-round1.json]
+- test-reviewer: passed (0 findings) → [logs/working/task-2/test-reviewer-round1.json]
+
+**Verification:**
+- `pytest tests/test_admin_alerts.py -v` → 29 passed (+3 from 26)
+- `pytest tests/ -q` → 950 passed, 2 skipped (baseline +3, no regressions)
+
