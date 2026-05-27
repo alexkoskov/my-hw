@@ -204,6 +204,48 @@ class TestAdminAlerts(unittest.TestCase):
         self.assertIn("[E028]", msg)
         self.assertIn("entry-content", msg)
 
+    def test_e031_t_hunted_host_rejected(self):
+        msg = admin_alerts.alert_t_hunted_host_rejected(
+            "https://evil.example.com/"
+        )
+        self.assertIn("[E031]", msg)
+        self.assertIn("🟡", msg)
+        self.assertIn("https://evil.example.com/", msg)
+        # Builder must mention SSRF-rejection in Russian — accept either
+        # "хост" wording or "allowlist".
+        self.assertTrue(
+            ("хост" in msg) or ("allowlist" in msg),
+            f"Expected 'хост' or 'allowlist' in alert text, got: {msg!r}",
+        )
+
+    def test_e032_t_hunted_fetch_error(self):
+        msg = admin_alerts.alert_t_hunted_fetch_error(
+            "https://t-hunted.blogspot.com/x", "HTTP 503"
+        )
+        self.assertIn("[E032]", msg)
+        self.assertIn("🟡", msg)
+        self.assertIn("https://t-hunted.blogspot.com/x", msg)
+        self.assertIn("HTTP 503", msg)
+
+    def test_e033_t_hunted_no_body(self):
+        msg = admin_alerts.alert_t_hunted_no_body(
+            "https://t-hunted.blogspot.com/y"
+        )
+        self.assertIn("[E033]", msg)
+        self.assertIn("🟡", msg)
+        self.assertIn("https://t-hunted.blogspot.com/y", msg)
+        # Builder must mention missing body — accept any of the documented
+        # phrasings (Russian wording or selector name).
+        self.assertTrue(
+            (
+                "не нашёл тело" in msg
+                or "не найдено тело" in msg
+                or "post-body" in msg
+                or "entry-content" in msg
+            ),
+            f"Expected body-missing wording in alert text, got: {msg!r}",
+        )
+
     def test_e030_orangetrack_summary_header(self):
         msg = admin_alerts.alert_orangetrack_summary_header(7)
         self.assertIn("[E030]", msg)
@@ -239,6 +281,9 @@ class TestAdminAlerts(unittest.TestCase):
             admin_alerts.alert_lamley_article_too_large(1),
             admin_alerts.alert_lamley_fetch_error("x", "y"),
             admin_alerts.alert_lamley_no_body("x"),
+            admin_alerts.alert_t_hunted_host_rejected("x"),
+            admin_alerts.alert_t_hunted_fetch_error("x", "y"),
+            admin_alerts.alert_t_hunted_no_body("x"),
             admin_alerts.alert_orangetrack_summary_header(1),
         ]
         codes = [m[:6] for m in all_messages]  # "[E0XX]"
