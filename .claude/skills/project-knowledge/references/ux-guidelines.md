@@ -19,7 +19,7 @@ Treat the text below as your role for the duration of any translation work in th
 
 > **Инструкция:**
 >
-> Ты — ведущий редактор и локализатор контента для популярного Telegram-канала. Твоя единственная задача: преобразовывать входящий английский текст в высококлассный русскоязычный контент.
+> Ты — ведущий редактор и локализатор контента для популярного Telegram-канала. Твоя единственная задача: преобразовывать **входящий текст (английский или португальский)** в высококлассный русскоязычный контент.
 >
 > **Алгоритм обработки текста:**
 >
@@ -100,6 +100,41 @@ Different sources come with different "native voice" and different structural qu
 - **Structure quirks:** parser returns thumbnail-only (see `patterns.md § Image extraction per source`) — 1 hero image, which matches the source page.
 - **Good title example (2026-04-24):** Legends Tour 2026 → `"🏆 Legends Tour 2026: 20 стран, 5 месяцев, одна дайкаст-модель"` — punchy, numbered, ends on a hook.
 - **Good title example (2026-04-24):** Brick Shop × HW → `"🏁 Brick Shop × Hot Wheels: Lamborghini, Aston Martin и Toyota теперь в пластиковых кирпичах"` — lists the three brands the reader actually wants to know about.
+
+### 🟤 t-hunted
+
+- **Voice:** независимый бразильский блог про Hot Wheels — коллекционерская community-журналистика. Автор — фанат, не журналист, не пресс-служба. [TBD operator после первых 5-10 публикаций — точная характеристика регистра, является ли блог one-author или несколько голосов]
+- **Tone dial:** «друг по хобби» — слегка ближе к autoevolution-баровому регистру, чем к mattel-пресс-релизу. Allow informal collector vocabulary. Используй PT-EN-RU глоссарий ниже — НЕ калькировать «caça» → «охота» (правильно «хант»), НЕ калькировать «Super Caça» → «Супер-охота» (правильно «Super-T»).
+- **Length:** [TBD operator] — большинство постов короткие, до 5-10 параграфов; иногда длинные deep-dive обзоры новых линеек.
+- **Structure quirks:** Blogger-шаблонные артефакты (Compartilhar, Marcadores, Postar comentário) уже отрезаны парсером — в LLM payload они НЕ попадают. Если что-то Blogger-ное всё-таки прорвалось — это сигнал к расширению `boilerplate_filter.py` PT-блока.
+- **Good/bad title examples:** [TBD operator — добавить после первых 5-10 публикаций]
+
+## Glossary — PT/EN/RU
+
+Hot Wheels collector jargon: переводы канонические для канала. LLM использует
+эту таблицу для PT→RU транскреации t-hunted статей, для EN→RU других источников
+— как референс по согласованности терминов.
+
+| PT | EN | RU (preferred) | Notes |
+|---|---|---|---|
+| Caça | (Treasure) Hunt | Хант | НЕ «охота» — устоявшийся коллекционерский сленг |
+| Super Caça | Super Treasure Hunt | Super-T (Супер-хант) | НЕ «Супер-охота» |
+| Caça ao Tesouro | Treasure Hunt | T-Hunt | Полная форма |
+| Linha principal | Mainline | Mainline | Не переводить — кастинговая категория |
+| Linha premium | Premium line | Premium | Не переводить |
+| Edição limitada | Limited edition | Лимитка / лимитированная серия | |
+| Coleção | Collection / series | Серия / коллекция | По контексту |
+| Modelo | Casting | Кастинг | Не «модель» (заводит в путаницу с «model car») |
+| Pintura | Paint / deco | Окрас / расцветка | |
+| Decalque | Tampo / decal | Тампо / декаль | «Тампо» — заводская печать; «декаль» — отдельная наклейка [VERIFY operator] |
+| Roda | Wheel (variant) | Колёса / диски | Указывать тип: RR (Real Riders), 5SP, etc. |
+| Lançamento | Release / drop | Релиз / релиз новой серии | |
+| Carrinho | Diecast car (lit. "little car") | Машинка / даикаст | «Carrinho» — общий collectible-сленг, не уменьшительное [VERIFY operator] |
+| Série | Series (e.g. Pop Culture, Boulevard) | Серия | Заглавный регистр у названия серии: «серия Pop Culture» |
+
+Operator: после первых 5-10 публикаций пересмотри `[VERIFY operator]` пункты против
+реальных t-hunted постов и поправь предпочитаемый RU-перевод там, где LLM
+систематически промахивается.
 
 ## Red flags to self-check before stage
 
