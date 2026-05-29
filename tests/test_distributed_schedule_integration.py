@@ -885,15 +885,16 @@ class TestDistributedSchedule(unittest.TestCase):
 
 
     # ======================================================================
-    # Scenario 6 (Task 8, t-hunted-pt-source): EN + PT mixed-tick smoke.
-    # Two RSS entries — one autoevolution-style EN link, one t-hunted-style
-    # PT link — flow through `job()` together. Asserts:
+    # Scenario 6 (Task 8, t-hunted-pt-source): EN + PT dispatch & routing
+    # smoke. Two RSS entries — one autoevolution-style EN link, one
+    # t-hunted-style PT link — flow through `job()` together. Scoped to:
     #   * `_resolve_source_name` (Task 3 wiring) routes the blogspot link
     #     to source_name='t-hunted' and autoevolution link to 'autoevolution'
-    #   * `transcreate_via_claude` is invoked exactly twice (no cross-
-    #     language interference; PT entry not collapsed onto EN)
+    #   * `transcreate_via_claude` is invoked exactly twice, with the
+    #     right per-entry article payload (link + source_name pinned via
+    #     `call_args_list` — proves no cross-language LLM-payload swap)
     #   * Both rows land in `published_articles` with the correct
-    #     `source_name` column value
+    #     `source_name` column value (DB-level routing pin)
     #   * `pending_articles` ends empty (no dedup false-positive on
     #     differing links)
     #   * No `[E031]`, `[E032]`, `[E033]` admin pings fire (happy-path
@@ -901,15 +902,36 @@ class TestDistributedSchedule(unittest.TestCase):
     #   * `outage_state` untouched (happy-path leaves the state machine
     #     alone)
     #   * Teaser dispatched twice (channel side-effect for both)
-    # Locked test name for the `-k integration_t_hunted` filter declared
-    # in tech-spec Verify-smoke for this task.
+    #
+    # OUT OF SCOPE (delegated elsewhere):
+    #   * Real `fetch_full_article` / parser execution — `fetch_full_patcher`
+    #     in setUp returns a synthetic article, so neither the autoevolution
+    #     nor the t-hunted parser is actually exercised here. Parser
+    #     correctness is covered by `tests/test_t_hunted_source.py` and
+    #     `tests/test_autoevolution_source.py` (unit).
+    #   * PT boilerplate filter — `boilerplate_filter.is_boilerplate`
+    #     against PT patterns is verified at unit level in
+    #     `tests/test_boilerplate_filter.py` (Task 4). This smoke does not
+    #     pipe real PT HTML through the pipeline.
+    #   * Hashtag rendering for the t-hunted source — covered by
+    #     `tests/test_telegram.py -k thunted` (Task 5 unit).
+    #
+    # Locked filter substring `integration_t_hunted` (test name) for the
+    # `-k integration_t_hunted` selector declared in tech-spec Verify-smoke.
     # ======================================================================
 
-    def test_integration_t_hunted_smoke_en_pt_mixed_tick(self):
-        """One EN (autoevolution) + one PT (t-hunted) entry, single
-        ``job()`` tick. Verifies both source paths coexist without
-        cross-language interference after Wave 1 (parser) + Wave 2
-        (dispatcher / NETLOC_TO_SOURCE / SOURCE_HASHTAG_OVERRIDE wiring).
+    def test_integration_t_hunted_en_pt_dispatch_and_routing_smoke(self):
+        """Dispatcher routing + LLM-payload language differentiation +
+        DB ``source_name`` storage + no-admin-alerts smoke for the
+        EN(autoevolution) + PT(t-hunted) mixed tick.
+
+        Scope: wiring after Wave 1 (parser module import) and Wave 2
+        (``NETLOC_TO_SOURCE``, dispatcher branch, ``SOURCE_HASHTAG_OVERRIDE``).
+        NOT a full-pipeline test — ``fetch_full_article`` is mocked in
+        the base setUp, so real parsers, the PT boilerplate filter, and
+        hashtag rendering are exercised only at unit-test level (see
+        ``tests/test_boilerplate_filter.py``, ``tests/test_t_hunted_source.py``,
+        ``tests/test_telegram.py -k thunted``).
         """
         en_link = 'https://www.autoevolution.com/news/hot-wheels-test-en-article-12345.html'
         pt_link = 'https://t-hunted.blogspot.com/2026/05/test-pt-article.html'
@@ -948,6 +970,45 @@ class TestDistributedSchedule(unittest.TestCase):
         self.assertEqual(mock_claude.call_count, 2,
                          f"expected 2 Claude calls (one per entry), got "
                          f"{mock_claude.call_count}")
+
+        # Pin the per-call article payload that reached
+        # `transcreate_via_claude(row)` (single positional arg — see
+        # `claude_transcreation.transcreate_via_claude(article, *, ...)`
+        # and the call site at `news_bot.py` `_fallback_publish`).
+        # `side_effect=[en_result, pt_result]` consumes results in order,
+        # so by index 0 must carry the EN entry and index 1 the PT entry.
+        # Without this, a regression that tagged BOTH payloads
+        # `source_name='autoevolution'` (or swapped the order) would still
+        # consume the two-element side_effect and pass `call_count == 2`.
+        # The `link` field is the canonical pin (NETLOC_TO_SOURCE input);
+        # `source_name` is also pinned because `_fetch_rss_entries`
+        # writes it via `_resolve_source_name(link)` before the row
+        # reaches Claude.
+        en_call_row = mock_claude.call_args_list[0].args[0]
+        pt_call_row = mock_claude.call_args_list[1].args[0]
+        self.assertEqual(
+            en_call_row.get('link'), en_link,
+            f"call 0 to transcreate_via_claude must carry EN link; "
+            f"got link={en_call_row.get('link')!r}, "
+            f"source_name={en_call_row.get('source_name')!r}",
+        )
+        self.assertEqual(
+            en_call_row.get('source_name'), 'autoevolution',
+            f"call 0 must carry source_name='autoevolution' (NETLOC_TO_SOURCE "
+            f"miss?); got {en_call_row.get('source_name')!r}",
+        )
+        self.assertEqual(
+            pt_call_row.get('link'), pt_link,
+            f"call 1 to transcreate_via_claude must carry PT link; "
+            f"got link={pt_call_row.get('link')!r}, "
+            f"source_name={pt_call_row.get('source_name')!r}",
+        )
+        self.assertEqual(
+            pt_call_row.get('source_name'), 't-hunted',
+            f"call 1 must carry source_name='t-hunted' (NETLOC_TO_SOURCE "
+            f"wiring or _resolve_source_name miss); "
+            f"got {pt_call_row.get('source_name')!r}",
+        )
 
         # Both rows land in published_articles; pending drains to empty.
         published = self._published_links()
