@@ -35,6 +35,16 @@ class TestSourceHashtag(unittest.TestCase):
             "#lamleygroup",
         )
 
+    def test_t_hunted_hashtag(self):
+        """Locks Decision 2 (SOURCE_HASHTAG_OVERRIDE) + R1 (Telegram drops
+        hyphens in hashtags) + R2 (naive ``parts[-2]`` would yield
+        ``#blogspot``). For ``t-hunted.blogspot.com`` the override map must
+        emit ``#thunted`` byte-for-byte."""
+        self.assertEqual(
+            _source_hashtag("https://t-hunted.blogspot.com/2026/05/post.html"),
+            "#thunted",
+        )
+
     def test_strips_www_prefix(self):
         self.assertEqual(_source_hashtag("https://www.example.com/"), "#example")
 
@@ -98,6 +108,26 @@ class TestSendTelegraphTeaser(unittest.TestCase):
         self.assertTrue(ok)
         kwargs = mock_bot.send_message.await_args.kwargs
         self.assertEqual(kwargs['text'], '#lamleygroup #news')
+
+    @patch('news_bot.TELEGRAM_BOT_TOKEN', 'test_token')
+    @patch('news_bot.TELEGRAM_CHANNEL_ID', '@channel')
+    @patch('news_bot.Bot')
+    def test_t_hunted_teaser_uses_thunted_tag(self, mock_bot_class):
+        """Locks AC6: the channel teaser for a ``t-hunted.blogspot.com``
+        source URL emits ``#thunted #news`` byte-for-byte (Decision 2
+        SOURCE_HASHTAG_OVERRIDE). Guards R1 (Telegram drops hyphens) and
+        R2 (default ``parts[-2]`` would yield ``#blogspot``)."""
+        mock_bot = MagicMock()
+        mock_bot.send_message = AsyncMock()
+        mock_bot_class.return_value = mock_bot
+
+        ok = send_telegraph_teaser(
+            telegraph_url='https://telegra.ph/X',
+            source_url='https://t-hunted.blogspot.com/2026/05/post.html',
+        )
+        self.assertTrue(ok)
+        kwargs = mock_bot.send_message.await_args.kwargs
+        self.assertEqual(kwargs['text'], '#thunted #news')
 
     @patch('news_bot.TELEGRAM_BOT_TOKEN', 'test_token')
     @patch('news_bot.TELEGRAM_CHANNEL_ID', '@channel')
