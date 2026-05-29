@@ -187,3 +187,27 @@ Review details — in JSON files via links. QA report — in logs/working/.
 - `pytest tests/test_distributed_schedule_integration.py -k integration_t_hunted -v` → 1 passed (renamed test green, `-k` filter substring preserved)
 - `pytest tests/ -q` → 991 passed, 2 skipped (no regressions)
 
+## Task 9: Code Audit
+
+**Status:** Done
+**Commit:** (audit-only, no code change)
+**Agent:** code-reviewer auditor (final-state holistic, not diff)
+**Summary:** approved_with_suggestions — 0 critical, 0 major, 5 minor (doc/cosmetic only). Cross-task wiring verified coherent end-to-end: parser contract ↔ dispatcher branch ↔ `SOURCE_HASHTAG_OVERRIDE` ↔ `NETLOC_TO_SOURCE` ↔ all 3 deploy `FILES` arrays line up. No shared-resource regressions, no duplicate logic beyond deliberate lamley-mirror baseline. Report → [logs/working/audit/code-audit.json].
+**Deviations:** None. Minor follow-ups (non-blocking, deferred to backlog): tech-spec Decision 2 prose refresh, fetch_full_article docstring widening, admin_alerts E030↔E031 ordering note.
+
+## Task 10: Security Audit
+
+**Status:** Done
+**Commit:** (audit-only, no code change)
+**Agent:** security-auditor (final-state OWASP-style, not diff)
+**Summary:** approved — 0 Critical, 0 High, 2 Medium, 1 Low across 15 files. SSRF allowlist is exact-match on `parsed.hostname` (not netloc), strictly matches lamley baseline. All 10 PT regex patterns `^`-anchored with bounded quantifiers, run only under 120-char ceiling — ReDoS-safe. Alert bodies scrubbed by `_redact_text`; logger by `_TokenRedactingFilter`. Report → [logs/working/audit/security-audit.json].
+**Deviations:** Medium findings (SEC-002 redirect-follow allowlist bypass, SEC-003 buffered-content-then-cap) are pre-existing systemic gaps INHERITED from lamley baseline — flagged for separate hardening PR, NOT regressions introduced by this feature. SEC-001 (http+https allowlist) similarly inherited. None block Wave 5.
+
+## Task 11: Test Audit
+
+**Status:** Done
+**Commit:** (audit-only, no code change)
+**Agent:** test-reviewer auditor (final-state AC-coverage + pyramid + litmus, not diff)
+**Summary:** passed — 0 critical, 0 major, 6 minor. AC1–AC10 all covered with strong assertions. Pyramid healthy: ~53 unit + 1 integration smoke + 0 E2E. Clean isolation (tempfile DBs, monkeypatch, freeze_time). All 5 litmus probes pass on SSRF/image-dedup/hashtag/dispatcher/PT-boilerplate. No flake risk. Report → [logs/working/audit/test-audit.json].
+**Deviations:** Minor non-blocking gaps tracked: no direct invariant test on feeds.json entry (covered indirectly by netloc-map test), deploy-invariant uses substring (not FILES-array membership), autouse `[E03N-STUB]` fixture in `test_t_hunted_source.py` is dead-but-harmless after T2 landed real builders (recommendation: drop stub, bind to real `[E031]/[E032]/[E033]` codes for stronger pinning) — deferred to backlog.
+
