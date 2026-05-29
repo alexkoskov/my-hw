@@ -211,3 +211,20 @@ Review details — in JSON files via links. QA report — in logs/working/.
 **Summary:** passed — 0 critical, 0 major, 6 minor. AC1–AC10 all covered with strong assertions. Pyramid healthy: ~53 unit + 1 integration smoke + 0 E2E. Clean isolation (tempfile DBs, monkeypatch, freeze_time). All 5 litmus probes pass on SSRF/image-dedup/hashtag/dispatcher/PT-boilerplate. No flake risk. Report → [logs/working/audit/test-audit.json].
 **Deviations:** Minor non-blocking gaps tracked: no direct invariant test on feeds.json entry (covered indirectly by netloc-map test), deploy-invariant uses substring (not FILES-array membership), autouse `[E03N-STUB]` fixture in `test_t_hunted_source.py` is dead-but-harmless after T2 landed real builders (recommendation: drop stub, bind to real `[E031]/[E032]/[E033]` codes for stronger pinning) — deferred to backlog.
 
+## Task 12: Pre-deploy QA
+
+**Status:** Done
+**Commit:** (QA-only, no code change)
+**Agent:** qa-runner (pre-deploy-qa skill)
+**Summary:** `status: passed`. Full pytest suite 991 passed / 2 skipped / 0 failed (zero regressions vs 935+ baseline, +56 feature tests). 23 acceptance criteria checked: 22 passed, 1 not_verifiable (live RSS connectivity). 0 criticals, 0 majors, 1 minor (t_hunted_source.py 206 LOC vs ≤170 soft target — already accepted by code audit + decisions.md Task 1). Recommendation: PROCEED to Task 13 (Deploy). Full report → [logs/qa/pre-deploy-qa.json].
+**Deviations:** None.
+**Deferred to post-deploy:** 8 criteria require live verification — handed off to Task 14 in `deferredToPostDeploy` of the JSON report. Headline items: AC_RSS_LIVE_CONNECTIVITY (feedparser.parse on t-hunted RSS), AC_CI_GREEN_ON_PR (after PR open), AC_SERVICE_CLEAN_RESTART (post-deploy systemctl + journalctl), AC_NO_ALERTS_24H ([E031-E033] absence in 24h window), AC_TELEGRAM_VISUAL_RENDER (hero image + #thunted hashtag operator visual), AC_RU_QUALITY_FIRST_PUBLISHES (subjective 5-10 sample review), AC_NO_REGRESSION_OTHER_SOURCES (7-day cadence watch), AC_LLM_BUDGET_25_PCT (30-day billing review).
+
+**Verification:**
+- `pytest tests/ -q` → 991 passed, 2 skipped, 0 failed in 13.69s
+- All 8 targeted feature suites green (test_t_hunted_source, admin_alerts -k t_hunted, sources_registry, telegram -k thunted, boilerplate_filter -k portuguese, ux_guidelines_structure, distributed_schedule_integration -k integration_t_hunted, deploy_files_invariant)
+- Smoke: `_source_hashtag('https://t-hunted.blogspot.com/2026/05/post.html')` → `'#thunted'` exact
+- Smoke: `grep -l "t_hunted_source.py" deploy.sh .github/workflows/deploy.yml .github/workflows/deploy_test.yml` → all 3 files in output
+- Hard-constraints: no diff against origin/dev for requirements.txt / .env.example / pending_articles_repo.py; no actual imports of curl_cffi / playwright / selenium / headless in feature code
+- Full report: [logs/qa/pre-deploy-qa.json]
+
