@@ -176,6 +176,17 @@ class TestIsBoilerplateNegative:
             f"unexpectedly filtered PT prose: {text!r}"
         )
 
+    def test_pt_compartilhar_inline_short_prose_kept(self):
+        # Short prose (<=120 chars) with 'compartilhar' inline (not at ^).
+        # Anchoring alone — independent from the length-bound — must save
+        # this. Pins the `^` guarantee even if `_MAX_BOILERPLATE_LEN` were
+        # ever raised.
+        text = "Eles vão compartilhar no Facebook em breve."
+        assert len(text) <= _MAX_BOILERPLATE_LEN
+        assert is_boilerplate(text) is False, (
+            f"unexpectedly filtered short PT prose: {text!r}"
+        )
+
 
 # ---------------------------------------------------------------------------
 # Length threshold: long content with trigger phrase is NOT filtered.
@@ -252,41 +263,97 @@ class TestRegexSafety:
     ``signal.alarm`` (alarm is POSIX-only, breaks on Windows CI)."""
 
     @pytest.mark.parametrize(
-        "adversarial",
+        "adversarial,expected",
         [
-            # 1. compartilhar — pump alternation choices via repeated "no "
-            ("compartilhar " + "no " * 35 + "facebook")[:_MAX_BOILERPLATE_LEN],
-            # 2. marcadores — long colon-suffixed payload
-            ("marcadores" + ":" * (_MAX_BOILERPLATE_LEN - len("marcadores"))),
-            # 3. postado por — long tail
-            ("postado por " + "x" * (_MAX_BOILERPLATE_LEN - len("postado por "))),
-            # 4. postagem — long tail to test anchored exact-match
-            ("postagem" + "x" * (_MAX_BOILERPLATE_LEN - len("postagem"))),
-            # 5. enviar por email — bait long tail
-            ("enviar por email" + "x" * (_MAX_BOILERPLATE_LEN - len("enviar por email"))),
-            # 6. postagens mais antigas — pump alternation and tail
-            ("postagens mais " + "antigas" * 15)[:_MAX_BOILERPLATE_LEN],
-            # 7. assinar — colon spam
-            ("assinar" + ":" * (_MAX_BOILERPLATE_LEN - len("assinar"))),
-            # 8. leia mais — long tail
-            ("leia mais" + "x" * (_MAX_BOILERPLATE_LEN - len("leia mais"))),
-            # 9. postar um comentário — pump "um " tokens
-            ("postar " + "um " * 35 + "comentario")[:_MAX_BOILERPLATE_LEN],
-            # 10. página inicial — pump alternation
-            ("pagina " + "inicial" * 15)[:_MAX_BOILERPLATE_LEN],
+            # 1. compartilhar — pump alternation choices via repeated "no ".
+            # Truncation chops off the trailing "facebook" platform token, so
+            # the platform alternation can't match; classification → False.
+            (
+                ("compartilhar " + "no " * 35 + "facebook")[:_MAX_BOILERPLATE_LEN],
+                False,
+            ),
+            # 2. marcadores — long colon-suffixed payload. Pattern is
+            # ``^marcadores\s*:`` so the colon at position 10 matches → True.
+            (
+                ("marcadores" + ":" * (_MAX_BOILERPLATE_LEN - len("marcadores"))),
+                True,
+            ),
+            # 3. postado por — pattern ``^postado\s+por\b`` matches at start
+            # regardless of tail; "x" after "por " keeps the \b satisfied → True.
+            (
+                ("postado por " + "x" * (_MAX_BOILERPLATE_LEN - len("postado por "))),
+                True,
+            ),
+            # 4. postagem — pattern ``^postagem$`` is exact-match; long tail
+            # breaks the `$` anchor → False.
+            (
+                ("postagem" + "x" * (_MAX_BOILERPLATE_LEN - len("postagem"))),
+                False,
+            ),
+            # 5. enviar por email — pattern ``^enviar\s+por\s+email\b``. The
+            # "x" character right after "email" is a word char so the `\b`
+            # boundary fails → False.
+            (
+                (
+                    "enviar por email"
+                    + "x" * (_MAX_BOILERPLATE_LEN - len("enviar por email"))
+                ),
+                False,
+            ),
+            # 6. postagens mais (antigas|recentes) — pattern ends with `$`;
+            # repeating "antigas" past one occurrence breaks the anchor → False.
+            (
+                ("postagens mais " + "antigas" * 15)[:_MAX_BOILERPLATE_LEN],
+                False,
+            ),
+            # 7. assinar — pattern ``^assinar\s*:`` matches the first colon
+            # right after "assinar" → True.
+            (
+                ("assinar" + ":" * (_MAX_BOILERPLATE_LEN - len("assinar"))),
+                True,
+            ),
+            # 8. leia mais — pattern ``^leia\s+mais$`` is anchored; long
+            # tail breaks the `$` anchor → False.
+            (
+                ("leia mais" + "x" * (_MAX_BOILERPLATE_LEN - len("leia mais"))),
+                False,
+            ),
+            # 9. postar (um )?comentário — pattern ends with `$`; repeated
+            # "um " tokens followed by truncated "comentario" don't end at
+            # `$` → False.
+            (
+                ("postar " + "um " * 35 + "comentario")[:_MAX_BOILERPLATE_LEN],
+                False,
+            ),
+            # 10. página (inicial|principal) — pattern ends with `$`; repeated
+            # "inicial" past one occurrence breaks the anchor → False. Padded
+            # to ≤120 chars (lands at 112 due to truncation of 'inicial'*15).
+            (
+                ("pagina " + "inicial" * 15)[:_MAX_BOILERPLATE_LEN],
+                False,
+            ),
         ],
     )
-    def test_pt_patterns_no_redos_under_120_char_input(self, adversarial):
+    def test_pt_patterns_no_redos_under_120_char_input(self, adversarial, expected):
         import time
 
-        # Exact ceiling: spec mandates adversarial-shaped 120-char input.
+        # Adversarial inputs at or near the 120-char ceiling enforced by
+        # _MAX_BOILERPLATE_LEN (most hit exactly 120; the 'pagina inicial'
+        # case lands at 112 due to integer-multiplied truncation).
         assert len(adversarial) <= _MAX_BOILERPLATE_LEN
         t0 = time.monotonic()
-        is_boilerplate(adversarial)
+        result = is_boilerplate(adversarial)
         elapsed = time.monotonic() - t0
         assert elapsed < 0.1, (
             f"is_boilerplate too slow on PT adversarial input "
             f"({elapsed:.3f}s): {adversarial!r}"
+        )
+        # Bind classification behaviour alongside the timing bound — a
+        # stubbed `is_boilerplate(_) -> False` would now fail (the True
+        # cases force real regex evaluation).
+        assert result is expected, (
+            f"classification drift on adversarial input: {adversarial!r} "
+            f"(expected {expected}, got {result})"
         )
 
 
