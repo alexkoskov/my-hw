@@ -130,3 +130,60 @@ Review details — in JSON files via links. QA report — in logs/working/.
 - `pytest tests/test_deploy_files_invariant.py -v` → 3 passed
 - `pytest tests/ -q` → 982 passed, 2 skipped (no regressions)
 
+## Task 5: Wiring tests (telegram hashtag + dispatcher unit)
+
+**Status:** Done
+**Commit:** ced0422
+**Agent:** teammate (general-purpose, opus)
+**Summary:** Test-only task — added 2 tests to `tests/test_telegram.py` (`TestSourceHashtag::test_t_hunted_hashtag` exact `'#thunted'`, `TestSendTelegraphTeaser::test_t_hunted_teaser_uses_thunted_tag` exact `'#thunted #news'` byte-for-byte) and created `tests/test_news_bot_dispatcher.py` (pytest-style, 59 LOC) with `test_fetch_full_article_routes_blogspot_to_t_hunted` (patches `news_bot.t_hunted_source.fetch_t_hunted_article`, asserts call_count==1 + args[0]==link + result passthrough) and `test_fetch_full_article_unknown_domain_returns_none`. Production code untouched (T3 wiring already live).
+**Deviations:** None.
+
+**Reviews:**
+
+*Round 1:*
+- code-reviewer: approved (3 minor optional) → [logs/working/task-5/code-reviewer-round1.json]
+- test-reviewer: passed (4/4 litmus, 2 minor) → [logs/working/task-5/test-reviewer-round1.json]
+
+**Verification:**
+- `pytest tests/test_telegram.py tests/test_news_bot_dispatcher.py -v` → 15 passed
+- `pytest tests/ -q` → 991 passed, 2 skipped (no regressions)
+
+## Task 7: ux-guidelines.md PT widening + t-hunted style block + glossary
+
+**Status:** Done
+**Commit:** 92d870c
+**Agent:** teammate (general-purpose, opus)
+**Summary:** 3 surgical edits to `.claude/skills/project-knowledge/references/ux-guidelines.md` (+36 lines net): (1) widened system-prompt input-language sentence to `**входящий текст (английский или португальский)**` per Decision 5 canonical form; (2) added `### 🟤 t-hunted` per-source style block (verbatim from code-research §D, mirrors autoevolution/lamley/mattel structure, `[TBD operator]` markers where deferred); (3) added `## Glossary — PT/EN/RU` section (14-row markdown table from code-research §E, two `[VERIFY operator]` flags). Created `tests/test_ux_guidelines_structure.py` (122 LOC, 4 tests) pinning sentence widening + t-hunted block presence + glossary table cardinality + section ordering.
+**Deviations:** None substantive. Block-quote integrity verified: only the widened sentence differs vs baseline.
+
+**Reviews:**
+
+*Round 1:*
+- code-reviewer: approved (3 minor optional) → [logs/working/task-7/code-reviewer-round1.json]
+- prompt-reviewer: approved_with_suggestions (6 minor polish, none blocking) → [logs/working/task-7/prompt-reviewer-round1.json]
+
+**Verification:**
+- `pytest tests/test_ux_guidelines_structure.py -v` → 4 passed (TDD red→green confirmed)
+- `pytest tests/ -q` → 991 passed, 2 skipped (no regressions)
+
+## Task 8: Integration smoke EN+PT (dispatch + routing)
+
+**Status:** Done
+**Commit:** bb92447 + 0cd8fe0 (round 2 fix)
+**Agent:** teammate (general-purpose, opus) + fixer (general-purpose, opus)
+**Summary:** Added `test_integration_t_hunted_en_pt_dispatch_and_routing_smoke` to `tests/test_distributed_schedule_integration.py::TestDistributedSchedule`. Reuses class-level harness (`_set_rss_entries`, `freeze_time('2026-05-26 09:00:00')`, base `fetch_full_patcher`). Two RSS entries (EN autoevolution + PT t-hunted blogspot) flow through `_resolve_source_name` → DB row → `transcreate_via_claude` (`side_effect=[en_result, pt_result]`) → publisher. Asserts: published count == 2; `published_articles.source_name` row values == `{'autoevolution', 't-hunted'}` (proves T3 wiring reaches storage); 4 `call_args_list` assertions on EN/PT `link` + `source_name` inside the article dict (pins LLM-payload language differentiation); no E031/E032/E033 admin alerts; outage state untouched.
+**Deviations:** Renamed from "mixed tick smoke" to drop "full pipeline" framing — test honestly scopes to dispatch + routing + DB + no-alert paths; real parser path and PT boilerplate filter delegated to T1/T4 unit tests with explicit OUT OF SCOPE block comment.
+
+**Reviews:**
+
+*Round 1:*
+- code-reviewer: approved (4 minor optional) → [logs/working/task-8/code-reviewer-round1.json]
+- test-reviewer: needs_improvement (2 MAJOR: no `call_args_list` inspection + "full pipeline" framing) → [logs/working/task-8/test-reviewer-round1.json]
+
+*Round 2 (after fix):*
+- test-reviewer: passed (both majors closed, signature verified, OUT OF SCOPE block honest) → [logs/working/task-8/test-reviewer-round2.json]
+
+**Verification:**
+- `pytest tests/test_distributed_schedule_integration.py -k integration_t_hunted -v` → 1 passed (renamed test green, `-k` filter substring preserved)
+- `pytest tests/ -q` → 991 passed, 2 skipped (no regressions)
+
