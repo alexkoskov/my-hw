@@ -228,3 +228,21 @@ Review details — in JSON files via links. QA report — in logs/working/.
 - Hard-constraints: no diff against origin/dev for requirements.txt / .env.example / pending_articles_repo.py; no actual imports of curl_cffi / playwright / selenium / headless in feature code
 - Full report: [logs/qa/pre-deploy-qa.json]
 
+
+## Task 13: Deploy (test instance) — COMPLETED WITH INCIDENT
+
+**Status:** Done (with deferred follow-up — see Observations)
+**Commit:** 7e967da (squash-merge of PR #12 to dev). No code change in this task; deploy ops only.
+**Agent:** main agent (orchestrator) + manual SSH verification authorized by user
+**Summary:** PR #12 squash-merged to `dev`; auto-triggered `deploy_test.yml` (run 26679230672) reported success but functionally FAILED — `t_hunted_source.py` was not deployed because `workflow_run` executed main's stale YAML (21-entry FILES array, no `t_hunted_source.py`), while `Checkout` correctly fetched dev's source (with new import). Service crashlooped 38× with `ModuleNotFoundError`. Recovered via manual `gh workflow run deploy_test.yml --ref dev` (run 26679953068) which uses dev's YAML (22-entry FILES). Post-recovery: service active, t_hunted_source.py on server, clean first cron tick, autoevolution publish to Telegram succeeded. Promotion `dev` → `main` DEFERRED to Task 14 sign-off. Full incident report → [logs/deploy/deploy-test.log](logs/deploy/deploy-test.log).
+**Deviations:** Deviated from happy path of T13 spec — initial auto-deploy failed due to GitHub Actions `workflow_run` infrastructure limitation. Manual `workflow_dispatch --ref dev` used as documented recovery path (still through CI/CD pipeline, not SSH). SSH was used ONLY for read-only verification of broken service state and post-recovery confirmation — authorized as emergency debugging per CLAUDE.md.
+
+**Observations flagged for Task 14:**
+1. **Missing E031/E032/E033 alerts on t-hunted parse failures.** First post-recovery cron tick had 2 t-hunted entries returning `None` (warning `No article data for https://t-hunted.blogspot.com/...`), but no corresponding `[E03x]` admin alert in journal. Either (a) parser returns None without invoking alert builder (logic gap in `fetch_t_hunted_article`), or (b) alert sent but not surfaced in journal. T14 should verify admin Telegram channel received E03x or open hotfix.
+2. **No SCP failure signal.** Workflow reported `success` despite functionally broken deploy. The infrastructure-fix needs a sanity check (e.g., grep news_bot.py imports against FILES list at deploy time, OR add post-deploy server-side smoke that imports news_bot in a subshell before restart).
+
+**Recommended infrastructure-fix follow-up (separate PR, before promoting dev → main):**
+- **Option A.** Read FILES from a checked-out file (e.g., `deploy_files.list`) instead of hardcoding in YAML — workflow_run still loads main's YAML, but FILES content comes from the checked-out dev SHA. Smallest change, fixes root cause.
+- **Option B.** Add a smoke step after Restart: `ssh "python3 -c 'import news_bot'"` — fails fast if any new import is missing.
+- **Option C.** Cherry-pick the deploy_test.yml change to main as a separate infrastructure PR BEFORE feature merges — fragile (requires discipline every time FILES changes), not recommended.
+- Author's pick: Option A + Option B together. Option B is a defence-in-depth backstop that catches any future FILES drift.
