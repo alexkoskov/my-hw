@@ -42,7 +42,11 @@ logger = logging.getLogger(__name__)
 _ALLOWED_HOSTS = ('t-hunted.blogspot.com',)
 
 _TIMEOUT_SECONDS = 15
-_IMAGE_LIMIT = 10
+#: Higher than lamley's 10 because t-hunted's new-arrival photo-gallery
+#: posts routinely carry 15-25 product photos (e.g. a full Car Culture
+#: set unboxing). Capped to avoid pathological pages with embedded
+#: ad / reaction-emoji <img> tags blowing out the Telegraph upload.
+_IMAGE_LIMIT = 30
 #: Defensive hard cap. Blogger posts are tiny (<200KB observed); 2MB
 #: drops obvious DOS / error pages before BeautifulSoup runs.
 _MAX_BYTES = 2_000_000
@@ -178,8 +182,18 @@ def fetch_t_hunted_article(
 
     # Lift first surviving paragraph as subtitle (editorial lead on the
     # Telegraph page); drop it from body so it doesn't repeat below.
-    subtitle = paragraphs[0] if paragraphs else ""
-    paragraphs = paragraphs[1:]
+    # Photo-gallery posts (single intro paragraph + many product images)
+    # are the dominant t-hunted format for new-arrival announcements — for
+    # those we keep the one paragraph in body and ship an empty subtitle,
+    # so news_bot.fetch_full_article does NOT drop the post on its
+    # ``not article.get('paragraphs')`` guard. Lamley keeps the
+    # unconditional lift because lamley posts are review-style and always
+    # carry 2+ paragraphs.
+    if len(paragraphs) >= 2:
+        subtitle = paragraphs[0]
+        paragraphs = paragraphs[1:]
+    else:
+        subtitle = ""
 
     # Blogger-aware image dedup: lamley's ``split("?")`` assumes size
     # in query params; Blogger encodes size in the path. Strip query +

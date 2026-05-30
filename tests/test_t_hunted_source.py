@@ -162,10 +162,12 @@ class TestFetchTHuntedArticle:
         assert "[E033-STUB]" in msg
 
     def test_image_limit_enforced(self):
-        # 15 unique image paths so dedup doesn't collapse them.
+        # 35 unique image paths > _IMAGE_LIMIT (30) so the break-clause
+        # in the image collection loop is exercised. Each ``/img/{i}/``
+        # segment differs so the size-suffix dedup leaves all 35 distinct.
         imgs = "\n".join(
             f'<img src="https://blogger.googleusercontent.com/img/{i}/=s1600/x.jpg" />'
-            for i in range(15)
+            for i in range(35)
         )
         html = (
             f'<html><body><h3 class="post-title">T</h3>'
@@ -211,6 +213,43 @@ class TestFetchTHuntedArticle:
             "https://blogger.googleusercontent.com/img/abc/=s1600/photo1.jpg",
             "https://blogger.googleusercontent.com/img/xyz/=s320-c/photo2.jpg",
         ]
+
+    def test_single_paragraph_post_keeps_paragraph_in_body_with_empty_subtitle(self):
+        # T-hunted photo-gallery posts (new-arrival announcements) typically
+        # have one intro paragraph followed by a product photo gallery.
+        # Before the conditional-lift fix, the parser lifted the one
+        # paragraph into ``subtitle``, leaving ``paragraphs=[]`` which
+        # caused news_bot.fetch_full_article to silently skip the post.
+        # Verify the lift is skipped when fewer than 2 paragraphs survive
+        # boilerplate filtering — the one paragraph stays in body, subtitle
+        # is empty, and news_bot will publish the post.
+        html = (
+            '<html><body><h3 class="post-title">Novo lançamento</h3>'
+            '<div class="post-body entry-content">'
+            '<p>A loja Universo Hot Wheels recebeu mais um set incrível.</p>'
+            '<img src="https://blogger.googleusercontent.com/img/a/=s1600/p1.jpg" />'
+            '<img src="https://blogger.googleusercontent.com/img/b/=s1600/p2.jpg" />'
+            '<img src="https://blogger.googleusercontent.com/img/c/=s1600/p3.jpg" />'
+            '</div></body></html>'
+        )
+        session = MagicMock()
+        session.get.return_value = _make_response(text=html)
+
+        out = t_hunted_source.fetch_t_hunted_article(
+            "https://t-hunted.blogspot.com/2026/05/post.html",
+            session=session,
+        )
+
+        assert out is not None
+        # Subtitle stays empty — no lift on single-paragraph post.
+        assert out["subtitle"] == ""
+        # The intro paragraph stays in the body.
+        assert out["paragraphs"] == [
+            "A loja Universo Hot Wheels recebeu mais um set incrível."
+        ]
+        # Image gallery still collected — confirms photo posts ship with
+        # their visual payload intact.
+        assert len(out["images"]) == 3
 
     def test_boilerplate_filter_applied_before_subtitle_lift(self):
         # First "paragraph" after title is EN boilerplate ("Share on
