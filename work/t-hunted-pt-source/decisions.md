@@ -246,3 +246,29 @@ Review details — in JSON files via links. QA report — in logs/working/.
 - **Option B.** Add a smoke step after Restart: `ssh "python3 -c 'import news_bot'"` — fails fast if any new import is missing.
 - **Option C.** Cherry-pick the deploy_test.yml change to main as a separate infrastructure PR BEFORE feature merges — fragile (requires discipline every time FILES changes), not recommended.
 - Author's pick: Option A + Option B together. Option B is a defence-in-depth backstop that catches any future FILES drift.
+
+## Task 14 (in progress): Hotfix — publish photo-gallery posts
+
+**Status:** In progress (24h watch ongoing)
+**Hotfix commit:** a0ae3f8 (squash-merge of PR #13 to dev)
+**Hotfix dispatch deploy:** GitHub Actions run 26682318000 (workflow_dispatch --ref dev, 22 files copied)
+**Agent:** main agent (during T14 post-deploy watch)
+**Summary:** Discovered during T+0 watch: 2026-05-30 cron tick saw 2 t-hunted RSS entries, both silently skipped via the "thin-body" path (paragraphs=[] after subtitle lift). User confirmed product intent — these photo-gallery posts (single intro paragraph + product photos) are the dominant t-hunted format and must publish so subscribers learn about new releases. Hotfix scope: t_hunted_source.py only — conditional subtitle lift (skip when fewer than 2 paragraphs survive boilerplate filter) + _IMAGE_LIMIT raised 10 → 30. Lamley unchanged (review-style posts always carry 2+ paragraphs). New test test_single_paragraph_post_keeps_paragraph_in_body_with_empty_subtitle pins behavior.
+**Deviations:** Required a second deploy iteration during T14 watch. Auto-triggered deploy_test.yml hit the same workflow_run/FILES drift as Wave 6 — service stayed on previous parser code; recovery via gh workflow run deploy_test.yml --ref dev. Total deploy time including workflow queue: ~3 min. Service uptime since recovery (verified via user-pasted SSH output at 14:46 МСК / 12:46 BST): 33 min, no restarts, CLEAN grep on E031/E032/E033/Traceback/ImportError.
+
+**Verification (T+35 min from hotfix deploy):**
+- pytest tests/ -q → 992 passed, 2 skipped, 0 failed (PR #13 baseline, +1 new test vs 991)
+- Suite at PR #13 CI run 26682163371 → success
+- File mtime on /home/hwbot/bot_test/t_hunted_source.py = 12:11 BST = 14:11 МСК (recovery deploy timestamp)
+- File size 8701 bytes (was 7920 — hotfix added 781 bytes of code + comments)
+- journalctl grep CLEAN since deploy timestamp
+- Today's tick slots 1/4 + 2/4 published before recovery (autoevolution Car Culture 12:06, autoevolution Legends Tour 13:36) — visible on @myhwchannel123, no t-hunted yet because today's 2 t-hunted entries were already processed-as-skipped before hotfix landed
+- Next opportunity for t-hunted publish: tomorrow 10:00 МСК (2026-05-31) natural cron tick
+
+**Pending T14 acceptance criteria:**
+- AC1 24h E03x grep: deferred to 2026-05-31 ~10:11 МСК
+- AC2 first t-hunted publish with hashtag + hero: BLOCKED on next RSS poll bringing a new t-hunted entry (could be tomorrow's tick or later, depending on t-hunted publishing cadence)
+- AC3 RU translation no PT leakage: BLOCKED on AC2
+- AC4 5-post quality spot-check: BLOCKED on accumulating ≥5 publishes (could take all 7 days or longer)
+- AC5 7-day cumulative E03x: ongoing
+- AC6 no regression in other sources: ongoing (slots 1/4 + 2/4 today are autoevolution, healthy signal)
