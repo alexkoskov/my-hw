@@ -155,6 +155,45 @@ _BOILERPLATE_PATTERNS = [
         r'^\s*(найти|купить)\b.*\bна\s+(ebay|amazon|aliexpress|mattel|walmart)\b',
         re.I,
     ),
+    # ------------------------------------------------------------------
+    # Portuguese — defence in depth for t-hunted.blogspot.com.
+    # Blogger PT-locale template emits short standalone labels for
+    # share widgets, navigation links and comment forms that bleed into
+    # the paragraph stream. All patterns are ^-anchored, ReDoS-safe (no
+    # nested greedy quantifiers), and bounded by ``_MAX_BOILERPLATE_LEN``
+    # so inline mentions inside real prose are preserved.
+    # ------------------------------------------------------------------
+    # "Compartilhar no Facebook" / "Compartilhar via WhatsApp" etc.
+    re.compile(
+        r'^compartilhar\s+(no|em|via|por)\s+'
+        r'(facebook|twitter|x|whatsapp|telegram|email)\b',
+        re.I,
+    ),
+    # "Marcadores: hot wheels, mattel" — Blogger labels footer.
+    re.compile(r'^marcadores\s*:', re.I),
+    # "Postado por <author>" — Blogger byline.
+    re.compile(r'^postado\s+por\b', re.I),
+    # Bare "Postagem" label (exact-match — avoids FP on prose
+    # «Postagem nova foi publicada»).
+    re.compile(r'^postagem$', re.I),
+    # "Enviar por email" — PT "Email this".
+    re.compile(r'^enviar\s+por\s+email\b', re.I),
+    # "Postagens mais antigas" / "Postagens mais recentes" — older/newer
+    # post navigation links.
+    re.compile(r'^postagens\s+mais\s+(antigas|recentes)$', re.I),
+    # "Assinar: Postagens (Atom)" — feed-subscribe link.
+    re.compile(r'^assinar\s*:', re.I),
+    # "Leia mais" — read-more link (anchored as standalone label, not
+    # part of inline prose). Only «leia mais» is included; «ler mais»
+    # was excluded due to higher FP risk per code-research §4.D.
+    re.compile(r'^leia\s+mais$', re.I),
+    # "Postar um comentário" / "Postar comentário" — Blogger comment
+    # form trigger. ``[áa]`` covers NFC-normalised UTF-8 plus an ASCII
+    # fallback in case the feedparser/encoding pipeline strips diacritics.
+    re.compile(r'^postar\s+(um\s+)?coment[áa]rio$', re.I),
+    # "Página inicial" / "Página principal" home link. ``p[aá]gina``
+    # handles both UTF-8 and ASCII fallbacks.
+    re.compile(r'^p[aá]gina\s+(inicial|principal)$', re.I),
 ]
 
 

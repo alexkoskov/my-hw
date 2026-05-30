@@ -94,6 +94,40 @@ class TestIsBoilerplatePositive:
     def test_russian_patterns_filtered(self, text):
         assert is_boilerplate(text) is True, f"expected boilerplate: {text!r}"
 
+    @pytest.mark.parametrize(
+        "text",
+        [
+            # 1. ^compartilhar\s+(no|em|via|por)\s+(facebook|twitter|x|whatsapp|telegram|email)
+            "Compartilhar no Facebook",
+            "compartilhar em Twitter",
+            "Compartilhar via WhatsApp",
+            "Compartilhar por Email",
+            # 2. ^marcadores\s*:
+            "Marcadores: hot wheels, mattel",
+            # 3. ^postado\s+por\b
+            "Postado por Editor",
+            # 4. ^postagem$ (short Blogger label — exact match)
+            "Postagem",
+            # 5. ^enviar\s+por\s+email\b
+            "Enviar por email",
+            # 6. ^postagens\s+mais\s+(antigas|recentes)$
+            "Postagens mais antigas",
+            "Postagens mais recentes",
+            # 7. ^assinar\s*:
+            "Assinar: Postagens (Atom)",
+            # 8. ^leia\s+mais$
+            "Leia mais",
+            # 9. ^postar\s+(um\s+)?coment[áa]rio$
+            "Postar um comentário",
+            "Postar comentario",
+            # 10. ^p[aá]gina\s+(inicial|principal)$
+            "Página inicial",
+            "Pagina principal",
+        ],
+    )
+    def test_portuguese_patterns_filtered(self, text):
+        assert is_boilerplate(text) is True, f"expected boilerplate: {text!r}"
+
 
 # ---------------------------------------------------------------------------
 # Pure-filter negative cases (must be PRESERVED — real content)
@@ -127,6 +161,31 @@ class TestIsBoilerplateNegative:
         # (callers usually drop empties earlier; we don't claim ownership).
         assert is_boilerplate("") is False
         assert is_boilerplate("   ") is False
+
+    def test_pt_lookalike_prose_kept(self):
+        # Long PT prose containing "compartilhar" inline (not anchored at
+        # ^ start) must NOT be filtered — defense against FP on real
+        # Portuguese article body content. Length comfortably exceeds the
+        # 120-char bound as a second-line safety net.
+        text = (
+            "Os colecionadores adoram compartilhar no Facebook fotos das suas "
+            "raridades e novidades sobre a linha Hot Wheels lançada este mês."
+        )
+        assert len(text) > _MAX_BOILERPLATE_LEN
+        assert is_boilerplate(text) is False, (
+            f"unexpectedly filtered PT prose: {text!r}"
+        )
+
+    def test_pt_compartilhar_inline_short_prose_kept(self):
+        # Short prose (<=120 chars) with 'compartilhar' inline (not at ^).
+        # Anchoring alone — independent from the length-bound — must save
+        # this. Pins the `^` guarantee even if `_MAX_BOILERPLATE_LEN` were
+        # ever raised.
+        text = "Eles vão compartilhar no Facebook em breve."
+        assert len(text) <= _MAX_BOILERPLATE_LEN
+        assert is_boilerplate(text) is False, (
+            f"unexpectedly filtered short PT prose: {text!r}"
+        )
 
 
 # ---------------------------------------------------------------------------
@@ -193,6 +252,109 @@ class TestAffiliateLengthBound:
         # Shape doesn't match Aff1/Aff2 anchored at start; expected False.
         assert out is False
         assert elapsed < 0.1, f"is_boilerplate too slow: {elapsed:.3f}s"
+
+
+class TestRegexSafety:
+    """Cross-language ReDoS-safety regressions. Each new pattern family
+    must complete under a tight time bound on adversarial 120-char
+    inputs (the same ceiling enforced by ``_MAX_BOILERPLATE_LEN``).
+
+    Pattern: cross-platform — uses ``time.monotonic()`` rather than
+    ``signal.alarm`` (alarm is POSIX-only, breaks on Windows CI)."""
+
+    @pytest.mark.parametrize(
+        "adversarial,expected",
+        [
+            # 1. compartilhar — pump alternation choices via repeated "no ".
+            # Truncation chops off the trailing "facebook" platform token, so
+            # the platform alternation can't match; classification → False.
+            (
+                ("compartilhar " + "no " * 35 + "facebook")[:_MAX_BOILERPLATE_LEN],
+                False,
+            ),
+            # 2. marcadores — long colon-suffixed payload. Pattern is
+            # ``^marcadores\s*:`` so the colon at position 10 matches → True.
+            (
+                ("marcadores" + ":" * (_MAX_BOILERPLATE_LEN - len("marcadores"))),
+                True,
+            ),
+            # 3. postado por — pattern ``^postado\s+por\b`` matches at start
+            # regardless of tail; "x" after "por " keeps the \b satisfied → True.
+            (
+                ("postado por " + "x" * (_MAX_BOILERPLATE_LEN - len("postado por "))),
+                True,
+            ),
+            # 4. postagem — pattern ``^postagem$`` is exact-match; long tail
+            # breaks the `$` anchor → False.
+            (
+                ("postagem" + "x" * (_MAX_BOILERPLATE_LEN - len("postagem"))),
+                False,
+            ),
+            # 5. enviar por email — pattern ``^enviar\s+por\s+email\b``. The
+            # "x" character right after "email" is a word char so the `\b`
+            # boundary fails → False.
+            (
+                (
+                    "enviar por email"
+                    + "x" * (_MAX_BOILERPLATE_LEN - len("enviar por email"))
+                ),
+                False,
+            ),
+            # 6. postagens mais (antigas|recentes) — pattern ends with `$`;
+            # repeating "antigas" past one occurrence breaks the anchor → False.
+            (
+                ("postagens mais " + "antigas" * 15)[:_MAX_BOILERPLATE_LEN],
+                False,
+            ),
+            # 7. assinar — pattern ``^assinar\s*:`` matches the first colon
+            # right after "assinar" → True.
+            (
+                ("assinar" + ":" * (_MAX_BOILERPLATE_LEN - len("assinar"))),
+                True,
+            ),
+            # 8. leia mais — pattern ``^leia\s+mais$`` is anchored; long
+            # tail breaks the `$` anchor → False.
+            (
+                ("leia mais" + "x" * (_MAX_BOILERPLATE_LEN - len("leia mais"))),
+                False,
+            ),
+            # 9. postar (um )?comentário — pattern ends with `$`; repeated
+            # "um " tokens followed by truncated "comentario" don't end at
+            # `$` → False.
+            (
+                ("postar " + "um " * 35 + "comentario")[:_MAX_BOILERPLATE_LEN],
+                False,
+            ),
+            # 10. página (inicial|principal) — pattern ends with `$`; repeated
+            # "inicial" past one occurrence breaks the anchor → False. Padded
+            # to ≤120 chars (lands at 112 due to truncation of 'inicial'*15).
+            (
+                ("pagina " + "inicial" * 15)[:_MAX_BOILERPLATE_LEN],
+                False,
+            ),
+        ],
+    )
+    def test_pt_patterns_no_redos_under_120_char_input(self, adversarial, expected):
+        import time
+
+        # Adversarial inputs at or near the 120-char ceiling enforced by
+        # _MAX_BOILERPLATE_LEN (most hit exactly 120; the 'pagina inicial'
+        # case lands at 112 due to integer-multiplied truncation).
+        assert len(adversarial) <= _MAX_BOILERPLATE_LEN
+        t0 = time.monotonic()
+        result = is_boilerplate(adversarial)
+        elapsed = time.monotonic() - t0
+        assert elapsed < 0.1, (
+            f"is_boilerplate too slow on PT adversarial input "
+            f"({elapsed:.3f}s): {adversarial!r}"
+        )
+        # Bind classification behaviour alongside the timing bound — a
+        # stubbed `is_boilerplate(_) -> False` would now fail (the True
+        # cases force real regex evaluation).
+        assert result is expected, (
+            f"classification drift on adversarial input: {adversarial!r} "
+            f"(expected {expected}, got {result})"
+        )
 
 
 class TestQuickLinkVerbGateRemoved:

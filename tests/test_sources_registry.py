@@ -51,11 +51,12 @@ class TestNetlocToSource:
             'corporate.mattel.com',
             'orangetrackdiecast.com',
             'www.orangetrackdiecast.com',
+            't-hunted.blogspot.com',
         }
 
     def test_values_are_only_the_three_source_names(self):
         assert set(NETLOC_TO_SOURCE.values()) == {
-            'autoevolution', 'lamley', 'mattel', 'orangetrack',
+            'autoevolution', 'lamley', 'mattel', 'orangetrack', 't-hunted',
         }
 
     def test_autoevolution_both_netlocs(self):
@@ -101,6 +102,12 @@ class TestResolveSourceName:
     def test_resolve_source_name_empty_string(self):
         # Empty netloc → 'other', does not raise.
         assert _resolve_source_name('') == 'other'
+
+    def test_resolves_t_hunted(self):
+        # t-hunted.blogspot.com → 't-hunted' (Task 3 mapping).
+        assert _resolve_source_name(
+            'https://t-hunted.blogspot.com/2026/05/post.html'
+        ) == 't-hunted'
 
 
 # ---------------------------------------------------------------------------

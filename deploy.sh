@@ -40,6 +40,7 @@ FILES=(
     "mattel_news_source.py"
     "lamley_source.py"
     "orangetrack_source.py"
+    "t_hunted_source.py"
     "telegraph_publisher.py"
     "pending_articles_repo.py"
     "claude_transcreation.py"

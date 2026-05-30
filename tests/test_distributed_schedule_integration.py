@@ -884,5 +884,188 @@ class TestDistributedSchedule(unittest.TestCase):
         )
 
 
+    # ======================================================================
+    # Scenario 6 (Task 8, t-hunted-pt-source): EN + PT dispatch & routing
+    # smoke. Two RSS entries — one autoevolution-style EN link, one
+    # t-hunted-style PT link — flow through `job()` together. Scoped to:
+    #   * `_resolve_source_name` (Task 3 wiring) routes the blogspot link
+    #     to source_name='t-hunted' and autoevolution link to 'autoevolution'
+    #   * `transcreate_via_claude` is invoked exactly twice, with the
+    #     right per-entry article payload (link + source_name pinned via
+    #     `call_args_list` — proves no cross-language LLM-payload swap)
+    #   * Both rows land in `published_articles` with the correct
+    #     `source_name` column value (DB-level routing pin)
+    #   * `pending_articles` ends empty (no dedup false-positive on
+    #     differing links)
+    #   * No `[E031]`, `[E032]`, `[E033]` admin pings fire (happy-path
+    #     should never trip the new t-hunted parser alerts)
+    #   * `outage_state` untouched (happy-path leaves the state machine
+    #     alone)
+    #   * Teaser dispatched twice (channel side-effect for both)
+    #
+    # OUT OF SCOPE (delegated elsewhere):
+    #   * Real `fetch_full_article` / parser execution — `fetch_full_patcher`
+    #     in setUp returns a synthetic article, so neither the autoevolution
+    #     nor the t-hunted parser is actually exercised here. Parser
+    #     correctness is covered by `tests/test_t_hunted_source.py` and
+    #     `tests/test_autoevolution_source.py` (unit).
+    #   * PT boilerplate filter — `boilerplate_filter.is_boilerplate`
+    #     against PT patterns is verified at unit level in
+    #     `tests/test_boilerplate_filter.py` (Task 4). This smoke does not
+    #     pipe real PT HTML through the pipeline.
+    #   * Hashtag rendering for the t-hunted source — covered by
+    #     `tests/test_telegram.py -k thunted` (Task 5 unit).
+    #
+    # Locked filter substring `integration_t_hunted` (test name) for the
+    # `-k integration_t_hunted` selector declared in tech-spec Verify-smoke.
+    # ======================================================================
+
+    def test_integration_t_hunted_en_pt_dispatch_and_routing_smoke(self):
+        """Dispatcher routing + LLM-payload language differentiation +
+        DB ``source_name`` storage + no-admin-alerts smoke for the
+        EN(autoevolution) + PT(t-hunted) mixed tick.
+
+        Scope: wiring after Wave 1 (parser module import) and Wave 2
+        (``NETLOC_TO_SOURCE``, dispatcher branch, ``SOURCE_HASHTAG_OVERRIDE``).
+        NOT a full-pipeline test — ``fetch_full_article`` is mocked in
+        the base setUp, so real parsers, the PT boilerplate filter, and
+        hashtag rendering are exercised only at unit-test level (see
+        ``tests/test_boilerplate_filter.py``, ``tests/test_t_hunted_source.py``,
+        ``tests/test_telegram.py -k thunted``).
+        """
+        en_link = 'https://www.autoevolution.com/news/hot-wheels-test-en-article-12345.html'
+        pt_link = 'https://t-hunted.blogspot.com/2026/05/test-pt-article.html'
+
+        # NOTE: do NOT pass `source_name` to _create_mock_rss_entry — the
+        # mock's argument is a no-op because `_fetch_rss_entries`
+        # overrides this field via `_resolve_source_name(link)` at
+        # collection time (news_bot.py:1535). The wiring under test is
+        # `NETLOC_TO_SOURCE` (Task 3): autoevolution.com → 'autoevolution',
+        # t-hunted.blogspot.com → 't-hunted'.
+        entries = [
+            _create_mock_rss_entry(en_link, title='Hot Wheels EN Test Article'),
+            _create_mock_rss_entry(pt_link,
+                                   title='Caça ao tesouro Pop Culture 2026'),
+        ]
+        self._set_rss_entries(entries)
+
+        # 09:00 UTC == 12:00 МСК cron tick. pub_date in the mock fixture
+        # is '2026-04-27' — ~30 days behind freeze_time but no
+        # stale-pub-date guard exists in `_fallback_publish` today
+        # (verified in task spec Edge cases).
+        with freeze_time('2026-05-26 09:00:00'):
+            with patch('news_bot.transcreate_via_claude') as mock_claude:
+                mock_claude.side_effect = [
+                    _make_claude_result(['First paragraph.', 'Second paragraph.'],
+                                        title_prefix='EN article'),
+                    _make_claude_result(['First paragraph.', 'Second paragraph.'],
+                                        title_prefix='PT article'),
+                ]
+                news_bot.job()
+
+        # Both Claude invocations happened — proves PT entry was not
+        # collapsed onto EN via dedup or skipped via a cross-language
+        # guard. side_effect=[a, b] would raise StopIteration on a third
+        # call, so call_count==2 also pins the upper bound.
+        self.assertEqual(mock_claude.call_count, 2,
+                         f"expected 2 Claude calls (one per entry), got "
+                         f"{mock_claude.call_count}")
+
+        # Pin the per-call article payload that reached
+        # `transcreate_via_claude(row)` (single positional arg — see
+        # `claude_transcreation.transcreate_via_claude(article, *, ...)`
+        # and the call site at `news_bot.py` `_fallback_publish`).
+        # `side_effect=[en_result, pt_result]` consumes results in order,
+        # so by index 0 must carry the EN entry and index 1 the PT entry.
+        # Without this, a regression that tagged BOTH payloads
+        # `source_name='autoevolution'` (or swapped the order) would still
+        # consume the two-element side_effect and pass `call_count == 2`.
+        # The `link` field is the canonical pin (NETLOC_TO_SOURCE input);
+        # `source_name` is also pinned because `_fetch_rss_entries`
+        # writes it via `_resolve_source_name(link)` before the row
+        # reaches Claude.
+        en_call_row = mock_claude.call_args_list[0].args[0]
+        pt_call_row = mock_claude.call_args_list[1].args[0]
+        self.assertEqual(
+            en_call_row.get('link'), en_link,
+            f"call 0 to transcreate_via_claude must carry EN link; "
+            f"got link={en_call_row.get('link')!r}, "
+            f"source_name={en_call_row.get('source_name')!r}",
+        )
+        self.assertEqual(
+            en_call_row.get('source_name'), 'autoevolution',
+            f"call 0 must carry source_name='autoevolution' (NETLOC_TO_SOURCE "
+            f"miss?); got {en_call_row.get('source_name')!r}",
+        )
+        self.assertEqual(
+            pt_call_row.get('link'), pt_link,
+            f"call 1 to transcreate_via_claude must carry PT link; "
+            f"got link={pt_call_row.get('link')!r}, "
+            f"source_name={pt_call_row.get('source_name')!r}",
+        )
+        self.assertEqual(
+            pt_call_row.get('source_name'), 't-hunted',
+            f"call 1 must carry source_name='t-hunted' (NETLOC_TO_SOURCE "
+            f"wiring or _resolve_source_name miss); "
+            f"got {pt_call_row.get('source_name')!r}",
+        )
+
+        # Both rows land in published_articles; pending drains to empty.
+        published = self._published_links()
+        self.assertEqual(len(published), 2,
+                         f"expected 2 published rows, got {published}")
+        self.assertEqual(set(published), {en_link, pt_link},
+                         f"expected both EN and PT links published, got {published}")
+        self.assertEqual(self._pending_links(), [],
+                         "pending_articles must be empty after mixed-tick job")
+
+        # source_name column preserved per-row — Task 3 wiring on the
+        # input side (NETLOC_TO_SOURCE) plus the schema-agnostic
+        # pending_articles_repo passthrough means the staged value
+        # survives unchanged into published_articles.
+        en_row = pending_articles_repo.get_published(en_link)
+        self.assertIsNotNone(en_row, f"EN row missing in published: {en_link}")
+        self.assertEqual(
+            en_row['source_name'], 'autoevolution',
+            f"EN row source_name regressed: {en_row['source_name']!r}",
+        )
+
+        pt_row = pending_articles_repo.get_published(pt_link)
+        self.assertIsNotNone(pt_row, f"PT row missing in published: {pt_link}")
+        self.assertEqual(
+            pt_row['source_name'], 't-hunted',
+            f"PT row source_name regressed (NETLOC_TO_SOURCE wiring "
+            f"or _resolve_source_name miss): {pt_row['source_name']!r}",
+        )
+
+        # Teaser ran once per published article — channel-side handoff
+        # for both EN and PT paths.
+        self.assertEqual(self.mock_teaser.call_count, 2,
+                         f"expected 2 teaser dispatches, got "
+                         f"{self.mock_teaser.call_count}")
+
+        # No new t-hunted parser admin alerts (E031/E032/E033) should fire
+        # in the happy-path tick. These codes are reserved for
+        # article-level failures inside `fetch_t_hunted_article` —
+        # `fetch_full_article` is mocked in setUp so the parser is never
+        # reached; an alert here would indicate a regression where
+        # someone hooked an admin-ping into the success path.
+        msgs = self._admin_messages()
+        self.assertFalse(
+            any(('[E031]' in m or '[E032]' in m or '[E033]' in m)
+                for m in msgs),
+            f"unexpected t-hunted parser admin alert in happy path: {msgs!r}",
+        )
+
+        # outage_state untouched — happy-path must not advance the
+        # Claude-outage machinery.
+        self.assertEqual(outage_state.get_ping_count(), 0,
+                         "outage_state.ping_count must stay 0 in happy path")
+        self.assertIsNone(outage_state.get_outage_started_at(),
+                          "outage_started_at must stay None in happy path")
+        self.assertFalse(outage_state.is_fallback_active(),
+                         "is_fallback_active() must stay False in happy path")
+
+
 if __name__ == '__main__':
     unittest.main()
