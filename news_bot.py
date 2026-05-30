@@ -1583,11 +1583,20 @@ def _fetch_orangetrack_entries(notifier=None):
 
 
 # Module-level registry the prep phase (Task 6) will iterate. Order matters
-# only for log readability — RSS first (fastest, cheapest), Mattel second
-# (single HTTP fetch + HTML parse), orangetrack last (per-entry parse).
+# only for log readability — RSS first (fastest, cheapest), orangetrack
+# last (per-entry parse).
+#
+# Mattel отключён 2026-05-24: corporate.mattel.com переехал на Astro/Netlify,
+# тело статьи рендерится client-side из JS-bundle и недоступно через любой
+# JSON endpoint. Listing (``/api/news/articles``) выдаёт только handle/title/
+# date/thumbnail. Полное восстановление потребует headless-браузера; за всю
+# историю Mattel выдал ноль Hot Wheels статей, поэтому source отключён без
+# замены. ``mattel_news_source.py`` и его тесты оставлены на месте — если
+# Mattel вернёт publishable Hot Wheels контент, источник можно восстановить
+# раскомментировав строку ниже и переписав парсер под новый API.
 SOURCES = [
     _fetch_rss_entries,
-    _fetch_mattel_entries,
+    # _fetch_mattel_entries,  # disabled — see comment above
     _fetch_orangetrack_entries,
 ]
 
