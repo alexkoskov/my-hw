@@ -349,6 +349,20 @@ def fetch_autoevolution_article(entry: dict, fetcher=None) -> Optional[Dict]:
             if not scraped["images"]:
                 scraped["images"] = _collect_rss_images(entry)
             return scraped
+        # Scrape failed (403, parser-no-body, network). RSS-only fallback
+        # is acceptable for prose but only if RSS carries a hero image —
+        # otherwise the Telegraph page lands without <figure>, the Telegram
+        # teaser has no og:image, and subscribers see a text-only preview
+        # (incident 2026-05-31 with autoevolution Boulevard Mix). Returning
+        # None here defers staging — news_bot.py skips the entry without
+        # marking it processed, so the next cron tick retries from scratch
+        # (autoevolution 403's are typically single-tick transients).
+        if not _collect_rss_images(entry):
+            logger.info(
+                "autoevolution: deferring %s — scrape failed and no RSS "
+                "hero image; will retry next tick", link,
+            )
+            return None
     return enrich_entry(entry)
 
 
