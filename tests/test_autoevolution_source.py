@@ -280,6 +280,26 @@ class TestFetchAutoevolutionArticle:
         assert out["paragraphs"] == ["Body."]
         assert out["images"] == ["https://s1.cdn.example/rss.jpg"]
 
+    def test_returns_none_when_scrape_fails_and_no_rss_images(self):
+        # Reproduces incident 2026-05-31: autoevolution Boulevard Mix was
+        # 403'd on scrape, fell back to RSS-only enrichment, but the RSS
+        # entry carried no media_thumbnail / media_content. The article was
+        # staged with images=[] and published to Telegraph the next morning
+        # without a hero, so the Telegram teaser had no preview image.
+        # Fix: defer (return None) when scrape fails AND RSS has no hero —
+        # news_bot skips the entry without marking processed, so next tick
+        # retries from scratch (autoevolution 403's are single-tick spikes).
+        def failing(url):
+            raise RuntimeError("403")
+        entry = {
+            "link": "https://www.autoevolution.com/news/boulevard-mix-270739.html",
+            "title": "Boulevard Mix",
+            "summary": "Short RSS summary.",
+            # NO media_thumbnail / media_content — the failure pattern.
+        }
+        out = fetch_autoevolution_article(entry, fetcher=failing)
+        assert out is None
+
 
 if __name__ == "__main__":
     pytest.main([__file__, "-v"])

@@ -230,13 +230,22 @@ def _parse_response(
             engine_name, expected_paragraph_count, len(paragraphs),
         )
 
-    # Sanity floor: total translated content must be at least 30 chars.
-    total_chars = sum(len(p) for p in paragraphs)
-    if total_chars < 30:
-        raise ClaudeTranscreationError(
-            f"{engine_name} response paragraphs total content too short "
-            f"({total_chars} chars < 30 minimum) — likely empty / stub translation"
-        )
+    # Sanity floor: total translated content must be at least 30 chars —
+    # but only when the input had ≥2 paragraphs. Single-paragraph posts
+    # (t-hunted photo-gallery format: 1 short intro + N product photos)
+    # legitimately produce a thin LLM body — sometimes the model treats
+    # the lone marketing intro as boilerplate and returns paragraphs=[]
+    # while filling title/alts/subtitle. For those posts the visual
+    # payload (title + hero + gallery) carries the article, so we accept
+    # the thin output instead of striking the slot 3 times (incident
+    # 2026-05-31 with all 4 t-hunted slots failing this check).
+    if expected_paragraph_count >= 2:
+        total_chars = sum(len(p) for p in paragraphs)
+        if total_chars < 30:
+            raise ClaudeTranscreationError(
+                f"{engine_name} response paragraphs total content too short "
+                f"({total_chars} chars < 30 minimum) — likely empty / stub translation"
+            )
 
     # Reject EN-leaking responses (translation silently skipped).
     if not _is_mostly_russian(paragraphs):
