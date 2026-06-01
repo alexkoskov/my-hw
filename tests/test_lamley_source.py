@@ -114,6 +114,52 @@ class TestFetchLamleyArticle:
         out = lamley_source.fetch_lamley_article("https://lamleygroup.com/x", session=session)
         assert len(out["images"]) == lamley_source.IMAGE_LIMIT
 
+    def test_blogger_lightbox_lifts_full_size_from_parent_anchor(self):
+        # Lamley (Blogger-hosted) uses the same lightbox sandwich pattern
+        # as t-hunted:
+        #   <a href=".../s1200/photo.jpg"><img src=".../w200-h200/photo.jpg" /></a>
+        # Without the parent-anchor lift, subscribers see 200×200 minis
+        # instead of the full-resolution Lamley review photos. Mirror of
+        # tests/test_t_hunted_source.py::test_blogger_lightbox_lifts_full_size_*.
+        full = "https://blogger.googleusercontent.com/img/BBBBB/s1200/lamley1.jpg"
+        thumb = "https://blogger.googleusercontent.com/img/BBBBB/w200-h200/lamley1.jpg"
+        html = (
+            '<html><body><article><h1>Title</h1>'
+            '<div class="entry-content">'
+            '<p>Para 1.</p>'
+            '<p>Para 2.</p>'
+            f'<a href="{full}"><img src="{thumb}" /></a>'
+            '</div></article></body></html>'
+        )
+        session = MagicMock()
+        session.get.return_value = _make_response(text=html)
+        out = lamley_source.fetch_lamley_article(
+            "https://lamleygroup.com/2026/05/post/", session=session,
+        )
+        assert out is not None
+        assert out["images"] == [full]
+
+    def test_blogger_lightbox_lift_skipped_for_non_blogger_href(self):
+        # Defensive: an off-site click tracker as parent ``<a href>``
+        # must not be lifted into the gallery — fall back to ``img.src``.
+        external = "https://example.com/track?u=blogger.googleusercontent.com"
+        thumb = "https://blogger.googleusercontent.com/img/Y/s1600/lamley.jpg"
+        html = (
+            '<html><body><article><h1>T</h1>'
+            '<div class="entry-content">'
+            '<p>Para 1.</p>'
+            '<p>Para 2.</p>'
+            f'<a href="{external}"><img src="{thumb}" /></a>'
+            '</div></article></body></html>'
+        )
+        session = MagicMock()
+        session.get.return_value = _make_response(text=html)
+        out = lamley_source.fetch_lamley_article(
+            "https://lamleygroup.com/2026/05/post/", session=session,
+        )
+        assert out is not None
+        assert out["images"] == [thumb]
+
 
 class TestRateLimitHandling:
     """Tests for the 429-retry + module throttle introduced after a live

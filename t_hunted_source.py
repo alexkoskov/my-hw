@@ -64,6 +64,30 @@ _USER_AGENT = 'Mozilla/5.0 (compatible; HotWheelsNewsBot/1.0)'
 _BLOGGER_SIZE_SUFFIX_RE = re.compile(r'=s\d+(-c)?(?:/|$)')
 
 
+#: Canonical Blogger image-CDN hosts. ``blogger.googleusercontent.com``
+#: is the modern shared CDN; ``*.bp.blogspot.com`` (1.bp / 2.bp / 3.bp / 4.bp)
+#: is the legacy Picasa-era host still present on older posts. Membership
+#: is by exact hostname suffix to keep ``_is_blogger_image_url`` ReDoS-safe
+#: and to reject same-substring decoy URLs (e.g. off-site trackers that
+#: pass the canonical host in a query parameter).
+_BLOGGER_IMAGE_HOSTS = ('blogger.googleusercontent.com', 'bp.blogspot.com')
+
+
+def _is_blogger_image_url(url: str) -> bool:
+    """Return True iff *url*'s hostname ends with a canonical Blogger CDN host.
+
+    Used to guard the lightbox-anchor lift in image extraction: lift the
+    parent ``<a href>`` only when it points at a sibling Blogger image
+    variant, not at an off-site click-tracker that happens to mention
+    ``blogger`` in its path or query.
+    """
+    try:
+        host = (urlparse(url).hostname or '').lower()
+    except (ValueError, AttributeError):
+        return False
+    return any(host == h or host.endswith('.' + h) for h in _BLOGGER_IMAGE_HOSTS)
+
+
 def _notify(notifier: Optional[Callable[[str], None]], message: str) -> None:
     """Log alert at ERROR + best-effort call ``notifier``.
 
@@ -204,6 +228,19 @@ def fetch_t_hunted_article(
         src = img.get("src") or ""
         if not src.startswith("http"):
             continue
+        # Blogger lightbox sandwich:
+        #   <a href="https://.../s1200/photo.jpg">      ← FULL-SIZE
+        #     <img src="https://.../w200-h200/photo.jpg" />  ← 200×200 thumb
+        #   </a>
+        # ``img.src`` is the grid thumbnail; the full-resolution variant
+        # lives in the wrapping ``<a href>``. Telegraph embeds the src URL
+        # verbatim (no re-hosting), so without this lift subscribers see
+        # 200×200 minis instead of full photos.
+        parent = img.parent
+        if parent is not None and parent.name == "a":
+            href = parent.get("href") or ""
+            if href.startswith("http") and _is_blogger_image_url(href):
+                src = href
         base = _BLOGGER_SIZE_SUFFIX_RE.sub('', src.split("?", 1)[0])
         if base in seen_bases:
             continue
