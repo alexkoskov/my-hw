@@ -214,6 +214,61 @@ class TestFetchTHuntedArticle:
             "https://blogger.googleusercontent.com/img/xyz/=s320-c/photo2.jpg",
         ]
 
+    def test_blogger_lightbox_lifts_full_size_from_parent_anchor(self):
+        # Blogger renders article images as a lightbox sandwich:
+        #   <a href=".../s1200/photo.jpg"><img src=".../w200-h200/photo.jpg" /></a>
+        # ``img.src`` is the 200×200 grid thumbnail; the wrapping ``<a href>``
+        # carries the full-resolution variant. Telegraph embeds the src URL
+        # verbatim (no re-hosting), so without this lift subscribers see
+        # 200×200 miniatures instead of full photos. This test pins the lift.
+        full = "https://blogger.googleusercontent.com/img/AAAAAAA/s1200/p1.jpg"
+        thumb = "https://blogger.googleusercontent.com/img/AAAAAAA/w200-h200/p1.jpg"
+        html = (
+            '<html><body><h3 class="post-title">Title</h3>'
+            '<div class="post-body entry-content">'
+            '<p>Para 1.</p>'
+            '<p>Para 2.</p>'
+            f'<a href="{full}"><img src="{thumb}" /></a>'
+            '</div></body></html>'
+        )
+        session = MagicMock()
+        session.get.return_value = _make_response(text=html)
+
+        out = t_hunted_source.fetch_t_hunted_article(
+            "https://t-hunted.blogspot.com/2026/05/post.html",
+            session=session,
+        )
+
+        assert out is not None
+        # Lift wins: full-size URL ends up in the images list, NOT the thumb.
+        assert out["images"] == [full]
+
+    def test_blogger_lightbox_lift_skipped_for_non_blogger_href(self):
+        # Defensive: if the wrapping ``<a href>`` points to a non-Blogger
+        # URL (e.g. an off-site link), fall back to ``img.src`` so we don't
+        # silently leak a hot-link or external URL into the gallery.
+        external = "https://example.com/click-tracker?u=blogger.googleusercontent.com"
+        thumb = "https://blogger.googleusercontent.com/img/X/s1600/p.jpg"
+        html = (
+            '<html><body><h3 class="post-title">T</h3>'
+            '<div class="post-body entry-content">'
+            '<p>Para 1.</p>'
+            '<p>Para 2.</p>'
+            f'<a href="{external}"><img src="{thumb}" /></a>'
+            '</div></body></html>'
+        )
+        session = MagicMock()
+        session.get.return_value = _make_response(text=html)
+
+        out = t_hunted_source.fetch_t_hunted_article(
+            "https://t-hunted.blogspot.com/2026/05/post.html",
+            session=session,
+        )
+
+        assert out is not None
+        # External anchor href is not lifted; we keep the Blogger thumb URL.
+        assert out["images"] == [thumb]
+
     def test_single_paragraph_post_keeps_paragraph_in_body_with_empty_subtitle(self):
         # T-hunted photo-gallery posts (new-arrival announcements) typically
         # have one intro paragraph followed by a product photo gallery.
