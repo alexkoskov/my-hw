@@ -193,6 +193,83 @@ class TestIsBoilerplateNegative:
 # ---------------------------------------------------------------------------
 
 
+class TestLongFormOutroFilter:
+    """t-hunted publishes a multi-sentence promotional outro on every
+    article (~274 chars). It exceeds ``_MAX_BOILERPLATE_LEN`` (120) so the
+    short-form pattern list does not see it; the long-form list bypasses
+    the cap. Incident 2026-06-02: the entire CTA + social plug reached
+    the channel after the LLM translated it to Russian."""
+
+    THUNTED_REAL_OUTRO = (
+        "Saiba mais sobre a série Car Culture e veja mais fotos neste link . "
+        "Para ver mais novidades todos os dias fique ligado aqui no T-Hunted, "
+        "curta nossa página no Facebook , siga o nosso Instagram e se "
+        "inscreva no nosso canal no YouTube !"
+    )
+
+    def test_real_thunted_outro_filtered(self):
+        # Verbatim outro from the 2026-06-02 incident — must be dropped.
+        assert len(self.THUNTED_REAL_OUTRO) > _MAX_BOILERPLATE_LEN
+        assert is_boilerplate(self.THUNTED_REAL_OUTRO) is True
+
+    def test_saiba_mais_sobre_short_form_also_filtered(self):
+        # Even short forms of the CTA must filter — pattern is anchored,
+        # not length-gated.
+        text = "Saiba mais sobre a série Boulevard."
+        assert is_boilerplate(text) is True
+
+    def test_para_ver_mais_novidades_second_sentence_filtered(self):
+        # If the parser ever splits the outro across two paragraphs, the
+        # second sentence (which is on its own a multi-clause promo line
+        # >120 chars) must still get caught by its own opener.
+        text = (
+            "Para ver mais novidades todos os dias fique ligado aqui no "
+            "T-Hunted, curta nossa página no Facebook, siga o nosso "
+            "Instagram e se inscreva no nosso canal no YouTube!"
+        )
+        assert is_boilerplate(text) is True
+
+    def test_uznat_bolshe_o_russian_defence_filtered(self):
+        # Defence in depth: if a future PT outro variant slips through
+        # the parser-side filter, the RU translation must also be caught
+        # before it reaches Telegraph rendering.
+        text = (
+            "Узнать больше о серии Car Culture и посмотреть ещё фото "
+            "можно по этой ссылке. А за ежедневными новостями "
+            "заглядывайте сюда, на T-Hunted."
+        )
+        assert is_boilerplate(text) is True
+
+    def test_real_prose_starting_with_saiba_not_filtered(self):
+        # Negative: legitimate Portuguese prose can start with «Saiba»
+        # alone without «mais sobre», e.g. an exclamation. The anchored
+        # pattern requires the full phrase, so this must pass through.
+        text = "Saiba que este modelo é raro: apenas 500 unidades foram feitas."
+        assert is_boilerplate(text) is False
+
+    def test_real_prose_starting_with_uznat_not_filtered(self):
+        # Negative RU mirror: «Узнать что-то новое о Hot Wheels — всегда
+        # интересно.» starts with «Узнать», NOT «Узнать больше о», so it
+        # passes the strict anchor and is preserved.
+        text = "Узнать что-то новое о Hot Wheels — всегда интересно."
+        assert is_boilerplate(text) is False
+
+    def test_long_form_pattern_redos_safe_under_400_char_input(self):
+        # ReDoS regression: the long-form list runs on uncapped input,
+        # so its patterns MUST be linear-time. Build a 400-char adversarial
+        # input that starts with the CTA opener and pad with token-noise
+        # designed to defeat naive ``.+?``-style patterns. Anchored
+        # ``\b``-bounded openers terminate at most after their last word.
+        import time
+        adversarial = "Saiba mais sobre a série " + "x" * 380
+        assert len(adversarial) > 400
+        t0 = time.monotonic()
+        result = is_boilerplate(adversarial)
+        elapsed = time.monotonic() - t0
+        assert elapsed < 0.1, f"ReDoS suspected ({elapsed:.3f}s)"
+        assert result is True
+
+
 class TestLengthThreshold:
     def test_long_paragraph_with_trigger_preserved(self):
         # Long content that begins with "Share on Facebook" — treated as
