@@ -272,3 +272,67 @@ Review details — in JSON files via links. QA report — in logs/working/.
 - AC4 5-post quality spot-check: BLOCKED on accumulating ≥5 publishes (could take all 7 days or longer)
 - AC5 7-day cumulative E03x: ongoing
 - AC6 no regression in other sources: ongoing (slots 1/4 + 2/4 today are autoevolution, healthy signal)
+
+## Task 14 (in progress): Post-deploy iterations on 2026-05-30 → 2026-06-02
+
+T14 watch window discovered **four production-quality bugs** that did not surface in pre-deploy QA — fixed via four sequential hotfix PRs to dev (test-instance only; prod still on a306e14 with only the Mattel disable from PR #14). Promotion `dev → main` deferred until a clean t-hunted publish lands without further regressions.
+
+### Hotfix 1 — PR #13 / commit a0ae3f8 (2026-05-30, T14 day 0)
+
+**Bug:** Photo-gallery t-hunted posts silently skipped. Parser's unconditional subtitle lift left `paragraphs=[]` when the source had only one intro paragraph + image gallery; `news_bot.py:1802` then dropped the post on the "no article data" guard.
+**Fix:** Conditional subtitle lift in `t_hunted_source.py` — only lift when `len(paragraphs) >= 2`. Also raised `_IMAGE_LIMIT` 10 → 30 for t-hunted photo galleries.
+**Verification:** 992 passed (+1 new test). User-confirmed product intent: photo posts ARE the value for subscribers.
+
+### Hotfix 2 — PR #15 / commit 586e611 (2026-05-31, T14 day 1)
+
+**Two bugs ganged into one PR:**
+
+(a) autoevolution 403 → empty-images publish. When autoevolution scrape failed (HTTP 403, CDN spike), the fallback `enrich_entry()` built a dict from RSS but `_collect_rss_images()` returned `[]` if RSS had no `media_thumbnail`/`media_content`. The article was staged with `images=[]` and published next morning without a hero. Telegraph teaser had no og:image. Reproduced with Boulevard Mix on prod.
+**Fix:** Return None from `fetch_autoevolution_article` when scrape failed AND RSS has no hero. Defers to next tick (403s are transient single-tick spikes).
+
+(b) LLM stub on single-paragraph t-hunted posts. The OpenRouter model returned `title/alts/subtitle` filled but `paragraphs=[]`, treating the lone PT marketing intro as boilerplate. Sanity floor `total_chars < 30` killed publish via 3 strikes → moved to failed. All 4 t-hunted slots failed this way on 2026-05-31.
+**Fix:** Enforce the 30-char floor only when `expected_paragraph_count >= 2` in `_llm_common._parse_response`. Single-paragraph photo posts carry value via title + hero + gallery, so empty/very-short LLM body is acceptable.
+
+**Verification:** 997 passed (+5 new tests: 1 autoevolution + 4 in new `tests/test_llm_common.py`).
+
+### Hotfix 3 — PR #16 / commit 327bf80 (2026-06-01, T14 day 2)
+
+**Bug:** Blogger lightbox thumbnail published instead of full-resolution photo. Blogger renders article images as `<a href=".../s1200/photo.jpg"><img src=".../w200-h200/photo.jpg" /></a>` — our parsers (t-hunted AND lamley, since both Blogger) grabbed `img.src` which is the 200×200 grid thumbnail; the full-size variant lives in the wrapping `<a href>`. Telegraph embeds the src URL verbatim (no re-hosting — verified by inspecting Telegraph DOM of past autoevolution publish), so subscribers saw 200×200 minis.
+**Fix:** In both `t_hunted_source.py` and `lamley_source.py`, lift `<img>.parent.<a>.href` when parent is `<a>` AND href is a `blogger.googleusercontent.com` URL.
+**Verification:** 994 passed (+2 new tests in t-hunted, +2 in lamley). User-confirmed visually post-deploy: "картинки качественные".
+
+### Hotfix 4 — PR #17 / commit b2a270d (2026-06-02, T14 day 3)
+
+**Bug:** Promotional PT outro CTA reached Telegram channel in Russian translation. t-hunted ships the same ~274-char promotional CTA on every article ("Saiba mais sobre a série <NAME> e veja mais fotos neste link. Para ver mais novidades todos os dias fique ligado aqui no T-Hunted, curta nossa página no Facebook..."). The existing `boilerplate_filter._BOILERPLATE_PATTERNS` is length-bounded at 120 chars (ReDoS defence) — even with a matching regex added, the 274-char outro would not be scanned. LLM translated it and shipped to subscribers as if real content.
+**Fix:** New `_LONG_BOILERPLATE_PATTERNS` list that bypasses the length cap. Each pattern strictly `^`-anchored on a distinctive phrase, no nested quantifiers (ReDoS-safe even on uncapped input). Three patterns: `^saiba\s+mais\s+sobre\b` (primary PT), `^para\s+ver\s+mais\s+novidades\b` (defence in depth), `^узнать\s+больше\s+о\b` (RU defence in depth).
+**Verification:** 1008 passed (+11 new tests). End-to-end verified on today's "Um novo lote da série Car Culture" — outro now stripped before LLM.
+
+### Wave 4 / Test channel state at session close
+
+- Service: `news_bot_test.service` active on `boilerplate_filter.py` commit b2a270d (PR #17 just deployed at 10:12 МСК).
+- Today's only t-hunted publish (Car Culture, 10:00 МСК) shipped WITH outro leak (pre-PR#17). User saw it visually. Future publishes will be clean.
+- Test queue: empty (cleared manually on 2026-05-31 — see "Manual queue clear" below).
+- Prod: untouched, still on `a306e14` (PR #14 Mattel disable only).
+- All 4 hotfix branches deleted from remote post-merge; 4 PRs (#13, #15, #16, #17) merged and closed.
+
+### Manual queue clear (2026-05-31, operational)
+
+Operator authorized one-shot DB mutation on test: `INSERT OR IGNORE INTO processed_news SELECT link, title, COALESCE(pub_date,'') FROM pending_articles; DELETE FROM pending_articles;` to drop 21 stale t-hunted entries (30-31 May backlog accumulated from feature-deploy + manual recovery deploys). Counts: pending 21→0, processed_news 80→101. Reason: 5-day backlog would have taken ~5 days to drain at MAX_DAILY_POSTS=4 and contained stale content from before all 4 hotfixes; user preferred a clean slate for T14 sign-off verification on truly fresh entries. This was test-DB only — prod was not touched.
+
+### Recurring operational issue — workflow_run + FILES drift
+
+The `deploy_test.yml` workflow_run trigger runs the workflow YAML from the **repo default branch (main)**, NOT the branch that triggered the upstream CI. dev's `t_hunted_source.py` entry in FILES has been on dev since PR #12 (2026-05-27) but cannot reach main until prod promotion happens. So every push to dev:
+1. Fires CI on dev (passes — correct dev code on runner).
+2. workflow_run fires `deploy_test.yml` using **main's stale FILES list** (without `t_hunted_source.py`).
+3. SCP copies 21 files, **silently omitting `t_hunted_source.py`**.
+4. Service restarts. If the file does not yet exist on disk it crashloops with `ModuleNotFoundError` (initial scenario — 38 restarts before recovery). If the file already exists from a prior recovery deploy, the service stays running but on the **previous version** of the parser — silent regression risk.
+
+**Workaround used every push:** immediately after squash-merge, run `gh workflow run deploy_test.yml --ref dev`. `workflow_dispatch` honors `--ref` and uses dev's YAML → correct FILES list (22 files) → t_hunted_source.py updates.
+
+**Permanent fix tracked in T13 backlog (options A/B/C):** read FILES from a checked-out manifest file, or add a post-restart smoke `python3 -c 'import news_bot'` step, or simply land prod promotion (PR dev → main) which retires the drift permanently. Deferred until T14 closes.
+
+## Next steps after this session
+
+1. Watch tomorrow 2026-06-03 10:00 МСК natural cron tick on test. Expected: t-hunted publish (if RSS has fresh entries) with clean RU body (no outro), correct `#thunted` hashtag, full-size hero image, and clean preview in `@myhwchannel123`.
+2. If clean publish verified → close T14 AC2/AC3, accumulate AC4 over next few days (5+ publishes for quality spot-check).
+3. After 5-7 days of green cadence on test (and no `[E031-E033]` alerts) → T14 sign-off → open `dev → main` PR bundling: PR #12 (feature) + PR #13/15/16/17 (hotfixes). Prod gets the whole package at once + workflow_run/FILES drift resolves automatically (main's YAML acquires t_hunted_source.py in FILES).
