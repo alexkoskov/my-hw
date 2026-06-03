@@ -519,13 +519,53 @@ def _parse_content_encoded(html_str: str, link: str) -> Optional[Dict]:
     # iterate over the direct children of the root and recurse manually
     # when we hit a wrapper (<div>, <article>, <section>).
     def _emit_paragraph(p_tag):
-        runs = _runs_from_tag(p_tag)
-        if not runs:
+        # Detect <br>-separated list-style content inside one <p>.
+        # orangetrack's WordPress editor authors series/case checklists as a
+        # single <p> with <br> between items (e.g. the "Below you'll find
+        # the series/case list" footer of the Boulevard mix posts):
+        #   `<p>#151 – <strong>'15 Toyota Alphard</strong><br>#152 – ...<br>...</p>`
+        # BeautifulSoup's get_text collapses <br> into a single space, so the
+        # whole list otherwise lands in one paragraph block and the LLM splice
+        # cannot un-collapse it. Splitting the <p> at <br> boundaries here
+        # emits one paragraph block per item, which Telegra.ph then renders on
+        # separate lines (verified live 2026-05-14 on the mix-3-H case-report
+        # article — both prod and test had the 5-item list collapsed).
+        if not p_tag.find("br"):
+            runs = _runs_from_tag(p_tag)
+            if not runs:
+                return
+            text = " ".join(r["text"] for r in runs).strip()
+            if not text:
+                return
+            blocks.append({"type": "paragraph", "text": text, "runs": runs})
             return
-        text = " ".join(r["text"] for r in runs).strip()
-        if not text:
-            return
-        blocks.append({"type": "paragraph", "text": text, "runs": runs})
+
+        segments: List[List] = [[]]
+        for child in p_tag.children:
+            if getattr(child, "name", None) == "br":
+                segments.append([])
+            else:
+                segments[-1].append(child)
+
+        for seg_children in segments:
+            if not seg_children:
+                continue
+            seg_html = "".join(str(c) for c in seg_children)
+            wrapper = BeautifulSoup(f"<p>{seg_html}</p>", "html.parser").p
+            if wrapper is None:
+                continue
+            runs = _runs_from_tag(wrapper)
+            if not runs:
+                continue
+            # Collapse whitespace: text-node trailing spaces + " ".join separator
+            # can double up when a text node ends in space and the next run is a
+            # tag (e.g. "#151 – " + " " + "Alphard"). Preserve runs verbatim —
+            # only the flattened `text` field is normalised; `text.find(run_text)`
+            # in the renderer still works since each run substring is intact.
+            text = re.sub(r"\s+", " ", " ".join(r["text"] for r in runs)).strip()
+            if not text:
+                continue
+            blocks.append({"type": "paragraph", "text": text, "runs": runs})
 
     def _emit_heading(h_tag, level):
         # Emit h-tags with level-aware dispatch (Decisions 2 + 3 of

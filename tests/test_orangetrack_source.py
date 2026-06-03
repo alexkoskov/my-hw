@@ -1006,6 +1006,40 @@ class TestListItemParsing:
         assert len(list_items) == 1
         assert list_items[0]["text"] == "X"
 
+    def test_br_separated_p_splits_into_paragraph_blocks(self):
+        """Regression for 2026-05-14: orangetrack's series/case checklist
+        footer is a single `<p>` with `<br>` between items
+        (`<p>#151 – <strong>Toyota Alphard</strong><br>#152 – ...`). Without
+        the <br>-split, BeautifulSoup collapses <br> into a space and the
+        whole 5-item list lands in one paragraph block — verified live
+        on /hot-wheels-2026-boulevard-mix-3-h-case-report/ where the
+        rendered Telegraph page had #151..#155 all on one line. The
+        split emits one paragraph block per segment so each item gets
+        its own line on Telegra.ph."""
+        html = (
+            '<p>#151 – <strong>’15 Toyota Alphard</strong>'
+            '<br>#152 – <strong>Koenigsegg CC850</strong>'
+            '<br>#153 – <strong>Datsun King Cab Baja Custom</strong></p>'
+        )
+        out = _parse_content_encoded(html, self.LINK)
+        assert out is not None
+        paragraphs = [b for b in out["blocks"] if b["type"] == "paragraph"]
+        # Three separate paragraph blocks, in DOM order.
+        assert len(paragraphs) == 3
+        assert paragraphs[0]["text"] == "#151 – ’15 Toyota Alphard"
+        assert paragraphs[1]["text"] == "#152 – Koenigsegg CC850"
+        assert paragraphs[2]["text"] == "#153 – Datsun King Cab Baja Custom"
+
+    def test_p_without_br_emits_single_paragraph(self):
+        """Sanity: a plain `<p>` with no `<br>` continues to emit one
+        paragraph block (no regression from the <br>-split path)."""
+        html = "<p>Just a regular paragraph with prose.</p>"
+        out = _parse_content_encoded(html, self.LINK)
+        assert out is not None
+        paragraphs = [b for b in out["blocks"] if b["type"] == "paragraph"]
+        assert len(paragraphs) == 1
+        assert paragraphs[0]["text"] == "Just a regular paragraph with prose."
+
     def test_empty_li_dropped(self):
         # Empty `<li></li>` MUST NOT emit a block.
         html = "<ul><li></li></ul>"
