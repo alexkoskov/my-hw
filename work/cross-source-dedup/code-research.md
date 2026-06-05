@@ -593,3 +593,832 @@ These weren't fully closed in code research and need tech-spec-level decisions:
 3. **Multi-language sets.** PT version uses Portuguese trim names sometimes (e.g. "Camionete" vs "Pickup"). Whether the lexicon needs PT-EN aliases.
 4. **Threshold tuning.** Spec says 50% hard-block / 30-49% soft-flag. Empirically validate against 5-10 known duplicate pairs from prod before locking thresholds.
 5. **`published_articles` 7-day query.** The table currently has `published_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP` (`pending_articles_repo.py:78`). Index on `published_at` doesn't exist — for a window of 7 days × ~7 posts/day = ~50 rows, full scan is fine. No index needed initially.
+
+---
+
+## 14. Tech-spec-level deepening
+
+## Updated: 2026-06-04
+
+This section drills down to the implementation-decision level for tech-spec drafting. Each subsection answers one of the open question buckets and proposes concrete code shapes ready to lift into the spec.
+
+### 14.A — Lexicon: brand entries derived from real source samples
+
+#### A.1 — Brands actually mentioned in test-fixture HTML
+
+Scanned all four source-fixture files for car-brand strings:
+
+- `tests/test_autoevolution_source.py:18` — "rare **Porsche**" (editorial lead, `SAMPLE_ARTICLE_HTML`); line 90 — "**Ford** &amp; Chevy" (entity-decode test). Image filenames reference "porsche" repeatedly.
+- `tests/test_t_hunted_source.py:74-83` — PT body «Caça ao tesouro Pop Culture 2026», zero brand mentions in fixture body — fixture is generic. Real prod t-hunted posts (per user-spec example) reference brands inline in English (Subaru Legacy GT, Land Rover S2, 2018 Toyota 4Runner).
+- `tests/test_lamley_source.py:50-68` (`SAMPLE_HTML`) — zero brand mentions, fixture text is "Sample Hot Wheels Post" generic.
+- `tests/test_orangetrack_source.py:52` — "1995 **Honda** NSX"; line 54 — "1969 **Dodge** Charger"; line 69 — "**Honda** NSX"; line 1020 — "'15 **Toyota** Alphard"; lines 1250-1299 — "**Ferrari**", "**Porsche**", "**Mercedes** — быстрая машина".
+
+**Real-content brand mentions across fixtures (deduplicated):**
+- Ford, Porsche, Honda, Dodge, Toyota, Ferrari, Mercedes.
+
+**Insight:** the existing test-fixture corpus is *thin* for brand extraction. Most fixtures use placeholder text. Calibration cannot be done from existing fixtures alone — synthetic representative bodies are required (covered in §14.F).
+
+#### A.2 — General Hot Wheels mainline coverage
+
+Hot Wheels mainline + premium lines (Boulevard, Car Culture, Pop Culture, Premium, Fast & Furious) and HW Boulevard typically pull from these brand families:
+
+**Tier 1 — JDM (the dominant HW segment, ~30% of mainline castings):**
+1. Toyota
+2. Nissan
+3. Honda
+4. Mazda
+5. Subaru
+6. Mitsubishi
+7. Datsun (vintage JDM — historically frequent in Boulevard / Car Culture vintage mixes)
+8. Lexus
+9. Acura
+
+**Tier 2 — American muscle / classic (high HW presence):**
+10. Ford (Mustang, F-150, Bronco — perpetual mainline)
+11. Chevrolet (Camaro, Corvette, Chevelle)
+12. Dodge (Charger, Challenger, Viper)
+13. Plymouth (Barracuda, Road Runner)
+14. Pontiac (Firebird, GTO)
+15. Buick (Grand National, Regal)
+16. Cadillac
+17. Chrysler
+18. AMC (vintage JDM-collector niche)
+19. Jeep (mainline regular)
+20. Hudson (Premium / vintage segment)
+
+**Tier 3 — European (premium-line dominant):**
+21. BMW
+22. Mercedes (also matches "Mercedes-Benz" — handled in regex §14.B.4)
+23. Audi
+24. Volkswagen (also matches "VW" — handled as alias)
+25. Porsche
+26. Ferrari
+27. Lamborghini
+28. McLaren
+29. Bugatti
+30. Aston Martin (multi-word — see §14.B.1)
+31. Land Rover (multi-word — including Range Rover variant)
+32. Lotus
+33. Koenigsegg
+
+**Tier 4 — niche/edge but appears in 2026 mixes:**
+34. Hispano-Suiza (premium niche, ~2% of HW Boulevard mixes)
+35. Pagani (premium)
+
+**Proposed final ~35 brand entries** (alphabetically ordered for diff-readability in source):
+
+```
+Acura, AMC, Aston Martin, Audi, BMW, Bugatti, Buick, Cadillac,
+Chevrolet, Chrysler, Datsun, Dodge, Ferrari, Ford, Honda, Hudson,
+Jeep, Koenigsegg, Lamborghini, Land Rover, Lexus, Lotus, Mazda,
+McLaren, Mercedes, Mitsubishi, Nissan, Pagani, Plymouth, Pontiac,
+Porsche, Range Rover, Subaru, Toyota, Volkswagen
+```
+
+35 entries. Hispano-Suiza explicitly excluded from MVP (PR-additive per user-spec Risk 3).
+
+#### A.3 — Quirky brand names — collisions and gotchas
+
+| Brand | Quirk | Mitigation |
+|-------|-------|-----------|
+| Aston Martin | Two words separated by space | Regex escapes space: `aston\s+martin` (see §14.B.1) |
+| Land Rover | Two words; also occurs as "Range Rover" sub-brand | Two separate entries — both extract as distinct brand tokens. Land Rover ≠ Range Rover for fingerprint purposes (model lineage differs). |
+| Range Rover | Sub-brand of Land Rover, but HW treats as separate marque (e.g. "Range Rover Classic" castings) | Separate entry. |
+| Lotus | Risk: false-match unrelated "lotus" prose ("lotus flower", "lotus position") | Acceptable noise — HW articles rarely use the word in non-car sense. Spot-check first 2 weeks per user-spec. |
+| Lexus | Risk: low — uncommon word | Safe. |
+| AMC | Three-letter brand, risk of false-match ("AMC theatre", "AMC stock") | Bound with `\b` and case-sensitive — most prose uses "amc" lowercase, brand always uppercase: `\bAMC\b` (no `re.I`). |
+| Mercedes | Often "Mercedes-Benz" — hyphen variant | Pattern: `mercedes(?:-benz)?` matches both. |
+| Volkswagen | Frequently "VW" in EN, "Volks" in DE/PT casual prose | Pattern: `(?:volkswagen|\bvw\b)` (VW only with word-bound). |
+| Chevrolet | Frequently "Chevy" in EN | Pattern: `(?:chevrolet|chevy)`. |
+| BMW | Three-letter, always uppercase | `\bBMW\b` no-case-fold like AMC. |
+| Honda | Risk: matches "Honda Civic" but also non-car names. Low IRL risk. | Safe with `\bhonda\b`. |
+| Datsun | Vintage-only; HW Boulevard / Car Culture vintage mixes | Safe — no collision. |
+| Hudson | Risk: false-match "Hudson river", "Hudson Hawk" | Lower-volume; accept noise. |
+| Pagani | Italian premium | Safe — uncommon prose word. |
+
+#### A.4 — Mainline-frequent vs edge cases
+
+- **Mainline-frequent (every mix has ≥1):** Toyota, Nissan, Honda, Ford, Chevrolet, Dodge, BMW, Porsche, Mazda, Subaru, Mitsubishi, Volkswagen.
+- **Premium-line dominant:** Ferrari, Lamborghini, McLaren, Bugatti, Aston Martin, Koenigsegg, Pagani, Land Rover, Range Rover, Mercedes, Audi, Lexus.
+- **Vintage / collector niche:** Datsun, AMC, Plymouth, Pontiac, Buick, Cadillac, Chrysler, Hudson, Jeep.
+- **Sport / curio:** Lotus, Acura.
+
+For the Subaru Legacy GT × Toyota 4Runner × Land Rover S2 (real 2026-06-03 pair) — Tier 1 + Tier 3 hits. All present.
+
+### 14.B — Exact regex patterns
+
+#### B.1 — Multi-word brand pattern, ReDoS-safe
+
+```python
+# Multi-word brands — escaped space, bounded {1,2} whitespace between tokens.
+_MULTIWORD_BRANDS_RE = re.compile(
+    r'\b(aston\s{1,2}martin|land\s{1,2}rover|range\s{1,2}rover)\b',
+    re.I,
+)
+```
+
+- `{1,2}` bounded quantifier (ReDoS-safe).
+- `\b` word-boundary on both sides — prevents "playstation aston martina" mid-string matches.
+- `re.I` case-insensitive — matches "Land Rover", "land rover", "LAND ROVER".
+
+#### B.2 — Single-word brand pattern, bounded
+
+```python
+# Single-word, case-insensitive, word-bound. Brands listed in lowercase for
+# inline reading. Order: longest first within alternation isn't required for
+# correctness (alternation is greedy left-to-right but each is anchored by \b).
+_SINGLE_BRANDS_RE = re.compile(
+    r'\b('
+    r'acura|audi|bugatti|buick|cadillac|chevrolet|chevy|chrysler|'
+    r'datsun|dodge|ferrari|ford|honda|hudson|jeep|koenigsegg|lamborghini|'
+    r'lexus|lotus|mazda|mclaren|mercedes(?:-benz)?|mitsubishi|nissan|'
+    r'pagani|plymouth|pontiac|porsche|subaru|toyota|volkswagen|vw'
+    r')\b',
+    re.I,
+)
+
+# Always-uppercase brands — separate compile, no re.I, to avoid noise from
+# common lowercase prose ("amc theatre", "bmw" the abbreviation is fine).
+_UPPERCASE_BRANDS_RE = re.compile(r'\b(AMC|BMW)\b')
+```
+
+- Alternation is bounded (no `*`, no `+` quantifiers inside).
+- `\b` anchors both ends.
+- `mercedes(?:-benz)?` — non-capturing optional suffix.
+
+#### B.3 — Brand + model token (the heart of fingerprint extraction)
+
+After identifying a brand position, look ahead for an optional year + model token:
+
+```python
+# Year prefix (optional) + model token. Year is dropped from the fingerprint
+# (per user-spec — PT often omits year). Model token: starts with capital
+# letter or digit, contains [A-Za-z0-9-], length bounded 2..25 to avoid
+# matching prose runs.
+_MODEL_AFTER_BRAND_RE = re.compile(
+    r'\b'
+    r'(?:(?:19|20)\d{2}\s+)?'                  # optional year 1900-2099
+    r'(?P<brand>' + _BRAND_ALTERNATION + r')'  # captured brand
+    r'(?:[\s\-]+'                              # one+ space-or-hyphen separator
+    r'(?P<model>[A-Z0-9][A-Za-z0-9\-]{1,24})'  # model token, 2-25 chars
+    r')?',                                     # model is OPTIONAL — bare brand counts too
+    re.I,
+)
+```
+
+Where `_BRAND_ALTERNATION` is the same alternation string as in `_SINGLE_BRANDS_RE` plus multi-word variants escaped.
+
+- All quantifiers bounded: `\d{2}`, `\d{4}` (via `(?:19|20)\d{2}`), `{1,24}`, `[\s\-]+` is bounded in practice by the surrounding context but technically unbounded — replace with `[\s\-]{1,3}` to be safe:
+
+```python
+r'(?:[\s\-]{1,3}'                              # 1-3 space-or-hyphen separators
+```
+
+**Final hardened regex (ReDoS-safe):**
+
+```python
+_MODEL_AFTER_BRAND_RE = re.compile(
+    r'\b'
+    r'(?:(?:19|20)\d{2}\s{1,3})?'
+    r'(?P<brand>aston\s{1,2}martin|land\s{1,2}rover|range\s{1,2}rover|'
+    r'acura|audi|bugatti|buick|cadillac|chevrolet|chevy|chrysler|'
+    r'datsun|dodge|ferrari|ford|honda|hudson|jeep|koenigsegg|lamborghini|'
+    r'lexus|lotus|mazda|mclaren|mercedes(?:-benz)?|mitsubishi|nissan|'
+    r'pagani|plymouth|pontiac|porsche|subaru|toyota|volkswagen|vw|'
+    r'amc|bmw)'
+    r'(?:[\s\-]{1,3}(?P<model>[A-Za-z0-9][A-Za-z0-9\-]{1,24}))?',
+    re.I,
+)
+```
+
+#### B.4 — Edge-case patterns: hyphenated models, alphanumeric (911, GT-R)
+
+Already covered by `[A-Za-z0-9][A-Za-z0-9\-]{1,24}`:
+- "911" (3 chars) — passes.
+- "GT-R" (4 chars, hyphen) — passes.
+- "4Runner" (7 chars) — passes.
+- "F-150" (5 chars, hyphen) — passes.
+- "Legacy GT" — extractor will match "Legacy" only; "GT" stays as next-iteration token via post-processing OR is captured by greediness if separator regex allows space. **Decision: keep extractor at one-token-after-brand to avoid over-greedy capture. "Legacy GT" → token "subaru-legacy" (brand+first-word), trim-suffix dropped.** Trade-off documented in user-spec Q1.
+
+#### B.5 — Module-level compile pattern (mirror boilerplate_filter.py:81)
+
+```python
+# Each pattern compiled once at module load — re.compile inside a function
+# would re-compile every call (boilerplate_filter.py:80 convention).
+_BRAND_MODEL_PATTERNS = (
+    _MODEL_AFTER_BRAND_RE,
+    _UPPERCASE_BRANDS_RE,
+)
+```
+
+### 14.C — Similarity formula codification (AC8 + AC10)
+
+User-spec ACs in plain code:
+
+```python
+def jaccard(a: set, b: set) -> float:
+    """Pure Jaccard. Empty intersection AND empty union → 0.0 (never undefined)."""
+    if not a or not b:
+        return 0.0
+    intersection = len(a & b)
+    union = len(a | b)
+    return intersection / union if union else 0.0
+
+
+def similarity(fp_new: dict, fp_existing: dict) -> float:
+    """
+    Combined similarity per AC8 + AC10.
+
+    fp_new / fp_existing structure:
+        {'strict': {'subaru-legacy', 'toyota-4runner', ...},  # brand+model tokens
+         'brands': {'subaru', 'toyota', ...}}                 # brand-only tokens
+
+    Corner cases (in this exact order):
+      1. AC6: empty fp on EITHER side → 0.0 (caller skips dedup gate).
+      2. AC8 part 1: if EITHER strict set has |fp| == 1 → skip brands fallback,
+         use jaccard(strict, strict) only.
+      3. AC8 part 2: brands-only fallback only when BOTH brands sets have ≥2
+         distinct entries.
+      4. Otherwise: max(jaccard(strict), jaccard(brands)).
+    """
+    s_new, s_old = fp_new.get('strict') or set(), fp_existing.get('strict') or set()
+    b_new, b_old = fp_new.get('brands') or set(), fp_existing.get('brands') or set()
+
+    # AC6 — empty fp on either side
+    if not s_new or not s_old:
+        return 0.0
+
+    strict_sim = jaccard(s_new, s_old)
+
+    # AC8 — 1-token-degeneracy guard
+    if len(s_new) == 1 or len(s_old) == 1:
+        return strict_sim
+
+    # AC8 — brands-only fallback gated on ≥2 brands BOTH sides
+    if len(b_new) >= 2 and len(b_old) >= 2:
+        brands_sim = jaccard(b_new, b_old)
+        return max(strict_sim, brands_sim)
+
+    return strict_sim
+```
+
+**Worked corner cases:**
+
+| fp_new | fp_existing | Branch | Result |
+|--------|------------|--------|--------|
+| `{strict:{}, brands:{}}` | any | AC6 | 0.0 |
+| `{strict:{toyota-4runner}}` | `{strict:{toyota-4runner}}` | AC8 1-token | 1.0 (correct — identical 1-tok) |
+| `{strict:{subaru-brz}}` | `{strict:{subaru-wrx}}` | AC8 1-token, no brand fallback | 0.0 (correct — guards against false 100%) |
+| `{strict:{toyota-4runner, subaru-legacy}, brands:{toyota,subaru}}` × 2 | identical | AC8 ≥2 brands | 1.0 (correct) |
+| `{strict:{ford-mustang}, brands:{ford}}` | `{strict:{ford-bronco}, brands:{ford}}` | AC8 ≥2 brands fails (1 brand each) | 0.0 strict, no fallback — returns strict_sim = 0.0 (correct — different Ford models, blocks would be wrong) |
+
+### 14.D — Soft-flag rate-limit (AC5): bot_state vs new table
+
+**Existing prior art:**
+- `bot_state` already used for outage state machine (`outage_state.py:81-153`). Generic k/v with BEGIN IMMEDIATE wrappers.
+- No precedent for per-pair compound keys in `bot_state`, but `outage_state.py:127` pattern would extend trivially:
+  ```python
+  conn.execute("SELECT value FROM bot_state WHERE key=?", (f"softflag:{new}|{existing}",))
+  ```
+
+**Option 1 — `bot_state` k/v with compound key.**
+
+| Pros | Cons |
+|------|------|
+| Zero schema changes — leverages existing DDL at `pending_articles_repo.py:108-113`. | Compound key formatting is ad-hoc — `softflag:{new_link}:{existing_link}` collides if any link contains `:` (URLs don't, but fragile). Use `\n` separator to be safer. |
+| Existing `_get` / `_set` helpers in `outage_state.py` are reusable shape. | Cannot efficiently expire old entries — `DELETE FROM bot_state WHERE key LIKE 'softflag:%' AND value < datetime('now', '-30 days')` needs a full scan, but the table is tiny so trivial. |
+| Migration-free (no ALTER, no risk of OperationalError edge cases). | Mixes concerns — bot_state grows with per-pair entries forever unless explicitly pruned. |
+
+**Option 2 — new dedicated `softflag_pings` table.**
+
+| Pros | Cons |
+|------|------|
+| Explicit PK `(new_link, existing_link)` — schema-level guarantee. | Requires a 3rd table in the dedup feature — more migration surface. |
+| Pruning by `last_pinged_at < now - 7d` is a single indexed scan. | Adds new file with DDL + helpers. |
+| Self-documenting — table name says what it stores. | Slight code-bloat for what is operationally a tiny dataset (≤ 50 active pairs at any time per user-spec scaling math in §J). |
+
+**Recommendation: Option 1 (`bot_state` with compound key).**
+
+Justification:
+1. **Volume is trivial** — at ~7 articles/day × 1-2 soft-flag triggers/week (per user-spec Risk 7 lamley-roundup case), the table will accumulate ~5-10 keys/week. After 6 months: ~150-300 keys. No performance issue.
+2. **The dedup feature already adds a migration** (`model_fingerprint` columns × 2 tables). Adding a 3rd table is moving against the "minimize migration surface" pattern.
+3. **Existing precedent in the codebase** — `bot_state` is the canonical "lazy k/v" store, exactly for use cases like this.
+4. **Pruning is opportunistic** — at every dedup-soft-flag tick, before write, `DELETE FROM bot_state WHERE key LIKE 'softflag:%' AND value < datetime('now', '-30 days')`. Bounded table size.
+
+**Proposed key format:**
+```python
+# Use '\n' as separator — URLs never contain newlines.
+_softflag_key = lambda new, old: f"softflag:{new}\n{old}"
+```
+
+**Helper signatures (mirror `outage_state.py:_get/_set`):**
+
+```python
+def softflag_pinged_recently(new_link: str, existing_link: str, days: int = 7) -> bool:
+    """True iff a soft-flag ping for this (new, existing) pair was sent within
+    the last `days` days. AC5: prevents the same pair from spamming admin."""
+
+def mark_softflag_pinged(new_link: str, existing_link: str) -> None:
+    """Stamp ISO-timestamp in bot_state for the pair. AC5."""
+```
+
+Both live in the dedup module (or in `pending_articles_repo` next to `bot_state` DDL).
+
+### 14.E — Backfill script structure
+
+#### E.1 — Repo conventions for one-shot scripts
+
+`scripts/` folder exists but contains only `backup_db.sh`. **No precedent for one-shot Python scripts in `scripts/`.** Existing CLI conventions live at top-level (`hw_review.py` with `argparse.ArgumentParser`, dispatch table, `main(argv=None)`, `if __name__ == '__main__': sys.exit(main())`).
+
+**Recommendation: top-level `backfill_fingerprints.py`**, mirroring `hw_review.py` shape. Reasons:
+1. Discoverability — operator runs `python3 backfill_fingerprints.py` from project root, same as `python3 hw_review.py list`.
+2. Shared sys.path semantics — `from pending_articles_repo import ...` works without path-hacks.
+3. The deploy.sh / git-clone workflow assumes top-level Python files.
+4. No new directory convention to introduce.
+
+#### E.2 — CLI surface (argparse)
+
+```python
+import argparse, sys, logging
+
+def _build_parser() -> argparse.ArgumentParser:
+    p = argparse.ArgumentParser(
+        prog='backfill_fingerprints',
+        description='One-shot backfill: extract model_fingerprint for '
+                    'published_articles rows in the last N days. Idempotent.',
+    )
+    p.add_argument('--days', type=int, default=14,
+                   help='backfill window in days (default 14, per user-spec AC11)')
+    p.add_argument('--dry-run', action='store_true',
+                   help='compute fingerprints but do not write to DB')
+    p.add_argument('--verbose', action='store_true',
+                   help='log every row processed (default: summary only)')
+    return p
+
+
+def main(argv=None) -> int:
+    args = _build_parser().parse_args(argv)
+    logging.basicConfig(level=logging.DEBUG if args.verbose else logging.INFO,
+                        format='%(asctime)s %(levelname)s %(message)s')
+    ...
+    return 0
+
+
+if __name__ == '__main__':
+    sys.exit(main())
+```
+
+#### E.3 — Reading `published_articles.paragraphs`
+
+`published_articles` does NOT store `paragraphs` — its DDL at `pending_articles_repo.py:70-81` only has `(link, title, ru_title, telegraph_url, telegraph_path, source_name, published_at, via_review)`. **Paragraphs are NOT preserved into published_articles after `move_to_published`.**
+
+**This is a blocker for the backfill plan as user-spec described it.** The backfill cannot compute fingerprints from `published_articles.paragraphs` because that column does not exist.
+
+**Two recovery paths (escalate to tech-spec for decision):**
+
+**Path A — backfill from `pending_articles` instead.**
+- Pending rows still have paragraphs. For rows still in queue, backfill works.
+- But the user-spec scenario (warm the 7-day window so PT republishes of past EN posts are caught) requires already-published rows.
+- Pending queue typically <10 rows. Won't cover the 14-day window.
+
+**Path B — fetch HTML again from URL during backfill.**
+- Use `news_bot.fetch_full_article(entry_stub)` per published row.
+- Network calls × ~50 rows × ~3s each = ~2.5 min total — within the user-spec ~5 min budget.
+- Risk: t-hunted/autoevolution rate-limit; Cloudflare bypass via `curl_cffi` (already done in source modules).
+- Risk: published article may be DELETED upstream; fingerprint = empty → store `[]`.
+
+**Path C — add `paragraphs TEXT` column to `published_articles` going forward.**
+- New articles (post-deploy) have paragraphs persisted at `move_to_published` time — `pending_articles_repo.py:546-613` would need updating.
+- Past articles still missing — backfill remains stuck for them.
+
+**Recommendation for tech-spec: Path B** (re-fetch from URL during backfill). Path C is also worth doing for future-proofing but doesn't fix the cold-start. Path B is the pragmatic ~5 min one-shot.
+
+**Modified backfill flow:**
+
+```python
+def backfill_one(row: dict, *, dry_run: bool) -> str:
+    """Returns one of: 'updated', 'skipped', 'error', 'empty-fp'."""
+    if row.get('model_fingerprint') is not None:
+        return 'skipped'  # idempotency — already set
+    entry_stub = {'link': row['link'], 'source_name': row['source_name'],
+                  'title': row.get('title') or '', 'published': ''}
+    try:
+        article = fetch_full_article(entry_stub)
+        if not article or not article.get('paragraphs'):
+            fp = {'strict': [], 'brands': []}
+            if not dry_run:
+                update_published_fingerprint(row['link'], fp)
+            return 'empty-fp'
+        fp = extract_fingerprint(article)
+        if not dry_run:
+            update_published_fingerprint(row['link'], fp)
+        return 'updated'
+    except Exception as exc:
+        logger.error("backfill failed for %s: %s", row['link'], exc)
+        return 'error'
+```
+
+#### E.4 — Idempotency check
+
+```sql
+SELECT link, source_name, title FROM published_articles
+WHERE published_at >= datetime('now', ? || ' days')
+  AND model_fingerprint IS NULL
+```
+
+- `IS NULL` is the canonical idempotency marker. **`'[]'` empty-list value means "computed but no brands found" — must NOT be re-processed.**
+- Backfill writes `'[]'` for empty-fp result; subsequent runs see `'[]'` (not NULL) and skip.
+- This matches the user-spec AC6 contract for runtime extractor (`'[]'` ≠ NULL).
+
+#### E.5 — Summary output (mirrors operator UX in admin pings)
+
+```
+Backfill complete:
+  Window:    14 days (228 rows scanned)
+  Processed: 47 (computed fingerprint)
+  Skipped:   181 (already had fingerprint)
+  Empty fp:  3 (industry news, no brands found)
+  Errors:    0
+  Duration:  4m 23s
+```
+
+Logged to stdout for operator visibility (per user-spec Сценарий 4).
+
+### 14.F — Calibration fixture data (8 pairs)
+
+#### F.1 — Fixture location
+
+`tests/fixtures/` exists with `mattel_flight_builder.py` (current sole inhabitant). Convention: Python module with fixture data exported as module-level constants.
+
+**Recommendation: new `tests/fixtures/cross_source_dedup_pairs.py`** — single module exporting `DUPE_PAIRS` and `NON_DUPE_PAIRS` lists of pair dicts.
+
+Pair-dict shape:
+```python
+{
+    'label': 'pair-1-real-2026-06-03',
+    'a': {'title': '...', 'subtitle': '...', 'paragraphs': [...], 'source_name': 'autoevolution'},
+    'b': {'title': '...', 'subtitle': '...', 'paragraphs': [...], 'source_name': 't-hunted'},
+    'expected_verdict': 'duplicate' | 'non-duplicate' | 'soft-flag',
+    'expected_overlap_min': 0.50,  # for duplicates
+    'expected_overlap_max': 0.30,  # for non-duplicates
+    'note': 'Real 2026-06-03 pair (synthetic for AE side — Cloudflare).',
+}
+```
+
+#### F.2 — The 4 duplicate pairs
+
+**Pair 1 — Real 2026-06-03 (Car Culture Road Trip Mix):**
+- A (autoevolution EN): title "New Hot Wheels Car Culture Road Trip Mix preorders start now"; subtitle synthesized from URL slug; paragraphs: synthesized 4-paragraph editorial mentioning "Subaru Legacy GT", "Land Rover S2", "2018 Toyota 4Runner", "Range Rover Classic". Marked as **synthetic representative** — real fetch blocked by Cloudflare.
+- B (t-hunted PT): title "Um novo lote da série Car Culture com carros de viagem"; subtitle/paragraphs: real ~553-char body extracted in user-spec interview. Brand mentions (EN-named even in PT body): Subaru Legacy GT, Land Rover S2, Toyota 4Runner.
+- Expected: 3 brand+model overlaps / ~4 total → ~75% strict-jaccard → **duplicate**.
+
+**Pair 2 — Premium / Boulevard mix overlap (synthesized):**
+- A (autoevolution): "Hot Wheels Boulevard Mix N reveals — Camaro Z28, Ford Mustang Boss, Datsun 510". 3 brands × 3 models.
+- B (lamley): "Boulevard preview — Camaro Z28, Mustang Boss, Datsun 510 spotted". Same 3 models.
+- Expected: 100% strict-jaccard → **duplicate**.
+
+**Pair 3 — Pop Culture pair across sources (synthesized):**
+- A (autoevolution): Pop Culture announcement with Lamborghini Countach, Porsche 911, Ferrari Testarossa.
+- B (t-hunted PT): "Pop Culture nova série" mentioning Lamborghini Countach, Porsche 911, Ferrari Testarossa.
+- Expected: 100% strict-jaccard → **duplicate**.
+
+**Pair 4 — JDM Premium pair (synthesized, partial overlap = soft-flag region):**
+- A (autoevolution): "JDM Premium reveal — Nissan Skyline GT-R, Toyota Supra, Mazda RX-7, Subaru WRX".
+- B (lamley): "JDM heavy hitters — Skyline GT-R and Supra spotted in Premium".
+- Expected: 2/4 overlap = 50% jaccard — sits exactly at hard-block boundary. **Annotate as edge-case calibration; expected_verdict='duplicate' (≥50%).**
+
+#### F.3 — The 4 non-duplicate pairs
+
+**Pair 5 — AC8 shape: same brand, different models (Subaru BRZ vs Subaru WRX):**
+- A: "New Subaru BRZ casting in Boulevard mix". Single brand+model.
+- B: "Lamley reviews the Subaru WRX premium release". Single brand+model.
+- Expected: strict-jaccard {subaru-brz} vs {subaru-wrx} = 0%, brand-jaccard = 100% BUT AC8 guard (1-token strict) blocks brand fallback. Final: 0%. **non-duplicate.**
+
+**Pair 6 — 1-token guard probe (single Toyota each):**
+- A: "Quick look: 2018 Toyota 4Runner premium release".
+- B: "Toyota Supra Premium variant announcement".
+- Expected: strict {toyota-4runner} vs {toyota-supra} = 0%, AC8 blocks fallback. **non-duplicate.**
+
+**Pair 7 — Related but different series (Boulevard mix vs Premium):**
+- A (autoevolution): "Boulevard Mix N reveals — Camaro Z28, Mustang Boss, Datsun 510" (3 brands).
+- B (lamley): "Premium Q3 lineup announced — Ferrari Testarossa, Porsche 911, Lamborghini Countach" (3 brands).
+- Expected: 0 strict overlap, 0 brand overlap. **non-duplicate.**
+
+**Pair 8 — Industry vs car review (completely unrelated):**
+- A (autoevolution): "Mattel Q3 earnings exceed expectations" — empty fingerprint.
+- B (lamley): "Hands-on with the Nissan GT-R Premium" — `{strict:{nissan-gt-r}, brands:{nissan}}`.
+- Expected: AC6 empty-fp on A → similarity = 0. **non-duplicate** (also confirms dedup is skipped when fp empty).
+
+#### F.4 — Source for synthesized bodies
+
+Each synthesized body is ~150-250 words in the source language, structured as:
+1. Title (~70 chars).
+2. Subtitle / lead (~150 chars).
+3. 3-5 paragraphs of editorial copy with brand+model mentions inline.
+
+Authoring guidance noted in fixture docstring: "Synthesized to be representative of real HW source-page content shape. Brand+model mentions are real HW castings from public 2026 mainline data; surrounding prose is reconstructed."
+
+### 14.G — Schema migration SQL (drop-in block)
+
+#### G.1 — Exact insertion point
+
+`pending_articles_repo.py:185-194` — the existing migration block. Insert the new ALTERs as a second iteration after the telegraph_url block:
+
+```python
+# Migration (2026-06-XX): model_fingerprint JSON list — cross-source-dedup
+# feature. Catches PT-EN republishes that bypass URL-only dedup. Stored as
+# JSON object {"strict": [...], "brands": [...]}; empty fp persisted as
+# {"strict": [], "brands": []} to distinguish "computed empty" from "not yet
+# processed" (NULL). Idempotent ALTER pattern — see telegraph_url precedent
+# above.
+for ddl in (
+    "ALTER TABLE pending_articles ADD COLUMN model_fingerprint TEXT",
+    "ALTER TABLE published_articles ADD COLUMN model_fingerprint TEXT",
+):
+    try:
+        conn.execute(ddl)
+    except sqlite3.OperationalError:
+        # Column already exists — idempotent on subsequent init_schema calls.
+        pass
+```
+
+Place this block **inside the existing `init_schema()` function**, after line 194 (the closing `pass` of the telegraph migration loop), before the final `conn.commit()` at line 195.
+
+#### G.2 — Expected `PRAGMA table_info` row
+
+For migration tests (`tests/test_migration.py` + `tests/test_pending_articles_repo.py`):
+
+```python
+'model_fingerprint': {'type': 'TEXT', 'notnull': 0, 'dflt_value': None, 'pk': 0}
+```
+
+Adds to:
+- `EXPECTED_PENDING` (`tests/test_pending_articles_repo.py:30`)
+- `EXPECTED_PUBLISHED` (`tests/test_pending_articles_repo.py:53`)
+- `EXPECTED_PENDING_COLUMNS` (`tests/test_migration.py:38`)
+- `EXPECTED_PUBLISHED_COLUMNS` (if present in `test_migration.py`; otherwise create it).
+
+### 14.H — New repo helpers (exact signatures + SQL)
+
+All four live in `pending_articles_repo.py` after `list_failed()` (~line 502) — grouped with other list/state-read helpers.
+
+```python
+def list_recent_pending_fingerprints(days: int = 7) -> list[dict]:
+    """Pending rows fetched within the last `days` days whose
+    `model_fingerprint` is non-NULL. Projection: link, source_name,
+    model_fingerprint (deserialised JSON object).
+
+    Returns rows in fetched_at-ascending order (oldest first) — irrelevant
+    for the dedup gate (it ORs all matches) but deterministic for tests.
+    """
+    conn = _connect()
+    try:
+        cur = conn.execute(
+            "SELECT link, source_name, model_fingerprint "
+            "FROM pending_articles "
+            "WHERE model_fingerprint IS NOT NULL "
+            "AND fetched_at >= datetime('now', ? || ' days') "
+            "ORDER BY fetched_at ASC",
+            (f"-{int(days)}",),
+        )
+        rows = cur.fetchall()
+    finally:
+        conn.close()
+    return [
+        {'link': r[0], 'source_name': r[1],
+         'model_fingerprint': _loads_or_none(r[2])}
+        for r in rows
+    ]
+
+
+def list_recent_published_fingerprints(days: int = 7) -> list[dict]:
+    """Published rows published within the last `days` days whose
+    `model_fingerprint` is non-NULL. Same projection as
+    list_recent_pending_fingerprints."""
+    conn = _connect()
+    try:
+        cur = conn.execute(
+            "SELECT link, source_name, model_fingerprint "
+            "FROM published_articles "
+            "WHERE model_fingerprint IS NOT NULL "
+            "AND published_at >= datetime('now', ? || ' days') "
+            "ORDER BY published_at ASC",
+            (f"-{int(days)}",),
+        )
+        rows = cur.fetchall()
+    finally:
+        conn.close()
+    return [
+        {'link': r[0], 'source_name': r[1],
+         'model_fingerprint': _loads_or_none(r[2])}
+        for r in rows
+    ]
+
+
+def update_published_fingerprint(link: str, fingerprint: dict) -> bool:
+    """Used by `backfill_fingerprints.py`. Writes JSON-encoded fingerprint
+    onto an existing published row. Returns True iff the row existed.
+
+    Idempotency: callers should check WHERE model_fingerprint IS NULL first
+    (per backfill flow §14.E.4); this helper does NOT enforce that — it
+    overwrites unconditionally."""
+    conn = _connect()
+    try:
+        cur = conn.execute(
+            "UPDATE published_articles SET model_fingerprint=? WHERE link=?",
+            (_dumps(fingerprint), link),
+        )
+        conn.commit()
+        return cur.rowcount > 0
+    finally:
+        conn.close()
+```
+
+`update_pending_fingerprint` — **dropped per the briefing**: backfill only touches `published_articles`. The runtime extractor writes via `insert_pending` directly.
+
+### 14.I — insert_pending signature change
+
+#### I.1 — Backward compatibility for callers
+
+`insert_pending(entry)` is dict-driven (`pending_articles_repo.py:202-240`). Adding `model_fingerprint` as a new optional key in `entry` is **backward-compatible at the Python level** — old callers omit the key, helper uses `entry.get('model_fingerprint')` which returns None.
+
+But SQL-level: `INSERT INTO pending_articles (..., model_fingerprint) VALUES (..., ?)` with NULL is fine for the new schema (column is nullable per migration G.1).
+
+**Modified SQL (line 218-220 + 221-231):**
+
+```python
+conn.execute(
+    "INSERT INTO pending_articles "
+    "(link, source_name, feed_url, title, subtitle, paragraphs, images, "
+    " blocks, pub_date, model_fingerprint) "
+    "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+    (
+        entry['link'],
+        entry['source_name'],
+        entry.get('feed_url'),
+        entry['title'],
+        entry.get('subtitle') or '',
+        _dumps(entry.get('paragraphs') or []),
+        _dumps(entry.get('images') or []),
+        _dumps(entry.get('blocks')),
+        entry.get('pub_date'),
+        _dumps(entry.get('model_fingerprint')),  # NULL-preserving — None → NULL
+    ),
+)
+```
+
+`_dumps(None)` returns None (`pending_articles_repo.py:129-131`) → SQLite NULL. So old callers that omit the key → NULL → safe.
+
+#### I.2 — Tests that hit `insert_pending`
+
+Inventoried 8 test files calling `insert_pending` (from earlier grep, lines bottom):
+
+| File | Lines | Action needed |
+|------|-------|--------------|
+| `tests/test_pending_articles_repo.py` | 220-290, 443-469 | Update `_sample_entry` helper at line 84 to include `model_fingerprint` kwarg default `None`. Add 1-2 round-trip tests for `model_fingerprint` JSON roundtrip. |
+| `tests/test_integration.py` | 322 | No change — uses dict literals; None default fine. |
+| `tests/test_distributed_schedule_integration.py` | 505, 761, 783 | No change — dict literals; None default fine. |
+| `tests/test_fallback_throttle.py` | 181 | No change. |
+| `tests/test_hw_review_retry.py` | 77-79, 221, 242, 265 | No change — `_insert_pending` helper passes kwargs; None default fine. |
+| `tests/test_hw_review_publish_flow.py` | 77 | No change. |
+| `tests/test_news_bot_dispatcher.py` (if it touches insert_pending) | — | Check; probably no change. |
+
+**Risk: schema-pin tests** (`test_pending_articles_repo.py:30`, `test_migration.py:38`) — **MUST** update both `EXPECTED_PENDING` and `EXPECTED_PUBLISHED` dicts. This is the only mandatory test edit caused by I.1.
+
+### 14.J — Performance / scaling
+
+#### J.1 — Jaccard ops volume
+
+Per user-spec scaling math:
+- ~10 articles fetched per day (per news_bot tick cadence; ~3 ticks/day × ~3-4 articles/tick).
+- ~50 fingerprints in 7-day window (pending + published combined; pending has ≤10 rows, published has ~40 rows in a 7-day window).
+- Per new article: 1 fingerprint extract + ~50 Jaccard computations + 1 max() reduction.
+- Per day: 10 × 50 = 500 Jaccard ops.
+
+Jaccard on 5-token Python sets: `len(a & b) / len(a | b)` ≈ ~1µs each. 500 ops/day = 500µs = 0.5ms/day. **Trivial. No optimization needed.**
+
+#### J.2 — Regex extract on ~5KB body × 35 brand patterns
+
+`re` module performance characteristics for the proposed regex shape:
+- `_MODEL_AFTER_BRAND_RE` is a single compiled regex with alternation of ~30 brands. `re.finditer()` does one linear scan.
+- All quantifiers bounded → linear time guarantee.
+- 5KB text × single regex scan ≈ ~0.5-1ms on modern hardware (CPython 3.11+).
+- Plus `_UPPERCASE_BRANDS_RE` (AMC|BMW only) = another ~0.5ms scan.
+
+**Estimated total extractor time: ~1-3ms per article.** Well under the 100ms budget from user-spec.
+
+#### J.3 — Repo query
+
+`SELECT ... WHERE model_fingerprint IS NOT NULL AND fetched_at >= datetime(...)`:
+- No index on `fetched_at` or `published_at`.
+- Table sizes: pending ≤ 10 rows, published ≤ 5000 rows after years of operation. 7-day filter on published ≈ ~40 rows post-filter.
+- Full scan with `WHERE` filter: ~5ms on 5000 rows. **OK.**
+- If table ever exceeds 50000 rows: add `CREATE INDEX IF NOT EXISTS idx_published_published_at ON published_articles(published_at)`. **Not needed for MVP.**
+
+#### J.4 — End-to-end dedup gate cost per article
+
+- Extract: ~1-3ms.
+- Query pending + published: ~5-10ms.
+- Up to 50 similarity() computations: ~0.5ms total.
+- Total: ~10-15ms per article. Within budget.
+
+### 14.K — AC9 fallback degraded mode — exception coverage
+
+#### K.1 — Where exceptions can escape
+
+1. **`extract_fingerprint(article)`** — regex compile failure (compile-time, not runtime, so caught at module load — would crash news_bot import. Mitigation: pin regex syntax in test_model_extractor unit tests that compile the regex). Runtime: malformed paragraphs (non-string elements), `re.error` on edge cases. Plus AttributeError if article dict is missing keys.
+2. **`similarity(fp_a, fp_b)`** — type errors (e.g. fp stored as list instead of dict — backwards-compat with old rows). KeyError on missing 'strict'/'brands' keys.
+3. **`list_recent_pending_fingerprints` / `list_recent_published_fingerprints`** — `sqlite3.Error` (locked DB, disk full), `json.JSONDecodeError` on malformed historical row (e.g. backfill wrote partial data and was interrupted).
+4. **`softflag_pinged_recently` / `mark_softflag_pinged`** — SQLite errors, datetime parse errors on corrupted bot_state values (pattern already handled in `outage_state.py:171,216`).
+5. **`alert_cross_source_dupe` / `alert_blocked_dupe`** builders — string formatting on None / unexpected types.
+
+#### K.2 — Wrap order recommendation
+
+**Single outer try/except over the whole dedup-gate block, with `Exception` catch.** This matches the user-spec AC9 ("любое исключение → статья публикуется"). Per-call try/except would leak partial state (e.g. ping sent but article blocked).
+
+```python
+# At news_bot.py ~line 1816 (after _is_text_only_checklist returns False):
+try:
+    fp = model_extractor.extract_fingerprint(article)
+    if fp['strict']:  # non-empty new fp; else skip (AC6)
+        existing = (
+            pending_repo.list_recent_pending_fingerprints(days=7)
+            + pending_repo.list_recent_published_fingerprints(days=7)
+        )
+        verdict = dedup_evaluate(fp, existing)
+        if verdict.action == 'hard-block':
+            logger.info("Skipping cross-source duplicate %s; matched %s (overlap %d%%)",
+                        link, verdict.match_link, int(verdict.overlap * 100))
+            mark_processed(link,
+                           article.get('title') or entry.get('title') or '',
+                           entry.get('published') or '')
+            send_admin_notification(admin_alerts.alert_blocked_dupe(
+                new_link=link, existing_link=verdict.match_link,
+                overlap_pct=int(verdict.overlap * 100)))
+            continue  # AC3 — drop the article
+        if verdict.action == 'soft-flag':
+            if not softflag_pinged_recently(link, verdict.match_link, days=7):
+                send_admin_notification(admin_alerts.alert_cross_source_dupe(
+                    new_link=link, existing_link=verdict.match_link,
+                    new_source=row['source_name'],
+                    existing_source=verdict.match_source,
+                    overlap_pct=int(verdict.overlap * 100),
+                    n_matches=verdict.n_matches, n_total=verdict.n_total,
+                    model_list=verdict.shared_models))
+                mark_softflag_pinged(link, verdict.match_link)
+            # fall through — article publishes as normal (AC4)
+    # Pass fp into the row, regardless of branch (AC1):
+    row['model_fingerprint'] = fp
+except Exception as exc:
+    # AC9 — degraded mode. Log full traceback, single admin ping with E016
+    # code (silent on subsequent crashes within the same hour — rate-limited
+    # via bot_state, same pattern as outage_state). Article still publishes.
+    logger.error("dedup gate failed for %s: %s", link, exc, exc_info=True)
+    try:
+        send_admin_notification(
+            admin_alerts.alert_dedup_extractor_crash(link, type(exc).__name__))
+    except Exception:
+        # If the alert itself crashes — give up silently. Log already emitted.
+        pass
+    # row['model_fingerprint'] stays unset → stored as NULL — flagged for
+    # backfill on next operator pass.
+```
+
+#### K.3 — Log + admin-ping policy
+
+- **Full traceback to ERROR log** via `exc_info=True` (Python logging convention).
+- **Admin ping E016 «🟡 Дедуп упал»** — short, includes link + exception type. Use rate-limit via `bot_state` key `dedup_crash_last_pinged_at` (mirror outage_state pattern at `outage_state.py:199-204`) — max 1 ping per hour, otherwise log-only.
+- **Severity:** 🟡 (yellow), not 🔴 — channel doesn't suffer; bug is in optional gate.
+
+**E016 builder template** (drop into `admin_alerts.py` after `alert_cross_source_dupe` and `alert_blocked_dupe`):
+
+```python
+def alert_dedup_extractor_crash(link: str, error_type: str) -> str:
+    return (
+        f"[E016] 🟡 Дедуп упал (degraded mode)\n\n"
+        f"Ссылка:\n{link}\n\n"
+        f"Ошибка: {error_type}\n\n"
+        f"Что произошло:\n"
+        f"экстрактор фингерпринта или сравнение крашнулось.\n"
+        f"Статья опубликована как обычно (fallback).\n\n"
+        f"Что сделать:\n"
+        f"посмотри traceback в логе — починим в hotfix.\n"
+        f"Канал не страдает."
+    )
+```
+
+#### K.4 — Code-code 보호 ordering for admin codes
+
+Updated E0XX inventory after this feature:
+- E014 — soft-flag «🤔 Похож на дубль» (user-spec AC4)
+- E015 — hard-block «🚫 Заблокирован дубль» (user-spec AC3, short ping)
+- E016 — extractor crash «🟡 Дедуп упал» (this section K.3, new — fills out AC9 visibility)
+
+Tests required (mirror `test_admin_alerts.py:25-60`):
+- `test_e014_cross_source_dupe`
+- `test_e015_blocked_dupe`
+- `test_e016_dedup_extractor_crash`
+
+---
+
+End of section 14 — tech-spec ready.
