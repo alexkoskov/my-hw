@@ -33,6 +33,24 @@ Review details — in JSON files via links. QA report — in logs/working/.
 
 -->
 
+## Task 9: Pre-deploy QA
+
+**Status:** Done
+**Commit:** (no code changes — verification only; report is the deliverable)
+**Agent:** qa-runner
+**Summary:** Pre-deploy QA verdict **PASSED** — 0 critical findings. Full suite `pytest -q` green: 1083 passed / 2 skipped / 0 failed (matches baseline exactly; the 2 skips are pre-existing motivated conditional skips for live Mattel snapshots). All 12 user AC + 11 tech AC checked: 18 `passed` (incl. AC1 fingerprint-shape and AC11 backfill-refetch both `passed (deviation approved)`), 0 `failed`, 5 `not_verifiable` (live-environment scope of Task 11). Backfill dry-run on a fresh isolated empty DB: exit 0, full summary block, DB md5 identical before==after (zero writes); real prod DB never touched. Coverage check passed (every Tasks 1-5 file has behavior-exercising tests); requirements.txt diff vs pre-feature baseline empty (no new packages); deploy.sh FILES has both new files; backfill imports news_bot before logging.basicConfig. Audit inputs factored: security PASS, test PASS-WITH-NOTES (M1/M2 fixed), code PASS-WITH-NOTES. Full report: [logs/working/task-9/qa-report.json](logs/working/task-9/qa-report.json).
+**Deviations:** Two approved spec deviations re-confirmed in the report (not new): fingerprint shape dict `{"strict":[],"brands":[]}` vs user-spec AC1 `list[str]` (tech-spec User-Spec Deviations + Decision 4/5); backfill re-fetch via `fetch_full_article` vs reading `published_articles.paragraphs` (Decision 10, [APPROVED 2026-06-04]).
+**Deferred to post-deploy (Task 11 operator flags):** 5 `not_verifiable` criteria require live environment — (1) AC-tech-5 performance budget (constructive guarantee only, no wall-clock CI assert per Decision 3); (2) AC11 prod backfill run + `SELECT COUNT(*) WHERE model_fingerprint IS NOT NULL` via sqlite3 CLI on VPS; (3) AC3/AC4 live [E015]/[E014] Telegram ping spot-check; (4) 2-week channel @myhwchannel no-visible-duplicate review; (5) AC10 live `.schema` confirmation of `model_fingerprint TEXT` on prod news.db. Tools: bash/sqlite3 on VPS SSH, Telegram visual. See `deferredToPostDeploy` in qa-report.json.
+
+**Reviews:** Not applicable — QA is its own verification step; the report is the deliverable, no secondary review.
+
+**Verification:**
+- `python3 -m pytest -q` → 1083 passed, 2 skipped, 0 failed
+- `python3 backfill_fingerprints.py --dry-run --days 1` (isolated fresh empty news.db) → exit 0, summary block present, DB md5 unchanged
+- requirements.txt diff vs `b891885` (pre-feature) → empty
+- `grep -nE "model_extractor.py|backfill_fingerprints.py" deploy.sh` → both present (L56-57)
+- Status=passed → cleared to proceed to Task 10 (Deploy)
+
 ## Task 6: Code Audit
 
 **Status:** Done
