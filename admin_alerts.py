@@ -364,3 +364,83 @@ def alert_t_hunted_no_body(link: str) -> str:
 # ---------------------------------------------------------------------------
 def alert_orangetrack_summary_header(total_events: int) -> str:
     return f"[E030] 🟡 Orangetrack: {total_events} проблем за тик"
+
+
+# ---------------------------------------------------------------------------
+# Cross-source dedup alerts (E014, E015, E016).
+# Гейт fingerprint-сравнения живёт в news_bot.job() между
+# _is_text_only_checklist и insert_pending (tech-spec Decision 7).
+# Все три builder'а — pure (str-формат); rate-limit и I/O — в news_bot.
+# ---------------------------------------------------------------------------
+
+# ---------------------------------------------------------------------------
+# E014 — soft-flag: похож на дубль (overlap 30-49%, статья прошла)
+# ---------------------------------------------------------------------------
+def alert_cross_source_dupe(
+    new_link: str,
+    existing_link: str,
+    new_source: str,
+    existing_source: str,
+    overlap_pct: int,
+    n_matches: int,
+    n_total: int,
+    models: List[str],
+) -> str:
+    # Подстрока 'Похож на дубль' — substring-якорь для интеграционных
+    # тестов Wave 2 и rate-limit-логики news_bot. Не менять.
+    model_list = "\n".join(models)
+    return (
+        f"[E014] 🤔 Похож на дубль\n\n"
+        f"Новая статья:\n{new_link}\n\n"
+        f"Похож на:\n{existing_link}\n\n"
+        f"Источник новой: {new_source}\n"
+        f"Источник существующей: {existing_source}\n"
+        f"Совпадение моделей: {overlap_pct}% ({n_matches}/{n_total})\n"
+        f"Общие модели:\n{model_list}\n\n"
+        f"Что произошло:\n"
+        f"статья прошла в очередь, потому что\n"
+        f"порог автоблокировки (50%) не достигнут.\n\n"
+        f"Что сделать:\n"
+        f"посмотри обе статьи — если это явно\n"
+        f"дубль, удали лишнюю через hw_review.py;\n"
+        f"если разные — игнорируй пинг."
+    )
+
+
+# ---------------------------------------------------------------------------
+# E015 — hard-block visibility: дубль заблокирован (overlap ≥50%)
+# ---------------------------------------------------------------------------
+def alert_cross_source_blocked(
+    new_link: str, existing_link: str, overlap_pct: int,
+) -> str:
+    # Подстрока 'Заблокирован дубль' — substring-якорь для интеграционных
+    # тестов Wave 2. Формат сознательно короткий: действие оператора
+    # опциональное (статья уже отброшена), блок «Что сделать» отсутствует.
+    return (
+        f"[E015] 🚫 Заблокирован дубль\n\n"
+        f"Новая (отброшена):\n{new_link}\n\n"
+        f"Существующая (канон):\n{existing_link}\n\n"
+        f"Совпадение: {overlap_pct}%"
+    )
+
+
+# ---------------------------------------------------------------------------
+# E016 — AC9 fallback: дедуп в degraded mode (extractor crash и т.п.)
+# ---------------------------------------------------------------------------
+def alert_dedup_degraded(reason: str) -> str:
+    # Подстрока 'Дедуп в degraded mode' — substring-якорь по tech-spec
+    # Decision 7. Шаблон в code-research §14.K.3 устарел (имя/эмодзи/
+    # заголовок другие) — НЕ копировать оттуда.
+    # Rate-limit на 1 час делается в news_bot.job() через bot_state,
+    # сам builder rate-limit не знает (pure str).
+    return (
+        f"[E016] ⚠️ Дедуп в degraded mode\n\n"
+        f"Причина: {reason}\n\n"
+        f"Что произошло:\n"
+        f"экстрактор моделей крашнулся,\n"
+        f"статья опубликована как обычно\n"
+        f"(fingerprint сохранён как NULL).\n\n"
+        f"Что сделать:\n"
+        f"посмотри traceback в логах,\n"
+        f"починим хотфиксом."
+    )

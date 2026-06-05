@@ -255,6 +255,65 @@ class TestAdminAlerts(unittest.TestCase):
         # Backwards-compat: integration tests могут полагаться на формат
         # с числом проблем.
 
+    # ------------------------------------------------------------------
+    # Cross-source dedup alerts (E014, E015, E016)
+    # ------------------------------------------------------------------
+
+    def test_e014_cross_source_dupe(self):
+        msg = admin_alerts.alert_cross_source_dupe(
+            new_link="https://orangetrack.example/p/a",
+            existing_link="https://lamleygroup.com/p/b",
+            new_source="orangetrack",
+            existing_source="lamley",
+            overlap_pct=35,
+            n_matches=2,
+            n_total=6,
+            models=["toyota 4runner", "subaru legacy gt"],
+        )
+        self.assertIn("[E014]", msg)
+        self.assertIn("🤔", msg)
+        # Integration tests pin this exact substring (tech-spec Decision 7).
+        self.assertIn("Похож на дубль", msg)
+        self.assertIn("https://orangetrack.example/p/a", msg)
+        self.assertIn("https://lamleygroup.com/p/b", msg)
+        self.assertIn("orangetrack", msg)
+        self.assertIn("lamley", msg)
+        self.assertIn("35%", msg)
+        self.assertIn("2/6", msg)
+        self.assertIn("toyota 4runner", msg)
+        self.assertIn("subaru legacy gt", msg)
+        self.assertIn("Что произошло", msg)
+        self.assertIn("Что сделать", msg)
+
+    def test_e015_cross_source_blocked(self):
+        msg = admin_alerts.alert_cross_source_blocked(
+            new_link="https://orangetrack.example/p/a",
+            existing_link="https://lamleygroup.com/p/b",
+            overlap_pct=72,
+        )
+        self.assertIn("[E015]", msg)
+        self.assertIn("🚫", msg)
+        # Integration tests pin this exact substring (tech-spec Decision 7).
+        self.assertIn("Заблокирован дубль", msg)
+        self.assertIn("https://orangetrack.example/p/a", msg)
+        self.assertIn("https://lamleygroup.com/p/b", msg)
+        self.assertIn("72%", msg)
+        # Format pin: E015 is intentionally short — no operator action block.
+        self.assertNotIn("Что сделать", msg)
+
+    def test_e016_dedup_degraded(self):
+        msg = admin_alerts.alert_dedup_degraded(reason="AttributeError")
+        self.assertIn("[E016]", msg)
+        self.assertIn("⚠️", msg)
+        # Integration tests pin this exact substring (tech-spec Decision 7).
+        # NOTE: code-research §14.K.3 used "Дедуп упал (degraded mode)" —
+        # tech-spec Decision 7 overrides with "Дедуп в degraded mode".
+        self.assertIn("Дедуп в degraded mode", msg)
+        self.assertIn("degraded", msg)
+        self.assertIn("AttributeError", msg)
+        self.assertIn("Что произошло", msg)
+        self.assertIn("Что сделать", msg)
+
     def test_all_alerts_have_unique_codes(self):
         """Sanity check: no two alerts share the same [E0XX] code."""
         slots = [datetime(2026, 5, 10, 10, 0, tzinfo=MSK)]
@@ -285,6 +344,11 @@ class TestAdminAlerts(unittest.TestCase):
             admin_alerts.alert_t_hunted_fetch_error("x", "y"),
             admin_alerts.alert_t_hunted_no_body("x"),
             admin_alerts.alert_orangetrack_summary_header(1),
+            admin_alerts.alert_cross_source_dupe(
+                "u", "v", "s1", "s2", 35, 2, 6, ["m1", "m2"],
+            ),
+            admin_alerts.alert_cross_source_blocked("u", "v", 72),
+            admin_alerts.alert_dedup_degraded("AttributeError"),
         ]
         codes = [m[:6] for m in all_messages]  # "[E0XX]"
         self.assertEqual(len(codes), len(set(codes)),
