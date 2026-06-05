@@ -33,6 +33,20 @@ Review details — in JSON files via links. QA report — in logs/working/.
 
 -->
 
+## Task 6: Code Audit
+
+**Status:** Done
+**Commit:** (no code changes — read-only audit)
+**Agent:** code-auditor
+**Summary:** Holistic code audit verdict **PASS-WITH-NOTES**. 0 critical / 2 major / 5 minor / 3 nit. Cross-component contracts (JSON shape uniformity, compiled-regex singleton, error-handling discipline) all hold; pattern adherence to `boilerplate_filter.py`, `outage_state.py`, `hw_review.py` verified; deploy.sh ships both new top-level files; Decisions 1–14 all honored. Two follow-up items worth a separate ticket: (1) `news_bot.py` reaches into `pending_repo._connect()` (private API) — promote a public helper; (2) the degraded-mode path opens two sequential connections — consolidate connection lifecycle. Neither blocks deploy. Full report: [logs/audits/code-audit.md](logs/audits/code-audit.md).
+**Deviations:** None — audit was read-only; no source files modified.
+
+**Reviews:** Not applicable — audit task has no reviewers (the report itself is the deliverable).
+
+**Verification:**
+- `test -f work/cross-source-dedup/logs/audits/code-audit.md && grep -q "## Verdict" work/cross-source-dedup/logs/audits/code-audit.md` → OK
+- Report covers all 5 source files + 11 review dimensions + 3 reference patterns
+
 ## Task 5: backfill_fingerprints.py one-shot script
 
 **Status:** Done
