@@ -30,12 +30,27 @@ from __future__ import annotations
 import json
 import logging
 import sqlite3
+from datetime import datetime, timedelta, timezone
 from typing import Any, Iterable, Optional
 
 import news_bot  # for DB_FILE at call time — see module docstring
 
 
 logger = logging.getLogger(__name__)
+
+
+# ---------------------------------------------------------------------------
+# bot_state keys for cross-source-dedup feature (Decision 6)
+# ---------------------------------------------------------------------------
+
+# Per-pair soft-flag rate-limit key prefix. Full key shape:
+#   ``softflag_pair:{new_link}\n{existing_link}``
+# Newline separator chosen because links contain ``:`` and ``/`` — a newline
+# is unambiguous (URLs cannot contain it).
+_KEY_SOFTFLAG_PAIR_PREFIX = 'softflag_pair:'
+
+# Global degraded-mode rate-limit key (1-hour window).
+_KEY_DEDUP_DEGRADED = 'dedup_degraded_last_pinged_at'
 
 
 # ---------------------------------------------------------------------------
@@ -115,8 +130,12 @@ CREATE TABLE IF NOT EXISTS bot_state (
 # JSON-serialised columns per table. Used by the row→dict converters to
 # deserialise list/dict fields, distinguishing NULL (absence) from "[]"
 # (empty-but-present). See tech-spec §9.13.
-_PENDING_JSON_COLS = ('paragraphs', 'images', 'blocks', 'ru_paragraphs', 'ru_blocks')
+_PENDING_JSON_COLS = ('paragraphs', 'images', 'blocks', 'ru_paragraphs', 'ru_blocks',
+                      'model_fingerprint')
 _FAILED_JSON_COLS = ('paragraphs', 'images', 'blocks')
+# JSON columns on ``published_articles``. Currently only the dedup
+# fingerprint added in the 2026-06-XX migration (Decision 11).
+_PUBLISHED_JSON_COLS = ('model_fingerprint',)
 
 
 # ---------------------------------------------------------------------------
@@ -182,9 +201,15 @@ def init_schema(conn: sqlite3.Connection) -> None:
     # retry doesn't create a second Telegraph page (Decision 9 idempotency).
     # SQLite has no ``ADD COLUMN IF NOT EXISTS``; use a try/except so the
     # ALTER is a no-op on already-migrated DBs.
+    #
+    # Migration (2026-06-XX, cross-source-dedup, Decision 11): store the
+    # model fingerprint JSON on both pending and published — same idempotent
+    # try/except OperationalError pattern.
     for ddl in (
         "ALTER TABLE failed_articles ADD COLUMN telegraph_url TEXT",
         "ALTER TABLE failed_articles ADD COLUMN telegraph_path TEXT",
+        "ALTER TABLE pending_articles ADD COLUMN model_fingerprint TEXT",
+        "ALTER TABLE published_articles ADD COLUMN model_fingerprint TEXT",
     ):
         try:
             conn.execute(ddl)
@@ -214,10 +239,16 @@ def insert_pending(entry: dict) -> bool:
     """
     conn = _connect()
     try:
+        # ``model_fingerprint`` (cross-source-dedup, Decision 5/11): callers
+        # before Task 4 do not set this key — ``entry.get`` returns None →
+        # ``_dumps(None)`` returns None → NULL stored. NULL means "not
+        # processed by the dedup gate"; ``{'strict':[],'brands':[]}`` (an
+        # empty dict-shape, JSON-encoded) means "processed, no brands found".
         conn.execute(
             "INSERT INTO pending_articles "
-            "(link, source_name, feed_url, title, subtitle, paragraphs, images, blocks, pub_date) "
-            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            "(link, source_name, feed_url, title, subtitle, paragraphs, "
+            " images, blocks, pub_date, model_fingerprint) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
             (
                 entry['link'],
                 entry['source_name'],
@@ -228,6 +259,7 @@ def insert_pending(entry: dict) -> bool:
                 _dumps(entry.get('images') or []),
                 _dumps(entry.get('blocks')),  # NULL-preserving
                 entry.get('pub_date'),
+                _dumps(entry.get('model_fingerprint')),  # NULL-preserving
             ),
         )
         conn.commit()
@@ -784,3 +816,188 @@ def retry_from_failed(link: str) -> bool:
         raise
     finally:
         conn.close()
+
+
+# ---------------------------------------------------------------------------
+# Cross-source dedup helpers (tech-spec cross-source-dedup, Decisions 5/6/11)
+# ---------------------------------------------------------------------------
+#
+# The three query/write helpers below accept ``conn`` as their first
+# parameter (vs the short-lived ``_connect()`` pattern used by older repo
+# helpers). This is deliberate — the backfill script (Task 5) holds a single
+# long-lived transaction across many rows, so the helpers must let the
+# caller decide when to commit / rollback.
+
+def list_recent_pending_fingerprints(conn: sqlite3.Connection,
+                                     days: int = 7) -> list[dict]:
+    """Return pending rows fetched within the last ``days`` days as a list
+    of dicts with ``model_fingerprint`` JSON-deserialised.
+
+    Projection: ``link``, ``source_name``, ``title``, ``model_fingerprint``,
+    ``fetched_at``. ``days`` is bound via a ``?`` placeholder
+    (``datetime('now', ? || ' days')`` with ``-{days}``) — matches the
+    ``list_pending_stale`` style so the ``TestSqlAudit`` SQL-injection
+    audit stays green.
+
+    Used by the dedup gate in ``news_bot.job()`` (Task 4): reads the
+    7-day window of fingerprint candidates and runs
+    ``model_extractor.similarity`` against each.
+    """
+    cur = conn.execute(
+        "SELECT link, source_name, title, model_fingerprint, fetched_at "
+        "FROM pending_articles "
+        "WHERE fetched_at >= datetime('now', ? || ' days')",
+        (f"-{int(days)}",),
+    )
+    rows = cur.fetchall()
+    desc = cur.description
+    return [_row_to_dict(r, desc, _PENDING_JSON_COLS) for r in rows]
+
+
+def list_recent_published_fingerprints(conn: sqlite3.Connection,
+                                       days: int = 7) -> list[dict]:
+    """Return published rows published within the last ``days`` days as
+    a list of dicts with ``model_fingerprint`` JSON-deserialised.
+
+    Same shape as ``list_recent_pending_fingerprints`` but against
+    ``published_articles`` / ``published_at``. Used by the dedup gate.
+    """
+    cur = conn.execute(
+        "SELECT link, source_name, title, model_fingerprint, published_at "
+        "FROM published_articles "
+        "WHERE published_at >= datetime('now', ? || ' days')",
+        (f"-{int(days)}",),
+    )
+    rows = cur.fetchall()
+    desc = cur.description
+    return [_row_to_dict(r, desc, _PUBLISHED_JSON_COLS) for r in rows]
+
+
+def update_published_fingerprint(conn: sqlite3.Connection,
+                                 link: str,
+                                 fingerprint: Optional[dict]) -> None:
+    """UPDATE ``published_articles.model_fingerprint`` for ``link``.
+
+    Used by the backfill script (Task 5) to populate fingerprints on
+    historical published rows that pre-date the dedup feature.
+    ``fingerprint`` is JSON-encoded via ``_dumps`` (so a dict is stored as
+    JSON text, ``None`` becomes NULL). Caller controls the transaction —
+    no internal commit.
+    """
+    conn.execute(
+        "UPDATE published_articles SET model_fingerprint=? WHERE link=?",
+        (_dumps(fingerprint), link),
+    )
+
+
+# ---------------------------------------------------------------------------
+# Cross-source dedup rate-limit helpers (Decision 6, bot_state-backed)
+# ---------------------------------------------------------------------------
+#
+# Pattern mirrors ``outage_state._parse_dt`` — corrupt/unexpected values
+# log a warning and return ``None`` so the dedup gate keeps working even
+# if a manual ``bot_state`` edit broke a row.
+
+def _parse_dt_tolerant(raw: Optional[str], key: str) -> Optional[datetime]:
+    """ISO-8601 string → tz-aware datetime, or None on missing / corrupt.
+
+    Mirrors ``outage_state._parse_dt``: corrupt content logs a warning
+    instead of raising so a manual ``bot_state`` edit (or a format drift
+    between feature versions) cannot block the dedup gate.
+    """
+    if raw is None:
+        return None
+    try:
+        return datetime.fromisoformat(raw)
+    except ValueError:
+        logger.warning("corrupted bot_state value at key=%s: %r", key, raw)
+        return None
+
+
+def _pair_key(new_link: str, existing_link: str) -> str:
+    """Build the bot_state key for a (new, existing) link pair.
+
+    Newline separator is chosen over ``:`` / ``/`` because links contain
+    those characters; a newline is unambiguous (URLs cannot include it
+    without percent-encoding). Decision 6.
+    """
+    return f"{_KEY_SOFTFLAG_PAIR_PREFIX}{new_link}\n{existing_link}"
+
+
+def is_pair_rate_limited(conn: sqlite3.Connection,
+                         new_link: str,
+                         existing_link: str,
+                         window_days: int = 7) -> bool:
+    """True iff a soft-flag ping for this (new, existing) pair was sent
+    within the last ``window_days`` days. Decision 6 / user-spec AC5.
+
+    Missing key → False (no prior ping). Corrupted timestamp → False +
+    warning (tolerant — parity with ``outage_state._parse_dt``).
+    """
+    key = _pair_key(new_link, existing_link)
+    row = conn.execute(
+        "SELECT value FROM bot_state WHERE key=?",
+        (key,),
+    ).fetchone()
+    if row is None:
+        return False
+    last = _parse_dt_tolerant(row[0], key)
+    if last is None:
+        return False
+    now = datetime.now(timezone.utc)
+    # If the stored timestamp is naive (legacy entry), assume UTC by
+    # replacing tzinfo — keeps the comparison meaningful.
+    if last.tzinfo is None:
+        last = last.replace(tzinfo=timezone.utc)
+    return (now - last) < timedelta(days=window_days)
+
+
+def mark_pair_pinged(conn: sqlite3.Connection,
+                     new_link: str,
+                     existing_link: str) -> None:
+    """UPSERT the current UTC timestamp at the soft-flag pair key.
+
+    Decision 6 / user-spec AC5. Caller controls the transaction (no
+    internal commit) — same as the other ``conn``-accepting helpers in
+    this section.
+    """
+    key = _pair_key(new_link, existing_link)
+    value = datetime.now(timezone.utc).isoformat()
+    conn.execute(
+        "INSERT OR REPLACE INTO bot_state (key, value) VALUES (?, ?)",
+        (key, value),
+    )
+
+
+def is_dedup_degraded_rate_limited(conn: sqlite3.Connection,
+                                   window_hours: int = 1) -> bool:
+    """True iff an E016 «dedup in degraded mode» ping was sent within
+    the last ``window_hours`` hours. Decision 6 / user-spec AC9.
+
+    Tolerates missing / corrupted values (returns False).
+    """
+    row = conn.execute(
+        "SELECT value FROM bot_state WHERE key=?",
+        (_KEY_DEDUP_DEGRADED,),
+    ).fetchone()
+    if row is None:
+        return False
+    last = _parse_dt_tolerant(row[0], _KEY_DEDUP_DEGRADED)
+    if last is None:
+        return False
+    now = datetime.now(timezone.utc)
+    if last.tzinfo is None:
+        last = last.replace(tzinfo=timezone.utc)
+    return (now - last) < timedelta(hours=window_hours)
+
+
+def mark_dedup_degraded_pinged(conn: sqlite3.Connection) -> None:
+    """UPSERT the current UTC timestamp at the degraded-mode key.
+
+    Decision 6 / user-spec AC9. Caller controls the transaction.
+    """
+    value = datetime.now(timezone.utc).isoformat()
+    conn.execute(
+        "INSERT OR REPLACE INTO bot_state (key, value) VALUES (?, ?)",
+        (_KEY_DEDUP_DEGRADED, value),
+    )

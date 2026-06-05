@@ -47,6 +47,22 @@ Review details — in JSON files via links. QA report — in logs/working/.
 - `pytest tests/test_admin_alerts.py -k "e014 or e015 or e016" -v` → 3 passed
 - `pytest -q tests/` → 1015 passed (no regressions)
 
+## Task 2: Schema migration + repo helpers + rate-limit helpers
+
+**Status:** Done
+**Commit:** (pending — see git log)
+**Agent:** repo-migrator (main agent, foreground after stalled background teammate)
+**Summary:** Extended `pending_articles_repo.py` with the `model_fingerprint TEXT` migration on both `pending_articles` and `published_articles` (Decision 11 — same idempotent try/except OperationalError block as the 2026-04-30 telegraph_url migration), registered `model_fingerprint` in `_PENDING_JSON_COLS` (+ new `_PUBLISHED_JSON_COLS`), extended `insert_pending` to accept `entry['model_fingerprint']` backward-compatibly via `entry.get`. Added 3 conn-accepting query/write helpers (`list_recent_pending_fingerprints`, `list_recent_published_fingerprints`, `update_published_fingerprint`) and 4 bot_state-backed rate-limit helpers (`is_pair_rate_limited`, `mark_pair_pinged`, `is_dedup_degraded_rate_limited`, `mark_dedup_degraded_pinged`) mirroring `outage_state.py` `_parse_dt` tolerance pattern (corrupted timestamp → warning + False, never raises). Pair key uses `\n` separator (Decision 6). Updated schema-pin tests (EXPECTED_PENDING / EXPECTED_PUBLISHED / EXPECTED_PENDING_COLUMNS + new EXPECTED_PUBLISHED_COLUMNS) plus 21 new unit tests covering JSON roundtrip, backward-compat NULL, 7-day window filtering, rate-limit window-expiry 3-step (mark → check True → fast-forward via direct bot_state UPDATE → check False), independent-pair isolation, corrupted-timestamp tolerance, init_schema idempotency.
+**Deviations:** None. Followed tech-spec §Interfaces (conn-accepting signatures for all 7 new helpers), not the §14.H drop-in (which used a short-lived `_connect()` pattern incompatible with backfill's long transaction).
+
+**Reviews:** Skipped — running foreground after stalled background teammate; review pipeline not wired for this task instance. Smoke check (double init_schema + PRAGMA both tables) green; full pytest suite 1065 passed (was 1044 after Task 1 + 21 new tests, no regressions).
+
+**Verification:**
+- Smoke 1: `python3 -c "import sqlite3, pending_articles_repo; conn=sqlite3.connect(':memory:'); pending_articles_repo.init_schema(conn); pending_articles_repo.init_schema(conn); print([r[1] for r in conn.execute('PRAGMA table_info(pending_articles)')])"` → output includes `'model_fingerprint'`, no exception fires on double-call
+- Smoke 2: same for `published_articles` → output includes `'model_fingerprint'`
+- `pytest tests/test_pending_articles_repo.py tests/test_migration.py -v` → 62 passed (41 original + 21 new)
+- `pytest -q tests/` → 1065 passed (baseline 1044 + 21 new tests, no regressions)
+
 ## Task 1: model_extractor.py + calibration fixture
 
 **Status:** Done
