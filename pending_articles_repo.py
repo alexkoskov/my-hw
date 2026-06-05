@@ -606,11 +606,15 @@ def move_to_published(link: str, telegraph_url: str, telegraph_path: str,
     try:
         # Step 0: read the pending row's EN/RU fields for the published-row copy.
         #
-        # Deliberate SELECT-by-name (title, ru_title, source_name, pub_date)
-        # rather than SELECT * — if future schema adds columns we don't want
-        # to drag them into published_articles silently.
+        # Deliberate SELECT-by-name (title, ru_title, source_name, pub_date,
+        # model_fingerprint) rather than SELECT * — if future schema adds
+        # columns we don't want to drag them into published_articles silently.
+        # ``model_fingerprint`` is carried through for cross-source-dedup
+        # AC2 — the fingerprint computed at fetch time stays addressable
+        # via ``list_recent_published_fingerprints`` for the 7-day window
+        # without re-running the extractor on the published-articles table.
         src = conn.execute(
-            "SELECT title, ru_title, source_name, pub_date "
+            "SELECT title, ru_title, source_name, pub_date, model_fingerprint "
             "FROM pending_articles WHERE link=?",
             (link,),
         ).fetchone()
@@ -618,17 +622,17 @@ def move_to_published(link: str, telegraph_url: str, telegraph_path: str,
             # Nothing to move; treat as no-op rather than error. Caller should
             # have guarded against this, but a missing row is not corruption.
             return
-        title, ru_title, source_name, pub_date = src
+        title, ru_title, source_name, pub_date, model_fingerprint = src
 
         # Step 1
         conn.execute(
             "INSERT OR IGNORE INTO published_articles "
             "(link, title, ru_title, telegraph_url, telegraph_path, "
-            " source_name, via_review) "
-            "VALUES (?, ?, ?, ?, ?, ?, ?)",
+            " source_name, via_review, model_fingerprint) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
             (
                 link, title, ru_title, telegraph_url, telegraph_path,
-                source_name, 1 if via_review else 0,
+                source_name, 1 if via_review else 0, model_fingerprint,
             ),
         )
         # Step 2

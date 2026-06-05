@@ -860,5 +860,526 @@ class TestCrashLoopGuard(_IntegrationBase):
         self.assertLess(first_arg, expected_seconds + 60)
 
 
+# ---------------------------------------------------------------------------
+# Cross-source dedup integration tests (cross-source-dedup feature, Wave 2).
+# ---------------------------------------------------------------------------
+
+
+class TestCrossSourceDedup(_PrepPhaseBase):
+    """Integration coverage for the cross-source dedup gate wired into
+    ``news_bot.job()`` between ``_is_text_only_checklist`` and
+    ``insert_pending`` (tech-spec Decision 14).
+
+    Each test mocks the same surface as ``TestIntegration`` (``load_feeds``
+    / ``fetch_rss`` / ``fetch_full_article``) so the gate sees a
+    deterministic article stream. The base's generic
+    ``send_admin_notification`` silencer is stopped per-test so we can
+    introspect the admin-ping mock; the silencer is re-started in
+    ``tearDown`` so ``_PrepPhaseBase``'s teardown has something to stop.
+
+    Seeding strategy:
+      * "Already published 7d ago" rows are inserted via
+        ``insert_pending(...)`` and then promoted via
+        ``move_to_published(...)`` — same path the bot would take in prod,
+        so the test exercises the AC2 carry-through too.
+      * The new article comes from the mocked RSS feed.
+    """
+
+    def setUp(self):
+        super().setUp()
+        # Stop the base silencer so per-test ``send_admin_notification``
+        # patches can OWN the name (same dance as
+        # ``TestOutageStateIntegration``).
+        self.notify_patcher.stop()
+
+    def tearDown(self):
+        # Re-start the base silencer so ``_IntegrationBase.tearDown``'s
+        # notify_patcher.stop() has something to stop.
+        self.notify_patcher.start()
+        super().tearDown()
+
+    def _seed_published(self, link, fingerprint, source='autoevolution',
+                        title='Existing Article'):
+        """Insert a pending row with ``model_fingerprint`` then promote it
+        to ``published_articles`` so ``list_recent_published_fingerprints``
+        sees it. Mirrors the production pending→published path.
+
+        ``ru_title`` MUST be set before ``move_to_published`` — the
+        published_articles schema NOT-NULLs it, and ``INSERT OR IGNORE``
+        would silently swallow the constraint violation, leaving the
+        published row missing and the test asserting on an empty table.
+        """
+        pending_articles_repo.insert_pending({
+            'link': link,
+            'source_name': source,
+            'feed_url': None,
+            'title': title,
+            'subtitle': '',
+            'paragraphs': ['Body.'],
+            'images': [],
+            'blocks': None,
+            'pub_date': '2026-06-01',
+            'model_fingerprint': fingerprint,
+        })
+        pending_articles_repo.update_staged(
+            link, ru_title='RU ' + title, ru_subtitle='',
+            ru_paragraphs=['Тело.'], ru_blocks=None,
+        )
+        pending_articles_repo.move_to_published(
+            link,
+            telegraph_url='https://telegra.ph/x',
+            telegraph_path='x',
+            via_review=False,
+        )
+
+    def _make_entry(self, link, title='New Article', published='2026-06-05'):
+        return {
+            'link': link,
+            'title': title,
+            'published': published,
+            'summary': 'Summary',
+        }
+
+    @patch('news_bot.fetch_full_article')
+    @patch('news_bot.fetch_rss')
+    @patch('news_bot.load_feeds')
+    @patch('news_bot.send_admin_notification')
+    def test_hard_block_path(
+        self, mock_admin, mock_load_feeds, mock_fetch_rss, mock_fetch_article,
+    ):
+        """100% model overlap → new article NOT staged, its link landed
+        in ``processed_news`` (Decision 8), exactly one E015 ping fired."""
+        existing_fp = {
+            'strict': ['toyota 4runner', 'subaru legacy gt'],
+            'brands': ['toyota', 'subaru'],
+        }
+        self._seed_published(
+            'http://t-hunted.example/existing',
+            existing_fp,
+            source='t-hunted',
+        )
+
+        mock_load_feeds.return_value = ['http://example.com/feed1.xml']
+        mock_fetch_rss.return_value = [
+            self._make_entry('http://autoevolution.example/new'),
+        ]
+        # Article body that ``extract_fingerprint`` will turn into the same
+        # tokens as ``existing_fp`` → similarity == 1.0 → hard block.
+        mock_fetch_article.return_value = {
+            'title': '2018 Toyota 4Runner gold chase',
+            'subtitle': '',
+            'paragraphs': ['Subaru Legacy GT (BP) shows up here too.'],
+            'images': [],
+        }
+
+        news_bot.job()
+
+        # New article never reached pending_articles.
+        self.assertEqual(pending_articles_repo.count_pending(), 0)
+
+        # Its link is in processed_news so the next tick won't re-fetch.
+        conn = sqlite3.connect(self.db_path)
+        try:
+            processed = {
+                r[0] for r in
+                conn.execute('SELECT link FROM processed_news').fetchall()
+            }
+        finally:
+            conn.close()
+        self.assertIn('http://autoevolution.example/new', processed)
+
+        # Exactly one E015 ping fired (no E014 / E016).
+        e015_calls = [
+            c for c in mock_admin.call_args_list
+            if '[E015]' in (c.args[0] if c.args else '')
+        ]
+        self.assertEqual(len(e015_calls), 1)
+
+    @patch('news_bot.fetch_full_article')
+    @patch('news_bot.fetch_rss')
+    @patch('news_bot.load_feeds')
+    @patch('news_bot.send_admin_notification')
+    def test_pass_through_with_non_empty_fp(
+        self, mock_admin, mock_load_feeds, mock_fetch_rss, mock_fetch_article,
+    ):
+        """Non-empty fingerprint, no match in window → article staged with
+        fingerprint populated, no E014/E015/E016 pings fired. Dominant
+        production case — protects against "no match accidentally pings"
+        regressions."""
+        mock_load_feeds.return_value = ['http://example.com/feed1.xml']
+        mock_fetch_rss.return_value = [
+            self._make_entry('http://example.com/article1'),
+        ]
+        mock_fetch_article.return_value = {
+            'title': '2018 Toyota 4Runner gold chase',
+            'subtitle': '',
+            'paragraphs': ['Subaru Legacy GT shows up here.'],
+            'images': [],
+        }
+
+        news_bot.job()
+
+        self.assertEqual(pending_articles_repo.count_pending(), 1)
+        row = pending_articles_repo.get_pending('http://example.com/article1')
+        self.assertIsNotNone(row)
+        fp = row.get('model_fingerprint')
+        self.assertIsInstance(fp, dict)
+        # The extractor surfaces the brands in the body → at least one
+        # strict token. We don't pin exact tokens (extractor evolves) —
+        # the contract being verified is "non-empty fp lands on the row".
+        self.assertTrue(fp.get('strict'),
+                        f"expected non-empty strict tokens, got {fp!r}")
+
+        # No dedup pings on the dominant pass-through case.
+        for c in mock_admin.call_args_list:
+            msg = c.args[0] if c.args else ''
+            self.assertNotIn('[E014]', msg)
+            self.assertNotIn('[E015]', msg)
+            self.assertNotIn('[E016]', msg)
+
+    @patch('news_bot.fetch_full_article')
+    @patch('news_bot.fetch_rss')
+    @patch('news_bot.load_feeds')
+    @patch('news_bot.send_admin_notification')
+    def test_soft_flag_path(
+        self, mock_admin, mock_load_feeds, mock_fetch_rss, mock_fetch_article,
+    ):
+        """~35% overlap → both rows in pending, exactly one E014 ping."""
+        # Existing row has 4 strict tokens; new has 4. Shared: 1 strict
+        # token → 1/7 ≈ 0.143. Bump shared overlap with brands fallback by
+        # using 2-brand sets on each side with shared brand → AC10 max
+        # selects brands jaccard. Build pair: existing {a4,b1,c1,d1},
+        # new {a4,e1,f1,g1}; brands existing {a,b,c,d}, new {a,e,f,g} →
+        # brand jaccard = 1/7 ≈ 0.14. Need 0.30-0.49.
+        #
+        # Cleaner construction: existing {x1, x2, x3}, new {x1, x2, y1}.
+        # strict jaccard = 2/4 = 0.5 → block, not flag. Drop to 1/3.
+        # existing {a1, b1, c1}, new {a1, d1, e1} → strict 1/5 = 0.2.
+        # Use 2 of 5 shared → strict {a1,b1,c1,d1,e1} vs {a1,b1,f1,g1,h1}
+        # → 2/8 = 0.25. Need ≥0.30.
+        # Use {a1,b1,c1} vs {a1,b1,d1,e1} → 2/5 = 0.40 — flag-range hit.
+        # Concretely with model-extractor tokens:
+        #   existing strict: ['toyota 4runner', 'subaru legacy gt',
+        #                     'honda civic']
+        #   new strict:      ['toyota 4runner', 'subaru legacy gt',
+        #                     'mazda mx-5', 'nissan 240sx']
+        # → shared = 2, union = 5, jaccard = 0.40 → flag.
+        existing_fp = {
+            'strict': ['toyota 4runner', 'subaru legacy gt', 'honda civic'],
+            'brands': ['toyota', 'subaru', 'honda'],
+        }
+        self._seed_published(
+            'http://t-hunted.example/existing',
+            existing_fp,
+            source='t-hunted',
+        )
+
+        mock_load_feeds.return_value = ['http://example.com/feed1.xml']
+        mock_fetch_rss.return_value = [
+            self._make_entry('http://autoevolution.example/new'),
+        ]
+        mock_fetch_article.return_value = {
+            'title': '2018 Toyota 4Runner gold chase',
+            'subtitle': '',
+            # Four strict tokens, two shared with the existing 3-token
+            # fingerprint → 2/5 ≈ 0.40 — soft-flag range. Each brand in
+            # its own sentence so the extractor doesn't accidentally
+            # swallow one into another's model_extra tail.
+            'paragraphs': [
+                'Subaru Legacy GT (BP) shows up too.',
+                'Ford Mustang Boss is also there.',
+                'Nissan Skyline R32 rounds it out.',
+            ],
+            'images': [],
+        }
+
+        news_bot.job()
+
+        # Both rows in pending+published; the new one is in pending.
+        self.assertEqual(pending_articles_repo.count_pending(), 1)
+        new_row = pending_articles_repo.get_pending(
+            'http://autoevolution.example/new'
+        )
+        self.assertIsNotNone(new_row)
+        # Fingerprint propagated through the soft-flag path.
+        self.assertIsInstance(new_row.get('model_fingerprint'), dict)
+
+        # Exactly one E014 ping, no E015 / E016.
+        e014_calls = [
+            c for c in mock_admin.call_args_list
+            if '[E014]' in (c.args[0] if c.args else '')
+        ]
+        self.assertEqual(len(e014_calls), 1,
+                         f"expected 1 E014 ping, got: {mock_admin.call_args_list}")
+        for c in mock_admin.call_args_list:
+            msg = c.args[0] if c.args else ''
+            self.assertNotIn('[E015]', msg)
+            self.assertNotIn('[E016]', msg)
+
+    @patch('news_bot.fetch_full_article')
+    @patch('news_bot.fetch_rss')
+    @patch('news_bot.load_feeds')
+    @patch('news_bot.send_admin_notification')
+    def test_soft_flag_rate_limited(
+        self, mock_admin, mock_load_feeds, mock_fetch_rss, mock_fetch_article,
+    ):
+        """Same (new, existing) pair pinged once already (within 7 days) →
+        second ``job()`` invocation does NOT re-fire E014 (AC5)."""
+        existing_link = 'http://t-hunted.example/existing'
+        new_link = 'http://autoevolution.example/new'
+        existing_fp = {
+            'strict': ['toyota 4runner', 'subaru legacy gt', 'honda civic'],
+            'brands': ['toyota', 'subaru', 'honda'],
+        }
+        self._seed_published(existing_link, existing_fp, source='t-hunted')
+
+        # Pre-seed the rate-limit row so the gate treats this pair as
+        # "already pinged" on the first tick.
+        rl_conn = pending_articles_repo._connect()
+        try:
+            pending_articles_repo.mark_pair_pinged(rl_conn, new_link, existing_link)
+            rl_conn.commit()
+        finally:
+            rl_conn.close()
+
+        mock_load_feeds.return_value = ['http://example.com/feed1.xml']
+        mock_fetch_rss.return_value = [self._make_entry(new_link)]
+        mock_fetch_article.return_value = {
+            'title': '2018 Toyota 4Runner gold chase',
+            'subtitle': '',
+            # Four strict tokens, two shared with the existing 3-token
+            # fingerprint → 2/5 ≈ 0.40 — soft-flag range. Each brand in
+            # its own sentence so the extractor doesn't accidentally
+            # swallow one into another's model_extra tail.
+            'paragraphs': [
+                'Subaru Legacy GT (BP) shows up too.',
+                'Ford Mustang Boss is also there.',
+                'Nissan Skyline R32 rounds it out.',
+            ],
+            'images': [],
+        }
+
+        news_bot.job()
+
+        # Article staged (soft-flag still passes through), no E014.
+        self.assertEqual(pending_articles_repo.count_pending(), 1)
+        e014_calls = [
+            c for c in mock_admin.call_args_list
+            if '[E014]' in (c.args[0] if c.args else '')
+        ]
+        self.assertEqual(
+            len(e014_calls), 0,
+            f"E014 must be rate-limited, got: {mock_admin.call_args_list}",
+        )
+
+    @patch('news_bot.fetch_full_article')
+    @patch('news_bot.fetch_rss')
+    @patch('news_bot.load_feeds')
+    @patch('news_bot.send_admin_notification')
+    def test_within_source_dedup(
+        self, mock_admin, mock_load_feeds, mock_fetch_rss, mock_fetch_article,
+    ):
+        """Decision 9: dedup runs across ALL sources, including same-source
+        republishes (autoevolution Boulevard Mix recurring). Pins against
+        future "skip self-source" optimisation."""
+        existing_fp = {
+            'strict': ['toyota 4runner', 'subaru legacy gt'],
+            'brands': ['toyota', 'subaru'],
+        }
+        self._seed_published(
+            'http://autoevolution.example/existing',
+            existing_fp,
+            source='autoevolution',
+        )
+
+        # New article on the SAME source — Decision 9 must still block.
+        mock_load_feeds.return_value = ['http://example.com/feed1.xml']
+        mock_fetch_rss.return_value = [
+            self._make_entry('http://autoevolution.example/new'),
+        ]
+        mock_fetch_article.return_value = {
+            'title': '2018 Toyota 4Runner gold chase',
+            'subtitle': '',
+            'paragraphs': ['Subaru Legacy GT (BP) shows up too.'],
+            'images': [],
+        }
+
+        news_bot.job()
+
+        # Same-source 100% overlap MUST be blocked — pins Decision 9.
+        self.assertEqual(pending_articles_repo.count_pending(), 0)
+        conn = sqlite3.connect(self.db_path)
+        try:
+            processed = {
+                r[0] for r in
+                conn.execute('SELECT link FROM processed_news').fetchall()
+            }
+        finally:
+            conn.close()
+        self.assertIn('http://autoevolution.example/new', processed)
+        e015_calls = [
+            c for c in mock_admin.call_args_list
+            if '[E015]' in (c.args[0] if c.args else '')
+        ]
+        self.assertEqual(len(e015_calls), 1)
+
+    @patch('news_bot.fetch_full_article')
+    @patch('news_bot.fetch_rss')
+    @patch('news_bot.load_feeds')
+    @patch('news_bot.send_admin_notification')
+    @patch('news_bot.model_extractor.extract_fingerprint',
+           return_value={'strict': [], 'brands': []})
+    def test_empty_fingerprint(
+        self, _mock_extract, mock_admin, mock_load_feeds, mock_fetch_rss,
+        mock_fetch_article,
+    ):
+        """Article with no brand tokens → passes through with
+        ``{'strict':[], 'brands':[]}`` stored. No comparison against the
+        7-day window (early return) and no pings."""
+        # Pre-seed a row to verify the gate doesn't even try to compare —
+        # if it did, the empty similarity guard (AC6) returns 0.0 anyway,
+        # but the test pins the no-pings invariant.
+        self._seed_published(
+            'http://t-hunted.example/existing',
+            {'strict': ['toyota 4runner'], 'brands': ['toyota']},
+            source='t-hunted',
+        )
+
+        mock_load_feeds.return_value = ['http://example.com/feed1.xml']
+        mock_fetch_rss.return_value = [
+            self._make_entry('http://example.com/empty'),
+        ]
+        mock_fetch_article.return_value = {
+            'title': 'Industry news headline',
+            'subtitle': '',
+            'paragraphs': ['No brand mentions in this body at all.'],
+            'images': [],
+        }
+
+        news_bot.job()
+
+        self.assertEqual(pending_articles_repo.count_pending(), 1)
+        row = pending_articles_repo.get_pending('http://example.com/empty')
+        self.assertIsNotNone(row)
+        self.assertEqual(
+            row.get('model_fingerprint'),
+            {'strict': [], 'brands': []},
+        )
+        for c in mock_admin.call_args_list:
+            msg = c.args[0] if c.args else ''
+            self.assertNotIn('[E014]', msg)
+            self.assertNotIn('[E015]', msg)
+            self.assertNotIn('[E016]', msg)
+
+    @patch('news_bot.fetch_full_article')
+    @patch('news_bot.fetch_rss')
+    @patch('news_bot.load_feeds')
+    @patch('news_bot.send_admin_notification')
+    @patch('news_bot.model_extractor.extract_fingerprint',
+           side_effect=RuntimeError("boom"))
+    def test_degraded_mode(
+        self, _mock_extract, mock_admin, mock_load_feeds, mock_fetch_rss,
+        mock_fetch_article,
+    ):
+        """Decision 12 / AC9 — extractor regression must NOT block
+        publishing. Article lands in pending with ``model_fingerprint``
+        NULL; exactly one E016 ping fires per hour."""
+        mock_load_feeds.return_value = ['http://example.com/feed1.xml']
+        mock_fetch_rss.side_effect = [
+            [self._make_entry('http://example.com/degraded1')],
+            [self._make_entry('http://example.com/degraded2')],
+        ]
+        mock_fetch_article.return_value = {
+            'title': 'T', 'subtitle': '',
+            'paragraphs': ['Body.'], 'images': [],
+        }
+
+        news_bot.job()
+
+        # First article published with NULL fingerprint (degraded path).
+        self.assertEqual(pending_articles_repo.count_pending(), 1)
+        row1 = pending_articles_repo.get_pending(
+            'http://example.com/degraded1'
+        )
+        self.assertIsNotNone(row1)
+        self.assertIsNone(row1.get('model_fingerprint'))
+
+        # E016 ping fired (with RuntimeError in the body).
+        e016_calls = [
+            c for c in mock_admin.call_args_list
+            if '[E016]' in (c.args[0] if c.args else '')
+        ]
+        self.assertEqual(len(e016_calls), 1)
+        self.assertIn('RuntimeError', e016_calls[0].args[0])
+
+        # Second job() within the same hour MUST NOT re-fire E016
+        # (1-hour rate-limit per Decision 6 / AC9).
+        mock_admin.reset_mock()
+        news_bot.job()
+        e016_calls_2 = [
+            c for c in mock_admin.call_args_list
+            if '[E016]' in (c.args[0] if c.args else '')
+        ]
+        self.assertEqual(
+            len(e016_calls_2), 0,
+            f"E016 must be rate-limited within 1h, got: {mock_admin.call_args_list}",
+        )
+        # Second article still published (degraded mode never blocks).
+        self.assertEqual(pending_articles_repo.count_pending(), 2)
+
+
+class TestFingerprintCarryThrough(_IntegrationBase):
+    """AC2 — fingerprint written to ``pending_articles`` survives the
+    ``move_to_published`` transition and is queryable via direct SELECT
+    on ``published_articles``. Lives on ``_IntegrationBase`` (no
+    ``job()``) — direct repo API only."""
+
+    def test_pending_to_published_roundtrip(self):
+        fp = {
+            'strict': ['toyota 4runner', 'subaru legacy gt'],
+            'brands': ['toyota', 'subaru'],
+        }
+        pending_articles_repo.insert_pending({
+            'link': 'http://example.com/roundtrip',
+            'source_name': 'autoevolution',
+            'feed_url': None,
+            'title': 'Roundtrip Title',
+            'subtitle': '',
+            'paragraphs': ['Body.'],
+            'images': [],
+            'blocks': None,
+            'pub_date': '2026-06-05',
+            'model_fingerprint': fp,
+        })
+        # ``ru_title`` is NOT NULL on published_articles — set it via
+        # ``update_staged`` so ``move_to_published``'s ``INSERT OR IGNORE``
+        # doesn't silently swallow the constraint violation.
+        pending_articles_repo.update_staged(
+            'http://example.com/roundtrip',
+            ru_title='RU Roundtrip Title', ru_subtitle='',
+            ru_paragraphs=['Тело.'], ru_blocks=None,
+        )
+        pending_articles_repo.move_to_published(
+            'http://example.com/roundtrip',
+            telegraph_url='https://telegra.ph/x',
+            telegraph_path='x',
+            via_review=False,
+        )
+
+        # Direct SELECT on published_articles — pin the column lives
+        # there with the same JSON shape as the pending row.
+        conn = sqlite3.connect(self.db_path)
+        try:
+            stored_raw = conn.execute(
+                "SELECT model_fingerprint FROM published_articles WHERE link=?",
+                ('http://example.com/roundtrip',),
+            ).fetchone()
+        finally:
+            conn.close()
+        self.assertIsNotNone(stored_raw)
+        import json as _json
+        self.assertEqual(_json.loads(stored_raw[0]), fp)
+
+
 if __name__ == '__main__':
     unittest.main()

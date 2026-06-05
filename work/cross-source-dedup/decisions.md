@@ -33,6 +33,20 @@ Review details — in JSON files via links. QA report — in logs/working/.
 
 -->
 
+## Task 4: Wire dedup gate in news_bot.job() + integration tests
+
+**Status:** Done
+**Commit:** (pending — see git log)
+**Agent:** gate-wirer (main agent foreground)
+**Summary:** Wired cross-source dedup gate into `news_bot.job()` between `_is_text_only_checklist` and `row` assembly per Decision 14. New private `_check_cross_source_dedup(article, fp, conn)` returns `('block'|'flag'|'pass', match|None)` by walking `list_recent_pending_fingerprints + list_recent_published_fingerprints` (7d window each) and computing `model_extractor.similarity` against each candidate. Hard-block (≥0.50) calls `mark_processed` + sends E015 + `continue` (Decision 8); soft-flag (0.30-0.49) checks `is_pair_rate_limited`, sends E014 + `mark_pair_pinged` if not limited, then falls through; pass writes `fp` into `row['model_fingerprint']`. Entire block wrapped in `try/except Exception` (Decision 12 / AC9) — exceptions log traceback, fire rate-limited E016, set `fp = None`, article publishes anyway. Added `TestCrossSourceDedup` (7 scenarios) + `TestFingerprintCarryThrough` (1 scenario) — all green.
+**Deviations:** Extended `pending_articles_repo.move_to_published` to carry `model_fingerprint` from pending into published_articles INSERT — required for AC2 carry-through (the published_articles INSERT was previously dropping the column). Task 2 didn't cover this. The change is two lines in `move_to_published` (SELECT and INSERT column lists) and is the minimum to satisfy `TestFingerprintCarryThrough` + AC2. Scope creep is small and surgical; flagged here for visibility.
+
+**Reviews:** Skipped — running foreground after stalled background teammate; review pipeline not wired for this task instance. Code-only verification: all 8 new integration tests green; full pytest suite 1073 passed (baseline 1065 after Task 2 + 8 new tests, no regressions).
+
+**Verification:**
+- `pytest tests/test_integration.py::TestCrossSourceDedup tests/test_integration.py::TestFingerprintCarryThrough -v` → 8 passed
+- `pytest -q tests/` → 1073 passed (baseline 1065 + 8 new tests, no regressions)
+
 ## Task 3: Admin-ping builders E014, E015, E016
 
 **Status:** Done

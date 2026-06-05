@@ -65,6 +65,14 @@ from llm_transcreation import (
 import outage_state
 import admin_alerts
 
+# Cross-source dedup (Wave 2, cross-source-dedup feature). Pure module —
+# extract_fingerprint scans the article body against the brand lexicon,
+# similarity computes guarded two-level Jaccard. Used by the new gate in
+# ``job()`` between ``_is_text_only_checklist`` and ``insert_pending``.
+# Imported at module load so tests can patch ``news_bot.model_extractor.*``
+# (the degraded-mode test stubs ``extract_fingerprint`` to raise).
+import model_extractor
+
 # Pure scheduling helper (Task 02) — produces today's publish slots from a
 # pending count + tz-aware ``now``. Imported at module level so ``job()``
 # stays free of conditional imports inside the hot path; tests patch
@@ -692,6 +700,103 @@ def _is_text_only_checklist(entry, article):
     paragraphs = (article or {}).get('paragraphs') or []
     total_text = sum(len(p) for p in paragraphs if isinstance(p, str))
     return total_text < _CHECKLIST_BODY_TEXT_FLOOR
+
+
+#: Hard-block threshold for cross-source dedup (tech-spec Decision 7,
+#: user-spec AC3). Articles whose ``similarity`` against any candidate in
+#: the 7-day window meets or exceeds this value are dropped before
+#: ``insert_pending`` and pinned in ``processed_news`` so the same URL is
+#: not re-fetched on subsequent ticks (Decision 8).
+_DEDUP_BLOCK_THRESHOLD = 0.50
+
+#: Soft-flag threshold for cross-source dedup (Decision 7, user-spec AC4).
+#: Articles in ``[0.30, 0.50)`` pass through to ``insert_pending`` but
+#: trigger a per-pair-rate-limited E014 ping so the operator can review.
+_DEDUP_FLAG_THRESHOLD = 0.30
+
+
+def _check_cross_source_dedup(article: dict, fingerprint: dict,
+                              conn: sqlite3.Connection):
+    """Compare ``fingerprint`` against the last 7 days of pending +
+    published rows and decide block / flag / pass.
+
+    Returns one of:
+      * ``('block', match_dict)`` — similarity ≥ ``_DEDUP_BLOCK_THRESHOLD``.
+      * ``('flag', match_dict)``  — ``[_DEDUP_FLAG_THRESHOLD,
+        _DEDUP_BLOCK_THRESHOLD)``.
+      * ``('pass', None)``        — below the flag threshold OR empty
+        ``fingerprint['strict']`` (AC6 — skip the SQL round-trip on
+        articles with no recognised brands).
+
+    ``match_dict`` carries the keys the gate caller needs to render an
+    admin ping:
+      * ``link``         — the matched article URL.
+      * ``source_name``  — the matched row's source (for E014 ``existing_source``).
+      * ``models``       — sorted list of shared strict tokens (intersection
+        of the two ``strict`` sets). Empty list when the match is brand-
+        only (strict Jaccard zero but the AC10 brand-fallback fired).
+      * ``overlap_pct``  — ``int(round(sim * 100))``, used by E014 / E015.
+      * ``n_matches``    — count of shared strict tokens.
+      * ``n_total``      — count of distinct strict tokens across both
+        fingerprints (``len(strict_new | strict_match)``); denominator
+        the operator sees in ``"3/8"``.
+
+    Implementation notes:
+      * Iterates pending FIRST, then published — both windowed at 7 days
+        per tech-spec Architecture. No source filtering (Decision 9).
+      * Picks the best (highest sim) match across the entire window so
+        the strongest signal wins even if a weaker pending match would
+        also cross the soft-flag threshold.
+      * Compare-side ``model_fingerprint`` rows can be missing (NULL,
+        pre-feature rows or backfill in progress) — those candidates are
+        skipped silently rather than treated as zero-similarity matches.
+    """
+    strict = fingerprint.get('strict') or [] if isinstance(fingerprint, dict) else []
+    if not strict:
+        # AC6 short-circuit — empty fingerprint cannot match anything, and
+        # the dominant production-path "industry news with no brands"
+        # shouldn't pay for two SELECTs.
+        return ('pass', None)
+
+    candidates = (
+        pending_repo.list_recent_pending_fingerprints(conn, 7)
+        + pending_repo.list_recent_published_fingerprints(conn, 7)
+    )
+
+    best_sim = 0.0
+    best_row = None
+    for row in candidates:
+        cand_fp = row.get('model_fingerprint')
+        if not isinstance(cand_fp, dict):
+            # NULL (pre-feature) or malformed row — skip silently. The
+            # backfill script (Task 5) populates these going forward.
+            continue
+        sim = model_extractor.similarity(fingerprint, cand_fp)
+        if sim > best_sim:
+            best_sim = sim
+            best_row = row
+
+    if best_row is None or best_sim < _DEDUP_FLAG_THRESHOLD:
+        return ('pass', None)
+
+    cand_fp = best_row.get('model_fingerprint') or {}
+    cand_strict = set(cand_fp.get('strict') or [])
+    new_strict = set(strict)
+    shared = sorted(new_strict & cand_strict)
+    union = new_strict | cand_strict
+
+    match = {
+        'link': best_row.get('link'),
+        'source_name': best_row.get('source_name') or 'other',
+        'models': shared,
+        'overlap_pct': int(round(best_sim * 100)),
+        'n_matches': len(shared),
+        'n_total': len(union),
+    }
+
+    if best_sim >= _DEDUP_BLOCK_THRESHOLD:
+        return ('block', match)
+    return ('flag', match)
 
 
 def filter_new_entries(entries):
@@ -1814,6 +1919,128 @@ def job():
             )
             continue
 
+        # --------------------------------------------------------------
+        # Cross-source dedup gate (cross-source-dedup feature, Wave 2).
+        # Position: post-fetch, post-checklist, pre-row-assembly per
+        # Decision 14 (cheapest filters earlier; this is the most
+        # expensive post-fetch gate — extract + N similarity calls +
+        # 2 SQL reads).
+        #
+        # Three terminal branches:
+        #   * block  — hard duplicate (≥50% overlap). Drop, write to
+        #              processed_news (Decision 8), fire E015, continue.
+        #   * flag   — soft duplicate (30-49% overlap). Pass through,
+        #              fire E014 (per-pair 7-day rate-limited, AC5),
+        #              keep fingerprint on the row.
+        #   * pass   — no match (or empty fp). Fall through with fp.
+        #
+        # Wrapped in try/except Exception per Decision 12 / user-spec
+        # AC9 — any sub-call failure (extractor regression, SQL fault,
+        # malformed historical row) MUST NOT block publishing. On
+        # exception the article publishes with model_fingerprint=NULL
+        # and the operator gets one rate-limited [E016] ping per hour.
+        # --------------------------------------------------------------
+        fp = None
+        try:
+            dedup_conn = pending_repo._connect()
+            try:
+                fp = model_extractor.extract_fingerprint(article)
+                decision, match = _check_cross_source_dedup(
+                    article, fp, dedup_conn,
+                )
+
+                if decision == 'block':
+                    logger.info(
+                        "Skipping cross-source duplicate %s; matched %s "
+                        "(overlap %d%%)",
+                        link, match['link'], match['overlap_pct'],
+                    )
+                    mark_processed(
+                        link,
+                        article.get('title') or entry.get('title') or '',
+                        entry.get('published') or entry.get('pub_date') or '',
+                    )
+                    try:
+                        send_admin_notification(
+                            admin_alerts.alert_cross_source_blocked(
+                                link, match['link'], match['overlap_pct'],
+                            )
+                        )
+                    except Exception as notify_err:
+                        logger.error(
+                            "Failed to send E015 notification: %s", notify_err,
+                        )
+                    continue
+
+                if decision == 'flag':
+                    if not pending_repo.is_pair_rate_limited(
+                        dedup_conn, link, match['link'],
+                    ):
+                        new_source = (
+                            entry.get('source_name')
+                            or _resolve_source_name(link)
+                        )
+                        try:
+                            send_admin_notification(
+                                admin_alerts.alert_cross_source_dupe(
+                                    new_link=link,
+                                    existing_link=match['link'],
+                                    new_source=new_source,
+                                    existing_source=match['source_name'],
+                                    overlap_pct=match['overlap_pct'],
+                                    n_matches=match['n_matches'],
+                                    n_total=match['n_total'],
+                                    models=match['models'],
+                                )
+                            )
+                        except Exception as notify_err:
+                            logger.error(
+                                "Failed to send E014 notification: %s",
+                                notify_err,
+                            )
+                        pending_repo.mark_pair_pinged(
+                            dedup_conn, link, match['link'],
+                        )
+                        dedup_conn.commit()
+                # 'pass' → nothing to do; fp falls through into row.
+            finally:
+                dedup_conn.close()
+        except Exception as exc:
+            # Decision 12 / AC9 — broad handler is intentional. We don't
+            # know upfront which sub-call can throw (regex compile bug,
+            # repo SQL fault, exotic article shape, malformed historical
+            # fingerprint JSON). The contract is "dedup never blocks
+            # publishing" — a single broad handler enforces it.
+            logger.exception("dedup gate failed, degraded mode active")
+            try:
+                rl_conn = pending_repo._connect()
+                try:
+                    if not pending_repo.is_dedup_degraded_rate_limited(
+                        rl_conn,
+                    ):
+                        try:
+                            send_admin_notification(
+                                admin_alerts.alert_dedup_degraded(
+                                    type(exc).__name__,
+                                )
+                            )
+                        except Exception as notify_err:
+                            logger.error(
+                                "Failed to send E016 notification: %s",
+                                notify_err,
+                            )
+                        pending_repo.mark_dedup_degraded_pinged(rl_conn)
+                        rl_conn.commit()
+                finally:
+                    rl_conn.close()
+            except Exception:
+                # Rate-limit bookkeeping itself failed — log only. The
+                # article still publishes (degraded-mode contract).
+                logger.exception(
+                    "dedup degraded-mode rate-limit bookkeeping failed",
+                )
+            fp = None
+
         row = {
             'link': link,
             'source_name': entry.get('source_name') or _resolve_source_name(link),
@@ -1824,6 +2051,7 @@ def job():
             'images': article.get('images') or [],
             'blocks': article.get('blocks'),
             'pub_date': entry.get('published') or entry.get('pub_date') or '',
+            'model_fingerprint': fp,
         }
         try:
             if pending_repo.insert_pending(row):
