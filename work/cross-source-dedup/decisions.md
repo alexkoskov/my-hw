@@ -47,6 +47,34 @@ Review details — in JSON files via links. QA report — in logs/working/.
 - `test -f work/cross-source-dedup/logs/audits/code-audit.md && grep -q "## Verdict" work/cross-source-dedup/logs/audits/code-audit.md` → OK
 - Report covers all 5 source files + 11 review dimensions + 3 reference patterns
 
+## Task 7: Security Audit
+
+**Status:** Done
+**Commit:** (no code changes — read-only audit)
+**Agent:** security-auditor
+**Summary:** Security audit verdict **PASS** — 0 HIGH / 0 MED / 2 LOW (informational). All 5 focuses empirically verified clean: SSRF (`fetch_full_article` domain-allowlist rejects `file://`/link-local/internal hosts — `entry_stub` opens no new channel), ReDoS (all 3 `model_extractor.py` regexes bounded; worst case 1.87ms on 10KB adversarial input), SQL injection (all 7 new `pending_articles_repo.py` helpers `?`-parametrized; `'; DROP TABLE` probe left tables intact), secret leakage (E016 uses `type(exc).__name__` only; every ping scrubbed via `_redact_text` at delivery), rendering injection (`send_admin_notification` sends `parse_mode=None` plain text). Critical caveat-5 invariant confirmed: `backfill_fingerprints.py` imports `news_bot` before `logging.basicConfig()` → `_TokenRedactingFilter` active on root logger. Two LOW/info notes both already flagged by Task 6 (private `_connect()` use). No fix-tasks opened. Full report: [logs/audits/security-audit.md](logs/audits/security-audit.md).
+**Deviations:** None — audit was read-only; no source files modified.
+
+**Reviews:** Not applicable — audit task has no reviewers (the report itself is the deliverable).
+
+**Verification:**
+- `test -f work/cross-source-dedup/logs/audits/security-audit.md && grep -q "## Verdict" .../security-audit.md` → OK
+- ReDoS empirically measured 1.87ms / 10KB; SSRF + SQLi probes run against live code paths
+
+## Task 8: Test Audit
+
+**Status:** Done
+**Commit:** d-pending (M1/M2 test-hardening fixes applied — see below)
+**Agent:** test-reviewer
+**Summary:** Test audit verdict **PASS WITH NOTES** — 0 critical / 0 high / 2 medium / 2 low / 2 info. All 7 `TestCrossSourceDedup` integration scenarios present and covering all 4 gate branches (block / flag / pass / degraded) + within-source AC7 + pass-through-with-nonempty-fp. No mock-leak anti-pattern; both rate-limit window-expiry tests use backdated `bot_state` rows (not `time.sleep`); calibration fixture has all 8 pairs in correct categories. Two medium findings were both **fixed immediately** (test-only, see Deviations): M1 — `test_calibration_real_pair_must_pass` asserted the raw `>=0.50` threshold instead of the decision verdict (contradicted T8 AC dimension 2.b); now asserts `_classify(sim) == 'duplicate'`. M2 — no direct guard on `_PENDING_JSON_COLS` tuple membership; added `test_pending_json_cols_registers_model_fingerprint`. Full report: [logs/audits/test-audit.md](logs/audits/test-audit.md).
+**Deviations:** Audit itself read-only, but the two medium findings were closed in the same session rather than deferred (trivial test-only changes; M1 was required to satisfy T8's own AC). Net +1 test.
+
+**Reviews:** Not applicable — audit task is its own review (the report is the deliverable).
+
+**Verification:**
+- `test -f work/cross-source-dedup/logs/audits/test-audit.md && grep -q "Verdict" .../test-audit.md` → OK
+- M1/M2 fixes: 2 targeted tests pass; full suite `pytest -q tests/` → 1083 passed, 2 skipped, 0 failed (was 1082+2skip; +1 from M2)
+
 ## Task 5: backfill_fingerprints.py one-shot script
 
 **Status:** Done

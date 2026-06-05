@@ -371,8 +371,10 @@ def test_calibration_real_pair_must_pass():
     fp_a = extract_fingerprint(pair['a'])
     fp_b = extract_fingerprint(pair['b'])
     sim = similarity(fp_a, fp_b)
-    assert sim >= 0.50, (
-        f"Real 2026-06-03 pair must classify as duplicate "
-        f"(similarity ≥ 0.50). Got: {sim:.3f}. "
+    # Assert the decision verdict, not the raw threshold — the guard must
+    # survive a threshold tune (Decision 13 / Task 8 audit M1).
+    assert _classify(sim) == 'duplicate', (
+        f"Real 2026-06-03 pair must classify as duplicate. "
+        f"Got verdict {_classify(sim)!r} at sim={sim:.3f}. "
         f"fp_a={fp_a}, fp_b={fp_b}"
     )

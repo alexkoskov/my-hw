@@ -971,6 +971,13 @@ class TestInsertPendingFingerprint(_TmpDbCase):
         # _PENDING_JSON_COLS membership.
         self.assertIsInstance(row['model_fingerprint'], dict)
 
+    def test_pending_json_cols_registers_model_fingerprint(self):
+        """Direct low-cost guard (Task 8 audit M2): the literal string
+        ``'model_fingerprint'`` must be an element of the ``_PENDING_JSON_COLS``
+        tuple. The roundtrip test above pins behavior, but this catches a
+        deleted tuple element even if that test is ever mocked/skipped."""
+        self.assertIn('model_fingerprint', repo._PENDING_JSON_COLS)
+
     def test_insert_pending_with_empty_fingerprint_roundtrip(self):
         """The computed-empty fingerprint ``{strict:[], brands:[]}`` is
         distinct from NULL (Decision 5) — must round-trip as the empty
