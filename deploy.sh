@@ -53,6 +53,8 @@ FILES=(
     "outage_state.py"
     "admin_alerts.py"
     "boilerplate_filter.py"
+    "model_extractor.py"
+    "backfill_fingerprints.py"
     "feeds.json"
     "requirements.txt"
     ".env.example"

@@ -33,6 +33,21 @@ Review details — in JSON files via links. QA report — in logs/working/.
 
 -->
 
+## Task 5: backfill_fingerprints.py one-shot script
+
+**Status:** Done
+**Commit:** (pending — see git log)
+**Agent:** backfill-author (main agent foreground)
+**Summary:** Added top-level `backfill_fingerprints.py` mirroring `hw_review.py` shape (argparse + `main(argv=None) -> int` + `if __name__ == '__main__': sys.exit(main())`). CLI: `--days N` (default 14, clamped to `[1, 90]` via `_days_in_range` `type=` callable that raises `ArgumentTypeError`), `--dry-run`, `--verbose`. Per Decision 10 / code-research §14.E.3 (Path A): for each published row with `model_fingerprint IS NULL` in the window, build an `entry_stub` and call `news_bot.fetch_full_article` — on success run `extract_fingerprint` + `update_published_fingerprint` (counted as `updated`); on empty/None article store terminal `{"strict":[],"brands":[]}` (counted as `empty-fp`); on exception leave NULL for retry (counted as `error`). Narrow try/except scoped only to `fetch_full_article` so extractor/repo bugs surface with traceback. 1-second `time.sleep` between fetches (skipped before row 1). Single long-lived `sqlite3` connection passed to conn-accepting repo helpers. `import news_bot` at module top per convention. Summary printed to stdout matches §14.E.5 shape (Window / Processed / Skipped / Empty fp / Errors / Duration). Updated `deploy.sh` FILES list with `model_extractor.py` and `backfill_fingerprints.py`. Added `tests/test_backfill_fingerprints.py` covering all 7 TDD anchors (11 total tests after parametrising `--days` clamp).
+**Deviations:** None.
+
+**Reviews:** Skipped — task runs foreground; review pipeline not wired for this task instance. Code-only verification: all 11 new tests green; full pytest suite 1084 passed (baseline 1073 + 11 new, no regressions); smoke check on /tmp/smoke.db (single row, `--dry-run --days 1`) exits 0 with correct summary shape.
+
+**Verification:**
+- Smoke: `python3 backfill_fingerprints.py --dry-run --days 1` on /tmp/smoke.db (single seeded row) → exit 0, prints summary with all expected labels, no DB writes
+- `pytest tests/test_backfill_fingerprints.py -v` → 11 passed
+- `pytest -q tests/` → 1084 passed (baseline 1073 + 11 new, no regressions)
+
 ## Task 4: Wire dedup gate in news_bot.job() + integration tests
 
 **Status:** Done
