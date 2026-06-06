@@ -33,6 +33,23 @@ Review details — in JSON files via links. QA report — in logs/working/.
 
 -->
 
+## Task 10: Deploy (test instance — prod DEFERRED)
+
+**Status:** In progress — test deploy done; prod promotion deferred (operator gate).
+**Commit:** 444b345 (FILES-invariant fix in deploy.yml + deploy_test.yml; deploy ops only, no feature code).
+**Agent:** main agent (orchestrator)
+**Summary:** Pre-flight caught the FILES-list invariant broken — Task 5 added `model_extractor.py` + `backfill_fingerprints.py` to `deploy.sh` but NOT to either GitHub Actions workflow. Fixed both `deploy.yml` and `deploy_test.yml` so all three FILES arrays match byte-for-byte (without it a main-branch CI deploy crashloops on `ImportError`). Deployed cross-source-dedup to the **test instance only** (Path C, mirroring t-hunted caution): pushed dev → auto `workflow_run` hit the known main-stale-YAML drift → recovered via `gh workflow run deploy_test.yml --ref dev`; ended on a final dev-YAML dispatch (run 27059499882, success — "news_bot_test.service restarted on dev branch code"). **Prod untouched** (still `a306e14`, Mattel-disable only). Migration (`model_fingerprint TEXT` ALTER) applies on next test cron tick via `init_db()`.
+**Deviations:** Deviated from task happy-path (which targets prod via `./deploy.sh`). Prod deploy DEFERRED: prod is far behind dev (t-hunted PR #12-17 + orangetrack br-split + this feature all unpromoted), and t-hunted T14 sign-off state is unverified this session — promoting dev→main would bundle unverified t-hunted onto prod. Test-first soak chosen until operator confirms (a) t-hunted T14 closed and (b) clean cross-source-dedup soak on test.
+
+**Reviews:** Not applicable — deploy task, no reviewers.
+
+**Verification (operator-driven, pending):** Agent does not SSH (operator applies prod/test ops). Operator to run on the test VPS and confirm:
+- `sqlite3 <test news.db> ".schema pending_articles"` → contains `model_fingerprint TEXT` (after first tick)
+- `sqlite3 <test news.db> ".schema published_articles"` → contains `model_fingerprint TEXT`
+- `sudo systemctl status news_bot_test.service` → `active (running)`
+- `sudo journalctl -u news_bot_test.service -n 200 --no-pager | grep -iE "importerror|traceback"` → empty since deploy
+- `ls -la <test bot dir>/model_extractor.py <test bot dir>/backfill_fingerprints.py` → both present, mtime ≈ 2026-06-06 13:11 МСК
+
 ## Task 9: Pre-deploy QA
 
 **Status:** Done
