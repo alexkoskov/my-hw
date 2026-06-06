@@ -43,12 +43,15 @@ Review details — in JSON files via links. QA report — in logs/working/.
 
 **Reviews:** Not applicable — deploy task, no reviewers.
 
-**Verification (operator-driven, pending):** Agent does not SSH (operator applies prod/test ops). Operator to run on the test VPS and confirm:
-- `sqlite3 <test news.db> ".schema pending_articles"` → contains `model_fingerprint TEXT` (after first tick)
-- `sqlite3 <test news.db> ".schema published_articles"` → contains `model_fingerprint TEXT`
-- `sudo systemctl status news_bot_test.service` → `active (running)`
-- `sudo journalctl -u news_bot_test.service -n 200 --no-pager | grep -iE "importerror|traceback"` → empty since deploy
-- `ls -la <test bot dir>/model_extractor.py <test bot dir>/backfill_fingerprints.py` → both present, mtime ≈ 2026-06-06 13:11 МСК
+**Verification (CONFIRMED green on test 2026-06-06 via CI probe):** Operator's local SSH was unavailable (local key not in `authorized_keys` + DeluxHost provider outage), so verification ran via an operator-authorized one-shot CI workflow (`verify_test.yml`, read-only, using the deploy key from a GitHub runner). Results:
+- `.schema pending_articles` → `model_fingerprint TEXT` present ✅
+- `.schema published_articles` → `model_fingerprint TEXT` present ✅
+- `systemctl is-active news_bot_test.service` → `active` ✅
+- `journalctl` grep since deploy → `clean — no ImportError/Traceback/model_extractor errors` ✅
+- `model_extractor.py` (14400 B) + `backfill_fingerprints.py` (12332 B) on disk, sizes match local ✅
+- Live signal: `[test] [E008]` heartbeat at 13:09 МСК (deploy startup tick) emitted a valid plan (3 fresh accepted) → service healthy on new code; no `[E016]` degraded-mode ping → dedup gate working without fallback.
+- Note: the simultaneous prod+test restarts at 18:23 МСК were a DeluxHost provider outage/maintenance reboot (provider status page: "Major Outage in Progress"), NOT a code/OOM/deploy issue.
+- The throwaway `verify_test.yml` + `chore/verify-test` branch were deleted after this probe.
 
 ## Task 9: Pre-deploy QA
 
