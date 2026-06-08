@@ -10,6 +10,7 @@ import re
 import os
 import json
 import asyncio
+import socket
 import time
 from datetime import datetime, timedelta, timezone
 from urllib.parse import urlparse
@@ -24,6 +25,18 @@ from dotenv import load_dotenv
 # ensure_access_token) call load_dotenv() independently; this is the
 # news_bot-specific guarantee, not a global one.
 load_dotenv()
+
+# Global socket default timeout. feedparser.parse() uses urllib.urlopen()
+# under the hood and offers no `timeout` kwarg (6.0.12 sig confirmed); a
+# slow RSS server (e.g. Cloudflare-fronted autoevolution.com sending TCP
+# ACK but no data) would otherwise block job() until kernel tcp_keepalive
+# fires hours later. Prod incident 2026-06-08: job() hung 2.5h+ after
+# Database initialized, missing the daily admin ping and any publishes.
+# 20s caps the worst-case wait per socket op; legitimate fast paths
+# (autoevolution curl_cffi, requests.get in source parsers, Telegraph API
+# client) all pass their own explicit timeout already, so this is a
+# defense-in-depth floor for any socket that forgot to.
+socket.setdefaulttimeout(20)
 
 import feedparser
 from deep_translator import GoogleTranslator

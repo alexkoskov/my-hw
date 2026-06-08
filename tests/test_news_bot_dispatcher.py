@@ -20,6 +20,21 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 import news_bot
 
 
+def test_socket_default_timeout_set_on_module_load():
+    """Regression for 2026-06-08 prod incident: importing ``news_bot``
+    must install a global ``socket.setdefaulttimeout`` so any code path
+    that creates a socket without explicit timeout (notably
+    ``feedparser.parse`` → ``urllib.request.urlopen`` for RSS) cannot
+    block job() forever on a slow/non-responsive server. Both call sites
+    of ``feedparser.parse`` (autoevolution RSS via ``fetch_rss``;
+    orangetrack feed via ``_fetch_orangetrack_entries``) rely on this
+    floor — they pass no timeout themselves because feedparser 6.0.12's
+    signature exposes no ``timeout`` kwarg.
+    """
+    import socket as _socket
+    assert _socket.getdefaulttimeout() == 20.0
+
+
 def test_fetch_full_article_routes_blogspot_to_t_hunted():
     """A blogspot.com link must route to
     ``t_hunted_source.fetch_t_hunted_article(link, …)`` exactly once and
