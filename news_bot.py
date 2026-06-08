@@ -2226,6 +2226,34 @@ def job():
         f"[job] done. Published {published_count}, "
         f"carry-over {carry_over}, queue size now {final_queue_size}."
     )
+    _record_heartbeat()
+
+
+_HEARTBEAT_PATH = os.path.expanduser("~/.cache/news_bot/last_tick.ts")
+
+
+def _record_heartbeat(path=None):
+    """Write a Unix-timestamp marker that proves ``job()`` completed.
+
+    External watchdog (cron'd ``watchdog.sh``) reads this file's mtime
+    and alerts the operator if it's older than the daily-tick interval.
+    Designed for the alive-but-stuck class of incident (prod 2026-06-08
+    feedparser hang) — ``Restart=on-failure`` already covers hard
+    crashes, this catches the silent ones.
+
+    Failure to write the heartbeat is logged but never raised — the
+    heartbeat is for monitoring, not for correctness of the cron tick.
+    """
+    target = _HEARTBEAT_PATH if path is None else path
+    try:
+        os.makedirs(os.path.dirname(target), exist_ok=True)
+        with open(target, "w") as f:
+            f.write(f"{int(time.time())}\n")
+    except OSError as exc:
+        logger.warning(
+            f"[heartbeat] failed to write {target!r}: "
+            f"{sanitize_error_message(exc)}"
+        )
 
 
 def main():

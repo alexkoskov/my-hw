@@ -20,6 +20,41 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 import news_bot
 
 
+def test_record_heartbeat_writes_unix_timestamp(tmp_path):
+    """Regression for 2026-06-08 prod-hang: ``_record_heartbeat`` must
+    write a fresh Unix timestamp every successful ``job()`` so the
+    external watchdog (``watchdog.sh`` cron'd at 22:00 МСК) can detect
+    alive-but-stuck instances by mtime age.
+    """
+    import time as _time
+    target = tmp_path / "subdir" / "last_tick.ts"
+    news_bot._record_heartbeat(str(target))
+    assert target.exists()
+    content = target.read_text().strip()
+    assert content.isdigit(), f"expected Unix timestamp, got {content!r}"
+    age = abs(int(content) - int(_time.time()))
+    assert age < 5, f"timestamp not fresh: age={age}s"
+
+
+def test_record_heartbeat_swallows_oserror(caplog):
+    """``_record_heartbeat`` is monitoring infrastructure — its failure
+    must NOT propagate into ``job()`` (which would falsely mark the
+    tick as crashed and trigger ``Restart=on-failure``).
+    """
+    import logging as _logging
+    # Path under a file (not dir) — makedirs will succeed (sees existing
+    # path component), but open() will hit ENOTDIR on the file segment.
+    # Cross-platform safe: just pass an empty string to break os.path.
+    with caplog.at_level(_logging.WARNING):
+        # Will fail because empty path has no dirname.
+        # os.makedirs("", exist_ok=True) → FileNotFoundError → caught.
+        news_bot._record_heartbeat("")
+    assert any("failed to write" in r.message for r in caplog.records), (
+        "expected a [heartbeat] WARNING log, got: "
+        + repr([r.message for r in caplog.records])
+    )
+
+
 def test_singleton_lock_acquires_when_free(tmp_path):
     """Regression for 2026-06-08 multi-instance incident: a fresh deploy
     path must acquire the flock without raising — first instance wins.

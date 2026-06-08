@@ -55,6 +55,7 @@ FILES=(
     "boilerplate_filter.py"
     "model_extractor.py"
     "backfill_fingerprints.py"
+    "watchdog.sh"
     "feeds.json"
     "requirements.txt"
     ".env.example"
