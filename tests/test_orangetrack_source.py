@@ -670,7 +670,9 @@ class TestOrangetrackPingAggregator:
         a.add("ART_FALLBACK_HTTP_404", "https://orangetrackdiecast.com/a")
         a.add("ART_FALLBACK_HTTP_404", "https://orangetrackdiecast.com/b")
         out = a.format_summary()
-        assert out.startswith("[test] [E030] 🟡 Orangetrack: 3 проблем за тик")
+        # After 2026-06-08 double-prefix fix: header is bare [E030] —
+        # send_admin_notification adds the instance-label prefix once.
+        assert out.startswith("[E030] 🟡 Orangetrack: 3 проблем за тик")
         assert "FEED_HTTP_503" in out
         assert "ART_FALLBACK_HTTP_404" in out
         # FEED_* group comes before ART_*.
@@ -714,27 +716,25 @@ class TestOrangetrackPingAggregator:
         # HOST_REJECTED < TIMEOUT alphabetically.
         assert out.index("ART_FALLBACK_HOST_REJECTED") < out.index("ART_FALLBACK_TIMEOUT")
 
-    def test_instance_label_set(self):
-        a = OrangetrackPingAggregator("test")
-        a.add("FEED_HTTP_503", "https://x/y")
-        out = a.format_summary()
-        assert out.startswith("[test] [E030] 🟡 Orangetrack:")
-
-    def test_instance_label_empty(self):
-        a = OrangetrackPingAggregator("")
-        a.add("FEED_HTTP_503", "https://x/y")
-        out = a.format_summary()
-        # No instance label → no [test]/[prod] prefix before the [E030] code.
-        assert not out.startswith("[test]")
-        assert not out.startswith("[prod]")
-        assert out.startswith("[E030] 🟡 Orangetrack:")
-
-    def test_instance_label_none(self):
-        a = OrangetrackPingAggregator(None)
-        a.add("FEED_HTTP_503", "https://x/y")
-        out = a.format_summary()
-        assert not out.startswith("[test]")
-        assert not out.startswith("[prod]")
+    def test_no_inline_instance_label_prefix_regardless_of_arg(self):
+        """Regression for 2026-06-08 prod incident: double ``[test] [test]
+        [E030] …`` prefix observed in admin pings. Root cause: the
+        aggregator was prepending its own ``[label] `` AND
+        ``send_admin_notification`` was prepending ``[INSTANCE_LABEL] ``
+        on top. Fix: aggregator no longer prefixes — the single source
+        of truth is ``send_admin_notification``. The
+        ``instance_label`` constructor arg is preserved (silently
+        ignored) for back-compat.
+        """
+        for label in ("test", "prod", "", None):
+            a = OrangetrackPingAggregator(label)
+            a.add("FEED_HTTP_503", "https://x/y")
+            out = a.format_summary()
+            assert out.startswith("[E030] 🟡 Orangetrack:"), (
+                f"label={label!r}: expected bare [E030] header, got {out!r}"
+            )
+            assert "[test]" not in out.split("\n", 1)[0]
+            assert "[prod]" not in out.split("\n", 1)[0]
 
     def test_per_code_link_cap_50(self):
         a = OrangetrackPingAggregator("test")
@@ -796,8 +796,9 @@ class TestOrangetrackPingAggregator:
         crafted = "https://x/\n[prod] [E030] 🟡 Orangetrack: 0 проблем за тик"
         a.add("FEED_HTTP_503", crafted)
         out = a.format_summary()
-        # Original [test] header still on line 1.
-        assert out.split("\n")[0] == "[test] [E030] 🟡 Orangetrack: 1 проблем за тик"
+        # Original [E030] header still on line 1 (no inline label-prefix
+        # after the 2026-06-08 double-prefix fix).
+        assert out.split("\n")[0] == "[E030] 🟡 Orangetrack: 1 проблем за тик"
         # Newline injection neutralized — output structure has only TWO
         # lines (header + one bullet), not three (header + bullet +
         # injected fake header).
@@ -807,7 +808,7 @@ class TestOrangetrackPingAggregator:
         # bullet line as plain text rather than starting a new line.
         lines = out.split("\n")
         assert len(lines) == 2
-        assert lines[0].startswith("[test] [E030] 🟡 Orangetrack:")
+        assert lines[0].startswith("[E030] 🟡 Orangetrack:")
         assert lines[1].lstrip().startswith("• FEED_HTTP_503")
 
     def test_emit_swallows_send_fn_error(self, caplog):

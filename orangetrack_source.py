@@ -1107,7 +1107,17 @@ class OrangetrackPingAggregator:
     """
 
     def __init__(self, instance_label: Optional[str] = None) -> None:
-        self.instance_label = (instance_label or "").strip()
+        # ``instance_label`` is accepted for backward-compat with existing
+        # callers (notably ``news_bot._fetch_orangetrack_entries``) but is
+        # NO LONGER USED for prefixing. Prior behaviour prepended
+        # ``[label] `` to ``format_summary()`` output; that combined with
+        # ``send_admin_notification`` (which ALSO prepends INSTANCE_LABEL
+        # for every admin-bound message) produced the ``[test] [test]
+        # [E030] …`` double-prefix observed in prod 2026-06-08. The single
+        # source of truth for prefixing is now ``send_admin_notification``.
+        # The parameter remains in the signature so external test code
+        # / docs that pass it don't break — silently dropped here.
+        del instance_label  # explicit "unused" signal for linters
         # {code: {link: count}} preserving insertion order via dict semantics.
         self._events: Dict[str, Dict[str, int]] = {}
         self._total_calls = 0
@@ -1159,8 +1169,11 @@ class OrangetrackPingAggregator:
         # operator triaging a flood sees the real severity even when the
         # per-code link cap (50) drops some entries from the bullet list.
         total_events = self._total_added
-        prefix = f"[{self.instance_label}] " if self.instance_label else ""
-        header = f"{prefix}{admin_alerts.alert_orangetrack_summary_header(total_events)}"
+        # NO inline [instance_label] prefix here — send_admin_notification
+        # prepends it once for every admin-bound message (news_bot.py:412).
+        # Adding it here too produced the [test] [test] [E030] double-prefix
+        # incident 2026-06-08.
+        header = admin_alerts.alert_orangetrack_summary_header(total_events)
         lines = [header]
         for code in sorted(self._events.keys(), key=_code_sort_key):
             bucket = self._events[code]
