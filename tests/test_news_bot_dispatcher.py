@@ -20,6 +20,45 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 import news_bot
 
 
+def test_singleton_lock_acquires_when_free(tmp_path):
+    """Regression for 2026-06-08 multi-instance incident: a fresh deploy
+    path must acquire the flock without raising — first instance wins.
+    """
+    lock_path = tmp_path / ".news_bot.lock"
+    news_bot._acquire_singleton_lock(str(lock_path))
+    # Cleanup so other tests can re-acquire; close releases the kernel lock.
+    if news_bot._singleton_lock_fd is not None:
+        news_bot._singleton_lock_fd.close()
+        news_bot._singleton_lock_fd = None
+    assert lock_path.exists()
+
+
+def test_singleton_lock_refuses_second_instance(tmp_path):
+    """If another process holds the flock, a second call to
+    ``_acquire_singleton_lock`` must exit with code 1 instead of returning.
+    This is the core defense against the four-parallel-bots class of
+    incident that motivated this code.
+    """
+    import fcntl as _fcntl
+    lock_path = tmp_path / ".news_bot.lock"
+    # First holder — open fd + take exclusive lock, keep alive for the test.
+    holder = open(str(lock_path), "w")
+    _fcntl.flock(holder.fileno(), _fcntl.LOCK_EX | _fcntl.LOCK_NB)
+    try:
+        try:
+            news_bot._acquire_singleton_lock(str(lock_path))
+        except SystemExit as exc:
+            assert exc.code == 1, f"expected exit code 1, got {exc.code!r}"
+        else:
+            raise AssertionError(
+                "second _acquire_singleton_lock call must SystemExit; instead "
+                "it returned normally — singleton-lock contract broken."
+            )
+    finally:
+        _fcntl.flock(holder.fileno(), _fcntl.LOCK_UN)
+        holder.close()
+
+
 def test_socket_default_timeout_set_on_module_load():
     """Regression for 2026-06-08 prod incident: importing ``news_bot``
     must install a global ``socket.setdefaulttimeout`` so any code path

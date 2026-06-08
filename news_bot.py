@@ -8,8 +8,10 @@ import sqlite3
 import logging
 import re
 import os
+import sys
 import json
 import asyncio
+import fcntl
 import socket
 import time
 from datetime import datetime, timedelta, timezone
@@ -2309,5 +2311,53 @@ def main():
         schedule.run_pending()
         time.sleep(60)
 
+_LOCK_FILE_PATH = os.path.join(
+    os.path.dirname(os.path.abspath(__file__)),
+    ".news_bot.lock",
+)
+# Module-level reference keeps the file descriptor alive for the process
+# lifetime. The kernel releases the flock on fd close (clean exit, SIGTERM,
+# SIGKILL, OOM-kill — all paths), so no explicit cleanup is needed.
+_singleton_lock_fd = None
+
+
+def _acquire_singleton_lock(lock_path=_LOCK_FILE_PATH):
+    """Hold an exclusive flock to refuse a second concurrent start.
+
+    Prod incident 2026-06-08: a manual restart sequence (nohup, then
+    setsid, then tmux — each launched silently because pgrep regex was
+    wrong and operator believed no process was running) produced four
+    parallel prod bots fetching the same RSS, racing on inserts and
+    publishes. Kernel-held ``flock`` makes a second start fail-fast
+    with a clear log line instead of silently doubling up.
+
+    Per-deploy isolation: lock file is colocated with ``news_bot.py``,
+    so ``/home/hwbot/bot/.news_bot.lock`` and
+    ``/home/hwbot/bot_test/.news_bot.lock`` are distinct files — prod
+    and test never conflict.
+
+    On lock-conflict: log ERROR and exit with code 1. Operator sees the
+    log line; no admin ping (the existing instance is already alive and
+    will fire its own ping at the next scheduled tick).
+    """
+    global _singleton_lock_fd
+    _singleton_lock_fd = open(lock_path, "w")
+    try:
+        fcntl.flock(_singleton_lock_fd.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+    except (BlockingIOError, OSError) as exc:
+        logger.error(
+            f"[singleton-lock] cannot acquire {lock_path!r}: another news_bot "
+            f"instance is already running in this deploy directory. Refusing "
+            f"to start to prevent duplicate publishes ({type(exc).__name__})."
+        )
+        _singleton_lock_fd.close()
+        _singleton_lock_fd = None
+        sys.exit(1)
+    _singleton_lock_fd.write(f"{os.getpid()}\n")
+    _singleton_lock_fd.flush()
+    logger.info(f"[singleton-lock] acquired {lock_path!r}")
+
+
 if __name__ == "__main__":
+    _acquire_singleton_lock()
     main()
