@@ -668,6 +668,19 @@ def fetch_rss(url):
         logger.error(f"Failed to fetch RSS from {url}: {e}")
         return []
 
+#: Sources whose RSS feeds are *broad diecast collectors* — they cover
+#: many brands (Hot Wheels, Matchbox, M2 Machines, Auto World, Mini GT,
+#: Topper Toys / Johnny Lightning, …) and most posts are NOT about
+#: Hot Wheels. For these sources we flip the default: an entry without
+#: an explicit Hot Wheels mention in the title is rejected, not kept.
+#: Added 2026-06-09 after two non-HW t-hunted posts leaked through to
+#: the test channel ("Topper Toys 1970: Johnny Lightning…", "Mundo
+#: Premium 64 #241: Porsche, Mustang и Diablo…"). Other sources
+#: (autoevolution / lamley / orangetrack) retain the default-include
+#: policy that operator-confirmed works for HW-focused sources.
+_BROAD_DIECAST_NETLOCS = ('t-hunted.blogspot.com',)
+
+
 def _is_hot_wheels_relevant(entry):
     """Reject articles that came through the Hot Wheels RSS feed by
     cross-tagging but are actually about a sibling Mattel brand.
@@ -678,16 +691,25 @@ def _is_hot_wheels_relevant(entry):
     Wheels-focused — anything where the title names a sibling brand
     *without also* naming Hot Wheels is filtered out at fetch time so
     it never enters ``pending_articles``.
+
+    For broad-diecast sources (``_BROAD_DIECAST_NETLOCS``) the default
+    flips from "include" to "reject" — the title MUST contain an
+    explicit Hot Wheels mention to pass.
     """
     title = (entry.get('title') or '').lower()
     if not title:
         return True  # nothing to inspect; default include
-    if 'hot wheels' in title:
-        return True  # explicit HW mention — keep
+    if 'hot wheels' in title or 'hotwheels' in title:
+        return True  # explicit HW mention — keep regardless of source
     # Sibling brands observed in production. Add more conservatively —
     # broad keyword bans risk dropping legitimate cross-over articles.
     sibling_brands = ('matchbox',)
     if any(brand in title for brand in sibling_brands):
+        return False
+    # Broad-diecast source guard. Reject entries from these feeds when
+    # the title has no Hot Wheels signal; they default to "not HW".
+    link = (entry.get('link') or '').lower()
+    if any(netloc in link for netloc in _BROAD_DIECAST_NETLOCS):
         return False
     return True
 

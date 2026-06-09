@@ -942,10 +942,16 @@ class TestDistributedSchedule(unittest.TestCase):
         # collection time (news_bot.py:1535). The wiring under test is
         # `NETLOC_TO_SOURCE` (Task 3): autoevolution.com → 'autoevolution',
         # t-hunted.blogspot.com → 't-hunted'.
+        # NOTE: PT title must contain 'hot wheels' explicitly — after the
+        # 2026-06-09 broad-diecast filter (``_BROAD_DIECAST_NETLOCS``),
+        # t-hunted entries without an HW signal in the title are rejected
+        # at fetch time. The dispatcher-routing scope of this smoke test
+        # is unchanged; only the fixture wording needs to clear the new
+        # relevance gate so the routing logic gets exercised.
         entries = [
             _create_mock_rss_entry(en_link, title='Hot Wheels EN Test Article'),
             _create_mock_rss_entry(pt_link,
-                                   title='Caça ao tesouro Pop Culture 2026'),
+                                   title='Hot Wheels Pop Culture 2026 caça ao tesouro'),
         ]
         self._set_rss_entries(entries)
 
