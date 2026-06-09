@@ -59,7 +59,16 @@ _YOUTUBE_HOSTS = (
     "youtu.be",
 )
 
-REQUEST_TIMEOUT = 15
+# Per-socket-op timeout for the fallback HTTP scrape via ``requests.get``.
+# Bumped 2026-06-09 from 15s → 30s after two consecutive ticks emitted
+# ``ART_FALLBACK_TIMEOUT`` (E030) for the same heavy case-report pages:
+#   /hot-wheels-2026-fast-furious-premium-q-case-report/
+#   /hot-wheels-2026-pop-culture-r-case-report/
+# Case-reports are image-heavy (20-30 hot-linked photos) and streamed
+# until ``MAX_RESPONSE_SIZE`` (5 MB) — 15s was tight when Cloudflare's
+# edge was slow. 30s remains safe — the gate stays cheap on quick pages
+# (most return in <2s) and pings only when something is genuinely wrong.
+REQUEST_TIMEOUT = 30
 MAX_RESPONSE_SIZE = 5 * 1024 * 1024  # 5 MB
 IMAGE_LIMIT = 10
 _CHUNK_SIZE = 8 * 1024  # 8 KB chunks for iter_content

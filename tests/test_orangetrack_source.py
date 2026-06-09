@@ -470,6 +470,24 @@ class TestEmptyEmbedWrapperDetection:
         )
 
 
+class TestRequestTimeoutFloor:
+    """Behavioral pin for the REQUEST_TIMEOUT floor. Bumped 2026-06-09
+    from 15 → 30 after recurrent ART_FALLBACK_TIMEOUT (E030) pings on
+    heavy case-report pages. The floor MUST remain >=30 — anything
+    tighter trades off legitimate slow Cloudflare responses against
+    operator alert volume in the wrong direction.
+    """
+
+    def test_request_timeout_floor(self):
+        import orangetrack_source
+        assert orangetrack_source.REQUEST_TIMEOUT >= 30, (
+            f"REQUEST_TIMEOUT regressed to {orangetrack_source.REQUEST_TIMEOUT}s "
+            "— heavy case-report pages with 20-30 images need at least 30s. "
+            "Tighter floor will surface E030 ART_FALLBACK_TIMEOUT on healthy "
+            "but slow Cloudflare responses."
+        )
+
+
 class TestFallbackPath:
     def _entry_no_content(self, link="https://orangetrackdiecast.com/post-x"):
         return {"link": link, "title": "T", "content": [], "summary": ""}
