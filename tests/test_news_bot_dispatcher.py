@@ -20,6 +20,81 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 import news_bot
 
 
+def test_send_admin_notification_retries_on_telegram_error(monkeypatch, caplog):
+    """Regression for 2026-06-09 prod tick: a single ``TelegramError:
+    Timed out`` on the morning [E008] dropped that day's plan ping with
+    no retry. send_admin_notification must now try up to 3 times with
+    exponential backoff before giving up.
+    """
+    import logging as _logging
+    import asyncio as _asyncio
+    from unittest.mock import AsyncMock
+    from telegram.error import TelegramError as _TE
+
+    monkeypatch.setattr(news_bot, "TELEGRAM_BOT_TOKEN", "fake-token")
+    monkeypatch.setattr(news_bot, "TELEGRAM_ADMIN_ID", "@admin")
+    monkeypatch.setattr(news_bot, "INSTANCE_LABEL", "")
+
+    # First two attempts raise TelegramError, third succeeds.
+    fake_send = AsyncMock(side_effect=[
+        _TE("Timed out"),
+        _TE("Timed out"),
+        None,
+    ])
+
+    class _FakeBot:
+        def __init__(self, token): self.send_message = fake_send
+
+    monkeypatch.setattr(news_bot, "Bot", _FakeBot)
+    # Don't actually sleep during backoff in tests.
+    monkeypatch.setattr(news_bot.time, "sleep", lambda s: None)
+
+    with caplog.at_level(_logging.WARNING):
+        ok = news_bot.send_admin_notification("test message")
+
+    assert ok is True
+    assert fake_send.await_count == 3, (
+        f"expected 3 send attempts (2 fails + 1 success), got {fake_send.await_count}"
+    )
+    warns = [r.message for r in caplog.records if r.levelno == _logging.WARNING]
+    assert any("attempt 1/3" in w and "retrying in 1s" in w for w in warns), (
+        f"expected attempt 1/3 retry log with 1s backoff; got {warns}"
+    )
+    assert any("attempt 2/3" in w and "retrying in 2s" in w for w in warns), (
+        f"expected attempt 2/3 retry log with 2s backoff; got {warns}"
+    )
+
+
+def test_send_admin_notification_gives_up_after_max_attempts(monkeypatch, caplog):
+    """All 3 attempts fail with TelegramError → log final ERROR, return False.
+    No exception propagates (callers must keep working — admin ping is
+    monitoring, not correctness)."""
+    import logging as _logging
+    from unittest.mock import AsyncMock
+    from telegram.error import TelegramError as _TE
+
+    monkeypatch.setattr(news_bot, "TELEGRAM_BOT_TOKEN", "fake-token")
+    monkeypatch.setattr(news_bot, "TELEGRAM_ADMIN_ID", "@admin")
+    monkeypatch.setattr(news_bot, "INSTANCE_LABEL", "")
+    fake_send = AsyncMock(side_effect=_TE("Timed out"))
+
+    class _FakeBot:
+        def __init__(self, token): self.send_message = fake_send
+
+    monkeypatch.setattr(news_bot, "Bot", _FakeBot)
+    monkeypatch.setattr(news_bot.time, "sleep", lambda s: None)
+
+    with caplog.at_level(_logging.ERROR):
+        ok = news_bot.send_admin_notification("test message")
+
+    assert ok is False
+    assert fake_send.await_count == 3
+    errors = [r.message for r in caplog.records if r.levelno == _logging.ERROR]
+    assert any("after 3 attempts" in e and "Timed out" in e for e in errors), (
+        f"expected final error log with attempt count; got {errors}"
+    )
+
+
 def test_record_heartbeat_writes_unix_timestamp(tmp_path):
     """Regression for 2026-06-08 prod-hang: ``_record_heartbeat`` must
     write a fresh Unix timestamp every successful ``job()`` so the

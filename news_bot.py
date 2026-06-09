@@ -397,8 +397,25 @@ for _llm_logger_name in (
 # above).  ``send_admin_notification`` itself routes its message through
 # ``_redact_text`` as a belt-and-suspenders measure, but callers should
 # still avoid embedding raw exception text in the user-visible payload.
-def send_admin_notification(message):
-    """Send a notification message to the admin.
+#: Max attempts for send_admin_notification before giving up. Added
+#: 2026-06-09 after a single ``TelegramError: Timed out`` on the prod
+#: morning tick (10:00:23 МСК) silently dropped that day's ``[E008]``
+#: plan-of-day ping. The article-publish HTTP call later in the same
+#: tick succeeded, confirming the failure was a transient Telegram
+#: edge slowness rather than a credential / network outage. Three
+#: attempts with 1s + 2s backoff costs at most ~3s on the bad path
+#: and zero on the happy path.
+ADMIN_NOTIFICATION_MAX_ATTEMPTS = 3
+
+
+def send_admin_notification(message, *, max_attempts=ADMIN_NOTIFICATION_MAX_ATTEMPTS):
+    """Send a notification message to the admin with bounded retry.
+
+    Retries on ``TelegramError`` only (timeouts, transient network) —
+    auth / chat-id errors aren't worth re-sending. Exponential backoff
+    between attempts: 1s, 2s. Default ``max_attempts=3``; callers can
+    pass ``max_attempts=1`` to opt out (e.g. fire-and-forget paths
+    where the operator can tolerate a single missed ping).
 
     The ``message`` is passed through ``_redact_text`` BEFORE the Telegram
     payload is built so that any caller that accidentally embeds a secret
@@ -413,26 +430,42 @@ def send_admin_notification(message):
     # admin pings from prod vs test bot in the same admin chat.
     if INSTANCE_LABEL:
         safe_message = f"[{INSTANCE_LABEL}] {safe_message}"
+
     async def _send():
         bot = Bot(token=TELEGRAM_BOT_TOKEN)
+        # parse_mode=None (plain text). Markdown was rejected
+        # 2026-04-30: a stray ``*`` / ``_`` / ``[`` in a sanitised
+        # exception message caused ``can't parse entities`` and the
+        # admin ping was silently dropped. Operational alerts have no
+        # use for inline formatting, and plain text removes the
+        # spoofing risk where article-derived text could rewrite the
+        # visible message via crafted ``[label](url)`` syntax.
+        await bot.send_message(
+            chat_id=TELEGRAM_ADMIN_ID,
+            text=safe_message,
+        )
+
+    last_err = None
+    for attempt in range(1, max_attempts + 1):
         try:
-            # parse_mode=None (plain text). Markdown was rejected
-            # 2026-04-30: a stray ``*`` / ``_`` / ``[`` in a sanitised
-            # exception message caused ``can't parse entities`` and the
-            # admin ping was silently dropped. Operational alerts have no
-            # use for inline formatting, and plain text removes the
-            # spoofing risk where article-derived text could rewrite the
-            # visible message via crafted ``[label](url)`` syntax.
-            await bot.send_message(
-                chat_id=TELEGRAM_ADMIN_ID,
-                text=safe_message,
-            )
+            asyncio.run(_send())
             logging.info(f"Admin notification sent: {safe_message[:50]}...")
             return True
         except TelegramError as e:
-            logging.error(f"Failed to send admin notification: {e}")
-            return False
-    return asyncio.run(_send())
+            last_err = e
+            if attempt < max_attempts:
+                backoff_seconds = 2 ** (attempt - 1)  # 1, 2, 4 (last unused)
+                logging.warning(
+                    f"Admin notification attempt {attempt}/{max_attempts} "
+                    f"failed ({type(e).__name__}: {e}); retrying in "
+                    f"{backoff_seconds}s."
+                )
+                time.sleep(backoff_seconds)
+    logging.error(
+        f"Failed to send admin notification after {max_attempts} attempts: "
+        f"{last_err}"
+    )
+    return False
 
 
 logger = logging.getLogger(__name__)
