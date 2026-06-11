@@ -6,8 +6,8 @@ This file is the **single source of truth** for how English-language Hot Wheels 
 
 | Path | Who translates | This guide applies? |
 |---|---|---|
-| `_fallback_publish` — auto-LLM (production default since 2026-04-30) | LLM via `claude_transcreation` / `openrouter_transcreation` / etc. — `_load_prompt` reads this file as system prompt | **YES — runtime dependency.** Deploy bundle ships it to the server (see Decision 8 in `architecture.md`). Missing or empty file → bot sits in Google fallback all day. |
-| `_fallback_publish` — Google Translate fallback | `transcreate_text` (Google Translate + emoji/glossary safety net) | Indirectly — the safety net is calibrated to this guide, but Google Translate doesn't read prose instructions. The `↳ автоперевод` marker on the Telegra.ph page warns readers about reduced quality on this branch. |
+| `_fallback_publish` — auto-LLM (production default since 2026-04-30) | LLM via `claude_transcreation` / `openrouter_transcreation` / etc. — `_load_prompt` reads this file as system prompt | **YES — runtime dependency.** Deploy bundle ships it to the server (see Decision 8 in `architecture.md`). Missing or empty file → every LLM call fails its prompt load and (since the 2026-06-11 hold-and-wait change) all posts are held until the file is restored. |
+| `transcreate_text` (Google Translate helper) | Google Translate + emoji/glossary safety net | **DORMANT since 2026-06-11** — no longer wired into the publish path (outages hold posts instead of falling back). Kept in code for possible revival; this guide is not applied through it. |
 | `hw_review stage N` — **archived 2026-04-30** | Was Claude in operator's session | Code preserved (`hw_review.py` + tests green), but path is dormant in production: 100 % of channel posts go through auto-LLM. If revived, this file is the prompt to load. |
 | Admin-ping composition (`build_admin_ping`) | `news_bot` code | No — admin pings are operator-internal, not reader-facing. |
 
@@ -149,7 +149,7 @@ If any of these are true, **stop and rework** — you're breaking the prompt:
 
 ## Quality drift — what the auto path can and can't do
 
-The drift between manual and auto paths that this section used to describe is **closed as of the `llm-transcreation-and-distributed-publishing` feature**: auto-LLM transcreation now reads the same prompt above as its system prompt, on every article, on every engine. There is no second-class «Google Translate + regex» track anymore for the primary route — Google Translate only fires as a per-article fallback when the LLM refuses / times out / is globally down, and the Telegra.ph page carries the `↳ автоперевод` marker so readers know to expect reduced quality.
+The drift between manual and auto paths that this section used to describe is **closed as of the `llm-transcreation-and-distributed-publishing` feature**: auto-LLM transcreation now reads the same prompt above as its system prompt, on every article, on every engine. Since the 2026-06-11 hold-and-wait change there is no Google-Translate track at all on the publish path: a per-article LLM failure strikes the article out (3 → `failed_articles`) rather than serving a machine translation, and an API-level LLM outage HOLDS the article in the queue until the LLM recovers. Everything that reaches the channel is LLM-transcreated, so the `↳ автоперевод` reduced-quality marker is no longer emitted.
 
 What the auto path **cannot** do, and what manual review used to handle:
 

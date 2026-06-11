@@ -1,40 +1,33 @@
 #!/usr/bin/env python3
-"""Tests for the dual-path translation contract in ``_fallback_publish``.
+"""Tests for the translation + publish contract in ``_fallback_publish``.
 
-Task 7 of ``llm-transcreation-and-distributed-publishing`` introduces a
-two-tier translation engine in step 1 of ``_fallback_publish``:
+Step 1 of ``_fallback_publish`` uses a single translation engine —
+``claude_transcreation.transcreate_via_claude`` (the LLM):
 
-* **Primary (Claude):** ``claude_transcreation.transcreate_via_claude``
-  is called when ``outage_state.is_fallback_active() == False``.
-* **Per-article fallback:** on ``ClaudeTranscreationError`` for THIS
-  article only, fall back to the existing ``transcreate_text`` (Google)
-  path. The outage state machine is NOT advanced (Decision 5).
-* **API-level outage:** on ``ClaudeOutageError`` the state machine has
-  already been advanced inside ``claude_transcreation``. The function
-  publishes THIS slot's article via Google (degraded mode) AND then
-  re-raises ``ClaudeOutageError`` so the upstream ``job()`` loop (Task 8)
-  can route subsequent slots through Google without strike-counting.
-* **Already-in-fallback shortcut:** when ``is_fallback_active() == True``
-  on entry, Claude is NOT called — the row goes straight to Google.
+* **Happy path (Claude):** the LLM dict's RU fields flow into Steps 2–5.
+* **Per-article failure:** on ``ClaudeTranscreationError`` for THIS article
+  the function re-raises so the slot loop strikes the row (3 strikes →
+  failed_articles). The outage state machine is NOT advanced. No Google.
 
-Steps 2–5 (Telegraph publish + ``mark_telegraph_published`` BEFORE
-Telegram teaser + ``move_to_published(via_review=False)`` + preview
-cleanup) are unchanged per Decision 9 idempotency from
-manual-review-workflow. Both branches assert:
+The API-level outage HOLD contract (``ClaudeOutageError`` → article held,
+nothing published, no Google) lives in ``tests/test_llm_outage_hold.py``
+(see the pointer note further down this file).
+
+Steps 2–5 (Telegraph publish + ``mark_telegraph_published`` BEFORE Telegram
+teaser + ``move_to_published(via_review=False)`` + preview cleanup) are
+unchanged per Decision 9 idempotency from manual-review-workflow. The
+happy path asserts:
 
 * ``via_review=False`` is passed through to ``move_to_published``.
-* ``auto_marker=True`` is passed to ``telegraph_publisher.publish_article``
-  (computed as ``not via_review`` inside the helper).
+* ``auto_marker=False`` is passed to ``telegraph_publisher.publish_article``
+  (the ``↳ автоперевод`` marker only ever flagged the removed Google path).
 * ``mark_telegraph_published`` is invoked BEFORE
   ``send_telegraph_teaser`` — Decision 9 idempotency anchor.
 
-Test layout follows the tempfile-DB pattern of
-``tests/test_idle_fallback.py`` (``_IdleFallbackCase`` fixture pattern):
-allocate a sqlite file, monkeypatch ``news_bot.DB_FILE``, call
-``init_db()``, populate rows via the real repo. Order assertions are
-made via ``MagicMock`` ``manager.attach_mock`` (Decision 9 anchor) and
-via ``call_order`` lists captured by ``side_effect`` callbacks
-(``assert_called_before`` does not exist in ``unittest.mock``).
+Test layout follows the tempfile-DB pattern: allocate a sqlite file,
+monkeypatch ``news_bot.DB_FILE``, call ``init_db()``, populate rows via the
+real repo. Order assertions are made via ``MagicMock`` ``manager.attach_mock``
+(Decision 9 anchor).
 """
 from __future__ import annotations
 
@@ -49,10 +42,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 import news_bot
 import pending_articles_repo as repo
-from claude_transcreation import (
-    ClaudeOutageError,
-    ClaudeTranscreationError,
-)
+from claude_transcreation import ClaudeTranscreationError
 
 
 def _sample_entry(link='http://example.com/a', title='Example Article',
@@ -278,190 +268,15 @@ class TestGoogleFallbackPath(_FallbackPublishPathsCase):
         self.assertEqual(mock_claude.call_count, 1)
 
 
-class TestGoogleEnglishGuard(_FallbackPublishPathsCase):
-    """When Google Translate returns the source verbatim (403 / blocked
-    call), ``_google_translate`` raises ``GoogleTranslationError`` so
-    the slot loop strikes the article instead of publishing EN body
-    content with an RU-emoji title."""
-
-    def test_pure_english_google_output_raises(self):
-        entry = self._insert(
-            link='http://a/eng-leak',
-            paragraphs=['First English paragraph.', 'Second one.'],
-        )
-        row = repo.get_pending(entry['link'])
-
-        # Google identity stub — returns the EN input verbatim, mimicking
-        # a 403 / blocked translate call.
-        mock_google = MagicMock(side_effect=lambda t, **k: t)
-        mock_publish = MagicMock(side_effect=AssertionError(
-            "publish_article must NOT fire when Google returned EN-only",
-        ))
-        # Force the already-in-fallback path so we exercise the Google
-        # branch directly without going through Claude.
-        with patch('news_bot.transcreate_text', mock_google), \
-             patch('news_bot.outage_state.is_fallback_active',
-                   return_value=True), \
-             patch('news_bot.telegraph_publisher.publish_article',
-                   mock_publish):
-            with self.assertRaises(news_bot.GoogleTranslationError):
-                news_bot._fallback_publish(row, via_review=False)
-
-
 # ============================================================================
-# Optional but important tests — already-in-fallback shortcut + outage re-raise
+# Outage / hold-and-wait contract moved to tests/test_llm_outage_hold.py
+# ----------------------------------------------------------------------------
+# The former Google-fallback paths (already-in-fallback shortcut, degraded-
+# mode publish + re-raise, pure-English Google guard) were removed when the
+# bot switched to hold-and-wait on LLM outage (2026-06-11). The new contract
+# (ClaudeOutageError HOLDS the article — no Google, nothing published) is
+# pinned in tests/test_llm_outage_hold.py.
 # ============================================================================
-
-
-class TestAlreadyInFallback(_FallbackPublishPathsCase):
-
-    def test_fallback_publish_already_in_fallback(self):
-        """``is_fallback_active() == True`` on entry → Claude is NOT called;
-        translation goes through Google directly. Downstream chain
-        unchanged (Decision 9 ordering)."""
-        entry = self._insert(
-            link='http://a/3',
-            title='EN T3',
-            subtitle='EN s3',
-            paragraphs=['EN p1.'],
-        )
-        row = repo.get_pending(entry['link'])
-
-        mock_claude = MagicMock(side_effect=AssertionError(
-            "Claude must NOT be called when fallback is already active"
-        ))
-        mock_google = MagicMock(side_effect=lambda t, **kw: f"[ру] {t}")
-
-        tg_url = 'https://telegra.ph/Skip-Claude-04-27'
-        mock_publish = MagicMock(return_value=tg_url)
-        mock_mark = MagicMock()
-        mock_teaser = MagicMock(return_value=True)
-        mock_move = MagicMock()
-
-        with patch('news_bot.transcreate_via_claude', mock_claude), \
-             patch('news_bot.transcreate_text', mock_google), \
-             patch('news_bot.outage_state.is_fallback_active',
-                   return_value=True), \
-             patch('news_bot.telegraph_publisher.publish_article',
-                   mock_publish), \
-             patch('news_bot.pending_repo.mark_telegraph_published',
-                   mock_mark), \
-             patch('news_bot.send_telegraph_teaser', mock_teaser), \
-             patch('news_bot.pending_repo.move_to_published', mock_move):
-            ok = news_bot._fallback_publish(row, via_review=False)
-
-        self.assertTrue(ok)
-        mock_claude.assert_not_called()
-        # Google fired for title + subtitle + paragraph.
-        self.assertGreaterEqual(mock_google.call_count, 3)
-
-        mock_publish.assert_called_once()
-        kwargs = mock_publish.call_args.kwargs
-        self.assertEqual(kwargs['title'], '[ру] EN T3')
-        self.assertEqual(kwargs['paragraphs'], ['[ру] EN p1.'])
-        self.assertTrue(kwargs.get('auto_marker'))
-
-        mock_move.assert_called_once()
-        self.assertEqual(mock_move.call_args.kwargs.get('via_review'), False)
-
-
-class TestOutageDegradedThenReraises(_FallbackPublishPathsCase):
-
-    def test_fallback_publish_outage_error_degraded_then_reraises(self):
-        """``ClaudeOutageError`` from Claude → ``record_outage_event``
-        advances the state machine, admin ping is dispatched, Google
-        fallback fires for THIS publication, Steps 2–5 execute fully,
-        and THEN ``_fallback_publish`` re-raises ``ClaudeOutageError``
-        so ``job()`` (Task 8) can advance its slot-counting loop without
-        treating this as a strike.
-
-        Critical contract for Task 8: the article DOES get published
-        (degraded via Google) AND the upstream loop still hears the
-        outage signal.
-        """
-        entry = self._insert(
-            link='http://a/4',
-            title='EN T4',
-            subtitle='EN s4',
-            paragraphs=['EN p4.'],
-        )
-        row = repo.get_pending(entry['link'])
-
-        mock_claude = MagicMock(side_effect=ClaudeOutageError(
-            'RateLimitError: 429',
-        ))
-        # Google still translates — degraded mode publishes anyway.
-        mock_google = MagicMock(side_effect=lambda t, **kw: f"[ру] {t}")
-
-        # Outage state machine + admin ping mocks. ``record_outage_event``
-        # returns a dict with ``pings_to_send`` (admin Telegram messages
-        # to dispatch) — assert ``send_admin_notification`` is called
-        # with each ping.
-        mock_record = MagicMock(return_value={
-            'state': 'ping_1_sent',
-            'pings_to_send': ['⚠️ Claude API недоступна. ...'],
-            'fallback_now': False,
-        })
-        mock_notify = MagicMock(return_value=True)
-
-        tg_url = 'https://telegra.ph/Outage-04-27'
-        manager = MagicMock()
-        mock_publish = MagicMock(return_value=tg_url)
-        mock_mark = MagicMock()
-        mock_teaser = MagicMock(return_value=True)
-        mock_move = MagicMock()
-        manager.attach_mock(mock_claude, 'claude')
-        manager.attach_mock(mock_record, 'record')
-        manager.attach_mock(mock_notify, 'notify')
-        manager.attach_mock(mock_google, 'google')
-        manager.attach_mock(mock_publish, 'publish')
-        manager.attach_mock(mock_mark, 'mark')
-        manager.attach_mock(mock_teaser, 'teaser')
-        manager.attach_mock(mock_move, 'move')
-
-        with patch('news_bot.transcreate_via_claude', mock_claude), \
-             patch('news_bot.transcreate_text', mock_google), \
-             patch('news_bot.outage_state.is_fallback_active',
-                   return_value=False), \
-             patch('news_bot.outage_state.record_outage_event', mock_record), \
-             patch('news_bot.send_admin_notification', mock_notify), \
-             patch('news_bot.telegraph_publisher.publish_article',
-                   mock_publish), \
-             patch('news_bot.pending_repo.mark_telegraph_published',
-                   mock_mark), \
-             patch('news_bot.send_telegraph_teaser', mock_teaser), \
-             patch('news_bot.pending_repo.move_to_published', mock_move):
-            with self.assertRaises(ClaudeOutageError):
-                news_bot._fallback_publish(row, via_review=False)
-
-        # State machine advanced + admin ping fired.
-        mock_record.assert_called_once()
-        # The single ping returned by record_outage_event was dispatched.
-        notify_payloads = [c.args[0] for c in mock_notify.call_args_list
-                           if c.args]
-        self.assertIn('⚠️ Claude API недоступна. ...', notify_payloads)
-
-        # Critical: Steps 2–5 ran BEFORE the re-raise. The article must
-        # have been published in degraded mode.
-        mock_publish.assert_called_once()
-        mock_mark.assert_called_once()
-        mock_teaser.assert_called_once_with(tg_url, entry['link'])
-        mock_move.assert_called_once()
-
-        # via_review=False, auto_marker=True preserved.
-        kwargs = mock_publish.call_args.kwargs
-        self.assertTrue(kwargs.get('auto_marker'))
-        self.assertEqual(mock_move.call_args.kwargs.get('via_review'), False)
-
-        # Decision 9 ordering still holds in degraded mode.
-        names = [c[0] for c in manager.mock_calls]
-        self.assertLess(names.index('mark'), names.index('teaser'),
-                        f"mark must run BEFORE teaser even in degraded mode; got {names}")
-        # State-machine update + admin ping happened BEFORE Telegraph
-        # publish (so operator knows about outage even if publish later
-        # fails for unrelated reasons).
-        self.assertLess(names.index('record'), names.index('publish'),
-                        f"record_outage_event must precede Telegraph publish; got {names}")
 
 
 # ============================================================================
@@ -596,10 +411,11 @@ class TestIdempotencyGuard(_FallbackPublishPathsCase):
     # ---- T2 ----------------------------------------------------------------
 
     def test_skip_if_link_already_published_outage_shortcut_path(self):
-        """``is_fallback_active() == True`` shortcut (line 1045) MUST be
-        guarded too: the zombie row never reaches the Google branch.
-        Regression test against any refactor that places the guard AFTER
-        the outage shortcut.
+        """The idempotency guard runs BEFORE any translation, even while the
+        outage state machine reports ``is_fallback_active() == True``: a
+        zombie (already-published) row short-circuits without calling the LLM
+        or any publish step. Regression test against any refactor that places
+        the guard after Step 1.
         """
         link = 'http://a/zombie-outage'
         self._insert(link=link, title='EN T-zombie-outage')

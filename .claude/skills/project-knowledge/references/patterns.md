@@ -21,8 +21,9 @@ Three-layer defense against duplicate Telegram posts on stale-state:
    create, Telegram teaser, repo writes). On hit: log INFO, admin-ping,
    `skip_pending`, return True. Slot loop counts the row as a successful
    slot — no `attempt_count` strike. The guard dominates all 4 entry
-   conditions of `_fallback_publish` (Claude success, per-article
-   fallback, ClaudeOutageError, `is_fallback_active()` shortcut).
+   conditions of `_fallback_publish` (LLM success, per-article failure,
+   ClaudeOutageError hold). (Since the 2026-06-11 hold-and-wait change there
+   is no Google-fallback / `is_fallback_active()` shortcut branch anymore.)
 
 2. **Idempotent `move_to_published`** — Step 1 uses `INSERT OR IGNORE
    INTO published_articles` (NOT plain `INSERT`). Defense-in-depth: if
@@ -66,16 +67,18 @@ cleanup-failure is degraded mode the operator must investigate.
   `ANTHROPIC_MODEL`). `max_tokens=8000` (Decision 13 cap against
   prompt-injection-driven cost amplification). Output validated against
   the input shape: `paragraphs` length must equal input length, otherwise
-  `ClaudeTranscreationError` triggers per-article fallback. Defensive
+  `ClaudeTranscreationError` — a per-article failure that bumps
+  `attempt_count` (3 strikes → `failed_articles`). Defensive
   per-paragraph 4000-char truncation as belt-and-braces; logs a warning
   if it fires.
-- **Fallback engine:** `transcreate_text` wraps Google Translate. Two
-  call sites: (a) per-article fallback for THIS article only when Claude
-  refuses or returns malformed output (no state change); (b) global
-  fallback during API-level Claude outages (after the 2-ping protocol
-  exhausts the 2 h grace window — see "Auto-publish path" below).
-- **HW glossary safety net** (14 patterns) runs as a post-pass on the
-  output of BOTH engines (e.g. `сборка гаража` → `гаражный проект`).
+- **Google engine — DORMANT (since 2026-06-11):** `transcreate_text` wraps
+  Google Translate but is no longer wired into the publish path. The
+  hold-and-wait change removed both former call sites (per-article
+  fallback and global-outage fallback): per-article LLM failures now
+  strike out, API-level outages HOLD the article in the queue. The
+  function + its safety nets are kept in code for possible revival.
+- **HW glossary safety net** (14 patterns) runs as a post-pass on the LLM
+  output (e.g. `сборка гаража` → `гаражный проект`).
   Encodes brand-specific terminology that even Claude can miss. The
   19-pattern bureaucratic regex was REMOVED in the llm-transcreation
   feature — Claude does not produce канцелярит, and the regex's
@@ -133,10 +136,10 @@ Operator preference: pure Russian, no English mixing in operational pings.
 
 ### Channel post format (locked 2026-04-21, auto-marker relocated 2026-04-27, `#news` tag added 2026-04-24)
 - **Channel teaser is byte-identical for every path** — single-line `#<source> #news` (e.g. `#autoevolution #news`, `#mattel #news`, `#lamleygroup #news`). The source hashtag is derived from the source URL's second-level domain by `news_bot._source_hashtag`; the trailing `#news` is a static tag hardcoded in `send_telegraph_teaser` (NOT derived from source) so subscribers can filter the channel by topic. Decision 14 (manual-review-workflow tech-spec) holds at the visible-feed level: subscribers see no difference between auto-LLM publishes and the dormant manual path (if revived). Edge case: when `_source_hashtag` returns the bare `#` (unknown / malformed `source_url`), `send_telegraph_teaser` falls back to the legacy bare hashtag and skips the `#news` append — emitting a lone `#news` would lose source attribution without compensating value.
-- **Telegra.ph article body — `↳ автоперевод` marker semantics changed with the llm-transcreation feature.** Originally a manual-vs-auto path differentiator; now a **quality warning** that fires only on the Google-fallback branch of `_fallback_publish`. Wiring: `news_bot._fallback_publish` calls `publish_article(..., auto_marker=used_google_fallback and not via_review)` (see [`news_bot.py:1195`](../../../news_bot.py#L1195)). LLM-translated auto publishes don't carry the marker (LLM output is held to be indistinguishable from manual review). The dormant `hw_review publish` path also wouldn't carry it (`via_review=True` blanks the flag). So in current production: marker present → Google-fallback article (operator should expect reduced quality + investigate why the LLM dropped it); marker absent → LLM-translated article.
+- **Telegra.ph article body — `↳ автоперевод` marker is no longer emitted (since the 2026-06-11 hold-and-wait change).** It was originally a manual-vs-auto path differentiator, then a Google-fallback quality warning. With the Google-fallback publish branch gone, `_fallback_publish` always calls `publish_article(..., auto_marker=False)` — every published page is LLM-translated and carries no marker. The `auto_marker` kwarg is retained on `publish_article` but is dead from the cron path.
 - The Telegra.ph page is surfaced via `LinkPreviewOptions(url=telegraph_url, show_above_text=True)` — Telegram renders the Instant View card above the hashtag, carrying domain label, title, excerpt, hero image, and ⚡ INSTANT VIEW button.
 - **Rationale for the relocation (2026-04-27):** the original two-line teaser (commit `cc4cc8c`) added subscriber-facing noise to the channel feed. Moving the marker INTO the article keeps the feed clean (Decision 14 byte-equality preserved) while still letting operators and curious readers diagnose path inside the article — the marker sits right above the source link where attribution context naturally lives.
-- Wiring: `telegraph_publisher.publish_article(..., auto_marker: bool = False)` controls the node insertion. `_fallback_publish` calls it with `auto_marker=used_google_fallback and not via_review` (only the Google-fallback branch lights it up; LLM-translated articles get `auto_marker=False`). `hw_review.cmd_publish` never passes the flag → defaults False (path is archived anyway). `send_telegraph_teaser` no longer accepts `auto_marker` (single-line only). Full spec: `work/telegraph-pipeline/post-format.md`.
+- Wiring: `telegraph_publisher.publish_article(..., auto_marker: bool = False)` controls the node insertion. Since 2026-06-11 `_fallback_publish` always passes `auto_marker=False` (no Google-fallback branch remains), so the node is never inserted from the cron path. `hw_review.cmd_publish` never passes the flag → defaults False (path is archived anyway). `send_telegraph_teaser` no longer accepts `auto_marker` (single-line only). Full spec: `work/telegraph-pipeline/post-format.md`.
 
 ### Auto-publish path (added with llm-transcreation feature)
 
@@ -144,11 +147,11 @@ The auto-publish path is the cron-side route that lands articles in the channel 
 
 - **Distributed-publish loop.** `news_bot.job()` fires once daily at 10:00 МСК. After fetch, `compute_publish_slots(N, now, 10:00, 20:00, min_interval_min=90)` returns `(slots, carry_over)` with `posts_today ≈ min(N, 7)`. The publish loop then calls `time.sleep((slot - now).total_seconds())` between iterations and publishes one article per slot. Window-end guard (Decision 15) breaks before scheduling past 20:00 МСК — excess slots become carry-over to the next day. Crash-loop guard (Decision 9) at the start of `job()` reads `MAX(published_at)` and waits for `last_published + MIN_INTERVAL_MINUTES` before resuming, protecting the channel from burst posting under rapid-restart loops.
 
-- **Outage state machine** (`outage_state.py`). Five states — `no_outage`, `ping_1_sent`, `ping_2_sent`, `google_fallback_active`, `recovery_pending`. State persists in `bot_state` SQLite table (survives container restart). `record_outage_event(now)` and `record_recovery_event(now)` are atomic via `BEGIN IMMEDIATE`; `PRAGMA busy_timeout=5000` absorbs typical contention. Pings: #1 immediately on first outage, #2 after 1 h, #3 ("switching to Google Translate") after 2 h. Recovery ping fires on the next slot where Claude succeeds again.
+- **Outage state machine** (`outage_state.py`). Five states — `no_outage`, `ping_1_sent`, `ping_2_sent`, `google_fallback_active`, `recovery_pending`. State persists in `bot_state` SQLite table (survives container restart). `record_outage_event(now)` and `record_recovery_event(now)` are atomic via `BEGIN IMMEDIATE`; `PRAGMA busy_timeout=5000` absorbs typical contention. Pings: #1 immediately on first outage (E010), #2 after 1 h (E011), #3 after 2 h (E012 — "still down 2 h, posts held"). Since the 2026-06-11 hold-and-wait change the machine drives operator pings only — it no longer switches the bot to Google; the `google_fallback_active` label / `fallback_active` flag are retained but DORMANT (not read by the publish path). Recovery ping (E013) fires on the next slot where the LLM succeeds again.
 
-- **Per-article vs API-level error classification** (Decision 5). API-level errors (advance the state machine): `APIConnectionError`, `APITimeoutError`, `RateLimitError` (429), `InternalServerError` (5xx), `AuthenticationError` (401), `PermissionDeniedError` (403), `NotFoundError` (model 404). Per-article errors (single-article Google fallback, no state change): `BadRequestError` (400), `UnprocessableEntityError` (422), unrecognized `APIStatusError` codes, `ClaudeTranscreationError` (refusal or malformed JSON). Misclassification would either fire a false outage (one weird article kills the channel for 2 h) or hide a real outage (auth failure quietly serves Google translation forever).
+- **Per-article vs API-level error classification** (Decision 5). API-level errors (advance the state machine, HOLD the article — hold-and-wait): `APIConnectionError`, `APITimeoutError`, `RateLimitError` (429), `InternalServerError` (5xx), `AuthenticationError` (401), `PermissionDeniedError` (403), `NotFoundError` (model 404). Per-article errors (no state change; bump `attempt_count`, 3 strikes → `failed_articles`): `BadRequestError` (400), `UnprocessableEntityError` (422), unrecognized `APIStatusError` codes, `ClaudeTranscreationError` (refusal or malformed JSON). Misclassification would either fire a false outage (one weird article needlessly holds the queue) or hide a real outage (auth failure quietly strikes out every article instead of holding + alerting).
 
-- **Output validation.** `claude_transcreation` enforces `max_tokens=8000` on every API call (Decision 13 — bounds the cost-amplification surface from prompt-injection in source article bodies). Parsed responses are validated: `paragraphs` length must equal input length, otherwise `ClaudeTranscreationError` (per-article Google fallback). Defensive 4000-char per-paragraph cap with WARNING log if it fires.
+- **Output validation.** `claude_transcreation` enforces `max_tokens=8000` on every API call (Decision 13 — bounds the cost-amplification surface from prompt-injection in source article bodies). Parsed responses are validated: `paragraphs` length must equal input length, otherwise `ClaudeTranscreationError` (per-article failure → `attempt_count` strike, no Google fallback since 2026-06-11). Defensive 4000-char per-paragraph cap with WARNING log if it fires.
 
 - **Token redaction (3-layer defense, Decision 12).** Anthropic API key shape `sk-ant-[A-Za-z0-9_=.-]{16,}` is redacted by:
   1. `_TokenRedactingFilter` regex on Python's logging pipeline (covers anthropic SDK's own `logger.exception(...)` calls — the filter is attached to `anthropic`, `anthropic._client`, `anthropic._base_client` loggers at import time).
@@ -292,7 +295,7 @@ pytest suite lives in `tests/` (~500 tests after the llm-transcreation feature; 
 - `test_claude_transcreation.py` — Anthropic SDK wrapper, mocked anthropic client, exception classification (per-article vs API-level outage), output validation — added by llm-transcreation feature.
 - `test_outage_state.py` — state machine transitions, persistence across simulated container restart, `BEGIN IMMEDIATE` concurrency — added by llm-transcreation feature.
 - `test_distributed_schedule_integration.py` — full cron tick → fetch → schedule → publishes; outage end-to-end; container restart end-to-end; manual-review preemption mid-window — added by llm-transcreation feature.
-- `test_fallback_publish_paths.py` — Claude success branch + per-article Google fallback branch of `_fallback_publish`, both asserting `via_review=False`, `auto_marker=True`, telegraph_url persisted before Telegram send — added by llm-transcreation feature.
+- `test_fallback_publish_paths.py` — Claude-success branch (asserts `via_review=False`, `auto_marker=False`, telegraph_url persisted before Telegram send), per-article-failure branch (re-raises so the slot loop strikes), and the API-level outage HOLD contract (`ClaudeOutageError` → article held, nothing published, no Google) — added by llm-transcreation feature, reworked by the 2026-06-11 hold-and-wait change.
 
 Removed in the llm-transcreation feature: `test_overflow.py`, `test_idle_fallback.py` (companions of `_overflow_fast_track` and inline idle-fallback, both deleted).
 

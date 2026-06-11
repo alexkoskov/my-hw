@@ -66,11 +66,10 @@ from boilerplate_filter import is_boilerplate
 import pending_articles_repo as pending_repo
 
 # Claude transcreation (Wave 2 task 3) + outage state machine (Wave 2
-# task 5) — pulled in at import time so ``_fallback_publish`` can pivot
-# between Claude (primary) and Google Translate (per-article fallback /
-# degraded-mode global fallback) without conditional imports inside the
-# hot path. Tests patch the bound names ``news_bot.transcreate_via_claude``
-# / ``news_bot.outage_state.is_fallback_active`` on the module surface.
+# task 5) — pulled in at import time so ``_fallback_publish`` translates via
+# the LLM only and HOLDS articles on an outage (no Google fallback since the
+# 2026-06-11 hold-and-wait change). Tests patch the bound name
+# ``news_bot.transcreate_via_claude`` on the module surface.
 import llm_transcreation as claude_transcreation  # alias preserves bound name
 from llm_transcreation import (
     transcreate_via_claude,
@@ -909,9 +908,14 @@ def transcreate_text(text, source='auto', target='ru', is_title=False):
     Per Decision 11 (llm-transcreation-and-distributed-publishing) the
     bureaucratic-regex cleanup and 4000-char body truncation were removed:
     Claude is now the primary transcreator (idiomatic by design) and
-    Telegraph has no caption-style length limit. This function survives
-    only as a Google-Translate fallback for per-article Claude failures
-    and global Anthropic outages, so the HW glossary safety net stays.
+    Telegraph has no caption-style length limit.
+
+    DORMANT (since 2026-06-11 hold-and-wait change): the publish pipeline no
+    longer calls this — an LLM outage now HOLDS articles instead of machine-
+    translating them. Kept (with its tests) as a self-contained utility for
+    possible reuse; ``GoogleTranslator``, ``_llm_translation_is_russian`` and
+    ``GoogleTranslationError`` support it. Safe to delete in a follow-up if
+    no revival is planned.
     """
     import re
 
@@ -1162,38 +1166,27 @@ def _cleanup_preview_html(preview_path):
 # the article EN→RU and runs the canonical Telegraph → Telegram → DB
 # pipeline shared with ``hw_review.cmd_publish``:
 #
-#   Step 1 (translate). Two-tier engine contract per llm-transcreation
-#       Decisions 1, 5, 9:
-#       * Primary: ``transcreate_via_claude(row)`` if
-#         ``outage_state.is_fallback_active() == False``. Returns a dict
-#         with ``title`` (emoji prefix), ``subtitle``, ``paragraphs``
-#         (and ``blocks`` for autoevolution). Hot Wheels-glossary +
-#         emoji safety net are applied inside the Claude module.
-#       * Per-article fallback (``ClaudeTranscreationError`` —
-#         refusal / malformed JSON / 4xx): drop THIS article to the
-#         legacy ``transcreate_text`` Google path. Outage state is NOT
-#         advanced (Decision 5 — per-article problems must not take
-#         the channel offline).
+#   Step 1 (translate). Single-engine, hold-on-outage contract
+#       (hold-and-wait, operator decision 2026-06-11):
+#       * Primary + only engine: ``transcreate_via_claude(row)``. Returns
+#         a dict with ``title`` (emoji prefix), ``subtitle``, ``paragraphs``
+#         (and ``blocks`` for autoevolution). Hot Wheels-glossary + emoji
+#         safety net are applied inside the Claude module. On success,
+#         ``_maybe_record_recovery`` closes any active outage.
+#       * Per-article failure (``ClaudeTranscreationError`` — refusal /
+#         malformed JSON / 4xx): the LLM is up but choked on THIS article.
+#         Re-raise so the slot loop strikes it (3 strikes → failed_articles).
+#         Outage state is NOT advanced. No Google fallback.
 #       * API-level outage (``ClaudeOutageError`` — 429 / 5xx / auth /
-#         network): the state machine and admin-pings already fired
-#         inside ``claude_transcreation``. We translate THIS article via
-#         Google (degraded mode — never leave a slot unpublished),
-#         finish Steps 2–5 normally, and then **re-raise the
-#         ClaudeOutageError** so the upstream ``job()`` loop (Task 8)
-#         can advance its slot-counter without a strike and route
-#         subsequent slots through Google directly.
-#       * Already-in-fallback shortcut: when
-#         ``is_fallback_active() == True`` on entry, Claude is NOT
-#         called at all — the row goes straight to Google. Recovery
-#         is owned by ``job()`` (probes Claude on the first slot of
-#         the next cron tick), not here.
+#         network): advance the 2-ping/2h notification state machine, then
+#         re-raise WITHOUT publishing — the article is HELD in pending and
+#         retried on the next slot/day until the LLM recovers. We never
+#         ship a Google machine translation.
 #   Step 2 (Telegraph). Reuse stored ``telegraph_url`` per Decision 9
 #       idempotency; else ``telegraph_publisher.publish_article`` →
 #       ``mark_telegraph_published`` (dedicated txn, survives Telegram
-#       teaser failure). The ``↳ автоперевод`` marker (user-spec AC18)
-#       is injected by ``publish_article(auto_marker=not via_review)``
-#       regardless of which engine produced the RU body — uniform
-#       across both Claude and Google paths.
+#       teaser failure). ``auto_marker`` is always False — the ``↳
+#       автоперевод`` marker only ever flagged the removed Google path.
 #   Step 3 (persist RU). ``pending_repo.update_staged`` writes RU
 #       title / subtitle / paragraphs / blocks into the pending row;
 #       this is the NOT NULL anchor read by ``move_to_published``.
@@ -1204,9 +1197,10 @@ def _cleanup_preview_html(preview_path):
 #       ``_cleanup_preview_html``.
 #
 # Contract: returns ``True`` on full success; raises ``ClaudeOutageError``
-# AFTER successful Steps 2–5 on the API-level-outage degraded path; raises
-# any other exception (Telegraph / Telegram / repo failure) up to the
-# caller so ``attempt_count`` can be bumped via
+# from Step 1 (article HELD, nothing published) on an API-level outage so
+# the slot loop can skip the slot without a strike; raises any other
+# exception (per-article LLM failure, Telegraph / Telegram / repo failure)
+# up to the caller so ``attempt_count`` can be bumped via
 # ``pending_repo.increment_attempt``.
 # ---------------------------------------------------------------------------
 
@@ -1218,11 +1212,9 @@ def _maybe_record_recovery():
 
     Called from every successful Claude transcreation in
     ``_fallback_publish`` AND from a successful startup health probe
-    in ``main()``. Without it, a single transient outage in the past
-    leaves ``fallback_active=1`` set forever — the bot silently
-    routes every future article through Google Translate with the
-    ``↳ автоперевод`` marker, and the channel is permanently
-    degraded until an operator hand-edits ``bot_state``.
+    in ``main()``. Without it, a transient outage in the past leaves the
+    outage state machine stuck active (stale ``outage_started_at`` /
+    ``ping_count``), so recovery pings never fire on the next success.
     """
     try:
         event = outage_state.record_recovery_event(
@@ -1245,8 +1237,10 @@ def _maybe_record_recovery():
 
 
 def _fallback_publish(row, via_review=False):
-    """Auto-publish a pending row through Claude (primary) or Google
-    (per-article + global fallback). Used by ``job()`` step (e) — the
+    """Auto-publish a pending row, translating via the LLM (Claude) only.
+    On an API-level LLM outage the article is HELD (re-raises
+    ``ClaudeOutageError`` before any publish side-effect) — no Google
+    machine-translation fallback. Used by ``job()`` step (e) — the
     distributed-publish loop — and ``hw_review`` operator-driven
     publishes (``via_review=True``).
 
@@ -1303,155 +1297,76 @@ def _fallback_publish(row, via_review=False):
             )
         return True
 
-    # Step 1: EN → RU. Two-tier translation engine — see comment header.
-    en_title = row.get('title') or ''
-    en_subtitle = row.get('subtitle') or ''
-    en_paragraphs = row.get('paragraphs') or []
-    en_blocks = row.get('blocks')
-
-    # ``outage_signal`` carries a ``ClaudeOutageError`` to re-raise after
-    # Steps 2–5 complete. It MUST stay None on the happy / per-article
-    # branches so the function's normal True return path is preserved.
-    outage_signal = None
-
-    # Pure-Google translation path, factored so both the per-article
-    # fallback and the API-level-outage degraded path share one body.
-    def _google_translate():
-        ru_title = transcreate_text(en_title, is_title=True) if en_title else ''
-        ru_subtitle = transcreate_text(en_subtitle) if en_subtitle else ''
-        ru_paragraphs = [transcreate_text(p) for p in en_paragraphs]
-        ru_blocks = None
-        if en_blocks:
-            ru_blocks = []
-            for block in en_blocks:
-                if not isinstance(block, dict):
-                    ru_blocks.append(block)
-                    continue
-                new_block = dict(block)
-                # Defensive isinstance() guards: a malformed upstream
-                # block dict (e.g. ``text=None`` or a nested object)
-                # would have crashed inside ``GoogleTranslator.translate``.
-                text_val = new_block.get('text')
-                if isinstance(text_val, str) and text_val:
-                    new_block['text'] = transcreate_text(text_val)
-                cap_val = new_block.get('caption')
-                if isinstance(cap_val, str) and cap_val:
-                    new_block['caption'] = transcreate_text(cap_val)
-                ru_blocks.append(new_block)
-        # GoogleTranslator returns the input verbatim on a 403 / blocked
-        # call (``transcreate_text`` swallows the exception and falls
-        # back to the original string). Under double-engine outage
-        # (Claude AND Google both down) this would surface in the
-        # channel as RU title + EN body. Reject those — the slot loop
-        # bumps attempt_count, the article retries on a later slot.
-        if not _llm_translation_is_russian(ru_paragraphs):
-            raise GoogleTranslationError(
-                "Google fallback returned mostly-English paragraphs — "
-                "likely 403/blocked translate call returning source verbatim",
-            )
-        return ru_title, ru_subtitle, ru_paragraphs, ru_blocks
-
-    # Track whether THIS article was translated by Google fallback (legacy
-    # path, lower quality) vs. by an LLM (Claude / OpenRouter / etc, current
-    # quality bar). Only the Google-fallback path warrants the
-    # ``↳ автоперевод`` marker on the Telegra.ph page (operator decision —
-    # users see the marker as a quality warning; LLM output is
-    # indistinguishable from manual review and should not carry it).
-    used_google_fallback = False
-
-    # Already-in-fallback shortcut (Decision 5 / tech-spec "Publish loop"):
-    # when the state machine says Claude is down + 2h grace elapsed, route
-    # straight to Google without trying Claude.
-    if outage_state.is_fallback_active():
-        logger.info(
-            f"[fallback] is_fallback_active=True — routing {link} via Google"
+    # Step 1: EN → RU translation. The LLM (Claude via
+    # ``claude_transcreation``) is the ONLY translation path. When it is
+    # unavailable we HOLD the article rather than auto-publish a low-quality
+    # Google machine translation (operator decision 2026-06-11): the row
+    # stays in ``pending_articles`` and the next slot/day retries the LLM
+    # until it recovers. Recovery is auto-detected on the first success.
+    #
+    # The classifier inside ``claude_transcreation`` turns SDK exceptions
+    # into ``ClaudeTranscreationError`` (per-article hiccup) or
+    # ``ClaudeOutageError`` (API-level outage) — handled distinctly below.
+    try:
+        claude_result = transcreate_via_claude(row)
+        ru_title = claude_result.get('title') or ''
+        ru_subtitle = claude_result.get('subtitle') or ''
+        ru_paragraphs = list(claude_result.get('paragraphs') or [])
+        ru_blocks = claude_result.get('blocks')
+        # Healthy LLM call → close any active outage and emit the recovery
+        # ping. Idempotent: a cheap read-only probe when no outage is active.
+        _maybe_record_recovery()
+    except ClaudeTranscreationError as exc:
+        # Per-article hiccup (refusal, malformed JSON, schema drift): the
+        # LLM is UP, it just choked on THIS article. Re-raise so the slot
+        # loop bumps attempt_count; after 3 strikes the row moves to
+        # ``failed_articles`` so one bad article cannot wedge the queue
+        # head forever. No Google fallback.
+        logger.warning(
+            f"[fallback] Claude per-article failure for {link}: "
+            f"{type(exc).__name__}: {sanitize_error_message(exc)} "
+            f"— slot strike (next slot retries this row)"
         )
-        ru_title, ru_subtitle, ru_paragraphs, ru_blocks = _google_translate()
-        used_google_fallback = True
-    else:
-        # Try Claude. The classifier inside ``claude_transcreation``
-        # turns SDK exceptions into either ``ClaudeTranscreationError``
-        # (per-article) or ``ClaudeOutageError`` (API-level).
+        raise
+    except ClaudeOutageError:
+        # API-level outage (429 / 5xx / auth / network). Advance the
+        # 2-ping/2h notification state machine so the operator is kept
+        # informed, then HOLD: re-raise WITHOUT publishing. The row stays
+        # in pending; the slot loop (``job()``) catches this, does NOT
+        # strike, and the next slot retries the LLM. No Google fallback —
+        # we wait for the LLM rather than ship a machine translation.
+        logger.warning(
+            f"[hold] LLM outage for {link} — holding article, will retry "
+            f"when the LLM recovers (no Google fallback)."
+        )
         try:
-            claude_result = transcreate_via_claude(row)
-            ru_title = claude_result.get('title') or ''
-            ru_subtitle = claude_result.get('subtitle') or ''
-            ru_paragraphs = list(claude_result.get('paragraphs') or [])
-            ru_blocks = claude_result.get('blocks')
-            # Healthy Claude call → close any active outage and emit
-            # the recovery ping. Idempotent: if no outage was active
-            # this is a cheap read-only probe inside outage_state.
-            _maybe_record_recovery()
-        except ClaudeTranscreationError as exc:
-            # Operator decision: GPT translates EVERYTHING. Per-article
-            # LLM hiccups (refusal, malformed JSON, schema drift) raise
-            # straight up — the slot loop bumps attempt_count, and after
-            # 3 slot strikes (= 3 cron slots ≈ 4.5h with the 90-min floor)
-            # the article auto-moves to failed_articles. No inline retry
-            # with time.sleep — that would block the slot for 10+ min
-            # synchronously and stall publish-loop pacing.
-            logger.warning(
-                f"[fallback] Claude per-article failure for {link}: "
-                f"{type(exc).__name__}: {sanitize_error_message(exc)} "
-                f"— slot strike (next slot retries this row)"
+            # tz-aware UTC: outage_state rejects naive datetimes (the
+            # 1h/2h thresholds must be unambiguous).
+            event = outage_state.record_outage_event(
+                datetime.now(timezone.utc),
             )
-            raise
-        except ClaudeOutageError as exc:
-            # API-level outage — advance the state machine and dispatch
-            # admin pings per the outage protocol (2 pings + 2h grace
-            # before global Google fallback). Then translate THIS article
-            # via Google so the slot doesn't stay unpublished (degraded
-            # mode), finish Steps 2–5, and re-raise after the publish so
-            # ``job()`` can advance its slot loop without a strike.
-            logger.warning(
-                f"[fallback] Claude API outage for {link}: "
-                f"{type(exc).__name__} — advancing outage state, "
-                f"degraded-mode Google publish + re-raise"
+            for ping_text in event.get('pings_to_send') or []:
+                try:
+                    send_admin_notification(ping_text)
+                except Exception as notify_err:
+                    logger.error(
+                        f"[hold] outage admin-ping send failed: "
+                        f"{sanitize_error_message(notify_err)}"
+                    )
+        except Exception as state_err:
+            # A state-machine update failure must not change the outcome —
+            # we still re-raise to hold the article. Log and continue.
+            logger.error(
+                f"[hold] outage_state.record_outage_event failed for "
+                f"{link}: {sanitize_error_message(state_err)}"
             )
-            # NB: ``outage_signal`` is intentionally function-local. If
-            # Steps 2-5 below raise a non-outage exception (Telegraph
-            # 503, Telegram error, …) the signal is "lost" — but
-            # ``record_outage_event`` already persisted the state in
-            # bot_state, so cross-call communication still works via
-            # the DB. The protocol explicitly probes Claude again on
-            # subsequent slots between ping #1 and ping #3 (1-2h) on
-            # the off chance the outage was transient; the global
-            # ``is_fallback_active`` flag flips at ping #3, and only
-            # then does the slot loop short-circuit Claude.
-            outage_signal = exc
-            try:
-                # Use a tz-aware UTC datetime — outage_state rejects
-                # naive datetimes (timestamps must be unambiguous across
-                # the 1h/2h thresholds in the state machine).
-                event = outage_state.record_outage_event(
-                    datetime.now(timezone.utc),
-                )
-                for ping_text in event.get('pings_to_send') or []:
-                    try:
-                        send_admin_notification(ping_text)
-                    except Exception as notify_err:
-                        logger.error(
-                            f"[fallback] outage admin-ping send failed: "
-                            f"{sanitize_error_message(notify_err)}"
-                        )
-            except Exception as state_err:
-                # State-machine update failure must not block the
-                # degraded-mode publish — log + continue. The re-raise
-                # below still informs ``job()`` so it can route
-                # subsequent slots through Google.
-                logger.error(
-                    f"[fallback] outage_state.record_outage_event failed "
-                    f"for {link}: {sanitize_error_message(state_err)}"
-                )
-            ru_title, ru_subtitle, ru_paragraphs, ru_blocks = _google_translate()
-            used_google_fallback = True
+        raise
 
-    # Step 1b: strip author social-media plugs from RU output.
-    # Single call site — covers Claude-success, is_fallback_active shortcut,
-    # ClaudeOutageError degraded mode (every path that reaches this point).
-    # Wrapped in try/except: regex bug must not block publish (publish-
-    # something > publish-nothing). Per-fragment INFO log so operator can
-    # spot false positives via journalctl.
+    # Step 1b: strip author social-media plugs from RU output. Reaching
+    # here means the LLM translated successfully (outage/per-article paths
+    # already re-raised above). Wrapped in try/except: a regex bug must not
+    # block publish (publish-something > publish-nothing). Per-fragment INFO
+    # log so the operator can spot false positives via journalctl.
     try:
         original_pieces = (
             [ru_title or '', ru_subtitle or '']
@@ -1503,7 +1418,7 @@ def _fallback_publish(row, via_review=False):
         if original_pieces != cleaned_pieces:
             logger.info(
                 f"[author_plug] stripped from {link!r} "
-                f"(via_review={via_review}, used_google={used_google_fallback})"
+                f"(via_review={via_review})"
             )
     except Exception as plug_err:
         logger.error(
@@ -1525,12 +1440,10 @@ def _fallback_publish(row, via_review=False):
             f"[fallback] reusing stored telegraph_url for {link}: {telegraph_url}"
         )
     else:
-        # ``↳ автоперевод`` marker is injected ONLY when this article was
-        # translated via Google fallback (legacy lower-quality path). LLM
-        # output (Claude / OpenRouter / etc) is treated as production
-        # quality and carries no marker, matching the manual-review path's
-        # node-tree shape. Manual review (via_review=True) never gets the
-        # marker either.
+        # ``auto_marker`` is always False: the ``↳ автоперевод`` marker
+        # only ever flagged the legacy Google-fallback path, which has been
+        # removed (LLM outages now HOLD instead of machine-translating). All
+        # published articles are LLM-translated, production quality, no marker.
         telegraph_url = telegraph_publisher.publish_article(
             title=ru_title,
             paragraphs=ru_paragraphs,
@@ -1538,7 +1451,7 @@ def _fallback_publish(row, via_review=False):
             source_url=link,
             subtitle=ru_subtitle,
             blocks=ru_blocks,
-            auto_marker=used_google_fallback and not via_review,
+            auto_marker=False,
         )
         telegraph_path = urlparse(telegraph_url).path.lstrip('/')
         if not telegraph_path:
@@ -1596,17 +1509,9 @@ def _fallback_publish(row, via_review=False):
     logger.info(
         f"[fallback] Published {link} via_review={via_review} url={telegraph_url}"
     )
-
-    # API-level outage signal — re-raise AFTER successful Steps 2–5 so
-    # ``job()`` (Task 8) can advance its slot-counting loop without
-    # treating this slot as a strike, and so subsequent slots route
-    # through Google directly until recovery. This is the contract that
-    # keeps the channel publishing AND keeps the upstream loop informed
-    # — without re-raise the outage signal would be silently swallowed
-    # and ``job()`` would keep trying Claude on every slot (anti-pattern
-    # — articles drift to ``move_to_failed`` after 3 strikes).
-    if outage_signal is not None:
-        raise outage_signal
+    # Reaching here means the LLM translated and the article published.
+    # An API-level outage never gets this far — it re-raises ClaudeOutageError
+    # from Step 1 (hold) before any publish side-effect.
 
     return True
 
@@ -1877,15 +1782,14 @@ def job():
       (d) admin ping             — plan-of-day; always fires (heartbeat on
                                   quiet days); + backlog warning when N > 50.
       (e) distributed-publish    — sleep-until-slot, publish via
-                                  ``_fallback_publish`` (Claude primary +
-                                  Google per-article fallback). When the
-                                  outage state machine has fallback active,
-                                  ``_fallback_publish`` short-circuits to
-                                  Google internally. ``ClaudeOutageError``
-                                  re-raises are absorbed and the loop
-                                  advances. Other unexpected errors
-                                  follow the standard 3-strikes flow
-                                  (``increment_attempt`` → ``move_to_failed``).
+                                  ``_fallback_publish`` (LLM/Claude only).
+                                  On ``ClaudeOutageError`` the article is
+                                  HELD (nothing published) and the loop
+                                  advances WITHOUT a strike so it retries the
+                                  LLM next slot/day — no Google fallback.
+                                  Other unexpected errors follow the standard
+                                  3-strikes flow (``increment_attempt`` →
+                                  ``move_to_failed``).
     """
     logger.info("Starting daily cron tick...")
     init_db()  # idempotent — guard against missing tables on first run.
@@ -2196,12 +2100,10 @@ def job():
     #     immediately).
     #   * Pull oldest pending row; if list_pending is empty (manual review
     #     preempted between cron tick and slot), break.
-    #   * Publish via ``_fallback_publish`` (Claude primary + per-article
-    #     Google fallback). ``_fallback_publish`` short-circuits to Google
-    #     internally when the state machine has the global Google fallback
-    #     active.
-    #   * ClaudeOutageError → already published in degraded mode by
-    #     ``_fallback_publish``; advance to the next slot without strike.
+    #   * Publish via ``_fallback_publish`` (LLM/Claude only — no Google).
+    #   * ClaudeOutageError → ``_fallback_publish`` HELD the article (nothing
+    #     published); advance to the next slot WITHOUT a strike so it retries
+    #     the LLM until recovery.
     #   * Other Exception → 3-strikes flow.
     # ------------------------------------------------------------------
     window_end_dt = datetime.combine(
@@ -2238,18 +2140,17 @@ def job():
             _fallback_publish(row, via_review=False)
             published_count += 1
         except ClaudeOutageError:
-            # ``_fallback_publish`` already published in degraded mode and
-            # advanced the state machine. We do NOT count this as a strike;
-            # the loop continues to the next slot, where the now-active
-            # fallback flag routes us through the Google-only path.
+            # LLM outage — ``_fallback_publish`` HELD this article (nothing
+            # was published) and advanced the operator-notification state
+            # machine. Do NOT count a publish and do NOT strike the row: it
+            # stays at the queue head and the next slot retries the LLM. We
+            # keep iterating slots so a same-day recovery still publishes;
+            # if the outage persists, the article simply carries over to the
+            # next daily tick. No Google fallback.
             logger.warning(
-                f"[slot {idx}/{len(slots)}] ClaudeOutageError surfaced; "
-                f"degraded-mode publish completed, continuing loop."
+                f"[slot {idx}/{len(slots)}] LLM outage — article held, "
+                f"will retry on the next slot/day."
             )
-            # Degraded-mode publishes are still real publishes for the
-            # end-of-loop summary — folding them into ``published_count``
-            # matches what the channel actually saw (CR-2).
-            published_count += 1
         except Exception as exc:
             safe = sanitize_error_message(exc)
             logger.error(
@@ -2318,9 +2219,8 @@ def main():
     diagnostic ping reaches the operator before the first ``job()`` call):
 
       1. ``claude_transcreation.health_check()`` — non-raising bool probe.
-         On ``False`` we ping the admin and flip the outage state machine
-         to ``fallback_active=True`` so the day's first ``job()`` runs
-         straight through the Google-only path.
+         On ``False`` we ping the admin (E004). ``job()`` then attempts the
+         LLM each slot and HOLDS articles until it recovers (no Google).
       2. ``os.getenv('TZ') == 'Europe/Moscow'`` — on mismatch we ping the
          admin (warning, not blocking — explicit pytz makes the cron line
          correct regardless of the container's wall-clock TZ).
@@ -2337,9 +2237,12 @@ def main():
 
     # Health check #1: Claude API + ux-guidelines.md probe.
     if not claude_transcreation.health_check():
+        # LLM unavailable at startup — just warn the operator. We do NOT
+        # switch to Google (that path was removed); ``job()`` will attempt
+        # the LLM on each slot and HOLD articles until it recovers.
         logger.warning(
             "[startup] claude_transcreation.health_check() returned False — "
-            "switching to Google-only for the day."
+            "articles will be held until the LLM recovers."
         )
         try:
             send_admin_notification(
@@ -2350,19 +2253,11 @@ def main():
                 f"[startup] failed to send Claude-probe ping: "
                 f"{sanitize_error_message(notify_err)}"
             )
-        try:
-            outage_state.set_fallback_active(True)
-        except Exception as exc:
-            logger.error(
-                f"[startup] outage_state.set_fallback_active(True) failed: "
-                f"{sanitize_error_message(exc)}"
-            )
     else:
         # Probe healthy — close any stale outage state from a prior run.
-        # Without this, a transient outage that happened yesterday and
-        # was never recovered (because nothing called record_recovery_event
-        # on success) would persist across restarts and force every slot
-        # through Google forever.
+        # Without this, a transient outage that happened yesterday and was
+        # never recovered (because nothing called record_recovery_event on
+        # success) would leave the outage state machine stuck active.
         _maybe_record_recovery()
 
     # Health check #2: container TZ.

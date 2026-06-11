@@ -41,6 +41,7 @@ import pytz
 import news_bot
 import pending_articles_repo
 import outage_state
+from claude_transcreation import ClaudeOutageError
 
 
 MSK = pytz.timezone("Europe/Moscow")
@@ -356,7 +357,9 @@ class TestMainHealthChecks(unittest.TestCase):
             any('Claude' in m for m in ping_msgs),
             f"expected a Claude-probe ping, got: {ping_msgs!r}",
         )
-        mock_set_fallback.assert_called_once_with(True)
+        # Hold-and-wait: startup no longer flips to a Google-only day — it
+        # just warns; job() will attempt the LLM each slot and hold instead.
+        mock_set_fallback.assert_not_called()
 
     @patch.dict(os.environ, {'TZ': 'Europe/Moscow'})
     @patch('news_bot.outage_state.set_fallback_active')
@@ -512,6 +515,41 @@ class TestDistributedPublishLoop(_DistribLoopBase):
         self.assertEqual(len(rows), 1)
         self.assertEqual(rows[0]['attempt_count'], 1)
         self.assertIn('boom', (rows[0].get('last_error') or ''))
+
+    @patch('news_bot.pending_repo.increment_attempt')
+    @patch('news_bot.send_admin_notification')
+    @patch('news_bot.time.sleep')
+    @patch('news_bot._fallback_publish')
+    @patch('news_bot.fetch_full_article')
+    def test_outage_holds_row_without_strike_or_publish(
+        self, mock_fetch_article, mock_publish, _mock_sleep, _mock_admin,
+        mock_increment,
+    ):
+        """Hold-and-wait slot-loop invariant: a ``ClaudeOutageError`` from
+        ``_fallback_publish`` must NOT strike the row (no increment_attempt),
+        must NOT count a publish, and must leave the row in pending with
+        attempt_count still 0 — so it carries over and retries the LLM.
+        This is the symmetric counterpart to
+        ``test_first_strike_increments_attempt`` for the outage branch."""
+        mock_fetch_article.side_effect = lambda e: self._article_payload()
+        mock_publish.side_effect = ClaudeOutageError('429 overloaded')
+
+        with _patch_sources_returning([
+            self._entry('http://example.com/hold', 'T1'),
+        ]):
+            with patch('news_bot.outage_state.is_fallback_active',
+                       return_value=False):
+                news_bot.job()
+
+        # Outage path is NOT a strike — the article waits, untouched.
+        mock_increment.assert_not_called()
+        rows = pending_articles_repo.list_pending()
+        self.assertEqual(len(rows), 1)
+        self.assertEqual(rows[0]['attempt_count'], 0)
+        # Nothing was published.
+        self.assertIsNone(
+            pending_articles_repo.get_published('http://example.com/hold')
+        )
 
     @patch('news_bot.send_admin_notification')
     @patch('news_bot.time.sleep')

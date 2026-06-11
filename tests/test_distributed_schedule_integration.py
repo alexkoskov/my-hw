@@ -397,16 +397,18 @@ class TestDistributedSchedule(unittest.TestCase):
     # the recovery side to match production behaviour.
     # ======================================================================
 
-    def test_outage_mid_day_advances_state_and_recovers_on_next_slot(self):
-        """Slot 2 throws ClaudeOutageError → ping #1 fires, article goes via
-        Google for THIS slot (degraded mode), outage state advances
-        (ping_count='1', outage_started_at set). Slot 3 succeeds via Claude
-        and ``_maybe_record_recovery`` (P1 fix C1+C4, 2026-04-30) auto-
-        clears the outage state and sends the switch-back ping.
+    def test_outage_mid_day_holds_article_and_recovers_on_next_slot(self):
+        """Hold-and-wait (2026-06-11): slot 2 throws ClaudeOutageError → the
+        head article is HELD (nothing published, no Google), ping #1 fires,
+        and the outage state advances (ping_count='1', outage_started_at
+        set). Slot 3 retries the SAME held article, Claude succeeds, the
+        article publishes for real, and ``_maybe_record_recovery`` clears
+        the outage state and sends the recovery ping.
 
-        Verifies AC14 (API-level outage → ping #1 + degraded-mode publish)
-        and AC15 (state advance is API-level only) plus AC for recovery
-        on the next successful Claude call.
+        Because the held article occupies slots 2 AND 3, the third article
+        (o3) is never reached this tick — it stays pending and carries over.
+        Verifies: API-level outage holds (no Google), state advance is
+        API-level only, recovery on the next successful Claude call.
         """
         entries = [
             _create_mock_rss_entry('http://example.com/o1', title='Outage 1'),
@@ -421,20 +423,24 @@ class TestDistributedSchedule(unittest.TestCase):
             with patch('news_bot.transcreate_via_claude') as mock_claude:
                 mock_claude.side_effect = [
                     _make_claude_result(['First paragraph.', 'Second paragraph.'],
-                                        title_prefix='Slot1'),
-                    outage_exc,
+                                        title_prefix='Slot1'),  # slot1 → o1 ok
+                    outage_exc,                                  # slot2 → o2 held
                     _make_claude_result(['First paragraph.', 'Second paragraph.'],
-                                        title_prefix='Slot3'),
+                                        title_prefix='Slot3'),  # slot3 → o2 ok
                 ]
                 news_bot.job()
 
         self.assertEqual(mock_claude.call_count, 3)
 
+        # o1 published at slot 1; o2 held at slot 2 then published at slot 3.
+        # o3 never reached (o2 occupied slots 2 and 3) → still pending.
         published = self._published_links()
-        self.assertEqual(len(published), 3,
-                         f"expected 3 published rows (all slots succeeded), "
+        self.assertEqual(len(published), 2,
+                         f"expected 2 published rows (o1 + recovered o2), "
                          f"got {published}")
-        self.assertEqual(self._pending_links(), [])
+        self.assertIn('http://example.com/o1', published)
+        self.assertIn('http://example.com/o2', published)
+        self.assertEqual(self._pending_links(), ['http://example.com/o3'])
 
         # Slot 3's Claude success triggered _maybe_record_recovery which
         # cleared the state. So at end-of-job, ping_count is back to 0
@@ -454,15 +460,13 @@ class TestDistributedSchedule(unittest.TestCase):
             any(('Claude' in m and ('восстанов' in m.lower() or
                                     'recovered' in m.lower()))
                 for m in msgs),
-            f"expected recovery switch-back ping, got: {msgs!r}",
+            f"expected recovery ping, got: {msgs!r}",
         )
 
-        # Slot 2's article went through Google — transcreate_text was
-        # called for the slot-2 row's title/subtitle/paragraphs.
-        # (Slots 1 and 3 should NOT use transcreate_text — they go via
-        # Claude. So the call count should be > 0 but bounded.)
-        self.assertGreater(self.mock_transcreate_text.call_count, 0,
-                           "Google fallback path must invoke transcreate_text")
+        # No Google fallback: transcreate_text MUST NOT be called on any
+        # slot — the held article waits for Claude instead.
+        self.assertEqual(self.mock_transcreate_text.call_count, 0,
+                         "hold-and-wait must NEVER invoke Google transcreate_text")
 
     # ======================================================================
     # Scenario 3: container restart mid-window. 5 pending rows, restart

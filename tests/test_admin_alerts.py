@@ -52,7 +52,9 @@ class TestAdminAlerts(unittest.TestCase):
         self.assertIn("[E004]", msg)
         self.assertIn("🟡", msg)
         self.assertIn("Claude", msg)
-        self.assertIn("Google", msg)
+        # New hold-and-wait behaviour: articles are held, not Google-translated.
+        self.assertIn("придержан", msg)
+        self.assertNotIn("Google Translate", msg)
 
     def test_e005_tz_mismatch(self):
         msg = admin_alerts.alert_tz_mismatch("America/Los_Angeles")
@@ -121,7 +123,8 @@ class TestAdminAlerts(unittest.TestCase):
         self.assertIn("[E010]", msg)
         self.assertIn("🟡", msg)
         self.assertIn("Claude API", msg)
-        self.assertIn("Google", msg)
+        self.assertIn("придерж", msg)
+        self.assertNotIn("Google Translate", msg)
 
     def test_e011_outage_second_ping(self):
         msg = admin_alerts.alert_outage_second_ping()
@@ -129,12 +132,13 @@ class TestAdminAlerts(unittest.TestCase):
         self.assertIn("🔴", msg)
         self.assertIn("1 час", msg)
 
-    def test_e012_outage_fallback_engaged(self):
-        msg = admin_alerts.alert_outage_fallback_engaged()
+    def test_e012_outage_still_down(self):
+        msg = admin_alerts.alert_outage_still_down()
         self.assertIn("[E012]", msg)
         self.assertIn("🔴", msg)
-        self.assertIn("Google", msg)
+        self.assertIn("придержан", msg)
         self.assertIn("2 час", msg)  # «2 часа» / «2 часов» — оба варианта
+        self.assertNotIn("Google Translate", msg)
 
     def test_e013_outage_recovery(self):
         msg = admin_alerts.alert_outage_recovery()
@@ -329,7 +333,7 @@ class TestAdminAlerts(unittest.TestCase):
             admin_alerts.alert_quiet_day(),
             admin_alerts.alert_outage_first_ping(),
             admin_alerts.alert_outage_second_ping(),
-            admin_alerts.alert_outage_fallback_engaged(),
+            admin_alerts.alert_outage_still_down(),
             admin_alerts.alert_outage_recovery(),
             admin_alerts.alert_mattel_news_http_error("x"),
             admin_alerts.alert_mattel_news_parsing_error("x"),
