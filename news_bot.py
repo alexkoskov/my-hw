@@ -87,11 +87,14 @@ import admin_alerts
 # (the degraded-mode test stubs ``extract_fingerprint`` to raise).
 import model_extractor
 
-# Pure scheduling helper (Task 02) — produces today's publish slots from a
-# pending count + tz-aware ``now``. Imported at module level so ``job()``
-# stays free of conditional imports inside the hot path; tests patch
-# ``news_bot.compute_publish_slots`` to inject synthetic slot lists.
-from compute_publish_slots import compute_publish_slots
+# Pure scheduling helper — produces today's publish slots from a pending count
+# + tz-aware ``now``. Imported at module level so ``job()`` stays free of
+# conditional imports inside the hot path; tests patch
+# ``news_bot.compute_fixed_slots`` to inject synthetic slot lists.
+# Fixed 3-slots-per-day scheduler (operator pacing 2026-06-13: 10:00/15:00/19:30
+# МСК). The old dynamic even-spread ``compute_publish_slots`` is DORMANT and no
+# longer imported here.
+from compute_publish_slots import compute_fixed_slots
 
 # Configuration - set via environment variables
 TELEGRAM_BOT_TOKEN = os.getenv('TELEGRAM_BOT_TOKEN')
@@ -117,12 +120,13 @@ WINDOW_END_TIME = datetime.strptime("20:00", "%H:%M").time()
 BACKLOG_WARNING_THRESHOLD = 50
 MSK_TZ = pytz.timezone("Europe/Moscow")
 
-#: Hard cap on publications per day. ``compute_publish_slots`` only enforces
-#: the soft cap that follows from ``MIN_INTERVAL_MINUTES`` × window-length
-#: (currently floor(600/90)+1 = 7). Operator-set ceiling caps it lower for
-#: editorial pacing (set 2026-05-24: 4 posts/day max). Surplus pending
+#: Hard cap on publications per day. With the fixed-slot scheduler
+#: (``compute_fixed_slots``, operator pacing 2026-06-13) the cap is a natural
+#: consequence of the three fixed times (10:00/15:00/19:30 МСК), so this
+#: constant is now redundant for trimming — kept for reference / back-compat
+#: (other code/tests reference ``news_bot.MAX_DAILY_POSTS``). Surplus pending
 #: articles go into carry_over and wait for the next cron tick.
-MAX_DAILY_POSTS = 4
+MAX_DAILY_POSTS = 3
 
 #: Seconds to sleep between Telegra.ph page creation and the Telegram
 #: teaser send. Lets Telegra.ph's edge cache populate OG tags before the
@@ -1778,7 +1782,7 @@ def job():
       (a) crash-loop guard      — sleep until ``last_published + 40min``
                                   if the most recent publish is too fresh.
       (b) fetch + filter + insert — iterate ``SOURCES``, dedup, stage rows.
-      (c) compute today's slots  — ``compute_publish_slots(N, now_msk)``.
+      (c) compute today's slots  — ``compute_fixed_slots(N, now_msk)``.
       (d) admin ping             — plan-of-day; always fires (heartbeat on
                                   quiet days); + backlog warning when N > 50.
       (e) distributed-publish    — sleep-until-slot, publish via
@@ -2039,22 +2043,15 @@ def job():
 
     # ------------------------------------------------------------------
     # Step (c): compute today's publish slots.
-    # ``compute_publish_slots`` returns (slots, carry_over). N=0 → empty
-    # list, no admin ping (Step (d) guard), no loop (Step (e) guard).
+    # ``compute_fixed_slots`` returns (slots, carry_over) for the three
+    # fixed daily times (10:00/15:00/19:30 МСК, operator pacing 2026-06-13).
+    # N=0 → empty list, no admin ping (Step (d) guard), no loop (Step (e)
+    # guard). The function already bounds the result to ≤3 slots, so the old
+    # MAX_DAILY_POSTS trim is no longer needed.
     # ------------------------------------------------------------------
     now_msk = datetime.now(MSK_TZ)
     queue_size = pending_repo.count_pending()
-    slots, carry_over = compute_publish_slots(
-        queue_size, now_msk,
-        window_start=WINDOW_START_TIME,
-        window_end=WINDOW_END_TIME,
-    )
-    # Hard daily-post cap (operator pacing, 2026-05-24). Trim surplus
-    # slots and push the overflow into carry_over so it shows up in the
-    # plan-of-day ping and the affected pending rows wait for tomorrow.
-    if len(slots) > MAX_DAILY_POSTS:
-        carry_over += len(slots) - MAX_DAILY_POSTS
-        slots = slots[:MAX_DAILY_POSTS]
+    slots, carry_over = compute_fixed_slots(queue_size, now_msk)
 
     # ------------------------------------------------------------------
     # Step (d): admin ping with plan-of-day. Always sent — operator wants a

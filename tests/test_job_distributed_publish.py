@@ -16,7 +16,7 @@ Covers:
   ``outage_state.set_fallback_active(True)`` on ``False``; warns on
   ``TZ != 'Europe/Moscow'``.
 * **Distributed-publish loop (Decision 15 + tech-spec §How-it-works step 7).**
-  ``job()`` after the fetch+insert phase calls ``compute_publish_slots`` and
+  ``job()`` after the fetch+insert phase calls ``compute_fixed_slots`` and
   iterates the result, sleeping until each slot, then publishing via
   ``_fallback_publish`` (or a Google-only path if ``is_fallback_active()``).
   Window-end guard breaks the loop on slots beyond the window.
@@ -401,10 +401,13 @@ class TestMainHealthChecks(unittest.TestCase):
 # ---------------------------------------------------------------------------
 
 class _DistribLoopBase(_JobBase):
-    """Adds time-frozen ``datetime.now(MSK)`` patching so ``compute_publish_slots``
+    """Adds time-frozen ``datetime.now(MSK)`` patching so ``compute_fixed_slots``
     is exercised against a deterministic ``now``."""
 
-    FROZEN_NOW = MSK.localize(dt.datetime(2026, 4, 27, 12, 0, 0))
+    # 10:00 МСК — the morning fixed slot. At this tick all three fixed slots
+    # (10:00/15:00/19:30) are eligible, so a 3-article queue yields 3 publishes
+    # (compute_fixed_slots, operator pacing 2026-06-13).
+    FROZEN_NOW = MSK.localize(dt.datetime(2026, 4, 27, 10, 0, 0))
 
     def setUp(self):
         super().setUp()
@@ -650,8 +653,8 @@ class TestWindowEndGuard(_DistribLoopBase):
     overran), the loop must ``break``."""
 
     # We need a frozen "now" inside the window to seed slots near 19:30,
-    # then synthesise a degenerate case where compute_publish_slots returns
-    # a slot beyond 20:00. Easiest: monkey-patch compute_publish_slots to
+    # then synthesise a degenerate case where compute_fixed_slots returns
+    # a slot beyond 20:00. Easiest: monkey-patch compute_fixed_slots to
     # return a synthetic slot list including one outside the window, and
     # assert _fallback_publish is NOT called for the over-window slot.
 
@@ -659,12 +662,12 @@ class TestWindowEndGuard(_DistribLoopBase):
     @patch('news_bot.time.sleep')
     @patch('news_bot._fallback_publish')
     @patch('news_bot.fetch_full_article')
-    @patch('news_bot.compute_publish_slots')
+    @patch('news_bot.compute_fixed_slots')
     def test_window_end_guard_breaks_loop(
         self, mock_compute, mock_fetch_article, mock_publish, _mock_sleep,
         _mock_admin,
     ):
-        # Two slots inside, one slot past window_end. compute_publish_slots
+        # Two slots inside, one slot past window_end. compute_fixed_slots
         # would never produce that organically, but the loop's window-end
         # guard insurance must catch it.
         slot_a = MSK.localize(dt.datetime(2026, 4, 27, 13, 0))
