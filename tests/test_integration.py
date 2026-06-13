@@ -592,9 +592,9 @@ class TestOutageStateIntegration(_IntegrationBase):
 
 
 class TestRestartMidWindow(_IntegrationBase):
-    """AC7: a container restart at 16:00 МСК with N pending articles
-    recomputes the schedule via ``compute_publish_slots(N, 16:00)`` and
-    enforces the 40-minute minimum interval.
+    """AC7: a container restart at 10:00 МСК with N pending articles
+    recomputes the schedule via ``compute_fixed_slots(N, 10:00)`` —
+    publishing at most once per fixed daily slot (10:00/15:00/19:30 МСК).
     """
 
     @patch('news_bot.time.sleep')
@@ -603,10 +603,15 @@ class TestRestartMidWindow(_IntegrationBase):
         self, _mock_admin, _mock_sleep,
     ):
         """5 pending rows + 1 already-published row + frozen
-        ``datetime.now`` at 16:00 MSK → ``compute_publish_slots`` is
-        called with N=5 and the resulting slots are spaced ≥40min apart.
+        ``datetime.now`` at 10:00 MSK → ``compute_fixed_slots`` is
+        called with N=5 and returns the three fixed slots, so exactly 3
+        publishes fire (== MAX_DAILY_POSTS) and 2 rows carry over.
         The already-published row is not re-published (idempotency
         Decision 9 — telegraph_url present in published_articles).
+
+        Frozen at 10:00 (the morning fixed slot) so all three fixed slots
+        are eligible — at the old 16:00 only the 19:30 slot would remain and
+        just one of the five rows would publish.
         """
         # Seed 5 pending rows.
         for i in range(5):
@@ -635,9 +640,9 @@ class TestRestartMidWindow(_IntegrationBase):
         finally:
             conn.close()
 
-        # Frozen now: 16:00 МСК — leftover window is 4 hours (240 min) for 5
-        # articles → raw_interval = 48 min; effective = max(48, 40) = 48 min.
-        frozen_now = MSK.localize(dt.datetime(2026, 4, 27, 16, 0, 0))
+        # Frozen now: 10:00 МСК — the morning fixed slot. All three fixed
+        # slots (10:00/15:00/19:30) are eligible at this tick.
+        frozen_now = MSK.localize(dt.datetime(2026, 4, 27, 10, 0, 0))
 
         captured = {}
 
@@ -645,32 +650,26 @@ class TestRestartMidWindow(_IntegrationBase):
             captured['n'] = n
             captured['now'] = now
             captured['kwargs'] = kwargs
-            from compute_publish_slots import compute_publish_slots as real
-            # Pin the floor to the historical 40-min value for this
-            # scenario — production now defaults to 90-min, but the
-            # test asserts a 5-publish recompute that only fits at 40.
-            return real(
-                n, now,
-                window_start=kwargs.get('window_start'),
-                window_end=kwargs.get('window_end'),
-                min_interval_min=40,
-            )
+            from compute_publish_slots import compute_fixed_slots as real
+            # Pass straight through to the real fixed-slot scheduler — the
+            # patch only exists to capture the call args.
+            return real(n, now, **kwargs)
 
         # The crash-loop guard reads ``datetime.now(timezone.utc)`` for
         # gap arithmetic against the UTC-naive ``published_at``. Returning
         # the same MSK-aware ``frozen_now`` from every ``now()`` call would
         # mix tz-aware (MSK) with tz-naive parsed published_at and produce
         # a TypeError. Resolve by routing UTC calls to a real UTC ``now``
-        # — guard fires (60min gap > 40min threshold → no sleep), then the
-        # publish loop reads ``datetime.now(MSK)`` which gets the frozen
-        # MSK value.
+        # — guard fires (60min gap < 90min threshold → sleeps, but
+        # ``time.sleep`` is mocked), then the publish loop reads
+        # ``datetime.now(MSK)`` which gets the frozen MSK value.
         def fake_now(tz=None):
             if tz is dt.timezone.utc:
                 return dt.datetime.now(dt.timezone.utc)
             return frozen_now
 
         with patch('news_bot.datetime') as mock_dt, \
-             patch('news_bot.compute_publish_slots',
+             patch('news_bot.compute_fixed_slots',
                    side_effect=fake_compute), \
              patch('news_bot._fallback_publish') as mock_publish, \
              patch('news_bot.outage_state.is_fallback_active', return_value=False), \
@@ -688,21 +687,14 @@ class TestRestartMidWindow(_IntegrationBase):
 
             news_bot.job()
 
-        # compute_publish_slots was called with N=5 and now at 16:00 MSK.
+        # compute_fixed_slots was called with N=5 and now at 10:00 MSK.
         self.assertEqual(captured.get('n'), 5)
-        self.assertEqual(captured['now'].hour, 16)
+        self.assertEqual(captured['now'].hour, 10)
         self.assertEqual(captured['now'].minute, 0)
-        # And it must receive the news_bot.WINDOW_START_TIME (10:00) /
-        # WINDOW_END_TIME (20:00) — otherwise the function falls back to
-        # its own default of 13:00 and we lose the morning window.
-        self.assertEqual(captured['kwargs'].get('window_start'),
-                         news_bot.WINDOW_START_TIME)
-        self.assertEqual(captured['kwargs'].get('window_end'),
-                         news_bot.WINDOW_END_TIME)
 
-        # _fallback_publish was called for every slot. compute_publish_slots
-        # returned 5 slots, but news_bot.MAX_DAILY_POSTS (4) trims the tail
-        # so only 4 publishes fire; the 5th row carries over to tomorrow.
+        # _fallback_publish was called once per fixed slot. compute_fixed_slots
+        # returns 3 slots for N=5, so 3 publishes fire and the 2 surplus rows
+        # carry over to tomorrow.
         self.assertEqual(mock_publish.call_count, news_bot.MAX_DAILY_POSTS)
 
         # Already-published row never went through the publish loop.

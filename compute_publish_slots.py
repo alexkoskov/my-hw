@@ -42,7 +42,75 @@ WINDOW_START: time = time(13, 0)
 WINDOW_END: time = time(20, 0)
 MIN_INTERVAL_MINUTES: int = 90
 
+#: Three FIXED daily publish times in Europe/Moscow (operator pacing decision
+#: 2026-06-13: one post morning, one afternoon, one evening). Consumed by
+#: ``compute_fixed_slots`` — the production scheduler. ``job()`` interprets
+#: these against ``now``'s tzinfo (always MSK), so no tz is attached here.
+DAILY_PUBLISH_TIMES: List[time] = [time(10, 0), time(15, 0), time(19, 30)]
 
+
+def compute_fixed_slots(
+    n: int,
+    now: datetime,
+    daily_times: List[time] = DAILY_PUBLISH_TIMES,
+    grace_minutes: int = 5,
+) -> Tuple[List[datetime], int]:
+    """Compute today's publish slots from the FIXED daily times.
+
+    Production scheduler (operator pacing decision 2026-06-13): publish at most
+    once per fixed time — 10:00, 15:00, 19:30 МСК by default. Replaces the
+    dynamic even-spread of ``compute_publish_slots`` (kept DORMANT for reference
+    and its existing unit tests).
+
+    Args:
+        n: Number of pending articles waiting to be published. Must be >= 0.
+        now: Current time. MUST be tz-aware; raises ValueError otherwise.
+        daily_times: Fixed wall-clock times to publish at (default 10:00, 15:00,
+            19:30). Interpreted against ``now``'s tzinfo.
+        grace_minutes: How long after a fixed time the slot is still eligible
+            (default 5). The 10:00 cron tick reaches slot-planning a few
+            seconds/minutes after 10:00:00, so without grace the 10:00 slot
+            would be wrongly dropped. Grace MUST stay small: a deploy-restart
+            well after a fixed time must NOT re-fire that slot — that would
+            break the 3/day guarantee.
+
+    Returns:
+        (slots, carry_over) where:
+        - slots is a list of tz-aware datetimes (inheriting tzinfo from `now`)
+          at which to publish, ordered ascending — at most ``len(daily_times)``
+          and at most ``n``.
+        - carry_over = n - len(slots) is the number of articles that did not fit
+          today's remaining fixed slots and should be deferred to the next tick.
+
+    Raises:
+        ValueError: if `now` is tz-naive (scheduler invariant: MSK-aware only).
+    """
+    if now.tzinfo is None:
+        raise ValueError("compute_fixed_slots requires tz-aware datetime")
+
+    # Spec contract is `n >= 0`; treating negative N as a no-op mirrors
+    # ``compute_publish_slots`` and keeps callers defensively safe.
+    if n <= 0:
+        return [], 0
+
+    tzinfo = now.tzinfo
+    today = sorted(
+        datetime.combine(now.date(), t, tzinfo=tzinfo) for t in daily_times
+    )
+
+    # A slot is eligible while it is still in the future OR has passed by no
+    # more than ``grace_minutes`` (covers the cron-tick latency at 10:00:00).
+    cutoff = now - timedelta(minutes=grace_minutes)
+    eligible = [s for s in today if s >= cutoff]
+
+    slots = eligible[:n]
+    carry_over = n - len(slots)
+    return slots, carry_over
+
+
+# DORMANT: ``compute_publish_slots`` (the dynamic even-spread below) is
+# superseded by ``compute_fixed_slots`` above for production scheduling. It is
+# retained for reference and to keep its existing unit-test coverage green.
 def compute_publish_slots(
     n: int,
     now: datetime,

@@ -55,7 +55,7 @@ import news_bot
 import outage_state
 import pending_articles_repo
 from claude_transcreation import ClaudeOutageError, ClaudeTranscreationError
-from compute_publish_slots import compute_publish_slots
+from compute_publish_slots import compute_fixed_slots
 
 
 MSK = pytz.timezone("Europe/Moscow")
@@ -168,7 +168,7 @@ class TestDistributedSchedule(unittest.TestCase):
         self.mock_notify = self.notify_patcher.start()
 
         # No real wall-clock sleeps. Args captured for between-slot timing
-        # ranges — the truth source for slot timing is compute_publish_slots
+        # ranges — the truth source for slot timing is compute_fixed_slots
         # itself, not hard-coded seconds in the test.
         self.sleep_patcher = patch('news_bot.time.sleep')
         self.mock_sleep = self.sleep_patcher.start()
@@ -280,17 +280,21 @@ class TestDistributedSchedule(unittest.TestCase):
     # ======================================================================
 
     def test_full_happy_path_three_articles_three_slots_three_publishes(self):
-        """N=3 at 12:00 МСК. compute_publish_slots → 3 slots in 13:00-20:00
-        window. Each slot publishes via Claude, no outage state recorded,
-        plan-of-day admin ping fired at the start.
+        """N=3 at 10:00 МСК. compute_fixed_slots → 3 slots at the fixed
+        daily times [10:00, 15:00, 19:30]. Each slot publishes via Claude,
+        no outage state recorded, plan-of-day admin ping fired at the start.
+
+        Frozen at 10:00 (the morning fixed slot) so all three fixed slots are
+        eligible this tick — at noon only 15:00 and 19:30 would remain, which
+        would publish just two of the three articles.
 
         Asserts:
           * exactly 3 ``transcreate_via_claude`` calls,
           * exactly 3 rows in ``published_articles``,
           * 0 rows in ``pending_articles`` after the loop,
           * outage_state shows no_outage,
-          * ``time.sleep`` between-slot waits sum to the inter-slot intervals
-            from compute_publish_slots (sanity, not byte-equality),
+          * ``time.sleep`` between-slot waits match the fixed-slot offsets
+            from compute_fixed_slots (sanity, not byte-equality),
           * one admin ping content-matches the plan-of-day fragment.
         """
         # 3 RSS entries → 3 full articles → 3 pending rows → 3 slots.
@@ -301,7 +305,7 @@ class TestDistributedSchedule(unittest.TestCase):
         ]
         self._set_rss_entries(entries)
 
-        with freeze_time('2026-04-27 09:00:00'):  # 09:00 UTC == 12:00 МСК
+        with freeze_time('2026-04-27 07:00:00'):  # 07:00 UTC == 10:00 МСК
             with patch('news_bot.transcreate_via_claude') as mock_claude:
                 mock_claude.side_effect = [
                     _make_claude_result(['First paragraph.', 'Second paragraph.'],
@@ -347,22 +351,15 @@ class TestDistributedSchedule(unittest.TestCase):
                          f"expected 3 teaser dispatches, got "
                          f"{self.mock_teaser.call_count}")
 
-        # Slot timing — verify sleep args match compute_publish_slots output
+        # Slot timing — verify sleep args match compute_fixed_slots output
         # for the same inputs (truth source, NOT hard-coded). Under freezegun
         # `now` is FROZEN, so every `wait_seconds = max(0, slot - now)` in the
-        # publish loop is computed from the SAME starting `now` (12:00 МСК).
+        # publish loop is computed from the SAME starting `now` (10:00 МСК).
         # Therefore the sequence of `time.sleep` waits equals the offsets of
-        # each slot from the cron-tick now, not the inter-slot deltas a real
-        # wall clock would see.
-        now_msk = MSK.localize(dt.datetime(2026, 4, 27, 12, 0, 0))
-        # Pass the same window kwargs news_bot.job() uses, otherwise the
-        # function's default 13:00 start would drift the expected slots
-        # away from the loop's actual 10:00-window slots.
-        slots, _carry = compute_publish_slots(
-            3, now_msk,
-            window_start=news_bot.WINDOW_START_TIME,
-            window_end=news_bot.WINDOW_END_TIME,
-        )
+        # each fixed slot from the cron-tick now, not the inter-slot deltas a
+        # real wall clock would see.
+        now_msk = MSK.localize(dt.datetime(2026, 4, 27, 10, 0, 0))
+        slots, _carry = compute_fixed_slots(3, now_msk)
         expected_offsets = [
             (s - now_msk).total_seconds() for s in slots
         ]
@@ -372,10 +369,10 @@ class TestDistributedSchedule(unittest.TestCase):
         sleep_args = [c.args[0] for c in self.mock_sleep.call_args_list
                       if c.args and isinstance(c.args[0], (int, float))
                       and c.args[0] != news_bot.TELEGRAPH_CACHE_WARMUP_SECONDS]
-        # The publish-loop emits ONE sleep per in-window slot whose
-        # offset > 0. With WINDOW_START=10:00 and now=12:00, the first
-        # slot lands at 12:00 itself (offset 0) and is published without
-        # a sleep call — so only the 2 later slots produce sleeps.
+        # The publish-loop emits ONE sleep per slot whose offset > 0. With
+        # now=10:00 the first fixed slot lands at 10:00 itself (offset 0) and
+        # is published without a sleep call — so only the 15:00 and 19:30
+        # slots produce sleeps.
         positive_expected = [o for o in expected_offsets if o > 0]
         self.assertEqual(len(sleep_args), len(positive_expected),
                          f"expected {len(positive_expected)} slot-wait sleeps, "
@@ -419,7 +416,10 @@ class TestDistributedSchedule(unittest.TestCase):
 
         outage_exc = ClaudeOutageError("simulated rate-limit (RateLimitError-equiv)")
 
-        with freeze_time('2026-04-27 09:00:00'):
+        # 07:00 UTC == 10:00 МСК — all three fixed slots eligible this tick
+        # (slot1=10:00, slot2=15:00, slot3=19:30) so the hold-and-recover
+        # sequence across three slots can play out.
+        with freeze_time('2026-04-27 07:00:00'):
             with patch('news_bot.transcreate_via_claude') as mock_claude:
                 mock_claude.side_effect = [
                     _make_claude_result(['First paragraph.', 'Second paragraph.'],
@@ -474,35 +474,34 @@ class TestDistributedSchedule(unittest.TestCase):
     # ======================================================================
 
     @patch('news_bot.MIN_INTERVAL_MINUTES', 40)
-    @patch('news_bot.compute_publish_slots')
+    @patch('news_bot.compute_fixed_slots')
     def test_container_restart_mid_window_recomputes_slots_and_continues(
         self, mock_compute,
     ):
         """Pre-seed 5 pending rows + 1 already-published row (simulated
-        prior-tick result). Freeze time at 16:00 МСК (mid-window).
-        Call ``job()`` directly. Expectation:
+        prior-tick result). Freeze time at 10:00 МСК (the morning fixed
+        slot). Call ``job()`` directly. Expectation:
           * fetch+stage phase finds nothing new (sources empty).
-          * compute_publish_slots(5, 16:00 MSK) → 5 slots at 48-min interval.
-          * 5 publishes happen, all currently-pending rows clear.
+          * compute_fixed_slots(5, 10:00 MSK) → 3 fixed slots
+            [10:00, 15:00, 19:30], carry_over=2.
+          * 3 publishes happen (one per fixed slot); the 2 surplus rows stay
+            pending and carry over to the next cron tick.
           * The pre-existing published row is NOT re-published
             (idempotency via pending vs published separation).
           * Crash-loop guard: simulate the most recent publish was 10 min
             before now, which is < MIN_INTERVAL_MINUTES (40). Bot must
             sleep (40 - 10) = 30 min before continuing.
 
-        ``MIN_INTERVAL_MINUTES`` and ``compute_publish_slots`` are pinned
-        to the historical 40-min floor for this test so the algorithm
-        scenario stays valid after the production default moved to 90.
-        ``compute_publish_slots`` is called by the loop with the module
-        default kwarg, so we patch it to inject a 40-min mock.
+        Frozen at 10:00 (instead of the old 16:00) so all three fixed slots
+        are eligible and the 5-row queue exercises the fixed-slot cap of 3.
+        ``MIN_INTERVAL_MINUTES`` is pinned to the historical 40-min floor so
+        the crash-loop-guard sleep assertion (30 min) stays valid after the
+        production default moved to 90. ``compute_fixed_slots`` is patched to
+        pass straight through to the real implementation — the patch only
+        exists so the loop calls a function we can pin, not to alter behaviour.
         """
-        from compute_publish_slots import compute_publish_slots as real_compute
-        mock_compute.side_effect = lambda n, now, **kw: real_compute(
-            n, now,
-            window_start=kw.get('window_start'),
-            window_end=kw.get('window_end'),
-            min_interval_min=40,
-        )
+        from compute_publish_slots import compute_fixed_slots as real_compute
+        mock_compute.side_effect = lambda n, now, **kw: real_compute(n, now, **kw)
         # Pre-seed 5 pending rows directly so we don't depend on the fetch
         # step recomputing them.
         for i in range(5):
@@ -521,7 +520,7 @@ class TestDistributedSchedule(unittest.TestCase):
 
         # Pre-seed one already-published row — must NOT be re-published.
         # ALSO seeds the crash-loop guard input (UTC ts 10 min before now).
-        # 16:00 MSK = 13:00 UTC; 10 min ago = 12:50 UTC.
+        # 10:00 MSK = 07:00 UTC; 10 min ago = 06:50 UTC.
         already_pub_link = 'http://example.com/already-pub'
         conn = sqlite3.connect(self.db_path)
         try:
@@ -531,7 +530,7 @@ class TestDistributedSchedule(unittest.TestCase):
                 " via_review, published_at) "
                 "VALUES (?, ?, ?, ?, ?, ?, ?)",
                 (already_pub_link, 'Already', 'Уже', 'https://telegra.ph/old',
-                 'autoevolution', 0, '2026-04-27 12:50:00'),
+                 'autoevolution', 0, '2026-04-27 06:50:00'),
             )
             conn.commit()
         finally:
@@ -540,37 +539,37 @@ class TestDistributedSchedule(unittest.TestCase):
         # Sources empty for this scenario — the fetch phase is incidental.
         self._set_rss_entries([])
 
-        # Freeze time at 16:00 МСК = 13:00 UTC.
-        with freeze_time('2026-04-27 13:00:00'):
+        # Freeze time at 10:00 МСК = 07:00 UTC (the morning fixed slot).
+        with freeze_time('2026-04-27 07:00:00'):
             with patch('news_bot.transcreate_via_claude') as mock_claude:
                 mock_claude.side_effect = [
                     _make_claude_result(['p1.', 'p2.'],
                                         title_prefix=f'Restart {i}')
-                    for i in range(5)
+                    for i in range(3)
                 ]
                 news_bot.job()
 
-        # First 4 of the 5 pre-seeded rows publish (MAX_DAILY_POSTS=4
-        # trims the 5th slot). The remaining row stays in pending and
-        # carries over to the next cron tick.
+        # 3 of the 5 pre-seeded rows publish (one per fixed slot —
+        # compute_fixed_slots returns [10:00, 15:00, 19:30], carry_over=2).
+        # The remaining 2 rows stay in pending and carry over to the next tick.
         self.assertEqual(
             self._pending_links(),
-            ['http://example.com/r4'],
-            "expected the 5th seeded row to remain pending under the daily cap",
+            ['http://example.com/r3', 'http://example.com/r4'],
+            "expected the 2 surplus seeded rows to remain pending under the "
+            "3 fixed daily slots",
         )
         published = self._published_links()
-        # 4 new + 1 pre-existing = 5 total.
-        self.assertEqual(len(published), 5,
-                         f"expected 5 total published (4 new + 1 pre-existing), "
+        # 3 new + 1 pre-existing = 4 total.
+        self.assertEqual(len(published), 4,
+                         f"expected 4 total published (3 new + 1 pre-existing), "
                          f"got {published}")
         # Pre-existing link is still there exactly once.
         self.assertEqual(published.count(already_pub_link), 1,
                          "pre-existing published row must NOT be duplicated")
 
         # Claude was called once per published slot, never on the already-
-        # published row. compute_publish_slots returned 5 slots but
-        # ``news_bot.MAX_DAILY_POSTS`` (4) trims the tail, so 4 publishes
-        # fire and the 5th row carries over to tomorrow.
+        # published row. compute_fixed_slots returns 3 slots, so 3 publishes
+        # fire and the 2 surplus rows carry over to tomorrow.
         self.assertEqual(mock_claude.call_count, news_bot.MAX_DAILY_POSTS)
 
         # Crash-loop guard sanity: the FIRST sleep is the guard wait =
@@ -659,7 +658,7 @@ class TestDistributedSchedule(unittest.TestCase):
             paras_in = article.get('paragraphs') or []
             return _make_claude_result(paras_in, title_prefix='OK')
 
-        with freeze_time('2026-04-27 09:00:00'):
+        with freeze_time('2026-04-27 07:00:00'):  # 07:00 UTC == 10:00 МСК
             with patch('news_bot.transcreate_via_claude') as mock_claude:
                 mock_claude.side_effect = claude_side_effect
                 news_bot.job()
