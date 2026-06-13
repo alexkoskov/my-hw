@@ -56,6 +56,27 @@ EXPECTED_PENDING_COLUMNS = {
     'attempt_count': {'type': 'INTEGER',   'notnull': 1, 'dflt_value': '0',                 'pk': 0},
     'last_error':    {'type': 'TEXT',      'notnull': 0, 'dflt_value': None,                'pk': 0},
     'pub_date':      {'type': 'TEXT',      'notnull': 0, 'dflt_value': None,                'pk': 0},
+    # Migration 2026-06-XX (cross-source-dedup, Decision 11): JSON dict
+    # `{strict:[...], brands:[...]}` populated by the dedup gate; NULL on
+    # pre-feature rows / dedup-degraded path.
+    'model_fingerprint': {'type': 'TEXT',  'notnull': 0, 'dflt_value': None,                'pk': 0},
+}
+
+
+# Expected ``published_articles`` columns (PRAGMA table_info shape). Pinned
+# alongside ``EXPECTED_PENDING_COLUMNS`` so the cross-source-dedup migration
+# (model_fingerprint) and any future column drift trip a schema-pin test.
+EXPECTED_PUBLISHED_COLUMNS = {
+    'link':           {'type': 'TEXT',      'notnull': 0, 'dflt_value': None,                'pk': 1},
+    'title':          {'type': 'TEXT',      'notnull': 1, 'dflt_value': None,                'pk': 0},
+    'ru_title':       {'type': 'TEXT',      'notnull': 1, 'dflt_value': None,                'pk': 0},
+    'telegraph_url':  {'type': 'TEXT',      'notnull': 1, 'dflt_value': None,                'pk': 0},
+    'telegraph_path': {'type': 'TEXT',      'notnull': 0, 'dflt_value': None,                'pk': 0},
+    'source_name':    {'type': 'TEXT',      'notnull': 1, 'dflt_value': None,                'pk': 0},
+    'published_at':   {'type': 'TIMESTAMP', 'notnull': 1, 'dflt_value': 'CURRENT_TIMESTAMP', 'pk': 0},
+    'via_review':     {'type': 'INTEGER',   'notnull': 1, 'dflt_value': None,                'pk': 0},
+    # Migration 2026-06-XX (cross-source-dedup, Decision 11).
+    'model_fingerprint': {'type': 'TEXT',  'notnull': 0, 'dflt_value': None,                'pk': 0},
 }
 
 
@@ -141,6 +162,49 @@ class TestMigration(unittest.TestCase):
                 actual[col], expected,
                 msg=f"pending_articles.{col} diverged: {actual[col]} != {expected}",
             )
+
+    def test_published_articles_has_expected_columns(self):
+        """``published_articles`` has all tech-spec columns including the
+        cross-source-dedup ``model_fingerprint`` column from the 2026-06-XX
+        migration (Decision 11). Modelled after
+        ``test_pending_articles_has_expected_columns``."""
+        news_bot.init_db()
+
+        actual = self._pragma_columns('published_articles')
+        self.assertEqual(
+            set(actual), set(EXPECTED_PUBLISHED_COLUMNS),
+            msg="published_articles column set diverged from tech-spec",
+        )
+        for col, expected in EXPECTED_PUBLISHED_COLUMNS.items():
+            self.assertEqual(
+                actual[col], expected,
+                msg=f"published_articles.{col} diverged: {actual[col]} != {expected}",
+            )
+
+    def test_init_schema_idempotent(self):
+        """Two back-to-back calls to ``pending_articles_repo.init_schema``
+        on the same connection must not raise — the cross-source-dedup
+        migration block (Decision 11) reuses the existing
+        ``try/except sqlite3.OperationalError`` idempotency pattern so the
+        ALTER statements no-op on a populated DB."""
+        import pending_articles_repo as repo
+
+        conn = sqlite3.connect(':memory:')
+        try:
+            repo.init_schema(conn)
+            # Second call must be a clean no-op (no OperationalError leak).
+            repo.init_schema(conn)
+            # And the migrated columns must be present on both tables.
+            pending_cols = {r[1] for r in conn.execute(
+                "PRAGMA table_info(pending_articles)"
+            )}
+            published_cols = {r[1] for r in conn.execute(
+                "PRAGMA table_info(published_articles)"
+            )}
+            self.assertIn('model_fingerprint', pending_cols)
+            self.assertIn('model_fingerprint', published_cols)
+        finally:
+            conn.close()
 
     # ------------------------------------------------------------------
     # AC: bot_state column schema matches tech-spec

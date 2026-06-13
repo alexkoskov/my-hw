@@ -8,8 +8,11 @@ import sqlite3
 import logging
 import re
 import os
+import sys
 import json
 import asyncio
+import fcntl
+import socket
 import time
 from datetime import datetime, timedelta, timezone
 from urllib.parse import urlparse
@@ -25,6 +28,18 @@ from dotenv import load_dotenv
 # news_bot-specific guarantee, not a global one.
 load_dotenv()
 
+# Global socket default timeout. feedparser.parse() uses urllib.urlopen()
+# under the hood and offers no `timeout` kwarg (6.0.12 sig confirmed); a
+# slow RSS server (e.g. Cloudflare-fronted autoevolution.com sending TCP
+# ACK but no data) would otherwise block job() until kernel tcp_keepalive
+# fires hours later. Prod incident 2026-06-08: job() hung 2.5h+ after
+# Database initialized, missing the daily admin ping and any publishes.
+# 20s caps the worst-case wait per socket op; legitimate fast paths
+# (autoevolution curl_cffi, requests.get in source parsers, Telegraph API
+# client) all pass their own explicit timeout already, so this is a
+# defense-in-depth floor for any socket that forgot to.
+socket.setdefaulttimeout(20)
+
 import feedparser
 from deep_translator import GoogleTranslator
 import schedule
@@ -35,6 +50,7 @@ from mattel_news_source import fetch_mattel_news, fetch_mattel_article
 import autoevolution_source
 import lamley_source
 import orangetrack_source
+import t_hunted_source
 import telegraph_publisher
 from telegraph_publisher import TelegraphError
 
@@ -50,11 +66,10 @@ from boilerplate_filter import is_boilerplate
 import pending_articles_repo as pending_repo
 
 # Claude transcreation (Wave 2 task 3) + outage state machine (Wave 2
-# task 5) — pulled in at import time so ``_fallback_publish`` can pivot
-# between Claude (primary) and Google Translate (per-article fallback /
-# degraded-mode global fallback) without conditional imports inside the
-# hot path. Tests patch the bound names ``news_bot.transcreate_via_claude``
-# / ``news_bot.outage_state.is_fallback_active`` on the module surface.
+# task 5) — pulled in at import time so ``_fallback_publish`` translates via
+# the LLM only and HOLDS articles on an outage (no Google fallback since the
+# 2026-06-11 hold-and-wait change). Tests patch the bound name
+# ``news_bot.transcreate_via_claude`` on the module surface.
 import llm_transcreation as claude_transcreation  # alias preserves bound name
 from llm_transcreation import (
     transcreate_via_claude,
@@ -63,6 +78,14 @@ from llm_transcreation import (
 )
 import outage_state
 import admin_alerts
+
+# Cross-source dedup (Wave 2, cross-source-dedup feature). Pure module —
+# extract_fingerprint scans the article body against the brand lexicon,
+# similarity computes guarded two-level Jaccard. Used by the new gate in
+# ``job()`` between ``_is_text_only_checklist`` and ``insert_pending``.
+# Imported at module load so tests can patch ``news_bot.model_extractor.*``
+# (the degraded-mode test stubs ``extract_fingerprint`` to raise).
+import model_extractor
 
 # Pure scheduling helper (Task 02) — produces today's publish slots from a
 # pending count + tz-aware ``now``. Imported at module level so ``job()``
@@ -93,6 +116,22 @@ WINDOW_START_TIME = datetime.strptime("10:00", "%H:%M").time()
 WINDOW_END_TIME = datetime.strptime("20:00", "%H:%M").time()
 BACKLOG_WARNING_THRESHOLD = 50
 MSK_TZ = pytz.timezone("Europe/Moscow")
+
+#: Hard cap on publications per day. ``compute_publish_slots`` only enforces
+#: the soft cap that follows from ``MIN_INTERVAL_MINUTES`` × window-length
+#: (currently floor(600/90)+1 = 7). Operator-set ceiling caps it lower for
+#: editorial pacing (set 2026-05-24: 4 posts/day max). Surplus pending
+#: articles go into carry_over and wait for the next cron tick.
+MAX_DAILY_POSTS = 4
+
+#: Seconds to sleep between Telegra.ph page creation and the Telegram
+#: teaser send. Lets Telegra.ph's edge cache populate OG tags before the
+#: Telegram IV worker fetches the URL — without this gap Telegram has been
+#: observed to negative-cache "no preview" for the freshly-created page
+#: (incident 2026-05-16: prod post lost hero image while test-instance
+#: post for the same article kept it). Tests filter sleep calls by this
+#: exact value to ignore the warmup pause when counting slot-wait sleeps.
+TELEGRAPH_CACHE_WARMUP_SECONDS = 3
 
 #: Per-article LLM retry tuning — applies to ClaudeTranscreationError
 #: only (refusal / malformed JSON / too-short / etc). True outages
@@ -357,8 +396,25 @@ for _llm_logger_name in (
 # above).  ``send_admin_notification`` itself routes its message through
 # ``_redact_text`` as a belt-and-suspenders measure, but callers should
 # still avoid embedding raw exception text in the user-visible payload.
-def send_admin_notification(message):
-    """Send a notification message to the admin.
+#: Max attempts for send_admin_notification before giving up. Added
+#: 2026-06-09 after a single ``TelegramError: Timed out`` on the prod
+#: morning tick (10:00:23 МСК) silently dropped that day's ``[E008]``
+#: plan-of-day ping. The article-publish HTTP call later in the same
+#: tick succeeded, confirming the failure was a transient Telegram
+#: edge slowness rather than a credential / network outage. Three
+#: attempts with 1s + 2s backoff costs at most ~3s on the bad path
+#: and zero on the happy path.
+ADMIN_NOTIFICATION_MAX_ATTEMPTS = 3
+
+
+def send_admin_notification(message, *, max_attempts=ADMIN_NOTIFICATION_MAX_ATTEMPTS):
+    """Send a notification message to the admin with bounded retry.
+
+    Retries on ``TelegramError`` only (timeouts, transient network) —
+    auth / chat-id errors aren't worth re-sending. Exponential backoff
+    between attempts: 1s, 2s. Default ``max_attempts=3``; callers can
+    pass ``max_attempts=1`` to opt out (e.g. fire-and-forget paths
+    where the operator can tolerate a single missed ping).
 
     The ``message`` is passed through ``_redact_text`` BEFORE the Telegram
     payload is built so that any caller that accidentally embeds a secret
@@ -373,26 +429,42 @@ def send_admin_notification(message):
     # admin pings from prod vs test bot in the same admin chat.
     if INSTANCE_LABEL:
         safe_message = f"[{INSTANCE_LABEL}] {safe_message}"
+
     async def _send():
         bot = Bot(token=TELEGRAM_BOT_TOKEN)
+        # parse_mode=None (plain text). Markdown was rejected
+        # 2026-04-30: a stray ``*`` / ``_`` / ``[`` in a sanitised
+        # exception message caused ``can't parse entities`` and the
+        # admin ping was silently dropped. Operational alerts have no
+        # use for inline formatting, and plain text removes the
+        # spoofing risk where article-derived text could rewrite the
+        # visible message via crafted ``[label](url)`` syntax.
+        await bot.send_message(
+            chat_id=TELEGRAM_ADMIN_ID,
+            text=safe_message,
+        )
+
+    last_err = None
+    for attempt in range(1, max_attempts + 1):
         try:
-            # parse_mode=None (plain text). Markdown was rejected
-            # 2026-04-30: a stray ``*`` / ``_`` / ``[`` in a sanitised
-            # exception message caused ``can't parse entities`` and the
-            # admin ping was silently dropped. Operational alerts have no
-            # use for inline formatting, and plain text removes the
-            # spoofing risk where article-derived text could rewrite the
-            # visible message via crafted ``[label](url)`` syntax.
-            await bot.send_message(
-                chat_id=TELEGRAM_ADMIN_ID,
-                text=safe_message,
-            )
+            asyncio.run(_send())
             logging.info(f"Admin notification sent: {safe_message[:50]}...")
             return True
         except TelegramError as e:
-            logging.error(f"Failed to send admin notification: {e}")
-            return False
-    return asyncio.run(_send())
+            last_err = e
+            if attempt < max_attempts:
+                backoff_seconds = 2 ** (attempt - 1)  # 1, 2, 4 (last unused)
+                logging.warning(
+                    f"Admin notification attempt {attempt}/{max_attempts} "
+                    f"failed ({type(e).__name__}: {e}); retrying in "
+                    f"{backoff_seconds}s."
+                )
+                time.sleep(backoff_seconds)
+    logging.error(
+        f"Failed to send admin notification after {max_attempts} attempts: "
+        f"{last_err}"
+    )
+    return False
 
 
 logger = logging.getLogger(__name__)
@@ -595,6 +667,19 @@ def fetch_rss(url):
         logger.error(f"Failed to fetch RSS from {url}: {e}")
         return []
 
+#: Sources whose RSS feeds are *broad diecast collectors* — they cover
+#: many brands (Hot Wheels, Matchbox, M2 Machines, Auto World, Mini GT,
+#: Topper Toys / Johnny Lightning, …) and most posts are NOT about
+#: Hot Wheels. For these sources we flip the default: an entry without
+#: an explicit Hot Wheels mention in the title is rejected, not kept.
+#: Added 2026-06-09 after two non-HW t-hunted posts leaked through to
+#: the test channel ("Topper Toys 1970: Johnny Lightning…", "Mundo
+#: Premium 64 #241: Porsche, Mustang и Diablo…"). Other sources
+#: (autoevolution / lamley / orangetrack) retain the default-include
+#: policy that operator-confirmed works for HW-focused sources.
+_BROAD_DIECAST_NETLOCS = ('t-hunted.blogspot.com',)
+
+
 def _is_hot_wheels_relevant(entry):
     """Reject articles that came through the Hot Wheels RSS feed by
     cross-tagging but are actually about a sibling Mattel brand.
@@ -605,16 +690,25 @@ def _is_hot_wheels_relevant(entry):
     Wheels-focused — anything where the title names a sibling brand
     *without also* naming Hot Wheels is filtered out at fetch time so
     it never enters ``pending_articles``.
+
+    For broad-diecast sources (``_BROAD_DIECAST_NETLOCS``) the default
+    flips from "include" to "reject" — the title MUST contain an
+    explicit Hot Wheels mention to pass.
     """
     title = (entry.get('title') or '').lower()
     if not title:
         return True  # nothing to inspect; default include
-    if 'hot wheels' in title:
-        return True  # explicit HW mention — keep
+    if 'hot wheels' in title or 'hotwheels' in title:
+        return True  # explicit HW mention — keep regardless of source
     # Sibling brands observed in production. Add more conservatively —
     # broad keyword bans risk dropping legitimate cross-over articles.
     sibling_brands = ('matchbox',)
     if any(brand in title for brand in sibling_brands):
+        return False
+    # Broad-diecast source guard. Reject entries from these feeds when
+    # the title has no Hot Wheels signal; they default to "not HW".
+    link = (entry.get('link') or '').lower()
+    if any(netloc in link for netloc in _BROAD_DIECAST_NETLOCS):
         return False
     return True
 
@@ -677,6 +771,103 @@ def _is_text_only_checklist(entry, article):
     return total_text < _CHECKLIST_BODY_TEXT_FLOOR
 
 
+#: Hard-block threshold for cross-source dedup (tech-spec Decision 7,
+#: user-spec AC3). Articles whose ``similarity`` against any candidate in
+#: the 7-day window meets or exceeds this value are dropped before
+#: ``insert_pending`` and pinned in ``processed_news`` so the same URL is
+#: not re-fetched on subsequent ticks (Decision 8).
+_DEDUP_BLOCK_THRESHOLD = 0.50
+
+#: Soft-flag threshold for cross-source dedup (Decision 7, user-spec AC4).
+#: Articles in ``[0.30, 0.50)`` pass through to ``insert_pending`` but
+#: trigger a per-pair-rate-limited E014 ping so the operator can review.
+_DEDUP_FLAG_THRESHOLD = 0.30
+
+
+def _check_cross_source_dedup(article: dict, fingerprint: dict,
+                              conn: sqlite3.Connection):
+    """Compare ``fingerprint`` against the last 7 days of pending +
+    published rows and decide block / flag / pass.
+
+    Returns one of:
+      * ``('block', match_dict)`` — similarity ≥ ``_DEDUP_BLOCK_THRESHOLD``.
+      * ``('flag', match_dict)``  — ``[_DEDUP_FLAG_THRESHOLD,
+        _DEDUP_BLOCK_THRESHOLD)``.
+      * ``('pass', None)``        — below the flag threshold OR empty
+        ``fingerprint['strict']`` (AC6 — skip the SQL round-trip on
+        articles with no recognised brands).
+
+    ``match_dict`` carries the keys the gate caller needs to render an
+    admin ping:
+      * ``link``         — the matched article URL.
+      * ``source_name``  — the matched row's source (for E014 ``existing_source``).
+      * ``models``       — sorted list of shared strict tokens (intersection
+        of the two ``strict`` sets). Empty list when the match is brand-
+        only (strict Jaccard zero but the AC10 brand-fallback fired).
+      * ``overlap_pct``  — ``int(round(sim * 100))``, used by E014 / E015.
+      * ``n_matches``    — count of shared strict tokens.
+      * ``n_total``      — count of distinct strict tokens across both
+        fingerprints (``len(strict_new | strict_match)``); denominator
+        the operator sees in ``"3/8"``.
+
+    Implementation notes:
+      * Iterates pending FIRST, then published — both windowed at 7 days
+        per tech-spec Architecture. No source filtering (Decision 9).
+      * Picks the best (highest sim) match across the entire window so
+        the strongest signal wins even if a weaker pending match would
+        also cross the soft-flag threshold.
+      * Compare-side ``model_fingerprint`` rows can be missing (NULL,
+        pre-feature rows or backfill in progress) — those candidates are
+        skipped silently rather than treated as zero-similarity matches.
+    """
+    strict = fingerprint.get('strict') or [] if isinstance(fingerprint, dict) else []
+    if not strict:
+        # AC6 short-circuit — empty fingerprint cannot match anything, and
+        # the dominant production-path "industry news with no brands"
+        # shouldn't pay for two SELECTs.
+        return ('pass', None)
+
+    candidates = (
+        pending_repo.list_recent_pending_fingerprints(conn, 7)
+        + pending_repo.list_recent_published_fingerprints(conn, 7)
+    )
+
+    best_sim = 0.0
+    best_row = None
+    for row in candidates:
+        cand_fp = row.get('model_fingerprint')
+        if not isinstance(cand_fp, dict):
+            # NULL (pre-feature) or malformed row — skip silently. The
+            # backfill script (Task 5) populates these going forward.
+            continue
+        sim = model_extractor.similarity(fingerprint, cand_fp)
+        if sim > best_sim:
+            best_sim = sim
+            best_row = row
+
+    if best_row is None or best_sim < _DEDUP_FLAG_THRESHOLD:
+        return ('pass', None)
+
+    cand_fp = best_row.get('model_fingerprint') or {}
+    cand_strict = set(cand_fp.get('strict') or [])
+    new_strict = set(strict)
+    shared = sorted(new_strict & cand_strict)
+    union = new_strict | cand_strict
+
+    match = {
+        'link': best_row.get('link'),
+        'source_name': best_row.get('source_name') or 'other',
+        'models': shared,
+        'overlap_pct': int(round(best_sim * 100)),
+        'n_matches': len(shared),
+        'n_total': len(union),
+    }
+
+    if best_sim >= _DEDUP_BLOCK_THRESHOLD:
+        return ('block', match)
+    return ('flag', match)
+
+
 def filter_new_entries(entries):
     """Filter entries that are not already processed AND that look
     Hot-Wheels-relevant (see ``_is_hot_wheels_relevant`` for the
@@ -717,9 +908,14 @@ def transcreate_text(text, source='auto', target='ru', is_title=False):
     Per Decision 11 (llm-transcreation-and-distributed-publishing) the
     bureaucratic-regex cleanup and 4000-char body truncation were removed:
     Claude is now the primary transcreator (idiomatic by design) and
-    Telegraph has no caption-style length limit. This function survives
-    only as a Google-Translate fallback for per-article Claude failures
-    and global Anthropic outages, so the HW glossary safety net stays.
+    Telegraph has no caption-style length limit.
+
+    DORMANT (since 2026-06-11 hold-and-wait change): the publish pipeline no
+    longer calls this — an LLM outage now HOLDS articles instead of machine-
+    translating them. Kept (with its tests) as a self-contained utility for
+    possible reuse; ``GoogleTranslator``, ``_llm_translation_is_russian`` and
+    ``GoogleTranslationError`` support it. Safe to delete in a follow-up if
+    no revival is planned.
     """
     import re
 
@@ -781,12 +977,23 @@ def transcreate_text(text, source='auto', target='ru', is_title=False):
     return result
 
 def _source_hashtag(source_url):
-    """Return a Telegram hashtag for the source: `#{brand}` from the URL's
-    netloc, stripping `www.` and the TLD. Example: `corporate.mattel.com`
-    → `#mattel`, `autoevolution.com` → `#autoevolution`."""
+    """Return a Telegram hashtag for the source.
+
+    Lookup order:
+      1. ``SOURCE_HASHTAG_OVERRIDE`` (keyed on the normalised, ``www.``-
+         stripped, lowercased netloc) — handles outliers where the default
+         TLD-strip would emit the hoster (e.g. ``blogspot``) instead of
+         the brand. Returns the override value as-is.
+      2. Fallback: lift `#{parts[-2]}` from the netloc, stripping `www.`
+         and the TLD. Example: `corporate.mattel.com` → `#mattel`,
+         `autoevolution.com` → `#autoevolution`.
+    """
     netloc = urlparse(source_url).netloc.lower()
     if netloc.startswith('www.'):
         netloc = netloc[4:]
+    override = SOURCE_HASHTAG_OVERRIDE.get(netloc)
+    if override is not None:
+        return override
     parts = netloc.split('.')
     label = parts[-2] if len(parts) >= 2 else netloc
     return f"#{label}"
@@ -810,8 +1017,29 @@ NETLOC_TO_SOURCE = {
     'lamleygroup.com':               'lamley',
     'www.lamleygroup.com':           'lamley',
     'corporate.mattel.com':          'mattel',
+    't-hunted.blogspot.com':         't-hunted',
     'orangetrackdiecast.com':        'orangetrack',
     'www.orangetrackdiecast.com':    'orangetrack',
+}
+
+
+# Override map for the channel-post hashtag (Decision 2 of t-hunted-pt-source
+# tech-spec). Default in ``_source_hashtag`` lifts the TLD-stripped second-
+# level label from the netloc (e.g. ``corporate.mattel.com`` → ``#mattel``),
+# which works for outlets where the brand IS the second-level domain. The
+# override map handles outliers where ``parts[-2]`` is the hoster instead of
+# the brand — for ``t-hunted.blogspot.com`` the default would emit
+# ``#blogspot`` (the platform, not the source). Keyed on the normalised
+# (``www.``-stripped, lowercased) netloc; value is the full hashtag string
+# WITH the leading ``#`` and dash-stripped at definition time.
+#
+# Why dash-stripped in the value: Telegram hashtag rules accept only
+# ``[a-zA-Z0-9_]``; a literal ``#t-hunted`` would render as ``#t`` followed
+# by ``-hunted`` plain text. Storing ``#thunted`` here keeps the value
+# WYSIWYG against what subscribers see in the channel and avoids a runtime
+# regex / replace.
+SOURCE_HASHTAG_OVERRIDE = {
+    't-hunted.blogspot.com': '#thunted',
 }
 
 
@@ -843,12 +1071,14 @@ SOURCE_EMOJI = {
     'mattel':        '\U0001F7E3',  # purple circle
     'lamley':        '\U0001F7E2',  # green circle
     'orangetrack':   '\U0001F535',  # blue circle
+    't-hunted':      '\U0001F7E4',  # brown circle
 }
 SOURCE_LABEL = {
     'autoevolution': 'autoevolution',
     'mattel':        'mattel',
     'lamley':        'lamley',
     'orangetrack':   'orangetrack',
+    't-hunted':      'T-Hunted',
 }
 
 def send_telegraph_teaser(telegraph_url, source_url):
@@ -936,38 +1166,27 @@ def _cleanup_preview_html(preview_path):
 # the article EN→RU and runs the canonical Telegraph → Telegram → DB
 # pipeline shared with ``hw_review.cmd_publish``:
 #
-#   Step 1 (translate). Two-tier engine contract per llm-transcreation
-#       Decisions 1, 5, 9:
-#       * Primary: ``transcreate_via_claude(row)`` if
-#         ``outage_state.is_fallback_active() == False``. Returns a dict
-#         with ``title`` (emoji prefix), ``subtitle``, ``paragraphs``
-#         (and ``blocks`` for autoevolution). Hot Wheels-glossary +
-#         emoji safety net are applied inside the Claude module.
-#       * Per-article fallback (``ClaudeTranscreationError`` —
-#         refusal / malformed JSON / 4xx): drop THIS article to the
-#         legacy ``transcreate_text`` Google path. Outage state is NOT
-#         advanced (Decision 5 — per-article problems must not take
-#         the channel offline).
+#   Step 1 (translate). Single-engine, hold-on-outage contract
+#       (hold-and-wait, operator decision 2026-06-11):
+#       * Primary + only engine: ``transcreate_via_claude(row)``. Returns
+#         a dict with ``title`` (emoji prefix), ``subtitle``, ``paragraphs``
+#         (and ``blocks`` for autoevolution). Hot Wheels-glossary + emoji
+#         safety net are applied inside the Claude module. On success,
+#         ``_maybe_record_recovery`` closes any active outage.
+#       * Per-article failure (``ClaudeTranscreationError`` — refusal /
+#         malformed JSON / 4xx): the LLM is up but choked on THIS article.
+#         Re-raise so the slot loop strikes it (3 strikes → failed_articles).
+#         Outage state is NOT advanced. No Google fallback.
 #       * API-level outage (``ClaudeOutageError`` — 429 / 5xx / auth /
-#         network): the state machine and admin-pings already fired
-#         inside ``claude_transcreation``. We translate THIS article via
-#         Google (degraded mode — never leave a slot unpublished),
-#         finish Steps 2–5 normally, and then **re-raise the
-#         ClaudeOutageError** so the upstream ``job()`` loop (Task 8)
-#         can advance its slot-counter without a strike and route
-#         subsequent slots through Google directly.
-#       * Already-in-fallback shortcut: when
-#         ``is_fallback_active() == True`` on entry, Claude is NOT
-#         called at all — the row goes straight to Google. Recovery
-#         is owned by ``job()`` (probes Claude on the first slot of
-#         the next cron tick), not here.
+#         network): advance the 2-ping/2h notification state machine, then
+#         re-raise WITHOUT publishing — the article is HELD in pending and
+#         retried on the next slot/day until the LLM recovers. We never
+#         ship a Google machine translation.
 #   Step 2 (Telegraph). Reuse stored ``telegraph_url`` per Decision 9
 #       idempotency; else ``telegraph_publisher.publish_article`` →
 #       ``mark_telegraph_published`` (dedicated txn, survives Telegram
-#       teaser failure). The ``↳ автоперевод`` marker (user-spec AC18)
-#       is injected by ``publish_article(auto_marker=not via_review)``
-#       regardless of which engine produced the RU body — uniform
-#       across both Claude and Google paths.
+#       teaser failure). ``auto_marker`` is always False — the ``↳
+#       автоперевод`` marker only ever flagged the removed Google path.
 #   Step 3 (persist RU). ``pending_repo.update_staged`` writes RU
 #       title / subtitle / paragraphs / blocks into the pending row;
 #       this is the NOT NULL anchor read by ``move_to_published``.
@@ -978,9 +1197,10 @@ def _cleanup_preview_html(preview_path):
 #       ``_cleanup_preview_html``.
 #
 # Contract: returns ``True`` on full success; raises ``ClaudeOutageError``
-# AFTER successful Steps 2–5 on the API-level-outage degraded path; raises
-# any other exception (Telegraph / Telegram / repo failure) up to the
-# caller so ``attempt_count`` can be bumped via
+# from Step 1 (article HELD, nothing published) on an API-level outage so
+# the slot loop can skip the slot without a strike; raises any other
+# exception (per-article LLM failure, Telegraph / Telegram / repo failure)
+# up to the caller so ``attempt_count`` can be bumped via
 # ``pending_repo.increment_attempt``.
 # ---------------------------------------------------------------------------
 
@@ -992,11 +1212,9 @@ def _maybe_record_recovery():
 
     Called from every successful Claude transcreation in
     ``_fallback_publish`` AND from a successful startup health probe
-    in ``main()``. Without it, a single transient outage in the past
-    leaves ``fallback_active=1`` set forever — the bot silently
-    routes every future article through Google Translate with the
-    ``↳ автоперевод`` marker, and the channel is permanently
-    degraded until an operator hand-edits ``bot_state``.
+    in ``main()``. Without it, a transient outage in the past leaves the
+    outage state machine stuck active (stale ``outage_started_at`` /
+    ``ping_count``), so recovery pings never fire on the next success.
     """
     try:
         event = outage_state.record_recovery_event(
@@ -1019,8 +1237,10 @@ def _maybe_record_recovery():
 
 
 def _fallback_publish(row, via_review=False):
-    """Auto-publish a pending row through Claude (primary) or Google
-    (per-article + global fallback). Used by ``job()`` step (e) — the
+    """Auto-publish a pending row, translating via the LLM (Claude) only.
+    On an API-level LLM outage the article is HELD (re-raises
+    ``ClaudeOutageError`` before any publish side-effect) — no Google
+    machine-translation fallback. Used by ``job()`` step (e) — the
     distributed-publish loop — and ``hw_review`` operator-driven
     publishes (``via_review=True``).
 
@@ -1077,155 +1297,76 @@ def _fallback_publish(row, via_review=False):
             )
         return True
 
-    # Step 1: EN → RU. Two-tier translation engine — see comment header.
-    en_title = row.get('title') or ''
-    en_subtitle = row.get('subtitle') or ''
-    en_paragraphs = row.get('paragraphs') or []
-    en_blocks = row.get('blocks')
-
-    # ``outage_signal`` carries a ``ClaudeOutageError`` to re-raise after
-    # Steps 2–5 complete. It MUST stay None on the happy / per-article
-    # branches so the function's normal True return path is preserved.
-    outage_signal = None
-
-    # Pure-Google translation path, factored so both the per-article
-    # fallback and the API-level-outage degraded path share one body.
-    def _google_translate():
-        ru_title = transcreate_text(en_title, is_title=True) if en_title else ''
-        ru_subtitle = transcreate_text(en_subtitle) if en_subtitle else ''
-        ru_paragraphs = [transcreate_text(p) for p in en_paragraphs]
-        ru_blocks = None
-        if en_blocks:
-            ru_blocks = []
-            for block in en_blocks:
-                if not isinstance(block, dict):
-                    ru_blocks.append(block)
-                    continue
-                new_block = dict(block)
-                # Defensive isinstance() guards: a malformed upstream
-                # block dict (e.g. ``text=None`` or a nested object)
-                # would have crashed inside ``GoogleTranslator.translate``.
-                text_val = new_block.get('text')
-                if isinstance(text_val, str) and text_val:
-                    new_block['text'] = transcreate_text(text_val)
-                cap_val = new_block.get('caption')
-                if isinstance(cap_val, str) and cap_val:
-                    new_block['caption'] = transcreate_text(cap_val)
-                ru_blocks.append(new_block)
-        # GoogleTranslator returns the input verbatim on a 403 / blocked
-        # call (``transcreate_text`` swallows the exception and falls
-        # back to the original string). Under double-engine outage
-        # (Claude AND Google both down) this would surface in the
-        # channel as RU title + EN body. Reject those — the slot loop
-        # bumps attempt_count, the article retries on a later slot.
-        if not _llm_translation_is_russian(ru_paragraphs):
-            raise GoogleTranslationError(
-                "Google fallback returned mostly-English paragraphs — "
-                "likely 403/blocked translate call returning source verbatim",
-            )
-        return ru_title, ru_subtitle, ru_paragraphs, ru_blocks
-
-    # Track whether THIS article was translated by Google fallback (legacy
-    # path, lower quality) vs. by an LLM (Claude / OpenRouter / etc, current
-    # quality bar). Only the Google-fallback path warrants the
-    # ``↳ автоперевод`` marker on the Telegra.ph page (operator decision —
-    # users see the marker as a quality warning; LLM output is
-    # indistinguishable from manual review and should not carry it).
-    used_google_fallback = False
-
-    # Already-in-fallback shortcut (Decision 5 / tech-spec "Publish loop"):
-    # when the state machine says Claude is down + 2h grace elapsed, route
-    # straight to Google without trying Claude.
-    if outage_state.is_fallback_active():
-        logger.info(
-            f"[fallback] is_fallback_active=True — routing {link} via Google"
+    # Step 1: EN → RU translation. The LLM (Claude via
+    # ``claude_transcreation``) is the ONLY translation path. When it is
+    # unavailable we HOLD the article rather than auto-publish a low-quality
+    # Google machine translation (operator decision 2026-06-11): the row
+    # stays in ``pending_articles`` and the next slot/day retries the LLM
+    # until it recovers. Recovery is auto-detected on the first success.
+    #
+    # The classifier inside ``claude_transcreation`` turns SDK exceptions
+    # into ``ClaudeTranscreationError`` (per-article hiccup) or
+    # ``ClaudeOutageError`` (API-level outage) — handled distinctly below.
+    try:
+        claude_result = transcreate_via_claude(row)
+        ru_title = claude_result.get('title') or ''
+        ru_subtitle = claude_result.get('subtitle') or ''
+        ru_paragraphs = list(claude_result.get('paragraphs') or [])
+        ru_blocks = claude_result.get('blocks')
+        # Healthy LLM call → close any active outage and emit the recovery
+        # ping. Idempotent: a cheap read-only probe when no outage is active.
+        _maybe_record_recovery()
+    except ClaudeTranscreationError as exc:
+        # Per-article hiccup (refusal, malformed JSON, schema drift): the
+        # LLM is UP, it just choked on THIS article. Re-raise so the slot
+        # loop bumps attempt_count; after 3 strikes the row moves to
+        # ``failed_articles`` so one bad article cannot wedge the queue
+        # head forever. No Google fallback.
+        logger.warning(
+            f"[fallback] Claude per-article failure for {link}: "
+            f"{type(exc).__name__}: {sanitize_error_message(exc)} "
+            f"— slot strike (next slot retries this row)"
         )
-        ru_title, ru_subtitle, ru_paragraphs, ru_blocks = _google_translate()
-        used_google_fallback = True
-    else:
-        # Try Claude. The classifier inside ``claude_transcreation``
-        # turns SDK exceptions into either ``ClaudeTranscreationError``
-        # (per-article) or ``ClaudeOutageError`` (API-level).
+        raise
+    except ClaudeOutageError:
+        # API-level outage (429 / 5xx / auth / network). Advance the
+        # 2-ping/2h notification state machine so the operator is kept
+        # informed, then HOLD: re-raise WITHOUT publishing. The row stays
+        # in pending; the slot loop (``job()``) catches this, does NOT
+        # strike, and the next slot retries the LLM. No Google fallback —
+        # we wait for the LLM rather than ship a machine translation.
+        logger.warning(
+            f"[hold] LLM outage for {link} — holding article, will retry "
+            f"when the LLM recovers (no Google fallback)."
+        )
         try:
-            claude_result = transcreate_via_claude(row)
-            ru_title = claude_result.get('title') or ''
-            ru_subtitle = claude_result.get('subtitle') or ''
-            ru_paragraphs = list(claude_result.get('paragraphs') or [])
-            ru_blocks = claude_result.get('blocks')
-            # Healthy Claude call → close any active outage and emit
-            # the recovery ping. Idempotent: if no outage was active
-            # this is a cheap read-only probe inside outage_state.
-            _maybe_record_recovery()
-        except ClaudeTranscreationError as exc:
-            # Operator decision: GPT translates EVERYTHING. Per-article
-            # LLM hiccups (refusal, malformed JSON, schema drift) raise
-            # straight up — the slot loop bumps attempt_count, and after
-            # 3 slot strikes (= 3 cron slots ≈ 4.5h with the 90-min floor)
-            # the article auto-moves to failed_articles. No inline retry
-            # with time.sleep — that would block the slot for 10+ min
-            # synchronously and stall publish-loop pacing.
-            logger.warning(
-                f"[fallback] Claude per-article failure for {link}: "
-                f"{type(exc).__name__}: {sanitize_error_message(exc)} "
-                f"— slot strike (next slot retries this row)"
+            # tz-aware UTC: outage_state rejects naive datetimes (the
+            # 1h/2h thresholds must be unambiguous).
+            event = outage_state.record_outage_event(
+                datetime.now(timezone.utc),
             )
-            raise
-        except ClaudeOutageError as exc:
-            # API-level outage — advance the state machine and dispatch
-            # admin pings per the outage protocol (2 pings + 2h grace
-            # before global Google fallback). Then translate THIS article
-            # via Google so the slot doesn't stay unpublished (degraded
-            # mode), finish Steps 2–5, and re-raise after the publish so
-            # ``job()`` can advance its slot loop without a strike.
-            logger.warning(
-                f"[fallback] Claude API outage for {link}: "
-                f"{type(exc).__name__} — advancing outage state, "
-                f"degraded-mode Google publish + re-raise"
+            for ping_text in event.get('pings_to_send') or []:
+                try:
+                    send_admin_notification(ping_text)
+                except Exception as notify_err:
+                    logger.error(
+                        f"[hold] outage admin-ping send failed: "
+                        f"{sanitize_error_message(notify_err)}"
+                    )
+        except Exception as state_err:
+            # A state-machine update failure must not change the outcome —
+            # we still re-raise to hold the article. Log and continue.
+            logger.error(
+                f"[hold] outage_state.record_outage_event failed for "
+                f"{link}: {sanitize_error_message(state_err)}"
             )
-            # NB: ``outage_signal`` is intentionally function-local. If
-            # Steps 2-5 below raise a non-outage exception (Telegraph
-            # 503, Telegram error, …) the signal is "lost" — but
-            # ``record_outage_event`` already persisted the state in
-            # bot_state, so cross-call communication still works via
-            # the DB. The protocol explicitly probes Claude again on
-            # subsequent slots between ping #1 and ping #3 (1-2h) on
-            # the off chance the outage was transient; the global
-            # ``is_fallback_active`` flag flips at ping #3, and only
-            # then does the slot loop short-circuit Claude.
-            outage_signal = exc
-            try:
-                # Use a tz-aware UTC datetime — outage_state rejects
-                # naive datetimes (timestamps must be unambiguous across
-                # the 1h/2h thresholds in the state machine).
-                event = outage_state.record_outage_event(
-                    datetime.now(timezone.utc),
-                )
-                for ping_text in event.get('pings_to_send') or []:
-                    try:
-                        send_admin_notification(ping_text)
-                    except Exception as notify_err:
-                        logger.error(
-                            f"[fallback] outage admin-ping send failed: "
-                            f"{sanitize_error_message(notify_err)}"
-                        )
-            except Exception as state_err:
-                # State-machine update failure must not block the
-                # degraded-mode publish — log + continue. The re-raise
-                # below still informs ``job()`` so it can route
-                # subsequent slots through Google.
-                logger.error(
-                    f"[fallback] outage_state.record_outage_event failed "
-                    f"for {link}: {sanitize_error_message(state_err)}"
-                )
-            ru_title, ru_subtitle, ru_paragraphs, ru_blocks = _google_translate()
-            used_google_fallback = True
+        raise
 
-    # Step 1b: strip author social-media plugs from RU output.
-    # Single call site — covers Claude-success, is_fallback_active shortcut,
-    # ClaudeOutageError degraded mode (every path that reaches this point).
-    # Wrapped in try/except: regex bug must not block publish (publish-
-    # something > publish-nothing). Per-fragment INFO log so operator can
-    # spot false positives via journalctl.
+    # Step 1b: strip author social-media plugs from RU output. Reaching
+    # here means the LLM translated successfully (outage/per-article paths
+    # already re-raised above). Wrapped in try/except: a regex bug must not
+    # block publish (publish-something > publish-nothing). Per-fragment INFO
+    # log so the operator can spot false positives via journalctl.
     try:
         original_pieces = (
             [ru_title or '', ru_subtitle or '']
@@ -1277,7 +1418,7 @@ def _fallback_publish(row, via_review=False):
         if original_pieces != cleaned_pieces:
             logger.info(
                 f"[author_plug] stripped from {link!r} "
-                f"(via_review={via_review}, used_google={used_google_fallback})"
+                f"(via_review={via_review})"
             )
     except Exception as plug_err:
         logger.error(
@@ -1299,12 +1440,10 @@ def _fallback_publish(row, via_review=False):
             f"[fallback] reusing stored telegraph_url for {link}: {telegraph_url}"
         )
     else:
-        # ``↳ автоперевод`` marker is injected ONLY when this article was
-        # translated via Google fallback (legacy lower-quality path). LLM
-        # output (Claude / OpenRouter / etc) is treated as production
-        # quality and carries no marker, matching the manual-review path's
-        # node-tree shape. Manual review (via_review=True) never gets the
-        # marker either.
+        # ``auto_marker`` is always False: the ``↳ автоперевод`` marker
+        # only ever flagged the legacy Google-fallback path, which has been
+        # removed (LLM outages now HOLD instead of machine-translating). All
+        # published articles are LLM-translated, production quality, no marker.
         telegraph_url = telegraph_publisher.publish_article(
             title=ru_title,
             paragraphs=ru_paragraphs,
@@ -1312,7 +1451,7 @@ def _fallback_publish(row, via_review=False):
             source_url=link,
             subtitle=ru_subtitle,
             blocks=ru_blocks,
-            auto_marker=used_google_fallback and not via_review,
+            auto_marker=False,
         )
         telegraph_path = urlparse(telegraph_url).path.lstrip('/')
         if not telegraph_path:
@@ -1325,6 +1464,10 @@ def _fallback_publish(row, via_review=False):
         # from the row — so the pending-row copy is the idempotency
         # anchor, not an input to the move.
         pending_repo.mark_telegraph_published(link, telegraph_url, telegraph_path)
+
+        # Let Telegra.ph's edge cache settle before Telegram's IV worker
+        # fetches the page (see ``TELEGRAPH_CACHE_WARMUP_SECONDS`` docstring).
+        time.sleep(TELEGRAPH_CACHE_WARMUP_SECONDS)
 
     # Step 3: persist RU fields. Required for the ``published_articles``
     # NOT NULL ``ru_title`` copy inside ``move_to_published``. Writes
@@ -1366,17 +1509,9 @@ def _fallback_publish(row, via_review=False):
     logger.info(
         f"[fallback] Published {link} via_review={via_review} url={telegraph_url}"
     )
-
-    # API-level outage signal — re-raise AFTER successful Steps 2–5 so
-    # ``job()`` (Task 8) can advance its slot-counting loop without
-    # treating this slot as a strike, and so subsequent slots route
-    # through Google directly until recovery. This is the contract that
-    # keeps the channel publishing AND keeps the upstream loop informed
-    # — without re-raise the outage signal would be silently swallowed
-    # and ``job()`` would keep trying Claude on every slot (anti-pattern
-    # — articles drift to ``move_to_failed`` after 3 strikes).
-    if outage_signal is not None:
-        raise outage_signal
+    # Reaching here means the LLM translated and the article published.
+    # An API-level outage never gets this far — it re-raises ClaudeOutageError
+    # from Step 1 (hold) before any publish side-effect.
 
     return True
 
@@ -1417,6 +1552,8 @@ def fetch_full_article(entry):
             return lamley_source.fetch_lamley_article(link, notifier=send_admin_notification)
         if 'autoevolution.com' in domain:
             return autoevolution_source.fetch_autoevolution_article(entry)
+        if 'blogspot.com' in domain:
+            return t_hunted_source.fetch_t_hunted_article(link, notifier=send_admin_notification)
     except Exception as exc:
         logger.exception(f"Source fetcher failed for {link}: {exc}")
         return None
@@ -1645,15 +1782,14 @@ def job():
       (d) admin ping             — plan-of-day; always fires (heartbeat on
                                   quiet days); + backlog warning when N > 50.
       (e) distributed-publish    — sleep-until-slot, publish via
-                                  ``_fallback_publish`` (Claude primary +
-                                  Google per-article fallback). When the
-                                  outage state machine has fallback active,
-                                  ``_fallback_publish`` short-circuits to
-                                  Google internally. ``ClaudeOutageError``
-                                  re-raises are absorbed and the loop
-                                  advances. Other unexpected errors
-                                  follow the standard 3-strikes flow
-                                  (``increment_attempt`` → ``move_to_failed``).
+                                  ``_fallback_publish`` (LLM/Claude only).
+                                  On ``ClaudeOutageError`` the article is
+                                  HELD (nothing published) and the loop
+                                  advances WITHOUT a strike so it retries the
+                                  LLM next slot/day — no Google fallback.
+                                  Other unexpected errors follow the standard
+                                  3-strikes flow (``increment_attempt`` →
+                                  ``move_to_failed``).
     """
     logger.info("Starting daily cron tick...")
     init_db()  # idempotent — guard against missing tables on first run.
@@ -1757,6 +1893,128 @@ def job():
             )
             continue
 
+        # --------------------------------------------------------------
+        # Cross-source dedup gate (cross-source-dedup feature, Wave 2).
+        # Position: post-fetch, post-checklist, pre-row-assembly per
+        # Decision 14 (cheapest filters earlier; this is the most
+        # expensive post-fetch gate — extract + N similarity calls +
+        # 2 SQL reads).
+        #
+        # Three terminal branches:
+        #   * block  — hard duplicate (≥50% overlap). Drop, write to
+        #              processed_news (Decision 8), fire E015, continue.
+        #   * flag   — soft duplicate (30-49% overlap). Pass through,
+        #              fire E014 (per-pair 7-day rate-limited, AC5),
+        #              keep fingerprint on the row.
+        #   * pass   — no match (or empty fp). Fall through with fp.
+        #
+        # Wrapped in try/except Exception per Decision 12 / user-spec
+        # AC9 — any sub-call failure (extractor regression, SQL fault,
+        # malformed historical row) MUST NOT block publishing. On
+        # exception the article publishes with model_fingerprint=NULL
+        # and the operator gets one rate-limited [E016] ping per hour.
+        # --------------------------------------------------------------
+        fp = None
+        try:
+            dedup_conn = pending_repo._connect()
+            try:
+                fp = model_extractor.extract_fingerprint(article)
+                decision, match = _check_cross_source_dedup(
+                    article, fp, dedup_conn,
+                )
+
+                if decision == 'block':
+                    logger.info(
+                        "Skipping cross-source duplicate %s; matched %s "
+                        "(overlap %d%%)",
+                        link, match['link'], match['overlap_pct'],
+                    )
+                    mark_processed(
+                        link,
+                        article.get('title') or entry.get('title') or '',
+                        entry.get('published') or entry.get('pub_date') or '',
+                    )
+                    try:
+                        send_admin_notification(
+                            admin_alerts.alert_cross_source_blocked(
+                                link, match['link'], match['overlap_pct'],
+                            )
+                        )
+                    except Exception as notify_err:
+                        logger.error(
+                            "Failed to send E015 notification: %s", notify_err,
+                        )
+                    continue
+
+                if decision == 'flag':
+                    if not pending_repo.is_pair_rate_limited(
+                        dedup_conn, link, match['link'],
+                    ):
+                        new_source = (
+                            entry.get('source_name')
+                            or _resolve_source_name(link)
+                        )
+                        try:
+                            send_admin_notification(
+                                admin_alerts.alert_cross_source_dupe(
+                                    new_link=link,
+                                    existing_link=match['link'],
+                                    new_source=new_source,
+                                    existing_source=match['source_name'],
+                                    overlap_pct=match['overlap_pct'],
+                                    n_matches=match['n_matches'],
+                                    n_total=match['n_total'],
+                                    models=match['models'],
+                                )
+                            )
+                        except Exception as notify_err:
+                            logger.error(
+                                "Failed to send E014 notification: %s",
+                                notify_err,
+                            )
+                        pending_repo.mark_pair_pinged(
+                            dedup_conn, link, match['link'],
+                        )
+                        dedup_conn.commit()
+                # 'pass' → nothing to do; fp falls through into row.
+            finally:
+                dedup_conn.close()
+        except Exception as exc:
+            # Decision 12 / AC9 — broad handler is intentional. We don't
+            # know upfront which sub-call can throw (regex compile bug,
+            # repo SQL fault, exotic article shape, malformed historical
+            # fingerprint JSON). The contract is "dedup never blocks
+            # publishing" — a single broad handler enforces it.
+            logger.exception("dedup gate failed, degraded mode active")
+            try:
+                rl_conn = pending_repo._connect()
+                try:
+                    if not pending_repo.is_dedup_degraded_rate_limited(
+                        rl_conn,
+                    ):
+                        try:
+                            send_admin_notification(
+                                admin_alerts.alert_dedup_degraded(
+                                    type(exc).__name__,
+                                )
+                            )
+                        except Exception as notify_err:
+                            logger.error(
+                                "Failed to send E016 notification: %s",
+                                notify_err,
+                            )
+                        pending_repo.mark_dedup_degraded_pinged(rl_conn)
+                        rl_conn.commit()
+                finally:
+                    rl_conn.close()
+            except Exception:
+                # Rate-limit bookkeeping itself failed — log only. The
+                # article still publishes (degraded-mode contract).
+                logger.exception(
+                    "dedup degraded-mode rate-limit bookkeeping failed",
+                )
+            fp = None
+
         row = {
             'link': link,
             'source_name': entry.get('source_name') or _resolve_source_name(link),
@@ -1767,6 +2025,7 @@ def job():
             'images': article.get('images') or [],
             'blocks': article.get('blocks'),
             'pub_date': entry.get('published') or entry.get('pub_date') or '',
+            'model_fingerprint': fp,
         }
         try:
             if pending_repo.insert_pending(row):
@@ -1790,6 +2049,12 @@ def job():
         window_start=WINDOW_START_TIME,
         window_end=WINDOW_END_TIME,
     )
+    # Hard daily-post cap (operator pacing, 2026-05-24). Trim surplus
+    # slots and push the overflow into carry_over so it shows up in the
+    # plan-of-day ping and the affected pending rows wait for tomorrow.
+    if len(slots) > MAX_DAILY_POSTS:
+        carry_over += len(slots) - MAX_DAILY_POSTS
+        slots = slots[:MAX_DAILY_POSTS]
 
     # ------------------------------------------------------------------
     # Step (d): admin ping with plan-of-day. Always sent — operator wants a
@@ -1835,12 +2100,10 @@ def job():
     #     immediately).
     #   * Pull oldest pending row; if list_pending is empty (manual review
     #     preempted between cron tick and slot), break.
-    #   * Publish via ``_fallback_publish`` (Claude primary + per-article
-    #     Google fallback). ``_fallback_publish`` short-circuits to Google
-    #     internally when the state machine has the global Google fallback
-    #     active.
-    #   * ClaudeOutageError → already published in degraded mode by
-    #     ``_fallback_publish``; advance to the next slot without strike.
+    #   * Publish via ``_fallback_publish`` (LLM/Claude only — no Google).
+    #   * ClaudeOutageError → ``_fallback_publish`` HELD the article (nothing
+    #     published); advance to the next slot WITHOUT a strike so it retries
+    #     the LLM until recovery.
     #   * Other Exception → 3-strikes flow.
     # ------------------------------------------------------------------
     window_end_dt = datetime.combine(
@@ -1877,18 +2140,17 @@ def job():
             _fallback_publish(row, via_review=False)
             published_count += 1
         except ClaudeOutageError:
-            # ``_fallback_publish`` already published in degraded mode and
-            # advanced the state machine. We do NOT count this as a strike;
-            # the loop continues to the next slot, where the now-active
-            # fallback flag routes us through the Google-only path.
+            # LLM outage — ``_fallback_publish`` HELD this article (nothing
+            # was published) and advanced the operator-notification state
+            # machine. Do NOT count a publish and do NOT strike the row: it
+            # stays at the queue head and the next slot retries the LLM. We
+            # keep iterating slots so a same-day recovery still publishes;
+            # if the outage persists, the article simply carries over to the
+            # next daily tick. No Google fallback.
             logger.warning(
-                f"[slot {idx}/{len(slots)}] ClaudeOutageError surfaced; "
-                f"degraded-mode publish completed, continuing loop."
+                f"[slot {idx}/{len(slots)}] LLM outage — article held, "
+                f"will retry on the next slot/day."
             )
-            # Degraded-mode publishes are still real publishes for the
-            # end-of-loop summary — folding them into ``published_count``
-            # matches what the channel actually saw (CR-2).
-            published_count += 1
         except Exception as exc:
             safe = sanitize_error_message(exc)
             logger.error(
@@ -1920,6 +2182,34 @@ def job():
         f"[job] done. Published {published_count}, "
         f"carry-over {carry_over}, queue size now {final_queue_size}."
     )
+    _record_heartbeat()
+
+
+_HEARTBEAT_PATH = os.path.expanduser("~/.cache/news_bot/last_tick.ts")
+
+
+def _record_heartbeat(path=None):
+    """Write a Unix-timestamp marker that proves ``job()`` completed.
+
+    External watchdog (cron'd ``watchdog.sh``) reads this file's mtime
+    and alerts the operator if it's older than the daily-tick interval.
+    Designed for the alive-but-stuck class of incident (prod 2026-06-08
+    feedparser hang) — ``Restart=on-failure`` already covers hard
+    crashes, this catches the silent ones.
+
+    Failure to write the heartbeat is logged but never raised — the
+    heartbeat is for monitoring, not for correctness of the cron tick.
+    """
+    target = _HEARTBEAT_PATH if path is None else path
+    try:
+        os.makedirs(os.path.dirname(target), exist_ok=True)
+        with open(target, "w") as f:
+            f.write(f"{int(time.time())}\n")
+    except OSError as exc:
+        logger.warning(
+            f"[heartbeat] failed to write {target!r}: "
+            f"{sanitize_error_message(exc)}"
+        )
 
 
 def main():
@@ -1929,9 +2219,8 @@ def main():
     diagnostic ping reaches the operator before the first ``job()`` call):
 
       1. ``claude_transcreation.health_check()`` — non-raising bool probe.
-         On ``False`` we ping the admin and flip the outage state machine
-         to ``fallback_active=True`` so the day's first ``job()`` runs
-         straight through the Google-only path.
+         On ``False`` we ping the admin (E004). ``job()`` then attempts the
+         LLM each slot and HOLDS articles until it recovers (no Google).
       2. ``os.getenv('TZ') == 'Europe/Moscow'`` — on mismatch we ping the
          admin (warning, not blocking — explicit pytz makes the cron line
          correct regardless of the container's wall-clock TZ).
@@ -1948,9 +2237,12 @@ def main():
 
     # Health check #1: Claude API + ux-guidelines.md probe.
     if not claude_transcreation.health_check():
+        # LLM unavailable at startup — just warn the operator. We do NOT
+        # switch to Google (that path was removed); ``job()`` will attempt
+        # the LLM on each slot and HOLD articles until it recovers.
         logger.warning(
             "[startup] claude_transcreation.health_check() returned False — "
-            "switching to Google-only for the day."
+            "articles will be held until the LLM recovers."
         )
         try:
             send_admin_notification(
@@ -1961,19 +2253,11 @@ def main():
                 f"[startup] failed to send Claude-probe ping: "
                 f"{sanitize_error_message(notify_err)}"
             )
-        try:
-            outage_state.set_fallback_active(True)
-        except Exception as exc:
-            logger.error(
-                f"[startup] outage_state.set_fallback_active(True) failed: "
-                f"{sanitize_error_message(exc)}"
-            )
     else:
         # Probe healthy — close any stale outage state from a prior run.
-        # Without this, a transient outage that happened yesterday and
-        # was never recovered (because nothing called record_recovery_event
-        # on success) would persist across restarts and force every slot
-        # through Google forever.
+        # Without this, a transient outage that happened yesterday and was
+        # never recovered (because nothing called record_recovery_event on
+        # success) would leave the outage state machine stuck active.
         _maybe_record_recovery()
 
     # Health check #2: container TZ.
@@ -2005,5 +2289,53 @@ def main():
         schedule.run_pending()
         time.sleep(60)
 
+_LOCK_FILE_PATH = os.path.join(
+    os.path.dirname(os.path.abspath(__file__)),
+    ".news_bot.lock",
+)
+# Module-level reference keeps the file descriptor alive for the process
+# lifetime. The kernel releases the flock on fd close (clean exit, SIGTERM,
+# SIGKILL, OOM-kill — all paths), so no explicit cleanup is needed.
+_singleton_lock_fd = None
+
+
+def _acquire_singleton_lock(lock_path=_LOCK_FILE_PATH):
+    """Hold an exclusive flock to refuse a second concurrent start.
+
+    Prod incident 2026-06-08: a manual restart sequence (nohup, then
+    setsid, then tmux — each launched silently because pgrep regex was
+    wrong and operator believed no process was running) produced four
+    parallel prod bots fetching the same RSS, racing on inserts and
+    publishes. Kernel-held ``flock`` makes a second start fail-fast
+    with a clear log line instead of silently doubling up.
+
+    Per-deploy isolation: lock file is colocated with ``news_bot.py``,
+    so ``/home/hwbot/bot/.news_bot.lock`` and
+    ``/home/hwbot/bot_test/.news_bot.lock`` are distinct files — prod
+    and test never conflict.
+
+    On lock-conflict: log ERROR and exit with code 1. Operator sees the
+    log line; no admin ping (the existing instance is already alive and
+    will fire its own ping at the next scheduled tick).
+    """
+    global _singleton_lock_fd
+    _singleton_lock_fd = open(lock_path, "w")
+    try:
+        fcntl.flock(_singleton_lock_fd.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+    except (BlockingIOError, OSError) as exc:
+        logger.error(
+            f"[singleton-lock] cannot acquire {lock_path!r}: another news_bot "
+            f"instance is already running in this deploy directory. Refusing "
+            f"to start to prevent duplicate publishes ({type(exc).__name__})."
+        )
+        _singleton_lock_fd.close()
+        _singleton_lock_fd = None
+        sys.exit(1)
+    _singleton_lock_fd.write(f"{os.getpid()}\n")
+    _singleton_lock_fd.flush()
+    logger.info(f"[singleton-lock] acquired {lock_path!r}")
+
+
 if __name__ == "__main__":
+    _acquire_singleton_lock()
     main()

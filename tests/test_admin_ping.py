@@ -30,12 +30,12 @@ class TestSourceVocabulary:
 
     def test_source_emoji_has_exact_keys(self):
         assert set(SOURCE_EMOJI) == {
-            'autoevolution', 'mattel', 'lamley', 'orangetrack',
+            'autoevolution', 'mattel', 'lamley', 'orangetrack', 't-hunted',
         }
 
     def test_source_label_has_exact_keys(self):
         assert set(SOURCE_LABEL) == {
-            'autoevolution', 'mattel', 'lamley', 'orangetrack',
+            'autoevolution', 'mattel', 'lamley', 'orangetrack', 't-hunted',
         }
 
     def test_source_emoji_values(self):

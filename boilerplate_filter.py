@@ -36,6 +36,36 @@ from typing import Iterable, List
 # (~80–110 chars) fit under the threshold.
 _MAX_BOILERPLATE_LEN = 120
 
+# Long-form boilerplate patterns — bypass the length cap above. Each
+# pattern must be strictly ``^``-anchored on a phrase that is vanishingly
+# unlikely to start a real news-prose paragraph, and free of nested
+# greedy quantifiers (ReDoS-safe even on uncapped input). Used for
+# multi-sentence promotional outros (CTA + social-media plug + bot name)
+# that routinely run 200–400 chars and would otherwise sail past the
+# 120-char threshold.
+#
+# t-hunted ships the same Portuguese outro on EVERY published article:
+#   "Saiba mais sobre a série <NAME> e veja mais fotos neste link.
+#    Para ver mais novidades todos os dias fique ligado aqui no T-Hunted,
+#    curta nossa página no Facebook, siga o nosso Instagram e se inscreva
+#    no nosso canal no YouTube!"
+# (~274 chars). Without long-form filtering this entire CTA was reaching
+# Telegraph after the LLM translated it to Russian (incident 2026-06-02).
+_LONG_BOILERPLATE_PATTERNS = [
+    # PT — "Saiba mais sobre ..." opener. Distinctive: legitimate news
+    # prose rarely opens a paragraph with this phrase. ``\b`` ensures we
+    # do not accidentally catch "saibamais..." style typos.
+    re.compile(r'^saiba\s+mais\s+sobre\b', re.I),
+    # PT — "Para ver mais novidades ..." defence in depth: catches the
+    # outro's second sentence if the parser ever splits the CTA across
+    # two paragraphs.
+    re.compile(r'^para\s+ver\s+mais\s+novidades\b', re.I),
+    # RU — defence in depth in case a future PT outro variant slips
+    # through and ends up translated. ``Узнать больше о ...`` is the
+    # canonical RU equivalent of "Saiba mais sobre ...".
+    re.compile(r'^узнать\s+больше\s+о\b', re.I),
+]
+
 # Platforms covered by author-plug patterns (variant A and B of the
 # author-plug-filter feature). Single tuple keeps the alternation in sync
 # across patterns. Threads / OnlyFans intentionally out of scope (rare in HW
@@ -155,6 +185,45 @@ _BOILERPLATE_PATTERNS = [
         r'^\s*(найти|купить)\b.*\bна\s+(ebay|amazon|aliexpress|mattel|walmart)\b',
         re.I,
     ),
+    # ------------------------------------------------------------------
+    # Portuguese — defence in depth for t-hunted.blogspot.com.
+    # Blogger PT-locale template emits short standalone labels for
+    # share widgets, navigation links and comment forms that bleed into
+    # the paragraph stream. All patterns are ^-anchored, ReDoS-safe (no
+    # nested greedy quantifiers), and bounded by ``_MAX_BOILERPLATE_LEN``
+    # so inline mentions inside real prose are preserved.
+    # ------------------------------------------------------------------
+    # "Compartilhar no Facebook" / "Compartilhar via WhatsApp" etc.
+    re.compile(
+        r'^compartilhar\s+(no|em|via|por)\s+'
+        r'(facebook|twitter|x|whatsapp|telegram|email)\b',
+        re.I,
+    ),
+    # "Marcadores: hot wheels, mattel" — Blogger labels footer.
+    re.compile(r'^marcadores\s*:', re.I),
+    # "Postado por <author>" — Blogger byline.
+    re.compile(r'^postado\s+por\b', re.I),
+    # Bare "Postagem" label (exact-match — avoids FP on prose
+    # «Postagem nova foi publicada»).
+    re.compile(r'^postagem$', re.I),
+    # "Enviar por email" — PT "Email this".
+    re.compile(r'^enviar\s+por\s+email\b', re.I),
+    # "Postagens mais antigas" / "Postagens mais recentes" — older/newer
+    # post navigation links.
+    re.compile(r'^postagens\s+mais\s+(antigas|recentes)$', re.I),
+    # "Assinar: Postagens (Atom)" — feed-subscribe link.
+    re.compile(r'^assinar\s*:', re.I),
+    # "Leia mais" — read-more link (anchored as standalone label, not
+    # part of inline prose). Only «leia mais» is included; «ler mais»
+    # was excluded due to higher FP risk per code-research §4.D.
+    re.compile(r'^leia\s+mais$', re.I),
+    # "Postar um comentário" / "Postar comentário" — Blogger comment
+    # form trigger. ``[áa]`` covers NFC-normalised UTF-8 plus an ASCII
+    # fallback in case the feedparser/encoding pipeline strips diacritics.
+    re.compile(r'^postar\s+(um\s+)?coment[áa]rio$', re.I),
+    # "Página inicial" / "Página principal" home link. ``p[aá]gina``
+    # handles both UTF-8 and ASCII fallbacks.
+    re.compile(r'^p[aá]gina\s+(inicial|principal)$', re.I),
 ]
 
 
@@ -169,7 +238,18 @@ def is_boilerplate(text: str) -> bool:
     if not isinstance(text, str):
         return False
     s = text.strip()
-    if not s or len(s) > _MAX_BOILERPLATE_LEN:
+    if not s:
+        return False
+    # Long-form patterns first — these intentionally bypass the
+    # ``_MAX_BOILERPLATE_LEN`` cap because they target multi-sentence
+    # promotional outros (~200-400 chars). Strict ``^`` anchors + no
+    # nested quantifiers keep them ReDoS-safe even on uncapped input.
+    for pat in _LONG_BOILERPLATE_PATTERNS:
+        if pat.search(s):
+            return True
+    # Short-form patterns — length-bounded to preserve real prose that
+    # happens to mention a trigger phrase inline.
+    if len(s) > _MAX_BOILERPLATE_LEN:
         return False
     for pat in _BOILERPLATE_PATTERNS:
         if pat.search(s):

@@ -213,6 +213,28 @@ def _notify(notifier, message: str) -> None:
 _ALLOWED_HOSTS = ('lamleygroup.com', 'www.lamleygroup.com')
 
 
+#: Canonical Blogger image-CDN hosts (Lamley is Blogger-hosted). Membership
+#: is by exact hostname suffix to keep ``_is_blogger_image_url`` ReDoS-safe
+#: and to reject same-substring decoy URLs (e.g. off-site trackers that
+#: pass the canonical host in a query parameter).
+_BLOGGER_IMAGE_HOSTS = ('blogger.googleusercontent.com', 'bp.blogspot.com')
+
+
+def _is_blogger_image_url(url: str) -> bool:
+    """Return True iff *url*'s hostname ends with a canonical Blogger CDN host.
+
+    Used to guard the lightbox-anchor lift in image extraction: lift the
+    parent ``<a href>`` only when it points at a sibling Blogger image
+    variant, not at an off-site click-tracker that happens to mention
+    ``blogger`` in its path or query.
+    """
+    try:
+        host = (urlparse(url).hostname or '').lower()
+    except (ValueError, AttributeError):
+        return False
+    return any(host == h or host.endswith('.' + h) for h in _BLOGGER_IMAGE_HOSTS)
+
+
 def _is_allowed_lamley_url(link: str) -> bool:
     """Return True iff ``link`` is an https:// URL whose host is in
     ``_ALLOWED_HOSTS``. Anything else is rejected silently."""
@@ -363,6 +385,17 @@ def fetch_lamley_article(
         src = img.get("src") or ""
         if not src.startswith("http"):
             continue
+        # Blogger lightbox sandwich (identical pattern to t-hunted):
+        #   <a href="https://.../s1200/photo.jpg">      ← FULL-SIZE
+        #     <img src="https://.../w200-h200/photo.jpg" />  ← 200×200 thumb
+        #   </a>
+        # Lift the wrapping ``<a href>`` so Telegraph (which doesn't
+        # re-host) shows the full-resolution photo instead of the thumb.
+        parent = img.parent
+        if parent is not None and parent.name == "a":
+            href = parent.get("href") or ""
+            if href.startswith("http") and _is_blogger_image_url(href):
+                src = href
         base = src.split("?", 1)[0]
         if base in seen_bases:
             continue

@@ -48,6 +48,8 @@ EXPECTED_PENDING = {
     'attempt_count': {'type': 'INTEGER',   'notnull': 1, 'dflt_value': '0',                     'pk': 0},
     'last_error':    {'type': 'TEXT',      'notnull': 0, 'dflt_value': None,                    'pk': 0},
     'pub_date':      {'type': 'TEXT',      'notnull': 0, 'dflt_value': None,                    'pk': 0},
+    # Migration 2026-06-XX (cross-source-dedup, Decision 11).
+    'model_fingerprint': {'type': 'TEXT',  'notnull': 0, 'dflt_value': None,                    'pk': 0},
 }
 
 EXPECTED_PUBLISHED = {
@@ -59,6 +61,8 @@ EXPECTED_PUBLISHED = {
     'source_name':    {'type': 'TEXT',      'notnull': 1, 'dflt_value': None,                'pk': 0},
     'published_at':   {'type': 'TIMESTAMP', 'notnull': 1, 'dflt_value': 'CURRENT_TIMESTAMP', 'pk': 0},
     'via_review':     {'type': 'INTEGER',   'notnull': 1, 'dflt_value': None,                'pk': 0},
+    # Migration 2026-06-XX (cross-source-dedup, Decision 11).
+    'model_fingerprint': {'type': 'TEXT',  'notnull': 0, 'dflt_value': None,                'pk': 0},
 }
 
 EXPECTED_FAILED = {
@@ -923,6 +927,362 @@ class TestMoves(_TmpDbCase):
 
     def test_retry_from_failed_missing_link_returns_false(self):
         self.assertFalse(repo.retry_from_failed('http://does/not/exist'))
+
+
+# ---------------- Cross-source dedup: schema-pin sanity ----------------
+
+class TestCrossSourceDedupSchemaPin(unittest.TestCase):
+    """Pin the dedup-related schema additions on both tables (Decision 11)."""
+
+    def test_expected_pending_includes_model_fingerprint(self):
+        self.assertIn('model_fingerprint', EXPECTED_PENDING)
+        self.assertEqual(
+            EXPECTED_PENDING['model_fingerprint'],
+            {'type': 'TEXT', 'notnull': 0, 'dflt_value': None, 'pk': 0},
+        )
+
+    def test_expected_published_includes_model_fingerprint(self):
+        self.assertIn('model_fingerprint', EXPECTED_PUBLISHED)
+        self.assertEqual(
+            EXPECTED_PUBLISHED['model_fingerprint'],
+            {'type': 'TEXT', 'notnull': 0, 'dflt_value': None, 'pk': 0},
+        )
+
+
+# ---------------- Cross-source dedup: insert_pending fingerprint ----------------
+
+class TestInsertPendingFingerprint(_TmpDbCase):
+    """Cover the ``insert_pending`` extension (entry['model_fingerprint'])
+    introduced for cross-source-dedup (Decisions 5, 11).
+    """
+
+    def test_insert_pending_with_fingerprint_roundtrip(self):
+        """A dict fingerprint round-trips through insert/get as a dict —
+        pins ``_PENDING_JSON_COLS`` registration against typos."""
+        fp = {'strict': ['toyota 4runner'], 'brands': ['toyota']}
+        entry = _sample_entry(link='http://fp/round')
+        entry['model_fingerprint'] = fp
+        self.assertTrue(repo.insert_pending(entry))
+
+        row = repo.get_pending(entry['link'])
+        self.assertIsNotNone(row)
+        self.assertEqual(row['model_fingerprint'], fp)
+        # CRITICAL: must be a dict not a str — that's what guards
+        # _PENDING_JSON_COLS membership.
+        self.assertIsInstance(row['model_fingerprint'], dict)
+
+    def test_pending_json_cols_registers_model_fingerprint(self):
+        """Direct low-cost guard (Task 8 audit M2): the literal string
+        ``'model_fingerprint'`` must be an element of the ``_PENDING_JSON_COLS``
+        tuple. The roundtrip test above pins behavior, but this catches a
+        deleted tuple element even if that test is ever mocked/skipped."""
+        self.assertIn('model_fingerprint', repo._PENDING_JSON_COLS)
+
+    def test_insert_pending_with_empty_fingerprint_roundtrip(self):
+        """The computed-empty fingerprint ``{strict:[], brands:[]}`` is
+        distinct from NULL (Decision 5) — must round-trip as the empty
+        dict-shape, NOT as None."""
+        fp = {'strict': [], 'brands': []}
+        entry = _sample_entry(link='http://fp/empty')
+        entry['model_fingerprint'] = fp
+        self.assertTrue(repo.insert_pending(entry))
+
+        row = repo.get_pending(entry['link'])
+        self.assertEqual(row['model_fingerprint'], fp)
+        # Distinct from NULL — must not be None.
+        self.assertIsNotNone(row['model_fingerprint'])
+
+    def test_insert_pending_without_fingerprint_backward_compat(self):
+        """Existing callers that don't set ``model_fingerprint`` in entry —
+        ``insert_pending`` must store NULL and not raise."""
+        entry = _sample_entry(link='http://fp/none')
+        # No 'model_fingerprint' key at all.
+        self.assertNotIn('model_fingerprint', entry)
+        self.assertTrue(repo.insert_pending(entry))
+
+        row = repo.get_pending(entry['link'])
+        self.assertIsNone(row['model_fingerprint'])
+
+
+# ---------------- Cross-source dedup: recent fingerprint queries ----------------
+
+class TestListRecentFingerprints(_TmpDbCase):
+    """Cover ``list_recent_pending_fingerprints`` /
+    ``list_recent_published_fingerprints`` — window filtering + JSON deserialisation.
+    """
+
+    def test_list_recent_pending_fingerprints_window(self):
+        """Seed 4 rows: 2 inside the 7-day window, 2 older. Only the
+        in-window rows are returned, with model_fingerprint deserialised
+        to dict."""
+        # Two inside-window rows, two outside-window (>7 days old).
+        fp_a = {'strict': ['toyota 4runner'], 'brands': ['toyota']}
+        fp_b = {'strict': ['subaru legacy gt'], 'brands': ['subaru']}
+        fp_c = {'strict': ['ford mustang'], 'brands': ['ford']}
+        fp_d = {'strict': ['honda civic'], 'brands': ['honda']}
+
+        for link, fp in (
+            ('http://fp/in1', fp_a),
+            ('http://fp/in2', fp_b),
+            ('http://fp/old1', fp_c),
+            ('http://fp/old2', fp_d),
+        ):
+            entry = _sample_entry(link=link)
+            entry['model_fingerprint'] = fp
+            repo.insert_pending(entry)
+
+        # Push old rows out of the 7-day window via direct UPDATE.
+        with self._conn() as c:
+            c.execute(
+                "UPDATE pending_articles SET fetched_at=datetime('now', '-10 days') "
+                "WHERE link IN (?, ?)",
+                ('http://fp/old1', 'http://fp/old2'),
+            )
+            c.commit()
+
+        with self._conn() as c:
+            rows = repo.list_recent_pending_fingerprints(c, days=7)
+
+        links = {r['link'] for r in rows}
+        self.assertEqual(links, {'http://fp/in1', 'http://fp/in2'})
+        # JSON deserialised to dict.
+        for r in rows:
+            self.assertIsInstance(r['model_fingerprint'], dict)
+            self.assertIn('strict', r['model_fingerprint'])
+            self.assertIn('brands', r['model_fingerprint'])
+
+    def test_list_recent_published_fingerprints_window(self):
+        """Same window filter applied to ``published_articles`` via
+        ``published_at``."""
+        fp_in = {'strict': ['toyota 4runner'], 'brands': ['toyota']}
+        fp_out = {'strict': ['ford mustang'], 'brands': ['ford']}
+
+        # Insert directly into published_articles to bypass the
+        # pending → published transition for this targeted unit test.
+        with self._conn() as c:
+            c.execute(
+                "INSERT INTO published_articles "
+                "(link, title, ru_title, telegraph_url, source_name, "
+                " via_review, model_fingerprint) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?)",
+                ('http://pub/in', 't', 'т', 'http://tg/in', 'mattel', 1,
+                 json.dumps(fp_in, ensure_ascii=False)),
+            )
+            c.execute(
+                "INSERT INTO published_articles "
+                "(link, title, ru_title, telegraph_url, source_name, "
+                " via_review, model_fingerprint, published_at) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?, datetime('now', '-10 days'))",
+                ('http://pub/old', 't', 'т', 'http://tg/old', 'mattel', 1,
+                 json.dumps(fp_out, ensure_ascii=False)),
+            )
+            c.commit()
+
+        with self._conn() as c:
+            rows = repo.list_recent_published_fingerprints(c, days=7)
+
+        links = {r['link'] for r in rows}
+        self.assertEqual(links, {'http://pub/in'})
+        self.assertEqual(rows[0]['model_fingerprint'], fp_in)
+        self.assertIsInstance(rows[0]['model_fingerprint'], dict)
+
+    def test_list_recent_pending_fingerprints_custom_days(self):
+        """The ``days`` parameter is honoured — narrower window excludes more rows."""
+        fp = {'strict': ['toyota 4runner'], 'brands': ['toyota']}
+        for link, days_old in (
+            ('http://w/today', 0),
+            ('http://w/2d', 2),
+            ('http://w/5d', 5),
+        ):
+            entry = _sample_entry(link=link)
+            entry['model_fingerprint'] = fp
+            repo.insert_pending(entry)
+            with self._conn() as c:
+                c.execute(
+                    "UPDATE pending_articles SET fetched_at=datetime('now', ?) "
+                    "WHERE link=?",
+                    (f"-{days_old} days", link),
+                )
+                c.commit()
+
+        with self._conn() as c:
+            wide = repo.list_recent_pending_fingerprints(c, days=7)
+            narrow = repo.list_recent_pending_fingerprints(c, days=3)
+        self.assertEqual({r['link'] for r in wide},
+                         {'http://w/today', 'http://w/2d', 'http://w/5d'})
+        self.assertEqual({r['link'] for r in narrow},
+                         {'http://w/today', 'http://w/2d'})
+
+
+# ---------------- Cross-source dedup: update_published_fingerprint ----------------
+
+class TestUpdatePublishedFingerprint(_TmpDbCase):
+    """Cover ``update_published_fingerprint`` (backfill script write path)."""
+
+    def _insert_pub(self, link, fingerprint=None):
+        fp_text = json.dumps(fingerprint, ensure_ascii=False) if fingerprint is not None else None
+        with self._conn() as c:
+            c.execute(
+                "INSERT INTO published_articles "
+                "(link, title, ru_title, telegraph_url, source_name, "
+                " via_review, model_fingerprint) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?)",
+                (link, 't', 'т', 'http://tg/' + link[-3:], 'mattel', 1, fp_text),
+            )
+            c.commit()
+
+    def test_update_published_fingerprint_writes_dict(self):
+        """Writing a dict fingerprint persists as JSON; read-back returns dict."""
+        self._insert_pub('http://upf/1', fingerprint=None)
+        fp = {'strict': ['toyota 4runner'], 'brands': ['toyota']}
+        with self._conn() as c:
+            repo.update_published_fingerprint(c, 'http://upf/1', fp)
+            c.commit()
+
+        with self._conn() as c:
+            row = c.execute(
+                "SELECT model_fingerprint FROM published_articles WHERE link=?",
+                ('http://upf/1',),
+            ).fetchone()
+        # Raw stored value is JSON-encoded TEXT.
+        self.assertIsNotNone(row[0])
+        self.assertEqual(json.loads(row[0]), fp)
+
+    def test_update_published_fingerprint_overwrites_existing(self):
+        """A previously-stored fingerprint is overwritten on re-write."""
+        old_fp = {'strict': ['ford mustang'], 'brands': ['ford']}
+        new_fp = {'strict': ['toyota 4runner'], 'brands': ['toyota']}
+        self._insert_pub('http://upf/2', fingerprint=old_fp)
+        with self._conn() as c:
+            repo.update_published_fingerprint(c, 'http://upf/2', new_fp)
+            c.commit()
+        with self._conn() as c:
+            raw = c.execute(
+                "SELECT model_fingerprint FROM published_articles WHERE link=?",
+                ('http://upf/2',),
+            ).fetchone()[0]
+        self.assertEqual(json.loads(raw), new_fp)
+
+
+# ---------------- Cross-source dedup: rate-limit helpers ----------------
+
+class TestPairRateLimit(_TmpDbCase):
+    """Cover ``is_pair_rate_limited`` / ``mark_pair_pinged`` (Decision 6,
+    soft-flag per-pair rate-limit).
+    """
+
+    def test_pair_rate_limit_unset_returns_false(self):
+        """No prior ``mark_pair_pinged`` → not rate-limited."""
+        with self._conn() as c:
+            self.assertFalse(
+                repo.is_pair_rate_limited(c, 'http://a/new', 'http://a/old')
+            )
+
+    def test_pair_rate_limit_within_window_true(self):
+        """mark → check immediately → True."""
+        with self._conn() as c:
+            repo.mark_pair_pinged(c, 'http://b/new', 'http://b/old')
+            c.commit()
+        with self._conn() as c:
+            self.assertTrue(
+                repo.is_pair_rate_limited(c, 'http://b/new', 'http://b/old',
+                                          window_days=7)
+            )
+
+    def test_pair_rate_limit_after_window_false(self):
+        """mark → fast-forward >7d via direct bot_state UPDATE → False."""
+        with self._conn() as c:
+            repo.mark_pair_pinged(c, 'http://c/new', 'http://c/old')
+            c.commit()
+        # Backdate the value to >7 days ago — direct UPDATE on bot_state row
+        # is shorter than mocking ``datetime.now`` and follows the
+        # outage_state test pattern.
+        old_iso = '2020-01-01T00:00:00+00:00'
+        with self._conn() as c:
+            c.execute(
+                "UPDATE bot_state SET value=? WHERE key=?",
+                (old_iso,
+                 'softflag_pair:http://c/new\nhttp://c/old'),
+            )
+            c.commit()
+        with self._conn() as c:
+            self.assertFalse(
+                repo.is_pair_rate_limited(c, 'http://c/new', 'http://c/old',
+                                          window_days=7)
+            )
+
+    def test_pair_rate_limit_independent_pairs(self):
+        """mark(A,B) does NOT rate-limit check(C,D) — pair keys are
+        independent."""
+        with self._conn() as c:
+            repo.mark_pair_pinged(c, 'http://A/new', 'http://A/old')
+            c.commit()
+        with self._conn() as c:
+            self.assertFalse(
+                repo.is_pair_rate_limited(c, 'http://C/new', 'http://D/old')
+            )
+
+    def test_pair_rate_limit_corrupted_timestamp_does_not_block(self):
+        """If ``bot_state`` has a malformed value at the pair key (manual
+        edit, format drift), ``is_pair_rate_limited`` returns False + logs
+        a warning — must NOT raise (parity with outage_state._parse_dt)."""
+        key = 'softflag_pair:http://d/new\nhttp://d/old'
+        with self._conn() as c:
+            c.execute(
+                "INSERT OR REPLACE INTO bot_state (key, value) VALUES (?, ?)",
+                (key, 'not-a-timestamp'),
+            )
+            c.commit()
+        with self._conn() as c:
+            # Must NOT raise; treat corrupted as "no last ping" → False.
+            self.assertFalse(
+                repo.is_pair_rate_limited(c, 'http://d/new', 'http://d/old')
+            )
+
+
+class TestDedupDegradedRateLimit(_TmpDbCase):
+    """Cover ``is_dedup_degraded_rate_limited`` / ``mark_dedup_degraded_pinged``
+    (Decision 6, global 1-hour window)."""
+
+    def test_degraded_rate_limit_unset_returns_false(self):
+        with self._conn() as c:
+            self.assertFalse(repo.is_dedup_degraded_rate_limited(c))
+
+    def test_degraded_rate_limit_within_hour_true(self):
+        with self._conn() as c:
+            repo.mark_dedup_degraded_pinged(c)
+            c.commit()
+        with self._conn() as c:
+            self.assertTrue(
+                repo.is_dedup_degraded_rate_limited(c, window_hours=1)
+            )
+
+    def test_degraded_rate_limit_after_hour_false(self):
+        with self._conn() as c:
+            repo.mark_dedup_degraded_pinged(c)
+            c.commit()
+        # Backdate the row to >1h ago — direct UPDATE for clarity.
+        old_iso = '2020-01-01T00:00:00+00:00'
+        with self._conn() as c:
+            c.execute(
+                "UPDATE bot_state SET value=? WHERE key=?",
+                (old_iso, 'dedup_degraded_last_pinged_at'),
+            )
+            c.commit()
+        with self._conn() as c:
+            self.assertFalse(
+                repo.is_dedup_degraded_rate_limited(c, window_hours=1)
+            )
+
+    def test_degraded_rate_limit_corrupted_timestamp_does_not_block(self):
+        with self._conn() as c:
+            c.execute(
+                "INSERT OR REPLACE INTO bot_state (key, value) VALUES (?, ?)",
+                ('dedup_degraded_last_pinged_at', 'corrupted'),
+            )
+            c.commit()
+        with self._conn() as c:
+            self.assertFalse(repo.is_dedup_degraded_rate_limited(c))
 
 
 # ---------------- SQL audit ----------------

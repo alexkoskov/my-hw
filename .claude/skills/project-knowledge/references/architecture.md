@@ -45,8 +45,11 @@ my-hw/
 │                              Imported by news_bot.py at startup.
 ├── outage_state.py          # SQLite-backed outage state machine (llm-transcreation feature).
 │                              5-state protocol (no_outage → ping_1_sent → ping_2_sent →
-│                              google_fallback_active → recovery_pending) with 2-ping +
-│                              2h grace window before global Google fallback. State
+│                              google_fallback_active → recovery_pending) driving the
+│                              operator-ping cadence (ping #1 now, #2 +1h, #3 +2h). Since
+│                              the 2026-06-11 hold-and-wait change it no longer switches the
+│                              bot to Google — outages HOLD posts; the google_fallback_active
+│                              label/fallback_active flag are dormant. State
 │                              persists in bot_state table; BEGIN IMMEDIATE for atomicity;
 │                              PRAGMA busy_timeout=5000. Imported by news_bot.py and
 │                              claude_transcreation.py at startup.
@@ -86,7 +89,7 @@ my-hw/
   - `outage_state.py` — outage state machine, imported by `news_bot.py` and `claude_transcreation.py`.
   - `.claude/skills/project-knowledge/references/ux-guidelines.md` — Claude API system prompt. **Architectural shift (closes AC28):** previously operator-side-only (loaded into the operator's Claude Code session); now ALSO a cron-side runtime dependency. Read by `claude_transcreation._load_prompt`. The deploy bundle ships it via `scp` (without `-r`), which flattens subdirs — on the server the file lands at `$DEPLOY_PATH/ux-guidelines.md`. Decision 8 of the `llm-transcreation-and-distributed-publishing` tech-spec covers the layout: `_load_prompt` tries the subdir path first, then falls back to the flat filename.
 
-  All four are listed as a single "cron-side files added by llm-transcreation feature" checklist for operator + future devs: deploy bundle MUST contain all four after deploy, otherwise the bot crashes on startup (missing `*.py`) or sits in Google fallback all day (missing `ux-guidelines.md`).
+  All four are listed as a single "cron-side files added by llm-transcreation feature" checklist for operator + future devs: deploy bundle MUST contain all four after deploy, otherwise the bot crashes on startup (missing `*.py`) or, with `ux-guidelines.md` missing, every LLM call fails its prompt load and (since the 2026-06-11 hold-and-wait change) all posts are held until the file is restored.
 - **Shared local + cron**: `requirements.txt`, `feeds.json`, `.env.example`, `news.db` (SQLite — cron-only data, never overwritten on deploy).
 
 ---
@@ -100,11 +103,12 @@ my-hw/
 - `curl_cffi` – Chrome-impersonating HTTP client for autoevolution
   (bypasses Cloudflare's `HTTP 403` on plain `requests`).
 - `beautifulsoup4` – Extracts title, body, images, and inline links from HTML.
-- `deep-translator` – Google Translate fallback engine. Used by `transcreate_text`
-  in `news_bot.py` for per-article fallback (Claude refused/malformed) and
-  for global API-level outage fallback. Bureaucratic regex post-processing
-  removed in the llm-transcreation feature; HW glossary safety net + emoji
-  prefix retained.
+- `deep-translator` – Google Translate engine wrapped by `transcreate_text`
+  in `news_bot.py`. **DORMANT since the 2026-06-11 hold-and-wait change** —
+  no longer wired into the publish path (outages now hold posts instead of
+  falling back to Google). Code + the HW glossary safety net + emoji prefix
+  are kept for possible revival; bureaucratic regex post-processing was
+  removed in the llm-transcreation feature.
 - `anthropic>=0.45.0,<0.46.0` – Anthropic Python SDK. Primary translator for
   the auto-publish path (llm-transcreation feature). Used by `claude_transcreation`
   with `ux-guidelines.md` as system prompt + JSON envelope. Pinned to lock
@@ -130,10 +134,11 @@ my-hw/
   (llm-transcreation feature). Loads `ux-guidelines.md` as the system
   prompt + a JSON envelope, sends the EN article as the user message,
   parses the Claude response into `{title, alts[2-3], subtitle, paragraphs,
-  blocks?}`. Per-article failures (refusal, malformed JSON, 4xx) fall
-  through to Google Translate for that article only; API-level outages
-  (auth, rate-limit, network, 5xx) trigger the 2-ping protocol + 2 h
-  grace before global Google fallback.
+  blocks?}`. Per-article failures (refusal, malformed JSON, 4xx) bump
+  `attempt_count` and strike the article out after 3 (→ `failed_articles`);
+  API-level outages (auth, rate-limit, network, 5xx) trigger the 2-ping
+  protocol and HOLD the article in the queue (hold-and-wait, 2026-06-11) —
+  nothing published, retried next slot/day until the LLM recovers.
 - **Auth method:** `ANTHROPIC_API_KEY` env var (obtained from
   https://console.anthropic.com → API Keys → Create Key, format
   `sk-ant-api03-…`). The key is redacted from logs by
@@ -143,10 +148,11 @@ my-hw/
   Cost ≈ $3/month at 10 articles/day. Sonnet 4.6 ≈ $15/month for higher
   quality.
 
-**Google Translate (via deep-translator)**
-- **Purpose:** Fallback translator. Per-article fallback when Claude
-  refuses or produces malformed output; global fallback during Claude
-  API outages (after the 2-ping protocol exhausts the 2 h grace window).
+**Google Translate (via deep-translator) — DORMANT since 2026-06-11**
+- **Purpose:** Formerly the fallback translator (per-article + global outage).
+  Unwired from the publish path by the hold-and-wait change — outages now
+  hold posts, no machine translation is published. `transcreate_text` is
+  kept in code for possible revival but is not called by `_fallback_publish`.
 - **Auth method:** No authentication required (public Google Translate API).
 
 **Telegra.ph API (`api.telegra.ph`)**
@@ -187,7 +193,7 @@ my-hw/
 
 ## Data Flow
 
-The pipeline is the **cron prep + distributed-publish phase** (no operator, daily at 10:00 МСК) — auto-LLM transcreation → Telegra.ph → Telegram. Production uses OpenRouter (`openai/gpt-5.4-mini`) as the primary translator with Google Translate as per-article + global fallback.
+The pipeline is the **cron prep + distributed-publish phase** (no operator, daily at 10:00 МСК) — auto-LLM transcreation → Telegra.ph → Telegram. Production uses OpenRouter (`openai/gpt-5.4-mini`) as the sole translator. On an API-level LLM outage the article is held in the queue (hold-and-wait, 2026-06-11); per-article LLM failures strike out after 3.
 
 A second loop — the **manual review loop** (`hw_review.py` CLI in operator's Claude Code session) — is documented below for completeness but **archived as of 2026-04-30**: the auto path produces 100 % of channel posts in production. The manual loop's code is preserved (740 tests stay green) so it can be revived ad-hoc for one-off articles.
 
@@ -204,9 +210,9 @@ A second loop — the **manual review loop** (`hw_review.py` CLI in operator's C
    - `time.sleep((slot - now).total_seconds())` until slot arrives.
    - Pop next row via `list_pending()` two-tier ordering: today's freshly-fetched batch first (in fetch order), then carry-over backlog drained oldest-first.
    - **Idempotency guard (publish-idempotency-fix, 2026-05-07):** at the very top of `_fallback_publish`, BEFORE any side effect, check `pending_articles_repo.get_published(link)`. If non-`None`, the pending row is a zombie (some prior `move_to_published` left an inconsistent state, or fetch loop re-staged a published link). Log INFO with `[idempotency-guard]` tag, send admin-ping `«⚠️ Пропущен дубль публикации»`, call `skip_pending(link)` (atomic `INSERT OR IGNORE → processed_news` + `DELETE → pending_articles`), return `True`. Slot loop treats as success — no `attempt_count` strike, no `move_to_failed`. If `skip_pending` itself raises (DB-level), log ERROR + send a second admin-ping `«⚠️ Не удалось снять зомби-строку»` and STILL return `True` (subscriber-visible duplicate prevention is the primary contract).
-   - If `outage_state.is_fallback_active()`, route directly to Google Translate; otherwise call `_fallback_publish` (Claude primary, Google per-article fallback).
-   - On `OutageError` (state-machine signal): the state machine already recorded the event and routed this article through Google. Continue to next slot.
-   - On unexpected exception: standard 3-strikes attempt counter → `move_to_failed`.
+   - Call `_fallback_publish` (LLM-only — no Google branch since 2026-06-11).
+   - On `ClaudeOutageError` (API-level outage): `_fallback_publish` already HELD the article (nothing published) and advanced the operator-ping state machine. Do NOT count a publish and do NOT strike the row — it stays at the queue head and the next slot/day retries the LLM. Continue to next slot.
+   - On unexpected exception (per-article LLM failure, Telegraph/Telegram/repo error): standard 3-strikes attempt counter → `move_to_failed`.
 
 ### Manual review loop — `hw_review.py` (archived 2026-04-30)
 
@@ -229,7 +235,7 @@ A second loop — the **manual review loop** (`hw_review.py` CLI in operator's C
 - Message body: `#{source_hashtag}` — `autoevolution` / `mattel` / `lamleygroup` per `_source_hashtag`. Single-line, byte-identical regardless of which translation engine produced the RU text (Decision 14). Holds even if the archived manual path is revived.
 - `LinkPreviewOptions(url=telegraph_url, show_above_text=True)` triggers Instant View card.
 - Telegra.ph page: hero figure + italic subtitle with `💬 «…»` + bold lead + body blocks (paragraphs, images, iframes) + `Источник:` footer.
-- The `↳ автоперевод` marker on the Telegra.ph page (plain `<p>` IMMEDIATELY BEFORE the `Источник:` footer) marks a quality warning for readers, **not a path differentiator**. It fires only when `_fallback_publish` translated the article via Google Translate (per-article LLM failure or global outage fallback) — wired as `auto_marker=used_google_fallback and not via_review` in [`news_bot.py:1195`](../../../../news_bot.py#L1195). LLM-translated auto publishes don't carry it. The dormant manual path also wouldn't carry it (`via_review=True`). See `patterns.md` § "Channel post format" for rationale and wiring.
+- The `↳ автоперевод` marker is no longer emitted. Since the 2026-06-11 hold-and-wait change there is no Google-fallback publish branch, so `_fallback_publish` always passes `auto_marker=False` and every published page is LLM-translated without a marker. The `auto_marker` kwarg on `telegraph_publisher.publish_article` is retained but always False from the cron path. See `patterns.md` § "Channel post format" for wiring.
 
 ---
 
@@ -256,7 +262,7 @@ A second loop — the **manual review loop** (`hw_review.py` CLI in operator's C
 - **Insert is idempotent** (publish-idempotency-fix, 2026-05-07): `move_to_published` step 1 uses `INSERT OR IGNORE` so a second move with the same `link` is a no-op rather than `IntegrityError`. Original values (telegraph_url, via_review, published_at) are preserved from the first move. Step 2 (`processed_news`) and step 3 (`DELETE pending_articles`) execute unconditionally.
 - **Post-commit defensive verification** (2026-05-08, after a prod incident where `published_articles` had rows but `processed_news` did not): `move_to_published` re-queries `processed_news` after the main commit. If the entry is missing, dozapis with `INSERT OR IGNORE` and emits a WARNING log. Self-healing — closes the zombie-row recurrence loop where `is_processed(link)` returns False on next fetch and re-stages an already-published link.
 
-**failed_articles** — dead letter after 3 GT attempts
+**failed_articles** — dead letter after 3 failed publish attempts
 - `link` PK, `title`, `last_error`, `attempt_count`, `failed_at`
 
 **bot_state** — small key/value store for cross-tick state (added by llm-transcreation feature)
@@ -264,8 +270,8 @@ A second loop — the **manual review loop** (`hw_review.py` CLI in operator's C
 - Active keys (all values stored as ISO-8601 strings or `'0'`/`'1'`/`'2'` for counters/flags):
   - `outage_started_at` — ISO timestamp when first Claude outage error fired. NULL = no active outage.
   - `last_ping_sent_at` — ISO timestamp of the last admin ping (#1, #2, or recovery).
-  - `ping_count` — `'1'` after ping #1, `'2'` after ping #2, `'3'` after the fallback-switch ping.
-  - `fallback_active` — `'1'` if Google Translate is the active engine (post-grace), else NULL.
+  - `ping_count` — `'1'` after ping #1, `'2'` after ping #2, `'3'` after the still-down (2 h) ping.
+  - `fallback_active` — legacy flag (`'1'` once 2 h grace elapsed, else NULL). DORMANT since the 2026-06-11 hold-and-wait change — still written by the state machine but no longer read by the publish path (posts are held, not routed to Google).
   - `last_health_check_at` — ISO timestamp of the most recent Claude probe attempt during recovery_pending state. Rate-limits probes.
 - DDL: `CREATE TABLE IF NOT EXISTS bot_state (key TEXT PRIMARY KEY, value TEXT);`. Owned by `pending_articles_repo.init_schema()`. `outage_state.py` provides typed accessors and state-machine helpers (`record_outage_event`, `record_recovery_event`) wrapped in `BEGIN IMMEDIATE` for atomicity. `PRAGMA busy_timeout=5000` absorbs typical contention with `hw_review` CLI writers.
 

@@ -56,6 +56,56 @@ class TestIsHotWheelsRelevant(unittest.TestCase):
             'title': 'NEW HOT WHEELS RELEASE',
         }))
 
+    def test_t_hunted_default_reject_without_hot_wheels(self):
+        """2026-06-09 incident: ``Topper Toys 1970: Johnny Lightning…``
+        and ``Mundo Premium 64 #241: Porsche, Mustang…`` slipped from
+        t-hunted (Brazilian-Portuguese diecast-collector blog covering
+        many brands) because the default for neutral titles was
+        "include". For broad-diecast sources the default flips to
+        "reject" — title MUST mention Hot Wheels explicitly to pass.
+        """
+        self.assertFalse(_is_hot_wheels_relevant({
+            'title': 'Topper Toys 1970: Johnny Lightning e os loucos Jet Power',
+            'link': 'https://t-hunted.blogspot.com/2026/06/topper-toys-1970.html',
+        }))
+        self.assertFalse(_is_hot_wheels_relevant({
+            'title': 'Mundo Premium 64 #241: Porsche, Mustang e Diablo',
+            'link': 'https://t-hunted.blogspot.com/2026/06/mundo-premium-64-241.html',
+        }))
+        self.assertFalse(_is_hot_wheels_relevant({
+            'title': 'M2 Machines novidades de junho',
+            'link': 'https://t-hunted.blogspot.com/2026/06/m2-machines.html',
+        }))
+
+    def test_t_hunted_with_hot_wheels_keeps_entry(self):
+        """A real HW post on t-hunted that mentions Hot Wheels explicitly
+        must pass the broad-diecast filter — same code path that catches
+        autoevolution's HW posts."""
+        self.assertTrue(_is_hot_wheels_relevant({
+            'title': 'Hot Wheels Boulevard mix-3 review',
+            'link': 'https://t-hunted.blogspot.com/2026/06/hot-wheels-boulevard.html',
+        }))
+        self.assertTrue(_is_hot_wheels_relevant({
+            'title': 'Novidades Hot Wheels J Case mainline',
+            'link': 'https://t-hunted.blogspot.com/2026/06/hot-wheels-j-case.html',
+        }))
+
+    def test_non_t_hunted_neutral_title_still_defaults_to_include(self):
+        """Regression: only t-hunted (and other future broad-diecast
+        sources) gets the strict default. autoevolution / lamley /
+        orangetrack continue to default-include neutral titles —
+        operator-confirmed those are HW-focused enough that strict
+        filtering would drop legitimate content."""
+        # No link → no source identification → default include.
+        self.assertTrue(_is_hot_wheels_relevant({
+            'title': 'Bugatti supercar news today',
+        }))
+        # autoevolution link → not in broad-diecast list → default include.
+        self.assertTrue(_is_hot_wheels_relevant({
+            'title': 'Bugatti supercar news today',
+            'link': 'https://www.autoevolution.com/news/bugatti-news-271234.html',
+        }))
+
 
 class TestFilterNewEntriesIntegration(unittest.TestCase):
     """End-to-end through ``filter_new_entries``: dedup + relevance work

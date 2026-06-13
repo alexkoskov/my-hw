@@ -52,7 +52,9 @@ class TestAdminAlerts(unittest.TestCase):
         self.assertIn("[E004]", msg)
         self.assertIn("🟡", msg)
         self.assertIn("Claude", msg)
-        self.assertIn("Google", msg)
+        # New hold-and-wait behaviour: articles are held, not Google-translated.
+        self.assertIn("придержан", msg)
+        self.assertNotIn("Google Translate", msg)
 
     def test_e005_tz_mismatch(self):
         msg = admin_alerts.alert_tz_mismatch("America/Los_Angeles")
@@ -121,7 +123,8 @@ class TestAdminAlerts(unittest.TestCase):
         self.assertIn("[E010]", msg)
         self.assertIn("🟡", msg)
         self.assertIn("Claude API", msg)
-        self.assertIn("Google", msg)
+        self.assertIn("придерж", msg)
+        self.assertNotIn("Google Translate", msg)
 
     def test_e011_outage_second_ping(self):
         msg = admin_alerts.alert_outage_second_ping()
@@ -129,12 +132,13 @@ class TestAdminAlerts(unittest.TestCase):
         self.assertIn("🔴", msg)
         self.assertIn("1 час", msg)
 
-    def test_e012_outage_fallback_engaged(self):
-        msg = admin_alerts.alert_outage_fallback_engaged()
+    def test_e012_outage_still_down(self):
+        msg = admin_alerts.alert_outage_still_down()
         self.assertIn("[E012]", msg)
         self.assertIn("🔴", msg)
-        self.assertIn("Google", msg)
+        self.assertIn("придержан", msg)
         self.assertIn("2 час", msg)  # «2 часа» / «2 часов» — оба варианта
+        self.assertNotIn("Google Translate", msg)
 
     def test_e013_outage_recovery(self):
         msg = admin_alerts.alert_outage_recovery()
@@ -204,6 +208,48 @@ class TestAdminAlerts(unittest.TestCase):
         self.assertIn("[E028]", msg)
         self.assertIn("entry-content", msg)
 
+    def test_e031_t_hunted_host_rejected(self):
+        msg = admin_alerts.alert_t_hunted_host_rejected(
+            "https://evil.example.com/"
+        )
+        self.assertIn("[E031]", msg)
+        self.assertIn("🟡", msg)
+        self.assertIn("https://evil.example.com/", msg)
+        # Builder must mention SSRF-rejection in Russian — accept either
+        # "хост" wording or "allowlist".
+        self.assertTrue(
+            ("хост" in msg) or ("allowlist" in msg),
+            f"Expected 'хост' or 'allowlist' in alert text, got: {msg!r}",
+        )
+
+    def test_e032_t_hunted_fetch_error(self):
+        msg = admin_alerts.alert_t_hunted_fetch_error(
+            "https://t-hunted.blogspot.com/x", "HTTP 503"
+        )
+        self.assertIn("[E032]", msg)
+        self.assertIn("🟡", msg)
+        self.assertIn("https://t-hunted.blogspot.com/x", msg)
+        self.assertIn("HTTP 503", msg)
+
+    def test_e033_t_hunted_no_body(self):
+        msg = admin_alerts.alert_t_hunted_no_body(
+            "https://t-hunted.blogspot.com/y"
+        )
+        self.assertIn("[E033]", msg)
+        self.assertIn("🟡", msg)
+        self.assertIn("https://t-hunted.blogspot.com/y", msg)
+        # Builder must mention missing body — accept any of the documented
+        # phrasings (Russian wording or selector name).
+        self.assertTrue(
+            (
+                "не нашёл тело" in msg
+                or "не найдено тело" in msg
+                or "post-body" in msg
+                or "entry-content" in msg
+            ),
+            f"Expected body-missing wording in alert text, got: {msg!r}",
+        )
+
     def test_e030_orangetrack_summary_header(self):
         msg = admin_alerts.alert_orangetrack_summary_header(7)
         self.assertIn("[E030]", msg)
@@ -212,6 +258,65 @@ class TestAdminAlerts(unittest.TestCase):
         self.assertIn("7", msg)
         # Backwards-compat: integration tests могут полагаться на формат
         # с числом проблем.
+
+    # ------------------------------------------------------------------
+    # Cross-source dedup alerts (E014, E015, E016)
+    # ------------------------------------------------------------------
+
+    def test_e014_cross_source_dupe(self):
+        msg = admin_alerts.alert_cross_source_dupe(
+            new_link="https://orangetrack.example/p/a",
+            existing_link="https://lamleygroup.com/p/b",
+            new_source="orangetrack",
+            existing_source="lamley",
+            overlap_pct=35,
+            n_matches=2,
+            n_total=6,
+            models=["toyota 4runner", "subaru legacy gt"],
+        )
+        self.assertIn("[E014]", msg)
+        self.assertIn("🤔", msg)
+        # Integration tests pin this exact substring (tech-spec Decision 7).
+        self.assertIn("Похож на дубль", msg)
+        self.assertIn("https://orangetrack.example/p/a", msg)
+        self.assertIn("https://lamleygroup.com/p/b", msg)
+        self.assertIn("orangetrack", msg)
+        self.assertIn("lamley", msg)
+        self.assertIn("35%", msg)
+        self.assertIn("2/6", msg)
+        self.assertIn("toyota 4runner", msg)
+        self.assertIn("subaru legacy gt", msg)
+        self.assertIn("Что произошло", msg)
+        self.assertIn("Что сделать", msg)
+
+    def test_e015_cross_source_blocked(self):
+        msg = admin_alerts.alert_cross_source_blocked(
+            new_link="https://orangetrack.example/p/a",
+            existing_link="https://lamleygroup.com/p/b",
+            overlap_pct=72,
+        )
+        self.assertIn("[E015]", msg)
+        self.assertIn("🚫", msg)
+        # Integration tests pin this exact substring (tech-spec Decision 7).
+        self.assertIn("Заблокирован дубль", msg)
+        self.assertIn("https://orangetrack.example/p/a", msg)
+        self.assertIn("https://lamleygroup.com/p/b", msg)
+        self.assertIn("72%", msg)
+        # Format pin: E015 is intentionally short — no operator action block.
+        self.assertNotIn("Что сделать", msg)
+
+    def test_e016_dedup_degraded(self):
+        msg = admin_alerts.alert_dedup_degraded(reason="AttributeError")
+        self.assertIn("[E016]", msg)
+        self.assertIn("⚠️", msg)
+        # Integration tests pin this exact substring (tech-spec Decision 7).
+        # NOTE: code-research §14.K.3 used "Дедуп упал (degraded mode)" —
+        # tech-spec Decision 7 overrides with "Дедуп в degraded mode".
+        self.assertIn("Дедуп в degraded mode", msg)
+        self.assertIn("degraded", msg)
+        self.assertIn("AttributeError", msg)
+        self.assertIn("Что произошло", msg)
+        self.assertIn("Что сделать", msg)
 
     def test_all_alerts_have_unique_codes(self):
         """Sanity check: no two alerts share the same [E0XX] code."""
@@ -228,7 +333,7 @@ class TestAdminAlerts(unittest.TestCase):
             admin_alerts.alert_quiet_day(),
             admin_alerts.alert_outage_first_ping(),
             admin_alerts.alert_outage_second_ping(),
-            admin_alerts.alert_outage_fallback_engaged(),
+            admin_alerts.alert_outage_still_down(),
             admin_alerts.alert_outage_recovery(),
             admin_alerts.alert_mattel_news_http_error("x"),
             admin_alerts.alert_mattel_news_parsing_error("x"),
@@ -239,7 +344,15 @@ class TestAdminAlerts(unittest.TestCase):
             admin_alerts.alert_lamley_article_too_large(1),
             admin_alerts.alert_lamley_fetch_error("x", "y"),
             admin_alerts.alert_lamley_no_body("x"),
+            admin_alerts.alert_t_hunted_host_rejected("x"),
+            admin_alerts.alert_t_hunted_fetch_error("x", "y"),
+            admin_alerts.alert_t_hunted_no_body("x"),
             admin_alerts.alert_orangetrack_summary_header(1),
+            admin_alerts.alert_cross_source_dupe(
+                "u", "v", "s1", "s2", 35, 2, 6, ["m1", "m2"],
+            ),
+            admin_alerts.alert_cross_source_blocked("u", "v", 72),
+            admin_alerts.alert_dedup_degraded("AttributeError"),
         ]
         codes = [m[:6] for m in all_messages]  # "[E0XX]"
         self.assertEqual(len(codes), len(set(codes)),

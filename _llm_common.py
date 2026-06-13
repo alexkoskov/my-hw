@@ -97,6 +97,15 @@ the input EN paragraphs, in the same order. Do not merge or split.
 
 Image URLs and caption strings are NOT part of this request — they are
 handled by a separate downstream call. Do not output a `blocks` field.
+
+## Inline formatting markers
+
+If an input paragraph contains `**word or phrase**` markers, those spans
+were **bold** in the original article. Preserve the markers around the
+corresponding translated words in your output paragraphs — wrap the
+Russian translation in `**...**`. Do not add new `**...**` markers to
+spans that were not marked in the input. Plain prose is rendered
+without markers.
 """
 
 _JSON_FENCE_RE = re.compile(
@@ -116,17 +125,126 @@ def _build_system_prompt(prompt_body: str) -> str:
     return prompt_body.rstrip() + "\n" + _JSON_ENVELOPE
 
 
+def _encode_format_markers(text: str, runs: list) -> str:
+    """Wrap bold spans in ``text`` with ``**...**`` markers per the
+    ``runs`` metadata. Returns text unchanged if no bold runs present.
+
+    Spec contract: only ``formats == ['bold']`` style spans are
+    encoded — italic/underline/strikethrough are currently dropped
+    across translation. Bold covers the vast majority of editorial
+    inline emphasis we see in the wild (autoevolution / orangetrack),
+    and the markdown-round-trip approach degrades gracefully when an
+    LLM drops a marker (the word just appears unbolded — same as
+    today's behaviour for ALL formatting).
+
+    First-wrap-wins on overlapping runs; same convention as
+    telegraph_publisher._render_paragraph_with_runs at the rendering
+    side, so the in-text positions agree with the eventual Telegraph
+    render path.
+    """
+    if not runs:
+        return text
+    spans = []
+    for run in runs:
+        if not isinstance(run, dict):
+            continue
+        run_text = run.get("text") or ""
+        if not run_text.strip():
+            continue
+        formats = run.get("formats") or []
+        if "bold" not in formats:
+            continue
+        pos = text.find(run_text)
+        if pos < 0:
+            continue
+        spans.append((pos, pos + len(run_text)))
+    if not spans:
+        return text
+    spans.sort(key=lambda s: s[0])
+    accepted = []
+    last_end = -1
+    for start, end in spans:
+        if start >= last_end:
+            accepted.append((start, end))
+            last_end = end
+    out = []
+    cursor = 0
+    for start, end in accepted:
+        out.append(text[cursor:start])
+        out.append(f"**{text[start:end]}**")
+        cursor = end
+    out.append(text[cursor:])
+    return "".join(out)
+
+
+#: Match `**...**` bold markers in LLM output. Non-greedy body so two
+#: adjacent bold spans on the same line don't merge into one capture.
+#: Disallow newlines in the body — a stray unbalanced `**` shouldn't
+#: swallow the rest of the paragraph.
+_BOLD_MARKER_RE = re.compile(r"\*\*([^*\n]+?)\*\*")
+
+
+def _decode_format_markers(text: str):
+    """Parse ``**bold**`` markers out of ``text``. Returns a tuple of
+    ``(clean_text, runs)`` — ``clean_text`` has the markers stripped,
+    ``runs`` is a list of dicts in the project's runs format
+    (``{'text': '<span>', 'formats': ['bold']}``). Empty ``runs`` if
+    the input has no markers.
+    """
+    matches = list(_BOLD_MARKER_RE.finditer(text))
+    if not matches:
+        return text, []
+    runs = []
+    parts = []
+    cursor = 0
+    for m in matches:
+        parts.append(text[cursor:m.start()])
+        bold_text = m.group(1)
+        parts.append(bold_text)
+        runs.append({"text": bold_text, "formats": ["bold"]})
+        cursor = m.end()
+    parts.append(text[cursor:])
+    return "".join(parts), runs
+
+
 def _build_user_message(article: dict) -> str:
     """Serialise the article for the main translation call.
 
-    ``blocks`` is intentionally OMITTED; captions/text inside blocks
-    are translated by ``_translate_block_strings`` (variant B+) instead.
+    ``blocks`` is intentionally OMITTED from the payload; captions/text
+    inside blocks are translated by ``_translate_block_strings``
+    (variant B+) instead. When ``blocks`` IS present in the article and
+    carries inline ``runs`` metadata, the corresponding paragraphs are
+    rebuilt with ``**bold**`` markdown markers so the LLM can preserve
+    them in the translated output (decoded back to runs by
+    ``_patch_text_with_ru_paragraphs``).
     """
+    paragraphs = list(article.get("paragraphs") or [])
+    blocks = article.get("blocks")
+    if isinstance(blocks, list) and blocks and paragraphs:
+        # Walk blocks in order; for each patchable block, take the next
+        # paragraph and encode bold runs into it. Mismatch in length is
+        # tolerated — leftover paragraphs at the tail are sent as-is.
+        marked = []
+        para_iter = iter(paragraphs)
+        for block in blocks:
+            if not isinstance(block, dict):
+                continue
+            if block.get("type") not in _PATCHED_TEXT_BLOCK_TYPES:
+                continue
+            try:
+                p = next(para_iter)
+            except StopIteration:
+                break
+            runs = block.get("runs") or []
+            marked.append(_encode_format_markers(p, runs))
+        marked.extend(para_iter)
+        paragraphs = marked
+
     payload = {
         "source_name": article.get("source_name"),
         "title": article.get("title"),
         "subtitle": article.get("subtitle"),
-        "paragraphs": article.get("paragraphs") or [],
+        "paragraphs": paragraphs,
     }
     return json.dumps(payload, ensure_ascii=False)
 
@@ -230,13 +348,22 @@ def _parse_response(
             engine_name, expected_paragraph_count, len(paragraphs),
         )
 
-    # Sanity floor: total translated content must be at least 30 chars.
-    total_chars = sum(len(p) for p in paragraphs)
-    if total_chars < 30:
-        raise ClaudeTranscreationError(
-            f"{engine_name} response paragraphs total content too short "
-            f"({total_chars} chars < 30 minimum) — likely empty / stub translation"
-        )
+    # Sanity floor: total translated content must be at least 30 chars —
+    # but only when the input had ≥2 paragraphs. Single-paragraph posts
+    # (t-hunted photo-gallery format: 1 short intro + N product photos)
+    # legitimately produce a thin LLM body — sometimes the model treats
+    # the lone marketing intro as boilerplate and returns paragraphs=[]
+    # while filling title/alts/subtitle. For those posts the visual
+    # payload (title + hero + gallery) carries the article, so we accept
+    # the thin output instead of striking the slot 3 times (incident
+    # 2026-05-31 with all 4 t-hunted slots failing this check).
+    if expected_paragraph_count >= 2:
+        total_chars = sum(len(p) for p in paragraphs)
+        if total_chars < 30:
+            raise ClaudeTranscreationError(
+                f"{engine_name} response paragraphs total content too short "
+                f"({total_chars} chars < 30 minimum) — likely empty / stub translation"
+            )
 
     # Reject EN-leaking responses (translation silently skipped).
     if not _is_mostly_russian(paragraphs):
@@ -327,6 +454,14 @@ def _patch_text_with_ru_paragraphs(blocks_in: list, ru_paragraphs: list) -> list
     on long block-shaped articles — preserves structural completeness
     while letting the main-call paragraph translations land in the
     Telegraph render.
+
+    ``**bold**`` markers in each RU paragraph are decoded into the
+    block's ``runs`` metadata so the Telegraph renderer can wrap the
+    translated bold spans in ``<strong>``. When the LLM drops markers
+    (or none were present on input) the block's old EN-text runs are
+    cleared — they reference English substrings that don't appear in
+    the Russian translation anyway, so the renderer would have dropped
+    them silently in any case.
     """
     if not isinstance(blocks_in, list) or not blocks_in:
         return blocks_in
@@ -341,7 +476,15 @@ def _patch_text_with_ru_paragraphs(blocks_in: list, ru_paragraphs: list) -> list
             try:
                 ru = next(paragraphs_iter)
                 if isinstance(ru, str) and ru.strip():
-                    new_block["text"] = ru
+                    clean_text, new_runs = _decode_format_markers(ru)
+                    new_block["text"] = clean_text
+                    # Replace EN-text runs with RU-text runs (or drop the
+                    # field entirely when no markers came back, so the
+                    # renderer skips the whole format machinery).
+                    if new_runs:
+                        new_block["runs"] = new_runs
+                    elif "runs" in new_block:
+                        del new_block["runs"]
             except StopIteration:
                 pass
         result.append(new_block)

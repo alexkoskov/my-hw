@@ -59,7 +59,16 @@ _YOUTUBE_HOSTS = (
     "youtu.be",
 )
 
-REQUEST_TIMEOUT = 15
+# Per-socket-op timeout for the fallback HTTP scrape via ``requests.get``.
+# Bumped 2026-06-09 from 15s → 30s after two consecutive ticks emitted
+# ``ART_FALLBACK_TIMEOUT`` (E030) for the same heavy case-report pages:
+#   /hot-wheels-2026-fast-furious-premium-q-case-report/
+#   /hot-wheels-2026-pop-culture-r-case-report/
+# Case-reports are image-heavy (20-30 hot-linked photos) and streamed
+# until ``MAX_RESPONSE_SIZE`` (5 MB) — 15s was tight when Cloudflare's
+# edge was slow. 30s remains safe — the gate stays cheap on quick pages
+# (most return in <2s) and pings only when something is genuinely wrong.
+REQUEST_TIMEOUT = 30
 MAX_RESPONSE_SIZE = 5 * 1024 * 1024  # 5 MB
 IMAGE_LIMIT = 10
 _CHUNK_SIZE = 8 * 1024  # 8 KB chunks for iter_content
@@ -519,13 +528,53 @@ def _parse_content_encoded(html_str: str, link: str) -> Optional[Dict]:
     # iterate over the direct children of the root and recurse manually
     # when we hit a wrapper (<div>, <article>, <section>).
     def _emit_paragraph(p_tag):
-        runs = _runs_from_tag(p_tag)
-        if not runs:
+        # Detect <br>-separated list-style content inside one <p>.
+        # orangetrack's WordPress editor authors series/case checklists as a
+        # single <p> with <br> between items (e.g. the "Below you'll find
+        # the series/case list" footer of the Boulevard mix posts):
+        #   `<p>#151 – <strong>'15 Toyota Alphard</strong><br>#152 – ...<br>...</p>`
+        # BeautifulSoup's get_text collapses <br> into a single space, so the
+        # whole list otherwise lands in one paragraph block and the LLM splice
+        # cannot un-collapse it. Splitting the <p> at <br> boundaries here
+        # emits one paragraph block per item, which Telegra.ph then renders on
+        # separate lines (verified live 2026-05-14 on the mix-3-H case-report
+        # article — both prod and test had the 5-item list collapsed).
+        if not p_tag.find("br"):
+            runs = _runs_from_tag(p_tag)
+            if not runs:
+                return
+            text = " ".join(r["text"] for r in runs).strip()
+            if not text:
+                return
+            blocks.append({"type": "paragraph", "text": text, "runs": runs})
             return
-        text = " ".join(r["text"] for r in runs).strip()
-        if not text:
-            return
-        blocks.append({"type": "paragraph", "text": text, "runs": runs})
+
+        segments: List[List] = [[]]
+        for child in p_tag.children:
+            if getattr(child, "name", None) == "br":
+                segments.append([])
+            else:
+                segments[-1].append(child)
+
+        for seg_children in segments:
+            if not seg_children:
+                continue
+            seg_html = "".join(str(c) for c in seg_children)
+            wrapper = BeautifulSoup(f"<p>{seg_html}</p>", "html.parser").p
+            if wrapper is None:
+                continue
+            runs = _runs_from_tag(wrapper)
+            if not runs:
+                continue
+            # Collapse whitespace: text-node trailing spaces + " ".join separator
+            # can double up when a text node ends in space and the next run is a
+            # tag (e.g. "#151 – " + " " + "Alphard"). Preserve runs verbatim —
+            # only the flattened `text` field is normalised; `text.find(run_text)`
+            # in the renderer still works since each run substring is intact.
+            text = re.sub(r"\s+", " ", " ".join(r["text"] for r in runs)).strip()
+            if not text:
+                continue
+            blocks.append({"type": "paragraph", "text": text, "runs": runs})
 
     def _emit_heading(h_tag, level):
         # Emit h-tags with level-aware dispatch (Decisions 2 + 3 of
@@ -1067,7 +1116,17 @@ class OrangetrackPingAggregator:
     """
 
     def __init__(self, instance_label: Optional[str] = None) -> None:
-        self.instance_label = (instance_label or "").strip()
+        # ``instance_label`` is accepted for backward-compat with existing
+        # callers (notably ``news_bot._fetch_orangetrack_entries``) but is
+        # NO LONGER USED for prefixing. Prior behaviour prepended
+        # ``[label] `` to ``format_summary()`` output; that combined with
+        # ``send_admin_notification`` (which ALSO prepends INSTANCE_LABEL
+        # for every admin-bound message) produced the ``[test] [test]
+        # [E030] …`` double-prefix observed in prod 2026-06-08. The single
+        # source of truth for prefixing is now ``send_admin_notification``.
+        # The parameter remains in the signature so external test code
+        # / docs that pass it don't break — silently dropped here.
+        del instance_label  # explicit "unused" signal for linters
         # {code: {link: count}} preserving insertion order via dict semantics.
         self._events: Dict[str, Dict[str, int]] = {}
         self._total_calls = 0
@@ -1119,8 +1178,11 @@ class OrangetrackPingAggregator:
         # operator triaging a flood sees the real severity even when the
         # per-code link cap (50) drops some entries from the bullet list.
         total_events = self._total_added
-        prefix = f"[{self.instance_label}] " if self.instance_label else ""
-        header = f"{prefix}{admin_alerts.alert_orangetrack_summary_header(total_events)}"
+        # NO inline [instance_label] prefix here — send_admin_notification
+        # prepends it once for every admin-bound message (news_bot.py:412).
+        # Adding it here too produced the [test] [test] [E030] double-prefix
+        # incident 2026-06-08.
+        header = admin_alerts.alert_orangetrack_summary_header(total_events)
         lines = [header]
         for code in sorted(self._events.keys(), key=_code_sort_key):
             bucket = self._events[code]

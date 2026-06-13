@@ -1,0 +1,190 @@
+# Decisions Log: cross-source-dedup
+
+Agent reports on completed tasks. Each entry is written by the agent that executed the task.
+
+---
+
+<!-- Entries are added by agents as tasks are completed.
+
+Format is strict — use only these sections, do not add others.
+Do not include: file lists, findings tables, JSON reports, step-by-step logs.
+Review details — in JSON files via links. QA report — in logs/working/.
+
+## Task N: [title]
+
+**Status:** Done
+**Commit:** abc1234
+**Agent:** [teammate name or "main agent"]
+**Summary:** 1-3 sentences: what was done, key decisions. Not a file list.
+**Deviations:** None / Deviated from spec: [reason], did [what].
+
+**Reviews:**
+
+*Round 1:*
+- code-reviewer: 2 findings → [logs/working/task-N/code-reviewer-1.json]
+- security-auditor: OK → [logs/working/task-N/security-auditor-1.json]
+
+*Round 2 (after fixes):*
+- code-reviewer: OK → [logs/working/task-N/code-reviewer-2.json]
+
+**Verification:**
+- `npm test` → 42 passed
+- Manual check → OK
+
+-->
+
+## Task 10: Deploy (test instance — prod DEFERRED)
+
+**Status:** In progress — test deploy done; prod promotion deferred (operator gate).
+**Commit:** 444b345 (FILES-invariant fix in deploy.yml + deploy_test.yml; deploy ops only, no feature code).
+**Agent:** main agent (orchestrator)
+**Summary:** Pre-flight caught the FILES-list invariant broken — Task 5 added `model_extractor.py` + `backfill_fingerprints.py` to `deploy.sh` but NOT to either GitHub Actions workflow. Fixed both `deploy.yml` and `deploy_test.yml` so all three FILES arrays match byte-for-byte (without it a main-branch CI deploy crashloops on `ImportError`). Deployed cross-source-dedup to the **test instance only** (Path C, mirroring t-hunted caution): pushed dev → auto `workflow_run` hit the known main-stale-YAML drift → recovered via `gh workflow run deploy_test.yml --ref dev`; ended on a final dev-YAML dispatch (run 27059499882, success — "news_bot_test.service restarted on dev branch code"). **Prod untouched** (still `a306e14`, Mattel-disable only). Migration (`model_fingerprint TEXT` ALTER) applies on next test cron tick via `init_db()`.
+**Deviations:** Deviated from task happy-path (which targets prod via `./deploy.sh`). Prod deploy DEFERRED: prod is far behind dev (t-hunted PR #12-17 + orangetrack br-split + this feature all unpromoted), and t-hunted T14 sign-off state is unverified this session — promoting dev→main would bundle unverified t-hunted onto prod. Test-first soak chosen until operator confirms (a) t-hunted T14 closed and (b) clean cross-source-dedup soak on test.
+
+**Reviews:** Not applicable — deploy task, no reviewers.
+
+**Verification (CONFIRMED green on test 2026-06-06 via CI probe):** Operator's local SSH was unavailable (local key not in `authorized_keys` + DeluxHost provider outage), so verification ran via an operator-authorized one-shot CI workflow (`verify_test.yml`, read-only, using the deploy key from a GitHub runner). Results:
+- `.schema pending_articles` → `model_fingerprint TEXT` present ✅
+- `.schema published_articles` → `model_fingerprint TEXT` present ✅
+- `systemctl is-active news_bot_test.service` → `active` ✅
+- `journalctl` grep since deploy → `clean — no ImportError/Traceback/model_extractor errors` ✅
+- `model_extractor.py` (14400 B) + `backfill_fingerprints.py` (12332 B) on disk, sizes match local ✅
+- Live signal: `[test] [E008]` heartbeat at 13:09 МСК (deploy startup tick) emitted a valid plan (3 fresh accepted) → service healthy on new code; no `[E016]` degraded-mode ping → dedup gate working without fallback.
+- Note: the simultaneous prod+test restarts at 18:23 МСК were a DeluxHost provider outage/maintenance reboot (provider status page: "Major Outage in Progress"), NOT a code/OOM/deploy issue.
+- The throwaway `verify_test.yml` + `chore/verify-test` branch were deleted after this probe.
+
+## Task 9: Pre-deploy QA
+
+**Status:** Done
+**Commit:** (no code changes — verification only; report is the deliverable)
+**Agent:** qa-runner
+**Summary:** Pre-deploy QA verdict **PASSED** — 0 critical findings. Full suite `pytest -q` green: 1083 passed / 2 skipped / 0 failed (matches baseline exactly; the 2 skips are pre-existing motivated conditional skips for live Mattel snapshots). All 12 user AC + 11 tech AC checked: 18 `passed` (incl. AC1 fingerprint-shape and AC11 backfill-refetch both `passed (deviation approved)`), 0 `failed`, 5 `not_verifiable` (live-environment scope of Task 11). Backfill dry-run on a fresh isolated empty DB: exit 0, full summary block, DB md5 identical before==after (zero writes); real prod DB never touched. Coverage check passed (every Tasks 1-5 file has behavior-exercising tests); requirements.txt diff vs pre-feature baseline empty (no new packages); deploy.sh FILES has both new files; backfill imports news_bot before logging.basicConfig. Audit inputs factored: security PASS, test PASS-WITH-NOTES (M1/M2 fixed), code PASS-WITH-NOTES. Full report: [logs/working/task-9/qa-report.json](logs/working/task-9/qa-report.json).
+**Deviations:** Two approved spec deviations re-confirmed in the report (not new): fingerprint shape dict `{"strict":[],"brands":[]}` vs user-spec AC1 `list[str]` (tech-spec User-Spec Deviations + Decision 4/5); backfill re-fetch via `fetch_full_article` vs reading `published_articles.paragraphs` (Decision 10, [APPROVED 2026-06-04]).
+**Deferred to post-deploy (Task 11 operator flags):** 5 `not_verifiable` criteria require live environment — (1) AC-tech-5 performance budget (constructive guarantee only, no wall-clock CI assert per Decision 3); (2) AC11 prod backfill run + `SELECT COUNT(*) WHERE model_fingerprint IS NOT NULL` via sqlite3 CLI on VPS; (3) AC3/AC4 live [E015]/[E014] Telegram ping spot-check; (4) 2-week channel @myhwchannel no-visible-duplicate review; (5) AC10 live `.schema` confirmation of `model_fingerprint TEXT` on prod news.db. Tools: bash/sqlite3 on VPS SSH, Telegram visual. See `deferredToPostDeploy` in qa-report.json.
+
+**Reviews:** Not applicable — QA is its own verification step; the report is the deliverable, no secondary review.
+
+**Verification:**
+- `python3 -m pytest -q` → 1083 passed, 2 skipped, 0 failed
+- `python3 backfill_fingerprints.py --dry-run --days 1` (isolated fresh empty news.db) → exit 0, summary block present, DB md5 unchanged
+- requirements.txt diff vs `b891885` (pre-feature) → empty
+- `grep -nE "model_extractor.py|backfill_fingerprints.py" deploy.sh` → both present (L56-57)
+- Status=passed → cleared to proceed to Task 10 (Deploy)
+
+## Task 6: Code Audit
+
+**Status:** Done
+**Commit:** (no code changes — read-only audit)
+**Agent:** code-auditor
+**Summary:** Holistic code audit verdict **PASS-WITH-NOTES**. 0 critical / 2 major / 5 minor / 3 nit. Cross-component contracts (JSON shape uniformity, compiled-regex singleton, error-handling discipline) all hold; pattern adherence to `boilerplate_filter.py`, `outage_state.py`, `hw_review.py` verified; deploy.sh ships both new top-level files; Decisions 1–14 all honored. Two follow-up items worth a separate ticket: (1) `news_bot.py` reaches into `pending_repo._connect()` (private API) — promote a public helper; (2) the degraded-mode path opens two sequential connections — consolidate connection lifecycle. Neither blocks deploy. Full report: [logs/audits/code-audit.md](logs/audits/code-audit.md).
+**Deviations:** None — audit was read-only; no source files modified.
+
+**Reviews:** Not applicable — audit task has no reviewers (the report itself is the deliverable).
+
+**Verification:**
+- `test -f work/cross-source-dedup/logs/audits/code-audit.md && grep -q "## Verdict" work/cross-source-dedup/logs/audits/code-audit.md` → OK
+- Report covers all 5 source files + 11 review dimensions + 3 reference patterns
+
+## Task 7: Security Audit
+
+**Status:** Done
+**Commit:** (no code changes — read-only audit)
+**Agent:** security-auditor
+**Summary:** Security audit verdict **PASS** — 0 HIGH / 0 MED / 2 LOW (informational). All 5 focuses empirically verified clean: SSRF (`fetch_full_article` domain-allowlist rejects `file://`/link-local/internal hosts — `entry_stub` opens no new channel), ReDoS (all 3 `model_extractor.py` regexes bounded; worst case 1.87ms on 10KB adversarial input), SQL injection (all 7 new `pending_articles_repo.py` helpers `?`-parametrized; `'; DROP TABLE` probe left tables intact), secret leakage (E016 uses `type(exc).__name__` only; every ping scrubbed via `_redact_text` at delivery), rendering injection (`send_admin_notification` sends `parse_mode=None` plain text). Critical caveat-5 invariant confirmed: `backfill_fingerprints.py` imports `news_bot` before `logging.basicConfig()` → `_TokenRedactingFilter` active on root logger. Two LOW/info notes both already flagged by Task 6 (private `_connect()` use). No fix-tasks opened. Full report: [logs/audits/security-audit.md](logs/audits/security-audit.md).
+**Deviations:** None — audit was read-only; no source files modified.
+
+**Reviews:** Not applicable — audit task has no reviewers (the report itself is the deliverable).
+
+**Verification:**
+- `test -f work/cross-source-dedup/logs/audits/security-audit.md && grep -q "## Verdict" .../security-audit.md` → OK
+- ReDoS empirically measured 1.87ms / 10KB; SSRF + SQLi probes run against live code paths
+
+## Task 8: Test Audit
+
+**Status:** Done
+**Commit:** d-pending (M1/M2 test-hardening fixes applied — see below)
+**Agent:** test-reviewer
+**Summary:** Test audit verdict **PASS WITH NOTES** — 0 critical / 0 high / 2 medium / 2 low / 2 info. All 7 `TestCrossSourceDedup` integration scenarios present and covering all 4 gate branches (block / flag / pass / degraded) + within-source AC7 + pass-through-with-nonempty-fp. No mock-leak anti-pattern; both rate-limit window-expiry tests use backdated `bot_state` rows (not `time.sleep`); calibration fixture has all 8 pairs in correct categories. Two medium findings were both **fixed immediately** (test-only, see Deviations): M1 — `test_calibration_real_pair_must_pass` asserted the raw `>=0.50` threshold instead of the decision verdict (contradicted T8 AC dimension 2.b); now asserts `_classify(sim) == 'duplicate'`. M2 — no direct guard on `_PENDING_JSON_COLS` tuple membership; added `test_pending_json_cols_registers_model_fingerprint`. Full report: [logs/audits/test-audit.md](logs/audits/test-audit.md).
+**Deviations:** Audit itself read-only, but the two medium findings were closed in the same session rather than deferred (trivial test-only changes; M1 was required to satisfy T8's own AC). Net +1 test.
+
+**Reviews:** Not applicable — audit task is its own review (the report is the deliverable).
+
+**Verification:**
+- `test -f work/cross-source-dedup/logs/audits/test-audit.md && grep -q "Verdict" .../test-audit.md` → OK
+- M1/M2 fixes: 2 targeted tests pass; full suite `pytest -q tests/` → 1083 passed, 2 skipped, 0 failed (was 1082+2skip; +1 from M2)
+
+## Task 5: backfill_fingerprints.py one-shot script
+
+**Status:** Done
+**Commit:** (pending — see git log)
+**Agent:** backfill-author (main agent foreground)
+**Summary:** Added top-level `backfill_fingerprints.py` mirroring `hw_review.py` shape (argparse + `main(argv=None) -> int` + `if __name__ == '__main__': sys.exit(main())`). CLI: `--days N` (default 14, clamped to `[1, 90]` via `_days_in_range` `type=` callable that raises `ArgumentTypeError`), `--dry-run`, `--verbose`. Per Decision 10 / code-research §14.E.3 (Path A): for each published row with `model_fingerprint IS NULL` in the window, build an `entry_stub` and call `news_bot.fetch_full_article` — on success run `extract_fingerprint` + `update_published_fingerprint` (counted as `updated`); on empty/None article store terminal `{"strict":[],"brands":[]}` (counted as `empty-fp`); on exception leave NULL for retry (counted as `error`). Narrow try/except scoped only to `fetch_full_article` so extractor/repo bugs surface with traceback. 1-second `time.sleep` between fetches (skipped before row 1). Single long-lived `sqlite3` connection passed to conn-accepting repo helpers. `import news_bot` at module top per convention. Summary printed to stdout matches §14.E.5 shape (Window / Processed / Skipped / Empty fp / Errors / Duration). Updated `deploy.sh` FILES list with `model_extractor.py` and `backfill_fingerprints.py`. Added `tests/test_backfill_fingerprints.py` covering all 7 TDD anchors (11 total tests after parametrising `--days` clamp).
+**Deviations:** None.
+
+**Reviews:** Skipped — task runs foreground; review pipeline not wired for this task instance. Code-only verification: all 11 new tests green; full pytest suite 1084 passed (baseline 1073 + 11 new, no regressions); smoke check on /tmp/smoke.db (single row, `--dry-run --days 1`) exits 0 with correct summary shape.
+
+**Verification:**
+- Smoke: `python3 backfill_fingerprints.py --dry-run --days 1` on /tmp/smoke.db (single seeded row) → exit 0, prints summary with all expected labels, no DB writes
+- `pytest tests/test_backfill_fingerprints.py -v` → 11 passed
+- `pytest -q tests/` → 1084 passed (baseline 1073 + 11 new, no regressions)
+
+## Task 4: Wire dedup gate in news_bot.job() + integration tests
+
+**Status:** Done
+**Commit:** (pending — see git log)
+**Agent:** gate-wirer (main agent foreground)
+**Summary:** Wired cross-source dedup gate into `news_bot.job()` between `_is_text_only_checklist` and `row` assembly per Decision 14. New private `_check_cross_source_dedup(article, fp, conn)` returns `('block'|'flag'|'pass', match|None)` by walking `list_recent_pending_fingerprints + list_recent_published_fingerprints` (7d window each) and computing `model_extractor.similarity` against each candidate. Hard-block (≥0.50) calls `mark_processed` + sends E015 + `continue` (Decision 8); soft-flag (0.30-0.49) checks `is_pair_rate_limited`, sends E014 + `mark_pair_pinged` if not limited, then falls through; pass writes `fp` into `row['model_fingerprint']`. Entire block wrapped in `try/except Exception` (Decision 12 / AC9) — exceptions log traceback, fire rate-limited E016, set `fp = None`, article publishes anyway. Added `TestCrossSourceDedup` (7 scenarios) + `TestFingerprintCarryThrough` (1 scenario) — all green.
+**Deviations:** Extended `pending_articles_repo.move_to_published` to carry `model_fingerprint` from pending into published_articles INSERT — required for AC2 carry-through (the published_articles INSERT was previously dropping the column). Task 2 didn't cover this. The change is two lines in `move_to_published` (SELECT and INSERT column lists) and is the minimum to satisfy `TestFingerprintCarryThrough` + AC2. Scope creep is small and surgical; flagged here for visibility.
+
+**Reviews:** Skipped — running foreground after stalled background teammate; review pipeline not wired for this task instance. Code-only verification: all 8 new integration tests green; full pytest suite 1073 passed (baseline 1065 after Task 2 + 8 new tests, no regressions).
+
+**Verification:**
+- `pytest tests/test_integration.py::TestCrossSourceDedup tests/test_integration.py::TestFingerprintCarryThrough -v` → 8 passed
+- `pytest -q tests/` → 1073 passed (baseline 1065 + 8 new tests, no regressions)
+
+## Task 3: Admin-ping builders E014, E015, E016
+
+**Status:** Done
+**Commit:** (pending — see git log)
+**Agent:** main agent (claimed after background teammate stalled silently)
+**Summary:** Added three pure builder functions to `admin_alerts.py` per tech-spec Decision 7: `alert_cross_source_dupe(...)` (E014, columnar full format, mirrors E006 shape), `alert_cross_source_blocked(new_link, existing_link, overlap_pct)` (E015, short 2-3 line), `alert_dedup_degraded(reason: str)` (E016, short alert with `⚠️` emoji and "Дедуп в degraded mode" title substring per task-3 round-1 fix vs stale §14.K.3 template).
+**Deviations:** None.
+
+**Reviews:** Skipped — background reviewer pipeline never fired. Code-only verification: 3 builder signatures match Data Models interface in tech-spec; 3 new tests pass; full pytest suite (`pytest -q tests/`) reports 1015 passed (was 1012 baseline +3 new tests, no regressions).
+
+**Verification:**
+- `pytest tests/test_admin_alerts.py -k "e014 or e015 or e016" -v` → 3 passed
+- `pytest -q tests/` → 1015 passed (no regressions)
+
+## Task 2: Schema migration + repo helpers + rate-limit helpers
+
+**Status:** Done
+**Commit:** (pending — see git log)
+**Agent:** repo-migrator (main agent, foreground after stalled background teammate)
+**Summary:** Extended `pending_articles_repo.py` with the `model_fingerprint TEXT` migration on both `pending_articles` and `published_articles` (Decision 11 — same idempotent try/except OperationalError block as the 2026-04-30 telegraph_url migration), registered `model_fingerprint` in `_PENDING_JSON_COLS` (+ new `_PUBLISHED_JSON_COLS`), extended `insert_pending` to accept `entry['model_fingerprint']` backward-compatibly via `entry.get`. Added 3 conn-accepting query/write helpers (`list_recent_pending_fingerprints`, `list_recent_published_fingerprints`, `update_published_fingerprint`) and 4 bot_state-backed rate-limit helpers (`is_pair_rate_limited`, `mark_pair_pinged`, `is_dedup_degraded_rate_limited`, `mark_dedup_degraded_pinged`) mirroring `outage_state.py` `_parse_dt` tolerance pattern (corrupted timestamp → warning + False, never raises). Pair key uses `\n` separator (Decision 6). Updated schema-pin tests (EXPECTED_PENDING / EXPECTED_PUBLISHED / EXPECTED_PENDING_COLUMNS + new EXPECTED_PUBLISHED_COLUMNS) plus 21 new unit tests covering JSON roundtrip, backward-compat NULL, 7-day window filtering, rate-limit window-expiry 3-step (mark → check True → fast-forward via direct bot_state UPDATE → check False), independent-pair isolation, corrupted-timestamp tolerance, init_schema idempotency.
+**Deviations:** None. Followed tech-spec §Interfaces (conn-accepting signatures for all 7 new helpers), not the §14.H drop-in (which used a short-lived `_connect()` pattern incompatible with backfill's long transaction).
+
+**Reviews:** Skipped — running foreground after stalled background teammate; review pipeline not wired for this task instance. Smoke check (double init_schema + PRAGMA both tables) green; full pytest suite 1065 passed (was 1044 after Task 1 + 21 new tests, no regressions).
+
+**Verification:**
+- Smoke 1: `python3 -c "import sqlite3, pending_articles_repo; conn=sqlite3.connect(':memory:'); pending_articles_repo.init_schema(conn); pending_articles_repo.init_schema(conn); print([r[1] for r in conn.execute('PRAGMA table_info(pending_articles)')])"` → output includes `'model_fingerprint'`, no exception fires on double-call
+- Smoke 2: same for `published_articles` → output includes `'model_fingerprint'`
+- `pytest tests/test_pending_articles_repo.py tests/test_migration.py -v` → 62 passed (41 original + 21 new)
+- `pytest -q tests/` → 1065 passed (baseline 1044 + 21 new tests, no regressions)
+
+## Task 1: model_extractor.py + calibration fixture
+
+**Status:** Done
+**Commit:** (pending — see git log)
+**Agent:** extractor-author (main agent, foreground after stalled background teammate)
+**Summary:** Added new `model_extractor.py` (35-brand lexicon, ReDoS-safe bounded-quantifier compiled regex constants module-level, pure `extract_fingerprint` returning sorted lists, guarded two-level Jaccard `similarity` per Decision 4 with AC6/AC8/AC10 guards). Added `tests/fixtures/cross_source_dedup_pairs.py` with 8 labelled calibration pairs (real 2026-06-03 pair as load-bearing Pair 1, AC8 same-brand probe as Pair 5, 1-token guard as Pair 6, empty-fp AC6 probe as Pair 8). Added `tests/test_model_extractor.py` with `TestExtractFingerprint` (18 tests), `TestSimilarity` (9 tests), `test_calibration_accuracy` (≥7/8 floor; actual 8/8), `test_calibration_real_pair_must_pass` (Pair 1 sim=0.75).
+**Deviations:** None. Lexicon ships 36 entries (35 from Decision 2 + `mini` added per code-research §14.A.2 sampling); Decision 2 phrased the target as "~35" so this is within spec. Composite model token captures up to 2 extra designator words (`(?:\s{1,2}[A-Za-z0-9][A-Za-z0-9\-]{0,24}){0,2}`) per Decision 3 — required so "Subaru Legacy GT" matches the smoke-check expected `subaru legacy gt`; extras are filtered through `_MODEL_EXTRA_KEEP_RE` to drop lowercase prose noise ("gold", "review", connectives) while keeping designator suffixes (Z28, STI, GT, hyphenated F-150 / Type-R).
+
+**Reviews:** Skipped — running foreground after stalled background teammate; review pipeline not wired for this task instance. Smoke checks per tech-spec verify-smoke field all green; calibration accuracy 8/8 well above 7/8 floor; real-pair must-pass sim=0.75 well above 0.50 threshold.
+
+**Verification:**
+- `pytest tests/test_model_extractor.py -v` → 29 passed
+- `pytest -q tests/` → 1044 passed (baseline 1015 + 29 new, no regressions)
+- Smoke 1: `extract_fingerprint({'title':'2018 Toyota 4Runner gold chase', 'paragraphs':['Subaru Legacy GT (BP).']})` → strict `['subaru legacy gt', 'toyota 4runner']`, brands `['subaru', 'toyota']`, year 2018 absent
+- Smoke 2: identical fingerprints for "Land Rover S2" / "land rover s2 review" → `similarity = 1.0`
+- Smoke 3: `extract_fingerprint({'title':'bmwxyz123 lotus position'})` → `{'strict': [], 'brands': []}` (case-sensitivity guards active)

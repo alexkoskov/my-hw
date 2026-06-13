@@ -470,6 +470,24 @@ class TestEmptyEmbedWrapperDetection:
         )
 
 
+class TestRequestTimeoutFloor:
+    """Behavioral pin for the REQUEST_TIMEOUT floor. Bumped 2026-06-09
+    from 15 → 30 after recurrent ART_FALLBACK_TIMEOUT (E030) pings on
+    heavy case-report pages. The floor MUST remain >=30 — anything
+    tighter trades off legitimate slow Cloudflare responses against
+    operator alert volume in the wrong direction.
+    """
+
+    def test_request_timeout_floor(self):
+        import orangetrack_source
+        assert orangetrack_source.REQUEST_TIMEOUT >= 30, (
+            f"REQUEST_TIMEOUT regressed to {orangetrack_source.REQUEST_TIMEOUT}s "
+            "— heavy case-report pages with 20-30 images need at least 30s. "
+            "Tighter floor will surface E030 ART_FALLBACK_TIMEOUT on healthy "
+            "but slow Cloudflare responses."
+        )
+
+
 class TestFallbackPath:
     def _entry_no_content(self, link="https://orangetrackdiecast.com/post-x"):
         return {"link": link, "title": "T", "content": [], "summary": ""}
@@ -670,7 +688,9 @@ class TestOrangetrackPingAggregator:
         a.add("ART_FALLBACK_HTTP_404", "https://orangetrackdiecast.com/a")
         a.add("ART_FALLBACK_HTTP_404", "https://orangetrackdiecast.com/b")
         out = a.format_summary()
-        assert out.startswith("[test] [E030] 🟡 Orangetrack: 3 проблем за тик")
+        # After 2026-06-08 double-prefix fix: header is bare [E030] —
+        # send_admin_notification adds the instance-label prefix once.
+        assert out.startswith("[E030] 🟡 Orangetrack: 3 проблем за тик")
         assert "FEED_HTTP_503" in out
         assert "ART_FALLBACK_HTTP_404" in out
         # FEED_* group comes before ART_*.
@@ -714,27 +734,25 @@ class TestOrangetrackPingAggregator:
         # HOST_REJECTED < TIMEOUT alphabetically.
         assert out.index("ART_FALLBACK_HOST_REJECTED") < out.index("ART_FALLBACK_TIMEOUT")
 
-    def test_instance_label_set(self):
-        a = OrangetrackPingAggregator("test")
-        a.add("FEED_HTTP_503", "https://x/y")
-        out = a.format_summary()
-        assert out.startswith("[test] [E030] 🟡 Orangetrack:")
-
-    def test_instance_label_empty(self):
-        a = OrangetrackPingAggregator("")
-        a.add("FEED_HTTP_503", "https://x/y")
-        out = a.format_summary()
-        # No instance label → no [test]/[prod] prefix before the [E030] code.
-        assert not out.startswith("[test]")
-        assert not out.startswith("[prod]")
-        assert out.startswith("[E030] 🟡 Orangetrack:")
-
-    def test_instance_label_none(self):
-        a = OrangetrackPingAggregator(None)
-        a.add("FEED_HTTP_503", "https://x/y")
-        out = a.format_summary()
-        assert not out.startswith("[test]")
-        assert not out.startswith("[prod]")
+    def test_no_inline_instance_label_prefix_regardless_of_arg(self):
+        """Regression for 2026-06-08 prod incident: double ``[test] [test]
+        [E030] …`` prefix observed in admin pings. Root cause: the
+        aggregator was prepending its own ``[label] `` AND
+        ``send_admin_notification`` was prepending ``[INSTANCE_LABEL] ``
+        on top. Fix: aggregator no longer prefixes — the single source
+        of truth is ``send_admin_notification``. The
+        ``instance_label`` constructor arg is preserved (silently
+        ignored) for back-compat.
+        """
+        for label in ("test", "prod", "", None):
+            a = OrangetrackPingAggregator(label)
+            a.add("FEED_HTTP_503", "https://x/y")
+            out = a.format_summary()
+            assert out.startswith("[E030] 🟡 Orangetrack:"), (
+                f"label={label!r}: expected bare [E030] header, got {out!r}"
+            )
+            assert "[test]" not in out.split("\n", 1)[0]
+            assert "[prod]" not in out.split("\n", 1)[0]
 
     def test_per_code_link_cap_50(self):
         a = OrangetrackPingAggregator("test")
@@ -796,8 +814,9 @@ class TestOrangetrackPingAggregator:
         crafted = "https://x/\n[prod] [E030] 🟡 Orangetrack: 0 проблем за тик"
         a.add("FEED_HTTP_503", crafted)
         out = a.format_summary()
-        # Original [test] header still on line 1.
-        assert out.split("\n")[0] == "[test] [E030] 🟡 Orangetrack: 1 проблем за тик"
+        # Original [E030] header still on line 1 (no inline label-prefix
+        # after the 2026-06-08 double-prefix fix).
+        assert out.split("\n")[0] == "[E030] 🟡 Orangetrack: 1 проблем за тик"
         # Newline injection neutralized — output structure has only TWO
         # lines (header + one bullet), not three (header + bullet +
         # injected fake header).
@@ -807,7 +826,7 @@ class TestOrangetrackPingAggregator:
         # bullet line as plain text rather than starting a new line.
         lines = out.split("\n")
         assert len(lines) == 2
-        assert lines[0].startswith("[test] [E030] 🟡 Orangetrack:")
+        assert lines[0].startswith("[E030] 🟡 Orangetrack:")
         assert lines[1].lstrip().startswith("• FEED_HTTP_503")
 
     def test_emit_swallows_send_fn_error(self, caplog):
@@ -1005,6 +1024,40 @@ class TestListItemParsing:
         list_items = [b for b in out["blocks"] if b["type"] == "list_item"]
         assert len(list_items) == 1
         assert list_items[0]["text"] == "X"
+
+    def test_br_separated_p_splits_into_paragraph_blocks(self):
+        """Regression for 2026-05-14: orangetrack's series/case checklist
+        footer is a single `<p>` with `<br>` between items
+        (`<p>#151 – <strong>Toyota Alphard</strong><br>#152 – ...`). Without
+        the <br>-split, BeautifulSoup collapses <br> into a space and the
+        whole 5-item list lands in one paragraph block — verified live
+        on /hot-wheels-2026-boulevard-mix-3-h-case-report/ where the
+        rendered Telegraph page had #151..#155 all on one line. The
+        split emits one paragraph block per segment so each item gets
+        its own line on Telegra.ph."""
+        html = (
+            '<p>#151 – <strong>’15 Toyota Alphard</strong>'
+            '<br>#152 – <strong>Koenigsegg CC850</strong>'
+            '<br>#153 – <strong>Datsun King Cab Baja Custom</strong></p>'
+        )
+        out = _parse_content_encoded(html, self.LINK)
+        assert out is not None
+        paragraphs = [b for b in out["blocks"] if b["type"] == "paragraph"]
+        # Three separate paragraph blocks, in DOM order.
+        assert len(paragraphs) == 3
+        assert paragraphs[0]["text"] == "#151 – ’15 Toyota Alphard"
+        assert paragraphs[1]["text"] == "#152 – Koenigsegg CC850"
+        assert paragraphs[2]["text"] == "#153 – Datsun King Cab Baja Custom"
+
+    def test_p_without_br_emits_single_paragraph(self):
+        """Sanity: a plain `<p>` with no `<br>` continues to emit one
+        paragraph block (no regression from the <br>-split path)."""
+        html = "<p>Just a regular paragraph with prose.</p>"
+        out = _parse_content_encoded(html, self.LINK)
+        assert out is not None
+        paragraphs = [b for b in out["blocks"] if b["type"] == "paragraph"]
+        assert len(paragraphs) == 1
+        assert paragraphs[0]["text"] == "Just a regular paragraph with prose."
 
     def test_empty_li_dropped(self):
         # Empty `<li></li>` MUST NOT emit a block.

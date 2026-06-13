@@ -65,7 +65,7 @@ def _ping_2_text() -> str:
 
 
 def _ping_3_text() -> str:
-    return admin_alerts.alert_outage_fallback_engaged()
+    return admin_alerts.alert_outage_still_down()
 
 
 def _recovery_text() -> str:
@@ -223,11 +223,19 @@ def set_ping_count(n: int) -> None:
 
 
 def is_fallback_active() -> bool:
-    """``True`` iff ``fallback_active='1'``. Missing/corrupt → ``False``."""
+    """``True`` iff ``fallback_active='1'``. Missing/corrupt → ``False``.
+
+    DORMANT since the 2026-06-11 hold-and-wait change: production no longer
+    reads this flag (LLM outages HOLD articles instead of switching to a
+    Google fallback). The state machine still records it (see ``fallback_now``
+    in ``record_outage_event``) but nothing acts on it. Kept for the test
+    suite / possible reuse; safe to retire in a follow-up.
+    """
     return _get(_KEY_FALLBACK_ACTIVE) == '1'
 
 
 def set_fallback_active(active: bool) -> None:
+    # DORMANT (see is_fallback_active): no production caller since 2026-06-11.
     # Storage asymmetry note: this writes literal '0' for the False case,
     # while ``clear_outage_state`` / ``record_recovery_event`` DELETE the row
     # entirely. ``is_fallback_active()`` treats both equivalently
