@@ -64,6 +64,16 @@ _LONG_BOILERPLATE_PATTERNS = [
     # through and ends up translated. ``Узнать больше о ...`` is the
     # canonical RU equivalent of "Saiba mais sobre ...".
     re.compile(r'^узнать\s+больше\s+о\b', re.I),
+    # PT — "Clique aqui / Clique neste link para ver tudo ..." per-article
+    # cross-promo CTA. t-hunted ships these "click here to see everything
+    # we covered about <topic>" links inline (incident 2026-06-13: the
+    # Ferrari F1 Premium post leaked two of them to Telegram — the existing
+    # "para ver mais novidades" pattern only caught the third, social plug).
+    re.compile(r'^clique\s+(aqui|neste\s+link|no\s+link)\b', re.I),
+    # RU — defence in depth for the translated "Кликайте по ссылке ..." /
+    # "Кликай сюда ..." form, if a PT click-CTA variant ever slips past the
+    # pre-translation filter.
+    re.compile(r'^кликай(те)?\s+(по|на|сюда)\b', re.I),
 ]
 
 # Platforms covered by author-plug patterns (variant A and B of the

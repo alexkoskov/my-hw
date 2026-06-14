@@ -789,7 +789,7 @@ _DEDUP_FLAG_THRESHOLD = 0.30
 
 
 def _check_cross_source_dedup(article: dict, fingerprint: dict,
-                              conn: sqlite3.Connection):
+                              conn: sqlite3.Connection, new_source=None):
     """Compare ``fingerprint`` against the last 7 days of pending +
     published rows and decide block / flag / pass.
 
@@ -816,7 +816,13 @@ def _check_cross_source_dedup(article: dict, fingerprint: dict,
 
     Implementation notes:
       * Iterates pending FIRST, then published — both windowed at 7 days
-        per tech-spec Architecture. No source filtering (Decision 9).
+        per tech-spec Architecture. CROSS-SOURCE ONLY (Decision 9 reversed
+        2026-06-14): candidates whose ``source_name`` equals ``new_source``
+        are skipped — one source republishing the same model within 7 days
+        is implausible, and comparing within-source only produces false
+        positives (e.g. autoevolution Ford F-100 vs Porsche Team Transport
+        sharing a brand token). When ``new_source`` is None/unknown, no
+        candidate is skipped (fail-open: never miss a real cross-source dup).
       * Picks the best (highest sim) match across the entire window so
         the strongest signal wins even if a weaker pending match would
         also cross the soft-flag threshold.
@@ -839,6 +845,11 @@ def _check_cross_source_dedup(article: dict, fingerprint: dict,
     best_sim = 0.0
     best_row = None
     for row in candidates:
+        if new_source and row.get('source_name') == new_source:
+            # Same-source candidate — never deduped (Decision 9 reversed
+            # 2026-06-14: within-source republishes don't happen; comparing
+            # them only yields false positives).
+            continue
         cand_fp = row.get('model_fingerprint')
         if not isinstance(cand_fp, dict):
             # NULL (pre-feature) or malformed row — skip silently. The
@@ -1919,12 +1930,13 @@ def job():
         # and the operator gets one rate-limited [E016] ping per hour.
         # --------------------------------------------------------------
         fp = None
+        new_source = entry.get('source_name') or _resolve_source_name(link)
         try:
             dedup_conn = pending_repo._connect()
             try:
                 fp = model_extractor.extract_fingerprint(article)
                 decision, match = _check_cross_source_dedup(
-                    article, fp, dedup_conn,
+                    article, fp, dedup_conn, new_source,
                 )
 
                 if decision == 'block':
@@ -1954,10 +1966,6 @@ def job():
                     if not pending_repo.is_pair_rate_limited(
                         dedup_conn, link, match['link'],
                     ):
-                        new_source = (
-                            entry.get('source_name')
-                            or _resolve_source_name(link)
-                        )
                         try:
                             send_admin_notification(
                                 admin_alerts.alert_cross_source_dupe(

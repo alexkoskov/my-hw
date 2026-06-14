@@ -240,6 +240,36 @@ class TestLongFormOutroFilter:
         )
         assert is_boilerplate(text) is True
 
+    def test_clique_neste_link_cta_filtered(self):
+        # Incident 2026-06-13 (Ferrari F1 Premium): t-hunted ships per-article
+        # "Clique neste link para ver tudo ..." cross-promo CTAs that the
+        # social-plug pattern did not catch. Both verbatim leaked lines:
+        text1 = (
+            "Clique neste link para ver tudo o que já falamos sobre essa "
+            "nova fase da Ferrari com a Hot Wheels!"
+        )
+        text2 = (
+            "Clique aqui para ver tudo o que já falamos sobre essa nova "
+            "fase da Fórmula 1 na Hot Wheels!"
+        )
+        assert is_boilerplate(text1) is True
+        assert is_boilerplate(text2) is True
+
+    def test_klikajte_russian_click_cta_defence_filtered(self):
+        # Defence in depth: the RU translation of the click-CTA (as it
+        # actually reached the channel on 2026-06-13) must also be caught.
+        text = (
+            "Кликайте по этой ссылке, если хотите посмотреть всё, что мы "
+            "уже рассказывали об этой новой фазе Ferrari вместе с Hot Wheels!"
+        )
+        assert is_boilerplate(text) is True
+
+    def test_real_prose_starting_with_clique_word_not_filtered(self):
+        # Negative: a sentence merely containing "clique" mid-prose, or
+        # starting with "Clique" followed by something other than the CTA
+        # openers, must pass. Anchor requires aqui / neste link / no link.
+        assert is_boilerplate("Clique duplo abre o menu de opções.") is False
+
     def test_real_prose_starting_with_saiba_not_filtered(self):
         # Negative: legitimate Portuguese prose can start with «Saiba»
         # alone without «mais sobre», e.g. an exclamation. The anchored
