@@ -1168,12 +1168,15 @@ class TestCrossSourceDedup(_PrepPhaseBase):
     @patch('news_bot.fetch_rss')
     @patch('news_bot.load_feeds')
     @patch('news_bot.send_admin_notification')
-    def test_within_source_dedup(
+    def test_within_source_not_deduped(
         self, mock_admin, mock_load_feeds, mock_fetch_rss, mock_fetch_article,
     ):
-        """Decision 9: dedup runs across ALL sources, including same-source
-        republishes (autoevolution Boulevard Mix recurring). Pins against
-        future "skip self-source" optimisation."""
+        """Decision 9 REVERSED (2026-06-14): dedup is CROSS-source only. Two
+        articles from the SAME source are never compared — even at 100%
+        fingerprint overlap — because one source republishing the same model
+        within 7 days is implausible, and within-source comparison only
+        produces false positives (autoevolution Ford F-100 vs Porsche Team
+        Transport). The same-source new article must PUBLISH normally."""
         existing_fp = {
             'strict': ['toyota 4runner', 'subaru legacy gt'],
             'brands': ['toyota', 'subaru'],
@@ -1184,11 +1187,13 @@ class TestCrossSourceDedup(_PrepPhaseBase):
             source='autoevolution',
         )
 
-        # New article on the SAME source — Decision 9 must still block.
+        # New article on the SAME source. Use a REAL autoevolution netloc so
+        # `_fetch_rss_entries` resolves source_name='autoevolution' (it
+        # rebuilds each item and overwrites source_name via the netloc map,
+        # ignoring any pre-set value). 100% overlap — yet must NOT be blocked.
+        new_link = 'https://www.autoevolution.com/news/within-source-new.html'
         mock_load_feeds.return_value = ['http://example.com/feed1.xml']
-        mock_fetch_rss.return_value = [
-            self._make_entry('http://autoevolution.example/new'),
-        ]
+        mock_fetch_rss.return_value = [self._make_entry(new_link)]
         mock_fetch_article.return_value = {
             'title': '2018 Toyota 4Runner gold chase',
             'subtitle': '',
@@ -1198,8 +1203,17 @@ class TestCrossSourceDedup(_PrepPhaseBase):
 
         news_bot.job()
 
-        # Same-source 100% overlap MUST be blocked — pins Decision 9.
-        self.assertEqual(pending_articles_repo.count_pending(), 0)
+        # Same-source pair is skipped → article passes the gate and is staged
+        # to pending (NOT blocked, NOT marked processed).
+        self.assertEqual(pending_articles_repo.count_pending(), 1)
+        row = pending_articles_repo.get_pending(new_link)
+        self.assertIsNotNone(row)
+        # Pass-through keeps the computed (non-empty) fingerprint on the row.
+        self.assertIsInstance(row['model_fingerprint'], dict)
+        self.assertTrue(
+            row['model_fingerprint'].get('strict'),
+            "pass-through should keep the computed fingerprint",
+        )
         conn = sqlite3.connect(self.db_path)
         try:
             processed = {
@@ -1208,12 +1222,14 @@ class TestCrossSourceDedup(_PrepPhaseBase):
             }
         finally:
             conn.close()
-        self.assertIn('http://autoevolution.example/new', processed)
-        e015_calls = [
-            c for c in mock_admin.call_args_list
-            if '[E015]' in (c.args[0] if c.args else '')
-        ]
-        self.assertEqual(len(e015_calls), 1)
+        self.assertNotIn(new_link, processed)
+        # No block ping (E015) and no soft-flag ping (E014) for same-source.
+        for code in ('[E015]', '[E014]'):
+            calls = [
+                c for c in mock_admin.call_args_list
+                if code in (c.args[0] if c.args else '')
+            ]
+            self.assertEqual(len(calls), 0, f"unexpected {code} ping")
 
     @patch('news_bot.fetch_full_article')
     @patch('news_bot.fetch_rss')
