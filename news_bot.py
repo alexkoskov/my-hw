@@ -128,6 +128,23 @@ MSK_TZ = pytz.timezone("Europe/Moscow")
 #: articles go into carry_over and wait for the next cron tick.
 MAX_DAILY_POSTS = 3
 
+#: In-slot publish retry (operator decision 2026-06-17). A transient network
+#: failure on the publish side — e.g. a Telegra.ph / Telegram read timeout —
+#: should not cost the article its slot until the next day. On such a failure
+#: the slot loop retries the SAME row up to ``PUBLISH_RETRY_ATTEMPTS`` more
+#: times, ``PUBLISH_RETRY_DELAY_SECONDS`` apart, before falling through to the
+#: cross-day 3-strike path (``increment_attempt`` → ``move_to_failed``). The
+#: retry re-runs the full publish (incl. re-translation) — acceptable for a
+#: rare transient blip. An LLM outage (``ClaudeOutageError``) is NOT retried
+#: here: it HOLDS immediately (see ``_publish_with_retries``).
+#: Slot spacing (10:00/15:00/19:30 МСК, ≥90 min apart) means the max
+#: ATTEMPTS*DELAY (~40 min) delay cannot push one slot's publish into the
+#: next slot. The only edge: retries on the LAST slot (19:30) can finish past
+#: the 20:00 window-end — harmless (it only delays the day's final post;
+#: revisit if a 4th, non-last slot is ever added near the window edge).
+PUBLISH_RETRY_ATTEMPTS = 4
+PUBLISH_RETRY_DELAY_SECONDS = 600  # 10 minutes
+
 #: Seconds to sleep between Telegra.ph page creation and the Telegram
 #: teaser send. Lets Telegra.ph's edge cache populate OG tags before the
 #: Telegram IV worker fetches the URL — without this gap Telegram has been
@@ -1782,6 +1799,52 @@ def _parse_published_at_utc(raw):
         return None
 
 
+def _publish_with_retries(row, idx, n_slots):
+    """Publish ``row`` via ``_fallback_publish``, retrying transient failures
+    within the same slot (operator decision 2026-06-17).
+
+    Returns ``(outcome, last_error)`` where ``outcome`` is:
+
+    * ``'published'`` — published OK (possibly after a retry). ``last_error`` None.
+    * ``'held'``      — ``ClaudeOutageError``: LLM unavailable, article HELD.
+                        Caller must NOT strike. Not retried (see below).
+    * ``'failed'``    — exhausted ``PUBLISH_RETRY_ATTEMPTS`` retries on a
+                        transient publish error. ``last_error`` carries the
+                        last exception; caller runs the 3-strike path.
+
+    An LLM outage is deliberately NOT retried here: holding is the desired
+    behaviour, and a retry would re-translate and waste tokens. Only
+    publish-side failures (Telegra.ph / Telegram / repo errors) are retried.
+    """
+    link = row.get('link')
+    attempts_left = PUBLISH_RETRY_ATTEMPTS
+    while True:
+        try:
+            _fallback_publish(row, via_review=False)
+            return 'published', None
+        except ClaudeOutageError:
+            return 'held', None
+        except ClaudeTranscreationError as exc:
+            # Per-article LLM problem (refusal / malformed JSON / schema
+            # drift) — deterministic: an immediate retry re-translates to the
+            # same bad result and burns tokens. Strike right away; the
+            # cross-day 3-strike path still gives the row later attempts.
+            return 'failed', exc
+        except Exception as exc:
+            # Transient publish-side failure (Telegra.ph / Telegram / repo
+            # network timeout). Retry the same row in-slot before striking.
+            if attempts_left <= 0:
+                return 'failed', exc
+            attempts_left -= 1
+            logger.warning(
+                f"[slot {idx}/{n_slots}] publish failed for {link}: "
+                f"{sanitize_error_message(exc)} — retrying in "
+                f"{PUBLISH_RETRY_DELAY_SECONDS // 60} min "
+                f"(then {attempts_left} more)"
+            )
+            time.sleep(PUBLISH_RETRY_DELAY_SECONDS)
+
+
 def job():
     """Daily cron tick — fetch + distributed-publish loop.
 
@@ -2141,10 +2204,10 @@ def job():
         logger.info(
             f"[slot {idx}/{len(slots)}] publishing row {link}"
         )
-        try:
-            _fallback_publish(row, via_review=False)
+        outcome, err = _publish_with_retries(row, idx, len(slots))
+        if outcome == 'published':
             published_count += 1
-        except ClaudeOutageError:
+        elif outcome == 'held':
             # LLM outage — ``_fallback_publish`` HELD this article (nothing
             # was published) and advanced the operator-notification state
             # machine. Do NOT count a publish and do NOT strike the row: it
@@ -2156,8 +2219,9 @@ def job():
                 f"[slot {idx}/{len(slots)}] LLM outage — article held, "
                 f"will retry on the next slot/day."
             )
-        except Exception as exc:
-            safe = sanitize_error_message(exc)
+        else:  # 'failed' — per-article problem, or transient error that
+               # survived the in-slot retries (each retry logged above).
+            safe = sanitize_error_message(err)
             logger.error(
                 f"[slot {idx}/{len(slots)}] publish failed for {link}: {safe}"
             )
