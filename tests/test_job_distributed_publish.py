@@ -41,7 +41,7 @@ import pytz
 import news_bot
 import pending_articles_repo
 import outage_state
-from claude_transcreation import ClaudeOutageError
+from claude_transcreation import ClaudeOutageError, ClaudeTranscreationError
 
 
 MSK = pytz.timezone("Europe/Moscow")
@@ -690,6 +690,121 @@ class TestWindowEndGuard(_DistribLoopBase):
         self.assertEqual(mock_publish.call_count, 2,
                          f"expected 2 publishes (slot 3 past window), got "
                          f"{mock_publish.call_count}")
+
+
+# ---------------------------------------------------------------------------
+# In-slot publish retry (operator decision 2026-06-17)
+# ---------------------------------------------------------------------------
+
+class TestPublishWithRetries(unittest.TestCase):
+    """``_publish_with_retries`` retries a transient publish failure within
+    the same slot (spaced ``PUBLISH_RETRY_DELAY_SECONDS`` apart) so a one-off
+    network blip (e.g. Telegra.ph read timeout) does not cost the article its
+    slot until the next day. Returns ('published'|'held'|'failed', last_err).
+    """
+
+    @patch('news_bot.time.sleep')
+    @patch('news_bot._fallback_publish')
+    def test_transient_failure_then_success(self, mock_pub, mock_sleep):
+        # Fail once (network timeout), then succeed on the retry.
+        mock_pub.side_effect = [RuntimeError('api.telegra.ph read timeout'), None]
+        outcome, err = news_bot._publish_with_retries({'link': 'x'}, 2, 2)
+        self.assertEqual(outcome, 'published')
+        self.assertIsNone(err)
+        self.assertEqual(mock_pub.call_count, 2)
+        # Exactly one retry-delay sleep happened before the successful retry.
+        mock_sleep.assert_called_once_with(news_bot.PUBLISH_RETRY_DELAY_SECONDS)
+
+    @patch('news_bot.time.sleep')
+    @patch('news_bot._fallback_publish')
+    def test_all_attempts_fail_returns_failed_with_last_error(self, mock_pub, mock_sleep):
+        boom = RuntimeError('still timing out')
+        mock_pub.side_effect = boom
+        outcome, err = news_bot._publish_with_retries({'link': 'x'}, 1, 1)
+        self.assertEqual(outcome, 'failed')
+        self.assertIs(err, boom)
+        # 1 initial attempt + PUBLISH_RETRY_ATTEMPTS retries.
+        self.assertEqual(mock_pub.call_count, news_bot.PUBLISH_RETRY_ATTEMPTS + 1)
+        self.assertEqual(mock_sleep.call_count, news_bot.PUBLISH_RETRY_ATTEMPTS)
+
+    @patch('news_bot.time.sleep')
+    @patch('news_bot._fallback_publish')
+    def test_outage_returns_held_without_retry(self, mock_pub, mock_sleep):
+        # An LLM outage is NOT a transient publish failure — hold immediately,
+        # never retry (retrying would re-translate and waste tokens).
+        mock_pub.side_effect = ClaudeOutageError('429 overloaded')
+        outcome, err = news_bot._publish_with_retries({'link': 'x'}, 1, 1)
+        self.assertEqual(outcome, 'held')
+        mock_pub.assert_called_once()
+        mock_sleep.assert_not_called()
+
+    @patch('news_bot.time.sleep')
+    @patch('news_bot._fallback_publish')
+    def test_per_article_failure_not_retried(self, mock_pub, mock_sleep):
+        # A per-article LLM problem is deterministic — strike immediately,
+        # never retry (would re-translate to the same bad result).
+        boom = ClaudeTranscreationError('malformed JSON')
+        mock_pub.side_effect = boom
+        outcome, err = news_bot._publish_with_retries({'link': 'x'}, 1, 1)
+        self.assertEqual(outcome, 'failed')
+        self.assertIs(err, boom)
+        mock_pub.assert_called_once()
+        mock_sleep.assert_not_called()
+
+
+class TestSlotLoopTransientRetry(_JobBase):
+    """job()-level: a transient publish failure that recovers on retry must
+    NOT strike the row (no increment_attempt) and must count as published."""
+
+    @patch('news_bot.pending_repo.increment_attempt')
+    @patch('news_bot.send_admin_notification')
+    @patch('news_bot.time.sleep')
+    @patch('news_bot._fallback_publish')
+    @patch('news_bot.fetch_full_article')
+    def test_transient_failure_recovers_in_slot_no_strike(
+        self, mock_fetch_article, mock_publish, _mock_sleep, _mock_admin,
+        mock_increment,
+    ):
+        mock_fetch_article.side_effect = lambda e: self._article_payload()
+        # First publish attempt times out; the in-slot retry succeeds.
+        mock_publish.side_effect = [RuntimeError('telegra.ph timeout'), None]
+
+        with _patch_sources_returning([
+            self._entry('http://example.com/retry', 'T1'),
+        ]):
+            with patch('news_bot.outage_state.is_fallback_active',
+                       return_value=False):
+                news_bot.job()
+
+        # Recovered on retry → no strike.
+        mock_increment.assert_not_called()
+        self.assertEqual(mock_publish.call_count, 2)
+
+    @patch('news_bot.pending_repo.increment_attempt', return_value=1)
+    @patch('news_bot.send_admin_notification')
+    @patch('news_bot.time.sleep')
+    @patch('news_bot._fallback_publish')
+    @patch('news_bot.fetch_full_article')
+    def test_exhausted_retries_strikes_once_not_per_retry(
+        self, mock_fetch_article, mock_publish, _mock_sleep, _mock_admin,
+        mock_increment,
+    ):
+        """A transient failure that never recovers must strike the row
+        EXACTLY ONCE for the slot (not once per in-slot retry)."""
+        mock_fetch_article.side_effect = lambda e: self._article_payload()
+        mock_publish.side_effect = RuntimeError('telegra.ph timeout')
+
+        with _patch_sources_returning([
+            self._entry('http://example.com/dead', 'T1'),
+        ]):
+            with patch('news_bot.outage_state.is_fallback_active',
+                       return_value=False):
+                news_bot.job()
+
+        # 1 initial + PUBLISH_RETRY_ATTEMPTS retries, but only ONE strike.
+        self.assertEqual(
+            mock_publish.call_count, news_bot.PUBLISH_RETRY_ATTEMPTS + 1)
+        mock_increment.assert_called_once()
 
 
 if __name__ == '__main__':
