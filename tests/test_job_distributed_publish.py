@@ -807,5 +807,63 @@ class TestSlotLoopTransientRetry(_JobBase):
         mock_increment.assert_called_once()
 
 
+# ---------------------------------------------------------------------------
+# Channel-silence alert (2026-06-23)
+# ---------------------------------------------------------------------------
+
+class TestDrySpellAlert(_JobBase):
+    """job() sends an [E017] admin warning when nothing has been published
+    for DRY_SPELL_ALERT_DAYS+ days — a louder signal than the daily [E009]
+    'no news', to catch a prolonged dry spell (over-strict filter, dead
+    source, server-network trouble)."""
+
+    def _admin_msgs(self, mock_admin):
+        return [c.args[0] for c in mock_admin.call_args_list if c.args]
+
+    @patch('news_bot.time.sleep')
+    @patch('news_bot.send_admin_notification')
+    def test_pings_when_channel_silent_for_days(self, mock_admin, _mock_sleep):
+        old = (dt.datetime.now(dt.timezone.utc).replace(tzinfo=None)
+               - dt.timedelta(days=5))
+        self._seed_published('https://example.com/old', old.strftime('%Y-%m-%d %H:%M:%S'))
+
+        with _patch_sources_empty():
+            with patch('news_bot.outage_state.is_fallback_active',
+                       return_value=False):
+                news_bot.job()
+
+        msgs = self._admin_msgs(mock_admin)
+        self.assertTrue(any('[E017]' in m for m in msgs),
+                        f"expected an [E017] channel-silent ping, got {msgs!r}")
+
+    @patch('news_bot.time.sleep')
+    @patch('news_bot.send_admin_notification')
+    def test_no_ping_when_recent_publish(self, mock_admin, _mock_sleep):
+        now = dt.datetime.now(dt.timezone.utc).replace(tzinfo=None)
+        self._seed_published('https://example.com/fresh', now.strftime('%Y-%m-%d %H:%M:%S'))
+
+        with _patch_sources_empty():
+            with patch('news_bot.outage_state.is_fallback_active',
+                       return_value=False):
+                news_bot.job()
+
+        msgs = self._admin_msgs(mock_admin)
+        self.assertFalse(any('[E017]' in m for m in msgs),
+                         f"unexpected [E017] ping with a recent publish: {msgs!r}")
+
+    @patch('news_bot.time.sleep')
+    @patch('news_bot.send_admin_notification')
+    def test_no_ping_when_never_published(self, mock_admin, _mock_sleep):
+        # Fresh DB — published_articles empty → no false alarm.
+        with _patch_sources_empty():
+            with patch('news_bot.outage_state.is_fallback_active',
+                       return_value=False):
+                news_bot.job()
+
+        msgs = self._admin_msgs(mock_admin)
+        self.assertFalse(any('[E017]' in m for m in msgs),
+                         f"unexpected [E017] ping on a never-published bot: {msgs!r}")
+
+
 if __name__ == '__main__':
     unittest.main()
