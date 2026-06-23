@@ -174,6 +174,31 @@ For production, prefer systemd-managed long-running process over raw `nohup` —
 **Endpoint:** None (no web server)
 **Checks:** Manual verification via Telegram channel posts and log inspection.
 
+**Heartbeat watchdog (`watchdog.sh`).** `job()` writes a Unix-timestamp
+heartbeat to `~/.cache/news_bot/last_tick.ts` at the end of every tick
+(`_record_heartbeat`). `watchdog.sh` (deployed — IS in the `FILES` list, lands
+at `$DEPLOY_PATH/watchdog.sh`) is run by cron once daily AFTER the publish
+window; if the heartbeat is older than 26 h it sends `[E099]` to the operator
+via the Telegram Bot API (reads `TELEGRAM_BOT_TOKEN`/`TELEGRAM_ADMIN_ID` from
+the colocated `.env`). Catches the **alive-but-stuck** class (prod 2026-06-08
+feedparser hang) that `Restart=on-failure` cannot — a hung process stays
+`active (running)`, so systemd never restarts it, but the heartbeat goes stale.
+
+**Cron is NOT managed by the deploy** (same as `backup_db.sh`) — install ONCE
+per instance (idempotent):
+```bash
+ssh hwbot@<host> '(crontab -l 2>/dev/null | grep -v "watchdog.sh"; \
+  echo "0 19 * * * /bin/bash /home/hwbot/bot/watchdog.sh") | crontab -'
+# prod path /home/hwbot/bot/, test path /home/hwbot/bot_test/. 19:00 BST = 22:00 МСК,
+# after the 10:00–19:30 МСК publish window. NOT installed as of 2026-06-23.
+```
+Live test (ages the heartbeat → expect an `[E099]` Telegram ping → restore):
+```bash
+ssh hwbot@<host> 'HB=~/.cache/news_bot/last_tick.ts; cp "$HB" /tmp/hb.bak; \
+  touch -d "2 days ago" "$HB"; /bin/bash /home/hwbot/bot/watchdog.sh; \
+  cp /tmp/hb.bak "$HB"'
+```
+
 ### Metrics
 
 **Analytics:** None
