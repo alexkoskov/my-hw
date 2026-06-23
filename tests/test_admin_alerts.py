@@ -146,6 +146,12 @@ class TestAdminAlerts(unittest.TestCase):
         self.assertIn("🟢", msg)
         self.assertIn("восстановилась", msg)
 
+    def test_e017_channel_silent(self):
+        msg = admin_alerts.alert_channel_silent(4)
+        self.assertIn("[E017]", msg)
+        self.assertIn("⚠️", msg)
+        self.assertIn("4", msg)  # the day count is shown
+
     # ------------------------------------------------------------------
     # Source-fetcher alerts (E020-E030)
     # ------------------------------------------------------------------

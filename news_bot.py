@@ -145,6 +145,13 @@ MAX_DAILY_POSTS = 3
 PUBLISH_RETRY_ATTEMPTS = 4
 PUBLISH_RETRY_DELAY_SECONDS = 600  # 10 minutes
 
+#: Channel-silence alert (2026-06-23). If nothing has been published for this
+#: many days, job() sends a LOUDER [E017] admin warning at the end of the tick
+#: — a stronger signal than the daily [E009] "нет новостей" — to catch a
+#: prolonged dry spell (over-strict filter dropping everything, a dead source,
+#: or server-network trouble). One ping per tick while the dry spell persists.
+DRY_SPELL_ALERT_DAYS = 3
+
 #: Seconds to sleep between Telegra.ph page creation and the Telegram
 #: teaser send. Lets Telegra.ph's edge cache populate OG tags before the
 #: Telegram IV worker fetches the URL — without this gap Telegram has been
@@ -2274,6 +2281,31 @@ def job():
         f"[job] done. Published {published_count}, "
         f"carry-over {carry_over}, queue size now {final_queue_size}."
     )
+
+    # Channel-silence guard (2026-06-23): warn the operator if the channel has
+    # gone quiet for DRY_SPELL_ALERT_DAYS+ days. Reads the same last-publish
+    # timestamp as the crash-loop guard. A publish this tick resets the gap, so
+    # this only fires during a real dry spell. Skipped when nothing was ever
+    # published (fresh DB) so a brand-new bot doesn't false-alarm. Never raises
+    # — monitoring must not break the tick.
+    try:
+        last_pub = _parse_published_at_utc(pending_repo.get_max_published_at())
+        if last_pub is not None:
+            silent_days = (datetime.now(timezone.utc) - last_pub).days
+            if silent_days >= DRY_SPELL_ALERT_DAYS:
+                logger.warning(
+                    f"[dry-spell] channel silent for {silent_days} days — "
+                    f"sending [E017] admin warning."
+                )
+                send_admin_notification(
+                    admin_alerts.alert_channel_silent(silent_days)
+                )
+    except Exception as exc:
+        logger.error(
+            f"[dry-spell] channel-silence check failed: "
+            f"{sanitize_error_message(exc)}"
+        )
+
     _record_heartbeat()
 
 
