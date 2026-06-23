@@ -700,6 +700,20 @@ def fetch_rss(url):
 #: policy that operator-confirmed works for HW-focused sources.
 _BROAD_DIECAST_NETLOCS = ('t-hunted.blogspot.com',)
 
+#: Hot Wheels line / series names that mark an article as HW even when the
+#: title omits the literal "hot wheels" words. Added 2026-06-23 after the
+#: broad-diecast default-reject (above) silently dropped genuine HW posts
+#: from t-hunted, whose Portuguese titles name the series rather than the
+#: brand (e.g. "Uma nova Silver Series com uma Ferrari!"), leaving the
+#: channel with nothing to publish for days. Lowercase, substring-matched
+#: against the title. Kept to HW-specific lines; the sibling-brand reject
+#: runs FIRST, so a shared name tagged "…da Matchbox" still drops out. Add
+#: conservatively — names shared across brands risk false includes.
+_HW_SERIES_SIGNALS = (
+    'silver series', 'pop culture', 'moving parts', 'neon speeder',
+    'car culture', 'team transport', 'boulevard', 'red line club',
+)
+
 
 def _is_hot_wheels_relevant(entry):
     """Reject articles that came through the Hot Wheels RSS feed by
@@ -723,9 +737,18 @@ def _is_hot_wheels_relevant(entry):
         return True  # explicit HW mention — keep regardless of source
     # Sibling brands observed in production. Add more conservatively —
     # broad keyword bans risk dropping legitimate cross-over articles.
+    # Checked BEFORE the series-name signal so a shared line name (e.g.
+    # Matchbox also has a "Moving Parts" line) tagged with a sibling brand
+    # is still rejected.
     sibling_brands = ('matchbox',)
     if any(brand in title for brand in sibling_brands):
         return False
+    # Hot Wheels series / line name → treat as HW even without the literal
+    # "hot wheels" words. The t-hunted (Brazilian-Portuguese) feed names the
+    # series, not the brand, so the broad-diecast default-reject below was
+    # dropping genuine HW posts (2026-06-23 — channel went silent for days).
+    if any(sig in title for sig in _HW_SERIES_SIGNALS):
+        return True
     # Broad-diecast source guard. Reject entries from these feeds when
     # the title has no Hot Wheels signal; they default to "not HW".
     link = (entry.get('link') or '').lower()
