@@ -90,6 +90,38 @@ class TestIsHotWheelsRelevant(unittest.TestCase):
             'link': 'https://t-hunted.blogspot.com/2026/06/hot-wheels-j-case.html',
         }))
 
+    def test_t_hunted_hw_series_name_keeps_entry(self):
+        """2026-06-23 incident: t-hunted's Portuguese titles name the Hot
+        Wheels *series* (Silver Series, Pop Culture, Neon Speeder, RLC…)
+        without the literal words "hot wheels", so the broad-diecast
+        default-reject was dropping genuine HW posts and the channel went
+        silent for days. A recognised HW series/line name now counts as a
+        Hot Wheels signal."""
+        for title in (
+            'Uma nova Silver Series com uma Ferrari!',
+            'Mais fotos do novo lote da série Pop Culture',
+            'Mais fotos da série Neon Speeder de 2026',
+            'Hot Wheels 2026 Car Culture / Vintage Racing T case report',
+            'A volta da pickup Ford F-100 para o Red Line Club!',
+        ):
+            self.assertTrue(
+                _is_hot_wheels_relevant({
+                    'title': title,
+                    'link': 'https://t-hunted.blogspot.com/2026/06/x.html',
+                }),
+                f"HW series title should pass the t-hunted filter: {title!r}",
+            )
+
+    def test_sibling_brand_beats_hw_series_name(self):
+        """A shared series name (e.g. Matchbox also has a "Moving Parts"
+        line) must NOT pass when the title also names a sibling brand —
+        the explicit sibling-brand reject takes precedence over the
+        series-name signal."""
+        self.assertFalse(_is_hot_wheels_relevant({
+            'title': 'Mais fotos da série Moving Parts do filme da Matchbox',
+            'link': 'https://t-hunted.blogspot.com/2026/06/moving-parts-matchbox.html',
+        }))
+
     def test_non_t_hunted_neutral_title_still_defaults_to_include(self):
         """Regression: only t-hunted (and other future broad-diecast
         sources) gets the strict default. autoevolution / lamley /
