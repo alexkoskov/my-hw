@@ -191,10 +191,13 @@ class TestFetchRssEntries:
 
         # Output must be a plain dict — no FeedParserDict leakage.
         assert type(item) is dict
-        # Bounded key set: only the explicit fields + feed_url + source_name.
+        # Bounded key set: only the explicit fields + feed_url + source_name
+        # + labels (Blogger brand taxonomy, empty here — no <category> tags).
         assert set(item.keys()) == {
             'link', 'title', 'published', 'summary', 'feed_url', 'source_name',
+            'labels',
         }
+        assert item['labels'] == []
         # feedparser internals must NOT leak through.
         assert 'summary_detail' not in item
         assert 'title_detail' not in item

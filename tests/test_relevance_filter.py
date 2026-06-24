@@ -10,11 +10,41 @@ from unittest.mock import patch
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
+import news_bot
 from news_bot import (
     _is_hot_wheels_relevant,
     _is_text_only_checklist,
     filter_new_entries,
 )
+
+
+class TestRssEntryLabels(unittest.TestCase):
+    """`_fetch_rss_entries` must carry each entry's Blogger labels (RSS
+    <category> → feedparser `tags`) into the item dict so the relevance
+    filter can reject by the source's own brand label."""
+
+    def test_labels_captured_from_feed_tags(self):
+        fake_entry = {
+            'link': 'https://t-hunted.blogspot.com/2026/06/moving.html',
+            'title': 'Mais fotos dos carros da série Moving Parts de 2026',
+            'summary': '...',
+            'tags': [{'term': 'Matchbox'}],
+        }
+        with patch('news_bot.load_feeds',
+                   return_value=['https://t-hunted.blogspot.com/feeds/posts/default?alt=rss']), \
+             patch('news_bot.fetch_rss', return_value=[fake_entry]):
+            items = news_bot._fetch_rss_entries()
+        self.assertEqual(len(items), 1)
+        self.assertEqual(items[0].get('labels'), ['Matchbox'])
+
+    def test_missing_tags_yield_empty_labels(self):
+        fake_entry = {'link': 'https://www.autoevolution.com/news/x.html',
+                      'title': 'Hot Wheels news', 'summary': ''}
+        with patch('news_bot.load_feeds',
+                   return_value=['https://www.autoevolution.com/rss/tag-Hot+Wheels.xml']), \
+             patch('news_bot.fetch_rss', return_value=[fake_entry]):
+            items = news_bot._fetch_rss_entries()
+        self.assertEqual(items[0].get('labels'), [])
 
 
 class TestIsHotWheelsRelevant(unittest.TestCase):
@@ -120,6 +150,60 @@ class TestIsHotWheelsRelevant(unittest.TestCase):
         self.assertFalse(_is_hot_wheels_relevant({
             'title': 'Mais fotos da série Moving Parts do filme da Matchbox',
             'link': 'https://t-hunted.blogspot.com/2026/06/moving-parts-matchbox.html',
+        }))
+
+    def test_sibling_brand_label_rejects(self):
+        """2026-06-24: the source's own brand label (Blogger "Labels:",
+        carried as RSS <category>) is authoritative. A post tagged with a
+        sibling diecast brand is rejected even if the title contains a word
+        that looks like a HW series — e.g. "Moving Parts" is a MATCHBOX line.
+        This is the exact post that leaked through the title-only filter."""
+        self.assertFalse(_is_hot_wheels_relevant({
+            'title': 'Mais fotos dos carros da série Moving Parts de 2026',
+            'link': 'https://t-hunted.blogspot.com/2026/06/moving.html',
+            'labels': ['Matchbox'],
+        }))
+        # Other sibling brands seen in the live feed.
+        for brand in ('Maisto', 'Tomica', 'Johnny Lightning'):
+            self.assertFalse(_is_hot_wheels_relevant({
+                'title': 'Alguma novidade diecast',
+                'link': 'https://t-hunted.blogspot.com/2026/06/x.html',
+                'labels': [brand],
+            }), f"label {brand!r} must reject")
+
+    def test_hw_series_label_keeps_entry(self):
+        """A Hot Wheels series label keeps the post even when the title has
+        no HW signal (e.g. the Pop Culture Porsche, titled in Portuguese)."""
+        self.assertTrue(_is_hot_wheels_relevant({
+            'title': 'Mais fotos do Porsche de K-Pop Demon Hunters',
+            'link': 'https://t-hunted.blogspot.com/2026/06/porsche.html',
+            'labels': ['Pop Culture'],
+        }))
+
+    def test_sibling_label_beats_hw_series_label(self):
+        """If somehow tagged with both, the sibling brand wins (reject)."""
+        self.assertFalse(_is_hot_wheels_relevant({
+            'title': 'Alguma série',
+            'link': 'https://t-hunted.blogspot.com/2026/06/y.html',
+            'labels': ['Silver Series', 'Matchbox'],
+        }))
+
+    def test_explicit_hot_wheels_title_beats_sibling_label(self):
+        """Cross-over articles naming Hot Wheels explicitly still pass even
+        with a sibling-brand label (preserves the Matchbox-vs-HW round-ups)."""
+        self.assertTrue(_is_hot_wheels_relevant({
+            'title': 'Hot Wheels vs Matchbox — qual comprar?',
+            'link': 'https://t-hunted.blogspot.com/2026/06/z.html',
+            'labels': ['Matchbox'],
+        }))
+
+    def test_moving_parts_no_label_falls_through_to_reject(self):
+        """Defense-in-depth: 'moving parts' was removed from the HW-series
+        title guesses (it's a Matchbox line), so even with the label missing
+        a t-hunted Moving Parts post is rejected by the broad-diecast default."""
+        self.assertFalse(_is_hot_wheels_relevant({
+            'title': 'Mais fotos dos carros da série Moving Parts de 2026',
+            'link': 'https://t-hunted.blogspot.com/2026/06/moving.html',
         }))
 
     def test_non_t_hunted_neutral_title_still_defaults_to_include(self):
