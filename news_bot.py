@@ -707,57 +707,72 @@ def fetch_rss(url):
 #: policy that operator-confirmed works for HW-focused sources.
 _BROAD_DIECAST_NETLOCS = ('t-hunted.blogspot.com',)
 
-#: Hot Wheels line / series names that mark an article as HW even when the
-#: title omits the literal "hot wheels" words. Added 2026-06-23 after the
-#: broad-diecast default-reject (above) silently dropped genuine HW posts
-#: from t-hunted, whose Portuguese titles name the series rather than the
-#: brand (e.g. "Uma nova Silver Series com uma Ferrari!"), leaving the
-#: channel with nothing to publish for days. Lowercase, substring-matched
-#: against the title. Kept to HW-specific lines; the sibling-brand reject
-#: runs FIRST, so a shared name tagged "…da Matchbox" still drops out. Add
-#: conservatively — names shared across brands risk false includes.
+#: Authoritative brand labels from the source's own taxonomy (Blogger
+#: "Labels:" / "Marcadores:", carried in the RSS feed as <category> and
+#: surfaced on the entry dict as ``labels``). t-hunted tags every post with
+#: the brand/series it covers — a sibling-brand label means it is NOT Hot
+#: Wheels (2026-06-24: a Matchbox "Moving Parts" post slipped through the
+#: title-only filter because "Moving Parts" is also a HW-sounding name).
+#: Lowercased exact-match against the entry's labels. Add brands seen on the
+#: feed + well-known diecast siblings.
+_SIBLING_BRAND_LABELS = frozenset({
+    'matchbox', 'maisto', 'tomica', 'johnny lightning', 'tarmac works',
+    'm2 machines', 'mini gt', 'auto world', 'majorette', 'greenlight',
+    'kaido house',
+})
+
+#: Hot Wheels series/line labels — a positive HW signal from the source's own
+#: taxonomy. Keeps genuine HW posts whose title names neither "Hot Wheels" nor
+#: the series (e.g. the Pop Culture Porsche, titled only in Portuguese).
+_HW_SERIES_LABELS = frozenset({
+    'silver series', 'pop culture', 'car culture', 'team transport',
+    'boulevard', 'neon speeder', 'neon speeders', 'rlc', 'red line club',
+    'trackin trucks', 'track fleet',
+})
+
+#: Hot Wheels line / series names matched as a SUBSTRING of the title — the
+#: fallback when the source carries no usable label. HW-specific, multi-word
+#: names only (single common words risk false includes). NB "moving parts" is
+#: deliberately absent — it is a MATCHBOX line, not Hot Wheels.
 _HW_SERIES_SIGNALS = (
-    'silver series', 'pop culture', 'moving parts', 'neon speeder',
+    'silver series', 'pop culture', 'neon speeder',
     'car culture', 'team transport', 'boulevard', 'red line club',
 )
 
 
 def _is_hot_wheels_relevant(entry):
-    """Reject articles that came through the Hot Wheels RSS feed by
-    cross-tagging but are actually about a sibling Mattel brand.
+    """Reject articles that reach a feed by cross-tagging but are actually
+    about a sibling diecast brand. The channel is Hot Wheels-only.
 
-    autoevolution.com tags Matchbox / Mega Bloks / Hot Wheels articles
-    with overlapping topic tags, so the ``tag-Hot+Wheels+News`` feed
-    occasionally yields Matchbox-only stories. The channel is Hot
-    Wheels-focused — anything where the title names a sibling brand
-    *without also* naming Hot Wheels is filtered out at fetch time so
-    it never enters ``pending_articles``.
-
-    For broad-diecast sources (``_BROAD_DIECAST_NETLOCS``) the default
-    flips from "include" to "reject" — the title MUST contain an
-    explicit Hot Wheels mention to pass.
+    Decision order (most authoritative first):
+      1. Explicit "hot wheels" in the title → keep (cross-over round-ups).
+      2. Sibling-brand LABEL (source's own taxonomy) → reject.
+      3. Hot Wheels series LABEL → keep.
+      4. "matchbox" in the title → reject (autoevolution cross-tag; no labels).
+      5. HW series name in the title → keep (label-less t-hunted posts).
+      6. Broad-diecast source (``_BROAD_DIECAST_NETLOCS``) with no HW signal →
+         reject; everyone else defaults to keep.
     """
     title = (entry.get('title') or '').lower()
-    if not title:
+    labels = {str(lbl).strip().lower() for lbl in (entry.get('labels') or [])}
+    if not title and not labels:
         return True  # nothing to inspect; default include
     if 'hot wheels' in title or 'hotwheels' in title:
-        return True  # explicit HW mention — keep regardless of source
-    # Sibling brands observed in production. Add more conservatively —
-    # broad keyword bans risk dropping legitimate cross-over articles.
-    # Checked BEFORE the series-name signal so a shared line name (e.g.
-    # Matchbox also has a "Moving Parts" line) tagged with a sibling brand
-    # is still rejected.
-    sibling_brands = ('matchbox',)
-    if any(brand in title for brand in sibling_brands):
+        return True  # explicit HW mention — keep regardless of source/label
+    # Authoritative brand label from the source. A sibling-brand tag rejects
+    # even when the title looks HW-ish (e.g. "Moving Parts" = a Matchbox line).
+    if labels & _SIBLING_BRAND_LABELS:
         return False
-    # Hot Wheels series / line name → treat as HW even without the literal
-    # "hot wheels" words. The t-hunted (Brazilian-Portuguese) feed names the
-    # series, not the brand, so the broad-diecast default-reject below was
-    # dropping genuine HW posts (2026-06-23 — channel went silent for days).
+    # Authoritative HW series label — keep even if the title has no HW signal.
+    if labels & _HW_SERIES_LABELS:
+        return True
+    # Title-only fallbacks (sources without usable labels, e.g. autoevolution).
+    if 'matchbox' in title:
+        return False
     if any(sig in title for sig in _HW_SERIES_SIGNALS):
         return True
-    # Broad-diecast source guard. Reject entries from these feeds when
-    # the title has no Hot Wheels signal; they default to "not HW".
+    # Broad-diecast source guard. Reject entries from these feeds when the
+    # title has no Hot Wheels signal; they default to "not HW".
     link = (entry.get('link') or '').lower()
     if any(netloc in link for netloc in _BROAD_DIECAST_NETLOCS):
         return False
@@ -1671,6 +1686,14 @@ def _fetch_rss_entries(notifier=None):
                 'published': entry.get('published', ''),
                 'summary': entry.get('summary', ''),
                 'feed_url': url,
+                # Blogger "Labels:" → RSS <category> → feedparser ``tags``.
+                # Carries the source's own brand/series taxonomy so the
+                # relevance filter can reject by label (e.g. Matchbox), which
+                # is more reliable than guessing the brand from the title.
+                'labels': [
+                    t.get('term') for t in (entry.get('tags') or [])
+                    if t.get('term')
+                ],
             }
             # Fall back to the feed URL's netloc when an entry lacks a link
             # — for RSS, the feed netloc equals the entry netloc.
