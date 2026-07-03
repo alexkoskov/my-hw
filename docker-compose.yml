@@ -1,0 +1,56 @@
+# Hot Wheels news bot — production runtime, routed through the SHARED VPN gateway
+# (Telegram/Telegra.ph are filtered from the RU host). Mirrors the proven
+# /root/intake-bot pattern: join the external `vpnnet` bridge, and a `route-setup`
+# sidecar points the default route at the sing-box gateway (172.28.0.2) so ALL
+# the bot's traffic egresses through the tunnel. No bot code change.
+#
+# Files placed alongside this compose on the host (NOT in git — host-side):
+#   .env          bot secrets (copied from the old NL server) + DB_FILE=/data/news.db
+#   ./data/news.db   persistent DB copied from the old server (anti-spam: keeps
+#                    processed_news so the channel isn't flooded with old posts)
+#
+# Prereq: the shared-vpn stack (/root/shared-vpn) must be UP first — it owns
+# `vpnnet` and the gateway container at 172.28.0.2.
+
+networks:
+  vpnnet:
+    external: true
+
+services:
+  news-bot:
+    build: .
+    image: hw-news-bot:latest
+    container_name: hw-news-bot
+    restart: unless-stopped
+    # Own netns on the shared VPN network; egress routed by route-setup below.
+    # No ports published — the bot is outbound-only (RSS/LLM/Telegram long calls).
+    networks:
+      - vpnnet
+    env_file:
+      - .env
+    volumes:
+      # Persistent DB (DB_FILE=/data/news.db in .env). Survives container
+      # recreation on redeploy — do NOT bake news.db into the image.
+      - ./data:/data
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+  # Points news-bot's default route at the shared VPN gateway, then holds so the
+  # restart policy re-asserts the route whenever the bot's netns is recreated.
+  route-setup:
+    image: alpine:latest
+    network_mode: "service:news-bot"
+    cap_add:
+      - NET_ADMIN
+    command: ["sh", "-c", "ip route replace default via 172.28.0.2 && echo 'default route -> 172.28.0.2 (shared VPN gateway)' && sleep infinity"]
+    depends_on:
+      - news-bot
+    restart: unless-stopped
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
