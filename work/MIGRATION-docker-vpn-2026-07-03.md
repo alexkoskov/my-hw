@@ -34,9 +34,20 @@ scp hwbot@148.135.207.54:/home/hwbot/bot/.env /tmp/hwenv
 scp /tmp/hwenv root@45.90.216.165:/root/hw-news/.env
 rm /tmp/hwenv
 ```
-Then on the host, append the container DB path (idempotent):
+Then on the host, append the container DB path (idempotent). `news_bot.DB_FILE`
+now reads this env var (fix 2026-07-06), so it routes all state to the mounted
+`/data` volume:
 ```bash
 grep -q '^DB_FILE=' /root/hw-news/.env || echo 'DB_FILE=/data/news.db' >> /root/hw-news/.env
+```
+**Fail-fast guard — verify the Telegraph token is present BEFORE starting.** If
+`TELEGRAPH_ACCESS_TOKEN` is missing/empty, `ensure_access_token()` runs an
+unguarded network call at startup that crash-loops the container **silently** (no
+admin ping — the crash is before the health-check):
+```bash
+grep -q '^TELEGRAPH_ACCESS_TOKEN=..*' /root/hw-news/.env \
+  && echo 'TELEGRAPH_ACCESS_TOKEN present — OK' \
+  || echo 'ABORT: TELEGRAPH_ACCESS_TOKEN missing/empty — copy it from the old server .env before Step 3'
 ```
 (The .env already carries TELEGRAM_*, OPENROUTER_API_KEY, LLM_PROVIDER=openrouter,
 INSTANCE_LABEL=prod, TELEGRAPH_ACCESS_TOKEN, TZ=Europe/Moscow — copied verbatim.)
