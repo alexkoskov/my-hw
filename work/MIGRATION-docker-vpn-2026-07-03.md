@@ -26,6 +26,14 @@ git clone https://github.com/alexkoskov/my-hw.git /root/hw-news
 cd /root/hw-news && git checkout dev      # branch that has Dockerfile + docker-compose.yml
 mkdir -p /root/hw-news/data
 ```
+**Fail-fast guard — verify the DB fix is in the checked-out code** (dev must be at
+commit `47f56f3` or later; without it the container hardcodes `news.db` and would
+re-flood the channel):
+```bash
+grep -q 'os.getenv("DB_FILE"' /root/hw-news/news_bot.py \
+  && echo 'DB_FILE env fix present — OK' \
+  || echo 'ABORT: DB fix missing — run `git pull` on dev before continuing'
+```
 
 ## Step 2 — .env (secrets) from the OLD server + DB path
 From your **Mac**:
@@ -74,6 +82,12 @@ line. A post should appear in the channel.
 ## Step 5 — finish
 - Only after the new container is confirmed posting: the OLD NL bot stays FROZEN;
   once you're happy, cancel the DeluxHost VPS.
+- ⚠️ **`kill -STOP` is NOT durable.** A reboot / redeploy on the NL box respawns
+  the systemd service **active** — then both instances post to the prod channel
+  (INSTANCE_LABEL=prod on both) → double-posting. So keep the "NL frozen, Moscow
+  live" window SHORT: as soon as Moscow is confirmed good, **power the NL VPS off
+  from the DeluxHost panel** (a powered-off box can't reboot-respawn) and cancel it
+  once fully happy. Don't leave it half-frozen for days.
 - **Leave GitHub `SSH_HOST` alone / repoint later:** the old `deploy.yml` (scp to
   a host + systemd) does NOT fit the Docker host. For now redeploys = `git pull &&
   docker compose up -d --build` on the host. (A proper Docker CI can come later,
