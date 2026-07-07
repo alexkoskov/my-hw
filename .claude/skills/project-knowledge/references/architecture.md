@@ -9,9 +9,9 @@ Technical architecture overview for AI agents. Helps agents understand HOW the s
 
 **Frontend:** None (CLI script with no user interface)
 
-**Backend:** Standalone Python script (no web framework)
+**Backend:** Standalone Python script (no web framework). In prod it runs inside a **Docker container** on the Moscow VPS, egress routed through a non-RU VPN — see deployment.md for topology.
 
-**Database:** SQLite (local file `news.db`)
+**Database:** SQLite (`news.db`; path via `DB_FILE`, prod = `/data/news.db` on a mounted volume)
 - **Why:** Lightweight, file‑based, zero‑configuration; suits the simple duplicate‑tracking requirement.
 
 **Runtime:** Python 3.8+
