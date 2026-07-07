@@ -24,17 +24,24 @@
 
 set -uo pipefail
 
-# Load TELEGRAM_BOT_TOKEN, TELEGRAM_ADMIN_ID, INSTANCE_LABEL from the
-# instance's .env (colocated with this script).
+# Config source: prefer the instance's colocated .env (NL/systemd host). In the
+# Docker container that file isn't present, but docker-compose's env_file already
+# injected TELEGRAM_BOT_TOKEN / TELEGRAM_ADMIN_ID / INSTANCE_LABEL into the
+# environment, and `docker exec` inherits them — so run this via
+# `docker exec hw-news-bot /app/watchdog.sh` and it works without the file.
 ENV_FILE="$(dirname "$(readlink -f "$0")")/.env"
-if [[ ! -f "$ENV_FILE" ]]; then
-    echo "[watchdog] missing env file: $ENV_FILE" >&2
+if [[ -f "$ENV_FILE" ]]; then
+    # shellcheck disable=SC1090
+    set -a; . "$ENV_FILE"; set +a
+fi
+if [[ -z "${TELEGRAM_BOT_TOKEN:-}" || -z "${TELEGRAM_ADMIN_ID:-}" ]]; then
+    echo "[watchdog] TELEGRAM_BOT_TOKEN/TELEGRAM_ADMIN_ID unset (no .env file and not in the environment)" >&2
     exit 1
 fi
-# shellcheck disable=SC1090
-set -a; . "$ENV_FILE"; set +a
 
-HEARTBEAT="$HOME/.cache/news_bot/last_tick.ts"
+# Heartbeat path — env-overridable to match news_bot's HEARTBEAT_FILE. The
+# container points both at /data/last_tick.ts (mounted volume).
+HEARTBEAT="${HEARTBEAT_FILE:-$HOME/.cache/news_bot/last_tick.ts}"
 THRESHOLD_SECONDS=$((26 * 60 * 60))   # 26h — covers a quiet day yesterday + any
                                       # publish-loop running long today; tighter
                                       # would false-positive on legitimate slow

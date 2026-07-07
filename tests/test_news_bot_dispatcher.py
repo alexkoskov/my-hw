@@ -221,3 +221,20 @@ def test_fetch_full_article_unknown_domain_returns_none():
         {'link': 'https://unknown.example.com/some-path'}
     )
     assert result is None
+
+
+def test_fetch_full_article_userinfo_attack_does_not_route_to_autoevolution():
+    """SSRF hardening (CWE-918): a userinfo-attack link whose pre-@ label is
+    ``autoevolution.com`` but whose real host is an internal/metadata IP must
+    NOT route to the autoevolution fetcher. The dispatcher matches on
+    ``urlparse().hostname`` (the post-@ host = the IP), so it falls through to
+    ``None`` and never fetches."""
+    link = 'http://autoevolution.com@169.254.169.254/latest/meta-data/'
+    mock_fetch = MagicMock(return_value={'title': 'x'})
+    with patch(
+        'news_bot.autoevolution_source.fetch_autoevolution_article',
+        new=mock_fetch,
+    ):
+        result = news_bot.fetch_full_article({'link': link})
+    mock_fetch.assert_not_called()
+    assert result is None

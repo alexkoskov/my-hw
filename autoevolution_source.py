@@ -13,6 +13,7 @@ import html
 import logging
 import re
 from typing import Dict, List, Optional
+from urllib.parse import urlparse
 
 try:
     from curl_cffi import requests as curl_requests
@@ -36,6 +37,28 @@ YOUTUBE_ID_RE = re.compile(
 VIMEO_ID_RE = re.compile(r"vimeo\.com/(\d+)")
 REQUEST_TIMEOUT = 20
 MAX_IMAGES = 10
+
+#: SSRF guard (CWE-918). The upstream news_bot dispatcher routes here on a
+#: host match, and this fetcher — unlike lamley/t_hunted/orangetrack/mattel —
+#: had NO downstream host check, so a hostile ``entry['link']`` (feed
+#: compromise, malicious <link>, or an open-redirect) of the form
+#: ``http://autoevolution.com@169.254.169.254/…`` (userinfo attack) or
+#: ``http://autoevolution.com.attacker.example/…`` (suffix attack) would cause
+#: a server-side GET to an arbitrary internal/metadata host. Exact-hostname
+#: allowlist — ``urlparse(...).hostname`` yields the post-@ host, closing both.
+_ALLOWED_HOSTS = ('autoevolution.com', 'www.autoevolution.com')
+
+
+def _is_allowed_autoevolution_url(link: str) -> bool:
+    """Return True iff ``link`` is an http(s) URL whose host is exactly in
+    ``_ALLOWED_HOSTS``. Anything else is rejected (no fetch)."""
+    try:
+        parsed = urlparse(link)
+    except (ValueError, AttributeError):
+        return False
+    if parsed.scheme not in ('http', 'https'):
+        return False
+    return (parsed.hostname or '').lower() in _ALLOWED_HOSTS
 
 
 def _runs_from_tag(tag) -> List[Dict]:
@@ -121,6 +144,13 @@ def _scrape_article_page(link: str, fetcher=None) -> Optional[Dict]:
     Returns ``None`` on any failure so the caller can fall back to RSS.
     ``fetcher`` is injectable for tests; otherwise curl_cffi is used.
     """
+    # SSRF guard — reject before any fetch (real or injected). See _ALLOWED_HOSTS.
+    if not _is_allowed_autoevolution_url(link):
+        logger.warning(
+            "Autoevolution fetch rejected (hostname not in allowlist): %r", link,
+        )
+        return None
+
     if fetcher is None:
         if not _CURL_CFFI_AVAILABLE:
             return None

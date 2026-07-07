@@ -691,6 +691,52 @@ def mark_processed(link, title, pub_date):
     conn.close()
     logger.debug(f"Marked as processed: {link}")
 
+
+def _count_processed_news():
+    """Number of rows in ``processed_news`` — the anti-repost ledger. A prod
+    instance whose ledger is empty at startup is almost certainly running on an
+    empty/ephemeral DB (see ``_prod_db_guard``)."""
+    conn = sqlite3.connect(DB_FILE)
+    try:
+        return conn.execute("SELECT COUNT(*) FROM processed_news").fetchone()[0]
+    finally:
+        conn.close()
+
+
+def _prod_db_guard():
+    """Return a list of prod-DB integrity warnings (empty if OK or not a prod
+    instance). B2 re-flood guard.
+
+    The Moscow container keeps state on a mounted volume via
+    ``DB_FILE=/data/news.db``. If that ``.env`` line is dropped, ``DB_FILE``
+    falls back to the relative default ``"news.db"`` on the EPHEMERAL /app
+    layer → ``init_db()`` creates an empty DB → ``processed_news`` is empty →
+    the bot re-floods the channel with months of RSS backlog. Gated on
+    ``INSTANCE_LABEL == 'prod'`` so test/local/CI (relative default DB, empty
+    test DBs) never false-alarm.
+    """
+    if INSTANCE_LABEL != 'prod':
+        return []
+    warnings = []
+    if not os.path.isabs(DB_FILE):
+        warnings.append(
+            f"DB_FILE={DB_FILE!r} — не абсолютный путь; прод-состояние может "
+            f"оказаться на временном слое контейнера, а не на смонтированном /data"
+        )
+    try:
+        if _count_processed_news() == 0:
+            warnings.append(
+                "таблица processed_news ПУСТАЯ на старте — если это не самый "
+                "первый деплой, база не персистентная и канал будет перезалит"
+            )
+    except Exception as db_err:
+        logger.error(
+            f"[startup] processed_news count failed: "
+            f"{sanitize_error_message(db_err)}"
+        )
+    return warnings
+
+
 # RSS functions
 def fetch_rss(url):
     """Fetch and parse RSS feed, return list of entries."""
@@ -1549,6 +1595,11 @@ def _fallback_publish(row, via_review=False):
         # from the row — so the pending-row copy is the idempotency
         # anchor, not an input to the move.
         pending_repo.mark_telegraph_published(link, telegraph_url, telegraph_path)
+        # Mirror the persisted URL back onto the in-memory row so an in-slot
+        # RETRY (``_publish_with_retries`` reuses this same dict) reuses this
+        # Telegraph page instead of publishing a fresh ORPHAN one (B4).
+        row['telegraph_url'] = telegraph_url
+        row['telegraph_path'] = telegraph_path
 
         # Let Telegra.ph's edge cache settle before Telegram's IV worker
         # fetches the page (see ``TELEGRAPH_CACHE_WARMUP_SECONDS`` docstring).
@@ -1577,11 +1628,19 @@ def _fallback_publish(row, via_review=False):
     # at the visible-feed level). The auto-marker lives in the
     # Telegra.ph article body — see the ``auto_marker`` kwarg passed
     # to ``publish_article`` above.
-    ok = send_telegraph_teaser(telegraph_url, link)
-    if not ok:
-        raise RuntimeError(
-            f"send_telegraph_teaser returned False for {link}"
-        )
+    # Guard against an in-slot RETRY re-sending the teaser (B4):
+    # ``_publish_with_retries`` reuses this same ``row`` dict, so if the teaser
+    # already went out on a prior attempt and a LATER step failed (e.g.
+    # ``move_to_published`` threw ``database is locked``), a retry must NOT post
+    # a duplicate. The marker is in-memory only (per publish call); it is set
+    # ONLY after a successful send, so a teaser that FAILED is still re-tried.
+    if not row.get('_teaser_sent'):
+        ok = send_telegraph_teaser(telegraph_url, link)
+        if not ok:
+            raise RuntimeError(
+                f"send_telegraph_teaser returned False for {link}"
+            )
+        row['_teaser_sent'] = True
 
     # Step 5: atomic move (single repo txn).
     pending_repo.move_to_published(
@@ -1611,7 +1670,12 @@ def fetch_full_article(entry):
     autoevolution.com (RSS-only — Cloudflare blocks scraping).
     """
     link = entry.get('link') or ''
-    domain = urlparse(link).netloc.lower()
+    # Match on hostname (not netloc): urlparse().hostname yields the real,
+    # post-@ host, so a userinfo-attack URL like
+    # ``http://autoevolution.com@169.254.169.254/…`` cannot route by its
+    # pre-@ label. Downstream parsers additionally enforce exact-host
+    # allowlists (defence in depth, incl. the .attacker.example suffix case).
+    domain = (urlparse(link).hostname or '').lower()
     try:
         if 'orangetrackdiecast.com' in domain:
             # Pass-through: body fields already populated by
@@ -2340,7 +2404,15 @@ def job():
     _record_heartbeat()
 
 
-_HEARTBEAT_PATH = os.path.expanduser("~/.cache/news_bot/last_tick.ts")
+#: Heartbeat marker path. Env-overridable (``HEARTBEAT_FILE``) so the Docker
+#: container points it at the mounted ``/data`` volume (``HEARTBEAT_FILE=
+#: /data/last_tick.ts``) — persistent across container restarts and readable by
+#: ``watchdog.sh`` run via ``docker exec`` (B5). Default keeps the NL/systemd/
+#: local ``~/.cache`` location.
+_HEARTBEAT_PATH = (
+    os.getenv("HEARTBEAT_FILE", "").strip()
+    or os.path.expanduser("~/.cache/news_bot/last_tick.ts")
+)
 
 
 def _record_heartbeat(path=None):
@@ -2428,6 +2500,19 @@ def main():
         except Exception as notify_err:
             logger.error(
                 f"[startup] failed to send TZ-warning ping: "
+                f"{sanitize_error_message(notify_err)}"
+            )
+
+    # Health check #3 (B2): prod DB integrity — catch the empty/ephemeral-DB
+    # re-flood risk (a dropped ``DB_FILE=/data/news.db`` .env line). Prod only.
+    db_warnings = _prod_db_guard()
+    if db_warnings:
+        logger.warning("[startup] prod DB guard: %s", "; ".join(db_warnings))
+        try:
+            send_admin_notification(admin_alerts.alert_prod_db_guard(db_warnings))
+        except Exception as notify_err:
+            logger.error(
+                f"[startup] failed to send prod-DB-guard ping: "
                 f"{sanitize_error_message(notify_err)}"
             )
 

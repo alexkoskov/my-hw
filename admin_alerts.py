@@ -90,6 +90,24 @@ def alert_tz_mismatch(actual_tz: str | None) -> str:
     )
 
 
+def alert_prod_db_guard(warnings: list[str]) -> str:
+    """[E018] prod DB integrity guard fired at startup (B2). ``warnings`` is a
+    non-empty list of human-readable problems (relative DB_FILE and/or empty
+    processed_news)."""
+    body = "\n".join(f"• {w}" for w in warnings)
+    return (
+        f"[E018] 🔴 Проверка БД на старте не прошла\n\n"
+        f"Что произошло:\n{body}\n\n"
+        f"Почему важно: если это не первый деплой, значит контейнер поднялся с "
+        f"ПУСТОЙ или временной базой (не на смонтированном /data). Тогда бот "
+        f"перезальёт канал старыми статьями.\n\n"
+        f"Что сделать СРОЧНО: проверь на сервере, что в .env есть строка "
+        f"DB_FILE=/data/news.db и что /root/hw-news/data/news.db на месте и не "
+        f"пустой. При сомнении останови контейнер (docker compose stop), пока "
+        f"не разберёшься — чтобы не залить канал."
+    )
+
+
 # ---------------------------------------------------------------------------
 # E006 — idempotency-guard поймал зомби-строку (дубль публикации)
 # ---------------------------------------------------------------------------

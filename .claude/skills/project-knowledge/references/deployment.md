@@ -5,17 +5,38 @@ Deployment process, infrastructure, and production operations for AI agents.
 
 ---
 
-> **Status (2026-07-06):** Prod runs on the **Netherlands VPS `148.135.207.54`**
-> (`news_bot.service`, active) — the topology described below. A **Docker + VPN
-> migration to the Moscow VPS `45.90.216.165`** is **prepared but NOT executed**:
-> artifacts on `dev` (`Dockerfile`, `docker-compose.yml`, `.dockerignore`),
-> runbook `work/MIGRATION-docker-vpn-2026-07-03.md`. The container would route
-> egress through the shared `shared-vpn` gateway (sing-box VLESS, `172.28.0.2` on
-> the `vpnnet` network) so a RU host still reaches Telegram — same pattern as the
-> colocated intake-bot. Everything below reflects the CURRENT NL/systemd setup
-> until the cutover happens; after cutover, redeploy = `git pull && docker compose
-> up -d --build` on the host (the `SSH_HOST`/systemd `deploy.yml` path does not
-> fit the Docker host). See [[project_host_outside_russia]] for the why.
+> **Status (2026-07-07):** ✅ **Prod migrated to a Docker container on the Moscow
+> VPS `45.90.216.165`** (cutover 2026-07-06, validated over a full daily cycle —
+> 19:30 + next-day 10:00 posts confirmed). The old **Netherlands VPS
+> `148.135.207.54`** `news_bot.service` is **stopped + disabled** — no longer prod.
+> The NL box is **KEPT (not cancelled)**: it still runs the **test bot**
+> (`news_bot_test.service`) and the operator's other bots.
+>
+> **Current prod runtime:** `hw-news-bot` Docker container on `45.90.216.165`
+> (repo at `/root/hw-news`, tracking **`main`**). Egress routes through the shared
+> `shared-vpn` gateway (sing-box VLESS, `172.28.0.2` on the external `vpnnet`
+> network) so the RU host reaches Telegram — same pattern as the colocated
+> intake-bot. Compose (`docker-compose.yml`): `news-bot` + a `route-setup` sidecar
+> that points the default route at the gateway. State lives on a host bind-mount
+> (`./data:/data`): `.env` (secrets, copied from the old NL server) + `data/news.db`
+> (`DB_FILE=/data/news.db` — the DB path is env-overridable as of 2026-07-06; the
+> hardcoded default `news.db` remains for NL/test/local).
+>
+> **Current prod deploy (MANUAL):** on the host — `cd /root/hw-news && git pull &&
+> docker compose up -d --build`. Run it **OUTSIDE the 10:00–20:00 МСК publish
+> window** (a container restart resets the in-process day schedule). There is **no
+> GitHub-Actions prod deploy**: the old `deploy.yml` (SCP + `systemctl restart` to
+> NL) is **DISARMED** 2026-07-07 (`workflow_run` trigger removed + job `if: false`)
+> because re-running it would `restart` → **revive the disabled NL bot → double-post**.
+> A proper Docker-targeted CI (git pull + `docker compose up` over SSH to Moscow)
+> is a TODO.
+>
+> **⚠️ Everything below the "Deployment Platform" heading describes the LEGACY
+> NL/systemd path.** It is still accurate for the **test bot** (which remains on NL
+> via `deploy_test.yml`) and kept as prod historical reference, but the PROD deploy
+> is now the Docker/Moscow process above. See [[project_host_outside_russia]] for
+> the why; runbooks: `work/MIGRATION-docker-vpn-2026-07-03.md` +
+> `work/CUTOVER-CHECKLIST-2026-07-06.md`.
 
 ---
 
@@ -62,14 +83,16 @@ These must be present on the production server (systemd EnvironmentFile or `sour
 
 ---
 
-## Two-instance topology (prod + test on the same VPS)
+## Two-instance topology (prod = Moscow Docker, test = NL systemd)
 
-Both bot instances run on `148.135.207.54` as separate systemd units, each with its own deploy directory, `.env`, `news.db`, and Telegram channel target. The single VPS hosts both.
+Since the 2026-07-06 migration the two instances run on **different hosts**: prod is
+a Docker container on the Moscow VPS `45.90.216.165`; test remains a systemd unit on
+the NL VPS `148.135.207.54`. Each has its own `.env`, `news.db`, and Telegram channel.
 
-| Instance | Deploy path | Service | Channel | Branch | Workflow |
+| Instance | Host | Runtime | Channel | Branch | Deploy |
 |---|---|---|---|---|---|
-| **prod** | `/home/hwbot/bot/` | `news_bot.service` | `-1004027529994` (prod) | `main` | `deploy.yml` |
-| **test** | `/home/hwbot/bot_test/` | `news_bot_test.service` | `@myhwchannel123` (test) | `dev` | `deploy_test.yml` |
+| **prod** | Moscow `45.90.216.165` | Docker `hw-news-bot` (`/root/hw-news`, `data/news.db`) | `-1004027529994` (prod) | `main` | **manual** `git pull && docker compose up -d --build` (deploy.yml DISARMED) |
+| **test** | NL `148.135.207.54` | systemd `news_bot_test.service` (`/home/hwbot/bot_test/`) | `@myhwchannel123` (test) | `dev` | `deploy_test.yml` (SCP + systemd) |
 
 The bot Telegram TOKEN is shared (one bot account posts to both channels). The Anthropic / OpenRouter / etc. API keys are shared (CI writes them to both `.env` files via the respective deploy workflow). Per-instance values that differ:
 
@@ -79,11 +102,11 @@ The bot Telegram TOKEN is shared (one bot account posts to both channels). The A
 
 `INSTANCE_LABEL` and `TELEGRAM_CHANNEL_ID` are set ONCE manually on the server and NOT managed by the deploy workflow's strip-then-append rewrite (the workflow's regex strips only LLM-related keys + TZ, leaving everything else untouched).
 
-**Iteration cycle:** `git push origin dev` → CI on dev → `deploy_test.yml` → test instance updates → operator inspects test channel → on confirmation `git checkout main && git merge dev && git push origin main` → CI on main → `deploy.yml` → prod instance updates.
+**Iteration cycle:** `git push origin dev` → CI on dev → `deploy_test.yml` → test instance (NL) updates → operator inspects test channel → on confirmation `git checkout main && git merge dev && git push origin main`. Prod (Moscow) does NOT auto-deploy anymore — update it **manually** on the host: `cd /root/hw-news && git pull && docker compose up -d --build` (**outside the 10:00–20:00 МСК window**). The CI `deploy.yml` prod path is disarmed. Prod's `.env` is hand-managed on the Moscow host (not CI-written); test's `.env` is still CI-written by `deploy_test.yml`.
 
 ## Deployment Triggers
 
-**Production (default — GitHub Actions CI):** `git push origin main` → `.github/workflows/ci.yml` runs pytest → on green, `.github/workflows/deploy.yml` triggers via `workflow_run`, SCPs the FILES list to the VPS at `$DEPLOY_PATH` (= `/home/hwbot/bot/`), runs `pip install --user -r requirements.txt` on the server, then `sudo systemctl restart news_bot.service`. One concurrent prod deploy at a time; queued runs replace pending.
+**Production (LEGACY — DISARMED 2026-07-07):** ⚠️ The description in this paragraph is the OLD NL/systemd prod deploy and **no longer runs**. `deploy.yml` had its `workflow_run` trigger removed and the job hard-guarded `if: false` because it SCP'd + `systemctl restart news_bot.service` to the OLD NL host — which would revive the stopped+disabled NL prod bot and double-post. **Current prod deploy is manual on the Moscow Docker host** (see the Status callout at the top). Historical behaviour, for reference: `git push origin main` → `ci.yml` pytest → on green, `deploy.yml` via `workflow_run` SCP'd the FILES list to `$DEPLOY_PATH` (= `/home/hwbot/bot/`), `pip install --user -r requirements.txt`, then `sudo systemctl restart news_bot.service`.
 
 **Test / staging (GitHub Actions CI):** `git push origin dev` → `ci.yml` runs pytest → on green, `.github/workflows/deploy_test.yml` triggers via `workflow_run`, SCPs the same FILES list to `$DEPLOY_PATH_TEST` (= `/home/hwbot/bot_test/`), `pip install`, then `sudo systemctl restart news_bot_test.service`. Independent concurrency group from prod (`deploy-test`). Manual run available via `Actions → Deploy test → Run workflow`.
 
@@ -118,10 +141,21 @@ The list lives in two places — `.github/workflows/deploy.yml` and `deploy.sh` 
 **Server-side sudoers** (`/etc/sudoers.d/news_bot`, mode **0440 — anything else and sudo silently ignores the file**):
 
 ```
-hwbot ALL=(ALL) NOPASSWD: /usr/bin/systemctl restart news_bot.service, /usr/bin/systemctl restart news_bot_test.service, /usr/bin/systemctl status news_bot.service, /usr/bin/systemctl status news_bot_test.service, /usr/bin/journalctl -u news_bot.service, /usr/bin/journalctl -u news_bot_test.service
+hwbot ALL=(root) NOPASSWD: /usr/bin/systemctl restart news_bot.service, /usr/bin/systemctl restart news_bot_test.service
 ```
 
 The single rule covers BOTH instances — prod (`news_bot.service`) and test (`news_bot_test.service`). Install via `ssh root@<host>` (one-time): `visudo -f /etc/sudoers.d/news_bot`, paste the line, `chmod 0440 /etc/sudoers.d/news_bot`, `visudo -c` to verify. Without this rule the deploy's restart step fails with "terminal is required to read the password" — the only command path that needs explicit privilege escalation is the systemd restart.
+
+> **⚠️ Hardened 2026-07-07 (S2 — privilege-escalation fix).** The rule previously
+> also granted `systemctl status …` and `journalctl -u …` NOPASSWD "for
+> convenience". Both spawn a **pager (`less`) as root** by default — from the
+> pager `!sh` gives a **root shell** (GTFOBins). Since the `hwbot` private key is
+> a CI secret (`SSH_PRIVATE_KEY`), anyone with it (or any `hwbot` compromise) got
+> root on the box that hosts the test bot + the operator's other bots. Removed
+> both — the deploy workflows only ever call `restart` (exact-arg match = safe, no
+> pager); the operator runs status/journalctl as root directly. Runas tightened
+> `(ALL)`→`(root)`. To apply on the NL box (as root):
+> `printf 'hwbot ALL=(root) NOPASSWD: /usr/bin/systemctl restart news_bot.service, /usr/bin/systemctl restart news_bot_test.service\n' > /etc/sudoers.d/news_bot && chmod 0440 /etc/sudoers.d/news_bot && visudo -c`
 
 **Rollback:** `git revert HEAD && git push origin main` (for prod) or `... origin dev` (for test) — the respective deploy workflow redeploys the parent commit and restarts the matching service. ~2-3 min total. For schema rollback, restore `news.db` from `/home/hwbot/backup/` (see Backups below).
 

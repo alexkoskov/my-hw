@@ -642,5 +642,79 @@ class TestIdempotencyGuard(_FallbackPublishPathsCase):
                                 f"got {logs.output!r}")
 
 
+class TestInSlotRetryIdempotency(_FallbackPublishPathsCase):
+    """B4 regression: ``_publish_with_retries`` reuses the SAME ``row`` dict
+    across in-slot retries. A failure AFTER a successful teaser send (e.g.
+    ``move_to_published`` throwing ``database is locked``) must NOT, on retry,
+    re-publish a fresh Telegraph page (orphan) or re-send the channel teaser
+    (duplicate visible post)."""
+
+    def _patches(self, mock_publish, mock_mark, mock_teaser, mock_move):
+        return [
+            patch('news_bot.transcreate_via_claude',
+                  MagicMock(return_value=_claude_dict())),
+            patch('news_bot.transcreate_text', MagicMock()),
+            patch('news_bot.outage_state.is_fallback_active', return_value=False),
+            patch('news_bot.telegraph_publisher.publish_article', mock_publish),
+            patch('news_bot.pending_repo.mark_telegraph_published', mock_mark),
+            patch('news_bot.send_telegraph_teaser', mock_teaser),
+            patch('news_bot.pending_repo.move_to_published', mock_move),
+            patch('news_bot.time.sleep', lambda s: None),
+        ]
+
+    def test_retry_after_move_failure_does_not_duplicate(self):
+        entry = self._insert(link='http://a/retry-move')
+        row = repo.get_pending(entry['link'])
+        mock_publish = MagicMock(return_value='https://telegra.ph/Retry-07-07')
+        mock_mark = MagicMock()
+        mock_teaser = MagicMock(return_value=True)
+        # move_to_published throws once (locked), then succeeds on the retry.
+        mock_move = MagicMock(side_effect=[
+            sqlite3.OperationalError('database is locked'), None,
+        ])
+        patches = self._patches(mock_publish, mock_mark, mock_teaser, mock_move)
+        for p in patches:
+            p.start()
+        try:
+            outcome, err = news_bot._publish_with_retries(row, idx=1, n_slots=1)
+        finally:
+            for p in patches:
+                p.stop()
+
+        self.assertEqual(outcome, 'published', f"got {outcome}/{err}")
+        # No duplicate channel post, no orphan Telegraph page:
+        mock_teaser.assert_called_once()
+        mock_publish.assert_called_once()
+        # The move WAS retried (failed once, then succeeded):
+        self.assertEqual(mock_move.call_count, 2)
+
+    def test_teaser_retried_when_it_actually_failed(self):
+        """The dedup marker must only suppress a re-send after the teaser
+        SUCCEEDED. If the first teaser returned False (nothing posted), the
+        retry MUST send it — and still must not re-publish Telegraph."""
+        entry = self._insert(link='http://a/retry-teaser')
+        row = repo.get_pending(entry['link'])
+        mock_publish = MagicMock(return_value='https://telegra.ph/Retry2-07-07')
+        mock_mark = MagicMock()
+        # First teaser fails (returns False → raise), second succeeds.
+        mock_teaser = MagicMock(side_effect=[False, True])
+        mock_move = MagicMock()
+        patches = self._patches(mock_publish, mock_mark, mock_teaser, mock_move)
+        for p in patches:
+            p.start()
+        try:
+            outcome, err = news_bot._publish_with_retries(row, idx=1, n_slots=1)
+        finally:
+            for p in patches:
+                p.stop()
+
+        self.assertEqual(outcome, 'published', f"got {outcome}/{err}")
+        # Teaser re-sent because the first attempt didn't post anything:
+        self.assertEqual(mock_teaser.call_count, 2)
+        # But Telegraph was published only once (reused on retry — no orphan):
+        mock_publish.assert_called_once()
+        mock_move.assert_called_once()
+
+
 if __name__ == '__main__':
     unittest.main()
