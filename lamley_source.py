@@ -40,6 +40,21 @@ except ImportError:  # pragma: no cover — only triggers in stripped envs
     _cffi_requests = None
     _CFFI_AVAILABLE = False
 
+#: Exception tuples spanning BOTH the ``requests`` library and ``curl_cffi``.
+#: curl_cffi's exceptions do NOT subclass ``requests``' — so on the PRODUCTION
+#: path (``session is None`` → ``_cffi_requests``) a ``except requests.*`` never
+#: fires: the 429 backoff, per-URL blacklist, cool-down and admin alert would
+#: all silently never run and the raw exception would escape to the caller.
+#: Catch the HTTP-status tuple BEFORE the transport tuple (``HTTPError``
+#: subclasses ``RequestException`` in both libraries).
+if _CFFI_AVAILABLE:
+    from curl_cffi.requests import exceptions as _cffi_exc
+    _HTTP_STATUS_ERRORS = (requests.HTTPError, _cffi_exc.HTTPError)
+    _TRANSPORT_ERRORS = (requests.RequestException, _cffi_exc.RequestException)
+else:  # pragma: no cover — curl_cffi missing (stripped env)
+    _HTTP_STATUS_ERRORS = (requests.HTTPError,)
+    _TRANSPORT_ERRORS = (requests.RequestException,)
+
 USER_AGENT = (
     "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 "
     "(KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36"
@@ -312,6 +327,7 @@ def fetch_lamley_article(
     # Soft client-side throttle BEFORE the first attempt so a tight call
     # loop doesn't hammer Lamley's WordPress.
     _throttle_wait()
+    response = None
     try:
         response = _do_fetch()
         # On 429, honour Retry-After (or fall back) and try ONE more time.
@@ -329,15 +345,20 @@ def fetch_lamley_article(
                 len(response.content)
             ))
             return None
-    except requests.HTTPError as exc:
-        # 429 after retry → record both the per-URL blacklist and the
-        # consecutive-strike counter (which may trip cool-down).
-        resp = getattr(exc, "response", None)
-        if resp is not None and resp.status_code == 429:
+    except _HTTP_STATUS_ERRORS as exc:
+        # 4xx/5xx from raise_for_status(). Read the status from the RESPONSE we
+        # already hold (not exc.response) — works regardless of which HTTP
+        # library raised, since curl_cffi's exceptions don't subclass requests'
+        # and don't reliably attach ``.response``. So 429 detection can't
+        # silently miss on the production curl_cffi path: 429 after retry →
+        # record the per-URL blacklist + the consecutive-strike counter (which
+        # may trip cool-down).
+        status = getattr(response, "status_code", None)
+        if status == 429:
             _record_429(link)
         _notify(notifier, admin_alerts.alert_lamley_fetch_error(link, str(exc)))
         return None
-    except requests.RequestException as exc:
+    except _TRANSPORT_ERRORS as exc:
         # Other transport-level errors (timeout, connection refused,
         # DNS) — don't blacklist the URL or trip the counter; they're
         # not WAF-shaped.

@@ -220,5 +220,56 @@ class TestDBFileEnvConfig(unittest.TestCase):
         self.assertEqual(self._imported_db_file({"DB_FILE": "   "}), "news.db")
 
 
+class TestProdDbGuard(unittest.TestCase):
+    """B2: ``_prod_db_guard`` flags the empty/ephemeral-DB re-flood risk for a
+    prod instance, and stays silent for non-prod (test/local/CI)."""
+
+    def setUp(self):
+        import news_bot
+        self.nb = news_bot
+        self.tmp = tempfile.mkdtemp()
+        self.db = os.path.join(self.tmp, "news.db")
+        self.db_patcher = patch.object(news_bot, "DB_FILE", self.db)
+        self.db_patcher.start()
+        news_bot.init_db()  # empty DB (0 processed_news rows)
+
+    def tearDown(self):
+        self.db_patcher.stop()
+        import shutil
+        shutil.rmtree(self.tmp, ignore_errors=True)
+
+    def test_non_prod_never_warns(self):
+        # Even with an empty DB, a non-prod label must not warn.
+        with patch.object(self.nb, "INSTANCE_LABEL", "test"):
+            self.assertEqual(self.nb._prod_db_guard(), [])
+        with patch.object(self.nb, "INSTANCE_LABEL", ""):
+            self.assertEqual(self.nb._prod_db_guard(), [])
+
+    def test_prod_empty_processed_news_warns(self):
+        with patch.object(self.nb, "INSTANCE_LABEL", "prod"):
+            warnings = self.nb._prod_db_guard()
+        self.assertTrue(any("processed_news" in w for w in warnings),
+                        f"expected an empty-DB warning, got {warnings}")
+
+    def test_prod_absolute_and_populated_is_ok(self):
+        self.nb.mark_processed("http://x/1", "t", "2026-01-01")
+        with patch.object(self.nb, "INSTANCE_LABEL", "prod"):
+            self.assertEqual(self.nb._prod_db_guard(), [])
+
+    def test_prod_relative_db_path_warns(self):
+        # Populate so the empty-DB check passes, isolating the path check.
+        self.nb.mark_processed("http://x/1", "t", "2026-01-01")
+        cwd = os.getcwd()
+        os.chdir(self.tmp)  # so relative "news.db" resolves to the same file
+        try:
+            with patch.object(self.nb, "INSTANCE_LABEL", "prod"), \
+                 patch.object(self.nb, "DB_FILE", "news.db"):
+                warnings = self.nb._prod_db_guard()
+        finally:
+            os.chdir(cwd)
+        self.assertEqual(len(warnings), 1, f"expected only the path warning, got {warnings}")
+        self.assertIn("DB_FILE", warnings[0])
+
+
 if __name__ == '__main__':
     unittest.main()

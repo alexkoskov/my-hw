@@ -341,6 +341,46 @@ class TestWAFProtection:
         assert url not in lamley_source._url_blacklist
         assert lamley_source._consecutive_429_count == 0
 
+    def test_429_blacklists_url_on_production_curl_cffi_path(self, monkeypatch):
+        """PROD PATH: with session=None the fetch routes through curl_cffi,
+        whose exceptions do NOT subclass ``requests.*``. Before the fix,
+        ``raise_for_status()`` raising a curl_cffi ``HTTPError`` escaped both
+        ``except`` clauses, so the 429 blacklist / strike / admin alert never
+        ran in production (and the raw exception escaped). Assert they fire."""
+        from curl_cffi.requests import exceptions as cffi_exc
+        url = "https://lamleygroup.com/waf-blocked"
+        cffi_err = cffi_exc.HTTPError("429 Client Error: Too Many Requests")
+        fake_cffi = MagicMock()
+        fake_cffi.get.return_value = _make_response(status=429, raise_exc=cffi_err)
+        monkeypatch.setattr(lamley_source, "_cffi_requests", fake_cffi)
+        monkeypatch.setattr(lamley_source, "_CFFI_AVAILABLE", True)
+
+        notifier = MagicMock()
+        result = lamley_source.fetch_lamley_article(url, session=None, notifier=notifier)
+
+        assert result is None
+        assert url in lamley_source._url_blacklist
+        assert lamley_source._url_blacklist[url] > 0
+        notifier.assert_called()  # admin alerted
+
+    def test_curl_cffi_transport_error_is_handled_gracefully(self, monkeypatch):
+        """PROD PATH: a curl_cffi transport error (timeout/DNS/conn refused)
+        on the ``.get`` call must degrade to ``None`` + admin alert, NOT
+        propagate, and NOT blacklist the URL (it isn't WAF-shaped)."""
+        from curl_cffi.requests import exceptions as cffi_exc
+        url = "https://lamleygroup.com/timeout"
+        fake_cffi = MagicMock()
+        fake_cffi.get.side_effect = cffi_exc.ConnectionError("connection refused")
+        monkeypatch.setattr(lamley_source, "_cffi_requests", fake_cffi)
+        monkeypatch.setattr(lamley_source, "_CFFI_AVAILABLE", True)
+
+        notifier = MagicMock()
+        result = lamley_source.fetch_lamley_article(url, session=None, notifier=notifier)
+
+        assert result is None
+        assert url not in lamley_source._url_blacklist
+        notifier.assert_called()
+
 
 class TestHostAllowlist:
     """``fetch_lamley_article`` must reject URLs whose hostname isn't

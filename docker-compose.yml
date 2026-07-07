@@ -28,9 +28,13 @@ services:
       - vpnnet
     env_file:
       - .env
+    environment:
+      # Heartbeat marker on the mounted volume (B5) — persistent across restarts
+      # and readable by `docker exec hw-news-bot /app/watchdog.sh` (host cron).
+      - HEARTBEAT_FILE=/data/last_tick.ts
     volumes:
-      # Persistent DB (DB_FILE=/data/news.db in .env). Survives container
-      # recreation on redeploy — do NOT bake news.db into the image.
+      # Persistent DB (DB_FILE=/data/news.db in .env) + heartbeat. Survives
+      # container recreation on redeploy — do NOT bake news.db into the image.
       - ./data:/data
     logging:
       driver: json-file

@@ -6,6 +6,7 @@ from unittest.mock import MagicMock
 import pytest
 
 from autoevolution_source import (
+    _is_allowed_autoevolution_url,
     _scrape_article_page,
     enrich_entry,
     fetch_autoevolution_article,
@@ -226,19 +227,79 @@ class TestScrapeArticlePage:
 
     def test_http_error_returns_none(self):
         fetcher = lambda url: _fake_response("", status=403)
-        out = _scrape_article_page("https://x-268757.html", fetcher=fetcher)
+        out = _scrape_article_page("https://www.autoevolution.com/news/x-268757.html", fetcher=fetcher)
         assert out is None
 
     def test_missing_body_returns_none(self):
         fetcher = lambda url: _fake_response("<html><h1>Only title</h1></html>")
-        out = _scrape_article_page("https://x-268757.html", fetcher=fetcher)
+        out = _scrape_article_page("https://www.autoevolution.com/news/x-268757.html", fetcher=fetcher)
         assert out is None
 
     def test_fetcher_exception_returns_none(self):
         def boom(url):
             raise RuntimeError("network dead")
-        out = _scrape_article_page("https://x-268757.html", fetcher=boom)
+        out = _scrape_article_page("https://www.autoevolution.com/news/x-268757.html", fetcher=boom)
         assert out is None
+
+
+class TestHostAllowlist:
+    """SSRF guard (CWE-918): the fetcher must reject any URL whose hostname
+    isn't exactly ``autoevolution.com`` / ``www.autoevolution.com`` BEFORE any
+    fetch — closing the userinfo (``@``) and suffix attacks the substring
+    dispatch would otherwise let through."""
+
+    @pytest.mark.parametrize("url", [
+        "https://www.autoevolution.com/news/x-1.html",
+        "https://autoevolution.com/news/x-1.html",
+        "http://www.autoevolution.com/news/x-1.html",
+    ])
+    def test_allows_canonical_hosts(self, url):
+        assert _is_allowed_autoevolution_url(url) is True
+
+    @pytest.mark.parametrize("url", [
+        "http://autoevolution.com@169.254.169.254/latest/meta-data/",  # userinfo attack
+        "http://autoevolution.com.attacker.example/x-1.html",           # suffix attack
+        "http://169.254.169.254/latest/meta-data/",
+        "https://evil.example/x-1.html",
+        "ftp://www.autoevolution.com/x",                                # non-http scheme
+        "file:///etc/passwd",
+        "",
+    ])
+    def test_rejects_hostile_or_non_canonical(self, url):
+        assert _is_allowed_autoevolution_url(url) is False
+
+    def test_scrape_rejects_hostile_url_without_fetching(self):
+        """A hostile URL must be rejected BEFORE the fetcher is ever called —
+        even an injected fetcher must not run (no SSRF egress)."""
+        calls = []
+        def spy_fetcher(url):
+            calls.append(url)
+            return _fake_response(SAMPLE_ARTICLE_HTML)
+        out = _scrape_article_page(
+            "http://autoevolution.com@169.254.169.254/latest/meta-data/",
+            fetcher=spy_fetcher,
+        )
+        assert out is None
+        assert calls == []  # guard fired before any fetch
+
+    def test_fetch_autoevolution_article_rejects_hostile_link(self):
+        """The public entry point degrades safely: a hostile link scrapes to
+        None, then falls back to RSS-only enrichment (which performs no fetch
+        of the link)."""
+        calls = []
+        def spy_fetcher(url):
+            calls.append(url)
+            return _fake_response(SAMPLE_ARTICLE_HTML)
+        entry = {
+            "link": "http://autoevolution.com.attacker.example/x-1.html",
+            "title": "RSS title", "summary": "RSS summary",
+            "media_content": [{"url": "https://s1.cdn.example/hero.jpg"}],
+        }
+        out = fetch_autoevolution_article(entry, fetcher=spy_fetcher)
+        assert calls == []  # never fetched the hostile host (SSRF guard)
+        # Degrades to RSS-only enrichment — no SSRF, no crash.
+        assert out is not None
+        assert out["title"] == "RSS title"
 
 
 class TestFetchAutoevolutionArticle:
