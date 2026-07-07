@@ -237,7 +237,7 @@ Different source parsers take different paths to image URLs. Each is tuned to ma
 - **Pending order** (`list_pending`): two-tier — today's freshly-fetched batch first (in fetch order), then carry-over backlog drained oldest-first. SQL: `ORDER BY CASE WHEN date(fetched_at) = date('now') THEN 0 ELSE 1 END, fetched_at ASC`.
 - Container restart mid-window: `news_bot.main()` triggers `job()` immediately (existing pattern). Crash-loop guard kicks in if needed. `compute_publish_slots(remaining_pending, now)` recomputes the schedule for the rest of the window — no migration of old slots. Already-published rows are skipped via Decision 9 idempotency from manual-review-workflow (telegraph_url presence).
 - The script runs indefinitely (`while True: schedule.run_pending(); time.sleep(60)`) when started interactively.
-- For production, a systemd service or cron job is recommended instead of relying on the in-process scheduler.
+- In prod it runs as a **Docker container** (`restart: unless-stopped`) on the Moscow VPS; test runs as a `systemd` service on NL. Either way the in-process `schedule` loop is the design — the supervisor (Docker / systemd) only restarts on process exit, so the alive-but-stuck class is caught by `watchdog.sh` instead (see deployment.md § Health Checks).
 
 ### Logging
 - Logging is configured at INFO level, with timestamps and module names.

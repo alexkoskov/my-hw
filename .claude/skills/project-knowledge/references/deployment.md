@@ -42,22 +42,28 @@ Deployment process, infrastructure, and production operations for AI agents.
 
 ## Deployment Platform
 
-**Platform:** Any Linux server with Python 3.8+ (e.g., VPS, Raspberry Pi, cloud VM)
+**Prod (since 2026-07-06):** a **Docker container** (`hw-news-bot`) on the Moscow VPS
+`45.90.216.165`, egress routed through the shared non-RU VPN gateway (see the Status
+callout + Two-instance topology). The app is still a single long-running Python process
+(`schedule` in-process, no web framework) — it just runs inside a container now, with
+state on the `./data:/data` bind-mount.
 
-**Type:** Cron job (scheduled task) – the script runs as a standalone Python process.
+**Test:** the legacy layout — a `systemd`-managed process on the NL VPS `148.135.207.54`.
 
-**Why this platform:** Low cost, full control over scheduling, and no need for a web server or container orchestration.
+**Why:** the RU host reaches Telegram only through the VPN, and Docker gives a
+reproducible image + isolated egress routing without changing the bot code.
 
 ---
 
 ## Access Information
 
 **SSH Access:**
-- Production: `ssh user@example.com` (deploy path: `/home/user/bot`)
+- **Prod:** `ssh root@45.90.216.165` (Moscow VPS, password auth). Repo/deploy dir: `/root/hw-news`; state on `/root/hw-news/data`.
+- **Test + other bots:** `ssh hwbot@148.135.207.54` (NL VPS, key auth); root also available. Test bot dir: `/home/hwbot/bot_test`.
 
-> If not configured, agent will request: server address, username, and port.
+> Operator runs all server-side ops (SSH, deploy, restart); Claude prepares the commands.
 
-**Credentials location:** Server credentials are stored in a local password manager (e.g., 1Password, KeePass) or as SSH keys.
+**Credentials:** in the operator's password manager / SSH keys. The bot secrets live only in each server's `.env` (never committed).
 
 ---
 
@@ -72,14 +78,16 @@ Deployment process, infrastructure, and production operations for AI agents.
 - `TELEGRAM_ADMIN_ID` — personal Telegram numeric chat_id for admin pings (daily schedule, outage protocol, backlog warning, error digests). User must `/start` the bot first for DMs to work.
 - `TELEGRAPH_ACCESS_TOKEN` — auto-created by `telegraph_publisher.ensure_access_token` on first run and persisted to `.env`.
 - `ANTHROPIC_API_KEY` — Claude API key for the auto-publish path's primary translator (llm-transcreation feature). Get from https://console.anthropic.com → API Keys → Create Key (format `sk-ant-api03-…`). **Sensitive** — redacted from logs by `_TokenRedactingFilter` (pattern `sk-ant-[A-Za-z0-9_=.-]{16,}`) and from admin Telegram pings by the shared `_redact_text` helper. NEVER echo/log/commit. Without this var, `claude_transcreation` hits `AuthenticationError` on the first API call → 2-ping outage protocol fires → posts are HELD (hold-and-wait, 2026-06-11), nothing published until the key/API recovers. (Only relevant when `LLM_PROVIDER` pins Anthropic; production default is OpenRouter.)
-- `TZ=Europe/Moscow` — process timezone. Cron triggers at 12:00 МСК via `pytz`-aware `schedule.Job.at(...)`, so the trigger fires correctly regardless of `TZ`. But `os.getenv('TZ')` is checked at startup (Decision 14 health check #2) — if it doesn't equal `'Europe/Moscow'`, the bot sends an admin warning ping ("log timestamps may show non-MSK times").
+- `TZ=Europe/Moscow` — process timezone. The daily tick fires at 10:00 МСК via `pytz`-aware `schedule.every().day.at("10:00", tz=...)`, so it's correct regardless of `TZ`. But `os.getenv('TZ')` is checked at startup (Decision 14 health check #2) — if it doesn't equal `'Europe/Moscow'`, the bot sends an admin warning ping ("log timestamps may show non-MSK times"). Note: the Moscow **host** is on UTC; only the container is MSK.
 
 **Optional (tunable defaults):**
 
 - `ANTHROPIC_MODEL` (default `claude-haiku-4-5`) — Claude model name. Override to `claude-sonnet-4-6` for higher quality at ~5× cost. Best stored as a GitHub Actions repo `var` rather than a secret; safe to log.
-- `INSTANCE_LABEL` — short label distinguishing this bot instance in admin pings. When set (e.g. `prod` or `test`), `send_admin_notification` prepends `[<label>] ` to every admin-bound message. Empty / unset → no prefix (backward-compatible). Set ONCE manually in each instance's `.env` on the server; the deploy workflows do NOT manage this var (their regex strips only LLM-related keys + TZ, leaving INSTANCE_LABEL untouched). Used by the two-instance topology (see below).
+- `INSTANCE_LABEL` — short label distinguishing this bot instance in admin pings. When set (e.g. `prod` or `test`), `send_admin_notification` prepends `[<label>] ` to every admin-bound message. Empty / unset → no prefix. Set ONCE manually in each instance's `.env`. Prod = `prod` — also drives the startup DB guard (below). Used by the two-instance topology.
+- `DB_FILE` — SQLite path, env-overridable (2026-07-06). **Prod container MUST set `DB_FILE=/data/news.db`** so state lands on the mounted volume, not the ephemeral image layer. Default `"news.db"` (relative) keeps NL/test/local behaviour. A prod instance with a relative `DB_FILE` or an empty `processed_news` triggers a startup `[E018]` admin ping (re-flood guard).
+- `HEARTBEAT_FILE` — heartbeat marker path, env-overridable. Prod container sets `HEARTBEAT_FILE=/data/last_tick.ts` (persistent + readable by the `docker exec` watchdog). Default `~/.cache/news_bot/last_tick.ts`.
 
-These must be present on the production server (systemd EnvironmentFile or `source .env` in the cron wrapper). The archived operator-side `hw_review.py` would also read these from a local `.env` if revived — currently dormant. The deploy workflow (`.github/workflows/deploy.yml` step "Write runtime env vars to server `.env`") writes `ANTHROPIC_API_KEY`, `ANTHROPIC_MODEL`, and `TZ` to the server's `.env` idempotently on every deploy — repeated deploys do not duplicate lines, and any pre-existing keys (TELEGRAM_*, TELEGRAPH_ACCESS_TOKEN) are preserved verbatim.
+**How env reaches each instance:** **prod** — `docker-compose.yml` (`env_file: .env` + `environment: HEARTBEAT_FILE`); the prod `.env` is **hand-managed on the Moscow host** (copied once from NL, not CI-written). **test** — CI-written: `deploy_test.yml` writes `ANTHROPIC_API_KEY`/`ANTHROPIC_MODEL`/`TZ` etc. to the NL server `.env` idempotently on every dev push (TELEGRAM_*, TELEGRAPH_ACCESS_TOKEN, INSTANCE_LABEL, DB_FILE preserved). The archived `hw_review.py` would read a local `.env` if revived (dormant).
 
 ---
 
@@ -144,7 +152,7 @@ The list lives in two places — `.github/workflows/deploy.yml` and `deploy.sh` 
 hwbot ALL=(root) NOPASSWD: /usr/bin/systemctl restart news_bot.service, /usr/bin/systemctl restart news_bot_test.service
 ```
 
-The single rule covers BOTH instances — prod (`news_bot.service`) and test (`news_bot_test.service`). Install via `ssh root@<host>` (one-time): `visudo -f /etc/sudoers.d/news_bot`, paste the line, `chmod 0440 /etc/sudoers.d/news_bot`, `visudo -c` to verify. Without this rule the deploy's restart step fails with "terminal is required to read the password" — the only command path that needs explicit privilege escalation is the systemd restart.
+The single rule covers both NL services — the decommissioned `news_bot.service` and the live test `news_bot_test.service` (only `news_bot_test.service` still runs). Install via `ssh root@<host>` (one-time): `visudo -f /etc/sudoers.d/news_bot`, paste the line, `chmod 0440 /etc/sudoers.d/news_bot`, `visudo -c` to verify. Without this rule the deploy's restart step fails with "terminal is required to read the password" — the only command path that needs explicit privilege escalation is the systemd restart.
 
 > **⚠️ Hardened 2026-07-07 (S2 — privilege-escalation fix).** The rule previously
 > also granted `systemctl status …` and `journalctl -u …` NOPASSWD "for
@@ -157,49 +165,46 @@ The single rule covers BOTH instances — prod (`news_bot.service`) and test (`n
 > `(ALL)`→`(root)`. To apply on the NL box (as root):
 > `printf 'hwbot ALL=(root) NOPASSWD: /usr/bin/systemctl restart news_bot.service, /usr/bin/systemctl restart news_bot_test.service\n' > /etc/sudoers.d/news_bot && chmod 0440 /etc/sudoers.d/news_bot && visudo -c`
 
-**Rollback:** `git revert HEAD && git push origin main` (for prod) or `... origin dev` (for test) — the respective deploy workflow redeploys the parent commit and restarts the matching service. ~2-3 min total. For schema rollback, restore `news.db` from `/home/hwbot/backup/` (see Backups below).
+**Rollback:** **prod** — `git revert HEAD && git push origin main`, then on the Moscow host `cd /root/hw-news && git pull && docker compose up -d --build` (outside the publish window). **test** — `git revert HEAD && git push origin dev` → `deploy_test.yml` redeploys the parent commit + restarts `news_bot_test.service`. For DB rollback, restore `news.db` from backups (see Backups).
 
-**Staging:** Yes — the `news_bot_test.service` instance on the same VPS is the staging environment. Posts go to `@myhwchannel123` (operator's only-subscriber test channel), not to the prod channel `-1004027529994`. Activated by pushing to the `dev` branch, which triggers `deploy_test.yml`. See "Two-instance topology" section above.
+**Staging:** the `news_bot_test.service` instance on the **NL VPS** is staging. Posts go to `@myhwchannel123` (operator's only-subscriber test channel), not the prod channel `-1004027529994`. Activated by pushing `dev` → `deploy_test.yml`. See "Two-instance topology".
 
 ---
 
 ## Scheduling
 
-Daily fixed-time cron at **10:00 МСК** via `schedule.every().day.at("10:00", tz=pytz.timezone("Europe/Moscow")).do(job)` inside `news_bot.main()`. One `job()` call also fires immediately on `python3 news_bot.py` startup so a deploy doesn't wait until 10:00 for the next tick. The crash-loop guard prevents burst posting on rapid restarts.
+Daily tick at **10:00 МСК** via `schedule.every().day.at("10:00", tz=pytz.timezone("Europe/Moscow")).do(job)` inside `news_bot.main()`. One `job()` also fires immediately on startup so a deploy doesn't wait until tomorrow's 10:00. The crash-loop guard prevents burst posting on rapid restarts.
 
-After fetch, the publish loop distributes the day's articles across the **10:00–20:00 МСК** window with a **40-minute floor between publishes** and a **max of 15 publishes/day**. Excess articles carry over to the next day's pending queue (no hard cap on backlog; AC20 admin-warning fires when `len(pending) > 50`).
+**Production scheduler = fixed daily slots** (`compute_fixed_slots`, operator pacing 2026-06-13): at most one post at each of **10:00 / 15:00 / 19:30 МСК**, oldest-pending first, ≤3/day (excess carries to the next day; AC20 admin warning at `len(pending) > 50`). A slot more than 5 min past is dropped (grace), so a restart never re-fires an already-published slot. The older even-spread `compute_publish_slots` (13:00–20:00, `MIN_INTERVAL_MINUTES=90`) is **DORMANT** — kept only for its unit tests.
 
-**Window invariant**: `news_bot.WINDOW_START_TIME` and `WINDOW_END_TIME` MUST be passed explicitly to `compute_publish_slots(...)` — the function defaults to `13:00`/`20:00`, which silently shrinks the window to 7h (≤ 11 slots) if you forget. Regression-guarded by `tests/test_integration.py::test_recompute_schedule_with_window_kwargs`.
-
-For production, prefer systemd-managed long-running process over raw `nohup` — `schedule` runs in-process. Container restart mid-window: the next `job()` recomputes slots from the current time to 20:00 МСК; already-published rows are skipped via Decision 9 idempotency (telegraph_url presence).
+**Restart-safe by design:** `schedule` runs in-process, so a container restart kills the in-flight `job()`. But `main()` re-runs `job()` immediately on boot, which recomputes today's remaining slots from `now` — already-published slots are dropped by grace, already-published rows are skipped via Decision 9 idempotency (telegraph_url presence). Verified live on the 2026-07-06 mid-window cutover. Still, prefer rebuilds **outside** the 10:00–20:00 МСК window.
 
 ---
 
 ## Pre-Deploy Checklist
 
-- [ ] `git pull` latest `dev` (or whichever branch being deployed)
-- [ ] `python3 -m pytest tests/ -q` green locally
-- [ ] `.env` on server has all required vars: `TELEGRAM_BOT_TOKEN`, `TELEGRAM_CHANNEL_ID`, `TELEGRAM_ADMIN_ID`, `TELEGRAPH_ACCESS_TOKEN`, `ANTHROPIC_API_KEY`, `TZ=Europe/Moscow` (and optional `ANTHROPIC_MODEL` if overriding the Haiku default). The deploy workflow writes the last three idempotently on every deploy, so the operator only needs to seed them once on a fresh VPS.
-- [ ] `ux-guidelines.md` reaches the server during deploy. Either path works — `_load_prompt` falls back from the subdir layout to the flat filename. After deploy, `ssh ... "ls $DEPLOY_PATH/ux-guidelines.md"` should return the file.
-- [ ] `news.db` present on server (if fresh VPS — it auto-creates via `init_db()` on first run; the schema migration includes the new `bot_state(key, value)` table for the llm-transcreation outage state machine, also idempotent — see `tests/test_migration.py` for invariants).
-- [ ] Any currently running `news_bot.py` process stopped before file copy.
-- [ ] `bash deploy.sh` (manual fallback) or `gh workflow run deploy.yml` — verify SCP output + `pip install` output (anthropic + pytz pulled).
+- [ ] `python3 -m pytest tests/ -q` green locally.
+- [ ] Merged to the target branch: **prod = `main`**, test = `dev`.
+- [ ] **Prod (Moscow Docker):** outside the 10:00–20:00 МСК window, on the host: `cd /root/hw-news && git pull && docker compose up -d --build`. The prod `.env` (hand-managed) has `TELEGRAM_*`, `TELEGRAPH_ACCESS_TOKEN`, an LLM key (`OPENROUTER_API_KEY`), `INSTANCE_LABEL=prod`, `TZ=Europe/Moscow`, and **`DB_FILE=/data/news.db`** (compose also injects `HEARTBEAT_FILE`).
+- [ ] **Test (NL systemd):** `git push origin dev` → `deploy_test.yml` handles SCP + `.env` write + restart automatically.
+- [ ] Post-deploy: check `docker logs hw-news-bot` (prod) — clean boot, no `[E018]` DB-guard ping, `[E008]` plan sent — or `journalctl -u news_bot_test.service` (test).
+- [ ] `news.db` present on the mounted volume (prod: `/root/hw-news/data/news.db`). Fresh instance auto-creates via `init_db()`; schema is idempotent (see `tests/test_migration.py`).
 
 ---
 
 ## Rollback Procedure
 
-**Platform rollback:** Replace the current `news_bot.py` with the previous version (from git history or backup) and restart the service.
+**Prod (Moscow Docker):** `git revert HEAD && git push origin main`, then on the host `git pull && docker compose up -d --build` (outside the window). ~3–4 min incl. build.
 
-**Manual steps if needed:** If the database schema changed and caused issues, restore the backup of `news.db`.
+**Test (NL systemd):** `git revert HEAD && git push origin dev` → `deploy_test.yml` redeploys the parent commit + restarts the service.
 
-**Approximate time:** ~2 minutes (file copy + service restart).
+**DB rollback:** restore `news.db` from a backup (see Backups) — prod: stop the container, replace `/root/hw-news/data/news.db`, start it.
 
 ---
 
 ## Environments
 
-**Production:** The script runs on a dedicated Linux server (no public URL). Deploys from `main` branch (manual copy).
+**Production:** Docker container on the Moscow VPS (no public URL). Deploys from `main` — manual rebuild on the host (`git pull && docker compose up -d --build`), outside the publish window. **Staging:** `news_bot_test.service` on the NL VPS, deploys from `dev` via `deploy_test.yml`.
 
 ---
 
@@ -207,8 +212,8 @@ For production, prefer systemd-managed long-running process over raw `nohup` —
 
 ### Logging
 
-**Where:** stdout (captured by systemd journal or cron mail)
-**Format:** Plain text with timestamps (`%(asctime)s - %(name)s - %(levelname)s - %(message)s`)
+**Where:** stdout — prod via `docker logs hw-news-bot` (json-file driver, 10 MB × 3 rotation); test via the systemd journal (`journalctl -u news_bot_test.service`).
+**Format:** Plain text with timestamps (`%(asctime)s - %(name)s - %(levelname)s - %(message)s`), in MSK.
 
 **Secret hygiene:** `httpx` and `httpcore` loggers are forced to `WARNING` at startup (see `news_bot._configure_third_party_logging`) because their INFO-level records include full URLs — and Telegram Bot API puts the bot token directly in the URL path (`/bot<TOKEN>/sendMessage`). Without the suppression, every send would leak the token into journal. Regression test: `tests/test_no_token_leak_in_logs.py`.
 
@@ -222,30 +227,22 @@ For production, prefer systemd-managed long-running process over raw `nohup` —
 **Endpoint:** None (no web server)
 **Checks:** Manual verification via Telegram channel posts and log inspection.
 
-**Heartbeat watchdog (`watchdog.sh`).** `job()` writes a Unix-timestamp
-heartbeat to `~/.cache/news_bot/last_tick.ts` at the end of every tick
-(`_record_heartbeat`). `watchdog.sh` (deployed — IS in the `FILES` list, lands
-at `$DEPLOY_PATH/watchdog.sh`) is run by cron once daily AFTER the publish
-window; if the heartbeat is older than 26 h it sends `[E099]` to the operator
-via the Telegram Bot API (reads `TELEGRAM_BOT_TOKEN`/`TELEGRAM_ADMIN_ID` from
-the colocated `.env`). Catches the **alive-but-stuck** class (prod 2026-06-08
-feedparser hang) that `Restart=on-failure` cannot — a hung process stays
-`active (running)`, so systemd never restarts it, but the heartbeat goes stale.
+**Heartbeat watchdog (`watchdog.sh`).** `job()` writes a Unix-timestamp heartbeat
+at the end of every tick (`_record_heartbeat`) to `HEARTBEAT_FILE` (env-overridable;
+prod = `/data/last_tick.ts` on the mounted volume, default `~/.cache/news_bot/last_tick.ts`).
+`watchdog.sh` runs once daily AFTER the publish window; if the heartbeat is older than
+26 h it sends `[E099]` via the Telegram Bot API. Catches the **alive-but-stuck** class
+(prod 2026-06-08 feedparser hang) that `Restart=on-failure` / `restart: unless-stopped`
+cannot — a hung process stays running, so nothing restarts it, but the heartbeat goes stale.
+`watchdog.sh` reads config from a colocated `.env` if present, else from the environment
+(so it runs both on the NL host and inside the Moscow container).
 
-**Cron is NOT managed by the deploy** (same as `backup_db.sh`) — install ONCE
-per instance (idempotent):
-```bash
-ssh hwbot@<host> '(crontab -l 2>/dev/null | grep -v "watchdog.sh"; \
-  echo "0 19 * * * /bin/bash /home/hwbot/bot/watchdog.sh") | crontab -'
-# prod path /home/hwbot/bot/, test path /home/hwbot/bot_test/. 19:00 BST = 22:00 МСК,
-# after the 10:00–19:30 МСК publish window. NOT installed as of 2026-06-23.
-```
-Live test (ages the heartbeat → expect an `[E099]` Telegram ping → restore):
-```bash
-ssh hwbot@<host> 'HB=~/.cache/news_bot/last_tick.ts; cp "$HB" /tmp/hb.bak; \
-  touch -d "2 days ago" "$HB"; /bin/bash /home/hwbot/bot/watchdog.sh; \
-  cp /tmp/hb.bak "$HB"'
-```
+**Prod (Moscow):** host cron runs it via `docker exec` (config inherited from the
+container's env; heartbeat on `/data`). Installed 2026-07-07 at `0 22 * * *` (host UTC =
+01:00 МСК):
+`docker exec hw-news-bot /bin/bash /app/watchdog.sh`. **Test (NL):** host cron
+`/home/hwbot/bot_test/watchdog.sh` (reads the colocated `.env` + `~/.cache` heartbeat).
+Neither cron is managed by the deploy — installed once per host.
 
 ### Metrics
 
@@ -261,22 +258,22 @@ ssh hwbot@<host> 'HB=~/.cache/news_bot/last_tick.ts; cp "$HB" /tmp/hb.bak; \
 
 ## Backups
 
-`news.db` holds three load-bearing tables (`pending_articles`, `published_articles`, `processed_news`) — losing it means the bot re-publishes every URL the RSS feeds still hold (typically months of backlog). Daily backups via `/home/hwbot/bot/backup_db.sh`:
+`news.db` holds three load-bearing tables (`pending_articles`, `published_articles`, `processed_news`) — losing it means the bot re-publishes every URL the RSS feeds still hold (typically months of backlog). Prod state is a **single copy** on the `./data` bind-mount, so a daily backup is load-bearing:
 
-- Runs at **02:00 server time** via hwbot's user crontab.
-- Atomic `sqlite3 .backup` (consistent under concurrent writes).
-- Output: `/home/hwbot/backup/news_<YYYY-MM-DD>.db` (mode 700 dir).
-- Rotation: `find ... -mtime +7 -delete` keeps last 7 days.
+`scripts/backup_db.sh` uses atomic `sqlite3 .backup` (consistent under concurrent
+writes), path-parameterized via `DB_FILE`/`$1`/`BACKUP_DIR` (2026-07-07), with an
+empty-DB guard and 7-day rotation. Each host cron is installed once (NOT deploy-managed);
+requires the `sqlite3` CLI on the host.
 
-**Reference copy** of the script: `scripts/backup_db.sh` in repo. **Not auto-deployed** (not in `FILES=()` list) — install once on a fresh VPS via the inline heredoc snippet in the same script's docstring.
+- **Prod (Moscow host):** backs up the bind-mount DB directly on the host (`.backup`
+  stays consistent while the container writes). Installed 2026-07-07 at `0 2 * * *`
+  (host UTC = 05:00 МСК, before the 10:00 tick):
+  `DB_FILE=/root/hw-news/data/news.db BACKUP_DIR=/root/hw-news/backups /bin/bash /root/hw-news/scripts/backup_db.sh`.
+  **TODO: copy `/root/hw-news/backups` OFF-box** (single-host copies only, so far).
+- **Test (NL host):** legacy `/home/hwbot/bot_test/backup_db.sh` → `/home/hwbot/backup/`.
 
-**Restore from backup:**
-```bash
-ssh hwbot@<host>
-systemctl stop news_bot.service   # via sudoers NOPASSWD if configured
-cp /home/hwbot/backup/news_<DATE>.db /home/hwbot/bot/news.db
-systemctl start news_bot.service
-```
+**Restore (prod):** stop the container, replace the DB on the mounted volume, start it —
+`docker compose stop news-bot; cp /root/hw-news/backups/news_<DATE>.db /root/hw-news/data/news.db; docker compose up -d`.
 
 **Manual merge** (e.g. recovering history from a different machine's `news.db` after migration):
 ```sql
