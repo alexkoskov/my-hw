@@ -1,0 +1,14 @@
+.git
+.github
+tests
+work
+logs
+__pycache__
+*.pyc
+*.pyo
+.pytest_cache
+*.db
+news.db
+.env
+.env.*
+# keep .claude/ — it holds ux-guidelines.md (the LLM system prompt loaded at runtime)

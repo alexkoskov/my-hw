@@ -105,7 +105,15 @@ TELEGRAM_ADMIN_ID = os.getenv('TELEGRAM_ADMIN_ID', '@sunny413x')
 INSTANCE_LABEL = os.getenv('INSTANCE_LABEL', '').strip()
 TRANSLATOR_SERVICE = 'google'  # or 'libre'
 RSS_URL = "https://www.autoevolution.com/rss/tag-Hot+Wheels.xml"
-DB_FILE = "news.db"
+# Env-overridable so the Docker+VPN container can point at its mounted volume
+# (DB_FILE=/data/news.db) instead of an ephemeral /app/news.db. Default keeps the
+# NL/systemd + test behaviour. Read once at import; callers read news_bot.DB_FILE
+# at call time (see pending_articles_repo / outage_state module docstrings).
+# ``.strip() or "news.db"``: a blank/whitespace-only DB_FILE= in .env would
+# otherwise resolve to "" — and sqlite3.connect("") opens a throwaway temp DB
+# (empty state → channel re-flood), the exact failure this guards against. A
+# stray surrounding space (`DB_FILE=/data/news.db `) is likewise a different path.
+DB_FILE = os.getenv("DB_FILE", "news.db").strip() or "news.db"
 LOG_LEVEL = logging.INFO
 
 # Distributed-publish constants (llm-transcreation-and-distributed-publishing

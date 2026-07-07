@@ -1,15 +1,18 @@
 name: Deploy
 
-# Triggers ONLY after the CI workflow on `main` finishes successfully.
-# Manual run is also available via "Run workflow" in the Actions UI ─
-# but ONLY after this file has reached the default branch (main). On the
-# very first deploy you must merge dev → main and push; the manual button
-# does not appear in the Actions UI until the workflow lives on main.
+# ⚠️ DEPRECATED / DISARMED 2026-07-07 — DO NOT USE AS-IS.
+# This workflow deploys via scp + `sudo systemctl restart news_bot.service` to
+# the OLD Netherlands VPS (secrets.SSH_HOST). Prod moved to a Docker container
+# on the Moscow VPS (45.90.216.165) on 2026-07-06, and the NL news_bot service
+# was stopped + disabled. Re-running this would scp to NL and `restart` →
+# REVIVE the decommissioned NL bot → double-post to the prod channel.
+#
+# The auto-trigger (`workflow_run` after CI on `main`) is REMOVED so a push to
+# `main` no longer fires a deploy. The job below is also hard-guarded `if: false`
+# so even a manual dispatch is a no-op.
+# TODO: replace with a Docker-targeted deploy (git pull + `docker compose up -d
+# --build` over SSH to the Moscow host; repoint SSH_HOST/secrets) before re-enabling.
 on:
-  workflow_run:
-    workflows: ["CI"]
-    types: [completed]
-    branches: [main]
   workflow_dispatch:
 
 # One deploy at a time. If a second push lands while a deploy is running,
@@ -20,14 +23,11 @@ concurrency:
 
 jobs:
   deploy:
-    # Skip when CI failed (workflow_run fires regardless of conclusion).
-    # Also skip when the originating event was a PR (workflow_run fires for
-    # PR-triggered CI runs too, and we don't want PR-CI green to deploy).
-    # Manual workflow_dispatch always proceeds.
-    if: >
-      github.event_name == 'workflow_dispatch' ||
-      (github.event.workflow_run.conclusion == 'success' &&
-       github.event.workflow_run.event == 'push')
+    # DISARMED 2026-07-07: hard-off. This deploy targets the OLD NL host and
+    # would revive the decommissioned prod bot. Even a manual dispatch is a
+    # no-op until the workflow is rewritten for the Docker/Moscow host (see
+    # header). Flip back to the real condition only after that rewrite.
+    if: false
 
     runs-on: ubuntu-latest
 

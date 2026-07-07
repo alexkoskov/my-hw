@@ -5,6 +5,20 @@ Deployment process, infrastructure, and production operations for AI agents.
 
 ---
 
+> **Status (2026-07-06):** Prod runs on the **Netherlands VPS `148.135.207.54`**
+> (`news_bot.service`, active) — the topology described below. A **Docker + VPN
+> migration to the Moscow VPS `45.90.216.165`** is **prepared but NOT executed**:
+> artifacts on `dev` (`Dockerfile`, `docker-compose.yml`, `.dockerignore`),
+> runbook `work/MIGRATION-docker-vpn-2026-07-03.md`. The container would route
+> egress through the shared `shared-vpn` gateway (sing-box VLESS, `172.28.0.2` on
+> the `vpnnet` network) so a RU host still reaches Telegram — same pattern as the
+> colocated intake-bot. Everything below reflects the CURRENT NL/systemd setup
+> until the cutover happens; after cutover, redeploy = `git pull && docker compose
+> up -d --build` on the host (the `SSH_HOST`/systemd `deploy.yml` path does not
+> fit the Docker host). See [[project_host_outside_russia]] for the why.
+
+---
+
 ## Deployment Platform
 
 **Platform:** Any Linux server with Python 3.8+ (e.g., VPS, Raspberry Pi, cloud VM)
