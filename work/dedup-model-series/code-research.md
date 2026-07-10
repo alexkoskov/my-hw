@@ -314,10 +314,10 @@ Recommended (place near `DB_FILE`, `news_bot.py:116`):
 # set-overlap dedup runs. Read once at import (AC6, like DB_FILE/TZ);
 # the gate reads news_bot.DEDUP_SERIES_ENABLED at call-time so tests
 # can monkeypatch without re-import.
-DEDUP_SERIES_ENABLED = os.getenv("DEDUP_SERIES_PAIRS", "1").strip().lower() \
+DEDUP_SERIES_ENABLED = os.getenv("DEDUP_SERIES_ENABLED", "1").strip().lower() \
     not in ("0", "false", "no", "off", "")
 ```
-- Env var name: **`DEDUP_SERIES_PAIRS`** (or `DEDUP_MODEL_SERIES`; pick one and put it in the deploy runbook + `.env`). Default-ON: unset/blank → enabled.
+- Env var name: **`DEDUP_SERIES_ENABLED`** — FINAL (decided in task decomposition): env name == constant name, per the codebase const==env convention (`DB_FILE`/`TZ`); this is the name the deploy runbook, `.env`, and operator commands all use. Default-ON: unset/blank → enabled.
 - Read pattern: **import-time constant** (AC6), but the gate uses `news_bot.DEDUP_SERIES_ENABLED` (attribute access, §3.1) so `monkeypatch.setattr(news_bot, "DEDUP_SERIES_ENABLED", False)` works in tests and the operator's "off + restart" flips it without code change (Scenario 5).
 - Safe-rollout (Scenario 8): deploy with toggle **off**, run backfill, watch `[E014]`/logs a couple of days on the freshly-warmed DB, then set the env to on + restart.
 
