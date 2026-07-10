@@ -34,9 +34,15 @@ set-overlap dedup always backstops. The whole pair-rule is behind an env
   30-day any-source pair-rule → existing 7-day set-overlap backstop; keep the
   degraded `try/except` + `[E016]`. New `DEDUP_SERIES_ENABLED` import-time const.
 - **`admin_alerts.py`** — extend the `[E015]` builder to render the matched
-  pair(s) + the earlier article link. `[E014]`/`[E016]` reused unchanged.
-- **`pending_articles_repo.py`** — the 30-day fingerprint window query (the
-  `model_fingerprint` JSON already carries the new keys — no schema change).
+  pair(s) + earlier link; **adapt the `[E014]` builder** for the broad-pair case
+  (matched series/theme + link) — the old `alert_cross_source_dupe` model-overlap
+  params (`overlap_pct`/`n_matches`/`models`) don't fit a theme-only match. `[E016]`
+  reused unchanged.
+- **`pending_articles_repo.py`** — NOT modified; reused as-is. Its
+  `list_recent_{pending,published}_fingerprints(conn, days)` already take a `days`
+  param (the gate calls them with `30`), and `model_fingerprint` JSON already
+  round-trips through `insert_pending`/`move_to_published` — the new keys ride along
+  with no schema change.
 - **`backfill_fingerprints.py`** — widen the re-select + skip-guard to also catch
   rows that have a car-fingerprint but no `pairs` key.
 - **Calibration fixture** — add the 3 real SDCC dupes + not-dupe probes.
@@ -49,13 +55,18 @@ Per new article, at the dedup gate in `job()`:
    recognised casting). `tier ∈ {D, B}`: **D** iff the series is lexicon-tagged
    distinctive AND a concrete model exists; otherwise **B** (fail-safe default).
 2. If `DEDUP_SERIES_ENABLED` and `pairs` non-empty: fetch the 30-day candidate
-   fingerprints (pending + published, ANY source — no same-source skip). First
-   shared `|D` pair → **block** (`mark_processed`, `[E015]`, skip publish). Else
-   first shared `|B` pair → **flag** (`[E014]` via the existing rate-limited path,
-   article continues).
-3. If the pair-rule neither blocked nor is disabled/empty → fall through to the
-   UNCHANGED existing 7-day cross-source set-overlap dedup (≥0.50). Candidates are
-   fetched once at 30 days; the 7-day subset is derived in Python.
+   fingerprints (pending + published, ANY source — no same-source skip). Scan ALL
+   candidates and remember whether a shared `|D` (distinctive) pair exists —
+   `|D` WINS over `|B`. If a `|D` match → **block** (verdict `('block', …)`;
+   `mark_processed`, `[E015]`, skip publish). Else if a `|B` (broad) match →
+   **flag** (verdict `('flag', …)`; `[E014]`, article publishes). Both verdicts are
+   **TERMINAL** — the old set-overlap dedup does NOT also run (avoids a double
+   verdict / double ping).
+3. The old 7-day cross-source set-overlap dedup runs ONLY when the pair-rule
+   returns **pass** (no shared pair at all, OR no series, OR the toggle is off) —
+   AC5 "в дополнение": the base dedup still catches everything it caught before, for
+   articles the pair-rule doesn't engage. Candidates are fetched once at 30 days;
+   the 7-day subset is derived in Python.
 4. The whole block is wrapped in the existing `try/except` → on any error log +
    rate-limited `[E016]`, `fp=None`, article publishes (degraded mode).
 
@@ -84,14 +95,18 @@ a new/unknown series can never silently hard-block. Serves **AC3, AC4, AC7**.
 **Alternatives:** any-overlap silent block (rejected by adequacy validator — kills
 legit new drops); default-distinctive (rejected — inverts the fail-safe).
 
-### Decision 3: Composition — pair-rule first, set-overlap always backstops
-**Decision:** Run the pair-rule first; if it does NOT hard-block, ALWAYS run the
-existing 7-day set-overlap dedup.
-**Rationale:** True "in addition, not instead" — closes the composition gap the
-quality validator flagged (series-recognised-but-no-pair-match must still get the
-old check). Serves **AC5**.
-**Alternatives:** replace old dedup for series-recognised articles (rejected —
-contradicts user intent).
+### Decision 3: Composition — pair-rule first; set-overlap backstops only on PASS
+**Decision:** The pair-rule returns one of three verdicts: **block** (distinctive),
+**flag** (broad), **pass**. `block` and `flag` are TERMINAL. The existing 7-day
+set-overlap dedup runs ONLY on **pass** (no shared pair, OR no series, OR toggle off).
+**Rationale:** True "in addition, not instead" — the base dedup still catches
+everything it did before for articles the pair-rule doesn't engage; but a broad
+flag is terminal so an article can't get both an `[E014]` "publishing" ping AND an
+`[E015]` "blocked" from the same tick (the double-ping the completeness validator
+flagged). Serves **AC5**.
+**Alternatives:** (a) run the old dedup after a broad flag too — rejected: causes
+the contradictory double verdict/ping; (b) replace the old dedup for series-recognised
+articles — rejected: contradicts user intent.
 
 ### Decision 4: Env toggle (default on) — runtime kill-switch
 **Decision:** `DEDUP_SERIES_ENABLED` (default `"1"`) read at import like `DB_FILE`;
@@ -102,9 +117,11 @@ change. Serves **AC6**.
 **Alternatives:** no toggle (rejected — adequacy validator "no runtime safety valve").
 
 ### Decision 5: Any-source pair matching (reverses shipped Decision 9) `[TECHNICAL]`
-**Decision:** The pair loop drops the same-source skip (`news_bot.py:990-994`) and
-`test_within_source_not_deduped` is flipped/split; the OLD set-overlap backstop
-KEEPS cross-source-only.
+**Decision:** The pair loop drops the same-source-skip branch inside
+`_check_cross_source_dedup`; `test_within_source_not_deduped` is SPLIT — the pair
+loop becomes any-source, but the OLD set-overlap backstop KEEPS cross-source-only,
+and the split retains a negative case (same-source + no series → still publishes)
+to guard against undoing the 2026-06-14 reversal.
 **Rationale:** The full model+series key is specific enough that same-source repeats
 («ещё фото») are real dupes — the 2026-06-14 within-source reversal was for the
 looser brand-level match, which stays cross-source. Serves **AC3** (any source).
@@ -116,6 +133,10 @@ follow-up, a motivating case).
 **Rationale:** All three touched modules are already in the deploy FILES arrays —
 avoids the ImportError-crashloop class from cross-source-dedup Task 10. Serves the
 user-spec Ограничения.
+**Alternatives:** a dedicated `series_extractor.py` module (rejected — a new
+first-party import to news_bot needs adding to all three deploy FILES arrays or it
+crash-loops on the next test-bot deploy); a new DB column for series (rejected —
+needless migration on a hot prod DB).
 
 ### Decision 7: Backfill widened re-select + pre-deploy cold-DB check
 **Decision:** Widen `backfill_fingerprints.py` SELECT to
@@ -123,7 +144,7 @@ user-spec Ограничения.
 skip-guard to require the `pairs` key; deploy runbook adds a pre-deploy
 `SELECT COUNT(*) FROM published_articles WHERE model_fingerprint IS NOT NULL`.
 **Rationale:** The Moscow prod DB is almost certainly cold (copied from the
-pre-feature NL snapshot; base backfill never run — see Risks). Serves **AC9, AC10**.
+pre-feature NL snapshot; base backfill never run — see Risks). Serves **AC10**.
 **Alternatives:** `IS NULL`-only re-select (rejected — skips rows that already have
 a car-fingerprint but no pairs).
 
@@ -167,17 +188,34 @@ None.
 ### Integration tests (`tests/test_integration.py::TestCrossSourceDedup`)
 - Distinctive pair, cross-source → block + `[E015]`.
 - Distinctive pair, same-source («ещё фото») → block (any-source).
-- Broad/theme-only match → flag `[E014]`, article publishes (NOT blocked).
-- Pair-rule passes (no match / no series / toggle off) → 7-day set-overlap backstop runs.
-- Toggle off → pair-rule skipped entirely.
+- Broad/theme-only match → flag `[E014]`, article PUBLISHES, and is **terminal**:
+  the old set-overlap does NOT also run (assert exactly one verdict/ping, no `[E015]`).
+- `|D`-wins-over-`|B`: an article sharing BOTH a distinctive and a broad pair →
+  block (not flag), regardless of candidate order.
+- Pair-rule PASS (no shared pair / no series / toggle off) → old 7-day set-overlap
+  runs and, in a **positive** case, actually BLOCKS (assert the block happens via the
+  backstop, not a vacuous "it ran").
+- Toggle off → pair-rule fully skipped; behaviour identical to today's dedup.
 - Degraded (extractor raises) → `[E016]`, article publishes.
-- Flip `test_within_source_not_deduped` (pair-rule is any-source; backstop stays cross-source).
+- AC2 carry-through: `pairs`/`series` survive `move_to_published` into
+  `published_articles.model_fingerprint`.
+- AC8 both-empty: no strict AND no series → pass/publish (update the stale
+  `test_empty_fingerprint` that mocks the old 2-key shape).
+- Split `test_within_source_not_deduped`: pair loop is any-source (positive), BUT
+  retain the negative half — same-source + NO series → still publishes (backstop
+  stays cross-source-only).
 
-### Calibration (`tests/fixtures/…`)
-3 real SDCC dupes (t-hunted PT + autoevolution EN + same-source «mais fotos») →
-hard-block; not-dupes: same-car-different-series → no block; theme-only mainline
-vs SDCC Stranger Things → soft-flag (not block); same-source recurring-line
-near-miss → soft-flag. Classifier ≥7/8.
+### Calibration (`tests/fixtures/…`, run through the NEW pair-tier classifier)
+Harness = the new verdict (`shares_pair` + `|D`/`|B` tier), NOT the old
+`_classify(similarity(...))` (pop-culture dupes have empty `strict` → the old
+classifier scores them ~0 and would miss the exact motivating cases). Fixture N =
+6 pairs. Aggregate ≥5/6 AND — more important because a silent hard-block is
+unrecoverable — **hard asymmetric invariants** (like `test_calibration_real_pair_must_pass`):
+- the 3 real SDCC dupes (t-hunted PT + autoevolution EN + same-source «mais fotos»)
+  MUST hard-block (`any_distinctive is True`);
+- every not-dupe probe MUST NOT hard-block (`any_distinctive is False`): same-car-
+  different-series; theme-only mainline vs SDCC Stranger Things; same-source
+  recurring-line near-miss.
 
 ### E2E tests
 None — replaced by the 2-week post-deploy channel monitoring (user-spec).
@@ -216,7 +254,7 @@ serve the user-spec's stated constraints/ACs, not changes to user intent.)
 
 Технические (дополняют пользовательские AC1–AC11 из user-spec):
 - [ ] Нет миграции схемы; `model_fingerprint` JSON расширен обратносовместимо.
-- [ ] `SqlAudit` (parameterized-queries test) остаётся зелёным (`json_extract` — статический фрагмент).
+- [ ] `json_extract(...,'$.pairs')` в backfill — статический литерал, никаких untrusted-токенов в SQL (они живут внутри opaque `model_fingerprint` blob). Примечание: `TestSqlAudit` сканирует только `pending_articles_repo.py`, поэтому backfill он НЕ покрывает — при желании расширить аудит на файл в Task 5.
 - [ ] Ни один новый top-level модуль/first-party import не добавлен в `news_bot` без записи во ВСЕ FILES-массивы (проверить deploy.yml/deploy_test.yml/deploy.sh).
 - [ ] Toggle off полностью пропускает парное правило; старый дедуп работает как раньше.
 - [ ] Degraded mode: любой сбой экстрактора/сравнения → статья публикуется.
@@ -228,10 +266,13 @@ serve the user-spec's stated constraints/ACs, not changes to user intent.)
 
 #### Task 1: Series/theme extraction + tier-tagged lexicon (`model_extractor.py`)
 - **Description:** Add a tier-tagged `SERIES_LEXICON` (car-lines, events, pop-culture
-  franchises; each tagged distinctive/broad, fail-safe default broad) and a
+  franchises; each tagged distinctive/broad, `_SERIES_DEFAULT_TIER='broad'`) and a
   series/theme extraction pass; enrich `extract_fingerprint` to
   `{strict, brands, series, pairs}` with the `"<model>|<series>|<tier>"` key.
-  Validate the lexicon against real feed text. Serves AC1, AC6, AC7.
+  ReDoS-safe: bounded quantifiers only (`\s{1,3}`, never `\s+`/`\s*`), mirroring
+  `_MODEL_AFTER_BRAND_RE`; a load-time assertion that lexicon canonicals contain no
+  `|`/newline (pair-key integrity). Validate the lexicon against real feed text.
+  Serves AC1, AC6, AC7.
 - **Skill:** code-writing
 - **Reviewers:** code-reviewer, test-reviewer
 - **Verify-smoke:** `python3 -c "import model_extractor,news_bot; ..."` on the 3 SDCC
@@ -240,10 +281,12 @@ serve the user-spec's stated constraints/ACs, not changes to user intent.)
 - **Files to modify:** `model_extractor.py`, `tests/test_model_extractor.py`
 - **Files to read:** `boilerplate_filter.py`, `work/dedup-model-series/code-research.md`
 
-#### Task 2: Extend `[E015]` ping with matched pair + earlier link (`admin_alerts.py`)
-- **Description:** Extend `alert_cross_source_blocked` to render the matched
-  `model+series` pair(s) and the earlier article link, keeping the «Заблокирован
-  дубль» anchor. Serves AC3.
+#### Task 2: Pair-aware `[E015]` + broad `[E014]` builders (`admin_alerts.py`)
+- **Description:** Extend `alert_cross_source_blocked` (`[E015]`) to render the
+  matched `model+series` pair(s) + earlier link, keeping the «Заблокирован дубль»
+  anchor. Adapt the `[E014]` broad-flag ping to the theme/series match (matched
+  series/theme + link) — the old model-overlap params don't fit a theme-only match.
+  Serves AC3, AC4.
 - **Skill:** code-writing
 - **Reviewers:** code-reviewer, test-reviewer
 - **Files to modify:** `admin_alerts.py`, `tests/test_admin_alerts.py`
@@ -269,6 +312,7 @@ serve the user-spec's stated constraints/ACs, not changes to user intent.)
   Serves AC3, AC4, AC5, AC6, AC8.
 - **Skill:** code-writing
 - **Reviewers:** code-reviewer, security-auditor, test-reviewer
+- **Verify-smoke:** `python3 -m pytest tests/test_integration.py::TestCrossSourceDedup -q` → block/flag-terminal/backstop-blocks/toggle-off/degraded scenarios green.
 - **Files to modify:** `news_bot.py`, `tests/test_integration.py`, `.env.example`
 - **Files to read:** `pending_articles_repo.py`, `work/dedup-model-series/code-research.md`
 
@@ -289,7 +333,7 @@ serve the user-spec's stated constraints/ACs, not changes to user intent.)
   pre-deploy `SELECT COUNT` check + safe rollout (deploy-dark → `backfill --days 30`
   → observe → toggle on, outside 10:00–20:00 МСК) in `deployment.md`. Serves AC10, AC11.
 - **Skill:** code-writing
-- **Reviewers:** test-reviewer, documentation-reviewer
+- **Reviewers:** test-reviewer
 - **Files to modify:** `tests/test_model_extractor.py`, `.claude/skills/project-knowledge/references/deployment.md`
 - **Files to read:** `work/dedup-model-series/user-spec.md`
 
