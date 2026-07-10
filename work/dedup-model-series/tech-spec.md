@@ -1,6 +1,6 @@
 ---
 created: 2026-07-10
-status: draft
+status: approved
 branch: dev
 size: L
 ---
@@ -183,7 +183,7 @@ None.
 - Tier classifier: distinctive iff tagged-distinctive AND model present.
 - `alert_cross_source_blocked` `[E015]`: renders matched pair + earlier link.
 - `backfill` widened select/skip: rows with car-fp but no `pairs` re-processed;
-  idempotent on second run.
+  30-day window honoured (~29d row in, ~31d row out); idempotent on second run.
 
 ### Integration tests (`tests/test_integration.py::TestCrossSourceDedup`)
 - Distinctive pair, cross-source → block + `[E015]`.
@@ -209,8 +209,10 @@ None.
 Harness = the new verdict (`shares_pair` + `|D`/`|B` tier), NOT the old
 `_classify(similarity(...))` (pop-culture dupes have empty `strict` → the old
 classifier scores them ~0 and would miss the exact motivating cases). Fixture N =
-6 pairs. Aggregate ≥5/6 AND — more important because a silent hard-block is
-unrecoverable — **hard asymmetric invariants** (like `test_calibration_real_pair_must_pass`):
+**8 pairs** (4 dupes: the 3 real SDCC + 1 more real cross-source dupe; 4 not-dupes),
+per user-spec AC11 → aggregate **≥7/8** AND — more important because a silent
+hard-block is unrecoverable — **hard asymmetric invariants** (like
+`test_calibration_real_pair_must_pass`):
 - the 3 real SDCC dupes (t-hunted PT + autoevolution EN + same-source «mais fotos»)
   MUST hard-block (`any_distinctive is True`);
 - every not-dupe probe MUST NOT hard-block (`any_distinctive is False`): same-car-
@@ -292,10 +294,13 @@ serve the user-spec's stated constraints/ACs, not changes to user intent.)
 - **Files to modify:** `admin_alerts.py`, `tests/test_admin_alerts.py`
 - **Files to read:** `work/dedup-model-series/code-research.md`
 
-#### Task 3: Calibration fixture (real dupes + not-dupes)
-- **Description:** Add the 3 real SDCC dupes (hard-block) + not-dupes
-  (same-car-different-series; theme-only mainline-vs-SDCC; same-source recurring-line
-  near-miss). Serves AC11.
+#### Task 3: Calibration fixture — 8 pairs (real dupes + not-dupes)
+- **Description:** Assemble 8 calibration pairs (per AC11, ≥7/8): 4 dupes — the 3
+  real SDCC (t-hunted PT + autoevolution EN + same-source «mais fotos») + 1 more
+  real cross-source dupe; 4 not-dupes — same-car-different-series, theme-only
+  mainline-vs-SDCC, same-source recurring-line near-miss, + one more distinct-but-
+  similar. Each labelled with the expected verdict for the asymmetric invariants.
+  Serves AC11.
 - **Skill:** code-writing
 - **Reviewers:** test-reviewer
 - **Files to modify:** `tests/fixtures/cross_source_dedup_pairs.py`
@@ -319,7 +324,7 @@ serve the user-spec's stated constraints/ACs, not changes to user intent.)
 #### Task 5: Backfill widened re-select (`backfill_fingerprints.py`)
 - **Description:** Widen the SELECT + `backfill_one` skip-guard to re-process rows
   that have a car-fingerprint but no `pairs` key (`json_extract(...,'$.pairs') IS
-  NULL`); keep idempotent. Serves AC9, AC10.
+  NULL`) + honour the 30-day window; keep idempotent. Serves AC10.
 - **Skill:** code-writing
 - **Reviewers:** code-reviewer, test-reviewer
 - **Verify-smoke:** `python3 backfill_fingerprints.py --days 30 --dry-run` on a temp DB → summary; second run no-op.
