@@ -36,6 +36,7 @@ import time
 from typing import Optional
 
 import openai
+import requests
 
 from _llm_common import (
     ClaudeOutageError,
@@ -92,6 +93,55 @@ def _resolve_api_key() -> Optional[str]:
 
 #: OpenRouter API base URL (OpenAI-compatible).
 _DEFAULT_BASE_URL = "https://openrouter.ai/api/v1"
+
+#: Account-balance endpoint (relative to the base URL). Returns
+#: ``{"data": {"total_credits": float, "total_usage": float}}``; remaining USD =
+#: total_credits - total_usage. This reflects the ACCOUNT balance (distinct from
+#: ``/auth/key`` which is the key's own limit). Confirm live:
+#:   curl -H "Authorization: Bearer $OPENROUTER_API_KEY" https://openrouter.ai/api/v1/credits
+_CREDITS_PATH = "/credits"
+_BALANCE_TIMEOUT_S = 15
+
+
+def get_remaining_credits() -> Optional[float]:
+    """Best-effort probe of the remaining OpenRouter balance in USD.
+
+    Returns ``total_credits - total_usage``, or ``None`` when it can't be
+    determined — no API key, network/HTTP/JSON error, or an uncapped account
+    (``total_credits`` null). NEVER raises: this backs a monitoring ping
+    (``news_bot._maybe_alert_openrouter_balance``) that must not break the tick.
+    The key travels in the ``Authorization`` header, never in the URL/logs.
+    """
+    key = _resolve_api_key()
+    if not key:
+        return None
+    base = os.getenv("OPENROUTER_BASE_URL", "").strip() or _DEFAULT_BASE_URL
+    url = base.rstrip("/") + _CREDITS_PATH
+    if not url.lower().startswith("https://"):
+        # Refuse to send the Bearer key over cleartext if OPENROUTER_BASE_URL is
+        # misconfigured to http:// — skip the probe rather than leak the key.
+        logger.warning("OpenRouter credits check skipped: non-https base URL")
+        return None
+    try:
+        resp = requests.get(
+            url,
+            headers={"Authorization": f"Bearer {key}"},
+            timeout=_BALANCE_TIMEOUT_S,
+        )
+        if resp.status_code != 200:
+            logger.warning("OpenRouter credits check: HTTP %s", resp.status_code)
+            return None
+        data = (resp.json() or {}).get("data") or {}
+        total = data.get("total_credits")
+        used = data.get("total_usage")
+        if total is None or used is None:
+            return None  # uncapped account or unexpected shape → no signal
+        return float(total) - float(used)
+    except Exception as exc:
+        # Terse, type-only log — never surface the token or a stack that might
+        # embed the header. The caller treats None as "unknown, skip".
+        logger.warning("OpenRouter credits check failed: %s", type(exc).__name__)
+        return None
 
 #: Lazily-instantiated singleton client.
 _DEFAULT_CLIENT: Optional["openai.OpenAI"] = None

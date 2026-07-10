@@ -455,5 +455,60 @@ class TestVariantBPlus(unittest.TestCase):
         self.assertEqual(result["blocks"][0]["src"], "https://x/a.jpg")
 
 
+class TestGetRemainingCredits(unittest.TestCase):
+    """``get_remaining_credits`` is a best-effort monitoring probe: it returns the
+    USD balance (total_credits - total_usage) or None (no key / error / unlimited),
+    and never raises."""
+
+    @staticmethod
+    def _resp(status=200, payload=None):
+        r = MagicMock()
+        r.status_code = status
+        r.json.return_value = payload if payload is not None else {}
+        return r
+
+    def test_remaining_is_credits_minus_usage(self):
+        with patch.dict(os.environ, {"OPENROUTER_API_KEY": "sk-or-test"}, clear=False), \
+             patch("openrouter_transcreation.requests.get",
+                   return_value=self._resp(200, {"data": {"total_credits": 10.0, "total_usage": 7.5}})) as g:
+            out = openrouter_transcreation.get_remaining_credits()
+        self.assertAlmostEqual(out, 2.5)
+        args, kwargs = g.call_args
+        self.assertTrue(args[0].endswith("/credits"))
+        self.assertIn("Authorization", kwargs["headers"])
+        self.assertNotIn("sk-or-test", args[0])  # key is in the header, not the URL
+
+    def test_no_key_returns_none_without_request(self):
+        with patch.dict(os.environ, {"OPENROUTER_API_KEY": "", "OPEN_ROUTER_API_KEY": ""}, clear=False), \
+             patch("openrouter_transcreation.requests.get") as g:
+            out = openrouter_transcreation.get_remaining_credits()
+        self.assertIsNone(out)
+        g.assert_not_called()
+
+    def test_non_200_returns_none(self):
+        with patch.dict(os.environ, {"OPENROUTER_API_KEY": "sk-or-test"}, clear=False), \
+             patch("openrouter_transcreation.requests.get", return_value=self._resp(500, {})):
+            self.assertIsNone(openrouter_transcreation.get_remaining_credits())
+
+    def test_network_error_returns_none(self):
+        with patch.dict(os.environ, {"OPENROUTER_API_KEY": "sk-or-test"}, clear=False), \
+             patch("openrouter_transcreation.requests.get", side_effect=Exception("boom")):
+            self.assertIsNone(openrouter_transcreation.get_remaining_credits())
+
+    def test_non_https_base_url_skips_without_leaking_key(self):
+        with patch.dict(os.environ, {"OPENROUTER_API_KEY": "sk-or-test",
+                                     "OPENROUTER_BASE_URL": "http://evil.example/api/v1"}, clear=False), \
+             patch("openrouter_transcreation.requests.get") as g:
+            out = openrouter_transcreation.get_remaining_credits()
+        self.assertIsNone(out)
+        g.assert_not_called()  # key never egresses over cleartext
+
+    def test_unlimited_or_bad_shape_returns_none(self):
+        with patch.dict(os.environ, {"OPENROUTER_API_KEY": "sk-or-test"}, clear=False), \
+             patch("openrouter_transcreation.requests.get",
+                   return_value=self._resp(200, {"data": {"total_credits": None, "total_usage": 0}})):
+            self.assertIsNone(openrouter_transcreation.get_remaining_credits())
+
+
 if __name__ == "__main__":
     unittest.main()
