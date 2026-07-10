@@ -238,3 +238,49 @@ def test_fetch_full_article_userinfo_attack_does_not_route_to_autoevolution():
         result = news_bot.fetch_full_article({'link': link})
     mock_fetch.assert_not_called()
     assert result is None
+
+
+def test_openrouter_balance_alert_fires_below_threshold(monkeypatch):
+    """Remaining < threshold → one [E019] admin ping."""
+    import openrouter_transcreation
+    sent = []
+    monkeypatch.setattr(news_bot, "send_admin_notification",
+                        lambda m, **k: sent.append(m) or True)
+    monkeypatch.setattr(openrouter_transcreation, "get_remaining_credits", lambda: 2.0)
+    monkeypatch.setenv("OPENROUTER_MIN_BALANCE_USD", "5")
+    news_bot._maybe_alert_openrouter_balance()
+    assert len(sent) == 1 and "[E019]" in sent[0]
+
+
+def test_openrouter_balance_no_alert_above_threshold(monkeypatch):
+    import openrouter_transcreation
+    sent = []
+    monkeypatch.setattr(news_bot, "send_admin_notification",
+                        lambda m, **k: sent.append(m) or True)
+    monkeypatch.setattr(openrouter_transcreation, "get_remaining_credits", lambda: 50.0)
+    monkeypatch.setenv("OPENROUTER_MIN_BALANCE_USD", "5")
+    news_bot._maybe_alert_openrouter_balance()
+    assert sent == []
+
+
+def test_openrouter_balance_none_no_alert(monkeypatch):
+    """Unknown balance (no key / error / unlimited) → no ping, no crash."""
+    import openrouter_transcreation
+    sent = []
+    monkeypatch.setattr(news_bot, "send_admin_notification",
+                        lambda m, **k: sent.append(m) or True)
+    monkeypatch.setattr(openrouter_transcreation, "get_remaining_credits", lambda: None)
+    news_bot._maybe_alert_openrouter_balance()
+    assert sent == []
+
+
+def test_openrouter_balance_check_never_raises(monkeypatch):
+    """The probe must never break job(): a failing balance call is swallowed."""
+    import openrouter_transcreation
+
+    def _boom():
+        raise RuntimeError("boom")
+    monkeypatch.setattr(openrouter_transcreation, "get_remaining_credits", _boom)
+    monkeypatch.setattr(news_bot, "send_admin_notification",
+                        lambda m, **k: (_ for _ in ()).throw(AssertionError("must not send")))
+    news_bot._maybe_alert_openrouter_balance()  # no exception = pass

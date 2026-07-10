@@ -737,6 +737,32 @@ def _prod_db_guard():
     return warnings
 
 
+def _maybe_alert_openrouter_balance():
+    """Best-effort daily heads-up: ping the admin ([E019]) when the OpenRouter
+    balance falls below ``OPENROUTER_MIN_BALANCE_USD`` (default 5). Runs once per
+    tick from ``job()``. NON-BLOCKING — any failure is swallowed so a monitoring
+    probe never breaks publishing. ``get_remaining_credits`` returns None (→ skip)
+    when no OpenRouter key is configured or the balance can't be read."""
+    try:
+        import openrouter_transcreation
+        remaining = openrouter_transcreation.get_remaining_credits()
+        if remaining is None:
+            return
+        raw = os.getenv("OPENROUTER_MIN_BALANCE_USD", "").strip()
+        try:
+            threshold = float(raw) if raw else 5.0
+        except ValueError:
+            threshold = 5.0
+        if remaining < threshold:
+            send_admin_notification(
+                admin_alerts.alert_openrouter_low_balance(remaining, threshold)
+            )
+    except Exception as exc:
+        logger.warning(
+            "OpenRouter balance check skipped: %s", sanitize_error_message(exc)
+        )
+
+
 # RSS functions
 def fetch_rss(url):
     """Fetch and parse RSS feed, return list of entries."""
@@ -2027,6 +2053,11 @@ def job():
                     f"{wait_seconds:.0f}s before continuing."
                 )
                 time.sleep(wait_seconds)
+
+    # Once-a-day heads-up if OpenRouter credits are running low (non-blocking).
+    # Placed AFTER the crash-loop guard so a restart storm is dampened by the
+    # guard's sleep rather than emitting one [E019] per rapid restart.
+    _maybe_alert_openrouter_balance()
 
     # ------------------------------------------------------------------
     # Step (b1): fetch all sources via the SOURCES registry.

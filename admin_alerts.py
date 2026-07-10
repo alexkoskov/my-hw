@@ -108,6 +108,19 @@ def alert_prod_db_guard(warnings: list[str]) -> str:
     )
 
 
+def alert_openrouter_low_balance(remaining: float, threshold: float) -> str:
+    """[E019] OpenRouter account balance dropped below the alert threshold.
+    Proactive warning so the operator tops up BEFORE credits hit zero and
+    transcreation starts failing."""
+    return (
+        f"[E019] 🟡 OpenRouter: осталось ~${remaining:.2f}\n\n"
+        f"Что произошло: баланс OpenRouter опустился ниже порога ${threshold:.2f}.\n\n"
+        f"Что сделать: пополни баланс на https://openrouter.ai/ (Settings → "
+        f"Credits). Иначе кредиты кончатся, переводы начнут падать и посты "
+        f"придержатся до пополнения."
+    )
+
+
 # ---------------------------------------------------------------------------
 # E006 — idempotency-guard поймал зомби-строку (дубль публикации)
 # ---------------------------------------------------------------------------

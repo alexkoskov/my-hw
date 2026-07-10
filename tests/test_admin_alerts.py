@@ -368,5 +368,15 @@ class TestAdminAlerts(unittest.TestCase):
             self.assertRegex(code, r"^\[E\d{3}\]$")
 
 
+class TestOpenRouterLowBalanceAlert(unittest.TestCase):
+    def test_e019_openrouter_low_balance(self):
+        msg = admin_alerts.alert_openrouter_low_balance(3.25, 5.0)
+        self.assertTrue(msg.startswith("[E019]"))
+        self.assertIn("3.25", msg)   # remaining
+        self.assertIn("5.00", msg)   # threshold
+        self.assertIn("openrouter", msg.lower())
+        self.assertIn("пополни", msg.lower())  # Russian call-to-action
+
+
 if __name__ == "__main__":
     unittest.main()
