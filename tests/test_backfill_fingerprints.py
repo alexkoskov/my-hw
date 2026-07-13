@@ -21,13 +21,38 @@ Test scenarios (TDD anchors from tasks/5.md):
   run) and bumps the ``Errors`` counter.
 * ``test_fetch_empty_stores_computed_empty`` — ``fetch_full_article``
   returning ``None`` writes the terminal computed-empty marker
-  ``{"strict": [], "brands": []}``; subsequent runs treat the row as
-  already-processed.
+  ``{"strict": [], "brands": [], "series": [], "pairs": []}``; subsequent
+  runs treat the row as already-processed.
 * ``test_summary_structure`` — stdout summary contains every header field
   (``Window:``, ``Processed:``, ``Skipped:``, ``Empty fp:``, ``Errors:``,
   ``Duration:``).
 * ``test_days_clamp_rejects_out_of_range`` — argparse rejects ``--days 0``
   and ``--days 100`` with ``SystemExit(2)``.
+
+Task-5 widened re-select scenarios (dedup-model-series):
+
+* ``test_old_shape_row_reselected_and_upgraded`` — a row carrying the OLD
+  two-key blob ``{"strict": [...], "brands": [...]}`` (no ``pairs`` key) is
+  re-selected by the widened SELECT, re-fetched, and rewritten with the new
+  four-key fingerprint; summary reports ``Processed: 1``.
+* ``test_row_with_pairs_key_skipped`` — a row already carrying a ``pairs``
+  key (e.g. the four-key empty form) is NOT re-selected → ``Processed: 0``,
+  ``0 rows scanned``.
+* ``test_backfilled_row_has_pairs_and_series_keys`` — after a run the
+  persisted blob carries both ``pairs`` AND ``series`` keys (AC10/AC9).
+* ``test_days_30_window_honored`` — ``--days 30`` includes a row ~29 days
+  old and excludes one ~31 days old.
+* ``test_second_run_noop_after_empty_fp`` — computed-empty idempotency: the
+  four-key empty marker is not re-selected on a second run → ``Processed:
+  0``, ``Empty fp: 0``, ``0 rows scanned``.
+* ``test_corrupt_blob_reprocessed_without_crash`` — a raw invalid-JSON (or
+  valid non-dict) ``model_fingerprint`` seeded directly via SQL does NOT crash
+  the widened SELECT (guarded by ``json_valid``) nor the Python skip-guard; the
+  row is re-selected and reprocessed into a valid four-key blob. Regression pin
+  for the ``CASE WHEN json_valid(...)`` SQL predicate.
+* ``test_old_empty_shape_row_reselected_and_upgraded_to_empty`` — compound edge
+  case: an OLD *empty* two-key blob ``{"strict": [], "brands": []}`` is
+  re-selected and rewritten to the four-key empty form, then idempotent.
 
 Mock policy: ``news_bot.fetch_full_article`` is monkeypatched
 (``monkeypatch.setattr``). ``model_extractor.extract_fingerprint`` is NOT
@@ -257,8 +282,9 @@ def test_fetch_exception_leaves_null(temp_db, monkeypatch, capsys):
 
 def test_fetch_empty_stores_computed_empty(temp_db, monkeypatch, capsys):
     """``fetch_full_article`` returning ``None`` → terminal computed-empty
-    fingerprint ``{"strict": [], "brands": []}`` is persisted; counter
-    ``Empty fp`` bumps. Subsequent runs see non-NULL and skip the row."""
+    fingerprint ``{"strict": [], "brands": [], "series": [], "pairs": []}``
+    is persisted; counter ``Empty fp`` bumps. Subsequent runs see the
+    ``pairs`` key present and skip the row."""
     _seed_published(temp_db, 'https://example.com/empty')
 
     monkeypatch.setattr(news_bot, 'fetch_full_article',
@@ -272,7 +298,7 @@ def test_fetch_empty_stores_computed_empty(temp_db, monkeypatch, capsys):
     raw = _get_fp_raw(temp_db, 'https://example.com/empty')
     assert raw is not None
     decoded = json.loads(raw)
-    assert decoded == {'strict': [], 'brands': []}
+    assert decoded == {'strict': [], 'brands': [], 'series': [], 'pairs': []}
 
     # Idempotency probe — re-run, second time it's a skip not an empty-fp.
     rc2 = backfill_fingerprints.main(['--days', '14'])
@@ -306,3 +332,236 @@ def test_days_clamp_rejects_out_of_range(temp_db, bad_value):
     with pytest.raises(SystemExit) as exc_info:
         backfill_fingerprints.main(['--days', bad_value])
     assert exc_info.value.code == 2
+
+
+# ---------------------------------------------------------------------------
+# Task-5 widened re-select tests (dedup-model-series)
+# ---------------------------------------------------------------------------
+
+
+def test_old_shape_row_reselected_and_upgraded(temp_db, monkeypatch, capsys):
+    """A row that already carries the OLD two-key car-fingerprint
+    ``{"strict": [...], "brands": [...]}`` (missing the ``pairs`` key) is
+    re-selected by the widened SELECT, re-fetched, and rewritten with the
+    new four-key fingerprint that now carries ``series``/``pairs``.
+
+    This is the core motivation of Task 5: the old ``IS NULL``-only filter
+    would silently skip such rows, so they'd never get car+series pairs.
+    """
+    _seed_published(
+        temp_db, 'https://example.com/old',
+        model_fingerprint={'strict': ['toyota 4runner'], 'brands': ['toyota']},
+    )
+
+    monkeypatch.setattr(news_bot, 'fetch_full_article',
+                        _fake_article_with_brand)
+
+    rc = backfill_fingerprints.main(['--days', '14'])
+    out = capsys.readouterr().out
+    assert rc == 0
+    # Re-selected + re-fetched + rewritten (not skipped).
+    assert 'Processed: 1 ' in out, out
+
+    decoded = json.loads(_get_fp_raw(temp_db, 'https://example.com/old'))
+    assert 'pairs' in decoded, decoded
+    assert 'series' in decoded, decoded
+    # Real extractor picked up the brand+model tokens from the stub body.
+    assert decoded['strict'], decoded
+
+
+def test_row_with_pairs_key_skipped(temp_db, monkeypatch, capsys):
+    """A row that ALREADY carries a ``pairs`` key (here the four-key empty
+    form) must NOT be re-selected by the widened SELECT — ``json_extract``
+    returns a non-NULL value for it — so nothing is scanned or processed."""
+    _seed_published(
+        temp_db, 'https://example.com/haspairs',
+        model_fingerprint={'strict': [], 'brands': [], 'series': [], 'pairs': []},
+    )
+
+    def _should_not_be_called(*_a, **_kw):
+        raise AssertionError('fetch_full_article must not run for a row that '
+                             'already carries a pairs key')
+
+    monkeypatch.setattr(news_bot, 'fetch_full_article', _should_not_be_called)
+
+    rc = backfill_fingerprints.main(['--days', '14'])
+    out = capsys.readouterr().out
+    assert rc == 0
+    assert 'Processed: 0 ' in out, out
+    assert '0 rows scanned' in out, out
+
+
+def test_backfilled_row_has_pairs_and_series_keys(temp_db, monkeypatch, capsys):
+    """After a normal backfill the persisted blob carries the full four-key
+    structure — both ``pairs`` and ``series`` keys present (AC10/AC9)."""
+    _seed_published(temp_db, 'https://example.com/warm')
+
+    monkeypatch.setattr(news_bot, 'fetch_full_article',
+                        _fake_article_with_brand)
+
+    rc = backfill_fingerprints.main(['--days', '14'])
+    out = capsys.readouterr().out
+    assert rc == 0
+    assert 'Processed: 1 ' in out, out
+
+    decoded = json.loads(_get_fp_raw(temp_db, 'https://example.com/warm'))
+    assert 'pairs' in decoded, decoded
+    assert 'series' in decoded, decoded
+
+
+def test_days_30_window_honored(temp_db, monkeypatch, capsys):
+    """``--days 30`` includes a row published ~29 days ago and excludes a
+    row published ~31 days ago (window boundary honoured)."""
+    _seed_published(temp_db, 'https://example.com/in29')
+    _seed_published(temp_db, 'https://example.com/out31')
+    # Re-stamp published_at via direct UPDATE (parameterised INSERT would
+    # store a SQL expression as literal text).
+    conn = sqlite3.connect(temp_db)
+    try:
+        conn.execute(
+            "UPDATE published_articles "
+            "SET published_at = datetime('now', '-29 days') WHERE link=?",
+            ('https://example.com/in29',),
+        )
+        conn.execute(
+            "UPDATE published_articles "
+            "SET published_at = datetime('now', '-31 days') WHERE link=?",
+            ('https://example.com/out31',),
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+    monkeypatch.setattr(news_bot, 'fetch_full_article',
+                        _fake_article_with_brand)
+
+    rc = backfill_fingerprints.main(['--days', '30'])
+    out = capsys.readouterr().out
+    assert rc == 0
+    assert 'Processed: 1 ' in out, out
+
+    assert _get_fp_raw(temp_db, 'https://example.com/in29') is not None
+    assert _get_fp_raw(temp_db, 'https://example.com/out31') is None
+
+
+def test_second_run_noop_after_empty_fp(temp_db, monkeypatch, capsys):
+    """Computed-empty idempotency: the first run writes the four-key empty
+    marker; because that marker carries a ``pairs`` key, the second run does
+    NOT re-select it → ``Processed: 0``, ``Empty fp: 0``, ``0 rows scanned``.
+
+    Intentionally kept separate from ``test_fetch_empty_stores_computed_empty``
+    despite the overlap: this one doubles as the AC10 ``--days 30`` smoke case
+    (the other uses the default 14-day window) and pins idempotency at the
+    SELECT level via the ``0 rows scanned`` assertion (proving the widened
+    predicate excludes the four-key marker), whereas the other only asserts the
+    ``Processed:``/``Empty fp:`` counters. Different failures caught."""
+    _seed_published(temp_db, 'https://example.com/emptyidem')
+
+    monkeypatch.setattr(news_bot, 'fetch_full_article',
+                        lambda *_a, **_kw: None)
+
+    rc1 = backfill_fingerprints.main(['--days', '30'])
+    out1 = capsys.readouterr().out
+    assert rc1 == 0
+    assert 'Empty fp:  1 ' in out1, out1
+
+    decoded = json.loads(_get_fp_raw(temp_db, 'https://example.com/emptyidem'))
+    assert decoded == {'strict': [], 'brands': [], 'series': [], 'pairs': []}
+
+    rc2 = backfill_fingerprints.main(['--days', '30'])
+    out2 = capsys.readouterr().out
+    assert rc2 == 0
+    assert 'Processed: 0 ' in out2, out2
+    assert 'Empty fp:  0 ' in out2, out2
+    assert '0 rows scanned' in out2, out2
+
+
+@pytest.mark.parametrize('raw_blob', ['not-valid-json{', '[1, 2, 3]'])
+def test_corrupt_blob_reprocessed_without_crash(temp_db, monkeypatch, capsys,
+                                                raw_blob):
+    """A row whose ``model_fingerprint`` holds a raw invalid-JSON blob (or a
+    valid-but-non-dict blob like a JSON array) must NOT crash the run and must
+    be treated as "not yet backfilled" → re-selected, re-fetched, rewritten as
+    a valid four-key fingerprint.
+
+    Seeded with a RAW ``UPDATE`` (not ``_seed_published``, which always
+    ``json.dumps`` a valid object) so the stored text is genuinely malformed.
+
+    Two layers are exercised:
+      * SQL — with the naive ``json_extract(model_fingerprint, '$.pairs') IS
+        NULL`` predicate, ``'not-valid-json{'`` makes SQLite raise
+        ``OperationalError: malformed JSON`` on the eager ``fetchall()`` and
+        aborts the whole run; the ``CASE WHEN json_valid(...)`` guard yields
+        NULL (→ re-selected) instead. Revert that fix and this test ERRORS.
+      * Python — the ``json.loads`` try/except and ``isinstance(..., dict)``
+        check in ``_already_backfilled`` keep a corrupt / non-dict blob from
+        crashing the skip-guard. The ``[1, 2, 3]`` case pins the isinstance
+        branch (valid JSON, so it survives even the naive SQL predicate).
+    """
+    _seed_published(temp_db, 'https://example.com/corrupt')
+    # Overwrite with a raw blob via direct SQL — bypasses the seed helper's
+    # json.dumps so the stored text is exactly what we set.
+    conn = sqlite3.connect(temp_db)
+    try:
+        conn.execute(
+            "UPDATE published_articles SET model_fingerprint = ? WHERE link = ?",
+            (raw_blob, 'https://example.com/corrupt'),
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+    monkeypatch.setattr(news_bot, 'fetch_full_article',
+                        _fake_article_with_brand)
+
+    # Must NOT raise (a reverted SQL fix would propagate OperationalError here).
+    rc = backfill_fingerprints.main(['--days', '14'])
+    out = capsys.readouterr().out
+    assert rc == 0
+    # Re-selected + reprocessed (proves the row survived the SELECT and fell
+    # through the guard to fetch_full_article, rather than crashing or skipping).
+    assert 'Processed: 1 ' in out, out
+
+    raw = _get_fp_raw(temp_db, 'https://example.com/corrupt')
+    assert raw is not None
+    decoded = json.loads(raw)  # now valid JSON
+    assert set(decoded) == {'strict', 'brands', 'series', 'pairs'}, decoded
+
+
+def test_old_empty_shape_row_reselected_and_upgraded_to_empty(
+        temp_db, monkeypatch, capsys):
+    """Compound edge case from tasks/5.md: an OLD *empty* two-key blob
+    ``{"strict": [], "brands": []}`` (empty result AND no ``pairs`` key) is
+    re-selected and rewritten to the four-key empty form, after which it is
+    idempotent.
+
+    Distinct from ``test_old_shape_row_reselected_and_upgraded`` (non-empty old
+    blob → real fingerprint) and from ``test_second_run_noop_after_empty_fp``
+    (NULL start → empty marker): this pins the exact combination the task warned
+    would otherwise loop forever — an old-shape row whose re-fetch ALSO yields
+    an empty result must still gain ``$.pairs`` so it stops being re-selected.
+    """
+    _seed_published(
+        temp_db, 'https://example.com/oldempty',
+        model_fingerprint={'strict': [], 'brands': []},
+    )
+
+    monkeypatch.setattr(news_bot, 'fetch_full_article',
+                        lambda *_a, **_kw: None)
+
+    rc1 = backfill_fingerprints.main(['--days', '30'])
+    out1 = capsys.readouterr().out
+    assert rc1 == 0
+    # Old empty 2-key blob was re-selected and re-processed to computed-empty.
+    assert 'Empty fp:  1 ' in out1, out1
+
+    decoded = json.loads(_get_fp_raw(temp_db, 'https://example.com/oldempty'))
+    assert decoded == {'strict': [], 'brands': [], 'series': [], 'pairs': []}
+
+    # Second run: the four-key marker carries ``pairs`` → not re-selected.
+    rc2 = backfill_fingerprints.main(['--days', '30'])
+    out2 = capsys.readouterr().out
+    assert rc2 == 0
+    assert 'Processed: 0 ' in out2, out2
+    assert 'Empty fp:  0 ' in out2, out2
+    assert '0 rows scanned' in out2, out2
