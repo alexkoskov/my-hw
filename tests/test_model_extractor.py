@@ -21,7 +21,13 @@ from __future__ import annotations
 
 import pytest
 
-from model_extractor import extract_fingerprint, similarity
+import model_extractor as me
+from model_extractor import (
+    extract_fingerprint,
+    extract_series,
+    shares_pair,
+    similarity,
+)
 from tests.fixtures.cross_source_dedup_pairs import (
     DUPE_PAIRS,
     NON_DUPE_PAIRS,
@@ -89,12 +95,24 @@ class TestExtractFingerprint:
         assert 'mercedes e300' in fp['strict']
         assert 'mercedes' in fp['brands']
 
-    def test_empty_body(self):
-        assert extract_fingerprint(_article()) == {'strict': [], 'brands': []}
+    def test_empty_body_four_keys(self):
+        # Every fingerprint carries the four keys — empty input yields four
+        # empty lists (non-NULL structure, AC8). Replaces the old 2-key
+        # `test_empty_body`.
+        assert extract_fingerprint(_article()) == {
+            'strict': [], 'brands': [], 'series': [], 'pairs': [],
+        }
 
     def test_empty_dict_input(self):
         # Defensive: completely empty input shouldn't crash.
-        assert extract_fingerprint({}) == {'strict': [], 'brands': []}
+        assert extract_fingerprint({}) == {
+            'strict': [], 'brands': [], 'series': [], 'pairs': [],
+        }
+
+    def test_returns_four_keys(self):
+        # Public contract: extract_fingerprint returns strict/brands/series/pairs.
+        fp = extract_fingerprint(_article(title='Toyota 4Runner review'))
+        assert set(fp) == {'strict', 'brands', 'series', 'pairs'}
 
     def test_missing_paragraphs_key(self):
         # `paragraphs` may be absent or None — graceful handling required.
@@ -122,6 +140,8 @@ class TestExtractFingerprint:
         assert 'subaru' in fp['brands']
         assert 'land rover' in fp['brands']
         assert 'toyota' in fp['brands']
+        # "série Car Culture" → series now populated (broad recurrent line).
+        assert 'car culture' in fp['series']
 
     def test_mixed_brands_single_body(self):
         fp = extract_fingerprint(_article(
@@ -378,3 +398,254 @@ def test_calibration_real_pair_must_pass():
         f"Got verdict {_classify(sim)!r} at sim={sim:.3f}. "
         f"fp_a={fp_a}, fp_b={fp_b}"
     )
+
+
+# ---------------------------------------------------------------------------
+# TestSeriesLexicon — lexicon integrity + fail-safe polarity
+# ---------------------------------------------------------------------------
+
+
+class TestSeriesLexicon:
+    def test_canonicals_have_no_pipe_or_newline(self):
+        # Pair-key integrity: `|` is the key separator; a canonical containing
+        # `|` or `\n` would corrupt the "<model>|<series>|<tier>" format.
+        # Mirrors the module load-time assertion.
+        for canonical, tier in me.SERIES_LEXICON.values():
+            assert '|' not in canonical, f"pipe in canonical {canonical!r}"
+            assert '\n' not in canonical, f"newline in canonical {canonical!r}"
+
+    def test_default_tier_is_broad(self):
+        # Fail-safe polarity (tech-spec Decision 2 / code-research §7.2): any
+        # resolvable-but-untagged path must default to broad, never distinctive.
+        assert me._SERIES_DEFAULT_TIER == 'broad'
+
+    def test_unrecognized_tier_defaults_to_broad(self):
+        # Fail-safe fallback exercised through the REAL code path, not the bare
+        # constant (which `test_default_tier_is_broad` already pins). An
+        # out-of-vocabulary / mistyped tier must resolve to the broad 'B'
+        # suffix, never distinctive 'D'. This is the load-bearing safety
+        # property (tech-spec Decision 2): a mistagged lexicon entry can never
+        # silently hard-block. Deleting the `.get(..., default)` fallback in
+        # `_tier_suffix` makes THIS test fail (mutation-closing).
+        assert me._tier_suffix('not-a-real-tier') == 'B'
+        assert me._tier_suffix('distinct') == 'B'  # near-miss typo of 'distinctive'
+        pairs = me._build_pairs(
+            {'porsche 911'}, {('some series', 'not-a-real-tier')}
+        )
+        assert pairs == ['porsche 911|some series|B']
+        assert not any(p.endswith('|D') for p in pairs)
+
+
+# ---------------------------------------------------------------------------
+# TestExtractSeries — lexicon-driven series/theme extraction
+# ---------------------------------------------------------------------------
+
+
+class TestExtractSeries:
+    def test_franchise_hit(self):
+        assert 'k-pop demon hunters' in extract_series(
+            'New K-Pop Demon Hunters cars revealed'
+        )
+
+    def test_alias_kpop_no_hyphen(self):
+        # "KPop" (no hyphen) resolves to the hyphenated canonical.
+        assert 'k-pop demon hunters' in extract_series(
+            'The KPop Demon Hunters lineup'
+        )
+
+    def test_event_sdcc_full_and_acronym(self):
+        # Both the full event name and the SDCC acronym → same canonical.
+        assert 'san diego comic-con' in extract_series('San Diego Comic-Con reveal')
+        assert 'san diego comic-con' in extract_series('SDCC 2026 exclusives')
+
+    def test_car_line_car_culture(self):
+        assert 'car culture' in extract_series('Car Culture Road Trip Mix')
+
+    def test_acronym_case_sensitive_no_prose_collision(self):
+        # Lowercase prose acronyms must NOT match (case-sensitive pass).
+        assert extract_series('he said sth about the rlc meeting today') == []
+        # Uppercase acronyms DO match.
+        assert 'super treasure hunt' in extract_series('New STH chase spotted')
+        assert 'red line club' in extract_series('RLC members-only exclusive')
+        assert 'san diego comic-con' in extract_series('SDCC drop')
+
+    @pytest.mark.parametrize('text,expected', [
+        # AC7 franchises named explicitly in the acceptance criteria — pinned
+        # through the ACTUAL `extract_series`/`_SERIES_RE` regex path (not a
+        # hand-built `_build_pairs` tuple), so a misspelled lexicon key or a
+        # dropped regex alternation would fail here.
+        ('New Top Gun Maverick set revealed', 'top gun'),
+        ('Stranger Things Camaro drop', 'stranger things'),
+        # Remaining lexicon entries never previously exercised end-to-end.
+        ('Monster Trucks bash event', 'monster trucks'),
+        ('Team Transport rig and trailer', 'team transport'),
+        ('Pop Culture crossover wave', 'pop culture'),
+        # Bare 'comic-con' alias (no "San Diego" prefix) → same canonical.
+        ('Exclusive Comic-Con reveal today', 'san diego comic-con'),
+    ])
+    def test_remaining_lexicon_entries_resolve(self, text, expected):
+        assert expected in extract_series(text)
+
+    def test_zamac_acronym_dual_case(self):
+        # `zamac` is routed to the case-SENSITIVE acronym pass with two curated
+        # casings ('ZAMAC' and 'Zamac'); both resolve to canonical 'zamac'.
+        assert 'zamac' in extract_series('New ZAMAC casting spotted')
+        assert 'zamac' in extract_series('New Zamac casting spotted')
+        # Case-sensitivity BOUNDARY (code-review round 1 minor / item #7):
+        # plain lowercase 'zamac' in prose is NOT matched. Documented recall
+        # gap — flagged for the real-DB smoke. `zamac` is a BROAD line, so
+        # under-matching only ever soft-flags (fail-safe direction), never a
+        # silent hard block.
+        assert extract_series('zamac diecast news') == []
+
+    def test_series_alias_across_paragraph_boundary(self):
+        # `_gather_text` joins title + paragraphs with '\n'; the bounded
+        # `\s{1,3}` in `_alias_to_pattern` tolerates that single newline, so a
+        # multi-word alias split across the title/paragraph boundary still
+        # resolves (documented in the `_alias_to_pattern` docstring, previously
+        # untested).
+        fp = extract_fingerprint(_article(
+            title='Hot Wheels reveals at San Diego',
+            paragraphs=['Comic-Con exclusives are here.'],
+        ))
+        assert 'san diego comic-con' in fp['series']
+
+    def test_no_series_returns_empty(self):
+        assert extract_series('Just a plain Toyota 4Runner review') == []
+
+    def test_long_body_no_hang(self):
+        # ReDoS-safety smoke: synthetic ~10KB body. Bounded quantifiers keep
+        # this linear-time; assertion is just "returned".
+        body = 'Car Culture and Boulevard news. ' * 500  # ~15KB
+        series = extract_series(body)
+        assert 'car culture' in series
+        assert 'boulevard' in series
+
+
+# ---------------------------------------------------------------------------
+# TestPairs — pair-key format + tier tagging
+# ---------------------------------------------------------------------------
+
+
+class TestPairs:
+    def test_distinctive_pair_key_format(self):
+        # Concrete model + distinctive series → "<model>|<series>|D".
+        pairs = me._build_pairs(
+            {'porsche 911'}, {('k-pop demon hunters', 'distinctive')}
+        )
+        assert pairs == ['porsche 911|k-pop demon hunters|D']
+
+    def test_theme_only_pair_is_broad(self):
+        # Series recognised, no concrete model → theme-only "*|<series>|B".
+        # Use a BROAD-tagged series (car culture) to prove the no-models branch
+        # is unconditionally |B regardless of the series' own tier — this is a
+        # genuinely different input from the distinctive-no-model case pinned by
+        # `test_distinctive_requires_concrete_model` (de-redundancy per
+        # test-review round 1 minor).
+        pairs = me._build_pairs(set(), {('car culture', 'broad')})
+        assert pairs == ['*|car culture|B']
+
+    def test_distinctive_requires_concrete_model(self):
+        # A distinctive franchise WITHOUT a model must be broad (|B), not |D —
+        # the no-models branch downgrades even a distinctive series' own tier.
+        pairs = me._build_pairs(set(), {('k-pop demon hunters', 'distinctive')})
+        assert pairs == ['*|k-pop demon hunters|B']
+        assert not any(p.endswith('|D') for p in pairs)
+
+    def test_connector_primary_model_degrades_to_theme_only(self):
+        # code-review round 1 major #1: a prose connector captured as the
+        # PRIMARY model token ("de" in the real t-hunted title "Porsche de
+        # K-Pop Demon Hunters") must NOT produce a bogus distinctive key like
+        # `porsche de k-pop|...|D` — that key can never match a differently-
+        # worded companion (the real Scenario-1 dupe is MISSED) and could even
+        # hard-block on connector noise if two articles share the garbage
+        # phrasing. The article degrades to the theme-only broad key instead.
+        # SCOPED: `strict` (and thus `similarity()`) is left UNCHANGED.
+        fp = extract_fingerprint(
+            _article(title='Mais fotos do Porsche de K-Pop Demon Hunters')
+        )
+        # strict token still emitted verbatim (feeds the shipped Jaccard path).
+        assert fp['strict'] == ['porsche de k-pop']
+        # but the pair-key is the theme-only fail-safe, never a bogus |D.
+        assert fp['pairs'] == ['*|k-pop demon hunters|B']
+        assert not any(p.endswith('|D') for p in fp['pairs'])
+
+    def test_broad_line_tier_is_B(self):
+        # Broad recurrent car-line + concrete model → still |B.
+        pairs = me._build_pairs({'toyota supra'}, {('car culture', 'broad')})
+        assert pairs == ['toyota supra|car culture|B']
+        assert all(p.endswith('|B') for p in pairs)
+
+    def test_extract_fingerprint_distinctive_pair_end_to_end(self):
+        # End-to-end: concrete Porsche model + distinctive franchise → |D key.
+        # Model and franchise are kept in separate sentences so the model
+        # regex does not absorb the franchise words.
+        fp = extract_fingerprint(_article(
+            title='Porsche 911.',
+            paragraphs=['The K-Pop Demon Hunters exclusive set is here.'],
+        ))
+        assert 'porsche 911|k-pop demon hunters|D' in fp['pairs']
+
+    def test_extract_fingerprint_theme_only_when_no_model(self):
+        # Pop-culture tie-in with no recognised car → theme-only broad key.
+        fp = extract_fingerprint(_article(
+            title='Hot Wheels San Diego Comic-Con exclusives revealed',
+        ))
+        assert fp['strict'] == []
+        assert '*|san diego comic-con|B' in fp['pairs']
+        assert not any(p.endswith('|D') for p in fp['pairs'])
+
+
+# ---------------------------------------------------------------------------
+# TestSharesPair — shared-pair detection + distinctive polarity
+# ---------------------------------------------------------------------------
+
+
+class TestSharesPair:
+    def test_shared_distinctive_returns_true(self):
+        fp_a = {'pairs': ['porsche 911|k-pop demon hunters|D', 'x|car culture|B']}
+        fp_b = {'pairs': ['porsche 911|k-pop demon hunters|D']}
+        any_shared, shared, any_distinctive = shares_pair(fp_a, fp_b)
+        assert any_shared is True
+        assert shared == ['porsche 911|k-pop demon hunters|D']
+        assert any_distinctive is True
+
+    def test_shared_broad_only_returns_false(self):
+        fp_a = {'pairs': ['toyota supra|car culture|B']}
+        fp_b = {'pairs': ['toyota supra|car culture|B', 'other|boulevard|B']}
+        any_shared, shared, any_distinctive = shares_pair(fp_a, fp_b)
+        assert any_shared is True
+        assert shared == ['toyota supra|car culture|B']
+        assert any_distinctive is False
+
+    def test_distinctive_wins_over_broad(self):
+        # Sharing BOTH a distinctive and a broad pair → distinctive wins.
+        fp_a = {'pairs': [
+            'porsche 911|k-pop demon hunters|D',
+            'toyota supra|car culture|B',
+        ]}
+        fp_b = {'pairs': [
+            'porsche 911|k-pop demon hunters|D',
+            'toyota supra|car culture|B',
+        ]}
+        any_shared, shared, any_distinctive = shares_pair(fp_a, fp_b)
+        assert any_shared is True
+        assert any_distinctive is True
+
+    def test_no_shared_pair(self):
+        fp_a = {'pairs': ['porsche 911|k-pop demon hunters|D']}
+        fp_b = {'pairs': ['toyota supra|car culture|B']}
+        any_shared, shared, any_distinctive = shares_pair(fp_a, fp_b)
+        assert any_shared is False
+        assert shared == []
+        assert any_distinctive is False
+
+    def test_missing_pairs_key_is_safe(self):
+        # Backward-compat: rows written before this feature lack a `pairs`
+        # key — shares_pair must not raise, just report no overlap.
+        any_shared, shared, any_distinctive = shares_pair(
+            {'strict': ['toyota 4runner']}, {'pairs': ['x|car culture|B']}
+        )
+        assert any_shared is False
+        assert shared == []
+        assert any_distinctive is False
