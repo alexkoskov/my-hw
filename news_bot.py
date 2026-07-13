@@ -114,6 +114,22 @@ RSS_URL = "https://www.autoevolution.com/rss/tag-Hot+Wheels.xml"
 # (empty state → channel re-flood), the exact failure this guards against. A
 # stray surrounding space (`DB_FILE=/data/news.db `) is likewise a different path.
 DB_FILE = os.getenv("DB_FILE", "news.db").strip() or "news.db"
+
+# Feature toggle for the tiered series/theme pair-rule layer of the
+# cross-source dedup gate (dedup-model-series, Task 4 / user-spec AC6).
+# Import-time constant read once from env, same pattern as ``DB_FILE``/``TZ``.
+# CRITICAL: the env-var name is IDENTICAL to the constant name
+# (``DEDUP_SERIES_ENABLED``) — the deploy runbook / operator set exactly this
+# key in the prod ``.env``; a const↔env name drift would make a "dark" deploy
+# silently no-op. Default ON: unset OR blank → enabled; only the explicit
+# off-words ``0/false/no/off`` (case-insensitive) disable the pair rule, after
+# which the gate runs only the legacy set-overlap backstop. The gate reads the
+# MODULE attribute ``news_bot.DEDUP_SERIES_ENABLED`` (a bare name inside this
+# module resolves to the module global at call time) so tests can monkeypatch
+# it and an operator can flip it via env + restart without touching code.
+DEDUP_SERIES_ENABLED = os.getenv(
+    "DEDUP_SERIES_ENABLED", "1"
+).strip().lower() not in ("0", "false", "no", "off")
 LOG_LEVEL = logging.INFO
 
 # Distributed-publish constants (llm-transcreation-and-distributed-publishing
@@ -929,68 +945,122 @@ _DEDUP_BLOCK_THRESHOLD = 0.50
 #: trigger a per-pair-rate-limited E014 ping so the operator can review.
 _DEDUP_FLAG_THRESHOLD = 0.30
 
+#: Candidate-fetch window for the tiered pair rule (tech-spec Decision 3):
+#: a distinctive/broad pair blocks/flags against any row seen in the last
+#: 30 days. The single ``_fetch_dedup_candidates`` call uses this window;
+#: the set-overlap backstop derives its narrower subset in Python.
+_DEDUP_PAIR_WINDOW_DAYS = 30
 
-def _check_cross_source_dedup(article: dict, fingerprint: dict,
-                              conn: sqlite3.Connection, new_source=None):
-    """Compare ``fingerprint`` against the last 7 days of pending +
-    published rows and decide block / flag / pass.
+#: Window for the legacy set-overlap backstop (tech-spec Decision 5): the
+#: backstop only ever compares rows from the last 7 days, a subset of the
+#: 30-day fetch derived in Python (no second SQL round-trip).
+_DEDUP_BACKSTOP_WINDOW_DAYS = 7
 
-    Returns one of:
-      * ``('block', match_dict)`` — similarity ≥ ``_DEDUP_BLOCK_THRESHOLD``.
-      * ``('flag', match_dict)``  — ``[_DEDUP_FLAG_THRESHOLD,
-        _DEDUP_BLOCK_THRESHOLD)``.
-      * ``('pass', None)``        — below the flag threshold OR empty
-        ``fingerprint['strict']`` (AC6 — skip the SQL round-trip on
-        articles with no recognised brands).
 
-    ``match_dict`` carries the keys the gate caller needs to render an
-    admin ping:
-      * ``link``         — the matched article URL.
-      * ``source_name``  — the matched row's source (for E014 ``existing_source``).
-      * ``models``       — sorted list of shared strict tokens (intersection
-        of the two ``strict`` sets). Empty list when the match is brand-
-        only (strict Jaccard zero but the AC10 brand-fallback fired).
-      * ``overlap_pct``  — ``int(round(sim * 100))``, used by E014 / E015.
-      * ``n_matches``    — count of shared strict tokens.
-      * ``n_total``      — count of distinct strict tokens across both
-        fingerprints (``len(strict_new | strict_match)``); denominator
-        the operator sees in ``"3/8"``.
-
-    Implementation notes:
-      * Iterates pending FIRST, then published — both windowed at 7 days
-        per tech-spec Architecture. CROSS-SOURCE ONLY (Decision 9 reversed
-        2026-06-14): candidates whose ``source_name`` equals ``new_source``
-        are skipped — one source republishing the same model within 7 days
-        is implausible, and comparing within-source only produces false
-        positives (e.g. autoevolution Ford F-100 vs Porsche Team Transport
-        sharing a brand token). When ``new_source`` is None/unknown, no
-        candidate is skipped (fail-open: never miss a real cross-source dup).
-      * Picks the best (highest sim) match across the entire window so
-        the strongest signal wins even if a weaker pending match would
-        also cross the soft-flag threshold.
-      * Compare-side ``model_fingerprint`` rows can be missing (NULL,
-        pre-feature rows or backfill in progress) — those candidates are
-        skipped silently rather than treated as zero-similarity matches.
+def _fetch_dedup_candidates(conn: sqlite3.Connection) -> list:
+    """Single 30-day candidate fetch (pending + published) shared by BOTH
+    dedup rules — the tiered pair rule (30-day window) and the set-overlap
+    backstop (7-day subset derived in Python from these rows). Fetched at
+    most once per gate invocation so the two rules never make a second SQL
+    round-trip (tech-spec Decision 5; ~200 rows over 30 days is a cheap
+    full scan, shipped §13.5).
     """
-    strict = fingerprint.get('strict') or [] if isinstance(fingerprint, dict) else []
-    if not strict:
-        # AC6 short-circuit — empty fingerprint cannot match anything, and
-        # the dominant production-path "industry news with no brands"
-        # shouldn't pay for two SELECTs.
-        return ('pass', None)
-
-    candidates = (
-        pending_repo.list_recent_pending_fingerprints(conn, 7)
-        + pending_repo.list_recent_published_fingerprints(conn, 7)
+    return (
+        pending_repo.list_recent_pending_fingerprints(
+            conn, _DEDUP_PAIR_WINDOW_DAYS)
+        + pending_repo.list_recent_published_fingerprints(
+            conn, _DEDUP_PAIR_WINDOW_DAYS)
     )
+
+
+def _pair_match(row: dict, shared_pairs: list, n_total: int) -> dict:
+    """Build a gate ``match`` dict for a tiered pair-rule verdict.
+
+    ``shared_pairs`` is the sorted list of shared ``"<model>|<series>|<tier>"``
+    keys. The dict is compatible with both alert builders and carries a
+    ``pairs`` key — its presence is what tells ``job()`` to pass ``pairs=`` to
+    the Task-2 E015/E014 builders (which then render the matched-series block).
+    A set-overlap match omits ``pairs`` so those builders fall back to the
+    legacy overlap-percent / model-list rendering. ``models`` mirrors
+    ``pairs`` for legacy-caller compatibility.
+    """
+    n_matches = len(shared_pairs)
+    overlap_pct = int(round(100 * n_matches / n_total)) if n_total else 0
+    return {
+        'link': row.get('link'),
+        'source_name': row.get('source_name') or 'other',
+        'models': shared_pairs,
+        'pairs': shared_pairs,
+        'overlap_pct': overlap_pct,
+        'n_matches': n_matches,
+        'n_total': n_total,
+    }
+
+
+def _pair_rule_verdict(pairs: list, candidates: list):
+    """Rule 1 body — the tiered series/theme pair rule over already-fetched
+    ``candidates`` (30-day pending + published, NO same-source skip).
+
+    Scan-and-remember: the first shared distinctive (``|D``) pair hard-blocks
+    and stops the scan; the first shared broad (``|B``) pair is remembered as
+    a soft flag but the scan CONTINUES so a later ``|D`` still wins. Returns
+    ``('block', match)`` / ``('flag', match)`` when a shared pair fires, or
+    ``('pass', None)`` when no candidate shares a pair (the gate then falls
+    through to the empty short-circuit + set-overlap backstop). Candidates
+    with a ``None``/non-dict fingerprint are skipped silently.
+    """
+    new_pairs = set(pairs)
+    flag_match = None
+    for row in candidates:
+        cand_fp = row.get('model_fingerprint')
+        if not isinstance(cand_fp, dict):
+            # NULL / pre-feature / malformed row — skip silently.
+            continue
+        cand_pairs = set(cand_fp.get('pairs') or [])
+        shared = new_pairs & cand_pairs
+        if not shared:
+            continue
+        shared_sorted = sorted(shared)
+        n_total = len(new_pairs | cand_pairs)
+        if any(p.endswith('|D') for p in shared):
+            # Distinctive → hard block. Stop scanning: a |D verdict can
+            # never be improved on, and a remembered |B must not survive.
+            return ('block', _pair_match(row, shared_sorted, n_total))
+        if flag_match is None:
+            # First broad match — remember but KEEP scanning so a later
+            # |D from another candidate can still win over this |B.
+            flag_match = _pair_match(row, shared_sorted, n_total)
+    if flag_match is not None:
+        return ('flag', flag_match)
+    return ('pass', None)
+
+
+def _set_overlap_backstop_verdict(fingerprint, strict: list,
+                                  candidates: list, new_source):
+    """Rule 2 body — the legacy set-overlap backstop (≥0.50 block /
+    ``[0.30, 0.50)`` flag), CROSS-SOURCE ONLY, over the 7-day subset of the
+    single 30-day ``candidates`` fetch (subset derived here in Python — no
+    second SQL round-trip). SQLite's ``CURRENT_TIMESTAMP`` columns are UTC
+    'YYYY-MM-DD HH:MM:SS', so the lexical ``<`` cutoff compare is
+    chronological. Same-source candidates are skipped (Decision 9 reversed
+    2026-06-14). Returns ``('block'|'flag', match)`` or ``('pass', None)``.
+    """
+    cutoff = (
+        datetime.now(timezone.utc)
+        - timedelta(days=_DEDUP_BACKSTOP_WINDOW_DAYS)
+    ).strftime('%Y-%m-%d %H:%M:%S')
 
     best_sim = 0.0
     best_row = None
     for row in candidates:
+        ts = row.get('fetched_at') or row.get('published_at')
+        if not ts or str(ts) < cutoff:
+            # Outside the backstop's 7-day window (or undatable) — the legacy
+            # backstop only ever saw 7-day rows; keep it that way.
+            continue
         if new_source and row.get('source_name') == new_source:
-            # Same-source candidate — never deduped (Decision 9 reversed
-            # 2026-06-14: within-source republishes don't happen; comparing
-            # them only yields false positives).
+            # Same-source candidate — never deduped by the backstop
+            # (Decision 9 reversed 2026-06-14).
             continue
         cand_fp = row.get('model_fingerprint')
         if not isinstance(cand_fp, dict):
@@ -1023,6 +1093,77 @@ def _check_cross_source_dedup(article: dict, fingerprint: dict,
     if best_sim >= _DEDUP_BLOCK_THRESHOLD:
         return ('block', match)
     return ('flag', match)
+
+
+def _check_cross_source_dedup(article: dict, fingerprint: dict,
+                              conn: sqlite3.Connection, new_source=None):
+    """Decide block / flag / pass for ``fingerprint`` against recent rows.
+
+    Two rules run in strict order — the tiered pair rule FIRST, the legacy
+    set-overlap backstop only on a pair-rule pass:
+
+      1. **Tiered pair rule** (series/theme, dedup-model-series feature; only
+         when ``news_bot.DEDUP_SERIES_ENABLED`` and the article has ``pairs``).
+         Scans ALL 30-day candidates (pending + published) with NO same-source
+         skip — a distinctive (``|D``) shared pair means the SAME casting +
+         franchise even from the same outlet ("more photos"), so it blocks
+         any-source. Scan-and-remember: the first shared ``|D`` pair hard-blocks
+         and stops the scan; a shared broad (``|B``) pair is only remembered as
+         a soft flag and the scan CONTINUES so a later ``|D`` still wins. Both a
+         ``block`` and a ``flag`` verdict are TERMINAL — the backstop does NOT
+         run, so an article can never earn two verdicts / two admin pings in
+         one tick.
+      2. **Set-overlap backstop** (legacy ≥50% block / ``[0.30,0.50)`` flag,
+         7-day window, CROSS-SOURCE ONLY). Reached only when the pair rule did
+         not fire (toggle off, no ``pairs``, or no shared pair). Unchanged
+         behaviour — including the same-source skip (Decision 9 reversed
+         2026-06-14: within-source republishes don't happen; comparing them
+         only yields false positives). The 7-day subset is derived in Python
+         from the single 30-day fetch (no second SQL round-trip).
+
+    Returns ``('block', match)`` / ``('flag', match)`` / ``('pass', None)``.
+    ``match`` carries ``link`` / ``source_name`` / ``models`` / ``overlap_pct``
+    / ``n_matches`` / ``n_total`` (+ ``pairs`` for pair-rule verdicts) — the
+    keys the E015/E014 builders read.
+
+    Back-compat & fail-safe: ``fingerprint`` and every candidate fingerprint
+    are read with ``.get('pairs') or []`` etc. so pre-feature rows (no
+    ``pairs``/``series`` keys) never ``KeyError``; candidates with a
+    ``None``/non-dict fingerprint are skipped silently. A crash anywhere here
+    is caught by the gate's degraded-mode ``try/except`` in ``job()`` (AC9).
+    """
+    fp_is_dict = isinstance(fingerprint, dict)
+    strict = (fingerprint.get('strict') or []) if fp_is_dict else []
+    series = (fingerprint.get('series') or []) if fp_is_dict else []
+    pairs = (fingerprint.get('pairs') or []) if fp_is_dict else []
+
+    # Lazy single 30-day fetch, reused by whichever rule needs it.
+    candidates = None
+
+    # ---- Rule 1: tiered pair rule (30-day window, ANY source) ----
+    if DEDUP_SERIES_ENABLED and pairs:
+        candidates = _fetch_dedup_candidates(conn)
+        decision, match = _pair_rule_verdict(pairs, candidates)
+        if decision != 'pass':
+            # block / flag are TERMINAL — the backstop never runs, so an
+            # article can never earn two verdicts / two admin pings per tick.
+            return (decision, match)
+
+    # ---- Empty short-circuit (AC8, re-gated to strict AND series) ----
+    # A pop-culture tie-in has empty ``strict`` but non-empty ``series`` /
+    # ``pairs`` — it MUST reach the pair scan above, so we only short-circuit
+    # when BOTH are empty (nothing either rule could ever match). This
+    # replaces the old empty-``strict``-only short-circuit, which was the bug
+    # that let pop-culture dupes through.
+    if not strict and not series:
+        return ('pass', None)
+
+    # ---- Rule 2: set-overlap backstop (7-day subset, CROSS-SOURCE ONLY) ----
+    # Reached only on a pair-rule pass. Reuses the single 30-day fetch.
+    if candidates is None:
+        candidates = _fetch_dedup_candidates(conn)
+    return _set_overlap_backstop_verdict(fingerprint, strict, candidates,
+                                         new_source)
 
 
 def filter_new_entries(entries):
@@ -2173,6 +2314,7 @@ def job():
                         send_admin_notification(
                             admin_alerts.alert_cross_source_blocked(
                                 link, match['link'], match['overlap_pct'],
+                                pairs=match.get('pairs'),
                             )
                         )
                     except Exception as notify_err:
@@ -2196,6 +2338,7 @@ def job():
                                     n_matches=match['n_matches'],
                                     n_total=match['n_total'],
                                     models=match['models'],
+                                    pairs=match.get('pairs'),
                                 )
                             )
                         except Exception as notify_err:
