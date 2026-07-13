@@ -295,6 +295,34 @@ class TestAdminAlerts(unittest.TestCase):
         self.assertIn("Что произошло", msg)
         self.assertIn("Что сделать", msg)
 
+    def test_e014_broad_series_flag(self):
+        # Broad-tier soft flag: match is a series/theme (here theme-only,
+        # no shared concrete model) — the model-overlap params don't apply.
+        msg = admin_alerts.alert_cross_source_dupe(
+            new_link="https://autoevolution.example/p/a",
+            existing_link="https://t-hunted.blogspot.com/p/b",
+            new_source="autoevolution",
+            existing_source="t-hunted",
+            pairs=["*|stranger things|B"],
+        )
+        self.assertIn("[E014]", msg)
+        self.assertIn("🤔", msg)
+        # Anchor preserved verbatim.
+        self.assertIn("Похож на дубль", msg)
+        # Theme-only pair renders the series without a fabricated model.
+        self.assertIn("stranger things", msg)
+        # No raw-key artifacts (theme marker / tier suffix / separator) leak.
+        self.assertNotIn("*", msg)
+        self.assertNotIn("|B", msg)
+        self.assertNotIn("|", msg)
+        self.assertIn("https://autoevolution.example/p/a", msg)
+        self.assertIn("https://t-hunted.blogspot.com/p/b", msg)
+        self.assertIn("autoevolution", msg)
+        self.assertIn("t-hunted", msg)
+        # Operator-guidance blocks kept.
+        self.assertIn("Что произошло", msg)
+        self.assertIn("Что сделать", msg)
+
     def test_e015_cross_source_blocked(self):
         msg = admin_alerts.alert_cross_source_blocked(
             new_link="https://orangetrack.example/p/a",
@@ -310,6 +338,96 @@ class TestAdminAlerts(unittest.TestCase):
         self.assertIn("72%", msg)
         # Format pin: E015 is intentionally short — no operator action block.
         self.assertNotIn("Что сделать", msg)
+
+    def test_e015_blocked_renders_matched_pairs(self):
+        # New pair-rule path: E015 blocks on a matched distinctive
+        # (model+series) pair — there is no meaningful set-overlap %.
+        # Pairs are passed in REVERSE of the expected (sorted) order so the
+        # test pins _render_pairs_block's `sorted(...)` determinism: dropping
+        # the sort would make the output follow insertion order and fail the
+        # relative-position assertion below.
+        msg = admin_alerts.alert_cross_source_blocked(
+            new_link="https://autoevolution.example/p/a",
+            existing_link="https://t-hunted.blogspot.com/p/b",
+            pairs=[
+                "toyota supra|top gun|D",
+                "porsche 911|k-pop demon hunters|D",
+            ],
+        )
+        self.assertIn("[E015]", msg)
+        self.assertIn("🚫", msg)
+        # Anchor preserved verbatim.
+        self.assertIn("Заблокирован дубль", msg)
+        # Raw pair keys decoded to readable form: drop |D suffix, '|' -> ' + '.
+        self.assertIn("porsche 911 + k-pop demon hunters", msg)
+        self.assertIn("toyota supra + top gun", msg)
+        # Deterministic sort: 'porsche...' sorts before 'toyota...' regardless
+        # of the reversed insertion order above.
+        self.assertLess(
+            msg.index("porsche 911 + k-pop demon hunters"),
+            msg.index("toyota supra + top gun"),
+            "matched pairs must render in deterministic sorted order",
+        )
+        # No raw-key artifacts leak into the operator ping.
+        self.assertNotIn("|D", msg)
+        self.assertNotIn("|B", msg)
+        self.assertNotIn("|", msg)
+        # Earlier/canonical link + the discarded new link are both rendered.
+        self.assertIn("https://t-hunted.blogspot.com/p/b", msg)
+        self.assertIn("https://autoevolution.example/p/a", msg)
+        # Short format preserved: still no «Что сделать» block.
+        self.assertNotIn("Что сделать", msg)
+
+    def test_e015_blocked_no_pairs_no_overlap_never_renders_none_pct(self):
+        # Edge case (task spec): empty/None optional args must NOT leak a
+        # literal `Совпадение: None%` into the operator ping. Both the
+        # fully-omitted and the explicit-empty-list forms are covered.
+        for kwargs in ({}, {"pairs": []}):
+            msg = admin_alerts.alert_cross_source_blocked(
+                new_link="https://autoevolution.example/p/a",
+                existing_link="https://t-hunted.blogspot.com/p/b",
+                **kwargs,
+            )
+            # Anchor + code still present so the ping is still recognizable.
+            self.assertIn("[E015]", msg)
+            self.assertIn("Заблокирован дубль", msg)
+            # The forbidden legacy render must never appear.
+            self.assertNotIn("None%", msg)
+            self.assertNotIn("None", msg)
+
+    def test_e014_broad_no_pairs_no_overlap_never_renders_none_pct(self):
+        # Same edge case for the soft-flag builder: no pairs and no legacy
+        # model-overlap params must NOT leak `Совпадение моделей: None% (None/None)`.
+        for kwargs in ({}, {"pairs": []}):
+            msg = admin_alerts.alert_cross_source_dupe(
+                new_link="https://autoevolution.example/p/a",
+                existing_link="https://t-hunted.blogspot.com/p/b",
+                new_source="autoevolution",
+                existing_source="t-hunted",
+                **kwargs,
+            )
+            self.assertIn("[E014]", msg)
+            self.assertIn("Похож на дубль", msg)
+            self.assertNotIn("None%", msg)
+            self.assertNotIn("None/None", msg)
+            self.assertNotIn("None", msg)
+
+    def test_e015_pair_tokens_with_underscore_and_asterisk_not_escaped(self):
+        # Plain-text passthrough (parse_mode=None): markdown-significant
+        # characters inside a REAL model/series token (not the theme-only '*'
+        # sentinel) must pass through byte-for-byte, with no escaping.
+        msg = admin_alerts.alert_cross_source_blocked(
+            new_link="https://autoevolution.example/p/a",
+            existing_link="https://t-hunted.blogspot.com/p/b",
+            pairs=["model_x|series*name|D"],
+        )
+        self.assertIn("[E015]", msg)
+        self.assertIn("Заблокирован дубль", msg)
+        # Decoded verbatim, '_' and '*' intact inside the token.
+        self.assertIn("model_x + series*name", msg)
+        # No markdown escaping was introduced.
+        self.assertNotIn("\\_", msg)
+        self.assertNotIn("\\*", msg)
 
     def test_e016_dedup_degraded(self):
         msg = admin_alerts.alert_dedup_degraded(reason="AttributeError")

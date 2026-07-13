@@ -20,7 +20,7 @@ Severity-эмодзи (используются в первой строке):
 """
 from __future__ import annotations
 
-from typing import List
+from typing import List, Optional
 
 
 # ---------------------------------------------------------------------------
@@ -422,29 +422,75 @@ def alert_orangetrack_summary_header(total_events: int) -> str:
 # ---------------------------------------------------------------------------
 
 # ---------------------------------------------------------------------------
-# E014 — soft-flag: похож на дубль (overlap 30-49%, статья прошла)
+# Pair-key rendering (shared by E014 broad-tier и E015 pair-block).
+# ---------------------------------------------------------------------------
+def _render_pair(raw: str) -> str:
+    """Раскодировать сырой ключ пары `"<model>|<series>|<tier>"` в читаемый
+    operator-facing вид: убрать суффикс тира `|D`/`|B`, заменить `|` на ` + `,
+    тему-only `*` (нет конкретной модели) отрендерить как серию без модели.
+
+    Примеры:
+        'porsche 911|k-pop demon hunters|D' -> 'porsche 911 + k-pop demon hunters'
+        '*|stranger things|B'               -> 'stranger things'
+    """
+    parts = raw.split("|")
+    # Сбросить хвостовой тег тира (D/B), если он есть.
+    if parts and parts[-1] in ("D", "B"):
+        parts = parts[:-1]
+    # Тема-only: ведущая '*' означает отсутствие конкретной модели.
+    parts = [p for p in parts if p and p != "*"]
+    return " + ".join(parts)
+
+
+def _render_pairs_block(pairs: List[str]) -> str:
+    """Отрендерить список сырых ключей пар в читаемый блок (по строке на пару,
+    детерминированный порядок через сортировку сырых ключей)."""
+    return "\n".join(_render_pair(p) for p in sorted(pairs))
+
+
+# ---------------------------------------------------------------------------
+# E014 — soft-flag: похож на дубль (set-overlap 30-49% ИЛИ broad-пара)
 # ---------------------------------------------------------------------------
 def alert_cross_source_dupe(
     new_link: str,
     existing_link: str,
     new_source: str,
     existing_source: str,
-    overlap_pct: int,
-    n_matches: int,
-    n_total: int,
-    models: List[str],
+    overlap_pct: Optional[int] = None,
+    n_matches: Optional[int] = None,
+    n_total: Optional[int] = None,
+    models: Optional[List[str]] = None,
+    *,
+    pairs: Optional[List[str]] = None,
 ) -> str:
     # Подстрока 'Похож на дубль' — substring-якорь для интеграционных
     # тестов Wave 2 и rate-limit-логики news_bot. Не менять.
-    model_list = "\n".join(models)
+    #
+    # Обратная совместимость: set-overlap soft-flag зовёт билдер с модельными
+    # параметрами (overlap_pct/n_matches/n_total/models) — рендерим блок
+    # моделей. Новый broad-тир парного правила передаёт `pairs` (серия/тема,
+    # может быть тема-only без модели) — рендерим блок серии/темы.
+    #
+    # `pairs=[]` трактуем как отсутствие пар (falsy → legacy-ветка). Легаси-блок
+    # моделей рендерим ТОЛЬКО при реальном `overlap_pct`; если его нет — опускаем
+    # блок, чтобы никогда не показать оператору `Совпадение моделей: None%`.
+    if pairs:
+        match_block = "Совпавшая серия/тема:\n" + _render_pairs_block(pairs)
+    elif overlap_pct is not None:
+        model_list = "\n".join(models or [])
+        match_block = (
+            f"Совпадение моделей: {overlap_pct}% ({n_matches}/{n_total})\n"
+            f"Общие модели:\n{model_list}"
+        )
+    else:
+        match_block = ""
     return (
         f"[E014] 🤔 Похож на дубль\n\n"
         f"Новая статья:\n{new_link}\n\n"
         f"Похож на:\n{existing_link}\n\n"
         f"Источник новой: {new_source}\n"
         f"Источник существующей: {existing_source}\n"
-        f"Совпадение моделей: {overlap_pct}% ({n_matches}/{n_total})\n"
-        f"Общие модели:\n{model_list}\n\n"
+        f"{match_block}\n\n"
         f"Что произошло:\n"
         f"статья прошла в очередь, потому что\n"
         f"порог автоблокировки (50%) не достигнут.\n\n"
@@ -456,19 +502,39 @@ def alert_cross_source_dupe(
 
 
 # ---------------------------------------------------------------------------
-# E015 — hard-block visibility: дубль заблокирован (overlap ≥50%)
+# E015 — hard-block visibility: дубль заблокирован
+# (set-overlap ≥50% ИЛИ совпавшая distinctive-пара)
 # ---------------------------------------------------------------------------
 def alert_cross_source_blocked(
-    new_link: str, existing_link: str, overlap_pct: int,
+    new_link: str,
+    existing_link: str,
+    overlap_pct: Optional[int] = None,
+    *,
+    pairs: Optional[List[str]] = None,
 ) -> str:
     # Подстрока 'Заблокирован дубль' — substring-якорь для интеграционных
     # тестов Wave 2. Формат сознательно короткий: действие оператора
     # опциональное (статья уже отброшена), блок «Что сделать» отсутствует.
+    #
+    # Обратная совместимость: `overlap_pct` остаётся 3-м позиционным — set-overlap
+    # block-путь зовёт билдер с процентом. Новое парное правило передаёт `pairs`
+    # (совпавшие distinctive-пары model+series) — тогда рендерим блок пар вместо
+    # строки процента (осмысленного set-overlap % там нет).
+    #
+    # `pairs=[]` трактуем как отсутствие пар (falsy → legacy-ветка). Легаси-строку
+    # процента рендерим ТОЛЬКО при реальном `overlap_pct`; если его нет — опускаем
+    # строку, чтобы никогда не показать оператору `Совпадение: None%`.
+    if pairs:
+        match_block = "Совпавшие пары:\n" + _render_pairs_block(pairs)
+    elif overlap_pct is not None:
+        match_block = f"Совпадение: {overlap_pct}%"
+    else:
+        match_block = ""
     return (
         f"[E015] 🚫 Заблокирован дубль\n\n"
         f"Новая (отброшена):\n{new_link}\n\n"
         f"Существующая (канон):\n{existing_link}\n\n"
-        f"Совпадение: {overlap_pct}%"
+        f"{match_block}"
     )
 
 
