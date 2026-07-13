@@ -94,3 +94,51 @@ Review details — in JSON files via links. QA report — in logs/working/.
 - Structural self-check → `fixture OK 4 4`
 - Real `extract_fingerprint`+`shares_pair` over all 8 pairs → 8/8 verdicts / any_distinctive / shared_pairs match
 - Old `test_calibration_accuracy` red 4/8 by design (Task 6 rewires); `test_calibration_real_pair_must_pass` green
+
+## Task 4: Toggle + tiered pair-rule gate refactor (news_bot.py)
+
+**Status:** Done
+**Commit:** 2d5d2e0
+**Agent:** main agent via implementation + fix teammates
+**Summary:** Wired the new (model+series) tiered pair rule into `_check_cross_source_dedup` on the publish path — pair rule FIRST (30d, any-source, scan-and-remember: distinctive `|D` → block/`[E015]`, broad `|B` → soft-flag/`[E014]`, both terminal) → empty short-circuit re-gated to "strict AND series both empty" → existing set-overlap backstop (7d, cross-source) only on pass. Single 30d fetch; 7d subset derived in Python. Toggle `DEDUP_SERIES_ENABLED` (env==const, default on). Split into `_pair_rule_verdict`/`_set_overlap_backstop_verdict` helpers.
+**Deviations:** Toggle parse drops the trailing `""` off-word so blank/unset → ON (matches AC6; the task's impl-hint tuple would have made blank → OFF — deliberately corrected, do NOT revert). The "orangetrack flake" raised in review was a misdiagnosis: `_IntegrationBase` already excludes orangetrack from `SOURCES`; the redundant per-class `SOURCES` patch was removed because it leaked test state.
+
+**Reviews:**
+
+*Round 1:*
+- security-auditor: approved, 0 findings → [logs/working/task-4/security-auditor-round1.json]
+- code-reviewer: approved_with_suggestions (1 major, 2 minor) → [logs/working/task-4/code-reviewer-round1.json]
+- test-reviewer: needs_improvement (1 major, 2 minor) → [logs/working/task-4/test-reviewer-round1.json]
+
+*Round 2 (after fixes):*
+- code-reviewer: approved — refactor behavior-preserving → [logs/working/task-4/code-reviewer-round2.json]
+- test-reviewer: changes_required — 7d-backstop boundary unpinned → [logs/working/task-4/test-reviewer-round2.json]
+
+*Round 3 (after fixes):*
+- test-reviewer: changes_required — redundant SOURCES patch leaked state → [logs/working/task-4/test-reviewer-round3.json]; resolved by lead (patch removed; SOURCES-restore verified; 17 + 30×3 green)
+
+**Verification:**
+- `pytest tests/test_integration.py::TestCrossSourceDedup -v` → 17 passed
+- `pytest tests/test_integration.py -q` ×3 → 30 passed (stable); SOURCES-leak check → restored True
+- `pytest -q -k 'not calibration'` → 1238 passed
+
+## Task 5: Widened backfill re-select for the pairs key (backfill_fingerprints.py)
+
+**Status:** Done
+**Commit:** f4217fd
+**Agent:** main agent via implementation + fix teammates
+**Summary:** Backfill re-selects rows missing the new `$.pairs` key (NULL, corrupt, or old 2-key fingerprint), not only `IS NULL`, guarded by `CASE WHEN json_valid(...)` so a malformed blob is reprocessed instead of crashing the eager `fetchall`. 4-key empty marker matches `extract_fingerprint`; parse-then-probe skip-guard via `_already_backfilled`; idempotent. `json_extract('$.pairs')` static literal, `--days` the only bound param.
+**Deviations:** None. (Non-blocking: `backfill_one` 63 lines → deferred to Task 7 audit.)
+
+**Reviews:**
+
+*Round 1:*
+- code-reviewer: approved_with_suggestions (2 major, 1 minor) → [logs/working/task-5/code-reviewer-round1.json]
+- test-reviewer: needs_improvement (1 major, 2 minor) → [logs/working/task-5/test-reviewer-round1.json]
+
+*Round 2 (after fixes):*
+- code-reviewer: approved — SQL-crash fix verified, regression-pinned → [logs/working/task-5/code-reviewer-round2.json]
+
+**Verification:**
+- `pytest tests/test_backfill_fingerprints.py` → 19 passed
+- `pytest -q -k 'not calibration'` → no regressions
