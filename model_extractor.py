@@ -128,8 +128,10 @@ _BRAND_ALIASES = {
 # pop-culture franchises) and is meant to be topped up via PR as new franchises
 # appear (user-spec Ограничения — franchises are an open, fast-growing set).
 # Aliases resolve case-insensitively EXCEPT the short/ambiguous acronyms in
-# `_ACRONYM_ALIASES`, which are matched case-sensitively to avoid prose
-# collisions (e.g. prose "sth"/"rlc").
+# `_ACRONYM_ALIASES` (SDCC/RLC/STH), matched case-sensitively to avoid prose
+# collisions (e.g. prose "sth"/"rlc"). The one exception is `zamac`
+# (in `_CASE_INSENSITIVE_ACRONYMS`): a broad line with negligible prose-collision
+# risk, so it matches any casing.
 SERIES_LEXICON: Dict[str, Tuple[str, str]] = {
     # ---- distinctive: concrete franchises / events / limited series ----
     'k-pop demon hunters':  ('k-pop demon hunters', 'distinctive'),
@@ -298,10 +300,14 @@ _UPPERCASE_BRANDS_RE = re.compile(r'\b(?P<brand>AMC|BMW|Lotus)\b')
 #   1. `_SERIES_RE` — case-insensitive alternation over the multi-word / longer
 #      aliases, built programmatically from the lexicon keys so the pattern can
 #      never drift from `SERIES_LEXICON`.
-#   2. `_SERIES_ACRONYM_RE` — case-SENSITIVE (no re.I) alternation over the
-#      short/ambiguous acronyms, mirroring `_UPPERCASE_BRANDS_RE`. Prose
+#   2. `_SERIES_ACRONYM_RE` — DERIVED from `_ACRONYM_ALIASES` (never hand-typed,
+#      so it can never drift from the lexicon). Genuinely ambiguous short
+#      acronyms are case-SENSITIVE, mirroring `_UPPERCASE_BRANDS_RE`: prose
 #      "sth"/"rlc"/"sdcc" lowercase must NOT match; only the exact-cased forms
-#      "SDCC"/"RLC"/"STH"/"ZAMAC"/"Zamac" do.
+#      "SDCC"/"RLC"/"STH" do. `zamac` is the deliberate exception — its
+#      canonical key is lowercase and it is a BROAD line (fail-safe), so it is
+#      matched CASE-INSENSITIVELY via a scoped `(?i:...)` group (lowercase
+#      "zamac" in prose resolves too).
 #
 # ReDoS-safety: `_alias_to_pattern` relaxes literal spaces to the bounded
 # `\s{1,3}` (never `\s+`/`\s*`), mirroring `_MODEL_AFTER_BRAND_RE`; the rest of
@@ -309,9 +315,19 @@ _UPPERCASE_BRANDS_RE = re.compile(r'\b(?P<brand>AMC|BMW|Lotus)\b')
 # longest-first so a longer alias always wins over a shorter one that could be
 # its prefix ("san diego comic-con" before "comic-con").
 
-# Short/ambiguous acronyms — routed to the case-sensitive pass (lowercase keys
-# in the lexicon; the regex matches the exact-cased forms).
+# Short/ambiguous acronyms — routed to the acronym pass (lowercase keys in the
+# lexicon). The ambiguous ones match their exact-cased (uppercase) form only;
+# `zamac` matches case-insensitively (see `_acronym_to_pattern`).
 _ACRONYM_ALIASES = frozenset({'sdcc', 'rlc', 'sth', 'zamac'})
+
+# Acronyms matched case-INSENSITIVELY (via a scoped `(?i:...)` group) rather
+# than exact-cased. Kept as a set so the deliberate casing decision is a single
+# reviewable place, not buried in `_acronym_to_pattern`. `zamac` qualifies
+# because its canonical key is lowercase AND it is a BROAD line (an under- or
+# over-match only ever soft-flags — the fail-safe direction). The genuinely
+# ambiguous short acronyms (sdcc/rlc/sth) are deliberately NOT here: prose
+# "sth"/"rlc"/"sdcc" must stay a non-match.
+_CASE_INSENSITIVE_ACRONYMS = frozenset({'zamac'})
 
 
 def _alias_to_pattern(alias: str) -> str:
@@ -335,9 +351,35 @@ _SERIES_RE = re.compile(
     re.IGNORECASE,
 )
 
-# Case-sensitive acronyms — exact-cased forms only (defends against prose
-# collisions the way `_UPPERCASE_BRANDS_RE` does for AMC/BMW/Lotus).
-_SERIES_ACRONYM_RE = re.compile(r'\b(?P<series>SDCC|RLC|STH|ZAMAC|Zamac)\b')
+def _acronym_to_pattern(alias: str) -> str:
+    """Compile one acronym alias to a case-appropriate, ReDoS-safe regex branch.
+
+    Derived from the alias itself (never hand-typed), so the acronym pattern
+    can never drift from `_ACRONYM_ALIASES` / `SERIES_LEXICON`:
+
+    - ``zamac`` (in `_CASE_INSENSITIVE_ACRONYMS`) → a scoped ``(?i:...)`` group
+      so lowercase "zamac" in prose matches too. Safe because it is a BROAD
+      line (over-/under-match only soft-flags — the fail-safe direction).
+    - every other acronym → its exact UPPERCASE form only, mirroring
+      `_UPPERCASE_BRANDS_RE`, so prose "sth"/"rlc"/"sdcc" stays a non-match.
+
+    Pure ``re.escape``-d literal text with no quantifiers → ReDoS-safe.
+    """
+    if alias in _CASE_INSENSITIVE_ACRONYMS:
+        return f'(?i:{re.escape(alias)})'
+    return re.escape(alias.upper())
+
+
+# Acronym alternation built from `_ACRONYM_ALIASES`, longest-first (prefix-safe,
+# same convention as `_CI_SERIES_ALIASES`). Compiled WITHOUT a global re.I — the
+# per-branch casing is decided in `_acronym_to_pattern`.
+_ACRONYM_BRANCHES = [
+    _acronym_to_pattern(a)
+    for a in sorted(_ACRONYM_ALIASES, key=len, reverse=True)
+]
+_SERIES_ACRONYM_RE = re.compile(
+    r'\b(?P<series>' + '|'.join(_ACRONYM_BRANCHES) + r')\b',
+)
 
 
 # ---------------------------------------------------------------------------

@@ -434,16 +434,30 @@ def test_calibration_sdcc_dupes_hard_block():
 
 
 def test_calibration_not_dupes_never_hard_block():
-    """Every not-dupe probe MUST NOT hard-block (``any_distinctive is False``).
+    """Every NON-DISTINCTIVE pair MUST NOT hard-block (``any_distinctive is False``).
 
-    The other half of the asymmetric invariant: a not-dupe that hard-blocks is
-    a silent false-positive drop. Soft-flag or pass are BOTH acceptable for
-    these probes (same car in a different series, theme-only Stranger Things,
-    a same-source broad near-miss); only a hard block is forbidden. Kept out of
-    the aggregate for the same irreversibility reason as the SDCC invariant.
+    The other half of the asymmetric invariant: a non-distinctive pair that
+    hard-blocks is a silent, irreversible drop. Soft-flag or pass are BOTH
+    acceptable for these probes (same car in a different series, theme-only
+    Stranger Things, a same-source broad near-miss, and the broad Car Culture
+    dupe pair-1 itself); only a hard block is forbidden. Kept out of the ≥7/8
+    aggregate for the same irreversibility reason as the SDCC invariant.
+
+    Selected by the load-bearing ``expected_any_distinctive`` flag across BOTH
+    lists (test-audit M-1) — NOT by list membership. This pins pair-1's
+    must-not-hard-block property DIRECTLY (it lives in ``DUPE_PAIRS`` as a broad
+    soft-flag dupe, ``expected_any_distinctive=False``), rather than only via the
+    aggregate's 1-error budget, and future-proofs against a fixture where the
+    broad-dupe series stops overlapping any NON_DUPE probe.
     """
-    assert NON_DUPE_PAIRS, "NON_DUPE_PAIRS must not be empty"
-    for pair in NON_DUPE_PAIRS:
+    non_distinctive = [
+        p for p in DUPE_PAIRS + NON_DUPE_PAIRS
+        if not p['expected_any_distinctive']
+    ]
+    # Guard against a fixture change silently emptying the selection (an empty
+    # loop would vacuously pass and drop the whole invariant).
+    assert non_distinctive, "expected at least one non-distinctive pair to pin"
+    for pair in non_distinctive:
         any_distinctive, _verdict = _pair_tier_verdict(pair)
         assert any_distinctive is False, (
             f"{pair['label']} MUST NOT hard-block, "
@@ -537,17 +551,28 @@ class TestExtractSeries:
     def test_remaining_lexicon_entries_resolve(self, text, expected):
         assert expected in extract_series(text)
 
-    def test_zamac_acronym_dual_case(self):
-        # `zamac` is routed to the case-SENSITIVE acronym pass with two curated
-        # casings ('ZAMAC' and 'Zamac'); both resolve to canonical 'zamac'.
+    def test_zamac_acronym_case_insensitive(self):
+        # `zamac` is the one acronym matched CASE-INSENSITIVELY (M1 fix): its
+        # canonical key is lowercase AND it is a BROAD line, so a scoped
+        # `(?i:zamac)` branch resolves every casing to canonical 'zamac'. This
+        # closes the previous lowercase recall gap in the fail-safe direction
+        # (a broad match only ever soft-flags, never a silent hard block).
         assert 'zamac' in extract_series('New ZAMAC casting spotted')
         assert 'zamac' in extract_series('New Zamac casting spotted')
-        # Case-sensitivity BOUNDARY (code-review round 1 minor / item #7):
-        # plain lowercase 'zamac' in prose is NOT matched. Documented recall
-        # gap — flagged for the real-DB smoke. `zamac` is a BROAD line, so
-        # under-matching only ever soft-flags (fail-safe direction), never a
-        # silent hard block.
-        assert extract_series('zamac diecast news') == []
+        # Lowercase prose 'zamac' NOW matches too (behaviour changed by M1).
+        assert 'zamac' in extract_series('zamac diecast news')
+
+    def test_ambiguous_acronyms_stay_case_sensitive(self):
+        # The M1 fix must NOT relax the genuinely ambiguous short acronyms:
+        # SDCC/RLC/STH still match ONLY their exact uppercase form, so common
+        # lowercase prose collisions ('sth'/'rlc'/'sdcc') stay a non-match.
+        assert extract_series('sth of note happened') == []
+        assert extract_series('the rlc was quiet') == []
+        assert extract_series('sdcc lower prose') == []
+        # ...but the uppercase forms still resolve.
+        assert 'super treasure hunt' in extract_series('STH exclusive drop')
+        assert 'red line club' in extract_series('RLC members-only')
+        assert 'san diego comic-con' in extract_series('SDCC exclusive')
 
     def test_series_alias_across_paragraph_boundary(self):
         # `_gather_text` joins title + paragraphs with '\n'; the bounded
@@ -697,6 +722,40 @@ class TestSharesPair:
         any_shared, shared, any_distinctive = shares_pair(
             {'strict': ['toyota 4runner']}, {'pairs': ['x|car culture|B']}
         )
+        assert any_shared is False
+        assert shared == []
+        assert any_distinctive is False
+
+    def test_model_token_exact_match_limitation_documented(self):
+        # DOCUMENTED accepted limitation (decisions.md Task 1; test-audit L-3),
+        # locked the same way `test_zamac_*` locks its accepted under-match:
+        # exact pair-key matching cannot rescue a dupe when only ONE side names
+        # a concrete car model.
+        #
+        # The real t-hunted title "Porsche de K-Pop Demon Hunters" captures the
+        # PT connector "de" as the PRIMARY model token, which is dropped from
+        # the pair set, so the article degrades to the theme-only BROAD key
+        # `*|k-pop demon hunters|B` (never a bogus |D — see
+        # `test_connector_primary_model_degrades_to_theme_only`).
+        theme_only = extract_fingerprint(
+            _article(title='Mais fotos do Porsche de K-Pop Demon Hunters')
+        )
+        assert theme_only['pairs'] == ['*|k-pop demon hunters|B']
+        assert not any(p.endswith('|D') for p in theme_only['pairs'])
+
+        # A companion article that DOES name the model emits the distinctive
+        # `porsche 911|k-pop demon hunters|D` key.
+        with_model = extract_fingerprint(_article(
+            title='Porsche 911.',
+            paragraphs=['The K-Pop Demon Hunters exclusive set is here.'],
+        ))
+        assert 'porsche 911|k-pop demon hunters|D' in with_model['pairs']
+
+        # The theme-only key and the model key do NOT intersect, so the real
+        # cross-source dupe is MISSED — an under-match (recoverable, fail-safe
+        # direction), NOT a false hard block. Any future change to
+        # theme-only <-> model matching must flip this test consciously.
+        any_shared, shared, any_distinctive = shares_pair(theme_only, with_model)
         assert any_shared is False
         assert shared == []
         assert any_distinctive is False

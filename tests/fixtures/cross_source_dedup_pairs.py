@@ -138,12 +138,16 @@ _SDCC_MAIS_FOTOS = {
 
 DUPE_PAIRS: list[dict] = [
     # Pair 1 — the load-bearing real 2026-06-03 Car Culture Road Trip Mix pair.
-    # KEEP label + the real high strict-overlap bodies: the surviving
-    # `test_calibration_real_pair_must_pass` finds this pair by label via
-    # next() (StopIteration if renamed/removed) and asserts the old
-    # similarity still classifies it 'duplicate'. Under the NEW pair-tier
-    # this is Car Culture — a recurring, broad line — so its shared pairs are
-    # all |B → soft-flag (publishes), never a hard block.
+    # Under the pair-tier rule this is Car Culture — a recurring, BROAD line —
+    # so its shared pairs are all |B → soft-flag (publishes), never a hard
+    # block. Its irreversible must-NOT-hard-block property is pinned directly
+    # by `test_calibration_not_dupes_never_hard_block` (which selects every
+    # `expected_any_distinctive=False` pair across BOTH lists) and its verdict
+    # by the ≥7/8 `test_calibration_pair_tier_accuracy` aggregate. NOTE: the old
+    # `test_calibration_real_pair_must_pass` was removed in Task 6 — pair-1's
+    # former ≥0.50 real-body similarity constraint is no longer enforced by any
+    # test, so the label/bodies are no longer load-bearing for a similarity
+    # threshold (kept only as a realistic broad-line dupe sample).
     {
         'label': 'pair-1-real-2026-06-03',
         'a': {
@@ -196,9 +200,9 @@ DUPE_PAIRS: list[dict] = [
             'fetch at spec time). Shares Subaru Legacy GT / Land Rover S2 / '
             'Toyota 4Runner, but the series is Car Culture — a recurring '
             'BROAD line — so all shared pairs are |B → soft-flag (publishes), '
-            'not a hard block. Label + bodies kept verbatim: the surviving '
-            'old-harness must-pass test looks this pair up by label and '
-            'still needs the real high strict-overlap to score >= 0.50.'
+            'not a hard block. (The old ≥0.50 similarity must-pass test was '
+            'removed in Task 6; this pair is now scored purely by the pair-tier '
+            'harness, so its real high strict-overlap is no longer asserted.)'
         ),
     },
     # Pair 2 — SDCC cross-source PT ↔ EN. Both roundups name the Porsche 911

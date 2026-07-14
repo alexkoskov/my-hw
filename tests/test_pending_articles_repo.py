@@ -1292,17 +1292,20 @@ class TestSqlAudit(unittest.TestCase):
     formatting around SQL keywords."""
 
     def test_parameterized_queries_only(self):
-        src_path = os.path.join(
-            os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+        # Scan every SQL-bearing first-party file. `backfill_fingerprints.py`
+        # was added (test-audit L-2): the security audit had to hand-verify its
+        # static-literal `json_extract(...,'$.pairs')` predicate because this
+        # net previously skipped it — now it is inside the automated scope.
+        import re
+        repo_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+        sql_source_files = [
             'pending_articles_repo.py',
-        )
-        with open(src_path, 'r', encoding='utf-8') as f:
-            source = f.read()
+            'backfill_fingerprints.py',
+        ]
 
         # Very narrow check: look for f-string or %-format patterns that
         # appear immediately adjacent to SQL keywords. False positives are
         # acceptable at this level — the intent is a smoke net, not a parser.
-        import re
         sql_keywords = r'(SELECT|INSERT|UPDATE|DELETE|FROM|WHERE|VALUES)'
         forbidden_patterns = [
             # f"... SELECT ... {expr} ..."
@@ -1312,13 +1315,17 @@ class TestSqlAudit(unittest.TestCase):
             # "... WHERE x = %s" % var
             re.compile(rf"['\"][^'\"]*{sql_keywords}[^'\"]*%s[^'\"]*['\"]", re.IGNORECASE),
         ]
-        for pat in forbidden_patterns:
-            m = pat.search(source)
-            self.assertIsNone(
-                m,
-                f"parameterized-query rule violated: pattern {pat.pattern!r} "
-                f"matched {m.group(0) if m else None!r} in pending_articles_repo.py",
-            )
+        for fname in sql_source_files:
+            src_path = os.path.join(repo_root, fname)
+            with open(src_path, 'r', encoding='utf-8') as f:
+                source = f.read()
+            for pat in forbidden_patterns:
+                m = pat.search(source)
+                self.assertIsNone(
+                    m,
+                    f"parameterized-query rule violated: pattern {pat.pattern!r} "
+                    f"matched {m.group(0) if m else None!r} in {fname}",
+                )
 
 
 if __name__ == '__main__':

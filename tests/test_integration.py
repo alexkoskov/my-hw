@@ -1851,6 +1851,63 @@ class TestCrossSourceDedup(_PrepPhaseBase):
     @patch('news_bot.fetch_rss')
     @patch('news_bot.load_feeds')
     @patch('news_bot.send_admin_notification')
+    def test_both_empty_short_circuit_real_extraction(
+        self, mock_admin, mock_load_feeds, mock_fetch_rss, mock_fetch_article,
+    ):
+        """AC8 end-to-end — a generic non-HW article whose REAL extraction
+        yields empty ``strict`` AND empty ``series`` publishes via the
+        both-empty short-circuit, with no dedup ping.
+
+        Unlike ``test_empty_fingerprint`` (which FORCES the 4-key empty shape
+        via a mock), this runs the ACTUAL ``extract_fingerprint`` over a title
+        with no recognisable brand/model and no lexicon series (test-audit L-4),
+        so the real both-empty gate short-circuit is exercised end-to-end while
+        a candidate row is seeded."""
+        # Seed a published candidate so the gate WOULD have something to fetch
+        # if it did not short-circuit — makes the no-ping assertion meaningful.
+        self._seed_published(
+            'http://t-hunted.example/existing',
+            {'strict': ['toyota 4runner'], 'brands': ['toyota'],
+             'series': [], 'pairs': []},
+            source='t-hunted',
+        )
+
+        new_link = 'http://autoevolution.example/generic'
+        generic_article = {
+            'title': 'City council approves new downtown park budget',
+            'subtitle': '',
+            'paragraphs': [
+                'The local council voted on Tuesday to fund a new public park.',
+                'Construction is expected to begin next spring near the river.',
+            ],
+            'images': [],
+        }
+        # Real-extraction sanity-check: genuinely both-empty (no brand/model,
+        # no lexicon series) — this is a reachable input, not a synthetic mock.
+        probe = news_bot.model_extractor.extract_fingerprint(generic_article)
+        self.assertEqual(probe.get('strict'), [])
+        self.assertEqual(probe.get('series'), [])
+
+        mock_load_feeds.return_value = ['http://example.com/feed1.xml']
+        mock_fetch_rss.return_value = [self._make_entry(new_link)]
+        mock_fetch_article.return_value = generic_article
+
+        news_bot.job()
+
+        # Both-empty short-circuit → article publishes.
+        self.assertEqual(pending_articles_repo.count_pending(), 1)
+        self.assertIsNotNone(pending_articles_repo.get_pending(new_link))
+        # No dedup ping of any kind.
+        for c in mock_admin.call_args_list:
+            msg = c.args[0] if c.args else ''
+            self.assertNotIn('[E014]', msg)
+            self.assertNotIn('[E015]', msg)
+            self.assertNotIn('[E016]', msg)
+
+    @patch('news_bot.fetch_full_article')
+    @patch('news_bot.fetch_rss')
+    @patch('news_bot.load_feeds')
+    @patch('news_bot.send_admin_notification')
     @patch('news_bot.model_extractor.extract_fingerprint',
            side_effect=RuntimeError("boom"))
     def test_degraded_mode(

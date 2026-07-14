@@ -257,6 +257,17 @@ a surprise (base is warmer than assumed) — stop and investigate before backfil
    `|D` pair hard-blocks (`[E015]`, irreversible — no manual re-publish). Watch
    the first days of `[E014]`/`[E015]` pings for false positives.
 
+> **Expected behaviour change once ON (not a regression).** A broad-tier
+> republish that the legacy backstop *used* to silently hard-block at ≥50%
+> car-overlap — e.g. a recurring **Car Culture** line re-covered by a second
+> source — now **SOFT-FLAGS and PUBLISHES** with an `[E014]` ping instead of
+> being dropped. This is intended (Decision 3 tiering: only a distinctive `|D`
+> pair may hard-block; broad `|B` pairs always publish-and-notify). The `[E014]`
+> ping IS the recovery signal — if it turns out to be a genuine dupe, the
+> operator removes it via `hw_review.py`. So expect **more visible `[E014]`
+> pings and fewer silent drops** right after enabling; that is the feature
+> working, not a false positive.
+
 ---
 
 ## Rollback Procedure
