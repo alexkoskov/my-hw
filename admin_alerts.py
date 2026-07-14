@@ -20,7 +20,7 @@ Severity-эмодзи (используются в первой строке):
 """
 from __future__ import annotations
 
-from typing import List
+from typing import List, Optional
 
 
 # ---------------------------------------------------------------------------
@@ -153,29 +153,178 @@ def alert_zombie_cleanup_failed(link: str, error_type: str) -> str:
 
 
 # ---------------------------------------------------------------------------
+# Intake-funnel diagnostic (watchdog) — shared by E008/E009.
+#
+# ``news_bot.job()`` step (b) accumulates a plain-int funnel dict per tick.
+# These helpers render it for the operator ping so a quiet day pinpoints
+# WHERE intake collapsed (fetch / filters / dedup) instead of the opaque
+# «новых статей нет». Contract: PURE, DETERMINISTIC, plain-text (no markdown
+# / parse_mode), and NEVER raises — a non-dict funnel degrades to "" so the
+# ping falls back to its legacy single line (a dict with bad-valued fields
+# instead renders a zeroed breakdown). Covers INTAKE/STAGING only;
+# translation/posting happen later at slots and are shown as not-applicable
+# on a quiet day.
+# ---------------------------------------------------------------------------
+def _funnel_int(funnel: dict, key: str) -> int:
+    """Best-effort non-negative int read from the funnel dict; never raises.
+
+    Counters in ``job()`` only ever increment, so a negative value would be a
+    bug upstream — clamp to 0 to honour the "non-negative" contract regardless.
+    """
+    try:
+        return max(0, int(funnel.get(key, 0) or 0))
+    except Exception:
+        return 0
+
+
+def _funnel_collapse_note(
+    sources: int, failed: int, new: int,
+    no_article: int, checklist: int, block: int, staged: int,
+) -> str:
+    """One-line pinpoint of the stage where intake collapsed. Returns "" when
+    something WAS staged (no collapse to report). ``dedup_degraded`` is not a
+    drop (those articles still publish) so it is never a collapse cause."""
+    try:
+        if staged > 0:
+            return ""
+        if sources == 0:
+            if failed > 0:
+                return f"Где схлопнулось: источники не ответили ({failed})"
+            return "Где схлопнулось: источники не дали новых записей"
+        if new == 0:
+            return "Где схлопнулось: все записи уже известны (фильтры отсеяли всё)"
+        # new > 0 but nothing staged — the loop dropped every candidate.
+        drops = (
+            ("дубль-блок", block),
+            ("нет статьи/текста", no_article),
+            ("чеклист без текста", checklist),
+        )
+        stage, count = max(drops, key=lambda kv: kv[1])
+        if count > 0:
+            return f"Где схлопнулось: {stage} ({count})"
+        return "Где схлопнулось: обработка статей (детали в логах)"
+    except Exception:
+        return ""
+
+
+def _format_funnel(funnel: dict) -> str:
+    """Render the intake-funnel breakdown as a plain-text multi-line block.
+
+    Fail-safe: a non-dict ``funnel`` returns "" so the caller falls back to
+    the legacy single-line ping. A dict with bad-valued fields does NOT fall
+    back — each bad field is coerced to 0 and a zeroed breakdown is rendered.
+    Never raises.
+    """
+    if not isinstance(funnel, dict):
+        return ""
+    try:
+        sources = _funnel_int(funnel, "sources_fetched")
+        failed = _funnel_int(funnel, "sources_failed")
+        new = _funnel_int(funnel, "new_count")
+        no_article = _funnel_int(funnel, "dropped_no_article")
+        checklist = _funnel_int(funnel, "dropped_checklist")
+        block = _funnel_int(funnel, "dropped_dedup_block")
+        degraded = _funnel_int(funnel, "dedup_degraded")
+        staged = _funnel_int(funnel, "staged")
+
+        lines = [
+            "Воронка приёма за тик:",
+            # ``sources`` is len(all_entries) — total items fetched across all
+            # sources, NOT a source count — so label it as records to avoid the
+            # "N sources responded" misreading. ``failed`` IS a source count.
+            f"• получено записей: {sources} (источников не ответило: {failed})",
+            f"• новых после фильтров: {new}",
+            f"• отсеяно: нет статьи {no_article}, "
+            f"чеклист {checklist}, дубль-блок {block}",
+            f"• дедуп degraded (всё равно опубликованы): {degraded}",
+            f"• добавлено в очередь: {staged}",
+        ]
+        note = _funnel_collapse_note(
+            sources, failed, new, no_article, checklist, block, staged,
+        )
+        if note:
+            lines.append(note)
+        return "\n".join(lines)
+    except Exception:
+        return ""
+
+
+def _format_funnel_line(funnel: dict) -> str:
+    """Compact one-line intake summary for the busy-day plan-of-day ping.
+
+    Fail-safe like ``_format_funnel``: non-dict / malformed → "".
+    """
+    if not isinstance(funnel, dict):
+        return ""
+    try:
+        sources = _funnel_int(funnel, "sources_fetched")
+        failed = _funnel_int(funnel, "sources_failed")
+        new = _funnel_int(funnel, "new_count")
+        staged = _funnel_int(funnel, "staged")
+        dropped = (
+            _funnel_int(funnel, "dropped_no_article")
+            + _funnel_int(funnel, "dropped_checklist")
+            + _funnel_int(funnel, "dropped_dedup_block")
+        )
+        failed_part = f", источники-сбои {failed}" if failed else ""
+        # ``sources`` is the fetched-item count (len(all_entries)), not a source
+        # count — label it "получено" so the compact line matches the full
+        # breakdown's first bullet. ``источники-сбои`` IS a source count.
+        return (
+            f"Приём: получено {sources} → новых {new} → "
+            f"в очередь {staged} (отсеяно {dropped}{failed_part})"
+        )
+    except Exception:
+        return ""
+
+
+# ---------------------------------------------------------------------------
 # E008 — heartbeat: busy day (план на сегодня)
 # ---------------------------------------------------------------------------
 def alert_plan_of_day(
-    inserted: int, queue_size: int, slots: List, carry_over: int
+    inserted: int, queue_size: int, slots: List, carry_over: int,
+    funnel: Optional[dict] = None,
 ) -> str:
     # Сохраняем подстроки 'План на сегодня', 'Принято свежих' —
     # на них висят test_distributed_schedule_integration / test_job_prep_phase.
+    #
+    # ``funnel`` (optional, backward-compatible) добавляет компактную строку
+    # воронки приёма. Легаси-вызов без funnel рендерит прежний текст один-в-один.
     slot_strs = ", ".join(s.strftime("%H:%M") for s in slots) or "—"
-    return (
+    base = (
         f"[E008] 🟢 План на сегодня\n\n"
         f"Принято свежих: {inserted}\n"
         f"Всего в очереди: {queue_size}\n"
         f"Слоты сегодня: {slot_strs}\n"
         f"Перенесено на завтра: {carry_over}"
     )
+    try:
+        line = _format_funnel_line(funnel) if funnel is not None else ""
+    except Exception:
+        line = ""
+    if line:
+        return f"{base}\n{line}"
+    return base
 
 
 # ---------------------------------------------------------------------------
 # E009 — heartbeat: quiet day (новых статей нет)
 # ---------------------------------------------------------------------------
-def alert_quiet_day() -> str:
+def alert_quiet_day(funnel: Optional[dict] = None) -> str:
     # Сохраняем подстроку 'Бот сработал' — на ней висит test_job_prep_phase.
-    return f"[E009] 🟢 Бот сработал, новых статей нет."
+    #
+    # ``funnel`` (optional, backward-compatible): при наличии дописываем
+    # читаемую воронку приёма — где именно схлопнулся intake (fetch/фильтры/
+    # дедуп) — плюс scope-заметку, что перевод/пост неприменимы (очередь пуста).
+    # Легаси-вызов без funnel возвращает прежнюю однострочную формулировку.
+    base = "[E009] 🟢 Бот сработал, новых статей нет."
+    try:
+        block = _format_funnel(funnel) if funnel is not None else ""
+    except Exception:
+        block = ""
+    if block:
+        return f"{base}\n\n{block}\nперевод/пост — очередь пуста"
+    return base
 
 
 # ---------------------------------------------------------------------------
@@ -422,29 +571,75 @@ def alert_orangetrack_summary_header(total_events: int) -> str:
 # ---------------------------------------------------------------------------
 
 # ---------------------------------------------------------------------------
-# E014 — soft-flag: похож на дубль (overlap 30-49%, статья прошла)
+# Pair-key rendering (shared by E014 broad-tier и E015 pair-block).
+# ---------------------------------------------------------------------------
+def _render_pair(raw: str) -> str:
+    """Раскодировать сырой ключ пары `"<model>|<series>|<tier>"` в читаемый
+    operator-facing вид: убрать суффикс тира `|D`/`|B`, заменить `|` на ` + `,
+    тему-only `*` (нет конкретной модели) отрендерить как серию без модели.
+
+    Примеры:
+        'porsche 911|k-pop demon hunters|D' -> 'porsche 911 + k-pop demon hunters'
+        '*|stranger things|B'               -> 'stranger things'
+    """
+    parts = raw.split("|")
+    # Сбросить хвостовой тег тира (D/B), если он есть.
+    if parts and parts[-1] in ("D", "B"):
+        parts = parts[:-1]
+    # Тема-only: ведущая '*' означает отсутствие конкретной модели.
+    parts = [p for p in parts if p and p != "*"]
+    return " + ".join(parts)
+
+
+def _render_pairs_block(pairs: List[str]) -> str:
+    """Отрендерить список сырых ключей пар в читаемый блок (по строке на пару,
+    детерминированный порядок через сортировку сырых ключей)."""
+    return "\n".join(_render_pair(p) for p in sorted(pairs))
+
+
+# ---------------------------------------------------------------------------
+# E014 — soft-flag: похож на дубль (set-overlap 30-49% ИЛИ broad-пара)
 # ---------------------------------------------------------------------------
 def alert_cross_source_dupe(
     new_link: str,
     existing_link: str,
     new_source: str,
     existing_source: str,
-    overlap_pct: int,
-    n_matches: int,
-    n_total: int,
-    models: List[str],
+    overlap_pct: Optional[int] = None,
+    n_matches: Optional[int] = None,
+    n_total: Optional[int] = None,
+    models: Optional[List[str]] = None,
+    *,
+    pairs: Optional[List[str]] = None,
 ) -> str:
     # Подстрока 'Похож на дубль' — substring-якорь для интеграционных
     # тестов Wave 2 и rate-limit-логики news_bot. Не менять.
-    model_list = "\n".join(models)
+    #
+    # Обратная совместимость: set-overlap soft-flag зовёт билдер с модельными
+    # параметрами (overlap_pct/n_matches/n_total/models) — рендерим блок
+    # моделей. Новый broad-тир парного правила передаёт `pairs` (серия/тема,
+    # может быть тема-only без модели) — рендерим блок серии/темы.
+    #
+    # `pairs=[]` трактуем как отсутствие пар (falsy → legacy-ветка). Легаси-блок
+    # моделей рендерим ТОЛЬКО при реальном `overlap_pct`; если его нет — опускаем
+    # блок, чтобы никогда не показать оператору `Совпадение моделей: None%`.
+    if pairs:
+        match_block = "Совпавшая серия/тема:\n" + _render_pairs_block(pairs)
+    elif overlap_pct is not None:
+        model_list = "\n".join(models or [])
+        match_block = (
+            f"Совпадение моделей: {overlap_pct}% ({n_matches}/{n_total})\n"
+            f"Общие модели:\n{model_list}"
+        )
+    else:
+        match_block = ""
     return (
         f"[E014] 🤔 Похож на дубль\n\n"
         f"Новая статья:\n{new_link}\n\n"
         f"Похож на:\n{existing_link}\n\n"
         f"Источник новой: {new_source}\n"
         f"Источник существующей: {existing_source}\n"
-        f"Совпадение моделей: {overlap_pct}% ({n_matches}/{n_total})\n"
-        f"Общие модели:\n{model_list}\n\n"
+        f"{match_block}\n\n"
         f"Что произошло:\n"
         f"статья прошла в очередь, потому что\n"
         f"порог автоблокировки (50%) не достигнут.\n\n"
@@ -456,19 +651,39 @@ def alert_cross_source_dupe(
 
 
 # ---------------------------------------------------------------------------
-# E015 — hard-block visibility: дубль заблокирован (overlap ≥50%)
+# E015 — hard-block visibility: дубль заблокирован
+# (set-overlap ≥50% ИЛИ совпавшая distinctive-пара)
 # ---------------------------------------------------------------------------
 def alert_cross_source_blocked(
-    new_link: str, existing_link: str, overlap_pct: int,
+    new_link: str,
+    existing_link: str,
+    overlap_pct: Optional[int] = None,
+    *,
+    pairs: Optional[List[str]] = None,
 ) -> str:
     # Подстрока 'Заблокирован дубль' — substring-якорь для интеграционных
     # тестов Wave 2. Формат сознательно короткий: действие оператора
     # опциональное (статья уже отброшена), блок «Что сделать» отсутствует.
+    #
+    # Обратная совместимость: `overlap_pct` остаётся 3-м позиционным — set-overlap
+    # block-путь зовёт билдер с процентом. Новое парное правило передаёт `pairs`
+    # (совпавшие distinctive-пары model+series) — тогда рендерим блок пар вместо
+    # строки процента (осмысленного set-overlap % там нет).
+    #
+    # `pairs=[]` трактуем как отсутствие пар (falsy → legacy-ветка). Легаси-строку
+    # процента рендерим ТОЛЬКО при реальном `overlap_pct`; если его нет — опускаем
+    # строку, чтобы никогда не показать оператору `Совпадение: None%`.
+    if pairs:
+        match_block = "Совпавшие пары:\n" + _render_pairs_block(pairs)
+    elif overlap_pct is not None:
+        match_block = f"Совпадение: {overlap_pct}%"
+    else:
+        match_block = ""
     return (
         f"[E015] 🚫 Заблокирован дубль\n\n"
         f"Новая (отброшена):\n{new_link}\n\n"
         f"Существующая (канон):\n{existing_link}\n\n"
-        f"Совпадение: {overlap_pct}%"
+        f"{match_block}"
     )
 
 

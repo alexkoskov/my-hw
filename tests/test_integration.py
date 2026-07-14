@@ -307,6 +307,79 @@ class TestIntegration(_PrepPhaseBase):
         mock_send_teaser.assert_not_called()
         self.assertEqual(pending_articles_repo.count_pending(), 0)
 
+    @patch('news_bot.send_telegraph_teaser')
+    @patch('news_bot.telegraph_publisher.publish_article')
+    @patch('news_bot.transcreate_via_claude')
+    @patch('news_bot.fetch_full_article')
+    @patch('news_bot.fetch_rss')
+    @patch('news_bot.load_feeds')
+    def test_busy_tick_plan_of_day_carries_compact_funnel(
+        self, mock_load_feeds, mock_fetch_rss, mock_fetch_article,
+        mock_transcreate, mock_publish, mock_send_teaser,
+    ):
+        """Intake-funnel watchdog: a busy tick that stages articles fires
+        the plan-of-day [E008] ping (never a false 'no news' [E009]) and
+        that ping carries the compact one-line intake summary."""
+        mock_load_feeds.return_value = ['http://example.com/feed1.xml']
+        mock_fetch_rss.return_value = [
+            self._create_mock_entry('http://example.com/busy1'),
+            self._create_mock_entry('http://example.com/busy2'),
+        ]
+        mock_fetch_article.return_value = {
+            'title': 'T', 'subtitle': '', 'paragraphs': ['Body.'], 'images': [],
+        }
+
+        news_bot.job()
+
+        self.assertEqual(pending_articles_repo.count_pending(), 2)
+
+        msgs = [
+            c.args[0] for c in self.mock_notify.call_args_list
+            if c.args and isinstance(c.args[0], str)
+        ]
+        # Exactly one plan-of-day ping; no false quiet-day ping.
+        plan_msgs = [m for m in msgs if '[E008]' in m]
+        self.assertEqual(len(plan_msgs), 1, f"expected one E008; got {msgs!r}")
+        self.assertFalse([m for m in msgs if '[E009]' in m],
+                         f"quiet-day E009 must NOT fire on a busy tick; got {msgs!r}")
+        plan = plan_msgs[0]
+        # Compact intake summary present with the staged count.
+        self.assertIn('Приём:', plan)
+        self.assertIn('в очередь 2', plan)
+
+    def test_source_exception_counts_in_funnel_quiet_day_ping(self):
+        """Intake-funnel watchdog: when a SOURCES fetcher raises, the tick's
+        real ``except`` path increments ``sources_failed`` and the quiet-day
+        [E009] ping pinpoints the collapse at the fetch stage. Proves the
+        counter that reaches the ping is driven by an actual exception, not a
+        hand-set funnel value. A second fetcher returns [] so nothing is
+        fetched → queue empty → quiet day."""
+        def boom(notifier=None):
+            raise RuntimeError('source boom')
+
+        def empty(notifier=None):
+            return []
+
+        with patch('news_bot.SOURCES', [boom, empty]):
+            news_bot.job()
+
+        # Nothing fetched → nothing staged → queue empty.
+        self.assertEqual(pending_articles_repo.count_pending(), 0)
+
+        msgs = [
+            c.args[0] for c in self.mock_notify.call_args_list
+            if c.args and isinstance(c.args[0], str)
+        ]
+        e009 = [m for m in msgs if '[E009]' in m]
+        self.assertEqual(len(e009), 1, f"expected one E009; got {msgs!r}")
+        ping = e009[0]
+        # The real except-path incremented sources_failed=1; the collapse note
+        # names the fetch stage with that count.
+        self.assertIn('Где схлопнулось: источники не ответили (1)', ping)
+        # And the per-source fetch-failure alert (E002) fired for the raiser.
+        self.assertTrue([m for m in msgs if '[E002]' in m],
+                        f"expected an E002 source-fetch-failure ping; got {msgs!r}")
+
 
 # ---------------------------------------------------------------------------
 # Outage state machine integration tests.
@@ -879,6 +952,14 @@ class TestCrossSourceDedup(_PrepPhaseBase):
 
     def setUp(self):
         super().setUp()
+        # NOTE: do NOT add a second ``news_bot.SOURCES`` patch here.
+        # ``_IntegrationBase.setUp`` already pins SOURCES to
+        # ``[_fetch_rss_entries, _fetch_mattel_entries]`` (mattel mocked to
+        # []), so the gate already sees ONLY the deterministic mocked RSS
+        # stream — the live-network ``_fetch_orangetrack_entries`` source is
+        # never in the list. Re-assigning ``self.sources_patcher`` would
+        # orphan the base's patcher (its ``stop()`` would no-op) and leak the
+        # mutated SOURCES list across the whole test process.
         # Stop the base silencer so per-test ``send_admin_notification``
         # patches can OWN the name (same dance as
         # ``TestOutageStateIntegration``).
@@ -923,6 +1004,27 @@ class TestCrossSourceDedup(_PrepPhaseBase):
             telegraph_path='x',
             via_review=False,
         )
+        return link
+
+    def _set_published_at(self, link, sql_datetime_expr):
+        """Directly override ``published_articles.published_at`` for ``link``
+        with a SQLite datetime expression (e.g. ``datetime('now','-10 days')``).
+
+        Used by the backstop-window boundary tests: ``_seed_published`` always
+        stamps ``published_at`` at the ``CURRENT_TIMESTAMP`` default (now), so
+        without this a seeded candidate can never sit INSIDE the 30-day pair
+        window but OUTSIDE the 7-day backstop window — the two dates the
+        set-overlap backstop's Python cutoff distinguishes."""
+        conn = sqlite3.connect(self.db_path)
+        try:
+            conn.execute(
+                f"UPDATE published_articles SET published_at = "
+                f"{sql_datetime_expr} WHERE link = ?",
+                (link,),
+            )
+            conn.commit()
+        finally:
+            conn.close()
 
     def _make_entry(self, link, title='New Article', published='2026-06-05'):
         return {
@@ -931,6 +1033,535 @@ class TestCrossSourceDedup(_PrepPhaseBase):
             'published': published,
             'summary': 'Summary',
         }
+
+    def _reset_tables(self):
+        """Wipe the tables the dedup gate reads/writes so a single test can
+        re-run ``job()`` with a different candidate seeding order. Clears
+        pending + published (candidate rows), processed_news (else the
+        blocked link is skipped as already-processed on the second run) and
+        the dedup rate-limit bookkeeping in bot_state."""
+        conn = sqlite3.connect(self.db_path)
+        try:
+            for tbl in ('pending_articles', 'published_articles',
+                        'processed_news', 'bot_state'):
+                try:
+                    conn.execute(f'DELETE FROM {tbl}')
+                except sqlite3.OperationalError:
+                    pass
+            conn.commit()
+        finally:
+            conn.close()
+
+    @patch('news_bot.fetch_full_article')
+    @patch('news_bot.fetch_rss')
+    @patch('news_bot.load_feeds')
+    @patch('news_bot.send_admin_notification')
+    def test_distinctive_pair_cross_source_blocks(
+        self, mock_admin, mock_load_feeds, mock_fetch_rss, mock_fetch_article,
+    ):
+        """AC3 — a distinctive (|D) pair shared with a published row from a
+        DIFFERENT source within 30 days → new article NOT staged, its link
+        pinned in ``processed_news``, exactly one E015 (rendering the matched
+        pair), and no E014 / E016."""
+        self._seed_published(
+            'http://t-hunted.example/existing',
+            {
+                'strict': ['porsche 911'],
+                'brands': ['porsche'],
+                'series': ['k-pop demon hunters'],
+                'pairs': ['porsche 911|k-pop demon hunters|D'],
+            },
+            source='t-hunted',
+        )
+
+        mock_load_feeds.return_value = ['http://example.com/feed1.xml']
+        mock_fetch_rss.return_value = [
+            self._make_entry('http://autoevolution.example/new'),
+        ]
+        mock_fetch_article.return_value = {
+            'title': 'Porsche 911 gets a K-Pop Demon Hunters makeover',
+            'subtitle': '',
+            'paragraphs': ['More photos inside.'],
+            'images': [],
+        }
+
+        news_bot.job()
+
+        self.assertEqual(pending_articles_repo.count_pending(), 0)
+        conn = sqlite3.connect(self.db_path)
+        try:
+            processed = {
+                r[0] for r in
+                conn.execute('SELECT link FROM processed_news').fetchall()
+            }
+        finally:
+            conn.close()
+        self.assertIn('http://autoevolution.example/new', processed)
+
+        e015_calls = [
+            c for c in mock_admin.call_args_list
+            if '[E015]' in (c.args[0] if c.args else '')
+        ]
+        self.assertEqual(len(e015_calls), 1)
+        msg = e015_calls[0].args[0]
+        self.assertIn('Совпавшие пары', msg)
+        self.assertIn('k-pop demon hunters', msg)
+        for c in mock_admin.call_args_list:
+            m = c.args[0] if c.args else ''
+            self.assertNotIn('[E014]', m)
+            self.assertNotIn('[E016]', m)
+
+    @patch('news_bot.fetch_full_article')
+    @patch('news_bot.fetch_rss')
+    @patch('news_bot.load_feeds')
+    @patch('news_bot.send_admin_notification')
+    def test_quiet_day_ping_shows_dedup_collapse(
+        self, mock_admin, mock_load_feeds, mock_fetch_rss, mock_fetch_article,
+    ):
+        """Intake-funnel watchdog: sources return an entry but it is dropped
+        at the cross-source dedup gate → nothing staged, queue empty → the
+        quiet-day [E009] ping carries the intake funnel and pinpoints the
+        collapse at the dedup stage (drop-count substring)."""
+        self._seed_published(
+            'http://t-hunted.example/existing',
+            {
+                'strict': ['porsche 911'],
+                'brands': ['porsche'],
+                'series': ['k-pop demon hunters'],
+                'pairs': ['porsche 911|k-pop demon hunters|D'],
+            },
+            source='t-hunted',
+        )
+        mock_load_feeds.return_value = ['http://example.com/feed1.xml']
+        mock_fetch_rss.return_value = [
+            self._make_entry('http://autoevolution.example/new'),
+        ]
+        mock_fetch_article.return_value = {
+            'title': 'Porsche 911 gets a K-Pop Demon Hunters makeover',
+            'subtitle': '',
+            'paragraphs': ['More photos inside.'],
+            'images': [],
+        }
+
+        news_bot.job()
+
+        # Article was blocked at dedup → nothing staged, queue empty.
+        self.assertEqual(pending_articles_repo.count_pending(), 0)
+
+        msgs = [
+            c.args[0] for c in mock_admin.call_args_list
+            if c.args and isinstance(c.args[0], str)
+        ]
+        e009 = [m for m in msgs if '[E009]' in m]
+        self.assertEqual(len(e009), 1, f"expected one E009; got {msgs!r}")
+        ping = e009[0]
+        # Legacy first line kept + funnel breakdown appended.
+        self.assertIn('Бот сработал', ping)
+        self.assertIn('Воронка', ping)
+        # Collapse pinpointed at dedup. Assert the collapse-note-SPECIFIC line
+        # (label + PARENTHESISED count) — 'дубль-блок 1' alone comes from the
+        # fixed breakdown line and would pass even if the note stopped
+        # pinpointing; 'дубль-блок (1)' can only come from _funnel_collapse_note
+        # choosing the dedup stage from the REAL (unmocked) drop count.
+        self.assertIn('Где схлопнулось: дубль-блок (1)', ping)
+        # Scope note: translate/post is not-applicable (queue empty).
+        self.assertIn('очередь пуста', ping)
+
+    @patch('news_bot.fetch_full_article')
+    @patch('news_bot.fetch_rss')
+    @patch('news_bot.load_feeds')
+    @patch('news_bot.send_admin_notification')
+    def test_broad_pair_soft_flag_is_terminal(
+        self, mock_admin, mock_load_feeds, mock_fetch_rss, mock_fetch_article,
+    ):
+        """AC4 + terminality — a shared BROAD pair (car-line 'car culture',
+        tier B) soft-flags: the article PUBLISHES with exactly one E014, and
+        the verdict is TERMINAL. The seed also shares the full car fingerprint
+        (100% strict overlap, cross-source) so the legacy set-overlap backstop
+        WOULD hard-block if it ran — proving the broad flag stops the gate
+        (no E015, no second ping)."""
+        self._seed_published(
+            'http://t-hunted.example/existing',
+            {
+                'strict': ['toyota supra'],
+                'brands': ['toyota'],
+                'series': ['car culture'],
+                'pairs': ['toyota supra|car culture|B'],
+            },
+            source='t-hunted',
+        )
+
+        new_link = 'http://autoevolution.example/new'
+        mock_load_feeds.return_value = ['http://example.com/feed1.xml']
+        mock_fetch_rss.return_value = [self._make_entry(new_link)]
+        mock_fetch_article.return_value = {
+            'title': 'Toyota Supra joins the Car Culture line',
+            'subtitle': '',
+            'paragraphs': ['A new release.'],
+            'images': [],
+        }
+
+        news_bot.job()
+
+        # Soft flag → article still publishes.
+        self.assertEqual(pending_articles_repo.count_pending(), 1)
+        self.assertIsNotNone(pending_articles_repo.get_pending(new_link))
+        # Not marked processed (only hard blocks are).
+        conn = sqlite3.connect(self.db_path)
+        try:
+            processed = {
+                r[0] for r in
+                conn.execute('SELECT link FROM processed_news').fetchall()
+            }
+        finally:
+            conn.close()
+        self.assertNotIn(new_link, processed)
+
+        e014_calls = [
+            c for c in mock_admin.call_args_list
+            if '[E014]' in (c.args[0] if c.args else '')
+        ]
+        self.assertEqual(len(e014_calls), 1,
+                         f"expected exactly one E014, got: {mock_admin.call_args_list}")
+        # Terminal: the backstop (which would 100%-block) never ran.
+        for c in mock_admin.call_args_list:
+            m = c.args[0] if c.args else ''
+            self.assertNotIn('[E015]', m)
+            self.assertNotIn('[E016]', m)
+
+    @patch('news_bot.fetch_full_article')
+    @patch('news_bot.fetch_rss')
+    @patch('news_bot.load_feeds')
+    @patch('news_bot.send_admin_notification')
+    def test_distinctive_wins_over_broad(
+        self, mock_admin, mock_load_feeds, mock_fetch_rss, mock_fetch_article,
+    ):
+        """|D wins over |B via scan-and-remember, independent of candidate
+        order. The new article shares a broad pair with one published row and
+        a distinctive pair with another → verdict must be BLOCK (not flag) no
+        matter which candidate the scan meets first. Asserted for BOTH seeding
+        orders."""
+        broad_seed = (
+            'http://t-hunted.example/broad',
+            {
+                'strict': ['porsche 911'],
+                'brands': ['porsche'],
+                'series': ['car culture'],
+                'pairs': ['porsche 911|car culture|B'],
+            },
+        )
+        distinctive_seed = (
+            'http://lamley.example/distinctive',
+            {
+                'strict': ['porsche 911'],
+                'brands': ['porsche'],
+                'series': ['k-pop demon hunters'],
+                'pairs': ['porsche 911|k-pop demon hunters|D'],
+            },
+        )
+        new_link = 'http://autoevolution.example/new'
+        article = {
+            'title': 'Porsche 911 in K-Pop Demon Hunters and Car Culture',
+            'subtitle': '',
+            'paragraphs': ['Details.'],
+            'images': [],
+        }
+
+        for order in ([broad_seed, distinctive_seed],
+                      [distinctive_seed, broad_seed]):
+            self._reset_tables()
+            mock_admin.reset_mock()
+            for link, fp in order:
+                self._seed_published(
+                    link, fp,
+                    source='t-hunted' if 't-hunted' in link else 'lamley',
+                )
+            mock_load_feeds.return_value = ['http://example.com/feed1.xml']
+            mock_fetch_rss.return_value = [self._make_entry(new_link)]
+            mock_fetch_article.return_value = article
+
+            news_bot.job()
+
+            self.assertEqual(
+                pending_articles_repo.count_pending(), 0,
+                f"distinctive pair must hard-block (order={[l for l, _ in order]})",
+            )
+            e015_calls = [
+                c for c in mock_admin.call_args_list
+                if '[E015]' in (c.args[0] if c.args else '')
+            ]
+            self.assertEqual(len(e015_calls), 1)
+            # The block is the distinctive pair, never the broad one.
+            self.assertIn('k-pop demon hunters', e015_calls[0].args[0])
+            for c in mock_admin.call_args_list:
+                m = c.args[0] if c.args else ''
+                self.assertNotIn('[E014]', m)
+                self.assertNotIn('[E016]', m)
+
+    @patch('news_bot.fetch_full_article')
+    @patch('news_bot.fetch_rss')
+    @patch('news_bot.load_feeds')
+    @patch('news_bot.send_admin_notification')
+    def test_pair_pass_falls_through_to_backstop_block(
+        self, mock_admin, mock_load_feeds, mock_fetch_rss, mock_fetch_article,
+    ):
+        """AC5 — pair rule passes (series recognised but NO shared pair: the
+        two articles carry the SAME cars under DIFFERENT series) → the legacy
+        7-day set-overlap backstop still runs and, in this positive case,
+        really BLOCKS on the 100% cross-source car overlap. Asserted as a
+        backstop block (E015 rendering the overlap percent, not a pair)."""
+        self._seed_published(
+            'http://t-hunted.example/existing',
+            {
+                'strict': ['subaru legacy gt', 'toyota 4runner'],
+                'brands': ['subaru', 'toyota'],
+                'series': ['team transport'],
+                'pairs': ['subaru legacy gt|team transport|B',
+                          'toyota 4runner|team transport|B'],
+            },
+            source='t-hunted',
+        )
+
+        new_link = 'http://autoevolution.example/new'
+        mock_load_feeds.return_value = ['http://example.com/feed1.xml']
+        mock_fetch_rss.return_value = [self._make_entry(new_link)]
+        # Same two cars, but a DIFFERENT series ('car culture') → no shared
+        # pair, so the pair rule passes; strict/brands overlap is 100%.
+        mock_fetch_article.return_value = {
+            'title': 'New drop.',
+            'subtitle': '',
+            'paragraphs': [
+                'Toyota 4Runner spotted.',
+                'Subaru Legacy GT joins Car Culture.',
+            ],
+            'images': [],
+        }
+
+        # Spy on the two 30-day candidate fetches. This is the ONE scenario
+        # that reaches BOTH rules in a single gate call (pair rule scans, then
+        # falls through to the backstop), so it is the only place a regression
+        # to a second SQL round-trip would surface — pin the single-fetch
+        # guarantee (tech-spec Decision 5: one 30-day fetch, 7-day subset in
+        # Python).
+        with patch('news_bot.pending_repo.list_recent_pending_fingerprints',
+                   wraps=pending_articles_repo.list_recent_pending_fingerprints
+                   ) as m_pend, \
+             patch('news_bot.pending_repo.list_recent_published_fingerprints',
+                   wraps=pending_articles_repo.list_recent_published_fingerprints
+                   ) as m_pub:
+            news_bot.job()
+
+        m_pend.assert_called_once()
+        m_pub.assert_called_once()
+
+        # Backstop hard-blocked the cross-source car dupe.
+        self.assertEqual(pending_articles_repo.count_pending(), 0)
+        conn = sqlite3.connect(self.db_path)
+        try:
+            processed = {
+                r[0] for r in
+                conn.execute('SELECT link FROM processed_news').fetchall()
+            }
+        finally:
+            conn.close()
+        self.assertIn(new_link, processed)
+
+        e015_calls = [
+            c for c in mock_admin.call_args_list
+            if '[E015]' in (c.args[0] if c.args else '')
+        ]
+        self.assertEqual(len(e015_calls), 1)
+        # Backstop signature: legacy overlap-percent block, NOT a pair block.
+        msg = e015_calls[0].args[0]
+        self.assertIn('Совпадение:', msg)
+        self.assertNotIn('Совпавшие пары', msg)
+        for c in mock_admin.call_args_list:
+            m = c.args[0] if c.args else ''
+            self.assertNotIn('[E014]', m)
+            self.assertNotIn('[E016]', m)
+
+    #: Backstop-window boundary fixture. A cross-source published row whose
+    #: FULL car fingerprint (100% strict overlap) would hard-block the new
+    #: article via the set-overlap backstop, while its ``team transport`` pairs
+    #: never intersect the new article's ``car culture`` pairs — so the tiered
+    #: pair rule PASSES and the article always reaches the backstop. Isolating
+    #: only the published_at date lets the two tests below probe the 7-day
+    #: cutoff and nothing else. Mirrors ``test_pair_pass_falls_through_to_
+    #: backstop_block`` (proven to backstop-block when the row is in-window).
+    _BACKSTOP_SEED_FP = {
+        'strict': ['subaru legacy gt', 'toyota 4runner'],
+        'brands': ['subaru', 'toyota'],
+        'series': ['team transport'],
+        'pairs': ['subaru legacy gt|team transport|B',
+                  'toyota 4runner|team transport|B'],
+    }
+    _BACKSTOP_NEW_ARTICLE = {
+        'title': 'New drop.',
+        'subtitle': '',
+        # Same two cars, but a DIFFERENT series ('car culture') → no shared
+        # pair (pair rule passes); 100% strict overlap (backstop would block).
+        'paragraphs': [
+            'Toyota 4Runner spotted.',
+            'Subaru Legacy GT joins Car Culture.',
+        ],
+        'images': [],
+    }
+
+    @patch('news_bot.fetch_full_article')
+    @patch('news_bot.fetch_rss')
+    @patch('news_bot.load_feeds')
+    @patch('news_bot.send_admin_notification')
+    def test_backstop_excludes_candidate_older_than_7_days(
+        self, mock_admin, mock_load_feeds, mock_fetch_rss, mock_fetch_article,
+    ):
+        """Backstop 7-day cutoff, OUTSIDE edge (tech-spec Decision 5). A
+        cross-source candidate that WOULD hard-block on 100% car overlap is
+        aged to ``published_at = now-10 days`` — INSIDE the 30-day pair-fetch
+        window but OUTSIDE the 7-day backstop window. The pair rule passes (no
+        shared pair) and the backstop's Python date cutoff must SKIP the row →
+        the article PUBLISHES, its link is NOT pinned in ``processed_news`` and
+        NO ``[E015]`` fires. Pins the ``_DEDUP_BACKSTOP_WINDOW_DAYS`` cutoff
+        math (format string / timezone / off-by-one): neutralising that check
+        makes THIS test fail (verified in review)."""
+        seed_link = self._seed_published(
+            'http://t-hunted.example/existing',
+            dict(self._BACKSTOP_SEED_FP),
+            source='t-hunted',
+        )
+        # Age the candidate to 10 days ago — inside 30d (pair fetch still sees
+        # it) but outside the backstop's 7d subset.
+        self._set_published_at(seed_link, "datetime('now','-10 days')")
+
+        new_link = 'http://autoevolution.example/new'
+        mock_load_feeds.return_value = ['http://example.com/feed1.xml']
+        mock_fetch_rss.return_value = [self._make_entry(new_link)]
+        mock_fetch_article.return_value = dict(self._BACKSTOP_NEW_ARTICLE)
+
+        news_bot.job()
+
+        # Outside the 7-day window → backstop can't match → article publishes.
+        self.assertEqual(
+            pending_articles_repo.count_pending(), 1,
+            "candidate aged past the 7-day backstop window must NOT block",
+        )
+        self.assertIsNotNone(pending_articles_repo.get_pending(new_link))
+        conn = sqlite3.connect(self.db_path)
+        try:
+            processed = {
+                r[0] for r in
+                conn.execute('SELECT link FROM processed_news').fetchall()
+            }
+        finally:
+            conn.close()
+        self.assertNotIn(new_link, processed)
+        # No dedup ping of any kind — nothing matched.
+        for c in mock_admin.call_args_list:
+            m = c.args[0] if c.args else ''
+            self.assertNotIn('[E014]', m)
+            self.assertNotIn('[E015]', m)
+            self.assertNotIn('[E016]', m)
+
+    @patch('news_bot.fetch_full_article')
+    @patch('news_bot.fetch_rss')
+    @patch('news_bot.load_feeds')
+    @patch('news_bot.send_admin_notification')
+    def test_backstop_includes_candidate_within_7_days(
+        self, mock_admin, mock_load_feeds, mock_fetch_rss, mock_fetch_article,
+    ):
+        """Backstop 7-day cutoff, INSIDE edge — the companion that proves the
+        cutoff is not over-excluding. Identical seeding to the OUTSIDE case but
+        aged to ``published_at = now-3 days`` (inside 7d). The backstop DOES run
+        against the row and hard-blocks on the 100% cross-source car overlap →
+        the article is NOT staged, its link lands in ``processed_news`` and
+        exactly one ``[E015]`` (legacy overlap-percent, not a pair) fires."""
+        seed_link = self._seed_published(
+            'http://t-hunted.example/existing',
+            dict(self._BACKSTOP_SEED_FP),
+            source='t-hunted',
+        )
+        # Age the candidate to 3 days ago — comfortably inside the 7-day window.
+        self._set_published_at(seed_link, "datetime('now','-3 days')")
+
+        new_link = 'http://autoevolution.example/new'
+        mock_load_feeds.return_value = ['http://example.com/feed1.xml']
+        mock_fetch_rss.return_value = [self._make_entry(new_link)]
+        mock_fetch_article.return_value = dict(self._BACKSTOP_NEW_ARTICLE)
+
+        news_bot.job()
+
+        # Inside the 7-day window → backstop hard-blocks the cross-source dupe.
+        self.assertEqual(
+            pending_articles_repo.count_pending(), 0,
+            "candidate inside the 7-day backstop window must block",
+        )
+        conn = sqlite3.connect(self.db_path)
+        try:
+            processed = {
+                r[0] for r in
+                conn.execute('SELECT link FROM processed_news').fetchall()
+            }
+        finally:
+            conn.close()
+        self.assertIn(new_link, processed)
+
+        e015_calls = [
+            c for c in mock_admin.call_args_list
+            if '[E015]' in (c.args[0] if c.args else '')
+        ]
+        self.assertEqual(len(e015_calls), 1)
+        # Backstop signature: legacy overlap-percent block, NOT a pair block.
+        msg = e015_calls[0].args[0]
+        self.assertIn('Совпадение:', msg)
+        self.assertNotIn('Совпавшие пары', msg)
+        for c in mock_admin.call_args_list:
+            m = c.args[0] if c.args else ''
+            self.assertNotIn('[E014]', m)
+            self.assertNotIn('[E016]', m)
+
+    @patch('news_bot.fetch_full_article')
+    @patch('news_bot.fetch_rss')
+    @patch('news_bot.load_feeds')
+    @patch('news_bot.send_admin_notification')
+    def test_toggle_off_skips_pair_rule(
+        self, mock_admin, mock_load_feeds, mock_fetch_rss, mock_fetch_article,
+    ):
+        """AC6 — with ``news_bot.DEDUP_SERIES_ENABLED`` monkeypatched off, the
+        pair rule is skipped entirely: a same-source distinctive pair that
+        would hard-block when enabled instead PUBLISHES, because only the
+        cross-source-only set-overlap backstop runs (and it skips the
+        same-source candidate). Behaviour identical to pre-feature dedup."""
+        self._seed_published(
+            'http://autoevolution.example/existing',
+            {
+                'strict': ['porsche 911'],
+                'brands': ['porsche'],
+                'series': ['k-pop demon hunters'],
+                'pairs': ['porsche 911|k-pop demon hunters|D'],
+            },
+            source='autoevolution',
+        )
+
+        new_link = 'https://www.autoevolution.com/news/more-photos.html'
+        mock_load_feeds.return_value = ['http://example.com/feed1.xml']
+        mock_fetch_rss.return_value = [self._make_entry(new_link)]
+        mock_fetch_article.return_value = {
+            'title': 'Porsche 911 gets a K-Pop Demon Hunters makeover',
+            'subtitle': '',
+            'paragraphs': ['More photos inside.'],
+            'images': [],
+        }
+
+        with patch('news_bot.DEDUP_SERIES_ENABLED', False):
+            news_bot.job()
+
+        # Pair rule skipped → same-source distinctive pair does NOT block.
+        self.assertEqual(pending_articles_repo.count_pending(), 1)
+        self.assertIsNotNone(pending_articles_repo.get_pending(new_link))
+        for c in mock_admin.call_args_list:
+            m = c.args[0] if c.args else ''
+            self.assertNotIn('[E014]', m)
+            self.assertNotIn('[E015]', m)
+            self.assertNotIn('[E016]', m)
 
     @patch('news_bot.fetch_full_article')
     @patch('news_bot.fetch_rss')
@@ -1168,18 +1799,21 @@ class TestCrossSourceDedup(_PrepPhaseBase):
     @patch('news_bot.fetch_rss')
     @patch('news_bot.load_feeds')
     @patch('news_bot.send_admin_notification')
-    def test_within_source_not_deduped(
+    def test_within_source_no_series_publishes(
         self, mock_admin, mock_load_feeds, mock_fetch_rss, mock_fetch_article,
     ):
-        """Decision 9 REVERSED (2026-06-14): dedup is CROSS-source only. Two
-        articles from the SAME source are never compared — even at 100%
-        fingerprint overlap — because one source republishing the same model
-        within 7 days is implausible, and within-source comparison only
-        produces false positives (autoevolution Ford F-100 vs Porsche Team
-        Transport). The same-source new article must PUBLISH normally."""
+        """Set-overlap BACKSTOP stays CROSS-source only (Decision 9 reversed
+        2026-06-14). Two articles from the SAME source with NO recognised
+        series (so the tiered pair rule does not engage) are never compared —
+        even at 100% car-fingerprint overlap — because one source republishing
+        the same model within 7 days is implausible and within-source
+        comparison only produces false positives (autoevolution Ford F-100 vs
+        Porsche Team Transport). The same-source new article must PUBLISH."""
         existing_fp = {
             'strict': ['toyota 4runner', 'subaru legacy gt'],
             'brands': ['toyota', 'subaru'],
+            'series': [],
+            'pairs': [],
         }
         self._seed_published(
             'http://autoevolution.example/existing',
@@ -1235,15 +1869,78 @@ class TestCrossSourceDedup(_PrepPhaseBase):
     @patch('news_bot.fetch_rss')
     @patch('news_bot.load_feeds')
     @patch('news_bot.send_admin_notification')
+    def test_within_source_distinctive_pair_blocks(
+        self, mock_admin, mock_load_feeds, mock_fetch_rss, mock_fetch_article,
+    ):
+        """The tiered pair rule is ANY-source (unlike the backstop): a shared
+        DISTINCTIVE pair means the SAME casting + franchise, so a same-source
+        "more photos" repost is a real duplicate. Guards against reverting the
+        any-source pair scan back into a cross-source-only skip. New article
+        shares ``porsche 911|k-pop demon hunters|D`` with a same-source
+        published row → hard block, exactly one E015."""
+        self._seed_published(
+            'http://autoevolution.example/existing',
+            {
+                'strict': ['porsche 911'],
+                'brands': ['porsche'],
+                'series': ['k-pop demon hunters'],
+                'pairs': ['porsche 911|k-pop demon hunters|D'],
+            },
+            source='autoevolution',
+        )
+
+        # Same source (real autoevolution netloc resolves to 'autoevolution').
+        new_link = 'https://www.autoevolution.com/news/more-photos.html'
+        mock_load_feeds.return_value = ['http://example.com/feed1.xml']
+        mock_fetch_rss.return_value = [self._make_entry(new_link)]
+        mock_fetch_article.return_value = {
+            'title': 'Porsche 911 gets a K-Pop Demon Hunters makeover',
+            'subtitle': '',
+            'paragraphs': ['More photos inside.'],
+            'images': [],
+        }
+
+        news_bot.job()
+
+        # Hard-blocked despite being same-source (pair rule is any-source).
+        self.assertEqual(pending_articles_repo.count_pending(), 0)
+        conn = sqlite3.connect(self.db_path)
+        try:
+            processed = {
+                r[0] for r in
+                conn.execute('SELECT link FROM processed_news').fetchall()
+            }
+        finally:
+            conn.close()
+        self.assertIn(new_link, processed)
+
+        e015_calls = [
+            c for c in mock_admin.call_args_list
+            if '[E015]' in (c.args[0] if c.args else '')
+        ]
+        self.assertEqual(len(e015_calls), 1)
+        # Rendered via the pair-rule builder path (matched-pairs block), not
+        # the legacy overlap-percent block.
+        self.assertIn('Совпавшие пары', e015_calls[0].args[0])
+        for c in mock_admin.call_args_list:
+            msg = c.args[0] if c.args else ''
+            self.assertNotIn('[E014]', msg)
+            self.assertNotIn('[E016]', msg)
+
+    @patch('news_bot.fetch_full_article')
+    @patch('news_bot.fetch_rss')
+    @patch('news_bot.load_feeds')
+    @patch('news_bot.send_admin_notification')
     @patch('news_bot.model_extractor.extract_fingerprint',
-           return_value={'strict': [], 'brands': []})
+           return_value={'strict': [], 'brands': [], 'series': [], 'pairs': []})
     def test_empty_fingerprint(
         self, _mock_extract, mock_admin, mock_load_feeds, mock_fetch_rss,
         mock_fetch_article,
     ):
-        """Article with no brand tokens → passes through with
-        ``{'strict':[], 'brands':[]}`` stored. No comparison against the
-        7-day window (early return) and no pings."""
+        """Article with neither brands nor series → passes through with the
+        4-key all-empty fingerprint stored (AC8). Empty ``strict`` AND empty
+        ``series`` → the gate short-circuits before any candidate fetch and
+        fires no pings."""
         # Pre-seed a row to verify the gate doesn't even try to compare —
         # if it did, the empty similarity guard (AC6) returns 0.0 anyway,
         # but the test pins the no-pings invariant.
@@ -1271,8 +1968,65 @@ class TestCrossSourceDedup(_PrepPhaseBase):
         self.assertIsNotNone(row)
         self.assertEqual(
             row.get('model_fingerprint'),
-            {'strict': [], 'brands': []},
+            {'strict': [], 'brands': [], 'series': [], 'pairs': []},
         )
+        for c in mock_admin.call_args_list:
+            msg = c.args[0] if c.args else ''
+            self.assertNotIn('[E014]', msg)
+            self.assertNotIn('[E015]', msg)
+            self.assertNotIn('[E016]', msg)
+
+    @patch('news_bot.fetch_full_article')
+    @patch('news_bot.fetch_rss')
+    @patch('news_bot.load_feeds')
+    @patch('news_bot.send_admin_notification')
+    def test_both_empty_short_circuit_real_extraction(
+        self, mock_admin, mock_load_feeds, mock_fetch_rss, mock_fetch_article,
+    ):
+        """AC8 end-to-end — a generic non-HW article whose REAL extraction
+        yields empty ``strict`` AND empty ``series`` publishes via the
+        both-empty short-circuit, with no dedup ping.
+
+        Unlike ``test_empty_fingerprint`` (which FORCES the 4-key empty shape
+        via a mock), this runs the ACTUAL ``extract_fingerprint`` over a title
+        with no recognisable brand/model and no lexicon series (test-audit L-4),
+        so the real both-empty gate short-circuit is exercised end-to-end while
+        a candidate row is seeded."""
+        # Seed a published candidate so the gate WOULD have something to fetch
+        # if it did not short-circuit — makes the no-ping assertion meaningful.
+        self._seed_published(
+            'http://t-hunted.example/existing',
+            {'strict': ['toyota 4runner'], 'brands': ['toyota'],
+             'series': [], 'pairs': []},
+            source='t-hunted',
+        )
+
+        new_link = 'http://autoevolution.example/generic'
+        generic_article = {
+            'title': 'City council approves new downtown park budget',
+            'subtitle': '',
+            'paragraphs': [
+                'The local council voted on Tuesday to fund a new public park.',
+                'Construction is expected to begin next spring near the river.',
+            ],
+            'images': [],
+        }
+        # Real-extraction sanity-check: genuinely both-empty (no brand/model,
+        # no lexicon series) — this is a reachable input, not a synthetic mock.
+        probe = news_bot.model_extractor.extract_fingerprint(generic_article)
+        self.assertEqual(probe.get('strict'), [])
+        self.assertEqual(probe.get('series'), [])
+
+        mock_load_feeds.return_value = ['http://example.com/feed1.xml']
+        mock_fetch_rss.return_value = [self._make_entry(new_link)]
+        mock_fetch_article.return_value = generic_article
+
+        news_bot.job()
+
+        # Both-empty short-circuit → article publishes.
+        self.assertEqual(pending_articles_repo.count_pending(), 1)
+        self.assertIsNotNone(pending_articles_repo.get_pending(new_link))
+        # No dedup ping of any kind.
         for c in mock_admin.call_args_list:
             msg = c.args[0] if c.args else ''
             self.assertNotIn('[E014]', msg)
@@ -1335,6 +2089,145 @@ class TestCrossSourceDedup(_PrepPhaseBase):
         # Second article still published (degraded mode never blocks).
         self.assertEqual(pending_articles_repo.count_pending(), 2)
 
+    @patch('news_bot.fetch_full_article')
+    @patch('news_bot.fetch_rss')
+    @patch('news_bot.load_feeds')
+    @patch('news_bot.send_admin_notification')
+    def test_theme_only_pop_culture_flags_no_model(
+        self, mock_admin, mock_load_feeds, mock_fetch_rss, mock_fetch_article,
+    ):
+        """AC4 + AC8 — a REAL pop-culture theme-only article (no recognisable
+        car model → empty ``strict`` with a non-empty ``series``/``pairs``
+        produced by the ACTUAL ``extract_fingerprint``, theme-only key
+        ``*|k-pop demon hunters|B``) shares its theme-only pair with a prior
+        published row → soft-flag: the article PUBLISHES with exactly one E014
+        naming the matched theme, no E015/E016. Exercises the
+        pop-culture-no-model path end-to-end through REAL extraction — the
+        exact case the empty-fp re-gate exists to let through (the extractor
+        genuinely emits ``strict=[]`` here, so this is a reachable scenario,
+        not a synthetic fixture). The re-gate LINE itself is pinned by the
+        companion ``test_theme_only_pop_culture_not_short_circuited``."""
+        # Prior published theme-only row from another source, no car model.
+        self._seed_published(
+            'http://t-hunted.example/existing',
+            {'strict': [], 'brands': [],
+             'series': ['k-pop demon hunters'],
+             'pairs': ['*|k-pop demon hunters|B']},
+            source='t-hunted',
+        )
+
+        new_link = 'http://autoevolution.example/new'
+        pop_article = {
+            'title': 'K-Pop Demon Hunters joins the Hot Wheels character car lineup',
+            'subtitle': '',
+            'paragraphs': [
+                'The animated hit K-Pop Demon Hunters gets a Hot Wheels collectible.',
+                'No specific car casting was announced.',
+            ],
+            'images': [],
+        }
+        # Real-extraction sanity-check: empty strict + a theme-only pair.
+        probe = news_bot.model_extractor.extract_fingerprint(pop_article)
+        self.assertEqual(probe.get('strict'), [])
+        self.assertIn('*|k-pop demon hunters|B', probe.get('pairs') or [])
+
+        mock_load_feeds.return_value = ['http://example.com/feed1.xml']
+        mock_fetch_rss.return_value = [self._make_entry(new_link)]
+        mock_fetch_article.return_value = pop_article
+
+        news_bot.job()
+
+        # Soft flag → article still publishes.
+        self.assertEqual(pending_articles_repo.count_pending(), 1)
+        self.assertIsNotNone(pending_articles_repo.get_pending(new_link))
+
+        e014_calls = [
+            c for c in mock_admin.call_args_list
+            if '[E014]' in (c.args[0] if c.args else '')
+        ]
+        self.assertEqual(
+            len(e014_calls), 1,
+            f"expected exactly one E014, got: {mock_admin.call_args_list}",
+        )
+        self.assertIn('k-pop demon hunters', e014_calls[0].args[0])
+        for c in mock_admin.call_args_list:
+            m = c.args[0] if c.args else ''
+            self.assertNotIn('[E015]', m)
+            self.assertNotIn('[E016]', m)
+
+    @patch('news_bot.fetch_full_article')
+    @patch('news_bot.fetch_rss')
+    @patch('news_bot.load_feeds')
+    @patch('news_bot.send_admin_notification')
+    def test_theme_only_pop_culture_not_short_circuited(
+        self, mock_admin, mock_load_feeds, mock_fetch_rss, mock_fetch_article,
+    ):
+        """AC8 re-gate PIN — a REAL theme-only pop-culture article (empty
+        ``strict`` + non-empty ``series``/``pairs`` from the actual
+        ``extract_fingerprint``) must NOT hit the empty-fp short-circuit.
+
+        The re-gate ``if not strict and not series`` only changes control flow
+        for the empty-strict / non-empty-series shape, and the pair scan
+        (which precedes it) masks that difference whenever the toggle is on.
+        So we toggle the pair rule OFF: the theme-only article then has to fall
+        THROUGH the re-gate into the set-overlap backstop, whose only
+        observable act for an empty-strict fingerprint is fetching candidates
+        (``similarity`` is 0 on empty strict, so no verdict, no ping — the
+        article publishes either way). Reverting the re-gate to the old
+        ``if not strict`` short-circuits BEFORE that fetch, leaving the spies
+        below uncalled → this test FAILS (verified). The fetch call is the
+        load-bearing observation that pins the re-gate line."""
+        # A cross-source published row so the backstop fetch has a row to
+        # return — not required for the pin, keeps the scenario realistic.
+        self._seed_published(
+            'http://t-hunted.example/existing',
+            {'strict': ['toyota supra'], 'brands': ['toyota'],
+             'series': [], 'pairs': []},
+            source='t-hunted',
+        )
+
+        new_link = 'http://autoevolution.example/new'
+        pop_article = {
+            'title': 'K-Pop Demon Hunters comes to Hot Wheels shelves',
+            'subtitle': '',
+            'paragraphs': [
+                'The K-Pop Demon Hunters franchise arrives as a Hot Wheels tie-in.',
+            ],
+            'images': [],
+        }
+        # Real-extraction sanity-check: empty strict, non-empty series.
+        probe = news_bot.model_extractor.extract_fingerprint(pop_article)
+        self.assertEqual(probe.get('strict'), [])
+        self.assertTrue(probe.get('series'))
+
+        mock_load_feeds.return_value = ['http://example.com/feed1.xml']
+        mock_fetch_rss.return_value = [self._make_entry(new_link)]
+        mock_fetch_article.return_value = pop_article
+
+        with patch('news_bot.DEDUP_SERIES_ENABLED', False), \
+             patch('news_bot.pending_repo.list_recent_pending_fingerprints',
+                   wraps=pending_articles_repo.list_recent_pending_fingerprints
+                   ) as m_pend, \
+             patch('news_bot.pending_repo.list_recent_published_fingerprints',
+                   wraps=pending_articles_repo.list_recent_published_fingerprints
+                   ) as m_pub:
+            news_bot.job()
+
+        # Re-gate held: the theme-only article was NOT short-circuited — it
+        # reached the backstop, which fetched candidates exactly once. The
+        # buggy ``if not strict`` revert would short-circuit before this fetch.
+        m_pend.assert_called_once()
+        m_pub.assert_called_once()
+
+        # Empty strict → backstop can't match → article publishes, no pings.
+        self.assertEqual(pending_articles_repo.count_pending(), 1)
+        self.assertIsNotNone(pending_articles_repo.get_pending(new_link))
+        for c in mock_admin.call_args_list:
+            m = c.args[0] if c.args else ''
+            self.assertNotIn('[E014]', m)
+            self.assertNotIn('[E015]', m)
+            self.assertNotIn('[E016]', m)
+
 
 class TestFingerprintCarryThrough(_IntegrationBase):
     """AC2 — fingerprint written to ``pending_articles`` survives the
@@ -1381,6 +2274,54 @@ class TestFingerprintCarryThrough(_IntegrationBase):
             stored_raw = conn.execute(
                 "SELECT model_fingerprint FROM published_articles WHERE link=?",
                 ('http://example.com/roundtrip',),
+            ).fetchone()
+        finally:
+            conn.close()
+        self.assertIsNotNone(stored_raw)
+        import json as _json
+        self.assertEqual(_json.loads(stored_raw[0]), fp)
+
+    def test_pending_to_published_roundtrip_with_pairs(self):
+        """AC2 — the 4-key fingerprint shape (``series``/``pairs`` added by the
+        dedup-model-series feature) survives the ``move_to_published``
+        transition byte-for-byte, not just the legacy 2-key
+        ``strict``/``brands`` shape. Guards the carry-through of the new keys
+        the cross-source pair rule reads on published candidates."""
+        fp = {
+            'strict': ['porsche 911'],
+            'brands': ['porsche'],
+            'series': ['k-pop demon hunters'],
+            'pairs': ['porsche 911|k-pop demon hunters|D'],
+        }
+        pending_articles_repo.insert_pending({
+            'link': 'http://example.com/roundtrip-pairs',
+            'source_name': 'autoevolution',
+            'feed_url': None,
+            'title': 'Roundtrip Pairs Title',
+            'subtitle': '',
+            'paragraphs': ['Body.'],
+            'images': [],
+            'blocks': None,
+            'pub_date': '2026-06-05',
+            'model_fingerprint': fp,
+        })
+        pending_articles_repo.update_staged(
+            'http://example.com/roundtrip-pairs',
+            ru_title='RU Roundtrip Pairs', ru_subtitle='',
+            ru_paragraphs=['Тело.'], ru_blocks=None,
+        )
+        pending_articles_repo.move_to_published(
+            'http://example.com/roundtrip-pairs',
+            telegraph_url='https://telegra.ph/x',
+            telegraph_path='x',
+            via_review=False,
+        )
+
+        conn = sqlite3.connect(self.db_path)
+        try:
+            stored_raw = conn.execute(
+                "SELECT model_fingerprint FROM published_articles WHERE link=?",
+                ('http://example.com/roundtrip-pairs',),
             ).fetchone()
         finally:
             conn.close()

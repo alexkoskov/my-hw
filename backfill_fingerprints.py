@@ -14,16 +14,26 @@ When to run
 
 Idempotency contract
 --------------------
-Canonical "not yet processed" marker is ``model_fingerprint IS NULL`` in the
-``published_articles`` row. Two non-NULL terminal states exist:
+A row is "not yet processed" when ``model_fingerprint IS NULL`` **or** its
+JSON blob is missing the ``$.pairs`` key (i.e. a pre-``dedup-model-series``
+two-key fingerprint written before ``series``/``pairs`` existed). The widened
+re-select warms both the base car-fingerprint and the new pairs in one pass;
+a row is terminal only once its blob carries the four-key structure. Terminal
+non-NULL states:
 
-- ``'{"strict": [...], "brands": [...]}'`` — real fingerprint, the article
-  body was reachable and the extractor produced tokens. Terminal.
-- ``'{"strict": [], "brands": []}'`` — **computed-empty**. The article body
-  was reachable but contained no brand+model tokens the extractor recognises
-  (industry news, retrospective, or the article was deleted upstream so we
-  got an empty body back). Also terminal — must NOT be retried on a later
-  run, because re-fetching will yield the same empty result.
+- ``'{"strict": [...], "brands": [...], "series": [...], "pairs": [...]}'`` —
+  real fingerprint, the article body was reachable and the extractor produced
+  tokens. Terminal.
+- ``'{"strict": [], "brands": [], "series": [], "pairs": []}'`` —
+  **computed-empty**. The article body was reachable but contained no
+  brand+model tokens the extractor recognises (industry news, retrospective,
+  or the article was deleted upstream so we got an empty body back). Also
+  terminal — the ``$.pairs`` key is present, so a later run will not
+  re-select it, and re-fetching would yield the same empty result anyway.
+
+Old two-key blobs (``'{"strict": [...], "brands": [...]}'`` with no
+``$.pairs``) are NOT terminal: they are re-selected and rewritten in the
+four-key form so they gain ``series``/``pairs``.
 
 If ``fetch_full_article`` raises (transient — Cloudflare 403, network
 timeout, DNS hiccup), the row is left with ``model_fingerprint IS NULL`` and
@@ -59,6 +69,7 @@ Exit codes
 from __future__ import annotations
 
 import argparse
+import json
 import logging
 import sqlite3
 import sys
@@ -118,7 +129,9 @@ def _build_parser() -> argparse.ArgumentParser:
         description=(
             'One-shot backfill: extract model_fingerprint for '
             'published_articles rows in the last N days. Idempotent — '
-            'skips rows that already have a non-NULL fingerprint.'
+            'reprocesses rows missing the "pairs" key (NULL, corrupt, or a '
+            'pre-dedup two-key fingerprint); skips rows already carrying '
+            '"pairs".'
         ),
     )
     parser.add_argument(
@@ -141,16 +154,40 @@ def _build_parser() -> argparse.ArgumentParser:
 # ---------------------------------------------------------------------------
 
 
+def _already_backfilled(raw_fp) -> bool:
+    """True when the row's RAW ``model_fingerprint`` blob already carries the
+    ``pairs`` key and must be left untouched — a concurrent writer (or an
+    already-upgraded row) beat us to it.
+
+    The widened SELECT hands us the RAW JSON string (``dict(zip(...))``, not a
+    repo helper that would deserialise), so we parse here. Everything that is
+    NOT a dict already carrying ``pairs`` returns ``False`` → the row is
+    (re)processed: a NULL blob, a genuinely-corrupt / non-JSON blob, a valid
+    non-dict blob (e.g. a JSON array), or an old two-key form (no ``pairs``).
+    ``json.loads`` is wrapped so a corrupt blob is treated as "not backfilled"
+    (reprocess) rather than crashing the whole run — the SQL predicate lets
+    such a row through, so this Python guard is its second line of defence.
+    """
+    if raw_fp is None:
+        return False
+    try:
+        decoded_fp = json.loads(raw_fp)
+    except (ValueError, TypeError):
+        return False
+    return isinstance(decoded_fp, dict) and 'pairs' in decoded_fp
+
+
 def backfill_one(conn, row: dict, *, dry_run: bool) -> str:
     """Process a single ``published_articles`` row.
 
     Returns one of:
-      * ``'skipped'`` — defensive race guard (SELECT filter already rejects
-        non-NULL rows, but the dict carries the live column so we re-check).
+      * ``'skipped'`` — defensive race guard: the blob already carries a
+        ``pairs`` key, so a concurrent writer (or an already-upgraded row)
+        beat us to it and we must not clobber it.
       * ``'updated'`` — real fingerprint extracted and persisted.
       * ``'empty-fp'`` — fetch succeeded but the article body had no
         recognisable brand+model tokens; computed-empty marker
-        ``{"strict": [], "brands": []}`` persisted.
+        ``{"strict": [], "brands": [], "series": [], "pairs": []}`` persisted.
       * ``'error'`` — ``fetch_full_article`` raised; row left NULL for a
         later retry.
 
@@ -158,10 +195,11 @@ def backfill_one(conn, row: dict, *, dry_run: bool) -> str:
     still classifies and returns the verdict, so the summary counters
     reflect what WOULD have happened.
     """
-    # Defensive: SELECT already filters IS NULL, but if a concurrent
-    # writer touched the row between SELECT and now, skip and don't
-    # clobber it.
-    if row.get('model_fingerprint') is not None:
+    # Skip only when the blob already carries the ``pairs`` key — the widened
+    # SELECT deliberately re-selects old two-key blobs (NULL or missing
+    # ``$.pairs``) so they get upgraded, so we must NOT reject them here. See
+    # ``_already_backfilled`` for the parse-then-probe (corrupt-blob-safe).
+    if _already_backfilled(row.get('model_fingerprint')):
         return 'skipped'
 
     link = row['link']
@@ -188,7 +226,10 @@ def backfill_one(conn, row: dict, *, dry_run: bool) -> str:
     # Empty body — terminal computed-empty path. ``None``, ``{}`` without
     # the paragraphs key, and ``{'paragraphs': []}`` all collapse here.
     if not article or not article.get('paragraphs'):
-        empty_fp = {'strict': [], 'brands': []}
+        # Four-key empty form — must match extract_fingerprint's empty
+        # early return. A two-key marker would lack ``$.pairs`` and be
+        # re-selected on every run, breaking idempotency.
+        empty_fp = {'strict': [], 'brands': [], 'series': [], 'pairs': []}
         if not dry_run:
             repo.update_published_fingerprint(conn, link, empty_fp)
             conn.commit()
@@ -234,17 +275,31 @@ def main(argv=None) -> int:
         repo.init_schema(conn)
 
         # SELECT projection mirrors list_recent_published_fingerprints'
-        # row shape but adds the IS NULL filter — we cannot reuse that
-        # helper directly because it returns ALL rows in the window
-        # (used by the dedup gate to inspect every candidate). Backfill
-        # only cares about un-processed rows.
-        # ``days`` parameterised via ``?`` placeholder — never f-string
-        # into SQL bodies (TestSqlAudit invariant).
+        # row shape but adds the "not yet processed" filter — we cannot
+        # reuse that helper directly because it returns ALL rows in the
+        # window (used by the dedup gate to inspect every candidate).
+        # Backfill only cares about un-processed rows: NULL fingerprint OR
+        # a blob missing the ``$.pairs`` key (a pre-dedup-model-series two-key
+        # fingerprint, OR a corrupt/non-JSON blob) — all must be re-selected so
+        # they gain ``series``/``pairs``. The ``json_valid`` CASE guard is
+        # load-bearing: a bare ``json_extract(model_fingerprint, '$.pairs')``
+        # raises ``OperationalError: malformed JSON`` on a corrupt blob, and
+        # because ``fetchall()`` materialises eagerly ONE bad row would abort
+        # the whole run (a ``NOT json_valid(x) OR json_extract(x, ...)`` guard
+        # does NOT reliably short-circuit across SQLite builds). Wrapping the
+        # extract in ``CASE WHEN json_valid(...) THEN json_extract(...) ELSE
+        # NULL END`` yields NULL (→ "needs reprocessing") for malformed blobs
+        # instead of throwing. ``json_extract(..., '$.pairs')`` stays a STATIC
+        # SQL literal (no interpolation); ``days`` is the only bound ``?``
+        # parameter — never f-string untrusted data into SQL bodies
+        # (TestSqlAudit invariant).
         cur = conn.execute(
             "SELECT link, source_name, title, model_fingerprint "
             "FROM published_articles "
             "WHERE published_at >= datetime('now', ? || ' days') "
-            "  AND model_fingerprint IS NULL",
+            "  AND (CASE WHEN json_valid(model_fingerprint) "
+            "            THEN json_extract(model_fingerprint, '$.pairs') "
+            "            ELSE NULL END) IS NULL",
             (f"-{int(args.days)}",),
         )
         col_names = [d[0] for d in cur.description]
@@ -253,7 +308,7 @@ def main(argv=None) -> int:
 
         logger.info(
             "Scanning published_articles WHERE published_at >= -%d days "
-            "AND model_fingerprint IS NULL → %d rows",
+            "AND (model_fingerprint IS NULL OR '$.pairs' missing) → %d rows",
             args.days, total,
         )
 

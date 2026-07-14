@@ -192,6 +192,84 @@ Daily tick at **10:00 МСК** via `schedule.every().day.at("10:00", tz=pytz.tim
 
 ---
 
+## Feature rollout: `dedup-model-series` (cold-DB warm-up + `DEDUP_SERIES_ENABLED` toggle)
+
+One-time staged rollout for the tiered series/theme pair-rule (the layer that
+hard-blocks cross-source pop-culture dupes — K-Pop Demon Hunters, Stranger
+Things, Top Gun). This is a **feature-specific procedure on top of** the general
+Pre-Deploy Checklist above — do not skip that; this only adds the cold-DB
+warm-up + dark-deploy sequence. **Operator applies all server commands; Claude
+only prepares them.**
+
+> **⚠️ Everything here runs OUTSIDE the 10:00–20:00 МСК publish window.** Each
+> `docker compose up -d --build` restarts the container and resets the
+> in-process daily schedule (`compute_fixed_slots`, slots 10:00 / 15:00 / **19:30**).
+> The Moscow host is on UTC.
+
+**Why the warm-up is load-bearing:** the dedup gate looks back only **7 days**
+through `pending_articles` + `published_articles` fingerprints. The Moscow prod
+DB is **cold** — copied from the pre-feature NL snapshot — so every historical
+row has `model_fingerprint IS NULL` and the gate has nothing to compare against
+for ~the first week. `backfill_fingerprints.py` warms both the base
+car-fingerprint AND the new `series`/`pairs` keys so the gate has history to
+match on before the pair-rule goes live.
+
+### Pre-deploy cold-DB check (operator, before touching anything)
+
+On the Moscow host, confirm the base is cold:
+
+```
+sqlite3 /root/hw-news/data/news.db "SELECT COUNT(*) FROM published_articles WHERE model_fingerprint IS NOT NULL"
+```
+
+Expect `0` (cold DB — no fingerprints yet). `Error: no such column:
+model_fingerprint` is **also** an expected confirmation: it means the snapshot
+predates the cross-source-dedup `ALTER`, which `init_db()` applies on the next
+container boot. Either result → safe to proceed. A large non-zero count would be
+a surprise (base is warmer than assumed) — stop and investigate before backfilling.
+
+### Staged rollout (strictly outside the window)
+
+1. **Pre-check** — run the `SELECT COUNT(*)` above; confirm `0` / no-such-column.
+2. **Dark deploy** — in the **hand-managed prod `.env`** on the host add
+   `DEDUP_SERIES_ENABLED=0`. The toggle is read **once at import**
+   (`news_bot.DEDUP_SERIES_ENABLED`, default ON: unset/blank → enabled; only
+   `0/false/no/off` disable it), so it takes effect on the next rebuild. With it
+   off the gate runs only the legacy set-overlap backstop — the new pair-rule is
+   inert and **cannot hard-block**.
+3. **Build & restart** — `cd /root/hw-news && git pull && docker compose up -d --build`.
+   `init_db()` adds the `model_fingerprint` column if the snapshot lacked it
+   (idempotent).
+4. **Warm-up backfill** — `docker compose exec -T news-bot python3 backfill_fingerprints.py --days 30`
+   (inherits `DB_FILE=/data/news.db` from the container env). Idempotent
+   (re-runnable; only touches rows missing the `$.pairs` key), supports
+   `--dry-run` for a no-write dress rehearsal, and `--days` is clamped to
+   `[1, 90]`. 30 days comfortably covers the gate's 7-day look-back.
+5. **Re-count & dark-observe** — re-run the `SELECT COUNT(*)`; it must now be
+   `> 0`. Watch `docker logs hw-news-bot` for a day or two on the freshly warmed
+   base: fingerprints extracting cleanly on live articles, no `[E018]` DB-guard
+   ping. The pair-rule is still OFF, so no hard block can land — that is the
+   safety of the dark phase.
+6. **Enable** — set `DEDUP_SERIES_ENABLED=1` (or simply **remove the override** —
+   default is on) in the prod `.env`, then `docker compose up -d --build` again,
+   **outside the window**. The pair-rule is now live: a shared broad pair
+   soft-flags (`[E014]` — article still publishes + ping), a shared distinctive
+   `|D` pair hard-blocks (`[E015]`, irreversible — no manual re-publish). Watch
+   the first days of `[E014]`/`[E015]` pings for false positives.
+
+> **Expected behaviour change once ON (not a regression).** A broad-tier
+> republish that the legacy backstop *used* to silently hard-block at ≥50%
+> car-overlap — e.g. a recurring **Car Culture** line re-covered by a second
+> source — now **SOFT-FLAGS and PUBLISHES** with an `[E014]` ping instead of
+> being dropped. This is intended (Decision 3 tiering: only a distinctive `|D`
+> pair may hard-block; broad `|B` pairs always publish-and-notify). The `[E014]`
+> ping IS the recovery signal — if it turns out to be a genuine dupe, the
+> operator removes it via `hw_review.py`. So expect **more visible `[E014]`
+> pings and fewer silent drops** right after enabling; that is the feature
+> working, not a false positive.
+
+---
+
 ## Rollback Procedure
 
 **Prod (Moscow Docker):** `git revert HEAD && git push origin main`, then on the host `git pull && docker compose up -d --build` (outside the window). ~3–4 min incl. build.
