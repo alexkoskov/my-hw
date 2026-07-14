@@ -8,13 +8,16 @@ Covers:
   smoke).
 - ``TestSimilarity`` — the Decision 4 guarded two-level Jaccard formula
   (AC6 empty-fp guard, AC8 1-token / brand-count guards, AC10 two-level max).
-- ``test_calibration_accuracy`` — runs ``extract_fingerprint`` + ``similarity``
-  on the 8-pair calibration fixture and asserts ≥7/8 correct classifications
-  (Decision 13 floor; user-spec AC12 target is ≥95% but the floor is the
-  gating threshold).
-- ``test_calibration_real_pair_must_pass`` — the real 2026-06-03 pair MUST
-  classify as duplicate (Decision 13 must-pass split — guards the load-
-  bearing example from being absorbed into the 1-misclassification budget).
+- ``test_calibration_pair_tier_accuracy`` — runs ``extract_fingerprint`` +
+  ``shares_pair`` on the 8-pair calibration fixture and asserts ≥7/8 correct
+  tier-verdicts (``duplicate`` / ``soft-flag`` / ``non-duplicate``), the
+  user-spec AC11 floor.
+- ``test_calibration_sdcc_dupes_hard_block`` — the 3 real SDCC 2026 dupes MUST
+  hard-block (``any_distinctive is True``). A SEPARATE hard invariant, kept out
+  of the ≥7/8 budget: a missed hard block is a silent, irreversible drop.
+- ``test_calibration_not_dupes_never_hard_block`` — every not-dupe probe MUST
+  NOT hard-block (``any_distinctive is False``), the other half of the
+  asymmetric invariant.
 """
 
 from __future__ import annotations
@@ -336,68 +339,116 @@ class TestSimilarity:
 
 
 # ---------------------------------------------------------------------------
-# Calibration tests (Decision 13)
+# Calibration tests — pair-tier verdict (user-spec AC11)
 # ---------------------------------------------------------------------------
+#
+# The 8-pair fixture is scored through the NEW pair-rule (``shares_pair`` over
+# the ``(model + series/theme)`` fingerprint), NOT the old car-set ``similarity``
+# Jaccard: the motivating dupes are pop-culture tie-ins (K-Pop Demon Hunters,
+# Stranger Things, Top Gun) whose ``strict`` car-set is empty on the themed
+# side, so the old Jaccard scored them ~0 and silently passed the exact cases
+# this feature exists to catch. The tier is read straight off the shared key's
+# ``|D`` / ``|B`` suffix (``shares_pair`` → ``any_distinctive``); no re-lookup.
+#
+# Gating: an aggregate floor (≥7/8 tier-verdicts) PLUS two asymmetric HARD
+# invariants pinned as separate tests — a silent hard block is irreversible (no
+# manual re-publish), so "MUST block" (the 3 SDCC dupes) and "MUST NOT block"
+# (every not-dupe probe) cannot be absorbed into the aggregate's 1-error budget.
 
 
-def _classify(sim: float) -> str:
-    """Classifier matching tech-spec Decision 4 thresholds."""
-    if sim >= 0.50:
-        return 'duplicate'
-    if sim >= 0.30:
-        return 'soft-flag'
-    return 'non-duplicate'
+def _pair_tier_verdict(pair: dict) -> tuple:
+    """Score one fixture pair through the shipped pair-tier gate.
+
+    Mirrors the Task 4 gate semantics: extract both fingerprints, intersect
+    their ``pairs`` via ``shares_pair``, then map the ``(any_shared,
+    any_distinctive)`` signal to the three-way verdict —
+      * shared ``|D`` pair  → ``'duplicate'``     (HARD block, ``[E015]``)
+      * shared ``|B`` only   → ``'soft-flag'``    (publishes + ping, ``[E014]``)
+      * no shared pair       → ``'non-duplicate'`` (pass through)
+
+    Returns ``(any_distinctive, verdict)`` so callers can assert both the
+    aggregate tier-verdict and the load-bearing hard-block polarity.
+    """
+    fp_a = extract_fingerprint(pair['a'])
+    fp_b = extract_fingerprint(pair['b'])
+    any_shared, _shared, any_distinctive = shares_pair(fp_a, fp_b)
+    if any_distinctive:
+        verdict = 'duplicate'
+    elif any_shared:
+        verdict = 'soft-flag'
+    else:
+        verdict = 'non-duplicate'
+    return any_distinctive, verdict
 
 
-def test_calibration_accuracy():
-    """≥7/8 pairs must be classified correctly (Decision 13 floor).
+def test_calibration_pair_tier_accuracy():
+    """≥7/8 pairs must map to the correct tier-verdict (user-spec AC11 floor).
 
-    User-spec AC12 target is ≥95% accuracy; the floor (≥87.5% = 7/8) is the
-    gating threshold. The must-pass split (`test_calibration_real_pair_must_
-    pass`) protects the load-bearing real pair from being absorbed into the
-    1-misclassification budget.
+    The aggregate budget allows exactly ONE misclassification. The two hard
+    invariants below (SDCC-must-block / not-dupe-must-not-block) are pinned
+    separately so an irreversible silent hard block can never hide inside this
+    budget.
     """
     pairs = DUPE_PAIRS + NON_DUPE_PAIRS
     correct = 0
     misclassified = []
     for pair in pairs:
-        fp_a = extract_fingerprint(pair['a'])
-        fp_b = extract_fingerprint(pair['b'])
-        sim = similarity(fp_a, fp_b)
-        verdict = _classify(sim)
+        _any_distinctive, verdict = _pair_tier_verdict(pair)
         expected = pair['expected_verdict']
         if verdict == expected:
             correct += 1
         else:
             misclassified.append(
-                f"{pair['label']}: sim={sim:.3f} → {verdict} "
-                f"(expected {expected})"
+                f"{pair['label']}: {verdict} (expected {expected})"
             )
     total = len(pairs)
     assert correct >= 7, (
-        f"Calibration floor: {correct}/{total} correct (need ≥7/8). "
-        f"Misclassified: {misclassified}"
+        f"Calibration floor: {correct}/{total} correct tier-verdicts "
+        f"(need ≥7/8). Misclassified: {misclassified}"
     )
 
 
-def test_calibration_real_pair_must_pass():
-    """The real 2026-06-03 pair MUST classify as duplicate.
+def test_calibration_sdcc_dupes_hard_block():
+    """The 3 real SDCC 2026 dupes MUST hard-block (``any_distinctive is True``).
 
-    Decision 13 must-pass split — without this guard, the 1-misclassification
-    budget in ``test_calibration_accuracy`` could absorb the only pair that
-    motivated the entire feature.
+    A SEPARATE hard invariant, NOT folded into the ≥7/8 aggregate: a missed
+    hard block is a silent, irreversible drop (no manual re-publish, no
+    per-subscriber recovery), so these three cannot be absorbed into the
+    1-misclassification budget. Selected by the fixture's load-bearing
+    ``expected_any_distinctive`` flag — pair-1 (Car Culture) is a BROAD
+    soft-flag dupe and is correctly excluded.
     """
-    pair = next(p for p in DUPE_PAIRS if p['label'] == 'pair-1-real-2026-06-03')
-    fp_a = extract_fingerprint(pair['a'])
-    fp_b = extract_fingerprint(pair['b'])
-    sim = similarity(fp_a, fp_b)
-    # Assert the decision verdict, not the raw threshold — the guard must
-    # survive a threshold tune (Decision 13 / Task 8 audit M1).
-    assert _classify(sim) == 'duplicate', (
-        f"Real 2026-06-03 pair must classify as duplicate. "
-        f"Got verdict {_classify(sim)!r} at sim={sim:.3f}. "
-        f"fp_a={fp_a}, fp_b={fp_b}"
+    sdcc_dupes = [p for p in DUPE_PAIRS if p['expected_any_distinctive']]
+    # Guard against a fixture change silently emptying the selection (an empty
+    # loop would vacuously pass and drop the whole invariant).
+    assert len(sdcc_dupes) == 3, (
+        f"expected the 3 real SDCC dupes in DUPE_PAIRS, got "
+        f"{[p['label'] for p in sdcc_dupes]}"
     )
+    for pair in sdcc_dupes:
+        any_distinctive, _verdict = _pair_tier_verdict(pair)
+        assert any_distinctive is True, (
+            f"{pair['label']} MUST hard-block (shared |D pair), "
+            f"got any_distinctive={any_distinctive!r}"
+        )
+
+
+def test_calibration_not_dupes_never_hard_block():
+    """Every not-dupe probe MUST NOT hard-block (``any_distinctive is False``).
+
+    The other half of the asymmetric invariant: a not-dupe that hard-blocks is
+    a silent false-positive drop. Soft-flag or pass are BOTH acceptable for
+    these probes (same car in a different series, theme-only Stranger Things,
+    a same-source broad near-miss); only a hard block is forbidden. Kept out of
+    the aggregate for the same irreversibility reason as the SDCC invariant.
+    """
+    assert NON_DUPE_PAIRS, "NON_DUPE_PAIRS must not be empty"
+    for pair in NON_DUPE_PAIRS:
+        any_distinctive, _verdict = _pair_tier_verdict(pair)
+        assert any_distinctive is False, (
+            f"{pair['label']} MUST NOT hard-block, "
+            f"got any_distinctive={any_distinctive!r}"
+        )
 
 
 # ---------------------------------------------------------------------------
