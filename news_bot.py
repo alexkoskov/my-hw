@@ -2205,12 +2205,28 @@ def job():
     # One source failing must not abort the tick — sanitise the error
     # string and surface it to the admin, then carry on.
     # ------------------------------------------------------------------
+    # Intake-funnel diagnostic (watchdog): a per-tick breakdown of where
+    # articles disappear on the way to being staged. Plain ints only — these
+    # counters can never raise, and the ping builders render them defensively
+    # (see admin_alerts._format_funnel). Covers INTAKE/STAGING (step b) only.
+    funnel = {
+        'sources_fetched': 0,     # len(all_entries) after the b1 fetch loop
+        'sources_failed': 0,      # SOURCES that threw in the b1 loop
+        'new_count': 0,           # len(new_entries) after both b2 filters
+        'dropped_no_article': 0,  # b3: no link OR no article/paragraphs
+        'dropped_checklist': 0,   # b3: text-only checklist reject
+        'dropped_dedup_block': 0, # b3: cross-source hard-block (E015)
+        'dedup_degraded': 0,      # b3: dedup crashed → degraded (E016), still attempts to stage
+        'staged': 0,              # == inserted
+    }
+
     all_entries = []
     for fetcher in SOURCES:
         fetcher_name = getattr(fetcher, '__name__', repr(fetcher))
         try:
             items = fetcher(notifier=send_admin_notification) or []
         except Exception as exc:
+            funnel['sources_failed'] += 1
             safe = sanitize_error_message(exc)
             logger.error(f"Source fetcher {fetcher_name} failed: {safe}")
             try:
@@ -2221,6 +2237,7 @@ def job():
                 logger.error(f"Failed to send admin notification: {notify_err}")
             continue
         all_entries.extend(items)
+    funnel['sources_fetched'] = len(all_entries)
     logger.info(f"Fetched {len(all_entries)} entries across {len(SOURCES)} sources.")
 
     # ------------------------------------------------------------------
@@ -2239,6 +2256,7 @@ def job():
             f"Filtered out {before_pending_filter - len(new_entries)} "
             f"entries already in pending_articles."
         )
+    funnel['new_count'] = len(new_entries)
 
     # ------------------------------------------------------------------
     # Step (b3): stage each accepted entry into pending_articles.
@@ -2249,11 +2267,13 @@ def job():
     for entry in new_entries:
         link = entry.get('link')
         if not link:
+            funnel['dropped_no_article'] += 1
             logger.warning("Entry has no link, skipping.")
             continue
 
         article = fetch_full_article(entry)
         if not article or not article.get('paragraphs'):
+            funnel['dropped_no_article'] += 1
             logger.warning(f"No article data for {link}, skipping")
             continue
 
@@ -2262,6 +2282,7 @@ def job():
         # don't want a translated bullet list. Reviews that mention a
         # checklist in the title but have substantive body text pass.
         if _is_text_only_checklist(entry, article):
+            funnel['dropped_checklist'] += 1
             logger.info(
                 "Skipping checklist-only article (no editorial body): %s",
                 link,
@@ -2300,6 +2321,7 @@ def job():
                 )
 
                 if decision == 'block':
+                    funnel['dropped_dedup_block'] += 1
                     logger.info(
                         "Skipping cross-source duplicate %s; matched %s "
                         "(overlap %d%%)",
@@ -2359,6 +2381,7 @@ def job():
             # repo SQL fault, exotic article shape, malformed historical
             # fingerprint JSON). The contract is "dedup never blocks
             # publishing" — a single broad handler enforces it.
+            funnel['dedup_degraded'] += 1
             logger.exception("dedup gate failed, degraded mode active")
             try:
                 rl_conn = pending_repo._connect()
@@ -2411,6 +2434,20 @@ def job():
             safe = sanitize_error_message(exc)
             logger.error(f"insert_pending failed for {link}: {safe}")
 
+    funnel['staged'] = inserted
+    # One structured, greppable funnel line per tick — pinpoints the intake
+    # stage where articles vanished on a quiet day (E009). Plain ints, so this
+    # cannot raise.
+    logger.info(
+        "[funnel] sources=%d(failed=%d) new=%d "
+        "dropped(no_article=%d,checklist=%d,dedup_block=%d,dedup_degraded=%d) "
+        "staged=%d",
+        funnel['sources_fetched'], funnel['sources_failed'],
+        funnel['new_count'], funnel['dropped_no_article'],
+        funnel['dropped_checklist'], funnel['dropped_dedup_block'],
+        funnel['dedup_degraded'], funnel['staged'],
+    )
+
     # ------------------------------------------------------------------
     # Step (c): compute today's publish slots.
     # ``compute_fixed_slots`` returns (slots, carry_over) for the three
@@ -2431,12 +2468,27 @@ def job():
     # Busy day:  multi-line columnar «🟢 План на сегодня — …»
     # Backlog warning fires as a separate ping at queue_size > 50 (AC20).
     # ------------------------------------------------------------------
-    if queue_size == 0 and inserted == 0:
-        plan_msg = admin_alerts.alert_quiet_day()
-    else:
-        plan_msg = admin_alerts.alert_plan_of_day(
-            inserted, queue_size, slots, carry_over
+    # Build the ping. The funnel renderers already fail safe internally, but
+    # wrap the BUILD too (belt-and-suspenders): a formatting bug in the funnel
+    # path must never break the tick — fall back to the no-funnel legacy call.
+    try:
+        if queue_size == 0 and inserted == 0:
+            plan_msg = admin_alerts.alert_quiet_day(funnel=funnel)
+        else:
+            plan_msg = admin_alerts.alert_plan_of_day(
+                inserted, queue_size, slots, carry_over, funnel=funnel
+            )
+    except Exception as build_err:
+        logger.error(
+            f"Failed to build plan-of-day ping with funnel, falling back to "
+            f"legacy: {sanitize_error_message(build_err)}"
         )
+        if queue_size == 0 and inserted == 0:
+            plan_msg = admin_alerts.alert_quiet_day()
+        else:
+            plan_msg = admin_alerts.alert_plan_of_day(
+                inserted, queue_size, slots, carry_over
+            )
     try:
         send_admin_notification(plan_msg)
     except Exception as notify_err:

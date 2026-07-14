@@ -486,6 +486,255 @@ class TestAdminAlerts(unittest.TestCase):
             self.assertRegex(code, r"^\[E\d{3}\]$")
 
 
+class TestIntakeFunnel(unittest.TestCase):
+    """intake-funnel diagnostic (watchdog) — E009/E008 enrichment + the
+    pure ``_format_funnel`` helper. The funnel is a plain-int dict built in
+    ``news_bot.job()`` step (b); these builders must render it safely and
+    NEVER raise, even on malformed input."""
+
+    # A funnel where sources produced entries but every candidate was
+    # dropped at the cross-source dedup stage → intake collapsed at dedup.
+    DEDUP_COLLAPSE = {
+        'sources_fetched': 5,
+        'sources_failed': 0,
+        'new_count': 3,
+        'dropped_no_article': 0,
+        'dropped_checklist': 0,
+        'dropped_dedup_block': 3,
+        'dedup_degraded': 0,
+        'staged': 0,
+    }
+
+    BUSY = {
+        'sources_fetched': 8,
+        'sources_failed': 1,
+        'new_count': 4,
+        'dropped_no_article': 1,
+        'dropped_checklist': 0,
+        'dropped_dedup_block': 1,
+        'dedup_degraded': 0,
+        'staged': 2,
+    }
+
+    # Sources all threw → nothing fetched → collapse at fetch (failed > 0).
+    SOURCES_DOWN = {
+        'sources_fetched': 0,
+        'sources_failed': 2,
+        'new_count': 0,
+        'dropped_no_article': 0,
+        'dropped_checklist': 0,
+        'dropped_dedup_block': 0,
+        'dedup_degraded': 0,
+        'staged': 0,
+    }
+
+    # Sources answered but returned zero entries → collapse at fetch (no new).
+    NO_ENTRIES = {
+        'sources_fetched': 0,
+        'sources_failed': 0,
+        'new_count': 0,
+        'dropped_no_article': 0,
+        'dropped_checklist': 0,
+        'dropped_dedup_block': 0,
+        'dedup_degraded': 0,
+        'staged': 0,
+    }
+
+    # Entries fetched but the pending/processed filters dropped every one
+    # (new_count == 0) → "все записи уже известны".
+    ALL_KNOWN = {
+        'sources_fetched': 4,
+        'sources_failed': 0,
+        'new_count': 0,
+        'dropped_no_article': 0,
+        'dropped_checklist': 0,
+        'dropped_dedup_block': 0,
+        'dedup_degraded': 0,
+        'staged': 0,
+    }
+
+    # new > 0, nothing staged, "no article/text" is the dominant drop stage.
+    NO_ARTICLE_MAX = {
+        'sources_fetched': 7,
+        'sources_failed': 0,
+        'new_count': 6,
+        'dropped_no_article': 5,
+        'dropped_checklist': 1,
+        'dropped_dedup_block': 0,
+        'dedup_degraded': 0,
+        'staged': 0,
+    }
+
+    # new > 0, nothing staged, "checklist without text" is the dominant stage.
+    CHECKLIST_MAX = {
+        'sources_fetched': 6,
+        'sources_failed': 0,
+        'new_count': 5,
+        'dropped_no_article': 1,
+        'dropped_checklist': 4,
+        'dropped_dedup_block': 0,
+        'dedup_degraded': 0,
+        'staged': 0,
+    }
+
+    # ------------------------------------------------------------------
+    # _format_funnel — pure helper shape + fail-safety
+    # ------------------------------------------------------------------
+    def test_format_funnel_shape(self):
+        block = admin_alerts._format_funnel(self.DEDUP_COLLAPSE)
+        self.assertIsInstance(block, str)
+        self.assertIn("Воронка", block)
+        # Every stage number is rendered — assert LABEL+digit so a stray digit
+        # elsewhere in the block can't accidentally satisfy the check.
+        self.assertIn("получено записей: 5", block)     # sources fetched (entries)
+        self.assertIn("новых после фильтров: 3", block)  # new after filters
+        # Drop labels present.
+        self.assertIn("дубль-блок", block)
+        self.assertIn("нет статьи", block)
+        self.assertIn("чеклист", block)
+        # Collapse stage pinpointed at dedup. Assert the collapse-note-SPECIFIC
+        # line (label + PARENTHESISED count) — this exact format can ONLY come
+        # from _funnel_collapse_note picking 'дубль-блок' as the winning stage;
+        # the fixed breakdown line above uses 'дубль-блок 3' (no parentheses),
+        # so a neutered note that stops pinpointing would fail this assertion.
+        self.assertIn("Где схлопнулось: дубль-блок (3)", block)
+
+    def test_format_funnel_all_zero_or_empty_renders_safely(self):
+        # Empty dict and an all-zero dict must both render without raising
+        # and still produce a readable string.
+        for funnel in ({}, dict.fromkeys(self.DEDUP_COLLAPSE, 0)):
+            block = admin_alerts._format_funnel(funnel)
+            self.assertIsInstance(block, str)
+            self.assertIn("Воронка", block)
+
+    def test_format_funnel_non_dict_returns_empty(self):
+        for bad in (None, "not a dict", 12345, ["list"], object()):
+            self.assertEqual(admin_alerts._format_funnel(bad), "")
+
+    # ------------------------------------------------------------------
+    # _funnel_collapse_note — one assertion per winning stage. These are the
+    # tests the round-1 review found missing: every branch of the note must
+    # name the RIGHT stage, so a broken max()/branch order is caught. Each
+    # asserts the collapse-note-SPECIFIC line, not a breakdown fragment.
+    # ------------------------------------------------------------------
+    def test_collapse_note_sources_failed(self):
+        # sources_fetched == 0 AND a source threw → blame the fetch stage.
+        block = admin_alerts._format_funnel(self.SOURCES_DOWN)
+        self.assertIn("Где схлопнулось: источники не ответили (2)", block)
+
+    def test_collapse_note_no_entries_fetched(self):
+        # sources_fetched == 0, none threw → sources simply had nothing new.
+        block = admin_alerts._format_funnel(self.NO_ENTRIES)
+        self.assertIn("Где схлопнулось: источники не дали новых записей", block)
+        # Must NOT be attributed to a failure when nothing threw.
+        self.assertNotIn("источники не ответили", block)
+
+    def test_collapse_note_all_known(self):
+        # Entries fetched but new_count == 0 → filters already knew them all.
+        block = admin_alerts._format_funnel(self.ALL_KNOWN)
+        self.assertIn(
+            "Где схлопнулось: все записи уже известны (фильтры отсеяли всё)",
+            block,
+        )
+
+    def test_collapse_note_no_article_dominant(self):
+        # new > 0, nothing staged, no-article is the max drop → name it.
+        block = admin_alerts._format_funnel(self.NO_ARTICLE_MAX)
+        self.assertIn("Где схлопнулось: нет статьи/текста (5)", block)
+        # The runner-up (checklist) must NOT be the one pinpointed.
+        self.assertNotIn("Где схлопнулось: чеклист", block)
+
+    def test_collapse_note_checklist_dominant(self):
+        # new > 0, nothing staged, checklist is the max drop → name it.
+        block = admin_alerts._format_funnel(self.CHECKLIST_MAX)
+        self.assertIn("Где схлопнулось: чеклист без текста (4)", block)
+        # The runner-up (no-article) must NOT be the one pinpointed.
+        self.assertNotIn("Где схлопнулось: нет статьи", block)
+
+    # ------------------------------------------------------------------
+    # E009 — alert_quiet_day enrichment + back-compat
+    # ------------------------------------------------------------------
+    def test_e009_quiet_day_with_funnel_renders_breakdown(self):
+        msg = admin_alerts.alert_quiet_day(funnel=self.DEDUP_COLLAPSE)
+        # Anchor + legacy first line preserved.
+        self.assertIn("[E009]", msg)
+        self.assertIn("🟢", msg)
+        self.assertIn("Бот сработал", msg)
+        # Funnel breakdown appended.
+        self.assertIn("Воронка", msg)
+        self.assertIn("дубль-блок", msg)
+        # Collapse stage pinpointed at dedup — assert the collapse-note-SPECIFIC
+        # format (label + parenthesised count), not the bare 'дубль-блок' which
+        # is already guaranteed by the breakdown line above.
+        self.assertIn("Где схлопнулось: дубль-блок (3)", msg)
+        # Scope note: translate/post is N/A when the queue is empty.
+        self.assertIn("очередь пуста", msg)
+        # Plain-text only — no markdown formatting sneaks in.
+        self.assertNotIn("**", msg)
+        # No secret shapes leak (funnel is ints only, belt-and-suspenders).
+        self.assertNotIn("sk-", msg)
+
+    def test_e009_quiet_day_no_arg_backcompat(self):
+        # Legacy zero-arg call must still render the exact single line.
+        msg = admin_alerts.alert_quiet_day()
+        self.assertIn("[E009]", msg)
+        self.assertIn("Бот сработал", msg)
+        self.assertNotIn("Воронка", msg)
+
+    def test_e009_quiet_day_funnel_none_backcompat(self):
+        # Explicit funnel=None behaves like the legacy call.
+        self.assertEqual(
+            admin_alerts.alert_quiet_day(funnel=None),
+            admin_alerts.alert_quiet_day(),
+        )
+
+    def test_e009_quiet_day_broken_funnel_does_not_raise(self):
+        # A malformed funnel must NOT break the builder. NOTE the two distinct
+        # fallbacks: a NON-DICT funnel ("boom"/123/["x"]/object()) returns ""
+        # → the legacy single-line ping. A DICT with a bad-valued field
+        # ({"sources_fetched": "NaN"}) does NOT fall back — each bad field is
+        # coerced to 0 and a zeroed «Воронка» breakdown is rendered. Either way
+        # the anchor + legacy first line are present, which is all we assert.
+        for bad in ("boom", 123, ["x"], object(), {"sources_fetched": "NaN"}):
+            msg = admin_alerts.alert_quiet_day(funnel=bad)
+            self.assertIn("[E009]", msg)
+            self.assertIn("Бот сработал", msg)
+
+    # ------------------------------------------------------------------
+    # E008 — alert_plan_of_day enrichment + legacy positional call
+    # ------------------------------------------------------------------
+    def test_e008_plan_of_day_legacy_positional_unchanged(self):
+        slots = [datetime(2026, 5, 10, 10, 0, tzinfo=MSK)]
+        # Existing positional call (no funnel) must keep working verbatim.
+        msg = admin_alerts.alert_plan_of_day(2, 2, slots, 0)
+        self.assertIn("[E008]", msg)
+        self.assertIn("План на сегодня", msg)
+        self.assertIn("Принято свежих: 2", msg)
+        self.assertNotIn("Приём:", msg)
+
+    def test_e008_plan_of_day_with_funnel_adds_compact_line(self):
+        slots = [datetime(2026, 5, 10, 10, 0, tzinfo=MSK)]
+        msg = admin_alerts.alert_plan_of_day(2, 2, slots, 0, funnel=self.BUSY)
+        self.assertIn("[E008]", msg)
+        self.assertIn("План на сегодня", msg)
+        self.assertIn("Принято свежих: 2", msg)
+        # Compact one-line intake summary appended.
+        self.assertIn("Приём:", msg)
+        self.assertIn("в очередь 2", msg)
+        # The BUSY fixture was built to exercise the failed-source and dropped
+        # parts of the compact line — pin them so a bug that drops the
+        # `failed_part` branch or miscomputes the drop sum is caught.
+        self.assertIn("источники-сбои 1", msg)   # sources_failed == 1
+        self.assertIn("отсеяно 2", msg)          # no_article(1)+checklist(0)+block(1)
+
+    def test_e008_plan_of_day_broken_funnel_does_not_raise(self):
+        slots = [datetime(2026, 5, 10, 10, 0, tzinfo=MSK)]
+        for bad in ("boom", 123, object(), {"staged": "NaN"}):
+            msg = admin_alerts.alert_plan_of_day(1, 1, slots, 0, funnel=bad)
+            self.assertIn("[E008]", msg)
+            self.assertIn("План на сегодня", msg)
+
+
 class TestOpenRouterLowBalanceAlert(unittest.TestCase):
     def test_e019_openrouter_low_balance(self):
         msg = admin_alerts.alert_openrouter_low_balance(3.25, 5.0)

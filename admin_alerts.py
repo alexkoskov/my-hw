@@ -153,29 +153,178 @@ def alert_zombie_cleanup_failed(link: str, error_type: str) -> str:
 
 
 # ---------------------------------------------------------------------------
+# Intake-funnel diagnostic (watchdog) — shared by E008/E009.
+#
+# ``news_bot.job()`` step (b) accumulates a plain-int funnel dict per tick.
+# These helpers render it for the operator ping so a quiet day pinpoints
+# WHERE intake collapsed (fetch / filters / dedup) instead of the opaque
+# «новых статей нет». Contract: PURE, DETERMINISTIC, plain-text (no markdown
+# / parse_mode), and NEVER raises — a non-dict funnel degrades to "" so the
+# ping falls back to its legacy single line (a dict with bad-valued fields
+# instead renders a zeroed breakdown). Covers INTAKE/STAGING only;
+# translation/posting happen later at slots and are shown as not-applicable
+# on a quiet day.
+# ---------------------------------------------------------------------------
+def _funnel_int(funnel: dict, key: str) -> int:
+    """Best-effort non-negative int read from the funnel dict; never raises.
+
+    Counters in ``job()`` only ever increment, so a negative value would be a
+    bug upstream — clamp to 0 to honour the "non-negative" contract regardless.
+    """
+    try:
+        return max(0, int(funnel.get(key, 0) or 0))
+    except Exception:
+        return 0
+
+
+def _funnel_collapse_note(
+    sources: int, failed: int, new: int,
+    no_article: int, checklist: int, block: int, staged: int,
+) -> str:
+    """One-line pinpoint of the stage where intake collapsed. Returns "" when
+    something WAS staged (no collapse to report). ``dedup_degraded`` is not a
+    drop (those articles still publish) so it is never a collapse cause."""
+    try:
+        if staged > 0:
+            return ""
+        if sources == 0:
+            if failed > 0:
+                return f"Где схлопнулось: источники не ответили ({failed})"
+            return "Где схлопнулось: источники не дали новых записей"
+        if new == 0:
+            return "Где схлопнулось: все записи уже известны (фильтры отсеяли всё)"
+        # new > 0 but nothing staged — the loop dropped every candidate.
+        drops = (
+            ("дубль-блок", block),
+            ("нет статьи/текста", no_article),
+            ("чеклист без текста", checklist),
+        )
+        stage, count = max(drops, key=lambda kv: kv[1])
+        if count > 0:
+            return f"Где схлопнулось: {stage} ({count})"
+        return "Где схлопнулось: обработка статей (детали в логах)"
+    except Exception:
+        return ""
+
+
+def _format_funnel(funnel: dict) -> str:
+    """Render the intake-funnel breakdown as a plain-text multi-line block.
+
+    Fail-safe: a non-dict ``funnel`` returns "" so the caller falls back to
+    the legacy single-line ping. A dict with bad-valued fields does NOT fall
+    back — each bad field is coerced to 0 and a zeroed breakdown is rendered.
+    Never raises.
+    """
+    if not isinstance(funnel, dict):
+        return ""
+    try:
+        sources = _funnel_int(funnel, "sources_fetched")
+        failed = _funnel_int(funnel, "sources_failed")
+        new = _funnel_int(funnel, "new_count")
+        no_article = _funnel_int(funnel, "dropped_no_article")
+        checklist = _funnel_int(funnel, "dropped_checklist")
+        block = _funnel_int(funnel, "dropped_dedup_block")
+        degraded = _funnel_int(funnel, "dedup_degraded")
+        staged = _funnel_int(funnel, "staged")
+
+        lines = [
+            "Воронка приёма за тик:",
+            # ``sources`` is len(all_entries) — total items fetched across all
+            # sources, NOT a source count — so label it as records to avoid the
+            # "N sources responded" misreading. ``failed`` IS a source count.
+            f"• получено записей: {sources} (источников не ответило: {failed})",
+            f"• новых после фильтров: {new}",
+            f"• отсеяно: нет статьи {no_article}, "
+            f"чеклист {checklist}, дубль-блок {block}",
+            f"• дедуп degraded (всё равно опубликованы): {degraded}",
+            f"• добавлено в очередь: {staged}",
+        ]
+        note = _funnel_collapse_note(
+            sources, failed, new, no_article, checklist, block, staged,
+        )
+        if note:
+            lines.append(note)
+        return "\n".join(lines)
+    except Exception:
+        return ""
+
+
+def _format_funnel_line(funnel: dict) -> str:
+    """Compact one-line intake summary for the busy-day plan-of-day ping.
+
+    Fail-safe like ``_format_funnel``: non-dict / malformed → "".
+    """
+    if not isinstance(funnel, dict):
+        return ""
+    try:
+        sources = _funnel_int(funnel, "sources_fetched")
+        failed = _funnel_int(funnel, "sources_failed")
+        new = _funnel_int(funnel, "new_count")
+        staged = _funnel_int(funnel, "staged")
+        dropped = (
+            _funnel_int(funnel, "dropped_no_article")
+            + _funnel_int(funnel, "dropped_checklist")
+            + _funnel_int(funnel, "dropped_dedup_block")
+        )
+        failed_part = f", источники-сбои {failed}" if failed else ""
+        # ``sources`` is the fetched-item count (len(all_entries)), not a source
+        # count — label it "получено" so the compact line matches the full
+        # breakdown's first bullet. ``источники-сбои`` IS a source count.
+        return (
+            f"Приём: получено {sources} → новых {new} → "
+            f"в очередь {staged} (отсеяно {dropped}{failed_part})"
+        )
+    except Exception:
+        return ""
+
+
+# ---------------------------------------------------------------------------
 # E008 — heartbeat: busy day (план на сегодня)
 # ---------------------------------------------------------------------------
 def alert_plan_of_day(
-    inserted: int, queue_size: int, slots: List, carry_over: int
+    inserted: int, queue_size: int, slots: List, carry_over: int,
+    funnel: Optional[dict] = None,
 ) -> str:
     # Сохраняем подстроки 'План на сегодня', 'Принято свежих' —
     # на них висят test_distributed_schedule_integration / test_job_prep_phase.
+    #
+    # ``funnel`` (optional, backward-compatible) добавляет компактную строку
+    # воронки приёма. Легаси-вызов без funnel рендерит прежний текст один-в-один.
     slot_strs = ", ".join(s.strftime("%H:%M") for s in slots) or "—"
-    return (
+    base = (
         f"[E008] 🟢 План на сегодня\n\n"
         f"Принято свежих: {inserted}\n"
         f"Всего в очереди: {queue_size}\n"
         f"Слоты сегодня: {slot_strs}\n"
         f"Перенесено на завтра: {carry_over}"
     )
+    try:
+        line = _format_funnel_line(funnel) if funnel is not None else ""
+    except Exception:
+        line = ""
+    if line:
+        return f"{base}\n{line}"
+    return base
 
 
 # ---------------------------------------------------------------------------
 # E009 — heartbeat: quiet day (новых статей нет)
 # ---------------------------------------------------------------------------
-def alert_quiet_day() -> str:
+def alert_quiet_day(funnel: Optional[dict] = None) -> str:
     # Сохраняем подстроку 'Бот сработал' — на ней висит test_job_prep_phase.
-    return f"[E009] 🟢 Бот сработал, новых статей нет."
+    #
+    # ``funnel`` (optional, backward-compatible): при наличии дописываем
+    # читаемую воронку приёма — где именно схлопнулся intake (fetch/фильтры/
+    # дедуп) — плюс scope-заметку, что перевод/пост неприменимы (очередь пуста).
+    # Легаси-вызов без funnel возвращает прежнюю однострочную формулировку.
+    base = "[E009] 🟢 Бот сработал, новых статей нет."
+    try:
+        block = _format_funnel(funnel) if funnel is not None else ""
+    except Exception:
+        block = ""
+    if block:
+        return f"{base}\n\n{block}\nперевод/пост — очередь пуста"
+    return base
 
 
 # ---------------------------------------------------------------------------

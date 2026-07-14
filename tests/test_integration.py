@@ -307,6 +307,79 @@ class TestIntegration(_PrepPhaseBase):
         mock_send_teaser.assert_not_called()
         self.assertEqual(pending_articles_repo.count_pending(), 0)
 
+    @patch('news_bot.send_telegraph_teaser')
+    @patch('news_bot.telegraph_publisher.publish_article')
+    @patch('news_bot.transcreate_via_claude')
+    @patch('news_bot.fetch_full_article')
+    @patch('news_bot.fetch_rss')
+    @patch('news_bot.load_feeds')
+    def test_busy_tick_plan_of_day_carries_compact_funnel(
+        self, mock_load_feeds, mock_fetch_rss, mock_fetch_article,
+        mock_transcreate, mock_publish, mock_send_teaser,
+    ):
+        """Intake-funnel watchdog: a busy tick that stages articles fires
+        the plan-of-day [E008] ping (never a false 'no news' [E009]) and
+        that ping carries the compact one-line intake summary."""
+        mock_load_feeds.return_value = ['http://example.com/feed1.xml']
+        mock_fetch_rss.return_value = [
+            self._create_mock_entry('http://example.com/busy1'),
+            self._create_mock_entry('http://example.com/busy2'),
+        ]
+        mock_fetch_article.return_value = {
+            'title': 'T', 'subtitle': '', 'paragraphs': ['Body.'], 'images': [],
+        }
+
+        news_bot.job()
+
+        self.assertEqual(pending_articles_repo.count_pending(), 2)
+
+        msgs = [
+            c.args[0] for c in self.mock_notify.call_args_list
+            if c.args and isinstance(c.args[0], str)
+        ]
+        # Exactly one plan-of-day ping; no false quiet-day ping.
+        plan_msgs = [m for m in msgs if '[E008]' in m]
+        self.assertEqual(len(plan_msgs), 1, f"expected one E008; got {msgs!r}")
+        self.assertFalse([m for m in msgs if '[E009]' in m],
+                         f"quiet-day E009 must NOT fire on a busy tick; got {msgs!r}")
+        plan = plan_msgs[0]
+        # Compact intake summary present with the staged count.
+        self.assertIn('Приём:', plan)
+        self.assertIn('в очередь 2', plan)
+
+    def test_source_exception_counts_in_funnel_quiet_day_ping(self):
+        """Intake-funnel watchdog: when a SOURCES fetcher raises, the tick's
+        real ``except`` path increments ``sources_failed`` and the quiet-day
+        [E009] ping pinpoints the collapse at the fetch stage. Proves the
+        counter that reaches the ping is driven by an actual exception, not a
+        hand-set funnel value. A second fetcher returns [] so nothing is
+        fetched → queue empty → quiet day."""
+        def boom(notifier=None):
+            raise RuntimeError('source boom')
+
+        def empty(notifier=None):
+            return []
+
+        with patch('news_bot.SOURCES', [boom, empty]):
+            news_bot.job()
+
+        # Nothing fetched → nothing staged → queue empty.
+        self.assertEqual(pending_articles_repo.count_pending(), 0)
+
+        msgs = [
+            c.args[0] for c in self.mock_notify.call_args_list
+            if c.args and isinstance(c.args[0], str)
+        ]
+        e009 = [m for m in msgs if '[E009]' in m]
+        self.assertEqual(len(e009), 1, f"expected one E009; got {msgs!r}")
+        ping = e009[0]
+        # The real except-path incremented sources_failed=1; the collapse note
+        # names the fetch stage with that count.
+        self.assertIn('Где схлопнулось: источники не ответили (1)', ping)
+        # And the per-source fetch-failure alert (E002) fired for the raiser.
+        self.assertTrue([m for m in msgs if '[E002]' in m],
+                        f"expected an E002 source-fetch-failure ping; got {msgs!r}")
+
 
 # ---------------------------------------------------------------------------
 # Outage state machine integration tests.
@@ -1037,6 +1110,62 @@ class TestCrossSourceDedup(_PrepPhaseBase):
             m = c.args[0] if c.args else ''
             self.assertNotIn('[E014]', m)
             self.assertNotIn('[E016]', m)
+
+    @patch('news_bot.fetch_full_article')
+    @patch('news_bot.fetch_rss')
+    @patch('news_bot.load_feeds')
+    @patch('news_bot.send_admin_notification')
+    def test_quiet_day_ping_shows_dedup_collapse(
+        self, mock_admin, mock_load_feeds, mock_fetch_rss, mock_fetch_article,
+    ):
+        """Intake-funnel watchdog: sources return an entry but it is dropped
+        at the cross-source dedup gate → nothing staged, queue empty → the
+        quiet-day [E009] ping carries the intake funnel and pinpoints the
+        collapse at the dedup stage (drop-count substring)."""
+        self._seed_published(
+            'http://t-hunted.example/existing',
+            {
+                'strict': ['porsche 911'],
+                'brands': ['porsche'],
+                'series': ['k-pop demon hunters'],
+                'pairs': ['porsche 911|k-pop demon hunters|D'],
+            },
+            source='t-hunted',
+        )
+        mock_load_feeds.return_value = ['http://example.com/feed1.xml']
+        mock_fetch_rss.return_value = [
+            self._make_entry('http://autoevolution.example/new'),
+        ]
+        mock_fetch_article.return_value = {
+            'title': 'Porsche 911 gets a K-Pop Demon Hunters makeover',
+            'subtitle': '',
+            'paragraphs': ['More photos inside.'],
+            'images': [],
+        }
+
+        news_bot.job()
+
+        # Article was blocked at dedup → nothing staged, queue empty.
+        self.assertEqual(pending_articles_repo.count_pending(), 0)
+
+        msgs = [
+            c.args[0] for c in mock_admin.call_args_list
+            if c.args and isinstance(c.args[0], str)
+        ]
+        e009 = [m for m in msgs if '[E009]' in m]
+        self.assertEqual(len(e009), 1, f"expected one E009; got {msgs!r}")
+        ping = e009[0]
+        # Legacy first line kept + funnel breakdown appended.
+        self.assertIn('Бот сработал', ping)
+        self.assertIn('Воронка', ping)
+        # Collapse pinpointed at dedup. Assert the collapse-note-SPECIFIC line
+        # (label + PARENTHESISED count) — 'дубль-блок 1' alone comes from the
+        # fixed breakdown line and would pass even if the note stopped
+        # pinpointing; 'дубль-блок (1)' can only come from _funnel_collapse_note
+        # choosing the dedup stage from the REAL (unmocked) drop count.
+        self.assertIn('Где схлопнулось: дубль-блок (1)', ping)
+        # Scope note: translate/post is not-applicable (queue empty).
+        self.assertIn('очередь пуста', ping)
 
     @patch('news_bot.fetch_full_article')
     @patch('news_bot.fetch_rss')
