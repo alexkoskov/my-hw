@@ -203,3 +203,19 @@ Review details — in JSON files via links. QA report — in logs/working/.
 **Agent:** main agent (audit teammate)
 **Summary:** Holistic test-quality audit of the whole feature test layer. **Verdict: PASS (pass-with-findings)** — 0 critical, 0 high, 1 medium, 4 low. Confirmed the critical axis: the calibration harness runs the NEW classifier (`shares_pair`/`any_distinctive`/`|D` tier), no `_classify(similarity())` remains; the two asymmetric hard invariants (3 SDCC-must-block / not-dupes-must-not-block) are pinned as separate, non-vacuous tests; both behaviour-reversal tests genuinely pin (same-source distinctive block + retained same-source-no-series-publishes half); backstop-blocks-positive, terminal-verdict, single-fetch, 7-day boundary, AC2 carry-through, AC8 both-empty, backfill (idempotency + widened re-select + corrupt-blob + 30-day window), and degraded mode all covered. Grounding run 138 passed; fixture 8/8 self-consistent with the real extractor. Medium (M-1): pair-1 (the one broad dupe in `DUPE_PAIRS`) has its irreversible must-not-hard-block property pinned only by the ≥7/8 aggregate, not by the dedicated not-dupe invariant (which iterates `NON_DUPE_PAIRS` only) — currently caught coincidentally via pair-7's shared `car culture` series; fix is a one-line selector broadening. Lows: stale fixture comment referencing the removed `test_calibration_real_pair_must_pass`; `TestSqlAudit` not scanning `backfill_fingerprints.py` (already a tech-spec note; static-literal predicate → nil risk); model-token exact-match limitation lacks a documenting test; AC8 both-empty exercised via mock only. Full report → [logs/working/task-9/test-audit.md].
 **Deviations:** None (analysis-only task; no code/tests changed). No spec/tech-spec defect found.
+
+## Task 10: Pre-deploy QA
+
+**Status:** Done
+**Agent:** qa-runner
+**Summary:** QA **passed** — zero criticals. Whole suite `python3 -m pytest -q` → 1244 passed, 0 failed, 0 skipped (no `-k` exclusion). 19 acceptance checks (AC1–AC11 + 6 tech-spec ACs + 2 live-only): 17 passed, 2 not_verifiable (operator/live), 0 failed. All four focus points confirmed against real code paths: toggle-off parity (`DEDUP_SERIES_ENABLED=0` → pair rule short-circuited, identical to legacy dedup; off-word set verified `0/false/no/off` any-case, unset/blank → ON), degraded publishes (`[E016]` rate-limited + article publishes), calibration 8/8 with both asymmetric hard invariants non-vacuous (real `extract_fingerprint`+`shares_pair` harness), FILES-array invariant (no new module; all touched modules in deploy.sh/deploy.yml/deploy_test.yml), no regressions. Backfill widened re-select confirmed on an isolated temp DB (scans in-window rows missing `$.pairs`, skips 4-key rows, honours the 30-day window). 1 minor finding: documented model-token exact-match limitation (safe-direction false-negative, accepted). No blockers — cleared to deploy.
+**Deviations:** None. Full report: [logs/working/qa-report.json].
+
+**Deferred to post-deploy:** 3 live/operator criteria (Task 11) — pre-deploy cold-DB `SELECT COUNT` on Moscow prod; `backfill --days 30` on prod + re-count > 0; 2-week `@myhwchannel` spot-check of live `[E015]`/`[E014]`. Contract in `deferredToPostDeploy` of qa-report.json.
+
+**Verification:**
+- `python3 -m pytest -q` → 1244 passed, 0 failed, 0 skipped
+- `tests/test_model_extractor.py` → 63 passed (incl. 3 calibration tests)
+- `tests/test_integration.py::TestCrossSourceDedup` → 18 passed
+- `tests/test_admin_alerts.py` + `tests/test_backfill_fingerprints.py` + `tests/test_deploy_files_invariant.py` → 64 passed
+- Toggle-parse + SDCC-pair + backfill widened-select smoke → all as expected
