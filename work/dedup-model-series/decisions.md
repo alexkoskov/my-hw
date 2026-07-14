@@ -160,3 +160,46 @@ Review details — in JSON files via links. QA report — in logs/working/.
 - `pytest tests/test_model_extractor.py -v` → 61 passed (incl. calibration)
 - `pytest -q` (whole suite, no `-k`) → 1241 passed — calibration green, no regressions
 - Runbook facts verified against code (column, toggle, service/container, paths, `[1,90]` clamp)
+
+## Task 7: Code Audit (holistic)
+
+**Status:** Done
+**Commit:** 0351438 (audit findings applied)
+**Agent:** code-reviewer (opus, analysis-only) + audit-fixer
+**Summary:** Holistic whole-feature code audit — verdict **READY**, 0 blockers/majors. Every load-bearing invariant verified live: pair-key format byte-consistent producer↔all consumers (8/8 fixture), gate terminality (block/flag terminal, backstop only on pass), fail-safe polarity, no duplicate init, FILES-array invariant, back-compat/degraded/toggle-off/carry-through. Applied M1 (acronym regex derived from aliases — kills drift + closes lowercase-`zamac` gap) + M2 (runbook note: broad-tier republish now soft-flags instead of the legacy ≥50% hard-block). 2 nits (N3/N4) left as cosmetic.
+**Deviations:** None. Report: [logs/working/task-7/code-audit.md].
+
+**Reviews:** self (audit). Fix re-review — code-reviewer: approve (ReDoS-safe confirmed) → [logs/working/task-7/code-audit-fix-review.json]
+
+**Verification:** `pytest -q` → 1244 passed; ReDoS probe worst 3.9ms/214KB; 8/8 fixture holds.
+
+## Task 8: Security Audit (holistic, OWASP)
+
+**Status:** Done
+**Commit:** — (analysis-only; 0 findings, no fix needed)
+**Agent:** security-auditor (opus, analysis-only)
+**Summary:** Holistic OWASP whole-feature audit — verdict **PASS-WITH-NOTES**, 0 critical/major/minor (2 informational). All 4 target threats confirmed safe as verified invariants: ReDoS (bounded, ~6ms/50KB), SQL (`json_extract` static literal, `days` parameterized, tokens stay in the opaque blob), plain-text pings (`parse_mode=None` + `_redact_text`), lexicon charset assertion (all 12 canonicals, no `|`/newline). No new deps/imports/secrets; degraded `[E016]` logs a full traceback (no silent swallow).
+**Deviations:** None. Report: [logs/working/task-8/security-audit.md].
+
+**Reviews:** self (audit). No fix required.
+
+**Verification:** targeted threat probes + OWASP trace — all clean.
+
+## Task 9: Test Audit (holistic)
+
+**Status:** Done
+**Commit:** 0351438 (audit findings applied)
+**Agent:** test-reviewer (opus, analysis-only) + audit-fixer
+**Summary:** Holistic test-quality/coverage audit — verdict **PASS**, 0 critical/high. Calibration harness clean (new pair-tier classifier; both asymmetric hard invariants non-vacuous), fixture 8/8 self-consistent with the real extractor. Applied M-1 (pin pair-1's must-NOT-hard-block directly, not just via the aggregate) + L-1..L-4 (stale fixture comments; `TestSqlAudit` now scans `backfill_fingerprints.py`; a documenting test for the model-token exact-match limitation; an end-to-end AC8 both-empty test through real extraction).
+**Deviations:** None. Report: [logs/working/task-9/test-audit.md].
+
+**Reviews:** self (audit). Fix re-review — test-reviewer: approve (mutation-verified) → [logs/working/task-9/test-audit-fix-review.json]
+
+**Verification:** `pytest -q` → 1244 passed (+3 net tests); M-1/L-3/L-4 mutation-verified.
+
+## Task 9: Test Audit
+
+**Status:** Done
+**Agent:** main agent (audit teammate)
+**Summary:** Holistic test-quality audit of the whole feature test layer. **Verdict: PASS (pass-with-findings)** — 0 critical, 0 high, 1 medium, 4 low. Confirmed the critical axis: the calibration harness runs the NEW classifier (`shares_pair`/`any_distinctive`/`|D` tier), no `_classify(similarity())` remains; the two asymmetric hard invariants (3 SDCC-must-block / not-dupes-must-not-block) are pinned as separate, non-vacuous tests; both behaviour-reversal tests genuinely pin (same-source distinctive block + retained same-source-no-series-publishes half); backstop-blocks-positive, terminal-verdict, single-fetch, 7-day boundary, AC2 carry-through, AC8 both-empty, backfill (idempotency + widened re-select + corrupt-blob + 30-day window), and degraded mode all covered. Grounding run 138 passed; fixture 8/8 self-consistent with the real extractor. Medium (M-1): pair-1 (the one broad dupe in `DUPE_PAIRS`) has its irreversible must-not-hard-block property pinned only by the ≥7/8 aggregate, not by the dedicated not-dupe invariant (which iterates `NON_DUPE_PAIRS` only) — currently caught coincidentally via pair-7's shared `car culture` series; fix is a one-line selector broadening. Lows: stale fixture comment referencing the removed `test_calibration_real_pair_must_pass`; `TestSqlAudit` not scanning `backfill_fingerprints.py` (already a tech-spec note; static-literal predicate → nil risk); model-token exact-match limitation lacks a documenting test; AC8 both-empty exercised via mock only. Full report → [logs/working/task-9/test-audit.md].
+**Deviations:** None (analysis-only task; no code/tests changed). No spec/tech-spec defect found.
