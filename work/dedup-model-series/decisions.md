@@ -142,3 +142,21 @@ Review details — in JSON files via links. QA report — in logs/working/.
 **Verification:**
 - `pytest tests/test_backfill_fingerprints.py` → 19 passed
 - `pytest -q -k 'not calibration'` → no regressions
+
+## Task 6: Pair-tier calibration test + deploy runbook (test_model_extractor.py, deployment.md)
+
+**Status:** Done
+**Commit:** f7db210
+**Agent:** main agent via implementation teammate (first attempt died on a transient API error mid-run; reverted the partial docstring edit and restarted clean)
+**Summary:** Replaced the old `_classify(similarity())` calibration harness with a pair-tier harness on `shares_pair` — aggregate ≥7/8 (8/8) plus two SEPARATE non-vacuous hard invariants (3 SDCC dupes must hard-block; no not-dupe may). Old calibration removed; `TestSimilarity` untouched. The whole suite is now green (`pytest -q` → 1241, no exclusions). Added the feature rollout runbook to `deployment.md` (cold-DB pre-check → dark deploy `DEDUP_SERIES_ENABLED=0` → `backfill --days 30` → observe → toggle on, all outside the 10:00–20:00 МСК window).
+**Deviations:** None of substance (the import already carried `shares_pair` from Task 1, so no import edit was needed).
+
+**Reviews:**
+
+*Round 1:*
+- test-reviewer: approve, 0 findings → [logs/working/task-6/test-reviewer-round1.json]
+
+**Verification:**
+- `pytest tests/test_model_extractor.py -v` → 61 passed (incl. calibration)
+- `pytest -q` (whole suite, no `-k`) → 1241 passed — calibration green, no regressions
+- Runbook facts verified against code (column, toggle, service/container, paths, `[1,90]` clamp)
