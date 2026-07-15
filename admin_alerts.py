@@ -328,6 +328,105 @@ def alert_quiet_day(funnel: Optional[dict] = None) -> str:
 
 
 # ---------------------------------------------------------------------------
+# E034 — end-of-tick PUBLISH-stage recap (companion to the E008/E009 intake
+# funnel).
+#
+# ``news_bot.job()`` step (e) accumulates plain-int outcome counters across the
+# day's publish slots (published / held / failed / moved_to_failed) plus a
+# de-duped, capped list of ``(link, reason)`` for the per-article failures that
+# survived retries. This builder renders them so the operator sees WHAT posted
+# and WHY a post failed — before this, a 'failed' reason went to the LOG only.
+# Contract mirrors the funnel helpers: PURE, DETERMINISTIC, plain-text (no
+# markdown / parse_mode), reasons already sanitized upstream
+# (``sanitize_error_message``), and NEVER raises — a non-dict / malformed recap
+# degrades to a minimal safe line. The caller ALSO wraps build+send in
+# try/except and runs this AFTER all publishing, so a recap fault can never
+# touch a post.
+# ---------------------------------------------------------------------------
+#: Cap on failure reasons rendered in the recap (``job()`` also caps its list).
+#: SINGLE SOURCE OF TRUTH for this cap — ``news_bot.PUBLISH_RECAP_MAX_FAILURES``
+#: is derived from this constant (imports it) so the two can never drift. The
+#: builder still re-clamps defensively here (defence-in-depth: the caller's
+#: collected list is already capped, but a hand-built recap dict might not be).
+RECAP_MAX_FAILURES = 5
+#: Defensive per-reason length clamp. Reasons are pre-sanitized, but this keeps
+#: the ping compact and blunts any accidental blob from an odd exception.
+_RECAP_REASON_MAXLEN = 200
+
+
+def _recap_failure_lines(failures) -> List[str]:
+    """Render up to ``RECAP_MAX_FAILURES`` «провал: <link> — <reason>» lines
+    from a list of ``(link, reason)`` pairs. Reasons are already sanitized
+    upstream; this only clamps length + shape. Never raises — a malformed entry
+    is skipped."""
+    out: List[str] = []
+    if not isinstance(failures, (list, tuple)):
+        return out
+    for entry in failures:
+        if len(out) >= RECAP_MAX_FAILURES:
+            break
+        try:
+            link, reason = entry
+        except Exception:
+            continue
+        link_s = str(link) if link is not None else "?"
+        reason_s = str(reason) if reason is not None else ""
+        if len(reason_s) > _RECAP_REASON_MAXLEN:
+            reason_s = reason_s[:_RECAP_REASON_MAXLEN] + "…"
+        out.append(f"провал: {link_s} — {reason_s}")
+    return out
+
+
+def alert_publish_recap(recap: dict) -> str:
+    """Render the end-of-tick publish recap ([E034]).
+
+    ``recap`` is a plain dict built by ``news_bot.job()`` step (e):
+        published        int  — posts published this tick
+        held             int  — slots HELD on a Claude/LLM outage (nothing posted)
+        failed           int  — per-article failures that survived retries
+        moved_to_failed  int  — subset of ``failed`` moved to failed_articles (≥3 strikes)
+        failures         list[(link, reason)] — capped, already sanitized
+
+    All-clean (held == failed == 0) → compact 🟢 one-liner «опубликовано N/N».
+    Any held/failed → expanded 🟡 with the tally + a held note + the per-failure
+    list. ``_funnel_int`` is reused as the shared best-effort non-negative int
+    reader (same increment-only-counter contract as the funnel dict).
+    """
+    code = "[E034]"
+    if not isinstance(recap, dict):
+        # A malformed/non-dict recap is a degraded state, not an all-clear:
+        # use 🟡 to match the inner-exception fallback below (both mean "recap
+        # unusable" and both warrant operator attention, not a green tick).
+        return f"{code} 🟡 Публикация: отчёт недоступен"
+    try:
+        published = _funnel_int(recap, "published")
+        held = _funnel_int(recap, "held")
+        failed = _funnel_int(recap, "failed")
+        moved = _funnel_int(recap, "moved_to_failed")
+        total = published + held + failed
+
+        if held == 0 and failed == 0:
+            # Clean tick — compact heartbeat line (denominator == published).
+            return f"{code} 🟢 Публикация: опубликовано {published}/{total}"
+
+        lines = [
+            f"{code} 🟡 Публикация: опубликовано {published}/{total}",
+            "",
+        ]
+        if held > 0:
+            lines.append(f"придержано {held} (Claude недоступна)")
+        if failed > 0:
+            tail = f" (снято после 3 промахов: {moved})" if moved > 0 else ""
+            lines.append(f"провалов: {failed}{tail}")
+            lines.extend(_recap_failure_lines(recap.get("failures")))
+        return "\n".join(lines)
+    except Exception:
+        # Belt-and-suspenders: the field reads above already fail safe, but a
+        # recap ping must never raise — the caller treats this as best-effort.
+        return f"{code} 🟡 Публикация: отчёт частично недоступен"
+
+
+# ---------------------------------------------------------------------------
 # E010 — outage ping #1 (Claude API упала, первое уведомление)
 # ---------------------------------------------------------------------------
 def alert_outage_first_ping() -> str:

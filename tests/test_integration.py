@@ -2330,5 +2330,255 @@ class TestFingerprintCarryThrough(_IntegrationBase):
         self.assertEqual(_json.loads(stored_raw[0]), fp)
 
 
+# ---------------------------------------------------------------------------
+# End-of-tick PUBLISH RECAP integration tests ([E034], publish-recap feature).
+# ---------------------------------------------------------------------------
+
+
+class TestPublishRecapIntegration(_IntegrationBase):
+    """The publish loop (job() step (e)) accumulates per-slot outcome counters
+    and, after the loop, sends a PUBLISH RECAP admin ping ([E034]) that surfaces
+    what posted and WHY a post failed. These drive the loop by patching
+    ``_publish_with_retries`` (outcome source) + ``compute_fixed_slots`` (slot
+    count) + frozen time, like the existing publish-loop tests.
+    """
+
+    FROZEN = MSK.localize(dt.datetime(2026, 4, 27, 12, 0, 0))
+
+    def _publish_side_effect(self, outcomes):
+        """Build a fake ``_publish_with_retries``. ``outcomes`` maps a row link
+        to ``(outcome, err)``. A 'published' outcome also removes the row from
+        pending (the real publish path that does so is bypassed here), so the
+        next slot pulls the next row. 'held'/'failed' leave the row in place —
+        exactly as the real loop expects.
+        """
+        def fake(row, idx, n_slots):
+            link = row['link']
+            outcome, err = outcomes[link]
+            if outcome == 'published':
+                pending_articles_repo.update_staged(
+                    link, 'РУ ' + link, '', ['РУ p1.', 'РУ p2.'], None,
+                )
+                pending_articles_repo.move_to_published(
+                    link=link,
+                    telegraph_url='https://telegra.ph/x-' + link.rsplit('/', 1)[-1],
+                    telegraph_path='x-' + link.rsplit('/', 1)[-1],
+                    via_review=False,
+                )
+            return outcome, err
+        return fake
+
+    def _run_job_with_slots(self, n_slots, publish_fake):
+        """Run ``job()`` with ``n_slots`` fixed slots at the frozen time,
+        SOURCES neutered, sleep mocked, and ``_publish_with_retries`` faked.
+        Returns the ``send_admin_notification`` mock for introspection.
+        """
+        slots = [self.FROZEN for _ in range(n_slots)]
+
+        def fake_now(tz=None):
+            if tz is dt.timezone.utc:
+                return dt.datetime.now(dt.timezone.utc)
+            return self.FROZEN
+
+        # Own the base silencer so we can read the admin pings.
+        self.notify_patcher.stop()
+        mock_admin = patch('news_bot.send_admin_notification').start()
+        try:
+            with patch('news_bot.datetime') as mock_dt, \
+                 patch('news_bot.time.sleep'), \
+                 patch('news_bot.compute_fixed_slots',
+                       return_value=(slots, 0)), \
+                 patch('news_bot._publish_with_retries',
+                       side_effect=publish_fake), \
+                 patch('news_bot.SOURCES', [lambda notifier=None: []]):
+                mock_dt.now.side_effect = fake_now
+                mock_dt.combine = dt.datetime.combine
+                mock_dt.strptime = dt.datetime.strptime
+                news_bot.job()
+        finally:
+            patch.stopall()
+            # Re-instate the base silencer so _IntegrationBase.tearDown's
+            # notify_patcher.stop() has a live patch to stop.
+            self.notify_patcher.start()
+        return mock_admin
+
+    @staticmethod
+    def _recap_pings(mock_admin):
+        return [
+            c.args[0] for c in mock_admin.call_args_list
+            if c.args and isinstance(c.args[0], str) and '[E034]' in c.args[0]
+        ]
+
+    def test_one_published_one_failed_recap_shows_failure(self):
+        _seed_pending_row('http://example.com/ok', title='OK')
+        _seed_pending_row('http://example.com/bad', title='BAD')
+        fake = self._publish_side_effect({
+            'http://example.com/ok': ('published', None),
+            'http://example.com/bad': (
+                'failed', RuntimeError('telegraph down: token=[REDACTED]'),
+            ),
+        })
+        mock_admin = self._run_job_with_slots(2, fake)
+
+        recaps = self._recap_pings(mock_admin)
+        self.assertEqual(len(recaps), 1, f"expected one [E034], got: {recaps!r}")
+        recap = recaps[0]
+        self.assertIn("🟡", recap)
+        self.assertIn("опубликовано 1/2", recap)
+        self.assertIn("провалов: 1", recap)
+        self.assertIn("провал: http://example.com/bad", recap)
+        self.assertIn("telegraph down", recap)  # sanitized reason surfaced
+
+    def test_held_slot_recap_shows_held(self):
+        _seed_pending_row('http://example.com/held', title='HELD')
+        fake = self._publish_side_effect({
+            'http://example.com/held': ('held', None),
+        })
+        mock_admin = self._run_job_with_slots(1, fake)
+
+        recaps = self._recap_pings(mock_admin)
+        self.assertEqual(len(recaps), 1, f"expected one [E034], got: {recaps!r}")
+        recap = recaps[0]
+        self.assertIn("🟡", recap)
+        self.assertIn("придержано 1", recap)
+        self.assertIn("Claude недоступна", recap)
+
+    def test_all_published_recap_is_compact(self):
+        _seed_pending_row('http://example.com/p1', title='P1')
+        _seed_pending_row('http://example.com/p2', title='P2')
+        fake = self._publish_side_effect({
+            'http://example.com/p1': ('published', None),
+            'http://example.com/p2': ('published', None),
+        })
+        mock_admin = self._run_job_with_slots(2, fake)
+
+        recaps = self._recap_pings(mock_admin)
+        self.assertEqual(len(recaps), 1, f"expected one [E034], got: {recaps!r}")
+        recap = recaps[0]
+        self.assertIn("🟢", recap)
+        self.assertIn("опубликовано 2/2", recap)
+        self.assertNotIn("провал", recap)
+
+    def test_quiet_no_slot_tick_sends_no_recap(self):
+        # No pending rows, SOURCES empty → compute_fixed_slots(0, ...) yields
+        # zero slots → publish loop never runs → recap must be skipped (the
+        # intake E009 heartbeat already covers a quiet tick).
+        def fake_now(tz=None):
+            if tz is dt.timezone.utc:
+                return dt.datetime.now(dt.timezone.utc)
+            return self.FROZEN
+
+        self.notify_patcher.stop()
+        mock_admin = patch('news_bot.send_admin_notification').start()
+        try:
+            with patch('news_bot.datetime') as mock_dt, \
+                 patch('news_bot.time.sleep'), \
+                 patch('news_bot.SOURCES', [lambda notifier=None: []]):
+                mock_dt.now.side_effect = fake_now
+                mock_dt.combine = dt.datetime.combine
+                mock_dt.strptime = dt.datetime.strptime
+                news_bot.job()
+        finally:
+            patch.stopall()
+            self.notify_patcher.start()
+
+        self.assertEqual(self._recap_pings(mock_admin), [],
+                         "quiet tick must not send a publish recap")
+
+    def test_broken_recap_builder_does_not_break_tick(self):
+        # A recap build error must be swallowed: publishing already happened,
+        # so the tick must complete normally and the row stays published.
+        _seed_pending_row('http://example.com/safe', title='SAFE')
+        fake = self._publish_side_effect({
+            'http://example.com/safe': ('published', None),
+        })
+        slots = [self.FROZEN]
+
+        def fake_now(tz=None):
+            if tz is dt.timezone.utc:
+                return dt.datetime.now(dt.timezone.utc)
+            return self.FROZEN
+
+        with patch('news_bot.datetime') as mock_dt, \
+             patch('news_bot.time.sleep'), \
+             patch('news_bot.compute_fixed_slots', return_value=(slots, 0)), \
+             patch('news_bot._publish_with_retries', side_effect=fake), \
+             patch('news_bot.admin_alerts.alert_publish_recap',
+                   side_effect=RuntimeError('recap boom')), \
+             patch('news_bot.SOURCES', [lambda notifier=None: []]):
+            mock_dt.now.side_effect = fake_now
+            mock_dt.combine = dt.datetime.combine
+            mock_dt.strptime = dt.datetime.strptime
+            # Must NOT raise out of job().
+            news_bot.job()
+
+        # Publishing was unaffected by the recap failure.
+        self.assertIsNotNone(
+            pending_articles_repo.get_published('http://example.com/safe'),
+        )
+
+    def test_failed_reason_with_secret_is_sanitized_in_recap(self):
+        # Pins the sanitization WIRING end-to-end: job() step (e) must feed the
+        # recap the SANITIZED reason (``safe = sanitize_error_message(err)``),
+        # never the raw ``str(err)``. We embed a value that we also set as the
+        # ``TELEGRAM_BOT_TOKEN`` env var, so sanitize_error_message replaces it
+        # with ``[REDACTED]``. The value is deliberately NOT a key/token shape,
+        # so ONLY sanitize_error_message (exact env-value match) can scrub it —
+        # not the regex ``_redact_text`` (which is bypassed here anyway because
+        # ``send_admin_notification`` is mocked). If the collect line ever drops
+        # the sanitize call (passes ``str(err)``), the raw secret leaks into the
+        # admin [E034] ping and this test fails.
+        _seed_pending_row('http://example.com/ok', title='OK')
+        _seed_pending_row('http://example.com/bad', title='BAD')
+        secret = 'TOPSECRET_bot_value_42'
+        fake = self._publish_side_effect({
+            'http://example.com/ok': ('published', None),
+            'http://example.com/bad': (
+                'failed',
+                RuntimeError(f'telegraph API 500: bot token {secret} rejected'),
+            ),
+        })
+        with patch.dict(os.environ, {'TELEGRAM_BOT_TOKEN': secret}):
+            mock_admin = self._run_job_with_slots(2, fake)
+
+        recaps = self._recap_pings(mock_admin)
+        self.assertEqual(len(recaps), 1, f"expected one [E034], got: {recaps!r}")
+        recap = recaps[0]
+        self.assertIn("провалов: 1", recap)
+        self.assertIn("провал: http://example.com/bad", recap)
+        # The secret was scrubbed before collection; the raw value must NOT
+        # appear and the redaction marker MUST.
+        self.assertNotIn(secret, recap)
+        self.assertIn("[REDACTED]", recap)
+
+    def test_moved_to_failed_after_three_strikes_recap_shows_subset(self):
+        # Drive one row to ≥3 strikes within a single tick: the same row fails
+        # on 3 consecutive slots → the real increment_attempt reaches 3 →
+        # move_to_failed → moved_to_failed_count == 1. The recap must surface
+        # the ≥3-strike subset tail, and the row must actually leave pending for
+        # failed_articles (end-to-end wiring of the moved_to_failed signal).
+        link = 'http://example.com/strikeout'
+        _seed_pending_row(link, title='STRIKEOUT')
+        fake = self._publish_side_effect({
+            link: ('failed', RuntimeError('persistent publish failure')),
+        })
+        mock_admin = self._run_job_with_slots(3, fake)
+
+        recaps = self._recap_pings(mock_admin)
+        self.assertEqual(len(recaps), 1, f"expected one [E034], got: {recaps!r}")
+        recap = recaps[0]
+        self.assertIn("🟡", recap)
+        # 3 failed attempts, exactly one moved to failed_articles (≥3 strikes).
+        self.assertIn("провалов: 3 (снято после 3 промахов: 1)", recap)
+        self.assertIn(f"провал: {link}", recap)
+        # End-to-end wiring: the row left pending and landed in failed_articles.
+        # ``_run_job_with_slots`` calls ``patch.stopall()`` (reverting the base
+        # DB_FILE patch), so re-point the repo at the same tempfile DB to read
+        # the post-job state — the file still exists until tearDown.
+        with patch('news_bot.DB_FILE', self.db_path):
+            self.assertEqual(pending_articles_repo.list_pending(), [])
+            self.assertIsNotNone(pending_articles_repo.get_failed(link))
+
+
 if __name__ == '__main__':
     unittest.main()
