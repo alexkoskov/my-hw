@@ -477,6 +477,10 @@ class TestAdminAlerts(unittest.TestCase):
             ),
             admin_alerts.alert_cross_source_blocked("u", "v", 72),
             admin_alerts.alert_dedup_degraded("AttributeError"),
+            admin_alerts.alert_publish_recap(
+                {'published': 1, 'held': 1, 'failed': 1, 'moved_to_failed': 0,
+                 'failures': [('u', 'boom')]},
+            ),
         ]
         codes = [m[:6] for m in all_messages]  # "[E0XX]"
         self.assertEqual(len(codes), len(set(codes)),
@@ -733,6 +737,152 @@ class TestIntakeFunnel(unittest.TestCase):
             msg = admin_alerts.alert_plan_of_day(1, 1, slots, 0, funnel=bad)
             self.assertIn("[E008]", msg)
             self.assertIn("План на сегодня", msg)
+
+
+class TestPublishRecap(unittest.TestCase):
+    """[E034] end-of-tick PUBLISH-stage recap — companion to the E008/E009
+    intake funnel. Renders the per-slot outcome counters accumulated by
+    ``news_bot.job()`` step (e) plus a capped, pre-sanitized list of failure
+    reasons. Contract mirrors the funnel helpers: PURE, plain-text (no
+    markdown / parse_mode), and NEVER raises even on malformed input.
+    """
+
+    ALL_CLEAN = {
+        'published': 3,
+        'held': 0,
+        'failed': 0,
+        'moved_to_failed': 0,
+        'failures': [],
+    }
+
+    HELD_AND_FAILED = {
+        'published': 1,
+        'held': 2,
+        'failed': 1,
+        'moved_to_failed': 1,
+        'failures': [
+            ('http://example.com/a', 'ClaudeTranscreationError: malformed JSON'),
+        ],
+    }
+
+    def test_all_published_compact_green_line(self):
+        msg = admin_alerts.alert_publish_recap(self.ALL_CLEAN)
+        self.assertIn("[E034]", msg)
+        self.assertIn("🟢", msg)
+        # published/attempted tally — all clean so N/N.
+        self.assertIn("опубликовано 3/3", msg)
+        # Compact: no failure/held sections on a clean tick.
+        self.assertNotIn("провал", msg)
+        self.assertNotIn("придержано", msg)
+        # Plain-text only.
+        self.assertNotIn("**", msg)
+
+    def test_held_and_failed_expanded_yellow(self):
+        msg = admin_alerts.alert_publish_recap(self.HELD_AND_FAILED)
+        self.assertIn("[E034]", msg)
+        self.assertIn("🟡", msg)
+        # Tally: 1 published of 4 attempted (1 published + 2 held + 1 failed).
+        self.assertIn("опубликовано 1/4", msg)
+        # Held note (generic — no internals leaked).
+        self.assertIn("придержано 2", msg)
+        self.assertIn("Claude недоступна", msg)
+        # Failed count + the ≥3-strike subset. Pin the EXACT tail (not just the
+        # "провалов: 1" prefix) so deleting the moved_to_failed rendering fails.
+        self.assertIn("провалов: 1 (снято после 3 промахов: 1)", msg)
+        # Per-failure line: link + sanitized reason.
+        self.assertIn("провал: http://example.com/a", msg)
+        self.assertIn("malformed JSON", msg)
+        self.assertNotIn("**", msg)
+
+    def test_failed_but_none_moved_omits_strike_tail(self):
+        # Negative case for the ≥3-strike tail: when moved_to_failed == 0 the
+        # tail must be ABSENT, and the count line renders bare "провалов: N".
+        recap = {
+            'published': 0, 'held': 0, 'failed': 1, 'moved_to_failed': 0,
+            'failures': [('http://example.com/a', 'boom')],
+        }
+        msg = admin_alerts.alert_publish_recap(recap)
+        self.assertIn("провалов: 1", msg)
+        self.assertNotIn("снято после", msg)
+
+    def test_failure_list_capped_at_five(self):
+        recap = {
+            'published': 0, 'held': 0,
+            'failed': 8, 'moved_to_failed': 0,
+            'failures': [
+                (f'http://example.com/{i}', f'reason {i}') for i in range(8)
+            ],
+        }
+        msg = admin_alerts.alert_publish_recap(recap)
+        rendered = [ln for ln in msg.splitlines() if ln.startswith('провал:')]
+        # Exact cap, not just an upper bound: pins the value to
+        # RECAP_MAX_FAILURES (5) so an off-by-N that caps at 0/1/3 is caught.
+        self.assertEqual(len(rendered), 5)
+        self.assertEqual(len(rendered), admin_alerts.RECAP_MAX_FAILURES)
+        # The count line still reflects the true total.
+        self.assertIn("провалов: 8", msg)
+
+    def test_malformed_failures_value_renders_tally_without_failure_lines(self):
+        # Exercises _recap_failure_lines' non-list defensive branch: a
+        # malformed (non-list) `failures` value must be skipped silently — the
+        # tally lines still render, but no "провал:" section appears.
+        recap = {
+            'published': 0, 'held': 1, 'failed': 1, 'moved_to_failed': 0,
+            'failures': 'oops',  # not a list/tuple
+        }
+        msg = admin_alerts.alert_publish_recap(recap)
+        self.assertIn("[E034]", msg)
+        self.assertIn("провалов: 1", msg)
+        self.assertIn("придержано 1", msg)
+        # No per-failure line could be rendered from a non-list value.
+        self.assertNotIn("провал:", msg)
+        self.assertNotIn("**", msg)
+
+    def test_builder_never_renders_raw_secret_text(self):
+        # Belt-and-suspenders: the builder does NOT itself redact — reasons
+        # arrive already sanitized upstream (news_bot.sanitize_error_message,
+        # pinned end-to-end by test_integration's
+        # test_failed_reason_with_secret_is_sanitized_in_recap). This test only
+        # confirms an already-redacted marker survives rendering unchanged and
+        # the builder never injects a token/secret shape of its own.
+        recap = {
+            'published': 1, 'held': 0, 'failed': 1, 'moved_to_failed': 0,
+            'failures': [('http://example.com/x', 'Telegram API 500 [REDACTED]')],
+        }
+        msg = admin_alerts.alert_publish_recap(recap)
+        self.assertNotIn("sk-", msg)
+        self.assertNotIn("Bearer ", msg)
+        self.assertIn("[REDACTED]", msg)
+
+    def test_empty_zero_input_handled(self):
+        empty = {'published': 0, 'held': 0, 'failed': 0,
+                 'moved_to_failed': 0, 'failures': []}
+        msg = admin_alerts.alert_publish_recap(empty)
+        self.assertIn("[E034]", msg)
+        self.assertIn("🟢", msg)
+        self.assertIn("опубликовано 0/0", msg)
+
+    def test_broken_recap_input_does_not_raise(self):
+        for bad in ("boom", 123, ["x"], object(), None,
+                    {'published': 'NaN', 'failures': 'oops'}):
+            msg = admin_alerts.alert_publish_recap(bad)
+            # Anchor always present — the builder degrades, never raises.
+            self.assertIn("[E034]", msg)
+            self.assertNotIn("**", msg)
+
+    def test_non_dict_recap_pins_explicit_guard_message(self):
+        # Pin the top-level `if not isinstance(recap, dict)` guard's OWN output
+        # text, so deleting the guard fails even though _funnel_int would
+        # otherwise degrade a non-dict silently into the compact branch. The
+        # fallback is 🟡 (degraded), matching the inner-exception fallback.
+        expected = "[E034] 🟡 Публикация: отчёт недоступен"
+        for bad in ("boom", 123, ["x"], object(), None):
+            self.assertEqual(admin_alerts.alert_publish_recap(bad), expected)
+
+    def test_plain_text_no_markdown(self):
+        msg = admin_alerts.alert_publish_recap(self.HELD_AND_FAILED)
+        for token in ("**", "```", "__", "]("):
+            self.assertNotIn(token, msg)
 
 
 class TestOpenRouterLowBalanceAlert(unittest.TestCase):

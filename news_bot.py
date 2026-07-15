@@ -169,6 +169,13 @@ MAX_DAILY_POSTS = 3
 PUBLISH_RETRY_ATTEMPTS = 4
 PUBLISH_RETRY_DELAY_SECONDS = 600  # 10 minutes
 
+#: End-of-tick PUBLISH RECAP (companion to the E008/E009 intake funnel). Cap on
+#: distinct (link, reason) failure entries collected for the [E034] recap ping —
+#: keeps the ping compact; admin_alerts also re-caps defensively when rendering.
+#: Derived from ``admin_alerts.RECAP_MAX_FAILURES`` (the single source of truth)
+#: so the collect-side cap here and the render-side cap there can never drift.
+PUBLISH_RECAP_MAX_FAILURES = admin_alerts.RECAP_MAX_FAILURES
+
 #: Channel-silence alert (2026-06-23). If nothing has been published for this
 #: many days, job() sends a LOUDER [E017] admin warning at the end of the tick
 #: — a stronger signal than the daily [E009] "нет новостей" — to catch a
@@ -2528,7 +2535,16 @@ def job():
     window_end_dt = datetime.combine(
         now_msk.date(), WINDOW_END_TIME, tzinfo=MSK_TZ,
     )
+    # Per-slot outcome counters for the end-of-tick PUBLISH RECAP ([E034],
+    # companion to the E008/E009 intake funnel). All plain ints — increment-only
+    # and cannot raise. ``recap_failures`` keeps a de-duped, capped list of
+    # ``(link, sanitized_reason)`` for the 'failed' outcomes (reason already run
+    # through ``sanitize_error_message`` — never raw text, never secrets).
     published_count = 0
+    held_count = 0
+    failed_count = 0
+    moved_to_failed_count = 0
+    recap_failures = []
     for idx, slot in enumerate(slots, start=1):
         # Window-end insurance.
         if slot > window_end_dt:
@@ -2559,6 +2575,7 @@ def job():
         if outcome == 'published':
             published_count += 1
         elif outcome == 'held':
+            held_count += 1
             # LLM outage — ``_fallback_publish`` HELD this article (nothing
             # was published) and advanced the operator-notification state
             # machine. Do NOT count a publish and do NOT strike the row: it
@@ -2573,6 +2590,15 @@ def job():
         else:  # 'failed' — per-article problem, or transient error that
                # survived the in-slot retries (each retry logged above).
             safe = sanitize_error_message(err)
+            failed_count += 1
+            # Collect a de-duped, capped (link, reason) for the [E034] recap.
+            # ``safe`` is already sanitized — never raw text, never secrets.
+            if (
+                link
+                and len(recap_failures) < PUBLISH_RECAP_MAX_FAILURES
+                and not any(existing == link for existing, _ in recap_failures)
+            ):
+                recap_failures.append((link, safe))
             logger.error(
                 f"[slot {idx}/{len(slots)}] publish failed for {link}: {safe}"
             )
@@ -2587,6 +2613,7 @@ def job():
             if new_count >= 3:
                 try:
                     pending_repo.move_to_failed(link, safe)
+                    moved_to_failed_count += 1
                     logger.warning(
                         f"[slot {idx}/{len(slots)}] moved {link} to failed "
                         f"after {new_count} strikes"
@@ -2602,6 +2629,36 @@ def job():
         f"[job] done. Published {published_count}, "
         f"carry-over {carry_over}, queue size now {final_queue_size}."
     )
+
+    # ------------------------------------------------------------------
+    # End-of-tick PUBLISH RECAP ([E034], companion to the E008/E009 intake
+    # funnel). Surfaces per-slot outcomes so the operator sees WHAT posted and
+    # WHY a post failed — the 'failed' reason was LOG-ONLY before this.
+    #
+    #   * Skip on a quiet/no-slot tick (nothing was attempted) — the intake
+    #     [E009] heartbeat already covers those; avoid a redundant ping.
+    #   * All-clean (held==failed==0) → compact 🟢 «опубликовано N/N».
+    #   * Any held/failed → 🟡 with the tally + held note + failure reasons.
+    #
+    # NON-BLOCKING / fail-safe: runs AFTER all publishing (cannot affect a
+    # post); counters are plain ints; the build+send is wrapped in try/except
+    # (log-and-continue) so a recap fault never breaks the tick.
+    # ------------------------------------------------------------------
+    if published_count + held_count + failed_count > 0:
+        try:
+            recap_msg = admin_alerts.alert_publish_recap({
+                'published': published_count,
+                'held': held_count,
+                'failed': failed_count,
+                'moved_to_failed': moved_to_failed_count,
+                'failures': recap_failures,
+            })
+            send_admin_notification(recap_msg)
+        except Exception as exc:
+            logger.error(
+                f"[publish-recap] failed to build/send recap: "
+                f"{sanitize_error_message(exc)}"
+            )
 
     # Channel-silence guard (2026-06-23): warn the operator if the channel has
     # gone quiet for DRY_SPELL_ALERT_DAYS+ days. Reads the same last-publish
