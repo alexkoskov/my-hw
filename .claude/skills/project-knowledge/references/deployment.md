@@ -214,6 +214,20 @@ for ~the first week. `backfill_fingerprints.py` warms both the base
 car-fingerprint AND the new `series`/`pairs` keys so the gate has history to
 match on before the pair-rule goes live.
 
+> **⚠️ Superseded (2026-07-20): backfill was SKIPPED for the actual rollout —
+> self-warm was used instead.** Two reasons. (1) A bulk backfill (~40 URLs in
+> ~1 min) trips autoevolution's Cloudflare **HTTP 403** rate-limit; paced live
+> scraping (1 article/slot) does not. (2) The pre-fix `backfill_fingerprints.py`
+> mis-handled a 403 (source returns `None`) as a *terminal* computed-empty
+> marker, **permanently writing the row off the dedup gate** — fixed on `dev`
+> (a no-body fetch is now retryable/NULL). But the deeper point: enabling with a
+> partly-cold base is **safe** anyway (a hard-block needs a `|D` pair *match*;
+> cold rows have no pairs → cannot false-block), and since every live publish
+> already writes a four-key fingerprint, the 7-day window **self-warms** within
+> ~7 days of deploy. So the dark-deploy + toggle steps below still apply, but the
+> backfill step is optional — prefer self-warm. See
+> [[project_backfill_403_trap_selfwarm]].
+
 ### Pre-deploy cold-DB check (operator, before touching anything)
 
 On the Moscow host, confirm the base is cold:
@@ -222,11 +236,17 @@ On the Moscow host, confirm the base is cold:
 sqlite3 /root/hw-news/data/news.db "SELECT COUNT(*) FROM published_articles WHERE model_fingerprint IS NOT NULL"
 ```
 
-Expect `0` (cold DB — no fingerprints yet). `Error: no such column:
-model_fingerprint` is **also** an expected confirmation: it means the snapshot
-predates the cross-source-dedup `ALTER`, which `init_db()` applies on the next
-container boot. Either result → safe to proceed. A large non-zero count would be
-a surprise (base is warmer than assumed) — stop and investigate before backfilling.
+**Correction (2026-07-20 — the original "expect 0" was wrong).** A SMALL
+non-zero count is NORMAL, not a surprise: cross-source-dedup has been live on
+this prod since the 2026-07-06 Moscow cutover, so every article published since
+carries an OLD two-key fingerprint (`{"strict":[...],"brands":[...]}`, no
+`$.pairs`). ~40–70 such rows is expected. `Error: no such column:
+model_fingerprint` is **also** fine (snapshot predates cross-source-dedup
+entirely; `init_db()` adds the column on next boot). The REAL surprise to stop
+on is rows **already carrying a `$.pairs` key** (dedup-model-series somehow
+already ran) — verify the shape with
+`sqlite3 .../news.db "SELECT model_fingerprint FROM published_articles WHERE model_fingerprint IS NOT NULL ORDER BY rowid DESC LIMIT 3"`
+(two-key blobs = normal → proceed; four-key with `series`/`pairs` = investigate).
 
 ### Staged rollout (strictly outside the window)
 
@@ -365,7 +385,17 @@ DETACH other;
 
 ## Cost Monitoring
 
-Production runs the auto-publish path through **OpenRouter** (`LLM_PROVIDER=openrouter`, default model `openai/gpt-5.4-mini`). The dispatcher (`llm_transcreation.py`) auto-selects an engine in priority order Anthropic → OpenAI → Gemini → OpenRouter based on which API keys are present, but the operator override via `LLM_PROVIDER` env var pins it. Variant B+ second-pass adds ~$0.005 per long autoevolution article (when `blocks=null` triggers the focused caption-translation call).
+Production runs the auto-publish path through **OpenRouter** (`LLM_PROVIDER=openrouter`).
+**Prod model (2026-07-20): `google/gemini-2.5-flash`** — hand-set in the prod `.env`
+(`OPENROUTER_MODEL=google/gemini-2.5-flash`), switched from `openai/gpt-5.4-mini` for a
+cheaper-but-still-strong-RU transcreation (Claude judged too costly for this hobby-volume
+bot). The **code default and CI default var both remain `openai/gpt-5.4-mini`** — so the
+**test bot still runs gpt-5.4-mini** (no `vars.OPENROUTER_MODEL` set; the prod override lives
+only in the hand-managed prod `.env`, not in the repo). To change the model: prod = edit the
+prod `.env` line + rebuild (outside the window); test = set repo var `OPENROUTER_MODEL` +
+redeploy. Reverting is one line. The dispatcher (`llm_transcreation.py`) auto-selects an
+engine in priority order Anthropic → OpenAI → Gemini → OpenRouter based on which API keys are
+present, but the operator override via `LLM_PROVIDER` env var pins it. Variant B+ second-pass adds ~$0.005 per long autoevolution article (when `blocks=null` triggers the focused caption-translation call).
 
 **Where to watch:** https://openrouter.ai/activity → daily breakdown by model. (For the legacy Anthropic path: https://console.anthropic.com → Usage.)
 
