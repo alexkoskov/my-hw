@@ -19,12 +19,16 @@ Test scenarios (TDD anchors from tasks/5.md):
 * ``test_fetch_exception_leaves_null`` — ``fetch_full_article`` raising
   ``ConnectionError`` leaves the fingerprint NULL (transient, retry on next
   run) and bumps the ``Errors`` counter.
-* ``test_fetch_empty_stores_computed_empty`` — ``fetch_full_article``
-  returning ``None`` writes the terminal computed-empty marker
-  ``{"strict": [], "brands": [], "series": [], "pairs": []}``; subsequent
-  runs treat the row as already-processed.
+* ``test_fetch_no_body_left_null_for_retry`` — a no-usable-body result
+  (``None``, a dict without ``paragraphs``, or empty ``paragraphs`` — all three
+  guard legs) leaves the row NULL (bumps ``Unreachable``) and a later run
+  RE-SELECTS it. Regression pin for the 403 write-off trap.
+* ``test_reachable_empty_extractor_result_persists_terminal`` — a REACHABLE
+  body whose extractor output is empty still persists the terminal four-key
+  empty marker and is skipped on re-run (the legitimate computed-empty case is
+  preserved, NOT collapsed into the retry path).
 * ``test_summary_structure`` — stdout summary contains every header field
-  (``Window:``, ``Processed:``, ``Skipped:``, ``Empty fp:``, ``Errors:``,
+  (``Window:``, ``Processed:``, ``Skipped:``, ``Unreachable:``, ``Errors:``,
   ``Duration:``).
 * ``test_days_clamp_rejects_out_of_range`` — argparse rejects ``--days 0``
   and ``--days 100`` with ``SystemExit(2)``.
@@ -42,17 +46,18 @@ Task-5 widened re-select scenarios (dedup-model-series):
   persisted blob carries both ``pairs`` AND ``series`` keys (AC10/AC9).
 * ``test_days_30_window_honored`` — ``--days 30`` includes a row ~29 days
   old and excludes one ~31 days old.
-* ``test_second_run_noop_after_empty_fp`` — computed-empty idempotency: the
-  four-key empty marker is not re-selected on a second run → ``Processed:
-  0``, ``Empty fp: 0``, ``0 rows scanned``.
+* ``test_real_body_persists_terminal_none_stays_retryable`` — the fix's core
+  distinction in one run: a reachable body persists a terminal fingerprint
+  (skipped next run) while a None fetch is left NULL (re-selected next run).
 * ``test_corrupt_blob_reprocessed_without_crash`` — a raw invalid-JSON (or
   valid non-dict) ``model_fingerprint`` seeded directly via SQL does NOT crash
   the widened SELECT (guarded by ``json_valid``) nor the Python skip-guard; the
   row is re-selected and reprocessed into a valid four-key blob. Regression pin
   for the ``CASE WHEN json_valid(...)`` SQL predicate.
-* ``test_old_empty_shape_row_reselected_and_upgraded_to_empty`` — compound edge
-  case: an OLD *empty* two-key blob ``{"strict": [], "brands": []}`` is
-  re-selected and rewritten to the four-key empty form, then idempotent.
+* ``test_old_shape_row_none_fetch_stays_retryable`` — compound edge case: an
+  OLD *empty* two-key blob ``{"strict": [], "brands": []}`` whose re-fetch
+  returns None is left UNCHANGED (still missing ``$.pairs``) and re-selected
+  next run — not frozen into a terminal marker over a transient block.
 
 Mock policy: ``news_bot.fetch_full_article`` is monkeypatched
 (``monkeypatch.setattr``). ``model_extractor.extract_fingerprint`` is NOT
@@ -76,6 +81,7 @@ import pytest
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 import news_bot  # noqa: E402  — env-reads at import are harmless in tests
+import model_extractor  # noqa: E402
 import pending_articles_repo as repo  # noqa: E402
 import backfill_fingerprints  # noqa: E402
 
@@ -174,6 +180,20 @@ def _fake_article_with_brand(*_args, **_kwargs):
     }
 
 
+def _fake_reachable_body(*_args, **_kwargs):
+    """Stub returning a well-formed REACHABLE body (has ``paragraphs``). Pairs
+    with a monkeypatched ``extract_fingerprint`` so a test can drive the
+    "reachable but extractor-empty" path deterministically, independent of the
+    real extractor's brand list."""
+    return {
+        'title': 'Quarterly collector market recap',
+        'subtitle': '',
+        'paragraphs': ['A general market overview with no specific castings.'],
+        'images': [],
+        'blocks': None,
+    }
+
+
 # ---------------------------------------------------------------------------
 # TDD anchor tests
 # ---------------------------------------------------------------------------
@@ -184,9 +204,9 @@ def test_idempotency_second_run_processed_zero(temp_db, monkeypatch, capsys):
     do because all rows now carry a non-NULL ``model_fingerprint``.
 
     Canonical idempotency marker per tech-spec Decision 10: ``IS NULL`` ==
-    "not processed". Both ``updated`` and ``empty-fp`` write a non-NULL
+    "not processed". The reachable-body ``updated`` path writes a non-NULL
     value, so the second run's SELECT returns zero rows and the summary
-    reports ``Processed: 0`` (and ``Empty fp: 0``).
+    reports ``Processed: 0`` (and ``Unreachable: 0``).
     """
     for i in range(3):
         _seed_published(temp_db, f'https://example.com/a{i}')
@@ -205,8 +225,8 @@ def test_idempotency_second_run_processed_zero(temp_db, monkeypatch, capsys):
     # Second run sees 0 rows matching the IS NULL filter — scanned count
     # AND processed/empty-fp counters are all zero.
     assert 'Processed: 0 ' in out2, out2
-    assert 'Empty fp:  0 ' in out2, out2
-    assert '0 rows scanned' in out2, out2
+    assert 'Unreachable: 0 ' in out2, out2
+    assert '(0 rows scanned)' in out2, out2
 
 
 def test_days_window_honored(temp_db, monkeypatch, capsys):
@@ -276,36 +296,82 @@ def test_fetch_exception_leaves_null(temp_db, monkeypatch, capsys):
     rc = backfill_fingerprints.main(['--days', '14'])
     out = capsys.readouterr().out
     assert rc == 0
-    assert 'Errors:    1' in out, out
+    assert 'Errors: 1' in out, out
+    assert 'Unreachable: 0 ' in out, out   # a raise is the Errors path, not Unreachable
     assert _get_fp_raw(temp_db, 'https://example.com/boom') is None
 
 
-def test_fetch_empty_stores_computed_empty(temp_db, monkeypatch, capsys):
-    """``fetch_full_article`` returning ``None`` → terminal computed-empty
-    fingerprint ``{"strict": [], "brands": [], "series": [], "pairs": []}``
-    is persisted; counter ``Empty fp`` bumps. Subsequent runs see the
-    ``pairs`` key present and skip the row."""
-    _seed_published(temp_db, 'https://example.com/empty')
+@pytest.mark.parametrize('no_body', [
+    None,                              # fetch returned nothing (swallowed 403)
+    {'title': 't'},                    # dict without a 'paragraphs' key
+    {'title': 't', 'paragraphs': []},  # present but empty paragraphs
+], ids=['none', 'no-paragraphs-key', 'empty-paragraphs'])
+def test_fetch_no_body_left_null_for_retry(temp_db, monkeypatch, capsys, no_body):
+    """A no-usable-body fetch result leaves the row's ``model_fingerprint``
+    NULL — NOT a terminal empty marker — so a later run retries it. Covers all
+    three legs of the ``not article or not article.get('paragraphs')`` guard:
+    ``None`` (e.g. a transient 403 the source swallows into a None "defer"), a
+    dict lacking ``paragraphs``, and one with empty ``paragraphs``.
+
+    Regression pin for the 403 write-off trap: persisting a four-key empty here
+    would carry a ``$.pairs`` key and drop the row from the dedup gate forever
+    over a transient block. The row must therefore stay NULL and be RE-SELECTED
+    on the next run (it does not converge — the deliberate trade documented in
+    the module docstring)."""
+    _seed_published(temp_db, 'https://example.com/none')
 
     monkeypatch.setattr(news_bot, 'fetch_full_article',
-                        lambda *_a, **_kw: None)
+                        lambda *_a, **_kw: no_body)
 
     rc = backfill_fingerprints.main(['--days', '14'])
     out = capsys.readouterr().out
     assert rc == 0
-    assert 'Empty fp:  1 ' in out, out
+    assert 'Unreachable: 1 ' in out, out
+    assert 'Errors: 0' in out, out        # no exception raised → not the Errors path
+    # Nothing persisted — the column is still NULL.
+    assert _get_fp_raw(temp_db, 'https://example.com/none') is None
 
-    raw = _get_fp_raw(temp_db, 'https://example.com/empty')
-    assert raw is not None
-    decoded = json.loads(raw)
-    assert decoded == {'strict': [], 'brands': [], 'series': [], 'pairs': []}
-
-    # Idempotency probe — re-run, second time it's a skip not an empty-fp.
+    # Second run RE-SELECTS the still-NULL row (proves it is NOT terminal).
     rc2 = backfill_fingerprints.main(['--days', '14'])
     out2 = capsys.readouterr().out
     assert rc2 == 0
-    assert 'Processed: 0 ' in out2
-    assert 'Empty fp:  0 ' in out2
+    assert '(1 rows scanned)' in out2, out2
+    assert 'Unreachable: 1 ' in out2, out2
+    assert _get_fp_raw(temp_db, 'https://example.com/none') is None
+
+
+def test_reachable_empty_extractor_result_persists_terminal(
+        temp_db, monkeypatch, capsys):
+    """A REACHABLE body whose extractor output is empty (genuine "no brands
+    found") still persists the terminal four-key empty marker and is skipped on
+    a re-run — distinct from an unreachable None fetch, which is left NULL.
+
+    Pins that the 403-trap fix did NOT collapse the legitimate computed-empty
+    case into the retry path. ``extract_fingerprint`` is stubbed to the empty
+    form (the one deliberate mock in this file) so the scenario is deterministic
+    regardless of the real extractor's brand list."""
+    _seed_published(temp_db, 'https://example.com/nobrands')
+
+    monkeypatch.setattr(news_bot, 'fetch_full_article', _fake_reachable_body)
+    monkeypatch.setattr(
+        model_extractor, 'extract_fingerprint',
+        lambda *_a, **_kw: {'strict': [], 'brands': [], 'series': [], 'pairs': []},
+    )
+
+    rc = backfill_fingerprints.main(['--days', '14'])
+    out = capsys.readouterr().out
+    assert rc == 0
+    assert 'Processed: 1 ' in out, out        # reachable → terminal, counted updated
+    assert 'Unreachable: 0 ' in out, out       # NOT the retry path
+
+    decoded = json.loads(_get_fp_raw(temp_db, 'https://example.com/nobrands'))
+    assert decoded == {'strict': [], 'brands': [], 'series': [], 'pairs': []}
+
+    # Terminal — the ``$.pairs`` key means the second run skips it (0 scanned).
+    rc2 = backfill_fingerprints.main(['--days', '14'])
+    out2 = capsys.readouterr().out
+    assert rc2 == 0
+    assert '(0 rows scanned)' in out2, out2
 
 
 def test_summary_structure(temp_db, monkeypatch, capsys):
@@ -320,7 +386,7 @@ def test_summary_structure(temp_db, monkeypatch, capsys):
     rc = backfill_fingerprints.main(['--days', '14'])
     out = capsys.readouterr().out
     assert rc == 0
-    for label in ('Window:', 'Processed:', 'Skipped:', 'Empty fp:',
+    for label in ('Window:', 'Processed:', 'Skipped:', 'Unreachable:',
                   'Errors:', 'Duration:'):
         assert label in out, f'missing {label} in summary:\n{out}'
 
@@ -388,7 +454,7 @@ def test_row_with_pairs_key_skipped(temp_db, monkeypatch, capsys):
     out = capsys.readouterr().out
     assert rc == 0
     assert 'Processed: 0 ' in out, out
-    assert '0 rows scanned' in out, out
+    assert '(0 rows scanned)' in out, out
 
 
 def test_backfilled_row_has_pairs_and_series_keys(temp_db, monkeypatch, capsys):
@@ -444,36 +510,40 @@ def test_days_30_window_honored(temp_db, monkeypatch, capsys):
     assert _get_fp_raw(temp_db, 'https://example.com/out31') is None
 
 
-def test_second_run_noop_after_empty_fp(temp_db, monkeypatch, capsys):
-    """Computed-empty idempotency: the first run writes the four-key empty
-    marker; because that marker carries a ``pairs`` key, the second run does
-    NOT re-select it → ``Processed: 0``, ``Empty fp: 0``, ``0 rows scanned``.
+def test_real_body_persists_terminal_none_stays_retryable(
+        temp_db, monkeypatch, capsys):
+    """The core of the 403-trap fix in a single run, two rows, opposite fates:
+    a reachable body persists a terminal fingerprint (carries ``$.pairs`` →
+    skipped next run), while a None fetch is left NULL (re-selected next run).
 
-    Intentionally kept separate from ``test_fetch_empty_stores_computed_empty``
-    despite the overlap: this one doubles as the AC10 ``--days 30`` smoke case
-    (the other uses the default 14-day window) and pins idempotency at the
-    SELECT level via the ``0 rows scanned`` assertion (proving the widened
-    predicate excludes the four-key marker), whereas the other only asserts the
-    ``Processed:``/``Empty fp:`` counters. Different failures caught."""
-    _seed_published(temp_db, 'https://example.com/emptyidem')
+    Pins the whole distinction at once — that ``updated`` and ``unreachable``
+    diverge precisely on whether a body came back."""
+    _seed_published(temp_db, 'https://example.com/reachable')
+    _seed_published(temp_db, 'https://example.com/blocked')
 
-    monkeypatch.setattr(news_bot, 'fetch_full_article',
-                        lambda *_a, **_kw: None)
+    def _fetch(entry, *_a, **_kw):
+        if entry['link'] == 'https://example.com/reachable':
+            return _fake_article_with_brand()
+        return None  # simulates a 403 the source layer swallowed into None
 
-    rc1 = backfill_fingerprints.main(['--days', '30'])
-    out1 = capsys.readouterr().out
-    assert rc1 == 0
-    assert 'Empty fp:  1 ' in out1, out1
+    monkeypatch.setattr(news_bot, 'fetch_full_article', _fetch)
 
-    decoded = json.loads(_get_fp_raw(temp_db, 'https://example.com/emptyidem'))
-    assert decoded == {'strict': [], 'brands': [], 'series': [], 'pairs': []}
+    rc = backfill_fingerprints.main(['--days', '30'])
+    out = capsys.readouterr().out
+    assert rc == 0
+    assert 'Processed: 1 ' in out, out        # the reachable row
+    assert 'Unreachable: 1 ' in out, out       # the blocked row
 
+    reachable = json.loads(_get_fp_raw(temp_db, 'https://example.com/reachable'))
+    assert 'pairs' in reachable, reachable
+    assert _get_fp_raw(temp_db, 'https://example.com/blocked') is None
+
+    # Second run re-selects ONLY the blocked row (reachable converged).
     rc2 = backfill_fingerprints.main(['--days', '30'])
     out2 = capsys.readouterr().out
     assert rc2 == 0
-    assert 'Processed: 0 ' in out2, out2
-    assert 'Empty fp:  0 ' in out2, out2
-    assert '0 rows scanned' in out2, out2
+    assert '(1 rows scanned)' in out2, out2
+    assert 'Unreachable: 1 ' in out2, out2
 
 
 @pytest.mark.parametrize('raw_blob', ['not-valid-json{', '[1, 2, 3]'])
@@ -528,19 +598,17 @@ def test_corrupt_blob_reprocessed_without_crash(temp_db, monkeypatch, capsys,
     assert set(decoded) == {'strict', 'brands', 'series', 'pairs'}, decoded
 
 
-def test_old_empty_shape_row_reselected_and_upgraded_to_empty(
-        temp_db, monkeypatch, capsys):
-    """Compound edge case from tasks/5.md: an OLD *empty* two-key blob
-    ``{"strict": [], "brands": []}`` (empty result AND no ``pairs`` key) is
-    re-selected and rewritten to the four-key empty form, after which it is
-    idempotent.
+def test_old_shape_row_none_fetch_stays_retryable(temp_db, monkeypatch, capsys):
+    """Compound edge case: an OLD *empty* two-key blob ``{"strict": [],
+    "brands": []}`` whose re-fetch returns None is left UNCHANGED — still the
+    two-key form, still missing ``$.pairs`` — and re-selected on the next run
+    (counted ``Unreachable``), rather than frozen into a terminal marker.
 
-    Distinct from ``test_old_shape_row_reselected_and_upgraded`` (non-empty old
-    blob → real fingerprint) and from ``test_second_run_noop_after_empty_fp``
-    (NULL start → empty marker): this pins the exact combination the task warned
-    would otherwise loop forever — an old-shape row whose re-fetch ALSO yields
-    an empty result must still gain ``$.pairs`` so it stops being re-selected.
-    """
+    Under the pre-fix behaviour this row would have been rewritten to a terminal
+    four-key empty marker on a transient 403 and written off the dedup gate
+    forever. Now it waits for a reachable retry. Distinct from
+    ``test_old_shape_row_reselected_and_upgraded`` (reachable body → real
+    upgrade)."""
     _seed_published(
         temp_db, 'https://example.com/oldempty',
         model_fingerprint={'strict': [], 'brands': []},
@@ -552,16 +620,15 @@ def test_old_empty_shape_row_reselected_and_upgraded_to_empty(
     rc1 = backfill_fingerprints.main(['--days', '30'])
     out1 = capsys.readouterr().out
     assert rc1 == 0
-    # Old empty 2-key blob was re-selected and re-processed to computed-empty.
-    assert 'Empty fp:  1 ' in out1, out1
+    assert 'Unreachable: 1 ' in out1, out1
 
+    # Blob unchanged — still the old two-key form, still missing pairs.
     decoded = json.loads(_get_fp_raw(temp_db, 'https://example.com/oldempty'))
-    assert decoded == {'strict': [], 'brands': [], 'series': [], 'pairs': []}
+    assert decoded == {'strict': [], 'brands': []}
 
-    # Second run: the four-key marker carries ``pairs`` → not re-selected.
+    # Still re-selected on the next run (did NOT converge to a terminal marker).
     rc2 = backfill_fingerprints.main(['--days', '30'])
     out2 = capsys.readouterr().out
     assert rc2 == 0
-    assert 'Processed: 0 ' in out2, out2
-    assert 'Empty fp:  0 ' in out2, out2
-    assert '0 rows scanned' in out2, out2
+    assert '(1 rows scanned)' in out2, out2
+    assert 'Unreachable: 1 ' in out2, out2

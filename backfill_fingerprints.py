@@ -26,18 +26,25 @@ non-NULL states:
   tokens. Terminal.
 - ``'{"strict": [], "brands": [], "series": [], "pairs": []}'`` —
   **computed-empty**. The article body was reachable but contained no
-  brand+model tokens the extractor recognises (industry news, retrospective,
-  or the article was deleted upstream so we got an empty body back). Also
-  terminal — the ``$.pairs`` key is present, so a later run will not
+  brand+model tokens the extractor recognises (industry news, retrospective).
+  Also terminal — the ``$.pairs`` key is present, so a later run will not
   re-select it, and re-fetching would yield the same empty result anyway.
 
 Old two-key blobs (``'{"strict": [...], "brands": [...]}'`` with no
 ``$.pairs``) are NOT terminal: they are re-selected and rewritten in the
 four-key form so they gain ``series``/``pairs``.
 
-If ``fetch_full_article`` raises (transient — Cloudflare 403, network
-timeout, DNS hiccup), the row is left with ``model_fingerprint IS NULL`` and
-counted as ``Errors``. A subsequent run picks it up again.
+A row is left ``model_fingerprint IS NULL`` (NON-terminal — retried next run)
+whenever the re-fetch yields no usable body: ``fetch_full_article`` **raises**
+(counted ``Errors``) OR **returns None / a body with no paragraphs** (counted
+``Unreachable``). The latter covers autoevolution's HTTP 403 — Cloudflare
+rate-limits a bulk re-fetch and the source layer defers it with a None return.
+We deliberately do NOT persist a terminal empty marker for a no-body result,
+because a transient 403 would otherwise carry a ``$.pairs`` key and write the
+row off the dedup gate FOREVER. The trade: a genuinely dead/removed URL that
+always returns None is re-selected on every run (one wasted fetch each), never
+converging — harmless, since such a row is never matched by the gate anyway.
+Silent permanent data loss on a transient block is the worse failure.
 
 CLI
 ---
@@ -184,10 +191,13 @@ def backfill_one(conn, row: dict, *, dry_run: bool) -> str:
       * ``'skipped'`` — defensive race guard: the blob already carries a
         ``pairs`` key, so a concurrent writer (or an already-upgraded row)
         beat us to it and we must not clobber it.
-      * ``'updated'`` — real fingerprint extracted and persisted.
-      * ``'empty-fp'`` — fetch succeeded but the article body had no
-        recognisable brand+model tokens; computed-empty marker
-        ``{"strict": [], "brands": [], "series": [], "pairs": []}`` persisted.
+      * ``'updated'`` — the body was reachable; the extracted fingerprint is
+        persisted. Includes the LEGITIMATE computed-empty case (reachable body,
+        no recognised tokens → terminal four-key ``{"strict": [], ...}``).
+      * ``'unreachable'`` — ``fetch_full_article`` returned None / a body with
+        no paragraphs (e.g. a transient autoevolution 403 the source layer
+        deferred). Row left NULL for a later retry — NOT persisted, so a
+        transient block never writes the row off the dedup gate.
       * ``'error'`` — ``fetch_full_article`` raised; row left NULL for a
         later retry.
 
@@ -223,18 +233,24 @@ def backfill_one(conn, row: dict, *, dry_run: bool) -> str:
         logger.error("backfill failed for %s: %s", link, exc)
         return 'error'
 
-    # Empty body — terminal computed-empty path. ``None``, ``{}`` without
-    # the paragraphs key, and ``{'paragraphs': []}`` all collapse here.
+    # No usable body — NOT terminal. ``fetch_full_article`` returns None (or a
+    # body without paragraphs) both for a genuinely empty/deleted upstream
+    # article AND for a transient block: autoevolution answers a bulk re-fetch
+    # with an HTTP 403 (Cloudflare rate-limit), which the source layer swallows
+    # into a None "defer, retry next tick". The two are indistinguishable here,
+    # so we must NOT persist — a terminal four-key empty marker carries a
+    # ``$.pairs`` key and would PERMANENTLY drop the row from the dedup gate
+    # over a transient 403. Leave ``model_fingerprint`` NULL so the next run
+    # retries; a persistently-dead URL just re-fails harmlessly each run (it is
+    # re-selected but never matched — same as an un-backfilled row). See the
+    # module docstring's idempotency contract for the deliberate trade.
     if not article or not article.get('paragraphs'):
-        # Four-key empty form — must match extract_fingerprint's empty
-        # early return. A two-key marker would lack ``$.pairs`` and be
-        # re-selected on every run, breaking idempotency.
-        empty_fp = {'strict': [], 'brands': [], 'series': [], 'pairs': []}
-        if not dry_run:
-            repo.update_published_fingerprint(conn, link, empty_fp)
-            conn.commit()
-        return 'empty-fp'
+        return 'unreachable'
 
+    # Reachable body — persist whatever the extractor yields. An empty four-key
+    # ``{"strict": [], ...}`` here is LEGITIMATE computed-empty (real body, no
+    # recognised brand+model tokens) and IS terminal: it carries ``$.pairs`` so
+    # a later run skips it and re-fetching would only reproduce the same result.
     fp = model_extractor.extract_fingerprint(article)
     if not dry_run:
         repo.update_published_fingerprint(conn, link, fp)
@@ -315,7 +331,7 @@ def main(argv=None) -> int:
         counters = {
             'updated': 0,
             'skipped': 0,
-            'empty_fp': 0,
+            'unreachable': 0,
             'errors': 0,
         }
 
@@ -330,8 +346,8 @@ def main(argv=None) -> int:
                 counters['updated'] += 1
             elif verdict == 'skipped':
                 counters['skipped'] += 1
-            elif verdict == 'empty-fp':
-                counters['empty_fp'] += 1
+            elif verdict == 'unreachable':
+                counters['unreachable'] += 1
             else:  # 'error'
                 counters['errors'] += 1
 
@@ -344,15 +360,18 @@ def main(argv=None) -> int:
     duration = _format_duration(time.monotonic() - start)
 
     # Summary — print() (NOT logger.info) per task contract: this is the
-    # operator-visible result line, not a progress log. Format matches
-    # code-research §14.E.5.
+    # operator-visible result line, not a progress log. Field set matches
+    # code-research §14.E.5; uniform single-space ``label: value`` lines (the
+    # 12-char ``Unreachable:`` label can't column-align with a single space
+    # after the shorter labels, so we drop the hand-padding rather than leave
+    # one ragged line).
     print('Backfill complete:')
-    print(f"  Window:    {args.days} days ({total} rows scanned)")
+    print(f"  Window: {args.days} days ({total} rows scanned)")
     print(f"  Processed: {counters['updated']} (computed fingerprint)")
-    print(f"  Skipped:   {counters['skipped']} (already had fingerprint)")
-    print(f"  Empty fp:  {counters['empty_fp']} (no brands found / unreachable)")
-    print(f"  Errors:    {counters['errors']}")
-    print(f"  Duration:  {duration}")
+    print(f"  Skipped: {counters['skipped']} (already had fingerprint)")
+    print(f"  Unreachable: {counters['unreachable']} (fetch failed - left NULL, will retry)")
+    print(f"  Errors: {counters['errors']}")
+    print(f"  Duration: {duration}")
 
     return 0
 
