@@ -15,6 +15,8 @@ import os
 import sqlite3
 import sys
 import tempfile
+import threading
+import time
 import unittest
 from unittest.mock import patch
 
@@ -1283,6 +1285,144 @@ class TestDedupDegradedRateLimit(_TmpDbCase):
             c.commit()
         with self._conn() as c:
             self.assertFalse(repo.is_dedup_degraded_rate_limited(c))
+
+
+# ---------------- Review-token store (dedup-review-buttons Task 1) ----------
+
+
+class TestReviewTokenStore(_TmpDbCase):
+    """Cover ``put_review_token`` / ``get_review_token_link`` /
+    ``delete_review_token`` — the token→link mapping behind the [E014]
+    review buttons (callback_data is capped at 64 bytes, so a short token
+    stands in for the full article URL). Backed by the existing
+    ``bot_state`` table under the ``review_token:`` key prefix — no new
+    table / migration.
+    """
+
+    def test_put_get_roundtrip(self):
+        repo.put_review_token('tok', 'http://x/a')
+        self.assertEqual(repo.get_review_token_link('tok'), 'http://x/a')
+
+    def test_get_unknown_token_returns_none(self):
+        self.assertIsNone(repo.get_review_token_link('never-stored'))
+
+    def test_delete_removes_token(self):
+        repo.put_review_token('tok', 'http://x/a')
+        repo.delete_review_token('tok')
+        self.assertIsNone(repo.get_review_token_link('tok'))
+
+    def test_delete_unknown_token_is_noop(self):
+        # Must not raise — idempotent delete (double-click on a button,
+        # bot restart between put and delete, etc.).
+        repo.delete_review_token('nope')
+
+    def test_put_overwrites_existing(self):
+        repo.put_review_token('tok', 'http://x/first')
+        repo.put_review_token('tok', 'http://x/second')
+        self.assertEqual(repo.get_review_token_link('tok'), 'http://x/second')
+
+    def test_token_stored_under_prefixed_key(self):
+        repo.put_review_token('tok', 'http://x/a')
+        with self._conn() as c:
+            prefixed = c.execute(
+                "SELECT value FROM bot_state WHERE key=?",
+                ('review_token:tok',),
+            ).fetchone()
+            bare = c.execute(
+                "SELECT value FROM bot_state WHERE key=?",
+                ('tok',),
+            ).fetchone()
+        self.assertIsNotNone(prefixed)
+        self.assertEqual(prefixed[0], 'http://x/a')
+        self.assertIsNone(bare)
+
+
+class TestConnectBusyTimeout(_TmpDbCase):
+    """Pin the busy-timeout contract on ``repo._connect()`` (5000 ms).
+
+    The feature introduces a second concurrent writer (the callback
+    listener thread calling ``skip_pending`` while the publish loop holds
+    a write lock), so ``_connect()`` must wait out short lock windows
+    instead of failing with ``database is locked``. Set via the
+    ``timeout=5.0`` parameter of ``sqlite3.connect`` — deliberately NOT
+    via a ``PRAGMA busy_timeout`` execute() inside ``_connect()``, which
+    would shift the execute() counter in the fault-injection test
+    ``test_move_to_published_rollback_on_error``.
+    """
+
+    def test_connect_sets_busy_timeout(self):
+        conn = repo._connect()
+        try:
+            row = conn.execute("PRAGMA busy_timeout").fetchone()
+        finally:
+            conn.close()
+        self.assertEqual(row[0], 5000)
+
+
+class TestConcurrentWriters(_TmpDbCase):
+    """Carry-forward from tech-spec (Integration tests / Risks «database is
+    locked»): publish-loop writer and cancel writer hit the same DB file at
+    the same time — under busy_timeout the second writer WAITS for the lock
+    instead of failing.
+
+    Control (not run, to keep the test deterministic): with
+    ``timeout=0`` (busy_timeout=0) on the cancel writer's connection, the
+    same scenario raises ``sqlite3.OperationalError: database is locked``
+    the instant its first write statement hits the RESERVED lock held by
+    the publish-loop transaction.
+    """
+
+    def test_two_writers_no_database_locked(self):
+        entry = _sample_entry(link='http://c/concurrent')
+        repo.insert_pending(entry)
+
+        errors = []
+        writer_started = threading.Event()
+
+        def cancel_writer():
+            # Models the listener thread handling a "skip" button press
+            # while the publish loop is mid-transaction.
+            writer_started.set()
+            try:
+                repo.skip_pending(entry['link'])
+            except Exception as exc:  # noqa: BLE001 — recorded for assert
+                errors.append(exc)
+
+        # Publish-loop writer: open transaction holding the write lock
+        # (BEGIN IMMEDIATE acquires RESERVED immediately, like the
+        # multi-statement move_to_* transactions do on first write).
+        locker = sqlite3.connect(self.db_path)
+        try:
+            locker.execute("BEGIN IMMEDIATE")
+            locker.execute(
+                "INSERT OR REPLACE INTO bot_state (key, value) VALUES (?, ?)",
+                ('test_publish_loop_marker', 'busy'),
+            )
+
+            t = threading.Thread(target=cancel_writer)
+            t.start()
+            self.assertTrue(writer_started.wait(timeout=5.0))
+            # Give the cancel writer time to reach the locked write and
+            # park inside the busy handler (well under the 5 s budget).
+            time.sleep(0.3)
+            locker.commit()  # release the lock — writer must now proceed
+            t.join(timeout=10.0)
+            self.assertFalse(t.is_alive(), 'cancel writer did not finish')
+        finally:
+            locker.close()
+
+        self.assertEqual(
+            errors, [],
+            f'cancel writer raised instead of waiting out the lock: {errors}',
+        )
+        # The cancel write went through: pending row gone, dedup stamped.
+        self.assertIsNone(repo.get_pending(entry['link']))
+        with self._conn() as c:
+            row = c.execute(
+                "SELECT 1 FROM processed_news WHERE link=?",
+                (entry['link'],),
+            ).fetchone()
+        self.assertIsNotNone(row)
 
 
 # ---------------- SQL audit ----------------

@@ -52,6 +52,14 @@ _KEY_SOFTFLAG_PAIR_PREFIX = 'softflag_pair:'
 # Global degraded-mode rate-limit key (1-hour window).
 _KEY_DEDUP_DEGRADED = 'dedup_degraded_last_pinged_at'
 
+# Review-token key prefix (dedup-review-buttons, tech-spec Decision 3).
+# Telegram callback_data is capped at 64 bytes while the queue PK is a full
+# article URL, so buttons carry a short token and ``bot_state`` maps
+# ``review_token:<token>`` → link. Full key shape: ``review_token:{token}``
+# — the token comes from ``secrets.token_urlsafe`` (URL-safe alphabet, no
+# separator collisions possible).
+_KEY_REVIEW_TOKEN_PREFIX = 'review_token:'
+
 
 # ---------------------------------------------------------------------------
 # DDL
@@ -173,8 +181,20 @@ def _row_to_dict(row: Optional[tuple], description: Iterable, json_cols: tuple) 
 
 def _connect() -> sqlite3.Connection:
     """Open a connection to the configured DB. Read ``news_bot.DB_FILE`` at
-    call time so tempfile patches in tests are honoured."""
-    return sqlite3.connect(news_bot.DB_FILE)
+    call time so tempfile patches in tests are honoured.
+
+    ``timeout=5.0`` pins a 5000 ms busy-timeout (same 5 s contract as
+    ``outage_state._connect``): the dedup-review-buttons feature adds a
+    second concurrent writer (listener thread calling ``skip_pending``
+    while the publish loop holds the write lock), and the busy handler
+    makes the second writer wait out the lock window instead of raising
+    ``database is locked``. Set via the ``sqlite3.connect`` parameter —
+    equivalent to ``PRAGMA busy_timeout = 5000`` but WITHOUT an extra
+    ``execute()`` inside ``_connect()``, which would shift the execute()
+    counter in the fault-injection test
+    ``test_move_to_published_rollback_on_error``.
+    """
+    return sqlite3.connect(news_bot.DB_FILE, timeout=5.0)
 
 
 # ---------------------------------------------------------------------------
@@ -1005,3 +1025,77 @@ def mark_dedup_degraded_pinged(conn: sqlite3.Connection) -> None:
         "INSERT OR REPLACE INTO bot_state (key, value) VALUES (?, ?)",
         (_KEY_DEDUP_DEGRADED, value),
     )
+
+
+# ---------------------------------------------------------------------------
+# Review-token store (dedup-review-buttons, tech-spec Decision 3)
+# ---------------------------------------------------------------------------
+#
+# Token → link mapping behind the [E014] review buttons: callback_data is
+# capped at 64 bytes, the queue PK is a full URL, so buttons carry a short
+# ``secrets.token_urlsafe`` token and ``bot_state`` resolves it back.
+#
+# Unlike the ``conn``-accepting dedup helpers above, these three follow the
+# ``outage_state._get`` / ``_set`` contour — each opens its own short-lived
+# connection via ``_connect()``, owns the transaction, and closes in
+# ``finally`` — because the callers (listener thread, alert sender) hold no
+# connection of their own.
+
+def _review_token_key(token: str) -> str:
+    """Build the bot_state key for a review token: prefix + token."""
+    return f"{_KEY_REVIEW_TOKEN_PREFIX}{token}"
+
+
+def put_review_token(token: str, link: str) -> None:
+    """UPSERT ``review_token:<token>`` → ``link`` in ``bot_state``.
+
+    A repeat put with the same token overwrites the stored link.
+    ``BEGIN IMMEDIATE`` mirrors ``outage_state._set`` — grab the write
+    lock up front so the busy handler (not a lock-upgrade deadlock)
+    resolves contention with the publish loop.
+    """
+    conn = _connect()
+    try:
+        conn.execute("BEGIN IMMEDIATE")
+        conn.execute(
+            "INSERT OR REPLACE INTO bot_state (key, value) VALUES (?, ?)",
+            (_review_token_key(token), link),
+        )
+        conn.commit()
+    except Exception:
+        conn.rollback()
+        raise
+    finally:
+        conn.close()
+
+
+def get_review_token_link(token: str) -> Optional[str]:
+    """Return the link stored for ``token``, or ``None`` if unknown
+    (expired, bot restarted, already consumed)."""
+    conn = _connect()
+    try:
+        row = conn.execute(
+            "SELECT value FROM bot_state WHERE key=?",
+            (_review_token_key(token),),
+        ).fetchone()
+        return row[0] if row is not None else None
+    finally:
+        conn.close()
+
+
+def delete_review_token(token: str) -> None:
+    """Delete the token row. Deleting an absent token is a safe no-op —
+    idempotent by design (double button press, restart races)."""
+    conn = _connect()
+    try:
+        conn.execute("BEGIN IMMEDIATE")
+        conn.execute(
+            "DELETE FROM bot_state WHERE key=?",
+            (_review_token_key(token),),
+        )
+        conn.commit()
+    except Exception:
+        conn.rollback()
+        raise
+    finally:
+        conn.close()
