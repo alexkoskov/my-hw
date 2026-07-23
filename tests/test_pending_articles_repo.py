@@ -16,7 +16,6 @@ import sqlite3
 import sys
 import tempfile
 import threading
-import time
 import unittest
 from unittest.mock import patch
 
@@ -1358,18 +1357,40 @@ class TestConnectBusyTimeout(_TmpDbCase):
             conn.close()
         self.assertEqual(row[0], 5000)
 
+    def test_connect_passes_explicit_timeout_parameter(self):
+        """Call-spy regression guard (test-review round 1, HIGH).
+
+        The PRAGMA check above also passes on a bare ``sqlite3.connect``
+        because the stdlib default ``timeout`` is already 5.0 — so it pins
+        the *behavior* but cannot catch someone reverting the explicit
+        parameter. This spy asserts the code line itself: ``_connect()``
+        must invoke ``sqlite3.connect(<DB_FILE>, timeout=5.0)`` explicitly,
+        keeping the 5 s contract in our code rather than in a stdlib
+        default that could drift.
+        """
+        calls = []
+        real_connect = sqlite3.connect
+
+        def spy_connect(path, *args, **kwargs):
+            calls.append({'path': path, 'args': args, 'kwargs': kwargs})
+            return real_connect(path, *args, **kwargs)
+
+        with patch.object(repo.sqlite3, 'connect', side_effect=spy_connect):
+            conn = repo._connect()
+            conn.close()
+
+        self.assertEqual(len(calls), 1)
+        self.assertEqual(calls[0]['path'], self.db_path)
+        self.assertEqual(calls[0]['kwargs'].get('timeout'), 5.0)
+
 
 class TestConcurrentWriters(_TmpDbCase):
     """Carry-forward from tech-spec (Integration tests / Risks «database is
     locked»): publish-loop writer and cancel writer hit the same DB file at
     the same time — under busy_timeout the second writer WAITS for the lock
-    instead of failing.
-
-    Control (not run, to keep the test deterministic): with
-    ``timeout=0`` (busy_timeout=0) on the cancel writer's connection, the
-    same scenario raises ``sqlite3.OperationalError: database is locked``
-    the instant its first write statement hits the RESERVED lock held by
-    the publish-loop transaction.
+    instead of failing. The negative counterpart (what the failure mode
+    looks like WITHOUT a busy-timeout) is
+    ``test_zero_timeout_control_raises_database_locked``.
     """
 
     def test_two_writers_no_database_locked(self):
@@ -1377,12 +1398,35 @@ class TestConcurrentWriters(_TmpDbCase):
         repo.insert_pending(entry)
 
         errors = []
-        writer_started = threading.Event()
+        write_reached = threading.Event()
+        real_connect = sqlite3.connect
+
+        class SignallingConn:
+            """Delegates to the real connection; sets ``write_reached``
+            immediately before the first WRITE statement of skip_pending
+            (its opening SELECT is lock-free under RESERVED). The main
+            thread holds the lock until this event fires, so the cancel
+            writer provably reaches its blocking write WHILE the lock is
+            held — deterministic contention, no sleep-based timing
+            (test-review round 1, MEDIUM)."""
+
+            def __init__(self, inner):
+                self._inner = inner
+
+            def execute(self, sql, params=()):
+                if 'INSERT OR IGNORE INTO processed_news' in sql:
+                    write_reached.set()
+                return self._inner.execute(sql, params)
+
+            def __getattr__(self, item):
+                return getattr(self._inner, item)
+
+        def signalling_connect(path, *a, **kw):
+            return SignallingConn(real_connect(path, *a, **kw))
 
         def cancel_writer():
             # Models the listener thread handling a "skip" button press
             # while the publish loop is mid-transaction.
-            writer_started.set()
             try:
                 repo.skip_pending(entry['link'])
             except Exception as exc:  # noqa: BLE001 — recorded for assert
@@ -1391,7 +1435,8 @@ class TestConcurrentWriters(_TmpDbCase):
         # Publish-loop writer: open transaction holding the write lock
         # (BEGIN IMMEDIATE acquires RESERVED immediately, like the
         # multi-statement move_to_* transactions do on first write).
-        locker = sqlite3.connect(self.db_path)
+        # Created BEFORE the connect patch so it uses a plain connection.
+        locker = real_connect(self.db_path)
         try:
             locker.execute("BEGIN IMMEDIATE")
             locker.execute(
@@ -1399,15 +1444,21 @@ class TestConcurrentWriters(_TmpDbCase):
                 ('test_publish_loop_marker', 'busy'),
             )
 
-            t = threading.Thread(target=cancel_writer)
-            t.start()
-            self.assertTrue(writer_started.wait(timeout=5.0))
-            # Give the cancel writer time to reach the locked write and
-            # park inside the busy handler (well under the 5 s budget).
-            time.sleep(0.3)
-            locker.commit()  # release the lock — writer must now proceed
-            t.join(timeout=10.0)
-            self.assertFalse(t.is_alive(), 'cancel writer did not finish')
+            with patch.object(repo.sqlite3, 'connect',
+                              side_effect=signalling_connect):
+                t = threading.Thread(target=cancel_writer)
+                t.start()
+                # Event fires just before the writer's blocking INSERT;
+                # the lock is still held here (commit comes only after
+                # the wait returns), so contention is guaranteed.
+                self.assertTrue(
+                    write_reached.wait(timeout=10.0),
+                    'cancel writer never reached its write statement',
+                )
+                locker.commit()  # release — writer must now proceed
+                t.join(timeout=10.0)
+                self.assertFalse(t.is_alive(),
+                                 'cancel writer did not finish')
         finally:
             locker.close()
 
@@ -1423,6 +1474,29 @@ class TestConcurrentWriters(_TmpDbCase):
                 (entry['link'],),
             ).fetchone()
         self.assertIsNotNone(row)
+
+    def test_zero_timeout_control_raises_database_locked(self):
+        """Negative control (test-review round 1, LOW): demonstrate the
+        exact failure mode the busy-timeout protects against. A connection
+        with ``timeout=0`` (busy_timeout=0 — no busy handler) attempting a
+        write while another connection holds RESERVED fails IMMEDIATELY
+        with ``database is locked``. Single-threaded and lock-release-free
+        until teardown, so fully deterministic and fast."""
+        locker = sqlite3.connect(self.db_path)
+        zero_timeout = sqlite3.connect(self.db_path, timeout=0)
+        try:
+            locker.execute("BEGIN IMMEDIATE")
+            locker.execute(
+                "INSERT OR REPLACE INTO bot_state (key, value) VALUES (?, ?)",
+                ('test_publish_loop_marker', 'busy'),
+            )
+            with self.assertRaises(sqlite3.OperationalError) as ctx:
+                zero_timeout.execute("BEGIN IMMEDIATE")
+            self.assertIn('database is locked', str(ctx.exception))
+            locker.rollback()
+        finally:
+            zero_timeout.close()
+            locker.close()
 
 
 # ---------------- SQL audit ----------------
