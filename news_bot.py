@@ -507,7 +507,11 @@ def send_admin_notification(message, *, max_attempts=ADMIN_NOTIFICATION_MAX_ATTE
     for attempt in range(1, max_attempts + 1):
         try:
             asyncio.run(_send())
-            logging.info(f"Admin notification sent: {safe_message[:50]}...")
+            # Full logging: log the ENTIRE (already-redacted) alert text, not a
+            # 50-char prefix — so alert content (e.g. the flagged article link +
+            # match in an [E014]/[E015] dedup ping) is diagnosable from the logs
+            # alone. safe_message has already passed through _redact_text.
+            logging.info("Admin notification sent: %s", safe_message)
             return True
         except TelegramError as e:
             last_err = e
@@ -2330,7 +2334,7 @@ def job():
                 if decision == 'block':
                     funnel['dropped_dedup_block'] += 1
                     logger.info(
-                        "Skipping cross-source duplicate %s; matched %s "
+                        "[E015] Cross-source hard-block %s; matched %s "
                         "(overlap %d%%)",
                         link, match['link'], match['overlap_pct'],
                     )
@@ -2353,9 +2357,21 @@ def job():
                     continue
 
                 if decision == 'flag':
-                    if not pending_repo.is_pair_rate_limited(
+                    alerted = not pending_repo.is_pair_rate_limited(
                         dedup_conn, link, match['link'],
-                    ):
+                    )
+                    # Full logging: record EVERY soft-flag decision (link +
+                    # [E014] + match) so a dedup flag is diagnosable straight
+                    # from the logs — even when the per-pair 7-day alert
+                    # rate-limit (AC5) suppresses the Telegram ping.
+                    logger.info(
+                        "[E014] Cross-source soft-flag %s; matched %s "
+                        "(overlap %d%%, %s->%s)%s",
+                        link, match['link'], match['overlap_pct'],
+                        new_source, match['source_name'],
+                        "" if alerted else " (alert rate-limited)",
+                    )
+                    if alerted:
                         try:
                             send_admin_notification(
                                 admin_alerts.alert_cross_source_dupe(

@@ -623,3 +623,41 @@ class TestAdminNotifyRedaction:
         assert ok is True
         captured = fake_send.await_args.kwargs["text"]
         assert captured == clean
+
+    def test_send_admin_notification_logs_full_message_not_truncated(
+        self, monkeypatch, caplog
+    ):
+        """Full logging: the 'Admin notification sent' log line carries the
+        ENTIRE (redacted) alert text, not the old 50-char truncation — so alert
+        content (e.g. the flagged article link + match in an [E014]/[E015] dedup
+        ping) is diagnosable from the logs alone, without opening Telegram."""
+        self._patch_credentials_and_bot(monkeypatch)
+        # Distinctive markers well past the old 50-char cap.
+        tail_link = "https://example.com/flagged-article-xyz"
+        long_msg = (
+            "[E014] Похож на дубль\n\nСтатья, помеченная как дубль, подробно "
+            f"описана здесь: {tail_link} — overlap 42 percent tail-marker-ZZZ"
+        )
+        # Guard the premise: the markers must sit past the old 50-char cap —
+        # else a future prefix edit could shorten the message and pass under
+        # the old truncation (false green).
+        assert long_msg.index(tail_link) > 50
+        assert long_msg.index("tail-marker-ZZZ") > 50
+
+        with caplog.at_level(logging.INFO):
+            ok = news_bot.send_admin_notification(long_msg)
+
+        assert ok is True
+        # Bind the check to the 'Admin notification sent:' record specifically,
+        # not to any INFO line that happens to echo the text.
+        sent_records = [
+            r.getMessage() for r in caplog.records
+            if r.getMessage().startswith("Admin notification sent:")
+        ]
+        assert sent_records, "no 'Admin notification sent:' log record found"
+        sent_log = "\n".join(sent_records)
+        assert tail_link in sent_log, (
+            "flagged-article link (past char 50) missing from the "
+            "'Admin notification sent:' line — still truncated:\n" + sent_log
+        )
+        assert "tail-marker-ZZZ" in sent_log

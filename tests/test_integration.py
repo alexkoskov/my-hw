@@ -1085,7 +1085,8 @@ class TestCrossSourceDedup(_PrepPhaseBase):
             'images': [],
         }
 
-        news_bot.job()
+        with self.assertLogs('news_bot', level='INFO') as cm:
+            news_bot.job()
 
         self.assertEqual(pending_articles_repo.count_pending(), 0)
         conn = sqlite3.connect(self.db_path)
@@ -1110,6 +1111,18 @@ class TestCrossSourceDedup(_PrepPhaseBase):
             m = c.args[0] if c.args else ''
             self.assertNotIn('[E014]', m)
             self.assertNotIn('[E016]', m)
+
+        # Full logging: the hard-block decision is recorded in the log itself
+        # ([E015] + link + match), not only in the Telegram alert.
+        block_lines = [
+            l for l in cm.output
+            if '[E015]' in l and 'http://autoevolution.example/new' in l
+        ]
+        self.assertTrue(
+            block_lines,
+            "expected an [E015] hard-block log line naming the blocked link; "
+            "got:\n" + "\n".join(cm.output),
+        )
 
     @patch('news_bot.fetch_full_article')
     @patch('news_bot.fetch_rss')
@@ -1201,7 +1214,8 @@ class TestCrossSourceDedup(_PrepPhaseBase):
             'images': [],
         }
 
-        news_bot.job()
+        with self.assertLogs('news_bot', level='INFO') as cm:
+            news_bot.job()
 
         # Soft flag → article still publishes.
         self.assertEqual(pending_articles_repo.count_pending(), 1)
@@ -1228,6 +1242,83 @@ class TestCrossSourceDedup(_PrepPhaseBase):
             m = c.args[0] if c.args else ''
             self.assertNotIn('[E015]', m)
             self.assertNotIn('[E016]', m)
+
+        # Full logging: the soft-flag decision is recorded in the log itself
+        # (link + [E014] + match), not only in the Telegram alert — so a dedup
+        # flag is diagnosable straight from the logs.
+        soft_lines = [l for l in cm.output if '[E014]' in l and new_link in l]
+        self.assertTrue(
+            soft_lines,
+            f"expected a soft-flag [E014] log line naming {new_link}; got:\n"
+            + "\n".join(cm.output),
+        )
+
+    @patch('news_bot.fetch_full_article')
+    @patch('news_bot.fetch_rss')
+    @patch('news_bot.load_feeds')
+    @patch('news_bot.send_admin_notification')
+    def test_soft_flag_logged_even_when_alert_rate_limited(
+        self, mock_admin, mock_load_feeds, mock_fetch_rss, mock_fetch_article,
+    ):
+        """Full-logging headline: a soft-flag decision is recorded in the LOG
+        even when the per-pair 7-day alert rate-limit (AC5) suppresses the
+        Telegram [E014] ping. Pins the log line's placement OUTSIDE the
+        ``if alerted:`` guard — a rate-limited flag would otherwise be invisible
+        in BOTH channels. (Reverting the log line back inside ``if alerted:``
+        makes this test go red while the non-rate-limited AC2 still passes.)"""
+        existing_link = 'http://t-hunted.example/existing'
+        new_link = 'http://autoevolution.example/new'
+        self._seed_published(
+            existing_link,
+            {
+                'strict': ['toyota supra'],
+                'brands': ['toyota'],
+                'series': ['car culture'],
+                'pairs': ['toyota supra|car culture|B'],
+            },
+            source='t-hunted',
+        )
+        # Pre-seed the pair rate-limit so the flag's Telegram ping is suppressed.
+        conn = pending_articles_repo._connect()
+        try:
+            pending_articles_repo.mark_pair_pinged(conn, new_link, existing_link)
+            conn.commit()
+        finally:
+            conn.close()
+
+        mock_load_feeds.return_value = ['http://example.com/feed1.xml']
+        mock_fetch_rss.return_value = [self._make_entry(new_link)]
+        mock_fetch_article.return_value = {
+            'title': 'Toyota Supra joins the Car Culture line',
+            'subtitle': '',
+            'paragraphs': ['A new release.'],
+            'images': [],
+        }
+
+        with self.assertLogs('news_bot', level='INFO') as cm:
+            news_bot.job()
+
+        # Soft flag is non-terminal → article still publishes.
+        self.assertIsNotNone(pending_articles_repo.get_pending(new_link))
+        # Rate-limited → NO [E014] Telegram ping this run.
+        e014_calls = [
+            c for c in mock_admin.call_args_list
+            if '[E014]' in (c.args[0] if c.args else '')
+        ]
+        self.assertEqual(
+            len(e014_calls), 0,
+            f"rate-limited flag must not ping; got: {mock_admin.call_args_list}",
+        )
+        # BUT the decision IS logged, tagged rate-limited.
+        rl_lines = [
+            l for l in cm.output
+            if '[E014]' in l and new_link in l and 'rate-limited' in l
+        ]
+        self.assertTrue(
+            rl_lines,
+            "expected a rate-limited [E014] soft-flag log line naming "
+            f"{new_link}; got:\n" + "\n".join(cm.output),
+        )
 
     @patch('news_bot.fetch_full_article')
     @patch('news_bot.fetch_rss')
