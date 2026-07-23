@@ -752,9 +752,14 @@ class TestPublishWithRetries(unittest.TestCase):
         mock_sleep.assert_not_called()
 
 
-class TestSlotLoopTransientRetry(_JobBase):
+class TestSlotLoopTransientRetry(_DistribLoopBase):
     """job()-level: a transient publish failure that recovers on retry must
-    NOT strike the row (no increment_attempt) and must count as published."""
+    NOT strike the row (no increment_attempt) and must count as published.
+
+    Inherits ``_DistribLoopBase`` (not ``_JobBase``) so ``datetime.now(MSK)``
+    is frozen at 10:00 МСК — without it the slot loop's 20:00 window-end
+    guard exits before publishing when the suite runs in the evening, making
+    these tests time-of-day flaky."""
 
     @patch('news_bot.pending_repo.increment_attempt')
     @patch('news_bot.send_admin_notification')
