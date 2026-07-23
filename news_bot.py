@@ -622,7 +622,17 @@ def resolve_dedup_callback(action, token, from_user_id):
     elif action == 'cancel':
         if pending_repo.get_pending(link) is not None:
             pending_repo.skip_pending(link)
-            status = "✅ Отменено оператором"
+            # Slot-boundary race (security review round 1): between the
+            # get_pending check above and skip_pending the slot loop may
+            # have published the row — skip_pending then no-ops silently
+            # (it never touches published_articles). Re-read state after
+            # the skip rather than trying to be transactional: a
+            # published row at this point means the publish won, so
+            # answer the honest «уже опубликовано», not «отменено».
+            if pending_repo.get_published(link) is not None:
+                status = "⚠️ Уже опубликовано, отменить нельзя"
+            else:
+                status = "✅ Отменено оператором"
         elif pending_repo.get_published(link) is not None:
             status = "⚠️ Уже опубликовано, отменить нельзя"
         else:

@@ -2832,6 +2832,44 @@ class TestResolveDedupCallback(_IntegrationBase):
         self.assertEqual(published_links, [survivor])
         self.assertIsNone(pending_articles_repo.get_published(cancelled))
 
+    def test_cancel_race_published_between_check_and_skip(self):
+        """Slot-boundary race (security review round 1): the row is still
+        pending at the ``get_pending`` check, but the slot loop publishes
+        it before ``skip_pending`` runs — the skip silently no-ops. The
+        function must then answer the honest «уже опубликовано», not a
+        misleading «отменено» (user-spec promise).
+        """
+        link = 'https://example.com/dedup-race'
+        _seed_pending_row(link)
+        token = self._stage_token(link)
+
+        real_skip = pending_articles_repo.skip_pending
+
+        def _publish_wins_then_skip(l):
+            # Simulate the slot publish landing first: row leaves pending
+            # and appears in published_articles; the real skip_pending
+            # then no-ops on the missing pending row.
+            conn = sqlite3.connect(self.db_path)
+            try:
+                conn.execute(
+                    "DELETE FROM pending_articles WHERE link=?", (l,))
+                conn.commit()
+            finally:
+                conn.close()
+            self._insert_published(l)
+            real_skip(l)
+
+        with patch('news_bot.pending_repo.skip_pending',
+                   side_effect=_publish_wins_then_skip):
+            status, answer = news_bot.resolve_dedup_callback(
+                'cancel', token, self.ADMIN_ID)
+
+        self.assertEqual(status, "⚠️ Уже опубликовано, отменить нельзя")
+        self.assertEqual(answer, "⚠️ Уже опубликовано, отменить нельзя")
+        # Channel post untouched; terminal outcome consumes the token.
+        self.assertIsNotNone(pending_articles_repo.get_published(link))
+        self.assertIsNone(pending_articles_repo.get_review_token_link(token))
+
     def test_cancel_published_returns_already_published(self):
         link = 'https://example.com/dedup-published'
         self._insert_published(link)
@@ -2858,6 +2896,34 @@ class TestResolveDedupCallback(_IntegrationBase):
         self.assertEqual(status, "⚠️ Статья уже недоступна")
         self.assertEqual(answer, "⚠️ Статья уже недоступна")
         self.assertIsNone(pending_articles_repo.get_review_token_link(token))
+
+    # -- unknown action (defensive branch) --------------------------------
+
+    def test_unknown_action_safe_fallback_token_not_consumed(self):
+        """Defensive branch (code+test review round 1): the Task 5
+        listener maps ``c → 'cancel'`` / ``k → 'keep'`` before calling,
+        so a raw letter or garbage action should never arrive — but if
+        it does, the function answers the safe stale text WITHOUT
+        consuming the still-valid token and without touching state.
+        """
+        link = 'https://example.com/dedup-unknown-action'
+        _seed_pending_row(link)
+        token = self._stage_token(link)
+
+        for bad_action in ('c', 'k', 'nuke', '', None):
+            with patch('news_bot.pending_repo.skip_pending') as mock_skip:
+                status, answer = news_bot.resolve_dedup_callback(
+                    bad_action, token, self.ADMIN_ID)
+            self.assertEqual(status, "⚠️ Кнопка устарела",
+                             f"action={bad_action!r}")
+            self.assertEqual(answer, "⚠️ Кнопка устарела")
+            mock_skip.assert_not_called()
+
+        # No state change; token survives for the real button press.
+        self.assertIsNotNone(pending_articles_repo.get_pending(link))
+        self.assertFalse(self._in_processed_news(link))
+        self.assertEqual(
+            pending_articles_repo.get_review_token_link(token), link)
 
     # -- keep / stale -----------------------------------------------------
 
