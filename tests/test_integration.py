@@ -2671,5 +2671,223 @@ class TestPublishRecapIntegration(_IntegrationBase):
             self.assertIsNotNone(pending_articles_repo.get_failed(link))
 
 
+# ---------------------------------------------------------------------------
+# Dedup-review callback decision logic (dedup-review-buttons Task 4).
+# ---------------------------------------------------------------------------
+
+
+class TestResolveDedupCallback(_IntegrationBase):
+    """Every branch of ``news_bot.resolve_dedup_callback`` on a real
+    tempfile SQLite DB (user-spec: the Telegram finger-press E2E is not
+    automatable, so the pure decision core carries the full coverage).
+
+    Return contract under test (fixed with Task 5's listener):
+      * terminal outcome → ``(status_text, answer_text)``, both non-empty
+        strings (listener edits the message + answers the callback);
+      * ignored press (non-admin / non-numeric admin id) →
+        ``(None, "")`` — listener must NOT edit the message.
+    """
+
+    ADMIN_ID = 424242
+
+    def setUp(self):
+        super().setUp()
+        # _IntegrationBase patches TELEGRAM_ADMIN_ID to the non-numeric
+        # '@admin'; these tests need the numeric-admin contract
+        # (tech-spec Decision 5), so layer a numeric patch on top.
+        self.numeric_admin_patcher = patch(
+            'news_bot.TELEGRAM_ADMIN_ID', str(self.ADMIN_ID))
+        self.numeric_admin_patcher.start()
+
+    def tearDown(self):
+        self.numeric_admin_patcher.stop()
+        super().tearDown()
+
+    # -- helpers ----------------------------------------------------------
+
+    def _stage_token(self, link, token='tok-test-1234'):
+        pending_articles_repo.put_review_token(token, link)
+        return token
+
+    def _in_processed_news(self, link):
+        conn = sqlite3.connect(self.db_path)
+        try:
+            row = conn.execute(
+                "SELECT 1 FROM processed_news WHERE link=?", (link,),
+            ).fetchone()
+            return row is not None
+        finally:
+            conn.close()
+
+    def _insert_published(self, link):
+        conn = sqlite3.connect(self.db_path)
+        try:
+            conn.execute(
+                "INSERT INTO published_articles "
+                "(link, title, ru_title, telegraph_url, telegraph_path, "
+                " source_name, via_review) "
+                "VALUES (?, 'EN', 'RU', 'https://telegra.ph/x', '/x', "
+                "        'autoevolution', 0)",
+                (link,),
+            )
+            conn.commit()
+        finally:
+            conn.close()
+
+    # -- auth gate --------------------------------------------------------
+
+    def test_non_admin_press_ignored_no_state_change(self):
+        link = 'https://example.com/dedup-a'
+        _seed_pending_row(link)
+        token = self._stage_token(link)
+
+        with patch('news_bot.pending_repo.skip_pending') as mock_skip:
+            status, answer = news_bot.resolve_dedup_callback(
+                'cancel', token, self.ADMIN_ID + 1)
+
+        self.assertIsNone(status)   # "do not edit the message" signal
+        self.assertEqual(answer, "")
+        mock_skip.assert_not_called()
+        self.assertIsNotNone(pending_articles_repo.get_pending(link))
+        # Token survives an ignored press — the admin can still act later.
+        self.assertEqual(
+            pending_articles_repo.get_review_token_link(token), link)
+
+    def test_non_numeric_admin_id_fail_closed(self):
+        link = 'https://example.com/dedup-failclosed'
+        _seed_pending_row(link)
+        token = self._stage_token(link)
+
+        with patch('news_bot.TELEGRAM_ADMIN_ID', '@sunny413x'):
+            status, answer = news_bot.resolve_dedup_callback(
+                'cancel', token, self.ADMIN_ID)
+
+        self.assertIsNone(status)
+        self.assertEqual(answer, "")
+        self.assertIsNotNone(pending_articles_repo.get_pending(link))
+        self.assertFalse(self._in_processed_news(link))
+        self.assertEqual(
+            pending_articles_repo.get_review_token_link(token), link)
+
+    # -- cancel branches --------------------------------------------------
+
+    def test_cancel_pending_row_skips_and_returns_cancelled(self):
+        link = 'https://example.com/dedup-cancel'
+        _seed_pending_row(link)
+        token = self._stage_token(link)
+
+        status, answer = news_bot.resolve_dedup_callback(
+            'cancel', token, self.ADMIN_ID)
+
+        self.assertEqual(status, "✅ Отменено оператором")
+        self.assertEqual(answer, "✅ Отменено оператором")
+        self.assertIsNone(pending_articles_repo.get_pending(link))
+        self.assertTrue(self._in_processed_news(link))
+        # skip is NOT a publish (Decision 2).
+        self.assertIsNone(pending_articles_repo.get_published(link))
+        # Token consumed on the terminal outcome...
+        self.assertIsNone(pending_articles_repo.get_review_token_link(token))
+        # ...so a second press of the same button is a safe stale no-op
+        # (idempotence, Decision 9).
+        status2, answer2 = news_bot.resolve_dedup_callback(
+            'cancel', token, self.ADMIN_ID)
+        self.assertEqual(status2, "⚠️ Кнопка устарела")
+        self.assertEqual(answer2, "⚠️ Кнопка устарела")
+
+    def test_cancel_then_slot_publish_does_not_publish(self):
+        """User-spec: after the operator cancels, the article does not go
+        out to the channel in its slot. Drives the slot-selection path the
+        way the job loop does (head of ``list_pending()``) with the channel
+        side-effect ``_fallback_publish`` stubbed.
+        """
+        cancelled = 'https://example.com/dedup-cancelled-slot'
+        survivor = 'https://example.com/dedup-survivor'
+        _seed_pending_row(cancelled, title='Cancelled')
+        _seed_pending_row(survivor, title='Survivor')
+        token = self._stage_token(cancelled)
+
+        news_bot.resolve_dedup_callback('cancel', token, self.ADMIN_ID)
+
+        # The cancelled link is gone from the publish queue entirely.
+        queue_links = [r['link'] for r in pending_articles_repo.list_pending()]
+        self.assertNotIn(cancelled, queue_links)
+        self.assertIn(survivor, queue_links)
+
+        # Replay the slot loop's per-slot selection (rows[0] of
+        # list_pending) until the queue drains, with the publish
+        # side-effect stubbed: the cancelled link must never be handed
+        # to _fallback_publish.
+        with patch('news_bot._fallback_publish') as mock_pub:
+            mock_pub.side_effect = lambda row, via_review=False: (
+                pending_articles_repo.skip_pending(row['link']))
+            while True:
+                rows = pending_articles_repo.list_pending()
+                if not rows:
+                    break
+                news_bot._fallback_publish(rows[0])
+
+        published_links = [
+            call.args[0]['link'] for call in mock_pub.call_args_list]
+        self.assertNotIn(cancelled, published_links)
+        self.assertEqual(published_links, [survivor])
+        self.assertIsNone(pending_articles_repo.get_published(cancelled))
+
+    def test_cancel_published_returns_already_published(self):
+        link = 'https://example.com/dedup-published'
+        self._insert_published(link)
+        token = self._stage_token(link)
+
+        with patch('news_bot.pending_repo.skip_pending') as mock_skip:
+            status, answer = news_bot.resolve_dedup_callback(
+                'cancel', token, self.ADMIN_ID)
+
+        self.assertEqual(status, "⚠️ Уже опубликовано, отменить нельзя")
+        self.assertEqual(answer, "⚠️ Уже опубликовано, отменить нельзя")
+        mock_skip.assert_not_called()
+        # The channel post / published row is untouched.
+        self.assertIsNotNone(pending_articles_repo.get_published(link))
+        self.assertIsNone(pending_articles_repo.get_review_token_link(token))
+
+    def test_cancel_missing_returns_unavailable(self):
+        link = 'https://example.com/dedup-vanished'
+        token = self._stage_token(link)  # token valid, article gone
+
+        status, answer = news_bot.resolve_dedup_callback(
+            'cancel', token, self.ADMIN_ID)
+
+        self.assertEqual(status, "⚠️ Статья уже недоступна")
+        self.assertEqual(answer, "⚠️ Статья уже недоступна")
+        self.assertIsNone(pending_articles_repo.get_review_token_link(token))
+
+    # -- keep / stale -----------------------------------------------------
+
+    def test_keep_returns_kept_no_state_change(self):
+        link = 'https://example.com/dedup-keep'
+        _seed_pending_row(link)
+        token = self._stage_token(link)
+
+        status, answer = news_bot.resolve_dedup_callback(
+            'keep', token, self.ADMIN_ID)
+
+        self.assertEqual(status, "👍 Оставлено")
+        self.assertEqual(answer, "👍 Оставлено")
+        # Queue untouched — the article publishes in its slot as usual.
+        self.assertIsNotNone(pending_articles_repo.get_pending(link))
+        self.assertFalse(self._in_processed_news(link))
+        self.assertIsNone(pending_articles_repo.get_review_token_link(token))
+
+    def test_stale_token_returns_expired(self):
+        link = 'https://example.com/dedup-stale'
+        _seed_pending_row(link)
+        # No token staged — simulates bot restart / already-consumed token.
+        status, answer = news_bot.resolve_dedup_callback(
+            'cancel', 'tok-unknown-9999', self.ADMIN_ID)
+
+        self.assertEqual(status, "⚠️ Кнопка устарела")
+        self.assertEqual(answer, "⚠️ Кнопка устарела")
+        self.assertIsNotNone(pending_articles_repo.get_pending(link))
+        self.assertFalse(self._in_processed_news(link))
+
+
 if __name__ == '__main__':
     unittest.main()

@@ -539,6 +539,88 @@ def send_admin_notification(
     return False
 
 
+def resolve_dedup_callback(action, token, from_user_id):
+    """Decide the outcome of a dedup-review button press (pure, no I/O).
+
+    The "brain" behind the ``[E014]`` review keyboard: Task 5's listener
+    parses ``callback_data`` (grammar ``dd:<c|k>:<token>``), maps the
+    letter to a full word (``c → 'cancel'``, ``k → 'keep'``), and calls
+    this function with the already-parsed fields. This function does NO
+    Telegram I/O — only config reads, ``pending_repo`` calls, and string
+    returns; the listener applies the result via ``edit_message_text`` +
+    ``answer_callback_query`` and owns the operator-decision INFO log.
+
+    Return contract (fixed with Task 5):
+        ``(status_text, answer_text)``
+        * terminal outcome — ``status_text`` is the line the listener
+          appends to the alert (``edit_message_text(original + "\\n\\n" +
+          status_text)``); ``answer_text`` is the short callback answer
+          (same string here);
+        * ignored press (non-admin, or non-numeric ``TELEGRAM_ADMIN_ID``)
+          — ``(None, "")``: the listener must NOT edit the message and
+          answers with an empty text.
+
+    Order of checks (security reviewer, wave 1): the admin gate runs
+    FIRST, before any token lookup — the repo token helpers accept any
+    string, so this function is the sole auth gate. Fail-closed
+    (Decision 5): a non-numeric ``TELEGRAM_ADMIN_ID`` (e.g. the default
+    ``@sunny413x``) means nobody is authorized. ``TELEGRAM_ADMIN_ID`` is
+    read from the module at call time so tests can patch it.
+
+    Terminal outcomes (Decisions 2/9/10):
+        * unknown token → «⚠️ Кнопка устарела» (bot restarted / token
+          already consumed) — nothing to delete, no DB writes;
+        * ``keep`` → «👍 Оставлено», queue untouched;
+        * ``cancel`` + link still pending → ``skip_pending(link)`` (the
+          only DB write; idempotent, never touches published_articles) →
+          «✅ Отменено оператором»;
+        * ``cancel`` + link already published → «⚠️ Уже опубликовано,
+          отменить нельзя» (channel post untouched);
+        * ``cancel`` + link nowhere → «⚠️ Статья уже недоступна».
+    The token is deleted exactly on terminal outcomes (keep + the three
+    cancel branches) — never on an ignored press, and an unknown action
+    (listener grammar should make this impossible) is a safe no-op that
+    keeps the token. Idempotent: a second press of a consumed button
+    resolves to the stale branch, never raises.
+    """
+    # 1. Admin gate — FIRST, before any token lookup (fail-closed).
+    try:
+        admin_id = int(TELEGRAM_ADMIN_ID)
+    except (TypeError, ValueError):
+        # Non-numeric admin id (default '@sunny413x') — nobody matches.
+        return (None, "")
+    try:
+        if int(from_user_id) != admin_id:
+            return (None, "")
+    except (TypeError, ValueError):
+        return (None, "")
+
+    # 2. Token resolve.
+    link = pending_repo.get_review_token_link(token)
+    if link is None:
+        return ("⚠️ Кнопка устарела", "⚠️ Кнопка устарела")
+
+    # 3/4. Action branches.
+    if action == 'keep':
+        status = "👍 Оставлено"
+    elif action == 'cancel':
+        if pending_repo.get_pending(link) is not None:
+            pending_repo.skip_pending(link)
+            status = "✅ Отменено оператором"
+        elif pending_repo.get_published(link) is not None:
+            status = "⚠️ Уже опубликовано, отменить нельзя"
+        else:
+            status = "⚠️ Статья уже недоступна"
+    else:
+        # Unknown action — listener grammar filters these out; don't burn
+        # a still-valid token on a malformed callback.
+        return ("⚠️ Кнопка устарела", "⚠️ Кнопка устарела")
+
+    # 5. Terminal outcome — consume the token (idempotent delete).
+    pending_repo.delete_review_token(token)
+    return (status, status)
+
+
 logger = logging.getLogger(__name__)
 
 
