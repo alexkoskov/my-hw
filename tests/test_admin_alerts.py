@@ -8,9 +8,12 @@ Each E0XX builder is a pure str -> str / params -> str function. Tests cover:
 - Substrings that integration tests rely on are preserved verbatim.
 """
 import os
+import secrets
 import sys
 import unittest
 from datetime import datetime, timezone, timedelta
+
+from telegram import InlineKeyboardMarkup
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
@@ -488,6 +491,48 @@ class TestAdminAlerts(unittest.TestCase):
         # And all match the [E0XX] format.
         for code in codes:
             self.assertRegex(code, r"^\[E\d{3}\]$")
+
+
+class TestDedupReviewKeyboard(unittest.TestCase):
+    """build_dedup_review_keyboard — inline keyboard for the E014 review
+    buttons (dedup-review-buttons Decision 3 callback_data grammar:
+    ``dd:c:<token>`` cancel / ``dd:k:<token>`` keep, cancel FIRST)."""
+
+    @staticmethod
+    def _flat_buttons(kb):
+        """Flatten rows in order — row layout (1x2 vs 2x1) is not part of
+        the contract, the button ORDER is."""
+        return [b for row in kb.inline_keyboard for b in row]
+
+    def test_returns_inline_keyboard_markup(self):
+        kb = admin_alerts.build_dedup_review_keyboard("tok")
+        self.assertIsInstance(kb, InlineKeyboardMarkup)
+
+    def test_two_buttons_callback_data(self):
+        kb = admin_alerts.build_dedup_review_keyboard("tok")
+        buttons = self._flat_buttons(kb)
+        self.assertEqual(len(buttons), 2)
+        self.assertEqual(
+            [b.callback_data for b in buttons],
+            ["dd:c:tok", "dd:k:tok"],  # cancel first, keep second
+        )
+
+    def test_button_labels(self):
+        kb = admin_alerts.build_dedup_review_keyboard("tok")
+        texts = [b.text for b in self._flat_buttons(kb)]
+        self.assertIn("🚫 Не публиковать", texts[0])
+        self.assertIn("👍 Оставить", texts[1])
+
+    def test_callback_data_under_64_bytes(self):
+        # Realistic token as minted by the sender (Task 3):
+        # secrets.token_urlsafe(9) → ~12 url-safe chars.
+        token = secrets.token_urlsafe(9)
+        kb = admin_alerts.build_dedup_review_keyboard(token)
+        for b in self._flat_buttons(kb):
+            self.assertLessEqual(
+                len(b.callback_data.encode("utf-8")), 64,
+                f"callback_data over Telegram 64-byte limit: {b.callback_data!r}",
+            )
 
 
 class TestIntakeFunnel(unittest.TestCase):

@@ -22,6 +22,8 @@ from __future__ import annotations
 
 from typing import List, Optional
 
+from telegram import InlineKeyboardButton, InlineKeyboardMarkup
+
 
 # ---------------------------------------------------------------------------
 # E001 — feeds.json пуст / сломан / отсутствует
@@ -747,6 +749,25 @@ def alert_cross_source_dupe(
         f"дубль, удали лишнюю через hw_review.py;\n"
         f"если разные — игнорируй пинг."
     )
+
+
+def build_dedup_review_keyboard(token: str) -> InlineKeyboardMarkup:
+    """Инлайн-клавиатура для E014-пинга «Похож на дубль» (фича
+    dedup-review-buttons): две кнопки решения оператора.
+
+    ``callback_data`` — грамматика Decision 3: ``dd:c:<token>`` (cancel)
+    и ``dd:k:<token>`` (keep). Токен короткий (``secrets.token_urlsafe(9)``,
+    ~12 символов, минтится отправителем), поэтому payload заведомо
+    укладывается в лимит Telegram 64 байта — URL статьи (PK
+    ``pending_articles``) туда бы не влез.
+
+    Порядок кнопок — контракт: cancel ПЕРВОЙ, keep второй. Функция чистая
+    (str -> InlineKeyboardMarkup), без I/O — как все билдеры модуля.
+    """
+    return InlineKeyboardMarkup([[
+        InlineKeyboardButton("🚫 Не публиковать", callback_data=f"dd:c:{token}"),
+        InlineKeyboardButton("👍 Оставить", callback_data=f"dd:k:{token}"),
+    ]])
 
 
 # ---------------------------------------------------------------------------

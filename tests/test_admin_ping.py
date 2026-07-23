@@ -9,11 +9,13 @@ of the manual-review-workflow tech-spec.
 
 import os
 import sys
+from unittest.mock import AsyncMock
 
 import pytest
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
+import news_bot
 from news_bot import (
     SOURCE_EMOJI,
     SOURCE_LABEL,
@@ -179,3 +181,69 @@ class TestSanitizeErrorMessage:
         result = sanitize_error_message(Exception('err sameval tail'))
         assert 'sameval' not in result
         assert '[REDACTED]' in result
+
+
+# ---------------------------------------------------------------------------
+# send_admin_notification — reply_markup forwarding (dedup-review-buttons
+# Task 2). Mock pattern mirrors
+# tests/test_no_token_leak_in_logs.py::TestAdminNotifyRedaction.
+# ---------------------------------------------------------------------------
+
+class TestReplyMarkupForwarding:
+    """Keyword-only ``reply_markup`` must reach ``bot.send_message``
+    untouched (it is a telegram object, NOT text — it must never pass
+    through ``_redact_text``), and omitting it must keep the call
+    byte-for-byte equivalent to today's behaviour."""
+
+    def _patch_credentials_and_bot(self, monkeypatch):
+        """Fake creds + FakeBot whose ``send_message`` is an ``AsyncMock``
+        (the function awaits it inside ``asyncio.run``; a plain ``Mock``
+        would return a non-awaitable and fail vacuously)."""
+        monkeypatch.setattr(
+            news_bot,
+            "TELEGRAM_BOT_TOKEN",
+            "1234567890:fake_for_test_AAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+        )
+        monkeypatch.setattr(news_bot, "TELEGRAM_ADMIN_ID", "@fake_admin")
+        # Deterministic text assertions: no [INSTANCE_LABEL] prefix.
+        monkeypatch.setattr(news_bot, "INSTANCE_LABEL", "")
+
+        fake_send = AsyncMock()
+
+        class _FakeBot:
+            def __init__(self, token):
+                self.token = token
+                self.send_message = fake_send
+
+        monkeypatch.setattr(news_bot, "Bot", _FakeBot)
+        return fake_send
+
+    def test_reply_markup_forwarded_when_passed(self, monkeypatch):
+        fake_send = self._patch_credentials_and_bot(monkeypatch)
+        kb = object()  # sentinel: forwarding must preserve identity
+
+        ok = news_bot.send_admin_notification("msg", reply_markup=kb)
+
+        assert ok is True
+        fake_send.assert_awaited_once()
+        assert fake_send.await_args.kwargs["reply_markup"] is kb
+
+    def test_send_unchanged_when_omitted(self, monkeypatch):
+        fake_send = self._patch_credentials_and_bot(monkeypatch)
+
+        ok = news_bot.send_admin_notification("plain ping")
+
+        assert ok is True
+        fake_send.assert_awaited_once()
+        # Default reply_markup=None == PTB send_message default (no keyboard).
+        assert fake_send.await_args.kwargs["reply_markup"] is None
+        # Text is not distorted by the new parameter.
+        assert fake_send.await_args.kwargs["text"] == "plain ping"
+
+    def test_reply_markup_is_keyword_only(self, monkeypatch):
+        self._patch_credentials_and_bot(monkeypatch)
+
+        # Positional second arg must raise — the contract that guarantees
+        # every existing positional caller stays green.
+        with pytest.raises(TypeError):
+            news_bot.send_admin_notification("m", object())

@@ -466,7 +466,9 @@ for _llm_logger_name in (
 ADMIN_NOTIFICATION_MAX_ATTEMPTS = 3
 
 
-def send_admin_notification(message, *, max_attempts=ADMIN_NOTIFICATION_MAX_ATTEMPTS):
+def send_admin_notification(
+    message, *, max_attempts=ADMIN_NOTIFICATION_MAX_ATTEMPTS, reply_markup=None,
+):
     """Send a notification message to the admin with bounded retry.
 
     Retries on ``TelegramError`` only (timeouts, transient network) —
@@ -479,6 +481,12 @@ def send_admin_notification(message, *, max_attempts=ADMIN_NOTIFICATION_MAX_ATTE
     payload is built so that any caller that accidentally embeds a secret
     (Telegram bot token, Anthropic API key) sees ``***`` in the chat
     rather than the raw value.  Per Decision 12.
+
+    ``reply_markup`` (keyword-only, dedup-review-buttons Task 2) is an
+    optional ready-made telegram keyboard object forwarded verbatim to
+    ``bot.send_message`` — NOT text, so it deliberately bypasses
+    ``_redact_text``. Default ``None`` keeps the call identical to the
+    pre-keyboard behaviour.
     """
     if not TELEGRAM_BOT_TOKEN or not TELEGRAM_ADMIN_ID:
         logging.error("Telegram credentials or admin ID not set.")
@@ -501,6 +509,7 @@ def send_admin_notification(message, *, max_attempts=ADMIN_NOTIFICATION_MAX_ATTE
         await bot.send_message(
             chat_id=TELEGRAM_ADMIN_ID,
             text=safe_message,
+            reply_markup=reply_markup,
         )
 
     last_err = None
