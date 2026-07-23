@@ -2889,5 +2889,228 @@ class TestResolveDedupCallback(_IntegrationBase):
         self.assertFalse(self._in_processed_news(link))
 
 
+class TestDedupReviewButtons(_PrepPhaseBase):
+    """Flag-gated inline review keyboard on the [E014] soft-dupe admin ping
+    (dedup-review-buttons Task 3).
+
+    Contract under test:
+      * ``news_bot.REVIEW_BUTTONS_ENABLED`` is True → the E014 send mints a
+        token, persists ``token→link`` via ``put_review_token`` BEFORE the
+        send, and passes ``reply_markup`` with exactly two buttons
+        (``dd:c:<token>`` / ``dd:k:<token>``, cancel first).
+      * Flag False (the default) → the E014 send is byte-identical to the
+        pre-feature behaviour: no ``reply_markup``, no token minted, no
+        ``review_token:*`` row in ``bot_state``.
+      * Only E014 carries the keyboard — sibling alerts in the same
+        ``job()`` run (E015 hard-block, quiet-day E009, ...) never get one.
+
+    Helpers are REUSED from ``TestCrossSourceDedup`` by plain-function
+    assignment instead of subclassing it — inheriting would re-register its
+    20 test methods under this class and run them all twice.
+    """
+
+    _seed_published = TestCrossSourceDedup._seed_published
+    _make_entry = TestCrossSourceDedup._make_entry
+
+    #: Broad (tier B) pair fingerprint — soft-flags (E014) the matching
+    #: article, same seed as ``test_broad_pair_soft_flag_is_terminal``.
+    SOFT_FP = {
+        'strict': ['toyota supra'],
+        'brands': ['toyota'],
+        'series': ['car culture'],
+        'pairs': ['toyota supra|car culture|B'],
+    }
+    SOFT_ARTICLE = {
+        'title': 'Toyota Supra joins the Car Culture line',
+        'subtitle': '',
+        'paragraphs': ['A new release.'],
+        'images': [],
+    }
+
+    #: Distinctive (|D) pair fingerprint — hard-blocks (E015) the matching
+    #: article, same seed as ``test_distinctive_pair_cross_source_blocks``.
+    BLOCK_FP = {
+        'strict': ['porsche 911'],
+        'brands': ['porsche'],
+        'series': ['k-pop demon hunters'],
+        'pairs': ['porsche 911|k-pop demon hunters|D'],
+    }
+    BLOCK_ARTICLE = {
+        'title': 'Porsche 911 gets a K-Pop Demon Hunters makeover',
+        'subtitle': '',
+        'paragraphs': ['More photos inside.'],
+        'images': [],
+    }
+
+    def setUp(self):
+        super().setUp()
+        # Same dance as TestCrossSourceDedup: stop the base silencer so the
+        # per-test ``send_admin_notification`` patch OWNS the name.
+        self.notify_patcher.stop()
+
+    def tearDown(self):
+        # Re-start the base silencer so _IntegrationBase.tearDown's
+        # notify_patcher.stop() has something to stop.
+        self.notify_patcher.start()
+        super().tearDown()
+
+    # -- helpers ----------------------------------------------------------
+
+    @staticmethod
+    def _e014_calls(mock_admin):
+        return [
+            c for c in mock_admin.call_args_list
+            if '[E014]' in (c.args[0] if c.args else '')
+        ]
+
+    def _review_token_keys(self):
+        """All ``review_token:*`` keys currently in ``bot_state``."""
+        conn = sqlite3.connect(self.db_path)
+        try:
+            return [
+                r[0] for r in conn.execute(
+                    "SELECT key FROM bot_state "
+                    "WHERE key LIKE 'review_token:%'",
+                ).fetchall()
+            ]
+        finally:
+            conn.close()
+
+    # -- tests ------------------------------------------------------------
+
+    @patch('news_bot.REVIEW_BUTTONS_ENABLED', True)
+    @patch('news_bot.fetch_full_article')
+    @patch('news_bot.fetch_rss')
+    @patch('news_bot.load_feeds')
+    @patch('news_bot.send_admin_notification')
+    def test_flag_on_e014_send_includes_review_keyboard(
+        self, mock_admin, mock_load_feeds, mock_fetch_rss, mock_fetch_article,
+    ):
+        """Flag ON: the soft-flag run sends E014 WITH ``reply_markup`` —
+        exactly two buttons ``dd:c:<token>`` / ``dd:k:<token>`` (cancel
+        first) — and the token is persisted: ``get_review_token_link(token)``
+        returns the flagged article's link."""
+        self._seed_published(
+            'http://t-hunted.example/existing', self.SOFT_FP,
+            source='t-hunted',
+        )
+        new_link = 'http://autoevolution.example/new'
+        mock_load_feeds.return_value = ['http://example.com/feed1.xml']
+        mock_fetch_rss.return_value = [self._make_entry(new_link)]
+        mock_fetch_article.return_value = dict(self.SOFT_ARTICLE)
+
+        news_bot.job()
+
+        e014 = self._e014_calls(mock_admin)
+        self.assertEqual(
+            len(e014), 1,
+            f"expected exactly one E014; got {mock_admin.call_args_list!r}",
+        )
+        kb = e014[0].kwargs.get('reply_markup')
+        self.assertIsNotNone(kb, "E014 send is missing reply_markup")
+        buttons = [b for row in kb.inline_keyboard for b in row]
+        self.assertEqual(len(buttons), 2)
+        cds = [b.callback_data for b in buttons]
+        # Cancel FIRST, keep second — order is part of the Task 2 contract.
+        self.assertTrue(cds[0].startswith('dd:c:'), cds)
+        token = cds[0][len('dd:c:'):]
+        self.assertTrue(token, "empty token in callback_data")
+        self.assertEqual(cds, [f'dd:c:{token}', f'dd:k:{token}'])
+        # Token persisted BEFORE the send → resolvable to the new link.
+        self.assertEqual(
+            pending_articles_repo.get_review_token_link(token), new_link,
+        )
+
+    @patch('news_bot.REVIEW_BUTTONS_ENABLED', False)
+    @patch('news_bot.fetch_full_article')
+    @patch('news_bot.fetch_rss')
+    @patch('news_bot.load_feeds')
+    @patch('news_bot.send_admin_notification')
+    def test_flag_off_e014_send_has_no_keyboard(
+        self, mock_admin, mock_load_feeds, mock_fetch_rss, mock_fetch_article,
+    ):
+        """Flag OFF (the default): the very same soft-flag run sends E014
+        WITHOUT ``reply_markup`` and mints no token — ``bot_state`` holds no
+        ``review_token:*`` row. Byte-identical to pre-feature behaviour."""
+        # Guard the "default OFF" half of the contract: with the env var
+        # unset in the test environment the import-time constant is False.
+        self.assertNotIn('REVIEW_BUTTONS_ENABLED', os.environ)
+
+        self._seed_published(
+            'http://t-hunted.example/existing', self.SOFT_FP,
+            source='t-hunted',
+        )
+        new_link = 'http://autoevolution.example/new'
+        mock_load_feeds.return_value = ['http://example.com/feed1.xml']
+        mock_fetch_rss.return_value = [self._make_entry(new_link)]
+        mock_fetch_article.return_value = dict(self.SOFT_ARTICLE)
+
+        news_bot.job()
+
+        e014 = self._e014_calls(mock_admin)
+        self.assertEqual(
+            len(e014), 1,
+            f"expected exactly one E014; got {mock_admin.call_args_list!r}",
+        )
+        self.assertIsNone(e014[0].kwargs.get('reply_markup'))
+        # No token minted, nothing written to bot_state.
+        self.assertEqual(self._review_token_keys(), [])
+
+    @patch('news_bot.REVIEW_BUTTONS_ENABLED', True)
+    @patch('news_bot.fetch_full_article')
+    @patch('news_bot.fetch_rss')
+    @patch('news_bot.load_feeds')
+    @patch('news_bot.send_admin_notification')
+    def test_only_e014_carries_keyboard(
+        self, mock_admin, mock_load_feeds, mock_fetch_rss, mock_fetch_article,
+    ):
+        """Flag ON, mixed run: one entry soft-flags (E014) and a second
+        hard-blocks (E015). Only the E014 call carries ``reply_markup`` —
+        every other admin ping in the run goes out without buttons."""
+        self._seed_published(
+            'http://t-hunted.example/existing-soft', self.SOFT_FP,
+            source='t-hunted',
+        )
+        self._seed_published(
+            'http://t-hunted.example/existing-block', self.BLOCK_FP,
+            source='t-hunted', title='Existing Block Article',
+        )
+        soft_link = 'http://autoevolution.example/soft'
+        block_link = 'http://autoevolution.example/block'
+        mock_load_feeds.return_value = ['http://example.com/feed1.xml']
+        mock_fetch_rss.return_value = [
+            self._make_entry(soft_link, title='Soft Article'),
+            self._make_entry(block_link, title='Block Article'),
+        ]
+        articles = {
+            soft_link: dict(self.SOFT_ARTICLE),
+            block_link: dict(self.BLOCK_ARTICLE),
+        }
+        mock_fetch_article.side_effect = (
+            lambda entry: articles[entry['link']]
+        )
+
+        news_bot.job()
+
+        e014 = self._e014_calls(mock_admin)
+        self.assertEqual(
+            len(e014), 1,
+            f"expected exactly one E014; got {mock_admin.call_args_list!r}",
+        )
+        self.assertIsNotNone(e014[0].kwargs.get('reply_markup'))
+        # The E015 hard-block DID fire in this run (otherwise the "other
+        # alerts" half of the assertion below would be vacuous).
+        others = [c for c in mock_admin.call_args_list if c not in e014]
+        self.assertTrue(
+            any('[E015]' in (c.args[0] if c.args else '') for c in others),
+            f"expected an E015 in the run; got {mock_admin.call_args_list!r}",
+        )
+        for c in others:
+            self.assertIsNone(
+                c.kwargs.get('reply_markup'),
+                f"non-E014 alert unexpectedly carries buttons: {c!r}",
+            )
+
+
 if __name__ == '__main__':
     unittest.main()

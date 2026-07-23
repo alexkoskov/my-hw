@@ -12,6 +12,7 @@ import sys
 import json
 import asyncio
 import fcntl
+import secrets
 import socket
 import time
 from datetime import datetime, timedelta, timezone
@@ -130,6 +131,21 @@ DB_FILE = os.getenv("DB_FILE", "news.db").strip() or "news.db"
 DEDUP_SERIES_ENABLED = os.getenv(
     "DEDUP_SERIES_ENABLED", "1"
 ).strip().lower() not in ("0", "false", "no", "off")
+
+# Feature toggle for the inline review keyboard on the [E014] soft-dupe
+# admin ping (dedup-review-buttons, tech-spec Decision 6). Same const↔env
+# name contract as ``DEDUP_SERIES_ENABLED`` above (a const↔env drift would
+# make the deploy silently no-op), and the same module-attribute read
+# pattern — the send site reads the bare name so tests can monkeypatch
+# ``news_bot.REVIEW_BUTTONS_ENABLED`` and the operator can flip it via
+# env + restart. CRITICAL, deliberately INVERTED default vs
+# DEDUP_SERIES_ENABLED: this flag is OFF unless the env var is an explicit
+# on-word (``1/true/yes/on``, case-insensitive); unset / blank / anything
+# else → disabled. Prod-only opt-in: buttons appear only where the
+# callback listener actually runs.
+REVIEW_BUTTONS_ENABLED = os.getenv(
+    "REVIEW_BUTTONS_ENABLED", ""
+).strip().lower() in ("1", "true", "yes", "on")
 LOG_LEVEL = logging.INFO
 
 # Distributed-publish constants (llm-transcreation-and-distributed-publishing
@@ -2464,6 +2480,24 @@ def job():
                     )
                     if alerted:
                         try:
+                            # dedup-review-buttons: when the flag is up,
+                            # mint a short token, persist token→link
+                            # BEFORE the send (a button press must never
+                            # race an unwritten token), and attach the
+                            # two-button review keyboard. Flag down →
+                            # kb stays None and the call is identical to
+                            # the pre-feature behaviour. Mint/put live
+                            # INSIDE this try so a storage/build fault
+                            # logs as a failed E014 ping instead of
+                            # breaking the "dedup never blocks
+                            # publishing" contract.
+                            kb = None
+                            if REVIEW_BUTTONS_ENABLED:
+                                token = secrets.token_urlsafe(9)
+                                pending_repo.put_review_token(token, link)
+                                kb = admin_alerts.build_dedup_review_keyboard(
+                                    token,
+                                )
                             send_admin_notification(
                                 admin_alerts.alert_cross_source_dupe(
                                     new_link=link,
@@ -2475,7 +2509,8 @@ def job():
                                     n_total=match['n_total'],
                                     models=match['models'],
                                     pairs=match.get('pairs'),
-                                )
+                                ),
+                                reply_markup=kb,
                             )
                         except Exception as notify_err:
                             logger.error(
