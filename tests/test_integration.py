@@ -3054,8 +3054,12 @@ class TestDedupReviewButtons(_PrepPhaseBase):
     ):
         """Flag ON: the soft-flag run sends E014 WITH ``reply_markup`` —
         exactly two buttons ``dd:c:<token>`` / ``dd:k:<token>`` (cancel
-        first) — and the token is persisted: ``get_review_token_link(token)``
-        returns the flagged article's link."""
+        first) — and the token is persisted BEFORE the send: an
+        AT-CALL-TIME probe inside the ``send_admin_notification`` mock
+        resolves ``get_review_token_link(token)`` to the flagged link the
+        moment the send happens (test-review round 1: a post-``job()``
+        assertion alone stays green if the put is moved AFTER the send,
+        missing the button-tap-races-unwritten-token production race)."""
         self._seed_published(
             'http://t-hunted.example/existing', self.SOFT_FP,
             source='t-hunted',
@@ -3065,7 +3069,35 @@ class TestDedupReviewButtons(_PrepPhaseBase):
         mock_fetch_rss.return_value = [self._make_entry(new_link)]
         mock_fetch_article.return_value = dict(self.SOFT_ARTICLE)
 
+        # Ordering probe: runs INSIDE the send call, i.e. before job()
+        # continues past it. For the E014 (the only call carrying a
+        # keyboard) the token extracted from callback_data must ALREADY
+        # resolve in bot_state — pinning put_review_token-before-send.
+        probe_hits = []
+
+        def _assert_token_written_at_send(message, **kwargs):
+            kb_probe = kwargs.get('reply_markup')
+            if kb_probe is None:
+                return True  # other pings (E009, ...) — not under test
+            cd = kb_probe.inline_keyboard[0][0].callback_data
+            self.assertTrue(cd.startswith('dd:c:'), cd)
+            probe_token = cd[len('dd:c:'):]
+            self.assertEqual(
+                pending_articles_repo.get_review_token_link(probe_token),
+                new_link,
+                "token not persisted BEFORE send_admin_notification — "
+                "a button tap could race an unwritten token",
+            )
+            probe_hits.append(probe_token)
+            return True
+
+        mock_admin.side_effect = _assert_token_written_at_send
+
         news_bot.job()
+
+        # The probe actually fired for the keyboard-carrying send —
+        # otherwise the at-call-time assertion above would be vacuous.
+        self.assertEqual(len(probe_hits), 1, probe_hits)
 
         e014 = self._e014_calls(mock_admin)
         self.assertEqual(
@@ -3082,7 +3114,8 @@ class TestDedupReviewButtons(_PrepPhaseBase):
         token = cds[0][len('dd:c:'):]
         self.assertTrue(token, "empty token in callback_data")
         self.assertEqual(cds, [f'dd:c:{token}', f'dd:k:{token}'])
-        # Token persisted BEFORE the send → resolvable to the new link.
+        # Same token the at-send probe saw, still resolvable after job().
+        self.assertEqual(probe_hits, [token])
         self.assertEqual(
             pending_articles_repo.get_review_token_link(token), new_link,
         )
