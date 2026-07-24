@@ -14,6 +14,7 @@ import asyncio
 import fcntl
 import secrets
 import socket
+import threading
 import time
 from datetime import datetime, timedelta, timezone
 from urllib.parse import urlparse
@@ -45,7 +46,7 @@ import feedparser
 from deep_translator import GoogleTranslator
 import schedule
 from telegram import Bot, LinkPreviewOptions
-from telegram.error import TelegramError
+from telegram.error import Conflict, TelegramError
 
 from mattel_news_source import fetch_mattel_news, fetch_mattel_article
 import autoevolution_source
@@ -648,6 +649,323 @@ def resolve_dedup_callback(action, token, from_user_id):
 
 
 logger = logging.getLogger(__name__)
+
+
+# ---------------------------------------------------------------------------
+# Background review listener (dedup-review-buttons Task 5) — the bot's first
+# INBOUND Telegram path. A daemon thread long-polls getUpdates for
+# callback_query presses under the [E014] keyboard, feeds them into the pure
+# resolve_dedup_callback above, and applies the outcome (edit + answer).
+# Isolation contract (tech-spec Decision 1 / Risk "listener thread crashes"):
+# nothing that happens in this thread may ever affect the publish loop.
+# ---------------------------------------------------------------------------
+
+#: Long-poll timeout (seconds) passed to getUpdates — the Telegram server
+#: holds the request open up to this long, so the loop is idle-cheap.
+REVIEW_LISTENER_POLL_TIMEOUT_SECONDS = 30
+#: Pause after a transient error (network blip, TelegramError, DB fault)
+#: before re-polling — prevents a busy-loop on a repeating failure.
+REVIEW_LISTENER_ERROR_BACKOFF_SECONDS = 5
+#: Longer pause after a 409 Conflict (another getUpdates consumer on the
+#: shared bot token) — the condition needs operator action, not fast retry.
+REVIEW_LISTENER_CONFLICT_BACKOFF_SECONDS = 60
+
+#: Exact callback_data grammar map: ``dd:<letter>:<token>``. The letters are
+#: the wire format (Telegram caps callback_data at 64 bytes); the values are
+#: the full-word actions ``resolve_dedup_callback`` expects (Task 4 contract
+#: — it takes ``'cancel'``/``'keep'``, never the bare letters).
+_REVIEW_CALLBACK_ACTIONS = {'c': 'cancel', 'k': 'keep'}
+
+#: Telegram hard-caps callback_data at 64 bytes; anything longer never came
+#: from our keyboard, so the parser rejects it outright (wave-1 security
+#: note: accept ONLY the exact grammar, ignore everything else silently).
+_REVIEW_CALLBACK_DATA_MAX_LEN = 64
+
+
+def _parse_review_callback_data(data):
+    """Parse ``callback_data`` against the exact ``dd:<c|k>:<token>`` grammar.
+
+    Returns ``(action_word, token)`` — action already mapped to the full
+    word (``'cancel'``/``'keep'``) — or ``None`` for anything that is not
+    EXACTLY three ``:``-separated fields with prefix ``dd``, a known
+    single-letter action and a non-empty token. Defensive by design
+    (wave-1 security review): garbage, foreign prefixes, full-word
+    actions on the wire, empty tokens and oversized payloads are all
+    silently rejected — the caller just advances the offset.
+    """
+    if not isinstance(data, str):
+        return None
+    if len(data) > _REVIEW_CALLBACK_DATA_MAX_LEN:
+        return None
+    parts = data.split(':')
+    if len(parts) != 3:
+        return None
+    prefix, letter, token = parts
+    if prefix != 'dd' or letter not in _REVIEW_CALLBACK_ACTIONS or not token:
+        return None
+    return (_REVIEW_CALLBACK_ACTIONS[letter], token)
+
+
+async def _review_get_updates(offset):
+    """One long-poll cycle: fresh ``Bot`` + fresh event loop per call.
+
+    Matches ``send_admin_notification`` exactly (Bot constructed INSIDE
+    the coroutine, one ``asyncio.run`` per Telegram call). This is not
+    style pedantry: ``HTTPXRequest`` builds its ``httpx.AsyncClient`` in
+    ``__init__`` and pools keep-alive connections, and a pooled
+    connection is bound to the event loop that opened it — reusing one
+    ``Bot`` across successive ``asyncio.run`` loops makes every second
+    poll die with "Event loop is closed". A fresh Bot per call keeps
+    each connection's lifetime inside its own loop.
+    """
+    bot = Bot(token=TELEGRAM_BOT_TOKEN)
+    return await bot.get_updates(
+        offset=offset,
+        timeout=REVIEW_LISTENER_POLL_TIMEOUT_SECONDS,
+        allowed_updates=['callback_query'],
+    )
+
+
+async def _review_edit_message(chat_id, message_id, text):
+    """Apply a terminal outcome to the alert: append status, drop keyboard.
+
+    Fresh Bot per call — same cross-event-loop rationale as
+    ``_review_get_updates``.
+    """
+    bot = Bot(token=TELEGRAM_BOT_TOKEN)
+    await bot.edit_message_text(
+        chat_id=chat_id,
+        message_id=message_id,
+        text=text,
+        reply_markup=None,
+    )
+
+
+async def _review_answer_callback(callback_query_id, text):
+    """Answer a button press (clears the client-side spinner).
+
+    Fresh Bot per call — same cross-event-loop rationale as
+    ``_review_get_updates``.
+    """
+    bot = Bot(token=TELEGRAM_BOT_TOKEN)
+    await bot.answer_callback_query(callback_query_id, text=text)
+
+
+def _handle_review_update(update):
+    """Process ONE getUpdates item: parse → resolve → edit/answer.
+
+    Synchronous by design (the testability seam): all Telegram I/O goes
+    through per-call ``asyncio.run`` on the ``_review_*`` coroutine
+    helpers above, matching the project's outgoing style. May raise —
+    the caller's per-update try/except owns survival (task-4 security
+    note: a DB error from pending_repo must never kill the listener
+    thread).
+
+    Outcome application (fixed contract with Task 4):
+      * terminal (``status_text`` is a string) → ``edit_message_text``
+        with the status line appended to the original alert text and the
+        keyboard removed (``reply_markup=None``), then
+        ``answer_callback_query`` with ``answer_text``; the operator
+        decision is logged at INFO (action + link + status);
+      * ignored press (``status_text is None``) → answer with empty text
+        only, NO edit, no log noise.
+    """
+    callback_query = getattr(update, 'callback_query', None)
+    if callback_query is None:
+        return  # allowed_updates should prevent this; be defensive anyway
+    parsed = _parse_review_callback_data(getattr(callback_query, 'data', None))
+    if parsed is None:
+        return  # not our grammar — silently ignore (offset advances upstream)
+    action, token = parsed
+    from_user = getattr(callback_query, 'from_user', None)
+    from_user_id = getattr(from_user, 'id', None)
+
+    # Grab the link for the decision log BEFORE resolve consumes the token
+    # (single source of truth — resolve deletes it on a terminal outcome).
+    link = pending_repo.get_review_token_link(token)
+
+    status_text, answer_text = resolve_dedup_callback(
+        action, token, from_user_id)
+
+    if status_text is None:
+        # Ignored press (non-admin / fail-closed config): acknowledge the
+        # spinner with an empty answer, change nothing, edit nothing.
+        asyncio.run(_review_answer_callback(callback_query.id, ""))
+        return
+
+    message = getattr(callback_query, 'message', None)
+    if message is not None:
+        original_text = getattr(message, 'text', None) or ''
+        asyncio.run(_review_edit_message(
+            message.chat_id,
+            message.message_id,
+            original_text + "\n\n" + status_text,
+        ))
+    asyncio.run(_review_answer_callback(callback_query.id, answer_text))
+    # user-spec: every operator decision lands in the log — action + article
+    # link + final status. No token value here (log hygiene).
+    logger.info(
+        "[review] operator decision: action=%s link=%s status=%s",
+        action, link, status_text,
+    )
+
+
+def _review_listener_sleep(stop_event, seconds):
+    """Backoff that stays responsive to the test stop-seam."""
+    if stop_event is not None:
+        stop_event.wait(seconds)
+    else:
+        time.sleep(seconds)
+
+
+def _run_review_listener(stop_event=None):
+    """Daemon-thread target: long-poll getUpdates for [E014] button presses.
+
+    Own ``Bot`` instances + own offset; each Telegram call runs a fresh
+    ``Bot`` through a fresh ``asyncio.run`` (same per-call event-loop
+    style as ``send_admin_notification`` — see ``_review_get_updates``
+    for why the Bot must not outlive its loop; and no
+    ``telegram.ext.Application``, which wants signal handlers the main
+    thread owns).
+
+    Resilience contract: NO exception ever escapes this function. Each
+    update is handled inside its own try/except (one poisoned update is
+    logged, acked via offset and skipped), the poll cycle has its own
+    try/except with a short backoff (5s; 60s on 409 Conflict — that means
+    a second getUpdates consumer on the shared bot token, which needs the
+    operator to enforce the single-listener rule, not fast retries), and
+    a final belt-and-braces handler catches anything else so the daemon
+    thread dies quietly instead of stack-tracing over the publish loop.
+
+    ``stop_event`` is the testability seam: production passes nothing
+    (infinite loop, daemon thread dies with the process); tests set the
+    event to exit after a bounded number of iterations.
+    """
+    try:
+        offset = None
+        while stop_event is None or not stop_event.is_set():
+            try:
+                updates = asyncio.run(_review_get_updates(offset))
+            except Conflict as exc:
+                logger.error(
+                    "[review] getUpdates got 409 Conflict — another "
+                    "process is polling with the same bot token. Review "
+                    "buttons must be enabled on exactly ONE instance "
+                    "(shared prod+test token); disable "
+                    "REVIEW_BUTTONS_ENABLED on the other instance. "
+                    "Backing off %ss. (%s)",
+                    REVIEW_LISTENER_CONFLICT_BACKOFF_SECONDS,
+                    sanitize_error_message(exc),
+                )
+                _review_listener_sleep(
+                    stop_event, REVIEW_LISTENER_CONFLICT_BACKOFF_SECONDS)
+                continue
+            except Exception as exc:
+                # Long-poll timeout, network blip, TelegramError, event-loop
+                # weirdness — log, short backoff, poll again. Never busy-loop,
+                # never die.
+                logger.error(
+                    "[review] review listener poll failed "
+                    "(%s: %s); retrying in %ss.",
+                    type(exc).__name__, sanitize_error_message(exc),
+                    REVIEW_LISTENER_ERROR_BACKOFF_SECONDS,
+                )
+                _review_listener_sleep(
+                    stop_event, REVIEW_LISTENER_ERROR_BACKOFF_SECONDS)
+                continue
+
+            for update in updates:
+                try:
+                    # Ack first: even a poisoned update is consumed exactly
+                    # once — Telegram must not redeliver it forever.
+                    offset = update.update_id + 1
+                    _handle_review_update(update)
+                except Exception:
+                    # DB fault, Telegram edit/answer error, exotic update
+                    # shape — log with traceback and move on. The thread
+                    # (and the publish loop) must survive any single update.
+                    logger.exception(
+                        "[review] failed to handle update %s — skipped",
+                        getattr(update, 'update_id', '?'),
+                    )
+    except Exception:
+        # Belt and braces (e.g. Bot() constructor failure): a daemon thread
+        # must never stack-trace over the publish process.
+        logger.exception(
+            "[review] review listener thread crashed — [E014] buttons are "
+            "inactive until the next restart"
+        )
+
+
+def _review_listener_enabled():
+    """Pure gate for the listener thread (tech-spec Decisions 5 + 6).
+
+    True only when ``REVIEW_BUTTONS_ENABLED`` is on AND
+    ``TELEGRAM_ADMIN_ID`` parses as an int. Fail-closed: the default
+    ``@sunny413x`` (non-numeric) can never equal a numeric
+    ``from_user.id``, so such a config disables listening entirely
+    rather than silently rejecting every press. Module attributes are
+    read at call time so tests can monkeypatch both knobs.
+    """
+    if not REVIEW_BUTTONS_ENABLED:
+        return False
+    try:
+        int(TELEGRAM_ADMIN_ID)
+    except (TypeError, ValueError):
+        return False
+    return True
+
+
+def _maybe_start_review_listener():
+    """main() wiring: start the daemon listener thread iff the gate is open.
+
+    Returns the started ``threading.Thread`` or ``None``. Three shapes:
+      * flag off (default — test instance) → silent no-op;
+      * flag on + non-numeric admin id → WARNING + best-effort admin ping
+        (fail-closed: buttons would render but nobody could ever be
+        authorized, so the listener does not start);
+      * gate open → daemon thread + "review listener active" log/ping.
+    """
+    if not REVIEW_BUTTONS_ENABLED:
+        return None
+    if not _review_listener_enabled():
+        logger.warning(
+            "[startup] review listener disabled — TELEGRAM_ADMIN_ID is not "
+            "numeric (fail-closed); [E014] buttons will not work until a "
+            "numeric admin id is configured."
+        )
+        try:
+            send_admin_notification(
+                "⚠️ REVIEW_BUTTONS_ENABLED включён, но TELEGRAM_ADMIN_ID "
+                "не числовой — слушатель нажатий выключен (fail-closed), "
+                "кнопки под [E014] работать не будут. Укажите числовой "
+                "TELEGRAM_ADMIN_ID и перезапустите бота."
+            )
+        except Exception as notify_err:
+            logger.error(
+                f"[startup] failed to send review-listener warning ping: "
+                f"{sanitize_error_message(notify_err)}"
+            )
+        return None
+
+    listener_thread = threading.Thread(
+        target=_run_review_listener,
+        name='review-listener',
+        daemon=True,
+    )
+    listener_thread.start()
+    logger.info("[startup] review listener active (daemon thread started)")
+    try:
+        send_admin_notification(
+            "✅ Review listener active — кнопки под [E014] обрабатываются "
+            "этим инстансом."
+        )
+    except Exception as notify_err:
+        logger.error(
+            f"[startup] failed to send review-listener startup ping: "
+            f"{sanitize_error_message(notify_err)}"
+        )
+    return listener_thread
 
 
 class GoogleTranslationError(Exception):
@@ -2950,6 +3268,13 @@ def main():
                 f"[startup] failed to send prod-DB-guard ping: "
                 f"{sanitize_error_message(notify_err)}"
             )
+
+    # Background review listener (dedup-review-buttons Task 5) — started
+    # BEFORE the cron registration and the immediate job() so the daemon
+    # thread lives through the whole process lifetime, including the long
+    # blocking publish window. Fail-closed gate inside; default (flag off)
+    # is a silent no-op.
+    _maybe_start_review_listener()
 
     # Daily fixed-time cron at 10:00 МСК (Decisions 2 + 4). pytz is the
     # only timezone API ``schedule==1.2.1`` accepts — see Decision 4.

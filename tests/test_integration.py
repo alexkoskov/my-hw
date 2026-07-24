@@ -44,8 +44,9 @@ import os
 import sqlite3
 import sys
 import tempfile
+import threading
 import unittest
-from unittest.mock import MagicMock, patch
+from unittest.mock import AsyncMock, MagicMock, patch
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
@@ -3209,6 +3210,287 @@ class TestDedupReviewButtons(_PrepPhaseBase):
                 c.kwargs.get('reply_markup'),
                 f"non-E014 alert unexpectedly carries buttons: {c!r}",
             )
+
+
+class TestReviewListener(_IntegrationBase):
+    """Task 5 — background review listener + main() wiring.
+
+    The listener is the bot's first inbound Telegram path, so the tests
+    stay strictly synchronous: the per-update handler
+    (``news_bot._handle_review_update``) is exercised directly with mock
+    ``Bot``/``Update`` objects (no threads, no sockets), and the outer
+    loop (``news_bot._run_review_listener``) is driven in-thread via the
+    ``stop_event`` seam with backoff constants patched to 0.
+    """
+
+    ADMIN_ID = 424242
+
+    # -- fixtures ---------------------------------------------------------
+
+    def _make_bot(self):
+        """Mock Bot whose API methods are awaitable — the handler builds
+        a fresh ``Bot`` per call (cross-event-loop httpx safety), so the
+        tests patch ``news_bot.Bot`` to hand this mock back every time."""
+        bot = MagicMock()
+        bot.get_updates = AsyncMock(return_value=[])
+        bot.edit_message_text = AsyncMock()
+        bot.answer_callback_query = AsyncMock()
+        return bot
+
+    def _make_update(self, data, *, update_id=1, user_id=ADMIN_ID,
+                     text='[E014] original alert'):
+        update = MagicMock()
+        update.update_id = update_id
+        cq = update.callback_query
+        cq.data = data
+        cq.id = 'cbq-1'
+        cq.from_user.id = user_id
+        cq.message.text = text
+        cq.message.chat_id = 777
+        cq.message.message_id = 42
+        return update
+
+    # -- gate predicate + main() wiring -----------------------------------
+
+    def test_review_listener_starts_when_enabled_and_numeric_admin(self):
+        with patch('news_bot.REVIEW_BUTTONS_ENABLED', True), \
+                patch('news_bot.TELEGRAM_ADMIN_ID', str(self.ADMIN_ID)), \
+                patch('news_bot.threading.Thread') as mock_thread:
+            self.assertTrue(news_bot._review_listener_enabled())
+            with self.assertLogs('news_bot', level='INFO') as logs:
+                result = news_bot._maybe_start_review_listener()
+
+        mock_thread.assert_called_once_with(
+            target=news_bot._run_review_listener,
+            name='review-listener',
+            daemon=True,
+        )
+        mock_thread.return_value.start.assert_called_once()
+        self.assertIsNotNone(result)
+        self.assertTrue(
+            any('review listener active' in line for line in logs.output))
+        # Best-effort startup ping went out.
+        self.mock_notify.assert_called_once()
+
+    def test_review_listener_not_started_when_flag_off(self):
+        self.mock_notify.reset_mock()
+        with patch('news_bot.REVIEW_BUTTONS_ENABLED', False), \
+                patch('news_bot.TELEGRAM_ADMIN_ID', str(self.ADMIN_ID)), \
+                patch('news_bot.threading.Thread') as mock_thread:
+            self.assertFalse(news_bot._review_listener_enabled())
+            result = news_bot._maybe_start_review_listener()
+
+        self.assertIsNone(result)
+        mock_thread.assert_not_called()
+        # Flag off is the normal test-instance state: silent (no ping).
+        self.mock_notify.assert_not_called()
+
+    def test_review_listener_not_started_when_admin_non_numeric(self):
+        self.mock_notify.reset_mock()
+        # _IntegrationBase already patches TELEGRAM_ADMIN_ID='@admin'
+        # (non-numeric) — exactly the fail-closed default shape.
+        with patch('news_bot.REVIEW_BUTTONS_ENABLED', True), \
+                patch('news_bot.threading.Thread') as mock_thread:
+            self.assertFalse(news_bot._review_listener_enabled())
+            with self.assertLogs('news_bot', level='WARNING') as logs:
+                result = news_bot._maybe_start_review_listener()
+
+        self.assertIsNone(result)
+        mock_thread.assert_not_called()
+        self.assertTrue(
+            any('TELEGRAM_ADMIN_ID' in line for line in logs.output))
+        # Operator is told (best-effort) why the buttons are dead.
+        self.mock_notify.assert_called_once()
+
+    # -- outer loop resilience --------------------------------------------
+
+    def test_review_listener_error_does_not_propagate(self):
+        stop_event = threading.Event()
+        calls = []
+
+        def fake_get_updates(*args, **kwargs):
+            if not calls:
+                calls.append('boom')
+                raise RuntimeError('simulated network/DB failure')
+            stop_event.set()
+
+            async def _empty():
+                return []
+            return _empty()
+
+        mock_bot = MagicMock()
+        mock_bot.get_updates = fake_get_updates
+        with patch('news_bot.Bot', return_value=mock_bot), \
+                patch('news_bot.REVIEW_LISTENER_ERROR_BACKOFF_SECONDS', 0):
+            with self.assertLogs('news_bot', level='ERROR') as logs:
+                # Must return normally — any escaping exception fails here.
+                news_bot._run_review_listener(stop_event=stop_event)
+
+        self.assertEqual(calls, ['boom'])  # error path was exercised
+        self.assertTrue(
+            any('review listener' in line for line in logs.output))
+
+    def test_review_listener_conflict_409_logged_with_backoff(self):
+        from telegram.error import Conflict
+        stop_event = threading.Event()
+        calls = []
+
+        def fake_get_updates(*args, **kwargs):
+            if not calls:
+                calls.append('conflict')
+                raise Conflict('terminated by other getUpdates request')
+            stop_event.set()
+
+            async def _empty():
+                return []
+            return _empty()
+
+        mock_bot = MagicMock()
+        mock_bot.get_updates = fake_get_updates
+        with patch('news_bot.Bot', return_value=mock_bot), \
+                patch('news_bot.REVIEW_LISTENER_CONFLICT_BACKOFF_SECONDS', 0):
+            with self.assertLogs('news_bot', level='ERROR') as logs:
+                news_bot._run_review_listener(stop_event=stop_event)
+
+        # Clear operator-facing message: shared token, exactly one listener.
+        self.assertTrue(
+            any('409' in line and 'one' in line.lower()
+                for line in logs.output),
+            f"expected a 409/single-listener ERROR line; got {logs.output!r}")
+
+    def test_review_listener_handler_error_advances_offset_and_survives(self):
+        stop_event = threading.Event()
+        seen_offsets = []
+        update = self._make_update('dd:c:tok-loop', update_id=7)
+
+        def fake_get_updates(*args, **kwargs):
+            seen_offsets.append(kwargs.get('offset'))
+            if len(seen_offsets) > 1:
+                stop_event.set()
+
+                async def _empty():
+                    return []
+                return _empty()
+
+            async def _one():
+                return [update]
+            return _one()
+
+        mock_bot = MagicMock()
+        mock_bot.get_updates = fake_get_updates
+        with patch('news_bot.Bot', return_value=mock_bot), \
+                patch('news_bot._handle_review_update',
+                      side_effect=sqlite3.OperationalError('db locked')), \
+                patch('news_bot.REVIEW_LISTENER_ERROR_BACKOFF_SECONDS', 0):
+            with self.assertLogs('news_bot', level='ERROR'):
+                news_bot._run_review_listener(stop_event=stop_event)
+
+        # The bad update was acked (offset advanced past it) and the loop
+        # lived on to poll again — one poisoned update can't wedge the
+        # listener or the publish process.
+        self.assertEqual(seen_offsets, [None, 8])
+
+    # -- callback_data grammar filter -------------------------------------
+
+    def test_callback_grammar_rejects_malformed_data(self):
+        bad_values = [
+            None,                          # missing data
+            '',                            # empty
+            'garbage',                     # no colons
+            'dd:c',                        # too few fields
+            'dd:c:tok:extra',              # too many fields
+            'dd:x:tok',                    # unknown action letter
+            'xx:c:tok',                    # wrong prefix
+            'dd:cancel:tok',               # full word not allowed on the wire
+            'dd:c:',                       # empty token
+            'dd:c:' + 'a' * 100,           # oversized (> Telegram 64-byte cap)
+        ]
+        with patch('news_bot.Bot') as mock_bot_cls, \
+                patch('news_bot.resolve_dedup_callback') as mock_resolve:
+            for value in bad_values:
+                update = self._make_update(value)
+                news_bot._handle_review_update(update)
+
+            # An update with no callback_query at all is likewise a no-op.
+            empty_update = MagicMock()
+            empty_update.callback_query = None
+            news_bot._handle_review_update(empty_update)
+
+        mock_resolve.assert_not_called()
+        # Rejected updates never even construct a Bot — zero Telegram I/O.
+        mock_bot_cls.assert_not_called()
+
+    def test_callback_letter_maps_to_full_word(self):
+        bot = self._make_bot()
+        with patch('news_bot.Bot', return_value=bot), \
+                patch('news_bot.resolve_dedup_callback',
+                      return_value=(None, "")) as mock_resolve:
+            news_bot._handle_review_update(
+                self._make_update('dd:c:tok-c', user_id=1))
+            news_bot._handle_review_update(
+                self._make_update('dd:k:tok-k', user_id=1))
+        self.assertEqual(
+            [c.args for c in mock_resolve.call_args_list],
+            [('cancel', 'tok-c', 1), ('keep', 'tok-k', 1)],
+        )
+
+    # -- terminal vs ignored outcomes -------------------------------------
+
+    def test_review_listener_dispatches_admin_cancel(self):
+        link = 'https://example.com/listener-cancel'
+        _seed_pending_row(link)
+        pending_articles_repo.put_review_token('tok-listener-1', link)
+        bot = self._make_bot()
+        update = self._make_update('dd:c:tok-listener-1')
+
+        with patch('news_bot.Bot', return_value=bot), \
+                patch('news_bot.TELEGRAM_ADMIN_ID', str(self.ADMIN_ID)), \
+                patch('news_bot.resolve_dedup_callback',
+                      wraps=news_bot.resolve_dedup_callback) as spy:
+            with self.assertLogs('news_bot', level='INFO') as logs:
+                news_bot._handle_review_update(update)
+
+        # Letter mapped to the full word BEFORE the pure resolver ran.
+        spy.assert_called_once_with('cancel', 'tok-listener-1', self.ADMIN_ID)
+        # Real DB effect: the pending row was skipped, not published.
+        self.assertIsNone(pending_articles_repo.get_pending(link))
+        self.assertIsNone(pending_articles_repo.get_published(link))
+        # Terminal outcome → message edited: status appended, keyboard gone.
+        bot.edit_message_text.assert_awaited_once_with(
+            chat_id=777,
+            message_id=42,
+            text='[E014] original alert\n\n✅ Отменено оператором',
+            reply_markup=None,
+        )
+        bot.answer_callback_query.assert_awaited_once_with(
+            'cbq-1', text='✅ Отменено оператором')
+        # Operator decision logged at INFO: action + link + status.
+        decision_lines = [
+            line for line in logs.output
+            if 'cancel' in line and link in line
+            and 'Отменено оператором' in line
+        ]
+        self.assertEqual(len(decision_lines), 1, logs.output)
+
+    def test_ignored_press_answers_empty_and_never_edits(self):
+        link = 'https://example.com/listener-nonadmin'
+        _seed_pending_row(link)
+        pending_articles_repo.put_review_token('tok-listener-2', link)
+        bot = self._make_bot()
+        update = self._make_update(
+            'dd:c:tok-listener-2', user_id=self.ADMIN_ID + 1)
+
+        with patch('news_bot.Bot', return_value=bot), \
+                patch('news_bot.TELEGRAM_ADMIN_ID', str(self.ADMIN_ID)):
+            news_bot._handle_review_update(update)
+
+        bot.edit_message_text.assert_not_awaited()
+        bot.answer_callback_query.assert_awaited_once_with('cbq-1', text='')
+        # State untouched: row still pending, token still alive.
+        self.assertIsNotNone(pending_articles_repo.get_pending(link))
+        self.assertEqual(
+            pending_articles_repo.get_review_token_link('tok-listener-2'),
+            link)
 
 
 if __name__ == '__main__':
