@@ -625,6 +625,65 @@ class TestMoves(_TmpDbCase):
         pub = repo.get_published(entry['link'])
         self.assertEqual(pub['via_review'], 0)
 
+    def test_move_to_published_missing_row_warns_and_dozapis_published(self):
+        """Audit CA-1b: the pending row can vanish between the Telegram
+        teaser send and ``move_to_published`` (operator cancel racing an
+        in-flight publish — ``skip_pending`` deleted it). The teaser IS in
+        the channel at that point, so a silent no-op would leave
+        ``published_articles`` without a row for a post that exists —
+        skewing the fingerprint window, E017 and E034. Contract: WARNING
+        log + defensive dozapis of the published row from the explicit
+        args (title recovered from ``processed_news``, where the skip
+        stamped it).
+        """
+        link = 'http://m/ghost'
+        entry = _sample_entry(link=link)
+        entry['title'] = 'Ghost Title'
+        repo.insert_pending(entry)
+        # The racing cancel: row leaves pending, title lands in
+        # processed_news.
+        repo.skip_pending(link)
+        self.assertIsNone(repo.get_pending(link))
+
+        with self.assertLogs('pending_articles_repo', level='WARNING') as logs:
+            repo.move_to_published(
+                link,
+                telegraph_url='https://telegra.ph/ghost',
+                telegraph_path='ghost',
+                via_review=False,
+            )
+
+        self.assertTrue(
+            any('move_to_published' in line and link in line
+                for line in logs.output),
+            f"expected a move_to_published WARNING; got {logs.output!r}")
+        # The completed publish is NEVER absent from published_articles.
+        pub = repo.get_published(link)
+        self.assertIsNotNone(pub)
+        self.assertEqual(pub['telegraph_url'], 'https://telegra.ph/ghost')
+        self.assertEqual(pub['telegraph_path'], 'ghost')
+        self.assertEqual(pub['via_review'], 0)
+        # Title recovered from the processed_news stamp left by the skip.
+        self.assertEqual(pub['title'], 'Ghost Title')
+
+    def test_move_to_published_missing_row_no_processed_news_uses_link(self):
+        """Dozapis fallback: no pending row AND no processed_news stamp
+        (row never existed) — the defensive insert still writes a row,
+        using the link for the NOT NULL title columns."""
+        link = 'http://m/ghost-bare'
+        with self.assertLogs('pending_articles_repo', level='WARNING'):
+            repo.move_to_published(
+                link,
+                telegraph_url='https://telegra.ph/ghost-bare',
+                telegraph_path='ghost-bare',
+                via_review=True,
+            )
+        pub = repo.get_published(link)
+        self.assertIsNotNone(pub)
+        self.assertEqual(pub['telegraph_url'], 'https://telegra.ph/ghost-bare')
+        self.assertEqual(pub['title'], link)
+        self.assertEqual(pub['via_review'], 1)
+
     def test_move_to_published_idempotent_on_duplicate_link(self):
         # Contract (Task 2): a second move_to_published with the same link
         # must NOT raise IntegrityError on the published_articles UNIQUE/PK,

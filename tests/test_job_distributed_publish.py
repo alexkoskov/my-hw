@@ -395,6 +395,25 @@ class TestMainHealthChecks(unittest.TestCase):
             f"expected a TZ-warning ping, got: {ping_msgs!r}",
         )
 
+    @patch.dict(os.environ, {'TZ': 'Europe/Moscow'})
+    @patch('news_bot.send_admin_notification')
+    @patch('news_bot.claude_transcreation.health_check', return_value=True)
+    @patch('news_bot._maybe_start_review_listener')
+    def test_main_wires_review_listener(
+        self, mock_listener, _mock_health, _mock_admin,
+    ):
+        """Audit M-2: pin the feature's ONLY production activation path.
+
+        The review-listener gate function is thoroughly tested at its own
+        seam, but nothing pinned the ``_maybe_start_review_listener()``
+        call inside ``main()`` — deleting that line left the whole suite
+        green (mutation-verified in the test audit) while shipping a fully
+        dead feature (buttons render flag-on, nothing ever serves them).
+        This spy makes that mutation fail.
+        """
+        self._run_main_once()
+        mock_listener.assert_called_once_with()
+
 
 # ---------------------------------------------------------------------------
 # Distributed-publish loop tests (Decisions 15 + tech-spec §How-it-works step 7)

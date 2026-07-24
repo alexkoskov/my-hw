@@ -639,8 +639,51 @@ def move_to_published(link: str, telegraph_url: str, telegraph_path: str,
             (link,),
         ).fetchone()
         if src is None:
-            # Nothing to move; treat as no-op rather than error. Caller should
-            # have guarded against this, but a missing row is not corruption.
+            # Missing pending row at move time (audit CA-1b): the only
+            # production path here is an operator cancel racing an
+            # in-flight publish — ``skip_pending`` deleted the row AFTER
+            # the Telegram teaser went out but BEFORE this move (the
+            # pre-teaser guard in ``_fallback_publish`` closes the wider
+            # window). The channel post EXISTS at this point, so a silent
+            # no-op would leave ``published_articles`` without a row for a
+            # real post — skewing the 7-day fingerprint window, the E017
+            # dry-spell check and the E034 recap. Mirror the post-commit
+            # defensive verification below: WARN loudly, then dozapis the
+            # published row from the explicit args. ``title`` is recovered
+            # from the ``processed_news`` stamp the skip left (falling
+            # back to the link for the NOT NULL columns); the RU title is
+            # unrecoverable (``update_staged`` no-oped on the deleted row).
+            logger.warning(
+                "[move_to_published] pending row for %s missing at move "
+                "time (operator cancel raced an in-flight publish?) — the "
+                "channel post exists, so dozapis published_articles from "
+                "explicit args instead of silently dropping the audit row",
+                link,
+            )
+            recovered = conn.execute(
+                "SELECT title, pub_date FROM processed_news WHERE link=?",
+                (link,),
+            ).fetchone()
+            title = (recovered[0] if recovered and recovered[0] else None) \
+                or link
+            pub_date = recovered[1] if recovered else None
+            conn.execute(
+                "INSERT OR IGNORE INTO published_articles "
+                "(link, title, ru_title, telegraph_url, telegraph_path, "
+                " source_name, via_review) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?)",
+                (
+                    link, title, title, telegraph_url, telegraph_path,
+                    '', 1 if via_review else 0,
+                ),
+            )
+            # Dedup stamp — a no-op when skip_pending already wrote it.
+            conn.execute(
+                "INSERT OR IGNORE INTO processed_news (link, title, pub_date) "
+                "VALUES (?, ?, ?)",
+                (link, title, pub_date),
+            )
+            conn.commit()
             return
         title, ru_title, source_name, pub_date, model_fingerprint = src
 

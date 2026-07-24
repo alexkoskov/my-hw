@@ -78,10 +78,18 @@ For each callback query:
 3. `edit_message_text(original_text + "\n\n" + status, reply_markup=None)` +
    `answer_callback_query`.
 
-**Publish loop is unchanged** and needs no cancel-check: it re-reads `list_pending()`
+**Publish loop slot selection is unchanged**: it re-reads `list_pending()`
 each slot and takes `rows[0]`, so a row deleted before its slot simply never
-publishes (verified: `news_bot.py` slot loop). The `_fallback_publish` idempotency
-guard (`get_published` check at top) already covers the residual boundary case.
+publishes (verified: `news_bot.py` slot loop). A cancel landing while that row's
+own publish is already in flight is covered by a two-sided guard (audit CA-1, not
+by the top-of-function idempotency check, which only catches already-published
+rows): (a) `_fallback_publish` re-checks the pending row immediately before the
+Telegram teaser — the last irreversible step — and aborts as
+success-without-publish if the row vanished (no channel post, no strike); (b) for
+the residual teaser→move window, `move_to_published` no longer silently no-ops on
+a missing pending row — it logs a WARNING and defensively dozapis the
+`published_articles` row from its explicit args, so a completed publish is never
+absent from the audit table.
 
 ### Shared resources
 

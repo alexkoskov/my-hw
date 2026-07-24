@@ -2956,6 +2956,79 @@ class TestResolveDedupCallback(_IntegrationBase):
         self.assertFalse(self._in_processed_news(link))
 
 
+class TestInFlightCancelGuard(_IntegrationBase):
+    """Audit CA-1a: an operator cancel that lands while THIS article's own
+    publish is mid-flight (LLM → Telegraph take minutes) must abort the
+    publish before the Telegram teaser — the last irreversible step. The
+    row is deleted by ``skip_pending`` inside ``resolve_dedup_callback``;
+    ``_fallback_publish`` re-checks the pending row right before the
+    teaser send and honours the cancel: no channel post, no strike
+    (success-without-publish, mirroring the idempotency guard's return).
+    """
+
+    RU_RESULT = {
+        'title': 'РуЗаголовок',
+        'subtitle': 'РуПодзаголовок',
+        'paragraphs': ['Русский абзац.'],
+        'blocks': None,
+    }
+
+    def test_cancel_mid_publish_aborts_before_teaser(self):
+        link = 'https://example.com/inflight-cancel'
+        _seed_pending_row(link)
+        row = pending_articles_repo.get_pending(link)
+
+        def _cancel_lands_then_publish(**kwargs):
+            # The operator presses «🚫 Не публиковать» while Telegraph is
+            # being created: resolve's cancel branch deletes the pending
+            # row. The Telegraph page itself still gets made (harmless
+            # orphan) — the guard sits AFTER this step, BEFORE the teaser.
+            pending_articles_repo.skip_pending(link)
+            return 'https://telegra.ph/inflight-cancel'
+
+        with patch('news_bot.transcreate_via_claude',
+                   return_value=dict(self.RU_RESULT)), \
+                patch('news_bot.telegraph_publisher.publish_article',
+                      side_effect=_cancel_lands_then_publish), \
+                patch('news_bot.time.sleep'), \
+                patch('news_bot.send_telegraph_teaser') as mock_teaser:
+            with self.assertLogs('news_bot', level='INFO') as logs:
+                result = news_bot._fallback_publish(row)
+
+        # Success-without-publish: True (no strike in the slot loop) but
+        # the channel teaser was never sent and nothing was "published".
+        self.assertTrue(result)
+        mock_teaser.assert_not_called()
+        self.assertIsNone(pending_articles_repo.get_published(link))
+        self.assertIsNone(pending_articles_repo.get_pending(link))
+        # The abort is visible in the log for the operator.
+        self.assertTrue(
+            any('[review-cancel]' in line and link in line
+                for line in logs.output),
+            f"expected a [review-cancel] abort line; got {logs.output!r}")
+
+    def test_publish_proceeds_when_row_still_pending(self):
+        """Positive control: with no cancel racing it, the same publish
+        passes the pre-teaser guard and completes normally."""
+        link = 'https://example.com/inflight-nocancel'
+        _seed_pending_row(link)
+        row = pending_articles_repo.get_pending(link)
+
+        with patch('news_bot.transcreate_via_claude',
+                   return_value=dict(self.RU_RESULT)), \
+                patch('news_bot.telegraph_publisher.publish_article',
+                      return_value='https://telegra.ph/inflight-nocancel'), \
+                patch('news_bot.time.sleep'), \
+                patch('news_bot.send_telegraph_teaser',
+                      return_value=True) as mock_teaser:
+            result = news_bot._fallback_publish(row)
+
+        self.assertTrue(result)
+        mock_teaser.assert_called_once()
+        self.assertIsNotNone(pending_articles_repo.get_published(link))
+        self.assertIsNone(pending_articles_repo.get_pending(link))
+
+
 class TestDedupReviewButtons(_PrepPhaseBase):
     """Flag-gated inline review keyboard on the [E014] soft-dupe admin ping
     (dedup-review-buttons Task 3).
@@ -3014,8 +3087,16 @@ class TestDedupReviewButtons(_PrepPhaseBase):
         # Same dance as TestCrossSourceDedup: stop the base silencer so the
         # per-test ``send_admin_notification`` patch OWNS the name.
         self.notify_patcher.stop()
+        # SEC-A8-1: the send site now gates on _review_listener_enabled()
+        # (flag + bot token + numeric admin), not the bare flag — the base
+        # class patches TELEGRAM_ADMIN_ID to the non-numeric '@admin', so
+        # flag-ON tests need a numeric admin id for the keyboard to mint.
+        self.numeric_admin_patcher = patch(
+            'news_bot.TELEGRAM_ADMIN_ID', '424242')
+        self.numeric_admin_patcher.start()
 
     def tearDown(self):
+        self.numeric_admin_patcher.stop()
         # Re-start the base silencer so _IntegrationBase.tearDown's
         # notify_patcher.stop() has something to stop.
         self.notify_patcher.start()
@@ -3161,6 +3242,40 @@ class TestDedupReviewButtons(_PrepPhaseBase):
     @patch('news_bot.fetch_rss')
     @patch('news_bot.load_feeds')
     @patch('news_bot.send_admin_notification')
+    def test_flag_on_non_numeric_admin_no_keyboard_no_token(
+        self, mock_admin, mock_load_feeds, mock_fetch_rss, mock_fetch_article,
+    ):
+        """Audit SEC-A8-1: flag ON but non-numeric admin id (the default
+        ``@sunny413x`` shape) — the listener can never start, so the E014
+        send site must not mint tokens or render buttons nobody will ever
+        serve (no eternal spinner, no orphan ``review_token:*`` rows).
+        The E014 alert itself still goes out, just without a keyboard —
+        exactly like flag-off."""
+        self._seed_published(
+            'http://t-hunted.example/existing', self.SOFT_FP,
+            source='t-hunted',
+        )
+        new_link = 'http://autoevolution.example/new'
+        mock_load_feeds.return_value = ['http://example.com/feed1.xml']
+        mock_fetch_rss.return_value = [self._make_entry(new_link)]
+        mock_fetch_article.return_value = dict(self.SOFT_ARTICLE)
+
+        with patch('news_bot.TELEGRAM_ADMIN_ID', '@sunny413x'):
+            news_bot.job()
+
+        e014 = self._e014_calls(mock_admin)
+        self.assertEqual(
+            len(e014), 1,
+            f"expected exactly one E014; got {mock_admin.call_args_list!r}",
+        )
+        self.assertIsNone(e014[0].kwargs.get('reply_markup'))
+        self.assertEqual(self._review_token_keys(), [])
+
+    @patch('news_bot.REVIEW_BUTTONS_ENABLED', True)
+    @patch('news_bot.fetch_full_article')
+    @patch('news_bot.fetch_rss')
+    @patch('news_bot.load_feeds')
+    @patch('news_bot.send_admin_notification')
     def test_only_e014_carries_keyboard(
         self, mock_admin, mock_load_feeds, mock_fetch_rss, mock_fetch_article,
     ):
@@ -3284,6 +3399,29 @@ class TestReviewListener(_IntegrationBase):
         mock_thread.assert_not_called()
         # Flag off is the normal test-instance state: silent (no ping).
         self.mock_notify.assert_not_called()
+
+    def test_review_listener_not_started_when_bot_token_missing(self):
+        """Audit CA-3: flag on + numeric admin + EMPTY bot token must be
+        fail-closed at the gate. Without this check the listener thread
+        starts and ``Bot(token=None)`` raises every poll — a perpetual
+        5s ERROR loop for the process lifetime."""
+        self.mock_notify.reset_mock()
+        with patch('news_bot.REVIEW_BUTTONS_ENABLED', True), \
+                patch('news_bot.TELEGRAM_ADMIN_ID', str(self.ADMIN_ID)), \
+                patch('news_bot.TELEGRAM_BOT_TOKEN', ''), \
+                patch('news_bot.threading.Thread') as mock_thread:
+            self.assertFalse(news_bot._review_listener_enabled())
+            with self.assertLogs('news_bot', level='WARNING') as logs:
+                result = news_bot._maybe_start_review_listener()
+
+        self.assertIsNone(result)
+        mock_thread.assert_not_called()
+        # The warning names the actual broken knob, not the admin id.
+        self.assertTrue(
+            any('TELEGRAM_BOT_TOKEN' in line for line in logs.output),
+            f"expected a TELEGRAM_BOT_TOKEN warning; got {logs.output!r}")
+        # Operator is told (best-effort) why the buttons are dead.
+        self.mock_notify.assert_called_once()
 
     def test_review_listener_not_started_when_admin_non_numeric(self):
         self.mock_notify.reset_mock()
@@ -3417,6 +3555,8 @@ class TestReviewListener(_IntegrationBase):
             'dd:cancel:tok',               # full word not allowed on the wire
             'dd:c:',                       # empty token
             'dd:c:' + 'a' * 100,           # oversized (> Telegram 64-byte cap)
+            'dd:c:' + 'ю' * 30,            # 35 chars but 65 UTF-8 bytes —
+                                           # the cap is BYTES (audit CA-5)
         ]
         with patch('news_bot.Bot') as mock_bot_cls, \
                 patch('news_bot.resolve_dedup_callback') as mock_resolve:
@@ -3432,6 +3572,30 @@ class TestReviewListener(_IntegrationBase):
         mock_resolve.assert_not_called()
         # Rejected updates never even construct a Bot — zero Telegram I/O.
         mock_bot_cls.assert_not_called()
+
+    def test_keyboard_callback_data_round_trips_through_parser(self):
+        """Audit M-1: the ``dd:<c|k>:<token>`` grammar lives as literals
+        in two modules (``admin_alerts`` builder, ``news_bot`` parser),
+        each pinned by its own unit test — but a tandem edit of the
+        builder + its test would ship a mismatch whose failure mode is
+        silent by design (parser rejects, listener just advances the
+        offset). This round-trip pins the seam: the builder's REAL
+        output, with a real ``secrets.token_urlsafe(9)`` token, must be
+        accepted by the parser for BOTH buttons."""
+        import secrets
+
+        import admin_alerts
+
+        token = secrets.token_urlsafe(9)
+        kb = admin_alerts.build_dedup_review_keyboard(token)
+        buttons = [b for row in kb.inline_keyboard for b in row]
+        self.assertEqual(len(buttons), 2)
+        parsed = [
+            news_bot._parse_review_callback_data(b.callback_data)
+            for b in buttons
+        ]
+        # Cancel first, keep second — and the exact minted token back out.
+        self.assertEqual(parsed, [('cancel', token), ('keep', token)])
 
     def test_callback_letter_maps_to_full_word(self):
         bot = self._make_bot()
@@ -3485,6 +3649,41 @@ class TestReviewListener(_IntegrationBase):
         decision_lines = [
             line for line in logs.output
             if 'cancel' in line and link in line
+            and 'Отменено оператором' in line
+        ]
+        self.assertEqual(len(decision_lines), 1, logs.output)
+
+    def test_decision_logged_even_when_edit_fails(self):
+        """Audit CA-2: by the time the message edit runs, the decision is
+        already applied (row skipped, token consumed) — so the
+        operator-decision INFO line must be emitted BEFORE the Telegram
+        edit/answer calls. A transient ``TelegramError`` on the edit
+        must not cost the audit line (user-spec: every operator decision
+        lands in the log)."""
+        from telegram.error import TelegramError
+
+        link = 'https://example.com/listener-log-first'
+        _seed_pending_row(link)
+        pending_articles_repo.put_review_token('tok-log-first', link)
+        bot = self._make_bot()
+        bot.edit_message_text = AsyncMock(
+            side_effect=TelegramError('message to edit not found'))
+        update = self._make_update('dd:c:tok-log-first')
+
+        with patch('news_bot.Bot', return_value=bot), \
+                patch('news_bot.TELEGRAM_ADMIN_ID', str(self.ADMIN_ID)):
+            with self.assertLogs('news_bot', level='INFO') as logs:
+                # The per-update guard in _run_review_listener owns
+                # survival; at the handler seam the error propagates.
+                with self.assertRaises(TelegramError):
+                    news_bot._handle_review_update(update)
+
+        # State change happened (cancel applied) ...
+        self.assertIsNone(pending_articles_repo.get_pending(link))
+        # ... and the audit line was written despite the failed edit.
+        decision_lines = [
+            line for line in logs.output
+            if 'operator decision' in line and link in line
             and 'Отменено оператором' in line
         ]
         self.assertEqual(len(decision_lines), 1, logs.output)

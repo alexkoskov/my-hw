@@ -692,10 +692,12 @@ REVIEW_LISTENER_CONFLICT_BACKOFF_SECONDS = 60
 #: — it takes ``'cancel'``/``'keep'``, never the bare letters).
 _REVIEW_CALLBACK_ACTIONS = {'c': 'cancel', 'k': 'keep'}
 
-#: Telegram hard-caps callback_data at 64 bytes; anything longer never came
+#: Telegram hard-caps callback_data at 64 BYTES; anything longer never came
 #: from our keyboard, so the parser rejects it outright (wave-1 security
 #: note: accept ONLY the exact grammar, ignore everything else silently).
-_REVIEW_CALLBACK_DATA_MAX_LEN = 64
+#: Compared against the UTF-8 byte length, not the code-point count
+#: (audit CA-5): a ≤64-char multibyte payload can exceed 64 bytes.
+_REVIEW_CALLBACK_DATA_MAX_BYTES = 64
 
 
 def _parse_review_callback_data(data):
@@ -711,7 +713,7 @@ def _parse_review_callback_data(data):
     """
     if not isinstance(data, str):
         return None
-    if len(data) > _REVIEW_CALLBACK_DATA_MAX_LEN:
+    if len(data.encode('utf-8')) > _REVIEW_CALLBACK_DATA_MAX_BYTES:
         return None
     parts = data.split(':')
     if len(parts) != 3:
@@ -746,13 +748,18 @@ async def _review_edit_message(chat_id, message_id, text):
     """Apply a terminal outcome to the alert: append status, drop keyboard.
 
     Fresh Bot per call — same cross-event-loop rationale as
-    ``_review_get_updates``.
+    ``_review_get_updates``. The text goes through ``_redact_text``
+    (audit SEC-A8-3, defense-in-depth parity with the send path's
+    Decision 12 belt-and-suspenders): today's inputs are Telegram's own
+    copy of an already-redacted alert plus a fixed status string, but
+    the edit path is an outgoing-message sink and must not silently
+    lose that property if a future caller feeds it dynamic text.
     """
     bot = Bot(token=TELEGRAM_BOT_TOKEN)
     await bot.edit_message_text(
         chat_id=chat_id,
         message_id=message_id,
-        text=text,
+        text=_redact_text(text),
         reply_markup=None,
     )
 
@@ -818,6 +825,15 @@ def _handle_review_update(update):
         asyncio.run(_review_answer_callback(callback_query.id, ""))
         return
 
+    # user-spec: every operator decision lands in the log — action + article
+    # link + final status. No token value here (log hygiene). Logged BEFORE
+    # the Telegram edit/answer calls (audit CA-2): the state change already
+    # happened inside resolve, so a transient Telegram failure below must
+    # not cost the audit line.
+    logger.info(
+        "[review] operator decision: action=%s link=%s status=%s",
+        action, link, status_text,
+    )
     message = getattr(callback_query, 'message', None)
     if message is not None:
         original_text = getattr(message, 'text', None) or ''
@@ -827,12 +843,6 @@ def _handle_review_update(update):
             original_text + "\n\n" + status_text,
         ))
     asyncio.run(_review_answer_callback(callback_query.id, answer_text))
-    # user-spec: every operator decision lands in the log — action + article
-    # link + final status. No token value here (log hygiene).
-    logger.info(
-        "[review] operator decision: action=%s link=%s status=%s",
-        action, link, status_text,
-    )
 
 
 def _review_listener_sleep(stop_event, seconds):
@@ -922,50 +932,91 @@ def _run_review_listener(stop_event=None):
         )
 
 
-def _review_listener_enabled():
-    """Pure gate for the listener thread (tech-spec Decisions 5 + 6).
+def _review_listener_gate_reason():
+    """Classify the review-listener gate state (audit CA-3 + CA-6).
 
-    True only when ``REVIEW_BUTTONS_ENABLED`` is on AND
-    ``TELEGRAM_ADMIN_ID`` parses as an int. Fail-closed: the default
-    ``@sunny413x`` (non-numeric) can never equal a numeric
-    ``from_user.id``, so such a config disables listening entirely
-    rather than silently rejecting every press. Module attributes are
-    read at call time so tests can monkeypatch both knobs.
+    Returns one of:
+      * ``'ok'`` — flag on, bot token present, numeric admin id;
+      * ``'off'`` — flag off (the default / test-instance state);
+      * ``'no_token'`` — flag on but ``TELEGRAM_BOT_TOKEN`` is empty.
+        Fail-closed (audit CA-3): without this check the listener starts
+        and ``Bot(token=None)`` raises ``InvalidToken`` every poll — a
+        perpetual 5s ERROR loop. Mirrors the send path's credential
+        guard in ``send_admin_notification``;
+      * ``'bad_admin'`` — flag on but ``TELEGRAM_ADMIN_ID`` is not
+        numeric (the default ``@sunny413x`` can never equal a numeric
+        ``from_user.id``, so nobody could ever be authorized).
+
+    Single source for the flag read (audit CA-6): the three startup
+    shapes in ``_maybe_start_review_listener`` branch on this reason
+    instead of re-checking ``REVIEW_BUTTONS_ENABLED`` separately.
+    Module attributes are read at call time so tests can patch them.
     """
     if not REVIEW_BUTTONS_ENABLED:
-        return False
+        return 'off'
+    if not TELEGRAM_BOT_TOKEN:
+        return 'no_token'
     try:
         int(TELEGRAM_ADMIN_ID)
     except (TypeError, ValueError):
-        return False
-    return True
+        return 'bad_admin'
+    return 'ok'
+
+
+def _review_listener_enabled():
+    """Pure boolean gate (tech-spec Decisions 5 + 6) — True iff the
+    listener can actually serve presses (flag on + bot token + numeric
+    admin id). Shared by the listener startup AND the E014 send site
+    (audit SEC-A8-1): buttons are only rendered when a listener with
+    the exact same effective config would serve them — no dead buttons,
+    no orphan tokens."""
+    return _review_listener_gate_reason() == 'ok'
 
 
 def _maybe_start_review_listener():
     """main() wiring: start the daemon listener thread iff the gate is open.
 
-    Returns the started ``threading.Thread`` or ``None``. Three shapes:
-      * flag off (default — test instance) → silent no-op;
-      * flag on + non-numeric admin id → WARNING + best-effort admin ping
-        (fail-closed: buttons would render but nobody could ever be
-        authorized, so the listener does not start);
-      * gate open → daemon thread + "review listener active" log/ping.
+    Returns the started ``threading.Thread`` or ``None``. Three shapes,
+    branching on ``_review_listener_gate_reason()`` (audit CA-6 — single
+    flag read):
+      * ``'off'`` (default — test instance) → silent no-op;
+      * ``'no_token'`` / ``'bad_admin'`` → WARNING + best-effort admin
+        ping naming the broken knob (fail-closed: the listener does not
+        start, and per SEC-A8-1 the E014 send site renders no buttons
+        under the same gate);
+      * ``'ok'`` → daemon thread + "review listener active" log/ping.
     """
-    if not REVIEW_BUTTONS_ENABLED:
+    reason = _review_listener_gate_reason()
+    if reason == 'off':
         return None
-    if not _review_listener_enabled():
-        logger.warning(
-            "[startup] review listener disabled — TELEGRAM_ADMIN_ID is not "
-            "numeric (fail-closed); [E014] buttons will not work until a "
-            "numeric admin id is configured."
-        )
-        try:
-            send_admin_notification(
+    if reason != 'ok':
+        if reason == 'no_token':
+            warn_log = (
+                "[startup] review listener disabled — TELEGRAM_BOT_TOKEN "
+                "is empty (fail-closed); [E014] buttons will not work "
+                "until a bot token is configured."
+            )
+            warn_ping = (
+                "⚠️ REVIEW_BUTTONS_ENABLED включён, но TELEGRAM_BOT_TOKEN "
+                "пуст — слушатель нажатий выключен (fail-closed), кнопки "
+                "под [E014] работать не будут. Задайте TELEGRAM_BOT_TOKEN "
+                "и перезапустите бота."
+            )
+        else:  # 'bad_admin'
+            warn_log = (
+                "[startup] review listener disabled — TELEGRAM_ADMIN_ID is "
+                "not numeric (fail-closed); [E014] buttons will not work "
+                "until a numeric admin id is configured."
+            )
+            warn_ping = (
                 "⚠️ REVIEW_BUTTONS_ENABLED включён, но TELEGRAM_ADMIN_ID "
                 "не числовой — слушатель нажатий выключен (fail-closed), "
                 "кнопки под [E014] работать не будут. Укажите числовой "
                 "TELEGRAM_ADMIN_ID и перезапустите бота."
             )
+        logger.warning(warn_log)
+        try:
+            send_admin_notification(warn_ping)
         except Exception as notify_err:
             logger.error(
                 f"[startup] failed to send review-listener warning ping: "
@@ -2273,6 +2324,26 @@ def _fallback_publish(row, via_review=False):
     # a duplicate. The marker is in-memory only (per publish call); it is set
     # ONLY after a successful send, so a teaser that FAILED is still re-tried.
     if not row.get('_teaser_sent'):
+        # In-flight cancel guard (audit CA-1a): the operator may press
+        # «🚫 Не публиковать» while THIS publish is mid-flight — the LLM +
+        # Telegraph steps above take minutes, and ``resolve_dedup_callback``'s
+        # cancel branch deletes the pending row via ``skip_pending`` and
+        # answers «✅ Отменено оператором». Re-check the row right before
+        # the LAST irreversible step (the channel teaser; an orphan
+        # Telegraph page is harmless): row gone → honour the cancel and
+        # abort. Return True mirrors the idempotency guard above —
+        # success-without-publish, so the slot loop neither strikes the
+        # row nor treats this as a failure. The teaser-already-sent retry
+        # path deliberately bypasses this guard: with a post in the
+        # channel, completing ``move_to_published`` (which dozapis-guards
+        # a missing row itself, CA-1b) is the consistent outcome.
+        if pending_repo.get_pending(link) is None:
+            logger.info(
+                f"[review-cancel] {link} pending row vanished mid-publish "
+                f"(operator cancelled via [E014] button) — aborting before "
+                f"the Telegram teaser; no channel post, no strike"
+            )
+            return True
         ok = send_telegraph_teaser(telegraph_url, link)
         if not ok:
             raise RuntimeError(
@@ -2833,19 +2904,23 @@ def job():
                     )
                     if alerted:
                         try:
-                            # dedup-review-buttons: when the flag is up,
-                            # mint a short token, persist token→link
-                            # BEFORE the send (a button press must never
-                            # race an unwritten token), and attach the
-                            # two-button review keyboard. Flag down →
-                            # kb stays None and the call is identical to
-                            # the pre-feature behaviour. Mint/put live
-                            # INSIDE this try so a storage/build fault
-                            # logs as a failed E014 ping instead of
-                            # breaking the "dedup never blocks
-                            # publishing" contract.
+                            # dedup-review-buttons: when the LISTENER
+                            # gate is open (flag + bot token + numeric
+                            # admin — audit SEC-A8-1: same effective
+                            # gate as the listener, so we never mint
+                            # tokens / render buttons nothing will ever
+                            # serve), mint a short token, persist
+                            # token→link BEFORE the send (a button press
+                            # must never race an unwritten token), and
+                            # attach the two-button review keyboard.
+                            # Gate closed → kb stays None and the call
+                            # is identical to the pre-feature behaviour.
+                            # Mint/put live INSIDE this try so a
+                            # storage/build fault logs as a failed E014
+                            # ping instead of breaking the "dedup never
+                            # blocks publishing" contract.
                             kb = None
-                            if REVIEW_BUTTONS_ENABLED:
+                            if _review_listener_enabled():
                                 token = secrets.token_urlsafe(9)
                                 pending_repo.put_review_token(token, link)
                                 kb = admin_alerts.build_dedup_review_keyboard(
