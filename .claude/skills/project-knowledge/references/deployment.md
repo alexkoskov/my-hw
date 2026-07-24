@@ -86,6 +86,7 @@ reproducible image + isolated egress routing without changing the bot code.
 - `INSTANCE_LABEL` — short label distinguishing this bot instance in admin pings. When set (e.g. `prod` or `test`), `send_admin_notification` prepends `[<label>] ` to every admin-bound message. Empty / unset → no prefix. Set ONCE manually in each instance's `.env`. Prod = `prod` — also drives the startup DB guard (below). Used by the two-instance topology.
 - `DB_FILE` — SQLite path, env-overridable (2026-07-06). **Prod container MUST set `DB_FILE=/data/news.db`** so state lands on the mounted volume, not the ephemeral image layer. Default `"news.db"` (relative) keeps NL/test/local behaviour. A prod instance with a relative `DB_FILE` or an empty `processed_news` triggers a startup `[E018]` admin ping (re-flood guard).
 - `HEARTBEAT_FILE` — heartbeat marker path, env-overridable. Prod container sets `HEARTBEAT_FILE=/data/last_tick.ts` (persistent + readable by the `docker exec` watchdog). Default `~/.cache/news_bot/last_tick.ts`.
+- `REVIEW_BUTTONS_ENABLED` — review buttons under the `[E014]` dedup ping (dedup-review-buttons feature). **Default off**; enable (`=1`) ONLY in the hand-managed prod `.env`. Double gate: the same flag enables BOTH the background `get_updates` listener AND keyboard rendering at the E014 send site. Requires a numeric `TELEGRAM_ADMIN_ID` (fail-closed otherwise). Exactly ONE instance may poll the shared bot token — a second poller gets HTTP 409. See § Feature rollout: dedup-review-buttons.
 
 **How env reaches each instance:** **prod** — `docker-compose.yml` (`env_file: .env` + `environment: HEARTBEAT_FILE`); the prod `.env` is **hand-managed on the Moscow host** (copied once from NL, not CI-written). **test** — CI-written: `deploy_test.yml` writes `ANTHROPIC_API_KEY`/`ANTHROPIC_MODEL`/`TZ` etc. to the NL server `.env` idempotently on every dev push (TELEGRAM_*, TELEGRAPH_ACCESS_TOKEN, INSTANCE_LABEL, DB_FILE preserved). The archived `hw_review.py` would read a local `.env` if revived (dormant).
 
@@ -287,6 +288,54 @@ already ran) — verify the shape with
 > operator removes it via `hw_review.py`. So expect **more visible `[E014]`
 > pings and fewer silent drops** right after enabling; that is the feature
 > working, not a false positive.
+
+---
+
+## Feature rollout: `dedup-review-buttons` (`REVIEW_BUTTONS_ENABLED` toggle)
+
+Enables the inline «🚫 Не публиковать» / «👍 Оставить» buttons under the `[E014]`
+«Похож на дубль» admin ping + the background listener that receives the presses
+(the bot's first inbound Telegram path — see architecture.md § Inbound review
+path). This is a **feature-specific procedure on top of** the general Pre-Deploy
+Checklist. **Operator applies all server commands; Claude only prepares them.**
+No deploy FILES changes — the feature lives entirely in already-deployed files.
+
+> **⚠️ One bot token, ONE poller.** The Telegram bot account is shared prod+test,
+> and Telegram allows exactly one `get_updates` consumer per token — a second
+> poller gets HTTP 409. Enable `REVIEW_BUTTONS_ENABLED=1` on the **prod instance
+> only**, never on test. The flag is default-off, and `deploy_test.yml` does not
+> manage this var, so the test instance stays off (no polling, no buttons) unless
+> someone hand-edits its `.env` — don't.
+
+> **⚠️ Rebuild OUTSIDE the 10:00–20:00 МСК publish window.**
+> `docker compose up -d --build` restarts the container and resets the in-process
+> daily schedule (slots 10:00 / 15:00 / **19:30**). The Moscow host is on UTC.
+
+### Enable (prod, Moscow host)
+
+1. **Pre-check admin id** — the hand-managed prod `.env` must have a **numeric**
+   `TELEGRAM_ADMIN_ID` (personal chat_id, not `@username`). Non-numeric →
+   fail-closed: the listener refuses to start and logs a startup warning.
+2. **Set the flag** — in the hand-managed prod `.env` (NOT CI-written) add
+   `REVIEW_BUTTONS_ENABLED=1`.
+3. **Rebuild** — outside the window: `cd /root/hw-news && git pull && docker compose up -d --build`.
+4. **Verify the listener** — `docker logs hw-news-bot` must show the startup line
+   **«review listener active»**. Missing line = gate closed (flag off or
+   non-numeric admin id) — check the `.env`.
+5. **Verify test stays out** — no 409 errors in either instance's logs (a 409
+   means two pollers, i.e. the flag leaked onto test); the test channel's
+   `[E014]` pings carry **no buttons** (flag off there → keyboard not rendered).
+6. **First live press** — on a real `[E014]`, tap «🚫 Не публиковать» → the
+   article does not publish in its slot and the buttons become «✅ Отменено
+   оператором»; «👍 Оставить» → publishes as usual, «👍 Оставлено». A press
+   after the slot already published resolves to «⚠️ Уже опубликовано, отменить
+   нельзя» — expected, not a bug.
+
+### Disable / rollback
+
+Remove the `REVIEW_BUTTONS_ENABLED=1` line from the prod `.env` (default is off)
+and rebuild outside the window. Buttons stop rendering and the listener does not
+start; already-sent buttons become inert (stale tokens are harmless).
 
 ---
 

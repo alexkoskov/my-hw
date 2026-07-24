@@ -216,6 +216,23 @@ A second loop — the **manual review loop** (`hw_review.py` CLI in operator's C
    - `'failed'` — per-article LLM failure (`ClaudeTranscreationError`) strikes IMMEDIATELY (deterministic, no retry); a transient publish-side error (Telegra.ph/Telegram/repo network timeout) is retried in-slot up to `PUBLISH_RETRY_ATTEMPTS`×`PUBLISH_RETRY_DELAY_SECONDS` (4×10 min, in-slot-retry 2026-06-17) so a one-off blip doesn't cost the slot until the next day. Either way, once `'failed'` the slot loop runs the standard 3-strike counter → `move_to_failed` (exactly one strike per slot, not per retry).
    - **Publish recap (publish-recap-diagnostic, 2026-07-15):** after the slot loop, `job()` tallies the outcomes (`published`/`held`/`failed`/`moved_to_failed` + a capped, de-duped list of `(link, sanitized reason)` for failures) and sends `admin_alerts.alert_publish_recap` → `[E034]` — 🟢 `опубликовано N/N` when all published, else 🟡 with held («Claude недоступна») + the failed reasons («снято после 3 промахов»). Surfaces `failed`-article reasons that were previously log-only (the intake funnel + this recap together cover the whole pipeline's "where + why"). Sent only when publishing was attempted (skips quiet ticks). Reasons double-scrubbed (`sanitize_error_message` + `_redact_text`), plain-text, fail-safe (runs after all publishing — cannot affect posts).
 
+### Inbound review path — `_run_review_listener()` (prod-only, gated by `REVIEW_BUTTONS_ENABLED`)
+
+**The project's first inbound Telegram path** (dedup-review-buttons feature, 2026-07). Until this feature the bot was strictly send-only; now the `[E014]` «Похож на дубль» admin ping carries two inline buttons — «🚫 Не публиковать» / «👍 Оставить» — and a background listener receives the operator's press.
+
+- **Send side.** In `job()`'s soft-flag branch (and ONLY there — no other alert carries buttons), when the flag is on: mint `token = secrets.token_urlsafe(9)`, persist `review_token:<token> → link` in `bot_state`, attach `admin_alerts.build_dedup_review_keyboard(token)` to the E014 `send_admin_notification` call. Flag off → no token, no buttons (pre-feature behavior).
+- **Listen side.** `main()` starts `_run_review_listener()` as a **daemon thread** next to the blocking `schedule`/publish loop. The thread opens its own `Bot` and long-polls `get_updates(offset, timeout=30, allowed_updates=['callback_query'])`. For each callback query it parses the `callback_data` grammar `dd:<c|k>:<token>` (`c` = cancel, `k` = keep; anything else is ignored) and calls the pure `resolve_dedup_callback(action, token, from_user_id)`:
+  - non-admin `from_user_id` → ignored, no state change (numeric-admin auth);
+  - unknown/stale token → «⚠️ Кнопка устарела»;
+  - keep → «👍 Оставлено» (no state change);
+  - cancel with the row still pending → `skip_pending(link)` → «✅ Отменено оператором»;
+  - cancel after the slot already published it → «⚠️ Уже опубликовано, отменить нельзя» (race-honest: queue state at press time is the source of truth, no timer);
+  - cancel with the row gone (failed/held) → «⚠️ Статья уже недоступна».
+
+  Terminal outcomes delete the token, then the listener does `edit_message_text` (append the status line, drop the keyboard — buttons become un-pressable) + `answer_callback_query`. The loop is wrapped so a listener error never kills the publish loop.
+- **Gate (fail-closed).** The thread starts only when `REVIEW_BUTTONS_ENABLED` is truthy AND `TELEGRAM_ADMIN_ID` is numeric; a non-numeric admin id disables the feature with a startup warning (a `@username` can never match the numeric `from_user.id`). The SAME flag gates keyboard rendering, so a flag-off instance neither polls nor shows buttons. **Prod-only:** the bot token is shared prod+test and Telegram allows one `get_updates` consumer — a second poller gets HTTP 409. See deployment.md § Feature rollout: dedup-review-buttons for the operator procedure.
+- **Publish loop is unchanged** — it re-reads `list_pending()` each slot, so a row cancelled before its slot simply never publishes; the `_fallback_publish` idempotency guard covers the in-flight boundary case.
+
 ### Manual review loop — `hw_review.py` (archived 2026-04-30)
 
 > **Status:** dormant. Operator declared production ready on 2026-04-30 EOD and stopped exercising this path. `hw_review.py` + tests are preserved verbatim — the workflow below still works if revived for a specific article.
@@ -275,7 +292,8 @@ A second loop — the **manual review loop** (`hw_review.py` CLI in operator's C
   - `ping_count` — `'1'` after ping #1, `'2'` after ping #2, `'3'` after the still-down (2 h) ping.
   - `fallback_active` — legacy flag (`'1'` once 2 h grace elapsed, else NULL). DORMANT since the 2026-06-11 hold-and-wait change — still written by the state machine but no longer read by the publish path (posts are held, not routed to Google).
   - `last_health_check_at` — ISO timestamp of the most recent Claude probe attempt during recovery_pending state. Rate-limits probes.
-- DDL: `CREATE TABLE IF NOT EXISTS bot_state (key TEXT PRIMARY KEY, value TEXT);`. Owned by `pending_articles_repo.init_schema()`. `outage_state.py` provides typed accessors and state-machine helpers (`record_outage_event`, `record_recovery_event`) wrapped in `BEGIN IMMEDIATE` for atomicity. `PRAGMA busy_timeout=5000` absorbs typical contention with `hw_review` CLI writers.
+  - `review_token:<token>` — value = the article `link` (URL); `<token> = secrets.token_urlsafe(9)` (dedup-review-buttons feature). Maps the `dd:<c|k>:<token>` callback_data of the `[E014]` review buttons back to an article (the URL itself would overflow Telegram's 64-byte callback_data limit). Lifecycle: written at the E014 send, read on button press, deleted after a terminal outcome. Stale tokens (bot restarted, row already gone, double press) are harmless — the handler resolves them to «устарела/недоступна»; no janitor needed. Accessors: `pending_articles_repo.put_review_token` / `get_review_token_link` / `delete_review_token`.
+- DDL: `CREATE TABLE IF NOT EXISTS bot_state (key TEXT PRIMARY KEY, value TEXT);`. Owned by `pending_articles_repo.init_schema()`. `outage_state.py` provides typed accessors and state-machine helpers (`record_outage_event`, `record_recovery_event`) wrapped in `BEGIN IMMEDIATE` for atomicity. `PRAGMA busy_timeout=5000` (set both by `outage_state` and, since dedup-review-buttons, in `pending_articles_repo._connect()`) absorbs typical contention — it now also serialises the second in-process writer, the review-listener thread, against the publish loop.
 
 ### Transactions owned by repo
 
