@@ -556,6 +556,29 @@ def send_admin_notification(
     return False
 
 
+def _is_admin_press(from_user_id):
+    """Fail-closed admin check — the single source of truth for "is this
+    press from the operator?" (tech-spec Decision 5).
+
+    Used by BOTH ``resolve_dedup_callback`` (its auth gate) and the
+    listener's ``_handle_review_update`` (security review round 1,
+    SEC-T5-1: the handler must gate BEFORE any DB read so arbitrary
+    users can't trigger token lookups). A non-numeric
+    ``TELEGRAM_ADMIN_ID`` (default ``@sunny413x``) or a non-int
+    ``from_user_id`` means nobody is authorized. Module attribute read
+    at call time so tests can patch it.
+    """
+    try:
+        admin_id = int(TELEGRAM_ADMIN_ID)
+    except (TypeError, ValueError):
+        # Non-numeric admin id (default '@sunny413x') — nobody matches.
+        return False
+    try:
+        return int(from_user_id) == admin_id
+    except (TypeError, ValueError):
+        return False
+
+
 def resolve_dedup_callback(action, token, from_user_id):
     """Decide the outcome of a dedup-review button press (pure, no I/O).
 
@@ -601,15 +624,8 @@ def resolve_dedup_callback(action, token, from_user_id):
     resolves to the stale branch, never raises.
     """
     # 1. Admin gate — FIRST, before any token lookup (fail-closed).
-    try:
-        admin_id = int(TELEGRAM_ADMIN_ID)
-    except (TypeError, ValueError):
-        # Non-numeric admin id (default '@sunny413x') — nobody matches.
-        return (None, "")
-    try:
-        if int(from_user_id) != admin_id:
-            return (None, "")
-    except (TypeError, ValueError):
+    # Shared with the listener's pre-DB gate — see _is_admin_press.
+    if not _is_admin_press(from_user_id):
         return (None, "")
 
     # 2. Token resolve.
@@ -780,16 +796,25 @@ def _handle_review_update(update):
     from_user = getattr(callback_query, 'from_user', None)
     from_user_id = getattr(from_user, 'id', None)
 
-    # Grab the link for the decision log BEFORE resolve consumes the token
-    # (single source of truth — resolve deletes it on a terminal outcome).
+    if not _is_admin_press(from_user_id):
+        # Non-admin press (or fail-closed config): acknowledge the spinner
+        # with an empty answer, change nothing, edit nothing — and do it
+        # BEFORE any DB read (SEC-T5-1: arbitrary users must not be able
+        # to trigger token lookups).
+        asyncio.run(_review_answer_callback(callback_query.id, ""))
+        return
+
+    # Admin press — grab the link for the decision log BEFORE resolve
+    # consumes the token (single source of truth — resolve deletes it on
+    # a terminal outcome).
     link = pending_repo.get_review_token_link(token)
 
     status_text, answer_text = resolve_dedup_callback(
         action, token, from_user_id)
 
     if status_text is None:
-        # Ignored press (non-admin / fail-closed config): acknowledge the
-        # spinner with an empty answer, change nothing, edit nothing.
+        # resolve's own gate declined (belt-and-braces — ours already
+        # passed): answer-only, no edit.
         asyncio.run(_review_answer_callback(callback_query.id, ""))
         return
 

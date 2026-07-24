@@ -3321,7 +3321,9 @@ class TestReviewListener(_IntegrationBase):
         mock_bot = MagicMock()
         mock_bot.get_updates = fake_get_updates
         with patch('news_bot.Bot', return_value=mock_bot), \
-                patch('news_bot.REVIEW_LISTENER_ERROR_BACKOFF_SECONDS', 0):
+                patch('news_bot.REVIEW_LISTENER_ERROR_BACKOFF_SECONDS', 0), \
+                patch('news_bot._review_listener_sleep',
+                      wraps=news_bot._review_listener_sleep) as sleep_spy:
             with self.assertLogs('news_bot', level='ERROR') as logs:
                 # Must return normally — any escaping exception fails here.
                 news_bot._run_review_listener(stop_event=stop_event)
@@ -3329,6 +3331,10 @@ class TestReviewListener(_IntegrationBase):
         self.assertEqual(calls, ['boom'])  # error path was exercised
         self.assertTrue(
             any('review listener' in line for line in logs.output))
+        # Backoff is pinned (test review round 1): the generic error branch
+        # MUST sleep with the error-backoff constant (patched to 0) — a
+        # deleted sleep call would busy-loop on a repeating failure.
+        sleep_spy.assert_called_once_with(stop_event, 0)
 
     def test_review_listener_conflict_409_logged_with_backoff(self):
         from telegram.error import Conflict
@@ -3348,7 +3354,9 @@ class TestReviewListener(_IntegrationBase):
         mock_bot = MagicMock()
         mock_bot.get_updates = fake_get_updates
         with patch('news_bot.Bot', return_value=mock_bot), \
-                patch('news_bot.REVIEW_LISTENER_CONFLICT_BACKOFF_SECONDS', 0):
+                patch('news_bot.REVIEW_LISTENER_CONFLICT_BACKOFF_SECONDS', 0), \
+                patch('news_bot._review_listener_sleep',
+                      wraps=news_bot._review_listener_sleep) as sleep_spy:
             with self.assertLogs('news_bot', level='ERROR') as logs:
                 news_bot._run_review_listener(stop_event=stop_event)
 
@@ -3357,6 +3365,11 @@ class TestReviewListener(_IntegrationBase):
             any('409' in line and 'one' in line.lower()
                 for line in logs.output),
             f"expected a 409/single-listener ERROR line; got {logs.output!r}")
+        # Backoff is pinned (test review round 1): the Conflict branch MUST
+        # sleep with the CONFLICT backoff constant (patched to 0; the
+        # unpatched generic constant is 5, so using the wrong one — or
+        # deleting the sleep — fails this assertion).
+        sleep_spy.assert_called_once_with(stop_event, 0)
 
     def test_review_listener_handler_error_advances_offset_and_survives(self):
         stop_event = threading.Event()
@@ -3422,7 +3435,11 @@ class TestReviewListener(_IntegrationBase):
 
     def test_callback_letter_maps_to_full_word(self):
         bot = self._make_bot()
+        # Numeric admin matching the presser: the handler's own admin gate
+        # (SEC-T5-1, runs BEFORE resolve) must pass so the spy sees the
+        # mapped action words.
         with patch('news_bot.Bot', return_value=bot), \
+                patch('news_bot.TELEGRAM_ADMIN_ID', '1'), \
                 patch('news_bot.resolve_dedup_callback',
                       return_value=(None, "")) as mock_resolve:
             news_bot._handle_review_update(
@@ -3481,11 +3498,16 @@ class TestReviewListener(_IntegrationBase):
             'dd:c:tok-listener-2', user_id=self.ADMIN_ID + 1)
 
         with patch('news_bot.Bot', return_value=bot), \
-                patch('news_bot.TELEGRAM_ADMIN_ID', str(self.ADMIN_ID)):
+                patch('news_bot.TELEGRAM_ADMIN_ID', str(self.ADMIN_ID)), \
+                patch('news_bot.pending_repo.get_review_token_link') \
+                as mock_link_read:
             news_bot._handle_review_update(update)
 
         bot.edit_message_text.assert_not_awaited()
         bot.answer_callback_query.assert_awaited_once_with('cbq-1', text='')
+        # SEC-T5-1: a non-admin press performs ZERO DB reads — the handler
+        # gates on the admin id BEFORE any token lookup.
+        mock_link_read.assert_not_called()
         # State untouched: row still pending, token still alive.
         self.assertIsNotNone(pending_articles_repo.get_pending(link))
         self.assertEqual(
