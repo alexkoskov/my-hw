@@ -289,7 +289,7 @@ does not publish + buttons become «✅ Отменено»; on another, tap «О
   is the concrete mechanism implementing the approved requirement "слушает только
   прод". The same flag gates both listening AND keyboard rendering, so a non-prod
   instance shows no buttons and never polls. No behavior change beyond the approved
-  requirement. → [PENDING USER APPROVAL]
+  requirement. → [APPROVED — operator approved the tech-spec incl. this deviation, 2026-07-22]
 
 ## Acceptance Criteria
 

@@ -132,3 +132,49 @@ Fix (commit 3feada9, tests only): (MEDIUM) the "token persisted BEFORE send" inv
 - `pytest tests/test_job_distributed_publish.py::TestSlotLoopTransientRetry -q` at 22:51 МСК → 2 passed (was 2 failed on baseline at the same wall-clock time)
 - `pytest tests/test_job_distributed_publish.py tests/test_integration.py -q` → 79 passed
 - `python3 -m pytest tests/ -q` → 1312 passed, 0 failed (full suite green at any time of day)
+
+## Task 6: Config + Project Knowledge docs
+
+**Status:** Done
+**Commit:** aa5c4c4 (+ review fix 1470468)
+**Agent:** doc-writer
+**Summary:** Documented the feature's config and operator surface across the three scoped files. `.env.example` gained a commented `REVIEW_BUTTONS_ENABLED` block next to `DEDUP_SERIES_ENABLED` (default OFF, prod-only, double gate listener+keyboard, numeric-admin fail-closed, one-poller/409). `architecture.md` gained a Data Flow subsection «Inbound review path — `_run_review_listener()`» (first inbound Telegram path: daemon-thread `get_updates(offset, timeout=30, allowed_updates=['callback_query'])`, `dd:<c|k>:<token>` grammar → `resolve_dedup_callback` outcomes incl. race-honest «уже опубликовано», error isolation, fail-closed gate) plus the `review_token:<token>` key with lifecycle in the `bot_state` section (busy_timeout note extended to cover the listener as second writer). `deployment.md` gained the Optional-env bullet and a `## Feature rollout: dedup-review-buttons` operator runbook (enable only in hand-managed prod `.env`, rebuild outside 10:00–20:00 МСК, verify «review listener active» in `docker logs hw-news-bot`, confirm test stays flag-off/no 409, disable path). Task 5 listener mechanics documented from the approved tech-spec design (written in parallel with its implementation, as planned).
+**Deviations:** None. The User-Spec Deviation `[PENDING USER APPROVAL]` marker on `REVIEW_BUTTONS_ENABLED` in tech-spec.md left in place — operator confirmation not yet given.
+
+**Reviews:**
+
+*Round 1:* changes_requested — 1 MAJOR factual finding: architecture.md's bot_state section claimed `pending_articles_repo._connect()` sets `PRAGMA busy_timeout=5000`; in fact it deliberately uses the connect-time parameter `sqlite3.connect(..., timeout=5.0)` (see its docstring — no extra `execute()`, protects the fault-injection execute-counter). Fix (commit 1470468, architecture.md only): reworded to distinguish the two mechanisms — `outage_state` executes the PRAGMA, `pending_articles_repo._connect()` pins the equivalent connect-time `timeout=5.0` (same 5 s contention absorption). Verified against the actual `_connect()` source before rewording. Everything else verified clean by the reviewer (log line, grammar, flag list, gate, runbook — byte-exact vs code).
+
+**Verification:**
+- `grep -rl REVIEW_BUTTONS_ENABLED` over the 3 files → all three listed
+- `grep "review_token|get_updates|_run_review_listener"` in architecture.md → 5 hits (inbound path + bot_state key)
+- Log line «review listener active», key `review_token:<token>`, grammar `dd:c:/dd:k:`, status strings — byte-checked against tech-spec (Decisions 3/5/6, Data Models, Task 12)
+- Consistency vs existing invariants (shared token/one poller, manual prod deploy outside window, hand-managed prod `.env`, deploy FILES unchanged) → no contradictions
+
+## Task 5: Background review listener + main() wiring
+
+**Status:** Done
+**Commit:** 9a208b3
+**Agent:** coder-listener
+**Summary:** Added the bot's first inbound Telegram path: `_run_review_listener()` — a daemon-thread long-poll loop (`get_updates(offset, timeout=30, allowed_updates=['callback_query'])`) that parses presses against the exact `dd:<c|k>:<token>` grammar (anything else silently ignored, only offset advances), maps `c/k → 'cancel'/'keep'` BEFORE calling `resolve_dedup_callback`, and applies outcomes: terminal → `edit_message_text` (original text + status line, `reply_markup=None`) + `answer_callback_query` + operator-decision INFO log (action + link + status, no token); ignored → empty answer only. Resilience: per-update try/except (a DB/Telegram fault on one update is logged, acked via offset and skipped), poll-cycle try/except with 5s backoff (60s + explicit single-listener ERROR message on 409 `Conflict`), and a belt-and-braces outer handler — nothing ever escapes the thread. Wiring: `_maybe_start_review_listener()` in `main()` BEFORE cron registration, gated by the pure `_review_listener_enabled()` (flag on AND numeric `TELEGRAM_ADMIN_ID`, fail-closed); gate open → «review listener active» log + ping, flag on + non-numeric admin → WARNING + best-effort explanatory ping, flag off → silent. Testability seams: `stop_event` for the loop, sync `_handle_review_update(update)` per-update handler, patchable backoff constants. Key implementation decision: every Telegram call runs a FRESH `Bot` inside its own `asyncio.run` (helpers `_review_get_updates` / `_review_edit_message` / `_review_answer_callback`) — PTB's `HTTPXRequest` builds its `httpx.AsyncClient` in `__init__` and pools keep-alive connections bound to the creating event loop, so a single Bot reused across successive `asyncio.run` loops would fail every second poll with «Event loop is closed»; per-call Bot matches `send_admin_notification` exactly and keeps each connection inside its own loop. TDD: 10 new tests in `tests/test_integration.py::TestReviewListener` written first (red 10/10), then implementation (green) — gate on/off/non-numeric, error-does-not-propagate, 409 messaging, poisoned-update offset-ack survival, grammar rejection matrix (10 malformed shapes, zero Bot construction), letter→word mapping spy, real-DB admin-cancel dispatch (edit+answer+log+pending skipped), non-admin ignored press (empty answer, state untouched).
+**Deviations:** None vs task WHAT/AC. One refinement vs the literal hint «создаёт собственный Bot и держит его в цикле»: the Bot is per-call rather than loop-lifetime, for the cross-event-loop httpx reason above; «свой экземпляр, не переиспользует чужой» and the `send_admin_notification` style are both honored.
+
+**Reviews:**
+
+*Round 1 (orchestrated by lead):*
+- code-reviewer: approved → [logs/working/task-5/code-reviewer-1.json]
+- security-auditor: PASS, 2 low → [logs/working/task-5/security-auditor-1.json]
+- test-reviewer: approved_with_comments, 1 major → [logs/working/task-5/test-reviewer-1.json]
+
+Fixes (commit afe4944):
+- (test-reviewer, MAJOR) Backoff not test-pinned: deleting either `_review_listener_sleep(...)` call left all tests green — a silent busy-loop regression path. Both loop tests (409 + generic error) now wrap `news_bot._review_listener_sleep` in a `wraps=` spy and assert exactly one call with the correct patched backoff constant (Conflict → CONFLICT constant, generic → ERROR constant; the wrong-constant case fails too since only the expected one is patched to 0). Mutation-verified: sleep removed from the Conflict branch → `test_review_listener_conflict_409_logged_with_backoff` FAILS; removed from the generic branch → `test_review_listener_error_does_not_propagate` FAILS; both restored → green.
+- (security-auditor SEC-T5-1, LOW) Handler performed a `get_review_token_link` DB read for every well-formed callback BEFORE the admin gate. Extracted the fail-closed comparison into `_is_admin_press(from_user_id)` — single source of truth, now used by BOTH `resolve_dedup_callback` (its gate, behaviour unchanged, all 10 `TestResolveDedupCallback` tests untouched and green) and `_handle_review_update`, which gates FIRST: non-admin → answer-only with ZERO DB reads (pinned by a `get_review_token_link` not-called spy in `test_ignored_press_answers_empty_and_never_edits`); the link pre-fetch for the decision log now happens only for admin presses. `test_callback_letter_maps_to_full_word` updated to a matching numeric admin so the spy still observes the mapped words.
+
+Rejected finding:
+- (security-auditor SEC-T5-2, LOW) «`logger.exception` traceback bypasses the redaction filter» — REJECTED, out of feature scope: `logger.exception` with raw tracebacks is the pre-existing project-wide pattern (e.g. the dedup-gate degraded-mode handler); the exceptions reachable from the listener's per-update guard were verified token-free (token values never appear in exception messages of `pending_repo`/PTB calls), and changing traceback redaction is a project-wide logging concern, not part of dedup-review-buttons.
+
+**Verification:**
+- Smoke: `python3 -c "import news_bot; print(hasattr(news_bot,'_run_review_listener'))"` → `True`
+- `pytest tests/test_integration.py::TestReviewListener -q` → 10 passed; `::TestResolveDedupCallback` → 10 passed (shared `_is_admin_press` refactor regression-free)
+- `python3 -m pytest -q` (full suite, after afe4944) → 1324 passed, 0 failed (baseline 1314 + 10 new, no regressions)
+- Mutation checks (round 1 fix): each `_review_listener_sleep` call deleted in turn → corresponding backoff test fails; restored → green.
