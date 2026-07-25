@@ -267,3 +267,18 @@ Rejected finding:
 - Фокус-набор 4 файлов фичи → 228 passed
 - Smoke tasks 1/2/5 → ok / ok / True
 - Full report: [logs/working/task-10/qa-report.json](logs/working/task-10/qa-report.json)
+
+## Task 11: Deploy (operator-applied)
+
+**Status:** Done (подготовка Claude завершена; серверные шаги применяет оператор)
+**Commit:** — (правок кода/деплой-скриптов нет; проверено состояние 8e3be71)
+**Agent:** deploy-prep
+**Summary:** Инвариант FILES подтверждён на HEAD 8e3be71: `git diff --stat c8744f0..HEAD -- '*.py'` затрагивает только `news_bot.py` / `admin_alerts.py` / `pending_articles_repo.py` (+ tests/, которые не деплоятся); новых first-party модулей нет — добавленные в `news_bot.py` импорты только stdlib (`secrets`, `threading`) и уже установленный `telegram.error`. Все три файла присутствуют во всех трёх массивах FILES (deploy.sh:38/45/54, deploy.yml:124/131/140, deploy_test.yml:95/102/111) → deploy-скрипты править НЕ нужно. Strip-then-append в `deploy_test.yml` (строка 167) управляет только LLM-ключами + TZ — `REVIEW_BUTTONS_ENABLED` не в списке и на тесте вручную не задан → тест остаётся OFF (флаг по коду включается только явным on-word: `1/true/yes/on`). Операторский runbook написан по-русски простым языком: [logs/working/task-11/deploy-runbook.md](logs/working/task-11/deploy-runbook.md) — фазы: тест (push dev → авто-деплой, кнопки дремлют, проверка «нет review listener active / нет 409»), промоут dev→main ВНЕ окна 10:00–20:00 МСК, прод (числовой `TELEGRAM_ADMIN_ID` через @userinfobot + `REVIEW_BUTTONS_ENABLED=1` в hand-managed `/root/hw-news/.env` идемпотентными sed/grep-однострочниками без вывода секретов, затем `git pull && docker compose up -d --build`), верификация (`review listener active` есть на проде, нет на тесте, нет `[E018]`/409), откат (вариант А: флаг=0 + rebuild — фича полностью спит; вариант Б: git revert). Инвариант «ровно ОДИН листенер (прод)» выделен в правило №1 runbook. Сверено с deployment.md § «Feature rollout: dedup-review-buttons» — противоречий нет, runbook на раздел ссылается.
+**Deviations:** Нет. Уточнение к тексту задачи: journalctl на NL даётся через `ssh root@148.135.207.54` (hwbot потерял NOPASSWD journalctl при усилении 2026-07-07).
+
+**Verification:**
+- `git diff --stat c8744f0..HEAD -- '*.py'` → только 3 деплоящихся модуля + tests/
+- `git diff --diff-filter=A --name-only c8744f0..HEAD` → добавлены только work/-документы, ни одного нового .py вне tests/
+- grep FILES по трём деплой-конфигам → все три модуля во всех трёх списках
+- deploy_test.yml:167 regex не содержит REVIEW_BUTTONS_ENABLED; news_bot.py:147–149 — off по умолчанию, `0` = off
+- Runbook: [logs/working/task-11/deploy-runbook.md](logs/working/task-11/deploy-runbook.md)
