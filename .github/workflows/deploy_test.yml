@@ -1,16 +1,17 @@
 name: Deploy test
 
-# Triggers ONLY after the CI workflow on `dev` finishes successfully.
-# Mirrors deploy.yml structure but targets the staging instance:
-#   DEPLOY_PATH_TEST  (e.g. /home/hwbot/bot_test/)
-#   news_bot_test.service
-# INSTANCE_LABEL=test is set MANUALLY in the server .env once;
-# this workflow does not manage it.
+# ⚠️ DISARMED 2026-07-25 — the NL VPS 148.135.207.54 is no longer paid for;
+# the test bot there is DELETED and the IP has been reclaimed by the hoster
+# (now serves a STRANGER's sshd). Running this workflow would offer our CI
+# SSH key to an unknown third-party host. workflow_run trigger removed +
+# job hard-guarded `if: false` — same disarm pattern as deploy.yml.
+# There is NO test instance anymore; the only deployment is prod
+# (Moscow Docker, manual). Re-arm only after provisioning a new staging
+# host AND rotating SSH_HOST/DEPLOY_PATH_TEST secrets.
+#
+# (Historical: triggered after CI on `dev`, SCP'd FILES to
+#  DEPLOY_PATH_TEST=/home/hwbot/bot_test/, restarted news_bot_test.service.)
 on:
-  workflow_run:
-    workflows: ["CI"]
-    types: [completed]
-    branches: [dev]
   workflow_dispatch:
 
 # One test deploy at a time. Independent of prod's `deploy-prod` group.
@@ -20,10 +21,9 @@ concurrency:
 
 jobs:
   deploy:
-    if: >
-      github.event_name == 'workflow_dispatch' ||
-      (github.event.workflow_run.conclusion == 'success' &&
-       github.event.workflow_run.event == 'push')
+    # DISARMED 2026-07-25 (см. шапку файла): NL хост списан, IP у чужого
+    # сервера. Не включать без нового staging-хоста + ротации секретов.
+    if: false
 
     runs-on: ubuntu-latest
 
