@@ -225,11 +225,19 @@ def init_schema(conn: sqlite3.Connection) -> None:
     # Migration (2026-06-XX, cross-source-dedup, Decision 11): store the
     # model fingerprint JSON on both pending and published — same idempotent
     # try/except OperationalError pattern.
+    #
+    # Migration (2026-07-25, content-gate): ``pending_articles.hold_reason``
+    # — nullable TEXT holding the matched content-gate markers. NULL (the
+    # value every pre-migration row gets for free) means "publishable";
+    # non-NULL means "HELD, awaiting the operator's «✅ Опубликовать»" and
+    # is filtered out of ``list_pending`` / ``count_pending``. Nullable +
+    # no default, so the ALTER is safe on the live prod DB with rows in it.
     for ddl in (
         "ALTER TABLE failed_articles ADD COLUMN telegraph_url TEXT",
         "ALTER TABLE failed_articles ADD COLUMN telegraph_path TEXT",
         "ALTER TABLE pending_articles ADD COLUMN model_fingerprint TEXT",
         "ALTER TABLE published_articles ADD COLUMN model_fingerprint TEXT",
+        "ALTER TABLE pending_articles ADD COLUMN hold_reason TEXT",
     ):
         try:
             conn.execute(ddl)
@@ -264,11 +272,17 @@ def insert_pending(entry: dict) -> bool:
         # ``_dumps(None)`` returns None → NULL stored. NULL means "not
         # processed by the dedup gate"; ``{'strict':[],'brands':[]}`` (an
         # empty dict-shape, JSON-encoded) means "processed, no brands found".
+        # ``hold_reason`` (content-gate, 2026-07-25): callers that do not
+        # set the key get NULL → a normal publishable row. A non-NULL
+        # marker string parks the row: staged, visible to ``get_pending``,
+        # but invisible to ``list_pending`` / ``count_pending`` until the
+        # operator approves it. Plain TEXT, not JSON — it is a
+        # human-readable marker list rendered straight back into [E036].
         conn.execute(
             "INSERT INTO pending_articles "
             "(link, source_name, feed_url, title, subtitle, paragraphs, "
-            " images, blocks, pub_date, model_fingerprint) "
-            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            " images, blocks, pub_date, model_fingerprint, hold_reason) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
             (
                 entry['link'],
                 entry['source_name'],
@@ -280,6 +294,7 @@ def insert_pending(entry: dict) -> bool:
                 _dumps(entry.get('blocks')),  # NULL-preserving
                 entry.get('pub_date'),
                 _dumps(entry.get('model_fingerprint')),  # NULL-preserving
+                entry.get('hold_reason'),  # NULL-preserving, plain TEXT
             ),
         )
         conn.commit()
@@ -449,9 +464,35 @@ def get_failed(link: str) -> Optional[dict]:
         conn.close()
 
 
+# ---------------------------------------------------------------------------
+# Content-gate hold (2026-07-25).
+#
+# Every helper below that hands rows to a publish, eviction or nag path
+# carries the literal predicate ``hold_reason IS NULL``. A row with a
+# non-NULL ``hold_reason`` is HELD (poster / catalog / packaging post
+# awaiting the operator's «✅ Опубликовать») and must never reach any of
+# them. That predicate IS the operator's rule «нет ответа = не публикуем»:
+# no timer, no auto-publish, no auto-drop — an unapproved row simply stays
+# invisible to the queue forever.
+#
+# The predicate is spelled out inline in each query rather than shared via
+# a module constant on purpose: string-concatenating SQL fragments (even
+# constant ones) is exactly the shape ``TestSqlAudit`` forbids.
+#
+# Deliberately NOT filtered: ``get_pending`` (by-PK accessor — the intake
+# duplicate guard must keep seeing held rows or the same article would be
+# re-staged every tick, and both button resolvers look rows up by link).
+# ---------------------------------------------------------------------------
+
+
 def list_pending() -> list[dict]:
-    """All pending rows in publish order: today's batch first, then
-    the carry-over backlog **oldest-first**.
+    """All PUBLISHABLE pending rows in publish order: today's batch first,
+    then the carry-over backlog **oldest-first**.
+
+    Rows held by the content gate (``hold_reason IS NOT NULL``) are
+    EXCLUDED — the slot loop reads this function, so the exclusion is what
+    guarantees a held article never publishes without an explicit
+    «✅ Опубликовать». Use ``list_held()`` to see them.
 
     Two-tier ordering:
       * Tier 0 — rows whose ``date(fetched_at) = date('now')``: today's
@@ -471,6 +512,7 @@ def list_pending() -> list[dict]:
     try:
         cur = conn.execute(
             "SELECT * FROM pending_articles "
+            "WHERE hold_reason IS NULL "
             "ORDER BY "
             "  CASE WHEN date(fetched_at) = date('now') THEN 0 ELSE 1 END, "
             "  fetched_at ASC"
@@ -484,13 +526,18 @@ def list_pending() -> list[dict]:
 
 def list_pending_stale(hours: int = 48) -> list[dict]:
     """Rows older than ``hours`` with no heads-up ping yet (``notified_at IS
-    NULL``). Caller will ping + ``mark_notified`` for each (Decision 12)."""
+    NULL``). Caller will ping + ``mark_notified`` for each (Decision 12).
+
+    Held rows are excluded: a parked article is old ON PURPOSE, and nagging
+    the operator about it every run would train them to ignore the ping.
+    """
     conn = _connect()
     try:
         # `hours` is parameterised — the SQL body is constant.
         cur = conn.execute(
             "SELECT * FROM pending_articles "
-            "WHERE notified_at IS NULL "
+            "WHERE hold_reason IS NULL "
+            "AND notified_at IS NULL "
             "AND fetched_at < datetime('now', ? || ' hours') "
             "ORDER BY fetched_at ASC",
             (f"-{int(hours)}",),
@@ -504,12 +551,16 @@ def list_pending_stale(hours: int = 48) -> list[dict]:
 
 def list_notified_overdue(grace_hours: int = 2) -> list[dict]:
     """Rows whose ``notified_at`` is older than ``grace_hours`` AND whose
-    ``ru_paragraphs`` is still NULL — the idle-fallback GT-publish pool."""
+    ``ru_paragraphs`` is still NULL — the idle-fallback GT-publish pool.
+
+    Held rows excluded (uniform rule): this pool feeds a publish path.
+    """
     conn = _connect()
     try:
         cur = conn.execute(
             "SELECT * FROM pending_articles "
-            "WHERE notified_at IS NOT NULL "
+            "WHERE hold_reason IS NULL "
+            "AND notified_at IS NOT NULL "
             "AND ru_paragraphs IS NULL "
             "AND notified_at < datetime('now', ? || ' hours') "
             "ORDER BY notified_at ASC",
@@ -524,12 +575,41 @@ def list_notified_overdue(grace_hours: int = 2) -> list[dict]:
 
 def list_pending_for_eviction() -> list[dict]:
     """Rows eligible for overflow fast-track: ``ru_paragraphs IS NULL``,
-    oldest first (Decision 7 — staged rows are never evicted)."""
+    oldest first (Decision 7 — staged rows are never evicted).
+
+    Held rows excluded: the overflow drain exists to relieve the
+    PUBLISHABLE queue, and a held row is not in it. Evicting one would
+    also destroy a decision the operator has not made yet.
+    """
     conn = _connect()
     try:
         cur = conn.execute(
             "SELECT * FROM pending_articles "
-            "WHERE ru_paragraphs IS NULL "
+            "WHERE hold_reason IS NULL "
+            "AND ru_paragraphs IS NULL "
+            "ORDER BY fetched_at ASC"
+        )
+        rows = cur.fetchall()
+        desc = cur.description
+    finally:
+        conn.close()
+    return [_row_to_dict(r, desc, _PENDING_JSON_COLS) for r in rows]
+
+
+def list_held() -> list[dict]:
+    """Rows HELD by the content gate, oldest-first — the operator's
+    «на утверждении» backlog.
+
+    Exact complement of ``list_pending``'s filter: together they partition
+    ``pending_articles``. Read by the daily plan ping so a forgotten hold
+    stays visible instead of silently rotting (the operator's «нет ответа =
+    не публикуем» rule means nothing else will ever surface it).
+    """
+    conn = _connect()
+    try:
+        cur = conn.execute(
+            "SELECT * FROM pending_articles "
+            "WHERE hold_reason IS NOT NULL "
             "ORDER BY fetched_at ASC"
         )
         rows = cur.fetchall()
@@ -554,10 +634,18 @@ def list_failed() -> list[dict]:
 
 
 def count_pending() -> int:
-    """Number of rows currently in the queue."""
+    """Number of PUBLISHABLE rows in the queue (held rows excluded).
+
+    Feeds ``compute_fixed_slots(N=count_pending())`` and the `> 50` backlog
+    warning, so the exclusion keeps a held article from buying the day an
+    extra publish slot it can never fill, or from inflating the backlog
+    alarm with rows the queue cannot drain on its own.
+    """
     conn = _connect()
     try:
-        row = conn.execute("SELECT COUNT(*) FROM pending_articles").fetchone()
+        row = conn.execute(
+            "SELECT COUNT(*) FROM pending_articles WHERE hold_reason IS NULL"
+        ).fetchone()
         return int(row[0])
     finally:
         conn.close()
@@ -813,6 +901,39 @@ def skip_pending(link: str) -> None:
             (link,),
         )
         conn.commit()
+    except Exception:
+        conn.rollback()
+        raise
+    finally:
+        conn.close()
+
+
+def clear_hold(link: str) -> bool:
+    """Release a content-gate hold: ``hold_reason = NULL`` for ``link``.
+
+    The «✅ Опубликовать» half of the [E036] keyboard. The row is already
+    staged (title, body, images, fingerprint), so approval is a single
+    UPDATE — from the next slot on it is an ordinary queue member and
+    publishes in its turn.
+
+    Returns ``True`` when a HELD row was actually released, ``False`` when
+    there was nothing to release (row gone, or already approved). The
+    caller uses that to tell «одобрено» from «статья уже недоступна»
+    without a second round-trip, and a double press resolves to ``False``
+    instead of reporting a fresh approval.
+
+    Never touches ``processed_news`` / ``published_articles``: approving is
+    not publishing, it only unparks the row.
+    """
+    conn = _connect()
+    try:
+        cur = conn.execute(
+            "UPDATE pending_articles SET hold_reason=NULL "
+            "WHERE link=? AND hold_reason IS NOT NULL",
+            (link,),
+        )
+        conn.commit()
+        return cur.rowcount > 0
     except Exception:
         conn.rollback()
         raise

@@ -51,6 +51,9 @@ EXPECTED_PENDING = {
     'pub_date':      {'type': 'TEXT',      'notnull': 0, 'dflt_value': None,                    'pk': 0},
     # Migration 2026-06-XX (cross-source-dedup, Decision 11).
     'model_fingerprint': {'type': 'TEXT',  'notnull': 0, 'dflt_value': None,                    'pk': 0},
+    # Migration 2026-07-25 (content-gate): NULL = publishable, non-NULL =
+    # held for operator approval and invisible to list_pending/count_pending.
+    'hold_reason':   {'type': 'TEXT',      'notnull': 0, 'dflt_value': None,                    'pk': 0},
 }
 
 EXPECTED_PUBLISHED = {
@@ -1559,6 +1562,210 @@ class TestConcurrentWriters(_TmpDbCase):
 
 
 # ---------------- SQL audit ----------------
+
+class TestHoldState(_TmpDbCase):
+    """``hold_reason`` — the content-gate hold state (2026-07-25).
+
+    A held row lives in ``pending_articles`` exactly like any other row,
+    but it is INVISIBLE to the publishable queue: ``list_pending`` (the
+    slot loop's row source) and ``count_pending`` (the slot-computation
+    and backlog-warning input) both filter it out. That single SQL
+    predicate is the load-bearing guarantee behind the operator's rule
+    «нет ответа = не публикуем»: with no approval the row simply never
+    reaches the publish path, forever, with no timer involved.
+    """
+
+    def _insert_held(self, link, reason='poster', fetched_at=None):
+        with self._conn() as c:
+            if fetched_at is None:
+                c.execute(
+                    "INSERT INTO pending_articles "
+                    "(link, source_name, title, paragraphs, hold_reason) "
+                    "VALUES (?, ?, ?, ?, ?)",
+                    (link, 't-hunted', 'held title', '[]', reason),
+                )
+            else:
+                c.execute(
+                    "INSERT INTO pending_articles "
+                    "(link, source_name, title, paragraphs, hold_reason, "
+                    " fetched_at) VALUES (?, ?, ?, ?, ?, ?)",
+                    (link, 't-hunted', 'held title', '[]', reason,
+                     fetched_at),
+                )
+            c.commit()
+
+    # -- schema -----------------------------------------------------------
+
+    def test_column_add_is_idempotent_on_an_existing_db(self):
+        """The ALTER runs on every ``init_schema`` call — including on the
+        live prod DB, which already has rows and (after the first run)
+        already has the column. Re-running must neither raise nor clobber."""
+        conn = sqlite3.connect(self.db_path)
+        try:
+            conn.execute(
+                "INSERT INTO pending_articles "
+                "(link, source_name, title, paragraphs, hold_reason) "
+                "VALUES ('http://x/keepme', 'mattel', 't', '[]', 'poster')"
+            )
+            conn.commit()
+            repo.init_schema(conn)
+            repo.init_schema(conn)
+            row = conn.execute(
+                "SELECT hold_reason FROM pending_articles WHERE link=?",
+                ('http://x/keepme',),
+            ).fetchone()
+            self.assertEqual(row[0], 'poster')
+        finally:
+            conn.close()
+
+    def test_legacy_rows_get_null_hold_reason(self):
+        """Prod-safety: rows written before the migration must come back as
+        publishable (NULL), never as accidentally-held."""
+        with self._conn() as c:
+            c.execute(
+                "INSERT INTO pending_articles "
+                "(link, source_name, title, paragraphs) "
+                "VALUES ('http://legacy/1', 'mattel', 't', '[]')"
+            )
+            c.commit()
+        row = repo.get_pending('http://legacy/1')
+        self.assertIsNone(row['hold_reason'])
+        self.assertEqual(
+            [r['link'] for r in repo.list_pending()], ['http://legacy/1'])
+
+    # -- insert -----------------------------------------------------------
+
+    def test_insert_pending_persists_hold_reason(self):
+        entry = _sample_entry(link='http://hold/insert')
+        entry['hold_reason'] = 'poster, url:poster'
+        self.assertTrue(repo.insert_pending(entry))
+        self.assertEqual(
+            repo.get_pending('http://hold/insert')['hold_reason'],
+            'poster, url:poster',
+        )
+
+    def test_insert_pending_without_hold_reason_stays_null(self):
+        entry = _sample_entry(link='http://hold/plain')
+        self.assertTrue(repo.insert_pending(entry))
+        self.assertIsNone(repo.get_pending('http://hold/plain')['hold_reason'])
+
+    # -- queue visibility -------------------------------------------------
+
+    def test_list_pending_excludes_held_rows(self):
+        repo.insert_pending(_sample_entry(link='http://free/1'))
+        self._insert_held('http://held/1')
+        self.assertEqual(
+            [r['link'] for r in repo.list_pending()], ['http://free/1'])
+
+    def test_count_pending_excludes_held_rows(self):
+        """Slot computation (``compute_fixed_slots(N=count_pending())``) and
+        the backlog warning both read this — a held row must not buy the
+        day an extra publish slot it can never fill."""
+        repo.insert_pending(_sample_entry(link='http://free/2'))
+        self._insert_held('http://held/2')
+        self._insert_held('http://held/3')
+        self.assertEqual(repo.count_pending(), 1)
+
+    def test_get_pending_still_sees_a_held_row(self):
+        """``get_pending`` is the by-PK accessor used by the intake
+        duplicate guard and both button resolvers — it must keep seeing
+        held rows, otherwise the same article would be re-staged daily."""
+        self._insert_held('http://held/4')
+        self.assertIsNotNone(repo.get_pending('http://held/4'))
+
+    def test_list_pending_stale_excludes_held_rows(self):
+        """The 48h «залежалась» heads-up must not nag forever about an
+        article that is deliberately parked awaiting approval."""
+        self._insert_held(
+            'http://held/stale', fetched_at="2020-01-01 00:00:00")
+        self.assertEqual(repo.list_pending_stale(48), [])
+
+    def test_list_notified_overdue_excludes_held_rows(self):
+        """Uniform rule: no repo helper that feeds a publish path may hand
+        out a held row (this pool is dormant, but the rule holds)."""
+        self._insert_held('http://held/overdue')
+        with self._conn() as c:
+            c.execute(
+                "UPDATE pending_articles SET notified_at=? WHERE link=?",
+                ("2020-01-01 00:00:00", 'http://held/overdue'),
+            )
+            c.commit()
+        self.assertEqual(repo.list_notified_overdue(2), [])
+
+    def test_list_pending_for_eviction_excludes_held_rows(self):
+        """Overflow fast-track drains the publishable queue; a held row is
+        not part of it and must not be evicted behind the operator's back."""
+        self._insert_held('http://held/evict')
+        self.assertEqual(repo.list_pending_for_eviction(), [])
+
+    # -- list_held --------------------------------------------------------
+
+    def test_list_held_returns_only_held_rows_oldest_first(self):
+        repo.insert_pending(_sample_entry(link='http://free/3'))
+        self._insert_held('http://held/new', fetched_at="2026-07-25 10:00:00")
+        self._insert_held('http://held/old', fetched_at="2026-07-01 10:00:00")
+        self.assertEqual(
+            [r['link'] for r in repo.list_held()],
+            ['http://held/old', 'http://held/new'],
+        )
+
+    def test_list_held_deserializes_json_columns(self):
+        entry = _sample_entry(link='http://held/json', paragraphs=['a', 'b'])
+        entry['hold_reason'] = 'catálogo'
+        repo.insert_pending(entry)
+        row = repo.list_held()[0]
+        self.assertEqual(row['paragraphs'], ['a', 'b'])
+        self.assertEqual(row['hold_reason'], 'catálogo')
+
+    def test_list_held_is_empty_when_nothing_is_held(self):
+        repo.insert_pending(_sample_entry(link='http://free/4'))
+        self.assertEqual(repo.list_held(), [])
+
+    # -- clear_hold -------------------------------------------------------
+
+    def test_clear_hold_releases_the_row_into_the_queue(self):
+        self._insert_held('http://held/approve')
+        self.assertTrue(repo.clear_hold('http://held/approve'))
+        self.assertIsNone(repo.get_pending('http://held/approve')['hold_reason'])
+        self.assertEqual(
+            [r['link'] for r in repo.list_pending()], ['http://held/approve'])
+        self.assertEqual(repo.count_pending(), 1)
+        self.assertEqual(repo.list_held(), [])
+
+    def test_clear_hold_returns_false_when_the_row_is_gone(self):
+        """Distinguishes «одобрено» from «статья уже недоступна» in the
+        button resolver without a second round-trip."""
+        self.assertFalse(repo.clear_hold('http://never/existed'))
+
+    def test_clear_hold_returns_false_when_the_row_is_not_held(self):
+        """Already approved (or never held): nothing to release. Keeps a
+        double press from reporting a fresh approval."""
+        repo.insert_pending(_sample_entry(link='http://free/5'))
+        self.assertFalse(repo.clear_hold('http://free/5'))
+
+    def test_clear_hold_touches_only_the_named_row(self):
+        self._insert_held('http://held/a')
+        self._insert_held('http://held/b')
+        repo.clear_hold('http://held/a')
+        self.assertEqual([r['link'] for r in repo.list_held()],
+                         ['http://held/b'])
+
+    # -- reject path ------------------------------------------------------
+
+    def test_skip_pending_removes_a_held_row_and_pins_it(self):
+        """«🚫 Не публиковать» reuses ``skip_pending`` — it must work on a
+        held row too (DELETE + processed_news pin so it never comes back)."""
+        self._insert_held('http://held/reject')
+        repo.skip_pending('http://held/reject')
+        self.assertIsNone(repo.get_pending('http://held/reject'))
+        self.assertEqual(repo.list_held(), [])
+        with self._conn() as c:
+            row = c.execute(
+                "SELECT 1 FROM processed_news WHERE link=?",
+                ('http://held/reject',),
+            ).fetchone()
+        self.assertIsNotNone(row)
+
 
 class TestSqlAudit(unittest.TestCase):
     """Grep-style audit: repo source must not hand-roll SQL with f-strings / %

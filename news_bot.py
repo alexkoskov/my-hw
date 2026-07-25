@@ -665,6 +665,74 @@ def resolve_dedup_callback(action, token, from_user_id):
     return (status, status)
 
 
+def resolve_hold_callback(action, token, from_user_id):
+    """Decide the outcome of a content-gate HOLD button press ([E036]).
+
+    Pure in the same sense as ``resolve_dedup_callback``: no Telegram I/O,
+    only config reads, ``pending_repo`` calls and string returns; the
+    listener applies the result (edit + answer) and owns the decision log.
+    Same ``(status_text, answer_text)`` contract, same ``(None, "")``
+    signal for an ignored press.
+
+    Auth: the SAME fail-closed numeric-admin gate (``_is_admin_press``),
+    checked FIRST, before any token lookup — the repo token helpers accept
+    any string, so this is the sole auth gate on this path too.
+
+    Terminal outcomes:
+        * unknown token → «⚠️ Кнопка устарела» (bot restarted / already
+          consumed) — no DB writes;
+        * ``approve`` + row still held → ``clear_hold(link)`` → «✅ Одобрено
+          — выйдет в ближайший слот»: the row is already staged, so
+          clearing ``hold_reason`` puts it straight into the publishable
+          queue;
+        * ``reject`` + row still pending → ``skip_pending(link)`` (DELETE +
+          processed_news pin, never touches published_articles) →
+          «🚫 Не будет опубликовано»;
+        * either action with the row gone (already approved and published,
+          rejected earlier, evicted) → «⚠️ Статья уже недоступна».
+
+    Doing NOTHING is a supported outcome and needs no branch here: an
+    unpressed hold simply stays out of ``list_pending`` forever. That is
+    the operator's explicit rule — silence means do not publish; there is
+    no timeout, no auto-publish and no auto-drop anywhere in this path.
+
+    The token is deleted exactly on terminal outcomes, so a second press
+    resolves to the stale branch instead of re-reporting a decision.
+    """
+    # 1. Admin gate — FIRST, before any token lookup (fail-closed).
+    if not _is_admin_press(from_user_id):
+        return (None, "")
+
+    # 2. Token resolve.
+    link = pending_repo.get_review_token_link(token)
+    if link is None:
+        return ("⚠️ Кнопка устарела", "⚠️ Кнопка устарела")
+
+    # 3. Action branches.
+    if action == 'approve':
+        # clear_hold's own rowcount is the source of truth: it returns
+        # False both when the row is gone and when it is no longer held,
+        # so a double press can never report a second fresh approval.
+        if pending_repo.clear_hold(link):
+            status = "✅ Одобрено — выйдет в ближайший слот"
+        else:
+            status = "⚠️ Статья уже недоступна"
+    elif action == 'reject':
+        if pending_repo.get_pending(link) is not None:
+            pending_repo.skip_pending(link)
+            status = "🚫 Не будет опубликовано"
+        else:
+            status = "⚠️ Статья уже недоступна"
+    else:
+        # Unknown action — listener grammar filters these out; don't burn
+        # a still-valid token on a malformed callback.
+        return ("⚠️ Кнопка устарела", "⚠️ Кнопка устарела")
+
+    # 4. Terminal outcome — consume the token (idempotent delete).
+    pending_repo.delete_review_token(token)
+    return (status, status)
+
+
 logger = logging.getLogger(__name__)
 
 
@@ -693,6 +761,33 @@ REVIEW_LISTENER_CONFLICT_BACKOFF_SECONDS = 60
 #: — it takes ``'cancel'``/``'keep'``, never the bare letters).
 _REVIEW_CALLBACK_ACTIONS = {'c': 'cancel', 'k': 'keep'}
 
+#: Content-gate HOLD grammar ([E036]): ``hd:<a|r>:<token>``.
+#: ``a → 'approve'`` (publish it), ``r → 'reject'`` (drop it).
+_HOLD_CALLBACK_ACTIONS = {'a': 'approve', 'r': 'reject'}
+
+#: Every callback grammar the listener understands, keyed by wire prefix.
+#: Adding a keyboard means adding a prefix here plus a resolver below.
+#: The prefixes MUST stay distinct — a shared one would route a press into
+#: the wrong resolver, which would answer «устарела» and lose the decision.
+_REVIEW_CALLBACK_GRAMMARS = {
+    'dd': _REVIEW_CALLBACK_ACTIONS,
+    'hd': _HOLD_CALLBACK_ACTIONS,
+}
+
+#: Action words that belong to the HOLD grammar. The parser emits FULL
+#: WORDS that are unique across grammars, so ``_handle_review_update``
+#: dispatches on the word alone — no second copy of the prefix, and the
+#: parser's ``(action, token)`` return shape stays unchanged (keeping the
+#: [E014] round-trip contract intact). Derived from the grammar map so the
+#: two can never drift.
+#:
+#: Dispatch names the resolver FUNCTIONS directly rather than storing them
+#: in a table: a table captures the function objects at import time, which
+#: would silently defeat ``patch('news_bot.resolve_dedup_callback')`` —
+#: the same read-the-module-attribute-at-call-time convention the rest of
+#: this file follows.
+_HOLD_ACTION_WORDS = frozenset(_HOLD_CALLBACK_ACTIONS.values())
+
 #: Telegram hard-caps callback_data at 64 BYTES; anything longer never came
 #: from our keyboard, so the parser rejects it outright (wave-1 security
 #: note: accept ONLY the exact grammar, ignore everything else silently).
@@ -702,15 +797,19 @@ _REVIEW_CALLBACK_DATA_MAX_BYTES = 64
 
 
 def _parse_review_callback_data(data):
-    """Parse ``callback_data`` against the exact ``dd:<c|k>:<token>`` grammar.
+    """Parse ``callback_data`` against the exact review-button grammars:
+    ``dd:<c|k>:<token>`` ([E014] dedup) and ``hd:<a|r>:<token>`` ([E036]
+    content-gate hold).
 
     Returns ``(action_word, token)`` — action already mapped to the full
-    word (``'cancel'``/``'keep'``) — or ``None`` for anything that is not
-    EXACTLY three ``:``-separated fields with prefix ``dd``, a known
-    single-letter action and a non-empty token. Defensive by design
-    (wave-1 security review): garbage, foreign prefixes, full-word
-    actions on the wire, empty tokens and oversized payloads are all
-    silently rejected — the caller just advances the offset.
+    word (``'cancel'``/``'keep'``/``'approve'``/``'reject'``, unique across
+    grammars so the caller can dispatch on it alone) — or ``None`` for
+    anything that is not EXACTLY three ``:``-separated fields with a known
+    prefix, a known single-letter action FOR THAT PREFIX, and a non-empty
+    token. Defensive by design (wave-1 security review): garbage, foreign
+    prefixes, cross-grammar letters (``dd:a:…``), full-word actions on the
+    wire, empty tokens and oversized payloads are all silently rejected —
+    the caller just advances the offset.
     """
     if not isinstance(data, str):
         return None
@@ -720,9 +819,10 @@ def _parse_review_callback_data(data):
     if len(parts) != 3:
         return None
     prefix, letter, token = parts
-    if prefix != 'dd' or letter not in _REVIEW_CALLBACK_ACTIONS or not token:
+    actions = _REVIEW_CALLBACK_GRAMMARS.get(prefix)
+    if actions is None or letter not in actions or not token:
         return None
-    return (_REVIEW_CALLBACK_ACTIONS[letter], token)
+    return (actions[letter], token)
 
 
 async def _review_get_updates(offset):
@@ -817,8 +917,16 @@ def _handle_review_update(update):
     # a terminal outcome).
     link = pending_repo.get_review_token_link(token)
 
-    status_text, answer_text = resolve_dedup_callback(
-        action, token, from_user_id)
+    # Dispatch on the action word — the parser guarantees it came from a
+    # known grammar and the words are unique across grammars. Anything
+    # else lands in the dedup resolver, whose unknown-action branch is
+    # already a safe «устарела» no-op that keeps the token.
+    if action in _HOLD_ACTION_WORDS:
+        status_text, answer_text = resolve_hold_callback(
+            action, token, from_user_id)
+    else:
+        status_text, answer_text = resolve_dedup_callback(
+            action, token, from_user_id)
 
     if status_text is None:
         # resolve's own gate declined (belt-and-braces — ours already
@@ -1701,6 +1809,274 @@ def _is_promo_article(entry, article):
     if len(cta) >= 3:
         return strong + weak
     return []
+
+
+# ---------------------------------------------------------------------------
+# CONTENT GATE (2026-07-25) — three post GENRES the operator does not want
+# published automatically. Prod incident: the bot published a thin t-hunted
+# post that was just "here are the photos of the 2026 poster" (four
+# sentences, 12 images, plus a video our parser cannot embed).
+#
+# Two verdicts, two mechanisms:
+#   * HOLD  — poster / catalog / packaging → staged BUT parked
+#             (``pending_articles.hold_reason``), invisible to the publish
+#             queue, released only by «✅ Опубликовать» ([E036]).
+#             NO answer = it never publishes. No timer, no auto-drop.
+#   * DROP  — video review / event announcement → rejected at intake like
+#             a promo post, link pinned in processed_news ([E037]).
+#
+# Precedence: HOLD wins. The incident post mentions «no vídeo abaixo» but
+# is a poster post — the operator gets to decide, it is not silently binned.
+#
+# DETECTION IS SUBJECT-ANCHORED, not body keyword soup: only the title and
+# the (title-derived) URL slug are scanned. An article that merely MENTIONS
+# a poster, or merely EMBEDS a video, or merely happens at a convention, is
+# not one of these genres. Matching reuses the promo filter's machinery —
+# ``_promo_fold`` (accent-strip + lowercase + word-bounded tokens),
+# ``_promo_scan_input`` (non-str → '', hard char cap) — so a marker never
+# fires on a longer word ('poster' never hits 'posterior') and a
+# pathological title can never stall intake.
+#
+# Markers are stored in canonical (accented) spelling for the operator's
+# alert and folded once at import for matching; the structural invariants
+# — tiers non-empty, pairwise disjoint, no two markers folding to the same
+# token, no collision with the promo tiers — are pinned by
+# ``TestContentGateMarkerSets``.
+# ---------------------------------------------------------------------------
+
+#: HOLD markers (category 1): the post's SUBJECT is a poster, a catalog or
+#: packaging — a picture-dump genre with little to translate. One marker in
+#: the title (or slug) is enough: the operator said outright they would not
+#: have published the incident post, and a hold costs one button press
+#: while a bad publish cannot be taken back.
+_HOLD_TITLE_MARKERS = (
+    # Poster / promo art. 'pôster' folds to the same token as EN 'poster',
+    # so one entry covers both languages; plurals need their own entries
+    # because matching is word-bounded.
+    'poster',
+    'posters',
+    'pôsteres',
+    'cartaz',
+    'cartazes',
+    # Catalog (PT + both EN spellings).
+    'catálogo',
+    'catálogos',
+    'catalog',
+    'catalogs',
+    'catalogue',
+    'catalogues',
+    # Packaging / card art.
+    'embalagem',
+    'embalagens',
+    'packaging',
+    'cartela',
+    'cartelas',
+    'blister',
+    'blisters',
+    'cardback',
+    'cardbacks',
+    'card back',
+    'card art',
+    'box art',
+)
+
+#: VIDEO markers (category 2): the post's SUBJECT is a video — a review,
+#: an unboxing, a "watch this" pointer. 'vídeo' folds to 'video', which
+#: also catches the EN word and the «Video:» headline form.
+_GENRE_VIDEO_MARKERS = (
+    'vídeo',
+    'vídeos',
+    'unboxing',
+    'assista',
+    'assistam',
+    'youtube',
+)
+
+#: EN «Watch: …» headline form. Handled by a regex rather than a marker
+#: because folding strips the colon, and a bare word-bounded 'watch' would
+#: eat ordinary editorial English («watch out for these five Treasure
+#: Hunts», «a casting worth watching»). Anchored at the start of the title
+#: and required to be followed by punctuation, which is exactly what the
+#: "watch this video" headline convention looks like.
+_GENRE_VIDEO_LEAD_RE = re.compile(r'^\s*watch\s*[:\-–—]', re.IGNORECASE)
+#: Marker name reported for a ``_GENRE_VIDEO_LEAD_RE`` hit.
+_GENRE_VIDEO_LEAD_MARKER = 'watch:'
+
+#: EVENT NAME markers (category 3, first half): the name of a gathering.
+#: NEVER sufficient on its own — see ``_GENRE_EVENT_ORG_MARKERS``.
+_GENRE_EVENT_NAME_MARKERS = (
+    'convention',
+    'conventions',
+    'convenção',
+    'convenções',
+    'expo',
+    'feira',
+    'feiras',
+    'encontro',
+    'encontros',
+    'meetup',
+    'nationals',
+    'swap meet',
+    'legends tour',
+)
+
+#: EVENT ORGANIZATIONAL markers (category 3, second half): the logistics
+#: vocabulary that makes a post ABOUT the event rather than about a car
+#: that happens to debut there.
+#:
+#: THIS PAIRING IS THE CRITICAL FALSE-POSITIVE GUARD. A convention-
+#: exclusive casting reveal ("Hot Wheels Convention 2026 exclusive Datsun
+#: revealed", "exclusivo da convenção") is legitimate model news — exactly
+#: what the channel exists for — and the mere name of a convention must
+#: never drop it. Equally, the org words alone are ordinary release
+#: language ("2026 mainline release dates", "datas de lançamento"), so
+#: BOTH halves must appear in the subject.
+_GENRE_EVENT_ORG_MARKERS = (
+    # PT
+    'datas',
+    'ingresso',
+    'ingressos',
+    'inscrições',
+    'inscrição',
+    'programação',
+    'credenciamento',
+    'acontece',
+    # EN
+    'dates',
+    'tickets',
+    'registration',
+    'will be held',
+    'schedule',
+    'venue',
+)
+
+#: Markers pre-folded once at import so the per-entry scan is pure
+#: substring checks (same shape as ``_PROMO_STRONG_FOLDED``).
+_HOLD_TITLE_FOLDED = tuple((m, _promo_fold(m)) for m in _HOLD_TITLE_MARKERS)
+_GENRE_VIDEO_FOLDED = tuple((m, _promo_fold(m)) for m in _GENRE_VIDEO_MARKERS)
+_GENRE_EVENT_NAME_FOLDED = tuple(
+    (m, _promo_fold(m)) for m in _GENRE_EVENT_NAME_MARKERS)
+_GENRE_EVENT_ORG_FOLDED = tuple(
+    (m, _promo_fold(m)) for m in _GENRE_EVENT_ORG_MARKERS)
+
+
+def _content_gate_subject(entry, article):
+    """Coerce ``entry``/``article`` into the SUBJECT text the content gate
+    scans: ``(raw_title, folded_title, folded_url_path)``.
+
+    Title comes from the feed entry, falling back to the parsed article.
+    The URL path is corroboration only in spirit — on the sources we read
+    (blogspot, wordpress, autoevolution) the slug is generated FROM the
+    title, so it adds no independent false-positive surface while
+    surviving a feed that truncates or mangles the title.
+
+    Never raises: non-dict inputs, non-str fields and unparseable URLs all
+    degrade to empty text (the filter must never crash the tick —
+    audit SEC-PROMO-1's lesson applies verbatim here). Both inputs go
+    through ``_promo_scan_input``, so the documented char cap holds.
+    """
+    if not isinstance(entry, dict):
+        entry = {}
+    if not isinstance(article, dict):
+        article = {}
+    raw_title = (_promo_scan_input(entry.get('title'))
+                 or _promo_scan_input(article.get('title')))
+    try:
+        path = urlparse(_promo_scan_input(entry.get('link'))).path
+    except ValueError:
+        # Malformed URL (e.g. an unterminated IPv6 literal) — the slug
+        # signal is optional, the gate carries on without it.
+        path = ''
+    return raw_title, _promo_fold(raw_title), _promo_fold(path)
+
+
+def _content_gate_hits(folded_title, folded_path, folded_markers):
+    """Matched markers for one tier. Title hits are reported bare; a
+    marker found ONLY in the slug is reported as ``url:<marker>`` so the
+    operator can see at a glance which signal fired."""
+    title_hits = [m for m, f in folded_markers if f in folded_title]
+    path_hits = [
+        f'url:{m}' for m, f in folded_markers
+        if f in folded_path and m not in title_hits
+    ]
+    return title_hits + path_hits
+
+
+def _hold_for_review_reason(entry, article):
+    """Return the list of matched markers when the post's SUBJECT is a
+    poster / catalog / packaging piece (truthy → HOLD for operator
+    approval, [E036]); empty list otherwise.
+
+    Prod incident 2026-07-25: t-hunted published «As fotos do último
+    poster da Hot Wheels» — four sentences, 12 images, an unembeddable
+    video — and the bot published it. The operator's instruction: do not
+    publish this genre automatically, ASK. With no answer the article
+    stays parked forever (`pending_articles.hold_reason`); silence is a
+    decision, not a timeout.
+
+    Rule: ONE marker in the title or the URL slug holds. Deliberately
+    strict — a hold is one button press away from publishing, so the cost
+    of a false hold is far below the cost of a false publish, and the
+    operator asked for exactly this asymmetry.
+
+    Scanned inputs: title + URL path only (see ``_content_gate_subject``).
+    The BODY is not scanned on purpose: an ordinary car-reveal post that
+    mentions the poster, the catalog spread and the new packaging in one
+    paragraph is still a car-reveal post.
+
+    Tolerates malformed input (non-dict entry/article, non-str fields,
+    unparseable link) by returning ``[]`` rather than raising; the call
+    site wraps it fail-open anyway.
+    """
+    _raw, folded_title, folded_path = _content_gate_subject(entry, article)
+    return _content_gate_hits(folded_title, folded_path, _HOLD_TITLE_FOLDED)
+
+
+def _is_rejected_genre(entry, article):
+    """Return ``(genre, markers)`` when the post's SUBJECT is a genre the
+    operator wants dropped outright at intake ([E037]), else ``(None, [])``.
+
+    ``genre`` is ``'video'`` (video review / unboxing / "watch this") or
+    ``'event'`` (convention / expo announcement). Markers are returned for
+    the alert so a false positive is diagnosable at a glance.
+
+    Rules:
+
+      * VIDEO — one marker in the title/slug, or the «Watch: …» headline
+        lead. A post that merely EMBEDS a video is NOT a video review: the
+        body is never scanned, so the incident post's «no vídeo abaixo»
+        cannot trip this (and neither can a car reveal whose reveal clip
+        is quoted in the lead paragraph).
+      * EVENT — an event NAME **and** an ORGANIZATIONAL word, both in the
+        subject. Two independent signals are required because a
+        convention-exclusive CAR REVEAL is legitimate model news: the name
+        of a convention says WHERE a casting was announced, not that the
+        post is about the convention. Conversely the org words alone are
+        ordinary release language ("2026 release dates").
+
+    Video is checked first; on a title that satisfies both, either verdict
+    is a drop, so the order is a tie-break, not a policy. HOLD outranks
+    BOTH — see ``job()``, which evaluates ``_hold_for_review_reason``
+    first and skips this check entirely on a hold.
+
+    Same malformed-input tolerance as ``_hold_for_review_reason``.
+    """
+    raw_title, folded_title, folded_path = _content_gate_subject(entry, article)
+
+    video = _content_gate_hits(folded_title, folded_path, _GENRE_VIDEO_FOLDED)
+    if _GENRE_VIDEO_LEAD_RE.match(raw_title):
+        video.append(_GENRE_VIDEO_LEAD_MARKER)
+    if video:
+        return ('video', video)
+
+    names = _content_gate_hits(
+        folded_title, folded_path, _GENRE_EVENT_NAME_FOLDED)
+    org = _content_gate_hits(
+        folded_title, folded_path, _GENRE_EVENT_ORG_FOLDED)
+    if names and org:
+        return ('event', names + org)
+
+    return (None, [])
 
 
 #: Hard-block threshold for cross-source dedup (tech-spec Decision 7,
@@ -3006,6 +3382,8 @@ def job():
         'dropped_no_article': 0,  # b3: no link OR no article/paragraphs
         'dropped_checklist': 0,   # b3: text-only checklist reject
         'dropped_promo': 0,       # b3: shop-promo/ad reject (E035)
+        'dropped_genre': 0,       # b3: content-gate genre drop — video/event (E037)
+        'held_for_review': 0,     # b3: content-gate HOLD — staged but parked (E036)
         'dropped_dedup_block': 0, # b3: cross-source hard-block (E015)
         'dedup_degraded': 0,      # b3: dedup crashed → degraded (E016), still attempts to stage
         'staged': 0,              # == inserted
@@ -3126,6 +3504,81 @@ def job():
                     "Failed to send E035 notification: %s", notify_err,
                 )
             continue
+
+        # --------------------------------------------------------------
+        # CONTENT GATE (2026-07-25). Three genres the operator does not
+        # want published automatically, two verdicts:
+        #
+        #   HOLD  (poster / catalog / packaging) — stage the row but park
+        #         it (hold_reason), ping [E036] with approve/reject
+        #         buttons. NO answer = it never publishes.
+        #   DROP  (video review / event announcement) — reject right here
+        #         like a promo post, ping [E037].
+        #
+        # PRECEDENCE: hold is evaluated FIRST and short-circuits the genre
+        # check. The incident post is a poster post that also says «no
+        # vídeo abaixo» — it must reach the operator for a decision, not
+        # be silently binned as a video post.
+        #
+        # The dedup gate still runs BELOW this and can hard-block a held
+        # candidate before it is ever staged. That ordering is deliberate:
+        # a poster post we have already covered from another source is a
+        # duplicate, and there is nothing for the operator to decide.
+        #
+        # Both detectors are wrapped fail-open, exactly like the promo
+        # filter and the dedup gate (Decision 12 / AC9, audit
+        # SEC-PROMO-1): an intake FILTER must never crash the tick, and a
+        # crash here would land BEFORE mark_processed, so the same entry
+        # would be refetched and crash-loop the daemon on every restart.
+        # Fail-open means "publish as usual" for BOTH — a detector fault
+        # must not silently park articles either.
+        # --------------------------------------------------------------
+        try:
+            hold_markers = _hold_for_review_reason(entry, article)
+        except Exception as exc:
+            logger.error(
+                "content-gate hold check failed for %s, treating as "
+                "not-held: %s", link, sanitize_error_message(exc),
+            )
+            hold_markers = []
+
+        if not hold_markers:
+            try:
+                genre, genre_markers = _is_rejected_genre(entry, article)
+            except Exception as exc:
+                logger.error(
+                    "content-gate genre check failed for %s, treating as "
+                    "not-rejected: %s", link, sanitize_error_message(exc),
+                )
+                genre, genre_markers = None, []
+            if genre:
+                funnel['dropped_genre'] += 1
+                logger.info(
+                    "[E037] Genre dropped %s genre=%s (markers: %s)",
+                    link, genre, ", ".join(genre_markers),
+                )
+                # Pin the link (E015/E035 precedent): a video review stays
+                # a video review — without the pin the same post would be
+                # re-fetched and re-alerted every daily tick.
+                mark_processed(
+                    link,
+                    article.get('title') or entry.get('title') or '',
+                    entry.get('published') or entry.get('pub_date') or '',
+                )
+                try:
+                    send_admin_notification(
+                        admin_alerts.alert_genre_blocked(
+                            link,
+                            article.get('title') or entry.get('title') or '',
+                            genre,
+                            genre_markers,
+                        )
+                    )
+                except Exception as notify_err:
+                    logger.error(
+                        "Failed to send E037 notification: %s", notify_err,
+                    )
+                continue
 
         # --------------------------------------------------------------
         # Cross-source dedup gate (cross-source-dedup feature, Wave 2).
@@ -3304,10 +3757,58 @@ def job():
             'blocks': article.get('blocks'),
             'pub_date': entry.get('published') or entry.get('pub_date') or '',
             'model_fingerprint': fp,
+            # Content gate: a non-NULL hold_reason parks the row — staged,
+            # but invisible to list_pending/count_pending until approved.
+            # Stored as the human-readable marker list so [E036] can be
+            # rebuilt from the row alone.
+            'hold_reason': ", ".join(hold_markers) if hold_markers else None,
         }
         try:
             if pending_repo.insert_pending(row):
                 inserted += 1
+                if hold_markers:
+                    # HELD: ask the operator. Sent only AFTER the row is
+                    # committed, so the token can never point at a row
+                    # that does not exist. Best-effort like every other
+                    # ping — a Telegram failure must not undo the staging
+                    # (the row stays parked and shows up in the daily
+                    # «На утверждении: N» line, which is exactly the
+                    # backstop this ping needs).
+                    funnel['held_for_review'] += 1
+                    logger.info(
+                        "[E036] Held for review %s (markers: %s)",
+                        link, ", ".join(hold_markers),
+                    )
+                    try:
+                        # Same gate as the E014 send site (audit
+                        # SEC-A8-1): mint a token and render buttons only
+                        # when a listener with the identical effective
+                        # config would serve them — no dead buttons, no
+                        # orphan tokens. Mint/put live INSIDE the try so a
+                        # storage fault logs as a failed ping rather than
+                        # breaking intake.
+                        kb = None
+                        if _review_listener_enabled():
+                            token = secrets.token_urlsafe(9)
+                            pending_repo.put_review_token(token, link)
+                            kb = admin_alerts.build_hold_review_keyboard(token)
+                        send_admin_notification(
+                            admin_alerts.alert_held_for_review(
+                                link,
+                                article.get('title')
+                                or entry.get('title') or '',
+                                hold_markers,
+                                # Derived from the SAME kb about to be
+                                # attached, so «Что сделать» can never
+                                # promise a button that is not there.
+                                buttons_enabled=kb is not None,
+                            ),
+                            reply_markup=kb,
+                        )
+                    except Exception as notify_err:
+                        logger.error(
+                            "Failed to send E036 notification: %s", notify_err,
+                        )
             else:
                 # UNIQUE conflict — another prep tick raced us; expected.
                 logger.info(f"Pending row already exists for {link} — skipped.")
@@ -3321,13 +3822,14 @@ def job():
     # cannot raise.
     logger.info(
         "[funnel] sources=%d(failed=%d) new=%d "
-        "dropped(no_article=%d,checklist=%d,promo=%d,dedup_block=%d,"
-        "dedup_degraded=%d) staged=%d",
+        "dropped(no_article=%d,checklist=%d,promo=%d,genre=%d,dedup_block=%d,"
+        "dedup_degraded=%d) held=%d staged=%d",
         funnel['sources_fetched'], funnel['sources_failed'],
         funnel['new_count'], funnel['dropped_no_article'],
         funnel['dropped_checklist'], funnel['dropped_promo'],
-        funnel['dropped_dedup_block'],
-        funnel['dedup_degraded'], funnel['staged'],
+        funnel['dropped_genre'], funnel['dropped_dedup_block'],
+        funnel['dedup_degraded'], funnel['held_for_review'],
+        funnel['staged'],
     )
 
     # ------------------------------------------------------------------
@@ -3339,8 +3841,25 @@ def job():
     # MAX_DAILY_POSTS trim is no longer needed.
     # ------------------------------------------------------------------
     now_msk = datetime.now(MSK_TZ)
+    # ``count_pending`` counts PUBLISHABLE rows only — content-gate holds
+    # are excluded, so a parked poster post never buys the day an extra
+    # slot it can never fill, and never inflates the `> 50` backlog alarm
+    # with rows the queue cannot drain on its own. The operator still sees
+    # them: the held backlog goes into the plan ping as its own
+    # «На утверждении: N» line (read below).
     queue_size = pending_repo.count_pending()
     slots, carry_over = compute_fixed_slots(queue_size, now_msk)
+
+    # Held backlog for the plan ping. Never blocks the tick: with the
+    # «нет ответа = не публикуем» rule nothing else surfaces a forgotten
+    # hold, but a DB hiccup here must not cost the heartbeat.
+    try:
+        held_count = len(pending_repo.list_held())
+    except Exception as exc:
+        logger.error(
+            f"Failed to read the held backlog: {sanitize_error_message(exc)}"
+        )
+        held_count = 0
 
     # ------------------------------------------------------------------
     # Step (d): admin ping with plan-of-day. Always sent — operator wants a
@@ -3355,10 +3874,12 @@ def job():
     # path must never break the tick — fall back to the no-funnel legacy call.
     try:
         if queue_size == 0 and inserted == 0:
-            plan_msg = admin_alerts.alert_quiet_day(funnel=funnel)
+            plan_msg = admin_alerts.alert_quiet_day(
+                funnel=funnel, held_count=held_count)
         else:
             plan_msg = admin_alerts.alert_plan_of_day(
-                inserted, queue_size, slots, carry_over, funnel=funnel
+                inserted, queue_size, slots, carry_over, funnel=funnel,
+                held_count=held_count,
             )
     except Exception as build_err:
         logger.error(

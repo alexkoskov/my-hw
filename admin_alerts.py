@@ -183,11 +183,16 @@ def _funnel_int(funnel: dict, key: str) -> int:
 
 def _funnel_collapse_note(
     sources: int, failed: int, new: int,
-    no_article: int, checklist: int, promo: int, block: int, staged: int,
+    no_article: int, checklist: int, promo: int, genre: int, block: int,
+    staged: int,
 ) -> str:
     """One-line pinpoint of the stage where intake collapsed. Returns "" when
     something WAS staged (no collapse to report). ``dedup_degraded`` is not a
-    drop (those articles still publish) so it is never a collapse cause."""
+    drop (those articles still publish) so it is never a collapse cause.
+
+    A content-gate HOLD is likewise not a collapse cause: the row IS staged
+    (``staged`` counts it), so a hold-only tick reports no collapse — the
+    «на утверждении» line carries that story instead."""
     try:
         if staged > 0:
             return ""
@@ -203,6 +208,7 @@ def _funnel_collapse_note(
             ("нет статьи/текста", no_article),
             ("чеклист без текста", checklist),
             ("реклама", promo),
+            ("жанр", genre),
         )
         stage, count = max(drops, key=lambda kv: kv[1])
         if count > 0:
@@ -229,6 +235,10 @@ def _format_funnel(funnel: dict) -> str:
         no_article = _funnel_int(funnel, "dropped_no_article")
         checklist = _funnel_int(funnel, "dropped_checklist")
         promo = _funnel_int(funnel, "dropped_promo")
+        # Content gate (2026-07-25). Missing keys read as 0, so a funnel
+        # dict built before this feature still renders.
+        genre = _funnel_int(funnel, "dropped_genre")
+        held = _funnel_int(funnel, "held_for_review")
         block = _funnel_int(funnel, "dropped_dedup_block")
         degraded = _funnel_int(funnel, "dedup_degraded")
         staged = _funnel_int(funnel, "staged")
@@ -241,12 +251,19 @@ def _format_funnel(funnel: dict) -> str:
             f"• получено записей: {sources} (источников не ответило: {failed})",
             f"• новых после фильтров: {new}",
             f"• отсеяно: нет статьи {no_article}, "
-            f"чеклист {checklist}, реклама {promo}, дубль-блок {block}",
+            f"чеклист {checklist}, реклама {promo}, жанр {genre}, "
+            f"дубль-блок {block}",
             f"• дедуп degraded (всё равно опубликованы): {degraded}",
             f"• добавлено в очередь: {staged}",
         ]
+        if held:
+            # A hold is NOT a drop — the article was staged, it is just
+            # parked until the operator answers [E036]. Own line so it is
+            # never read as "отсеяно".
+            lines.append(f"• придержано на утверждение: {held}")
         note = _funnel_collapse_note(
-            sources, failed, new, no_article, checklist, promo, block, staged,
+            sources, failed, new, no_article, checklist, promo, genre, block,
+            staged,
         )
         if note:
             lines.append(note)
@@ -267,10 +284,13 @@ def _format_funnel_line(funnel: dict) -> str:
         failed = _funnel_int(funnel, "sources_failed")
         new = _funnel_int(funnel, "new_count")
         staged = _funnel_int(funnel, "staged")
+        # ``held_for_review`` is deliberately absent from this sum: a held
+        # article was staged, not dropped — the operator still has it.
         dropped = (
             _funnel_int(funnel, "dropped_no_article")
             + _funnel_int(funnel, "dropped_checklist")
             + _funnel_int(funnel, "dropped_promo")
+            + _funnel_int(funnel, "dropped_genre")
             + _funnel_int(funnel, "dropped_dedup_block")
         )
         failed_part = f", источники-сбои {failed}" if failed else ""
@@ -288,15 +308,40 @@ def _format_funnel_line(funnel: dict) -> str:
 # ---------------------------------------------------------------------------
 # E008 — heartbeat: busy day (план на сегодня)
 # ---------------------------------------------------------------------------
+def _held_backlog_line(held_count) -> str:
+    """«На утверждении: N» — the content-gate backlog line for the daily
+    ping. Returns "" for 0 / malformed input (never raises).
+
+    Held rows are excluded from ``count_pending()``, so they appear in
+    NEITHER «Всего в очереди» NOR the slot computation. This line is the
+    only place the operator ever sees them: with the «нет ответа = не
+    публикуем» rule there is no timer and no escalation, so a forgotten
+    hold would otherwise be invisible forever.
+    """
+    try:
+        n = max(0, int(held_count or 0))
+    except Exception:
+        return ""
+    if not n:
+        return ""
+    return f"На утверждении: {n}"
+
+
 def alert_plan_of_day(
     inserted: int, queue_size: int, slots: List, carry_over: int,
     funnel: Optional[dict] = None,
+    *,
+    held_count: int = 0,
 ) -> str:
     # Сохраняем подстроки 'План на сегодня', 'Принято свежих' —
     # на них висят test_distributed_schedule_integration / test_job_prep_phase.
     #
     # ``funnel`` (optional, backward-compatible) добавляет компактную строку
     # воронки приёма. Легаси-вызов без funnel рендерит прежний текст один-в-один.
+    #
+    # ``held_count`` (keyword-only, content-gate 2026-07-25) — сколько статей
+    # ждут решения оператора по [E036]. Они НЕ входят в «Всего в очереди»
+    # (count_pending их исключает), поэтому нужна отдельная строка.
     slot_strs = ", ".join(s.strftime("%H:%M") for s in slots) or "—"
     base = (
         f"[E008] 🟢 План на сегодня\n\n"
@@ -305,6 +350,9 @@ def alert_plan_of_day(
         f"Слоты сегодня: {slot_strs}\n"
         f"Перенесено на завтра: {carry_over}"
     )
+    held_line = _held_backlog_line(held_count)
+    if held_line:
+        base = f"{base}\n{held_line}"
     try:
         line = _format_funnel_line(funnel) if funnel is not None else ""
     except Exception:
@@ -317,14 +365,23 @@ def alert_plan_of_day(
 # ---------------------------------------------------------------------------
 # E009 — heartbeat: quiet day (новых статей нет)
 # ---------------------------------------------------------------------------
-def alert_quiet_day(funnel: Optional[dict] = None) -> str:
+def alert_quiet_day(funnel: Optional[dict] = None, *,
+                    held_count: int = 0) -> str:
     # Сохраняем подстроку 'Бот сработал' — на ней висит test_job_prep_phase.
     #
     # ``funnel`` (optional, backward-compatible): при наличии дописываем
     # читаемую воронку приёма — где именно схлопнулся intake (fetch/фильтры/
     # дедуп) — плюс scope-заметку, что перевод/пост неприменимы (очередь пуста).
     # Легаси-вызов без funnel возвращает прежнюю однострочную формулировку.
+    #
+    # ``held_count`` (keyword-only, content-gate 2026-07-25) — на тихом дне
+    # это может быть ЕДИНСТВЕННОЕ, что есть в базе: публикуемая очередь
+    # пуста, а статья висит на утверждении. Без этой строки оператор бы её
+    # больше нигде не увидел (таймера и напоминаний по [E036] нет).
     base = "[E009] 🟢 Бот сработал, новых статей нет."
+    held_line = _held_backlog_line(held_count)
+    if held_line:
+        base = f"{base}\n{held_line}"
     try:
         block = _format_funnel(funnel) if funnel is not None else ""
     except Exception:
@@ -896,4 +953,143 @@ def alert_promo_blocked(link: str, title: str, markers: List[str]) -> str:
         f"Что сделать:\n"
         f"глянь статью по ссылке; если это НЕ реклама —\n"
         f"ложное срабатывание: сообщи, поправим паттерны."
+    )
+
+
+# ---------------------------------------------------------------------------
+# CONTENT GATE (2026-07-25) — E036 (hold) + E037 (drop).
+#
+# Прод-инцидент: бот опубликовал пустой пост t-hunted «вот фото постера
+# 2026» (4 предложения, 12 картинок, видео, которое наш парсер не умеет
+# встраивать). Оператор развёл три жанра на два механизма:
+#   * постеры / каталоги / упаковка → НЕ публиковать сразу, СПРОСИТЬ [E036];
+#   * видео-обзоры и ивенты → отсекать на приёме [E037].
+# Детекторы — news_bot._hold_for_review_reason / _is_rejected_genre;
+# билдеры ниже, как и весь модуль, чистые (str/клавиатура, без I/O).
+# ---------------------------------------------------------------------------
+
+#: Operator-facing genre names for [E037]. Unknown keys fall through to the
+#: raw key — a future genre must never render as "None".
+_GENRE_LABELS = {
+    'video': 'видео-обзор',
+    'event': 'ивент',
+}
+
+
+def _gate_title(title) -> str:
+    """Truncate an untrusted article title for a content-gate ping — same
+    cap and rationale as ``alert_promo_blocked`` (audit SEC-PROMO-4)."""
+    title_s = title if isinstance(title, str) else str(title)
+    if len(title_s) > _PROMO_TITLE_MAXLEN:
+        return title_s[:_PROMO_TITLE_MAXLEN] + "…"
+    return title_s
+
+
+def _gate_markers(markers) -> str:
+    """Render the matched marker list (our own constants — safe verbatim)."""
+    try:
+        return ", ".join(str(m) for m in markers) if markers else "—"
+    except Exception:
+        return "—"
+
+
+# ---------------------------------------------------------------------------
+# E036 — content gate: пост придержан до решения оператора
+# ---------------------------------------------------------------------------
+def alert_held_for_review(link: str, title: str, markers: List[str], *,
+                          buttons_enabled: bool = False) -> str:
+    """[E036] a poster/catalog/packaging post was STAGED BUT HELD.
+
+    ``buttons_enabled`` (keyword-only, default False = fail-safe) mirrors
+    the [E014] contract: it is derived at the send site from the SAME
+    keyboard object that gets attached, so the «Что сделать» block can
+    never promise a button that is not under the message.
+
+    Both branches state the operator's own rule outright — **no answer
+    means the article is never published**. A two-button prompt otherwise
+    reads as "it goes out unless I stop it", which is the exact opposite
+    of what this feature does.
+    """
+    # Подстрока 'На утверждение' — substring-якорь интеграционных тестов,
+    # не менять.
+    if buttons_enabled:
+        todo_block = (
+            f"Что сделать:\n"
+            f"глянь статью по ссылке и нажми кнопку\n"
+            f"под этим сообщением: «✅ Опубликовать» —\n"
+            f"уйдёт в ближайший свободный слот,\n"
+            f"«🚫 Не публиковать» — уберём совсем.\n"
+            f"Если не отвечать, статья так и останется\n"
+            f"здесь и НИКОГДА не опубликуется."
+        )
+    else:
+        # Гейт кнопок закрыт (REVIEW_BUTTONS_ENABLED выкл / нет токена /
+        # нечисловой admin id) — кнопок под сообщением физически нет, и
+        # выпустить статью на этом инстансе нечем. Говорим это прямо, а не
+        # советуем несуществующее действие (урок [E014]/[E003] 2026-07-25).
+        todo_block = (
+            f"Что сделать:\n"
+            f"на этом инстансе кнопок нет, выпустить\n"
+            f"статью нечем — она останется придержанной\n"
+            f"и НИКОГДА не опубликуется. Если её всё же\n"
+            f"надо выпустить — скажи, включим кнопки."
+        )
+    return (
+        f"[E036] 🖼 На утверждение\n\n"
+        f"Заголовок:\n{_gate_title(title)}\n\n"
+        f"Ссылка:\n{link}\n\n"
+        f"Сработавшие маркеры: {_gate_markers(markers)}\n\n"
+        f"Что произошло:\n"
+        f"похоже на пост про постер / каталог / упаковку.\n"
+        f"Такие мы не публикуем автоматически — статья\n"
+        f"придержана в очереди и ждёт твоего решения.\n\n"
+        f"{todo_block}"
+    )
+
+
+def build_hold_review_keyboard(token: str) -> InlineKeyboardMarkup:
+    """Инлайн-клавиатура для [E036] «На утверждение»: решение оператора.
+
+    ``callback_data`` — грамматика ``hd:a:<token>`` (approve) и
+    ``hd:r:<token>`` (reject), рядом с ``dd:<c|k>:<token>`` у [E014].
+    Префикс РАЗНЫЙ намеренно: общий развёл бы нажатие «одобрить» в
+    dedup-резолвер, который ответил бы «устарела» и потерял решение.
+
+    Токен короткий (``secrets.token_urlsafe(9)``, ~12 символов), поэтому
+    payload заведомо укладывается в лимит Telegram 64 байта — URL статьи
+    (PK ``pending_articles``) туда бы не влез.
+
+    Порядок кнопок — контракт: approve ПЕРВОЙ, reject второй. Функция
+    чистая (str -> InlineKeyboardMarkup), без I/O — как все билдеры модуля.
+    """
+    return InlineKeyboardMarkup([[
+        InlineKeyboardButton("✅ Опубликовать", callback_data=f"hd:a:{token}"),
+        InlineKeyboardButton("🚫 Не публиковать", callback_data=f"hd:r:{token}"),
+    ]])
+
+
+# ---------------------------------------------------------------------------
+# E037 — content gate: жанр отсечён на приёме (видео-обзор / ивент)
+# ---------------------------------------------------------------------------
+def alert_genre_blocked(link: str, title: str, genre: str,
+                        markers: List[str]) -> str:
+    """[E037] intake genre drop. ``genre`` — the key returned by
+    ``news_bot._is_rejected_genre`` (``'video'`` / ``'event'``), rendered
+    through ``_GENRE_LABELS``; an unknown key renders verbatim rather than
+    as "None". ``title`` is untrusted source text and is capped."""
+    # Подстрока 'Отсечён жанр' — substring-якорь интеграционных тестов,
+    # не менять.
+    genre_label = _GENRE_LABELS.get(genre, genre if genre else "неизвестный")
+    return (
+        f"[E037] 🚫 Отсечён жанр\n\n"
+        f"Жанр: {genre_label}\n\n"
+        f"Заголовок:\n{_gate_title(title)}\n\n"
+        f"Ссылка:\n{link}\n\n"
+        f"Сработавшие маркеры: {_gate_markers(markers)}\n\n"
+        f"Что произошло:\n"
+        f"такие посты мы не публикуем — статья отброшена\n"
+        f"на приёме, до перевода: токены не потрачены.\n\n"
+        f"Что сделать:\n"
+        f"ничего. Но если это ошибка и статью стоило\n"
+        f"опубликовать — скажи, поправим правила."
     )

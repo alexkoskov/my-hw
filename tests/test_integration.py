@@ -3898,5 +3898,778 @@ class TestPromoIntakeFilter(_PrepPhaseBase):
             self.assertNotIn('[E035]', c.args[0] if c.args else '')
 
 
+class TestResolveHoldCallback(_IntegrationBase):
+    """Every branch of ``news_bot.resolve_hold_callback`` on a real
+    tempfile SQLite DB — the [E036] «На утверждение» buttons.
+
+    Same contract as ``resolve_dedup_callback``: ``(status, answer)`` on a
+    terminal outcome, ``(None, "")`` on an ignored press.
+    """
+
+    ADMIN_ID = 424242
+
+    def setUp(self):
+        super().setUp()
+        self.numeric_admin_patcher = patch(
+            'news_bot.TELEGRAM_ADMIN_ID', str(self.ADMIN_ID))
+        self.numeric_admin_patcher.start()
+
+    def tearDown(self):
+        self.numeric_admin_patcher.stop()
+        super().tearDown()
+
+    # -- helpers ----------------------------------------------------------
+
+    def _seed_held(self, link, reason='poster', title='Poster post'):
+        pending_articles_repo.insert_pending({
+            'link': link,
+            'source_name': 't-hunted',
+            'feed_url': None,
+            'title': title,
+            'subtitle': '',
+            'paragraphs': ['First paragraph.'],
+            'images': [],
+            'blocks': None,
+            'pub_date': '2026-07-25',
+            'hold_reason': reason,
+        })
+
+    def _stage_token(self, link, token='tok-hold-1234'):
+        pending_articles_repo.put_review_token(token, link)
+        return token
+
+    def _in_processed_news(self, link):
+        conn = sqlite3.connect(self.db_path)
+        try:
+            return conn.execute(
+                "SELECT 1 FROM processed_news WHERE link=?", (link,),
+            ).fetchone() is not None
+        finally:
+            conn.close()
+
+    # -- the load-bearing guarantee ---------------------------------------
+
+    def test_held_row_is_never_selected_by_the_slot_loop(self):
+        """THE guarantee behind «нет ответа = не публикуем»: with no
+        button press at all, the slot loop never sees the row. Drives the
+        loop's real selection path (head of ``list_pending()``) with the
+        channel side-effect stubbed — mirrors
+        ``test_cancel_then_slot_publish_does_not_publish``."""
+        held = 'https://example.com/held-poster'
+        survivor = 'https://example.com/ordinary-news'
+        self._seed_held(held)
+        _seed_pending_row(survivor, title='Survivor')
+
+        self.assertNotIn(
+            held, [r['link'] for r in pending_articles_repo.list_pending()])
+
+        with patch('news_bot._fallback_publish') as mock_pub:
+            mock_pub.side_effect = lambda row, via_review=False: (
+                pending_articles_repo.skip_pending(row['link']))
+            while True:
+                rows = pending_articles_repo.list_pending()
+                if not rows:
+                    break
+                news_bot._fallback_publish(rows[0])
+
+        published = [c.args[0]['link'] for c in mock_pub.call_args_list]
+        self.assertEqual(published, [survivor])
+        # Still parked, still intact — nothing consumed or expired it.
+        self.assertIsNotNone(pending_articles_repo.get_pending(held))
+        self.assertEqual(
+            [r['link'] for r in pending_articles_repo.list_held()], [held])
+
+    # -- approve ----------------------------------------------------------
+
+    def test_approve_releases_the_row_into_the_queue(self):
+        link = 'https://example.com/hold-approve'
+        self._seed_held(link)
+        token = self._stage_token(link)
+
+        status, answer = news_bot.resolve_hold_callback(
+            'approve', token, self.ADMIN_ID)
+
+        self.assertEqual(status, "✅ Одобрено — выйдет в ближайший слот")
+        self.assertEqual(answer, status)
+        self.assertIsNone(pending_articles_repo.get_pending(link)['hold_reason'])
+        self.assertIn(
+            link, [r['link'] for r in pending_articles_repo.list_pending()])
+        self.assertEqual(pending_articles_repo.count_pending(), 1)
+        # Approval is not a publish.
+        self.assertIsNone(pending_articles_repo.get_published(link))
+        self.assertFalse(self._in_processed_news(link))
+        # Token consumed → a second press is a safe stale no-op.
+        self.assertIsNone(pending_articles_repo.get_review_token_link(token))
+        self.assertEqual(
+            news_bot.resolve_hold_callback('approve', token, self.ADMIN_ID),
+            ("⚠️ Кнопка устарела", "⚠️ Кнопка устарела"),
+        )
+
+    def test_approve_then_slot_publishes_the_article(self):
+        """The other half of the guarantee: once approved, the article
+        behaves like any queue member and DOES go out at its slot."""
+        link = 'https://example.com/hold-approve-slot'
+        self._seed_held(link)
+        news_bot.resolve_hold_callback(
+            'approve', self._stage_token(link), self.ADMIN_ID)
+
+        with patch('news_bot._fallback_publish') as mock_pub:
+            mock_pub.side_effect = lambda row, via_review=False: (
+                pending_articles_repo.skip_pending(row['link']))
+            rows = pending_articles_repo.list_pending()
+            self.assertTrue(rows)
+            news_bot._fallback_publish(rows[0])
+
+        self.assertEqual(
+            [c.args[0]['link'] for c in mock_pub.call_args_list], [link])
+
+    def test_approve_when_the_row_is_gone_reports_unavailable(self):
+        link = 'https://example.com/hold-approve-gone'
+        token = self._stage_token(link)
+        status, _ = news_bot.resolve_hold_callback(
+            'approve', token, self.ADMIN_ID)
+        self.assertEqual(status, "⚠️ Статья уже недоступна")
+        self.assertIsNone(pending_articles_repo.get_review_token_link(token))
+
+    def test_approve_on_an_already_released_row_reports_unavailable(self):
+        """Two tokens for the same article (re-staged after a restart):
+        the second press must not report a fresh approval."""
+        link = 'https://example.com/hold-approve-twice'
+        self._seed_held(link)
+        news_bot.resolve_hold_callback(
+            'approve', self._stage_token(link, 'tok-a'), self.ADMIN_ID)
+        status, _ = news_bot.resolve_hold_callback(
+            'approve', self._stage_token(link, 'tok-b'), self.ADMIN_ID)
+        self.assertEqual(status, "⚠️ Статья уже недоступна")
+
+    # -- reject -----------------------------------------------------------
+
+    def test_reject_drops_the_row_and_pins_the_link(self):
+        link = 'https://example.com/hold-reject'
+        self._seed_held(link)
+        token = self._stage_token(link)
+
+        status, answer = news_bot.resolve_hold_callback(
+            'reject', token, self.ADMIN_ID)
+
+        self.assertEqual(status, "🚫 Не будет опубликовано")
+        self.assertEqual(answer, status)
+        self.assertIsNone(pending_articles_repo.get_pending(link))
+        self.assertEqual(pending_articles_repo.list_held(), [])
+        # Pinned so it never comes back on the next fetch; not a publish.
+        self.assertTrue(self._in_processed_news(link))
+        self.assertIsNone(pending_articles_repo.get_published(link))
+        self.assertIsNone(pending_articles_repo.get_review_token_link(token))
+
+    def test_reject_when_the_row_is_gone_reports_unavailable(self):
+        link = 'https://example.com/hold-reject-gone'
+        token = self._stage_token(link)
+        status, _ = news_bot.resolve_hold_callback(
+            'reject', token, self.ADMIN_ID)
+        self.assertEqual(status, "⚠️ Статья уже недоступна")
+
+    # -- auth gate --------------------------------------------------------
+
+    def test_non_admin_press_ignored_no_state_change(self):
+        link = 'https://example.com/hold-nonadmin'
+        self._seed_held(link)
+        token = self._stage_token(link)
+
+        for action in ('approve', 'reject'):
+            with self.subTest(action=action):
+                status, answer = news_bot.resolve_hold_callback(
+                    action, token, self.ADMIN_ID + 1)
+                self.assertIsNone(status)
+                self.assertEqual(answer, "")
+        # Still held, token untouched — the admin can still act later.
+        self.assertEqual(
+            pending_articles_repo.get_pending(link)['hold_reason'], 'poster')
+        self.assertEqual(
+            pending_articles_repo.get_review_token_link(token), link)
+
+    def test_non_numeric_admin_id_fail_closed(self):
+        link = 'https://example.com/hold-failclosed'
+        self._seed_held(link)
+        token = self._stage_token(link)
+
+        with patch('news_bot.TELEGRAM_ADMIN_ID', '@sunny413x'):
+            status, answer = news_bot.resolve_hold_callback(
+                'approve', token, self.ADMIN_ID)
+
+        self.assertIsNone(status)
+        self.assertEqual(answer, "")
+        self.assertEqual(
+            pending_articles_repo.get_pending(link)['hold_reason'], 'poster')
+
+    # -- token / action robustness ----------------------------------------
+
+    def test_unknown_token_is_stale(self):
+        self.assertEqual(
+            news_bot.resolve_hold_callback('approve', 'nope', self.ADMIN_ID),
+            ("⚠️ Кнопка устарела", "⚠️ Кнопка устарела"),
+        )
+
+    def test_unknown_action_keeps_the_token(self):
+        link = 'https://example.com/hold-badaction'
+        self._seed_held(link)
+        token = self._stage_token(link)
+        status, _ = news_bot.resolve_hold_callback(
+            'explode', token, self.ADMIN_ID)
+        self.assertEqual(status, "⚠️ Кнопка устарела")
+        # Token NOT burned — a real button can still be pressed.
+        self.assertEqual(
+            pending_articles_repo.get_review_token_link(token), link)
+        self.assertEqual(
+            pending_articles_repo.get_pending(link)['hold_reason'], 'poster')
+
+
+class TestReviewCallbackGrammarsCoexist(_IntegrationBase):
+    """Both keyboards ship at once: the [E014] ``dd:`` grammar must keep
+    working exactly as before, and the [E036] ``hd:`` grammar must route
+    to its own resolver."""
+
+    ADMIN_ID = 424242
+
+    def setUp(self):
+        super().setUp()
+        self.numeric_admin_patcher = patch(
+            'news_bot.TELEGRAM_ADMIN_ID', str(self.ADMIN_ID))
+        self.numeric_admin_patcher.start()
+
+    def tearDown(self):
+        self.numeric_admin_patcher.stop()
+        super().tearDown()
+
+    def test_parser_accepts_both_grammars(self):
+        self.assertEqual(
+            news_bot._parse_review_callback_data('dd:c:tok'), ('cancel', 'tok'))
+        self.assertEqual(
+            news_bot._parse_review_callback_data('dd:k:tok'), ('keep', 'tok'))
+        self.assertEqual(
+            news_bot._parse_review_callback_data('hd:a:tok'),
+            ('approve', 'tok'))
+        self.assertEqual(
+            news_bot._parse_review_callback_data('hd:r:tok'), ('reject', 'tok'))
+
+    def test_parser_rejects_cross_grammar_letters_and_junk(self):
+        """Strictness is per-prefix: a letter valid in one grammar must
+        not be accepted under the other."""
+        for bad in (
+            'dd:a:tok', 'dd:r:tok',        # hold letters on the dedup prefix
+            'hd:c:tok', 'hd:k:tok',        # dedup letters on the hold prefix
+            'hd:approve:tok',              # full word on the wire
+            'hd:a:', 'hd::tok', ':a:tok',  # empty fields
+            'hd:a:tok:extra',              # too many fields
+            'xx:a:tok',                    # unknown prefix
+            'hd:a:' + 'a' * 100,           # over Telegram's 64-byte cap
+            'hd:a:' + 'ю' * 30,            # 35 chars but 65 UTF-8 bytes
+            None, 42, b'hd:a:tok',
+        ):
+            with self.subTest(data=bad):
+                self.assertIsNone(news_bot._parse_review_callback_data(bad))
+
+    def test_hold_keyboard_round_trips_through_the_parser(self):
+        """Grammar literals live in two modules (builder + parser); pin
+        the seam with the builder's REAL output and a real token."""
+        import secrets
+
+        import admin_alerts
+
+        token = secrets.token_urlsafe(9)
+        buttons = [
+            b for row in admin_alerts.build_hold_review_keyboard(
+                token).inline_keyboard
+            for b in row
+        ]
+        self.assertEqual(len(buttons), 2)
+        self.assertEqual(
+            [news_bot._parse_review_callback_data(b.callback_data)
+             for b in buttons],
+            [('approve', token), ('reject', token)],
+        )
+
+    def test_dedup_grammar_still_routes_to_the_dedup_resolver(self):
+        """Regression: adding the hold grammar must not steal [E014]
+        presses."""
+        link = 'https://example.com/still-dedup'
+        _seed_pending_row(link)
+        pending_articles_repo.put_review_token('tok-dd', link)
+
+        status, _ = news_bot.resolve_dedup_callback(
+            'cancel', 'tok-dd', self.ADMIN_ID)
+        self.assertEqual(status, "✅ Отменено оператором")
+        self.assertIsNone(pending_articles_repo.get_pending(link))
+
+    def test_handler_dispatches_each_grammar_to_its_own_resolver(self):
+        """The listener's dispatch, not just the parser: an ``hd:`` press
+        must never land in the dedup resolver (which would answer
+        «устарела» and quietly lose the operator's decision)."""
+        def _make_update(data, update_id=1):
+            upd = MagicMock()
+            upd.update_id = update_id
+            cq = upd.callback_query
+            cq.data = data
+            cq.id = 'cbq'
+            cq.from_user.id = self.ADMIN_ID
+            cq.message.text = 'original alert'
+            cq.message.chat_id = 777
+            cq.message.message_id = 42
+            return upd
+
+        # Fresh Bot per Telegram call (cross-event-loop httpx safety), so
+        # patch the class and hand back an awaitable mock — same fixture
+        # shape as TestReviewListener.
+        bot = MagicMock()
+        bot.edit_message_text = AsyncMock()
+        bot.answer_callback_query = AsyncMock()
+
+        with patch('news_bot.Bot', return_value=bot), \
+                patch('news_bot.resolve_hold_callback',
+                      return_value=("ok", "ok")) as hold_spy, \
+                patch('news_bot.resolve_dedup_callback',
+                      return_value=("ok", "ok")) as dedup_spy:
+            news_bot._handle_review_update(_make_update('hd:a:tok-h'))
+            news_bot._handle_review_update(_make_update('dd:c:tok-d', 2))
+
+        hold_spy.assert_called_once_with('approve', 'tok-h', self.ADMIN_ID)
+        dedup_spy.assert_called_once_with('cancel', 'tok-d', self.ADMIN_ID)
+
+
+class TestContentGateIntake(_PrepPhaseBase):
+    """The content gate end-to-end through ``news_bot.job()``.
+
+    HOLD: the real 2026-07-25 poster post is STAGED WITH a hold_reason,
+    stays out of the publishable queue, and produces exactly one [E036]
+    with the approve/reject keyboard.
+    DROP: video-review and event entries are rejected at intake like promo
+    posts — one [E037], link pinned, no re-fetch next tick.
+    """
+
+    POSTER_LINK = ('https://t-hunted.blogspot.com/2026/07/'
+                   'as-fotos-do-ultimo-poster-da-hot-wheels.html')
+    POSTER_TITLE = 'As fotos do último poster da Hot Wheels 2026'
+    POSTER_BODY = {
+        'title': POSTER_TITLE,
+        'subtitle': '',
+        'paragraphs': [
+            'Saiu o último poster da Hot Wheels para 2026.',
+            'As fotos mostram os carros da linha básica.',
+            'Confira todas as imagens abaixo.',
+            'Veja também no vídeo abaixo.',
+        ],
+        'images': ['http://img/%d.jpg' % i for i in range(12)],
+    }
+
+    def setUp(self):
+        super().setUp()
+        self.notify_patcher.stop()
+        # SEC-A8-1: the [E036] send site gates buttons on
+        # _review_listener_enabled() (flag + token + NUMERIC admin); the
+        # base class patches a non-numeric '@admin'.
+        self.numeric_admin_patcher = patch(
+            'news_bot.TELEGRAM_ADMIN_ID', '424242')
+        self.numeric_admin_patcher.start()
+
+    def tearDown(self):
+        self.numeric_admin_patcher.stop()
+        self.notify_patcher.start()
+        super().tearDown()
+
+    # -- helpers ----------------------------------------------------------
+
+    @staticmethod
+    def _calls_with(mock_admin, code):
+        return [c for c in mock_admin.call_args_list
+                if code in (c.args[0] if c.args else '')]
+
+    def _feed(self, mock_load_feeds, mock_fetch_rss, mock_fetch_article,
+              link, title, article):
+        mock_load_feeds.return_value = ['http://example.com/feed1.xml']
+        mock_fetch_rss.return_value = [{
+            'link': link, 'title': title,
+            'published': '2026-07-25', 'summary': 'Summary',
+        }]
+        mock_fetch_article.return_value = dict(article)
+
+    # -- HOLD -------------------------------------------------------------
+
+    @patch('news_bot.REVIEW_BUTTONS_ENABLED', True)
+    @patch('news_bot.fetch_full_article')
+    @patch('news_bot.fetch_rss')
+    @patch('news_bot.load_feeds')
+    @patch('news_bot.send_admin_notification')
+    def test_poster_post_is_staged_but_held(
+        self, mock_admin, mock_load_feeds, mock_fetch_rss, mock_fetch_article,
+    ):
+        self._feed(mock_load_feeds, mock_fetch_rss, mock_fetch_article,
+                   self.POSTER_LINK, self.POSTER_TITLE, self.POSTER_BODY)
+
+        with self.assertLogs('news_bot', level='INFO') as cm:
+            news_bot.job()
+
+        # Staged — the row EXISTS (unlike a promo drop) and carries the
+        # marker list that produced the decision.
+        row = pending_articles_repo.get_pending(self.POSTER_LINK)
+        self.assertIsNotNone(row)
+        self.assertIn('poster', row['hold_reason'])
+
+        # ...but is NOT publishable: invisible to the slot loop's source
+        # and absent from the slot-computation count.
+        self.assertNotIn(
+            self.POSTER_LINK,
+            [r['link'] for r in pending_articles_repo.list_pending()])
+        self.assertEqual(pending_articles_repo.count_pending(), 0)
+        self.assertEqual(
+            [r['link'] for r in pending_articles_repo.list_held()],
+            [self.POSTER_LINK])
+
+        # NOT pinned in processed_news: the article is still live in the
+        # queue, and a pin would be the "we're done with it" marker.
+        conn = sqlite3.connect(self.db_path)
+        try:
+            processed = {r[0] for r in conn.execute(
+                'SELECT link FROM processed_news').fetchall()}
+        finally:
+            conn.close()
+        self.assertNotIn(self.POSTER_LINK, processed)
+
+        # Exactly one [E036] naming the article and the matched markers.
+        e036 = self._calls_with(mock_admin, '[E036]')
+        self.assertEqual(len(e036), 1, mock_admin.call_args_list)
+        msg = e036[0].args[0]
+        self.assertIn('На утверждение', msg)
+        self.assertIn(self.POSTER_LINK, msg)
+        self.assertIn('poster', msg)
+        # No genre drop happened.
+        self.assertEqual(self._calls_with(mock_admin, '[E037]'), [])
+
+        # Diagnosable from the logs alone.
+        self.assertTrue(
+            [l for l in cm.output if '[E036]' in l and self.POSTER_LINK in l],
+            "expected an [E036] log line naming the held link",
+        )
+        self.assertTrue(
+            [l for l in cm.output if '[funnel]' in l and 'held=1' in l],
+            "expected the [funnel] line to count held=1",
+        )
+
+    @patch('news_bot.REVIEW_BUTTONS_ENABLED', True)
+    @patch('news_bot.fetch_full_article')
+    @patch('news_bot.fetch_rss')
+    @patch('news_bot.load_feeds')
+    @patch('news_bot.send_admin_notification')
+    def test_hold_alert_carries_the_approve_reject_keyboard(
+        self, mock_admin, mock_load_feeds, mock_fetch_rss, mock_fetch_article,
+    ):
+        """Gate open: [E036] ships the two buttons, the token resolves to
+        the held link, and the advice matches what is attached."""
+        self._feed(mock_load_feeds, mock_fetch_rss, mock_fetch_article,
+                   self.POSTER_LINK, self.POSTER_TITLE, self.POSTER_BODY)
+
+        news_bot.job()
+
+        e036 = self._calls_with(mock_admin, '[E036]')
+        self.assertEqual(len(e036), 1)
+        kb = e036[0].kwargs.get('reply_markup')
+        self.assertIsNotNone(kb, "[E036] send is missing reply_markup")
+        cds = [b.callback_data for row in kb.inline_keyboard for b in row]
+        self.assertTrue(cds[0].startswith('hd:a:'), cds)
+        token = cds[0][len('hd:a:'):]
+        self.assertTrue(token)
+        self.assertEqual(cds, [f'hd:a:{token}', f'hd:r:{token}'])
+        self.assertEqual(
+            pending_articles_repo.get_review_token_link(token),
+            self.POSTER_LINK)
+        # Advice matches reality.
+        text = e036[0].args[0]
+        self.assertIn('✅ Опубликовать', text)
+        self.assertIn('🚫 Не публиковать', text)
+        self.assertNotIn('hw_review', text)
+
+    @patch('news_bot.REVIEW_BUTTONS_ENABLED', False)
+    @patch('news_bot.fetch_full_article')
+    @patch('news_bot.fetch_rss')
+    @patch('news_bot.load_feeds')
+    @patch('news_bot.send_admin_notification')
+    def test_gate_closed_holds_the_article_without_buttons(
+        self, mock_admin, mock_load_feeds, mock_fetch_rss, mock_fetch_article,
+    ):
+        """Flag off: still HELD (the safe direction), but no keyboard, no
+        token minted, and the advice must not tell the operator to press
+        a button that is not there."""
+        self._feed(mock_load_feeds, mock_fetch_rss, mock_fetch_article,
+                   self.POSTER_LINK, self.POSTER_TITLE, self.POSTER_BODY)
+
+        news_bot.job()
+
+        self.assertEqual(
+            [r['link'] for r in pending_articles_repo.list_held()],
+            [self.POSTER_LINK])
+        e036 = self._calls_with(mock_admin, '[E036]')
+        self.assertEqual(len(e036), 1)
+        self.assertIsNone(e036[0].kwargs.get('reply_markup'))
+        self.assertNotIn('нажми', e036[0].args[0])
+        self.assertIn('НИКОГДА не опубликуется', e036[0].args[0])
+        # No orphan tokens.
+        conn = sqlite3.connect(self.db_path)
+        try:
+            self.assertEqual(conn.execute(
+                "SELECT COUNT(*) FROM bot_state "
+                "WHERE key LIKE 'review_token:%'").fetchone()[0], 0)
+        finally:
+            conn.close()
+
+    @patch('news_bot.REVIEW_BUTTONS_ENABLED', True)
+    @patch('news_bot.fetch_full_article')
+    @patch('news_bot.fetch_rss')
+    @patch('news_bot.load_feeds')
+    @patch('news_bot.send_admin_notification')
+    def test_held_article_is_reported_in_the_daily_plan_ping(
+        self, mock_admin, mock_load_feeds, mock_fetch_rss, mock_fetch_article,
+    ):
+        """The held backlog must be visible somewhere — it is excluded
+        from «Всего в очереди», and nothing else ever re-surfaces it."""
+        self._feed(mock_load_feeds, mock_fetch_rss, mock_fetch_article,
+                   self.POSTER_LINK, self.POSTER_TITLE, self.POSTER_BODY)
+
+        news_bot.job()
+
+        plan = [c.args[0] for c in mock_admin.call_args_list
+                if c.args and ('[E008]' in c.args[0] or '[E009]' in c.args[0])]
+        self.assertTrue(plan, mock_admin.call_args_list)
+        self.assertTrue(
+            any('На утверждении: 1' in m for m in plan),
+            f"held backlog missing from the daily ping: {plan!r}",
+        )
+
+    @patch('news_bot.REVIEW_BUTTONS_ENABLED', True)
+    @patch('news_bot.fetch_full_article')
+    @patch('news_bot.fetch_rss')
+    @patch('news_bot.load_feeds')
+    @patch('news_bot.send_admin_notification')
+    def test_held_article_is_not_re_staged_on_the_next_tick(
+        self, mock_admin, mock_load_feeds, mock_fetch_rss, mock_fetch_article,
+    ):
+        """The held row is not pinned in processed_news, so the b2 filter
+        must catch it via ``get_pending`` instead — otherwise the operator
+        would get a fresh [E036] every single day."""
+        self._feed(mock_load_feeds, mock_fetch_rss, mock_fetch_article,
+                   self.POSTER_LINK, self.POSTER_TITLE, self.POSTER_BODY)
+
+        news_bot.job()
+        mock_admin.reset_mock()
+        mock_fetch_article.reset_mock()
+        news_bot.job()
+
+        mock_fetch_article.assert_not_called()
+        self.assertEqual(self._calls_with(mock_admin, '[E036]'), [])
+        self.assertEqual(len(pending_articles_repo.list_held()), 1)
+
+    # -- precedence -------------------------------------------------------
+
+    @patch('news_bot.REVIEW_BUTTONS_ENABLED', True)
+    @patch('news_bot.fetch_full_article')
+    @patch('news_bot.fetch_rss')
+    @patch('news_bot.load_feeds')
+    @patch('news_bot.send_admin_notification')
+    def test_hold_wins_over_the_genre_drop(
+        self, mock_admin, mock_load_feeds, mock_fetch_rss, mock_fetch_article,
+    ):
+        """A title that trips BOTH detectors must be HELD, not dropped —
+        the operator gets to decide rather than losing the article."""
+        link = 'https://t-hunted.blogspot.com/2026/07/video-poster.html'
+        title = 'Vídeo: as fotos do novo poster da Hot Wheels 2026'
+        self._feed(mock_load_feeds, mock_fetch_rss, mock_fetch_article,
+                   link, title, dict(self.POSTER_BODY, title=title))
+
+        news_bot.job()
+
+        self.assertIsNotNone(pending_articles_repo.get_pending(link))
+        self.assertEqual(len(self._calls_with(mock_admin, '[E036]')), 1)
+        self.assertEqual(self._calls_with(mock_admin, '[E037]'), [])
+
+    # -- DROP -------------------------------------------------------------
+
+    @patch('news_bot.fetch_full_article')
+    @patch('news_bot.fetch_rss')
+    @patch('news_bot.load_feeds')
+    @patch('news_bot.send_admin_notification')
+    def test_video_review_is_dropped_at_intake(
+        self, mock_admin, mock_load_feeds, mock_fetch_rss, mock_fetch_article,
+    ):
+        link = 'https://t-hunted.blogspot.com/2026/07/unboxing-caixa-j.html'
+        title = 'Unboxing da caixa J de 2026 da Hot Wheels'
+        self._feed(mock_load_feeds, mock_fetch_rss, mock_fetch_article,
+                   link, title,
+                   {'title': title, 'subtitle': '',
+                    'paragraphs': ['Abrimos a caixa.'], 'images': []})
+
+        with self.assertLogs('news_bot', level='INFO') as cm:
+            news_bot.job()
+
+        # Never staged, and pinned so tomorrow's tick skips it at b2.
+        self.assertEqual(pending_articles_repo.count_pending(), 0)
+        self.assertIsNone(pending_articles_repo.get_pending(link))
+        self.assertEqual(pending_articles_repo.list_held(), [])
+        conn = sqlite3.connect(self.db_path)
+        try:
+            processed = {r[0] for r in conn.execute(
+                'SELECT link FROM processed_news').fetchall()}
+        finally:
+            conn.close()
+        self.assertIn(link, processed)
+
+        e037 = self._calls_with(mock_admin, '[E037]')
+        self.assertEqual(len(e037), 1, mock_admin.call_args_list)
+        msg = e037[0].args[0]
+        self.assertIn('Отсечён жанр', msg)
+        self.assertIn('видео-обзор', msg)
+        self.assertIn(link, msg)
+        self.assertIn('unboxing', msg)
+        # A dropped article carries no buttons — nothing to decide.
+        self.assertIsNone(e037[0].kwargs.get('reply_markup'))
+        self.assertEqual(self._calls_with(mock_admin, '[E036]'), [])
+
+        self.assertTrue(
+            [l for l in cm.output if '[funnel]' in l and 'genre=1' in l],
+            "expected the [funnel] line to count genre=1",
+        )
+
+        # Next tick: the pin means the body is NOT fetched again.
+        mock_fetch_article.reset_mock()
+        news_bot.job()
+        mock_fetch_article.assert_not_called()
+
+    @patch('news_bot.fetch_full_article')
+    @patch('news_bot.fetch_rss')
+    @patch('news_bot.load_feeds')
+    @patch('news_bot.send_admin_notification')
+    def test_event_announcement_is_dropped_at_intake(
+        self, mock_admin, mock_load_feeds, mock_fetch_rss, mock_fetch_article,
+    ):
+        link = 'https://t-hunted.blogspot.com/2026/07/convencao-2026.html'
+        title = 'Convenção Hot Wheels 2026: datas e ingressos'
+        self._feed(mock_load_feeds, mock_fetch_rss, mock_fetch_article,
+                   link, title,
+                   {'title': title, 'subtitle': '',
+                    'paragraphs': ['O evento acontece em julho.'],
+                    'images': []})
+
+        news_bot.job()
+
+        self.assertIsNone(pending_articles_repo.get_pending(link))
+        e037 = self._calls_with(mock_admin, '[E037]')
+        self.assertEqual(len(e037), 1)
+        self.assertIn('ивент', e037[0].args[0])
+        self.assertIn('convenção', e037[0].args[0])
+
+    @patch('news_bot.fetch_full_article')
+    @patch('news_bot.fetch_rss')
+    @patch('news_bot.load_feeds')
+    @patch('news_bot.send_admin_notification')
+    def test_convention_exclusive_reveal_publishes_normally(
+        self, mock_admin, mock_load_feeds, mock_fetch_rss, mock_fetch_article,
+    ):
+        """The critical false-positive guard, end-to-end: a
+        convention-exclusive casting reveal — event name in the title,
+        event logistics in the BODY — is ordinary model news and must
+        reach the publishable queue untouched."""
+        link = 'https://example.com/2026/07/convention-datsun.html'
+        title = 'Hot Wheels Convention 2026 exclusive Datsun revealed'
+        self._feed(mock_load_feeds, mock_fetch_rss, mock_fetch_article,
+                   link, title,
+                   {'title': title, 'subtitle': '',
+                    'paragraphs': [
+                        'The convention will be held in Los Angeles; '
+                        'tickets and registration open in March.',
+                        'Watch the reveal in the video below.',
+                    ],
+                    'images': []})
+
+        news_bot.job()
+
+        row = pending_articles_repo.get_pending(link)
+        self.assertIsNotNone(row)
+        self.assertIsNone(row['hold_reason'])
+        self.assertIn(
+            link, [r['link'] for r in pending_articles_repo.list_pending()])
+        self.assertEqual(self._calls_with(mock_admin, '[E036]'), [])
+        self.assertEqual(self._calls_with(mock_admin, '[E037]'), [])
+
+    # -- fail-open --------------------------------------------------------
+
+    @patch('news_bot._hold_for_review_reason', side_effect=RuntimeError('boom'))
+    @patch('news_bot.fetch_full_article')
+    @patch('news_bot.fetch_rss')
+    @patch('news_bot.load_feeds')
+    @patch('news_bot.send_admin_notification')
+    def test_hold_detector_crash_is_fail_open(
+        self, mock_admin, mock_load_feeds, mock_fetch_rss,
+        mock_fetch_article, _mock_hold,
+    ):
+        """A detector crash must not kill the tick (``job()`` runs inside
+        a bare ``while True`` scheduler and the crash would land BEFORE
+        mark_processed → crash-loop on restart). Fail-open = published as
+        usual, NOT silently parked."""
+        link = 'http://example.com/2026/07/ordinary.html'
+        self._feed(mock_load_feeds, mock_fetch_rss, mock_fetch_article,
+                   link, 'Ordinary Hot Wheels news',
+                   {'title': 'Ordinary Hot Wheels news', 'subtitle': '',
+                    'paragraphs': ['A new casting was revealed.'],
+                    'images': []})
+
+        news_bot.job()  # must not raise
+
+        row = pending_articles_repo.get_pending(link)
+        self.assertIsNotNone(row)
+        self.assertIsNone(row['hold_reason'])
+        self.assertEqual(self._calls_with(mock_admin, '[E036]'), [])
+
+    @patch('news_bot._is_rejected_genre', side_effect=RuntimeError('boom'))
+    @patch('news_bot.fetch_full_article')
+    @patch('news_bot.fetch_rss')
+    @patch('news_bot.load_feeds')
+    @patch('news_bot.send_admin_notification')
+    def test_genre_detector_crash_is_fail_open(
+        self, mock_admin, mock_load_feeds, mock_fetch_rss,
+        mock_fetch_article, _mock_genre,
+    ):
+        link = 'http://example.com/2026/07/ordinary2.html'
+        self._feed(mock_load_feeds, mock_fetch_rss, mock_fetch_article,
+                   link, 'Ordinary Hot Wheels news',
+                   {'title': 'Ordinary Hot Wheels news', 'subtitle': '',
+                    'paragraphs': ['A new casting was revealed.'],
+                    'images': []})
+
+        news_bot.job()  # must not raise
+
+        self.assertIsNotNone(pending_articles_repo.get_pending(link))
+        self.assertEqual(self._calls_with(mock_admin, '[E037]'), [])
+
+    @patch('news_bot.REVIEW_BUTTONS_ENABLED', True)
+    @patch('news_bot.pending_repo.put_review_token',
+           side_effect=RuntimeError('storage down'))
+    @patch('news_bot.fetch_full_article')
+    @patch('news_bot.fetch_rss')
+    @patch('news_bot.load_feeds')
+    @patch('news_bot.send_admin_notification')
+    def test_token_mint_failure_still_leaves_the_article_held(
+        self, mock_admin, mock_load_feeds, mock_fetch_rss,
+        mock_fetch_article, _mock_put,
+    ):
+        """The ping is best-effort; the HOLD is not. A storage fault while
+        minting the token must not publish the article by accident — it
+        stays parked and shows up in the daily «На утверждении» line."""
+        self._feed(mock_load_feeds, mock_fetch_rss, mock_fetch_article,
+                   self.POSTER_LINK, self.POSTER_TITLE, self.POSTER_BODY)
+
+        news_bot.job()  # must not raise
+
+        self.assertEqual(
+            [r['link'] for r in pending_articles_repo.list_held()],
+            [self.POSTER_LINK])
+        self.assertEqual(pending_articles_repo.count_pending(), 0)
+
+
 if __name__ == '__main__':
     unittest.main()
