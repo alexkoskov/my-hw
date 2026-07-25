@@ -18,6 +18,7 @@ import threading
 import time
 import unicodedata
 from datetime import datetime, timedelta, timezone
+from typing import NamedTuple, Optional
 from urllib.parse import urlparse
 
 import pytz
@@ -1908,25 +1909,39 @@ _GENRE_VIDEO_MARKERS = (
     'youtube',
 )
 
-#: Genre words that count ONLY in subject position, never as an
-#: anywhere-marker: 'watch' is ordinary editorial English elsewhere
-#: («watch out for these five Treasure Hunts», «a casting worth watching»).
+#: Genre words that count ONLY in the SEPARATOR form («Watch: …»), never
+#: as an anywhere-marker and never via the noun-phrase branch.
+#:
+#: 'watch' is an ordinary imperative VERB, unlike the noun-like
+#: 'vídeo'/'unboxing' that head a labelled headline. As an anywhere-marker
+#: it would eat «watch out for these five Treasure Hunts» / «a casting
+#: worth watching»; via the noun-phrase branch it would eat every
+#: «Watch {this|these|our|my|all|every} …» sentence, which is just English
+#: and says nothing about video content (code review round 2). Only
+#: «Watch:» — the explicit headline convention — is unambiguous.
 _GENRE_VIDEO_LEAD_ONLY_MARKERS = (
     'watch',
 )
 
 #: REVIEW co-markers — the second independent signal for branch (B). These
-#: describe the ACT of reviewing/opening rather than the subject of the
-#: post, so «vídeo» + one of these is a video review, while «vídeo» alone
-#: is just a word. Deliberately contains no video marker as a substring
+#: name the ACT of reviewing or opening a product the author ALREADY HAS,
+#: so «vídeo» + one of these is a video review, while «vídeo» alone is
+#: just a word. Deliberately contains no video marker as a substring
 #: (a phrase like 'case unboxing' would supply both signals by itself and
 #: silently collapse the two-signal bar — the promo filter's round-1 bug).
+#:
+#: Review round 2 (R2) removed the "I touched it" preview words —
+#: 'hands-on' and 'first impressions'. Both are ordinary PREVIEW-
+#: journalism vocabulary for a not-yet-released casting ("First hands-on
+#: video of the 2027 Corvette Z06 STH"), i.e. exactly the coverage the
+#: channel exists for, and lexical proximity to 'video' is not proof of
+#: genre. Losing them can only cause a miss (an unwanted review gets
+#: published — recoverable, and the pre-feature status quo), whereas
+#: keeping them caused an unrecoverable drop.
 _GENRE_VIDEO_REVIEW_MARKERS = (
     # EN
     'review',
     'reviews',
-    'hands-on',
-    'first impressions',
     'full case',
     'assortment',
     'we open',
@@ -1939,6 +1954,39 @@ _GENRE_VIDEO_REVIEW_MARKERS = (
     'lote completo',
 )
 
+#: HEADLINE VERBS — finite verbs that turn a title into a NEWS CLAUSE
+#: rather than a label for the post's subject. Their presence suppresses
+#: branch (A2) only (see ``_genre_video_subject_marker``).
+#:
+#: Review round 2 (R1): "Video of the 2027 Corvette Z06 reveal LEAKED
+#: online", "Video of the new HW Legends Tour winner SURFACES online",
+#: "Video of the 2027 Toyota Supra STH debut GOES viral" — a standard
+#: automotive-journalism template where the video is merely the vehicle
+#: for a reveal. Grammatically it is identical to the required-drop case
+#: «Unboxing DA caixa J de 2026» (both are genre word + genitive + noun
+#: phrase), which is why narrowing the NP-head list to bare determiners
+#: was NOT the fix: it would have broken that required case while leaving
+#: the template intact. The finite verb is the discriminator the data
+#: actually supports — a label has no predicate, a news clause does.
+#:
+#: A closed list, so a miss is the failure mode (cheap by our weighting).
+#: NOTE: PT «é» is deliberately absent — it accent-folds to «e», the
+#: Portuguese word for "and", which would suppress nearly every PT title.
+_GENRE_HEADLINE_VERBS = (
+    # EN
+    'leaked', 'leaks', 'surfaces', 'surfaced', 'goes', 'went',
+    'breaks', 'broke', 'shows', 'showed', 'confirms', 'confirmed',
+    'debuts', 'debuted', 'arrives', 'arrived', 'reveals', 'revealed',
+    'appears', 'appeared', 'hits', 'drops', 'dropped', 'lands', 'landed',
+    'returns', 'returned', 'gets', 'got', 'becomes', 'became',
+    'is', 'are', 'was', 'were', 'has', 'have', 'wins', 'won',
+    # PT
+    'revela', 'revelou', 'revelado', 'vaza', 'vazou', 'aparece',
+    'apareceu', 'mostra', 'mostrou', 'confirma', 'confirmou',
+    'chega', 'chegou', 'ganha', 'ganhou', 'traz', 'trouxe',
+    'volta', 'voltou', 'saiu', 'virou',
+)
+
 #: Every genre word eligible for SUBJECT POSITION (branch A).
 _GENRE_VIDEO_LEAD_MARKERS = (
     _GENRE_VIDEO_MARKERS + _GENRE_VIDEO_LEAD_ONLY_MARKERS
@@ -1946,12 +1994,17 @@ _GENRE_VIDEO_LEAD_MARKERS = (
 
 #: Determiners / prepositions that turn a leading genre word into the HEAD
 #: OF A NOUN PHRASE — «Unboxing THE 2026 H case», «Unboxing DA caixa J»,
-#: «Assista AO review». This is what separates a genre post from a news
-#: clause: a leading genre word followed by a VERB («Vídeo REVELA o
+#: «Assista AO review». First half of what separates a genre post from a
+#: news clause: a leading genre word followed by a VERB («Vídeo REVELA o
 #: Porsche», «Unboxing SURPRISES us») is a sentence ABOUT something, not a
 #: label for the post's subject. Kept to closed-class function words only —
 #: no verbs, and deliberately NOT 'out' (which would re-open «Watch out
 #: for these five Treasure Hunts»).
+#:
+#: NOT sufficient on its own (review round 2, R1): the genitives here are
+#: also how a news clause names its subject («Video OF THE Corvette reveal
+#: leaked online»), so branch (A2) additionally requires that no
+#: ``_GENRE_HEADLINE_VERBS`` token follow.
 _GENRE_VIDEO_NP_HEADS = (
     # EN
     'the', 'a', 'an', 'this', 'these', 'that', 'those', 'all', 'every',
@@ -2046,54 +2099,89 @@ _GENRE_VIDEO_LEAD_CANON = {
     _promo_fold(m).strip(): m for m in _GENRE_VIDEO_LEAD_MARKERS
 }
 
-#: Longest-first alternation so 'vídeos' wins over 'vídeo' (otherwise
-#: «Vídeos:» would fail to match — after 'video' comes 's', not a
-#: separator). Built FROM the marker tuples so the two cannot drift.
-_GENRE_VIDEO_LEAD_ALT = '|'.join(
-    re.escape(tok).replace(r'\ ', r'\s+')
-    for tok in sorted(_GENRE_VIDEO_LEAD_CANON, key=len, reverse=True)
-)
+def _genre_lead_alternation(markers):
+    """Longest-first regex alternation over the FOLDED forms of ``markers``.
+
+    Longest-first so 'vídeos' wins over 'vídeo' — otherwise «Vídeos:» would
+    fail to match, because after 'video' comes 's', not a separator. Built
+    FROM the marker tuples so regex and markers cannot drift apart.
+    """
+    return '|'.join(
+        re.escape(_promo_fold(m).strip()).replace(r'\ ', r'\s+')
+        for m in sorted(markers, key=lambda m: len(_promo_fold(m)), reverse=True)
+    )
+
 
 #: Branch (A1) — genre word at the head of the title, immediately followed
 #: by a separator: «Vídeo: …», «Watch: …», «Unboxing — …». The classic
-#: "the subject is the video" headline convention.
+#: "the subject is the video" headline convention. Accepts EVERY lead
+#: marker, including the separator-only ones.
 _GENRE_VIDEO_LEAD_SEP_RE = re.compile(
-    rf'^\s*({_GENRE_VIDEO_LEAD_ALT})\s*[:\-–—]')
+    rf'^\s*({_genre_lead_alternation(_GENRE_VIDEO_LEAD_MARKERS)})\s*[:\-–—]')
 
 #: Branch (A2) — genre word at the head of the title followed by a
 #: determiner/preposition, i.e. heading a NOUN PHRASE: «Unboxing the 2026
 #: H case …», «Assista ao …». A leading genre word followed by anything
 #: else (a verb: «Vídeo revela …», «Unboxing surprises …») is a clause
 #: reporting news, and is deliberately NOT matched.
+#:
+#: Built from ``_GENRE_VIDEO_MARKERS`` ONLY — the separator-only markers
+#: are excluded (code review round 2). Those are imperative VERBS, and
+#: «Watch {this|these|our|my|all|every} …» is ordinary English that says
+#: nothing about video content, whereas the noun-like markers genuinely
+#: head a labelled noun phrase («Unboxing da caixa J …»).
 _GENRE_VIDEO_LEAD_NP_RE = re.compile(
-    rf'^\s*({_GENRE_VIDEO_LEAD_ALT})\s+'
+    rf'^\s*({_genre_lead_alternation(_GENRE_VIDEO_MARKERS)})\s+'
     rf'(?:{"|".join(re.escape(w) for w in _GENRE_VIDEO_NP_HEADS)})\b'
 )
 
 
-def _genre_video_subject_marker(raw_title):
-    """Return a marker string when a video genre word occupies SUBJECT
-    POSITION at the head of ``raw_title``, else ``None``.
+_GENRE_HEADLINE_VERBS_FOLDED = tuple(
+    (v, _promo_fold(v)) for v in _GENRE_HEADLINE_VERBS)
 
-    Two accepted shapes (see the regexes above): ``'vídeo:'`` for the
-    separator form and ``'vídeo …'`` for the noun-phrase form — both read
-    back to the operator as "the title LEADS with this word".
+
+def _genre_headline_verbs(folded_title):
+    """Matched ``_GENRE_HEADLINE_VERBS`` in the folded title — i.e. the
+    evidence that the title is a news CLAUSE, not a label."""
+    return [v for v, f in _GENRE_HEADLINE_VERBS_FOLDED if f in folded_title]
+
+
+def _genre_video_subject_marker(raw_title, folded_title):
+    """Return ``(marker, branch)`` when a video genre word occupies
+    SUBJECT POSITION at the head of ``raw_title``, else ``None``.
+
+    Two accepted shapes, reported as separate BRANCHES so the caller can
+    treat them differently (see ``_GENRE_BRANCH_ACTION``):
+
+      * ``'video_lead'`` — ``'vídeo:'``: genre word + separator
+        («Vídeo: …», «Watch: …»). Unambiguous headline convention, no
+        further conditions.
+      * ``'video_np'`` — ``'vídeo …'``: genre word heading a noun phrase
+        («Unboxing da caixa J …»). Additionally requires that NO finite
+        headline verb appear in the title (review round 2, R1): «Video of
+        the Corvette reveal LEAKED online» is grammatically the same
+        shape but is a news clause, and dropping it is unrecoverable.
 
     Title-only by design: subject position is a property of word order and
     punctuation, neither of which a URL slug preserves (a reveal whose
     slug happens to start with 'video-' must not be dropped).
     """
     text = _content_gate_deaccent(raw_title)
-    for regex, suffix in (
-        (_GENRE_VIDEO_LEAD_SEP_RE, ':'),
-        (_GENRE_VIDEO_LEAD_NP_RE, ' …'),
-    ):
-        match = regex.match(text)
-        if match:
-            token = re.sub(r'\s+', ' ', match.group(1))
-            canonical = _GENRE_VIDEO_LEAD_CANON.get(token, token)
-            return f'{canonical}{suffix}'
+
+    match = _GENRE_VIDEO_LEAD_SEP_RE.match(text)
+    if match:
+        return (_genre_lead_marker(match, ':'), 'video_lead')
+
+    match = _GENRE_VIDEO_LEAD_NP_RE.match(text)
+    if match and not _genre_headline_verbs(folded_title):
+        return (_genre_lead_marker(match, ' …'), 'video_np')
     return None
+
+
+def _genre_lead_marker(match, suffix):
+    """Render a lead-position hit under the marker's canonical spelling."""
+    token = re.sub(r'\s+', ' ', match.group(1))
+    return f'{_GENRE_VIDEO_LEAD_CANON.get(token, token)}{suffix}'
 
 
 def _content_gate_subject(entry, article):
@@ -2136,6 +2224,49 @@ def _content_gate_hits(folded_title, folded_path, folded_markers):
         if f in folded_path and m not in title_hits
     ]
     return title_hits + path_hits
+
+
+class GenreVerdict(NamedTuple):
+    """Result of ``_is_rejected_genre``.
+
+    ``genre``   — ``'video'`` / ``'event'`` / ``None`` (keep).
+    ``markers`` — matched markers, surfaced in the [E037] ping so a false
+                  positive is diagnosable at a glance.
+    ``branch``  — WHICH rule fired (``'video_lead'`` / ``'video_np'`` /
+                  ``'video_signals'`` / ``'event'`` / ``None``). Kept
+                  separate from ``genre`` so the ACTION each rule triggers
+                  is a one-place policy decision — see
+                  ``_GENRE_BRANCH_ACTION``.
+    """
+
+    genre: Optional[str]
+    markers: list
+    branch: Optional[str]
+
+
+#: What each content-gate branch DOES. Single source of policy: the
+#: detector only reports which rule matched, ``job()`` looks the action up
+#: here. Valid actions: ``'drop'`` (reject at intake, [E037], link pinned)
+#: and ``'hold'`` (stage but park for operator approval, [E036] — the same
+#: path posters take).
+#:
+#: Today every branch drops, which is the operator's stated intent. A
+#: pending question is whether the SOFTER video branches should hold
+#: instead, since a wrong hold costs one tap while a wrong drop is
+#: irreversible; ``'video_lead'`` (the unambiguous «Vídeo:»/«Watch:»
+#: headline form) would stay a drop either way. Re-pointing is exactly
+#: this dict — no detector or call-site change:
+#:
+#:     'video_np': 'hold', 'video_signals': 'hold',
+#:
+#: ``TestGenreBranchActionRouting`` proves the hold route works by
+#: patching this map, so flipping it is a tested one-line change.
+_GENRE_BRANCH_ACTION = {
+    'video_lead': 'drop',
+    'video_np': 'drop',
+    'video_signals': 'drop',
+    'event': 'drop',
+}
 
 
 def _hold_for_review_reason(entry, article):
@@ -2187,8 +2318,10 @@ def _is_rejected_genre(entry, article):
               determiner/preposition so it heads a noun phrase («Unboxing
               the 2026 H case …», «Assista ao …»); or
           (B) TWO SIGNALS — a genre word plus a review-shaped co-marker
-              (review / análise / hands-on / assortment / abrimos …), or
-              two DISTINCT genre words («Assista ao unboxing …»).
+              (review / análise / assortment / abrimos …), or two DISTINCT
+              genre words («Check the full video unboxing here …» — note
+              that «Assista ao unboxing …» is NOT a branch-(B) example, it
+              resolves earlier via (A2)'s noun-phrase form).
         Review round 1 (F1/F2): the previous single-marker rule dropped
         genuine car reveals that merely used the word — «Mattel drops
         video revealing the 2027 Corvette Z06», «Vídeo revela o novo
@@ -2218,31 +2351,37 @@ def _is_rejected_genre(entry, article):
     BOTH — see ``job()``, which evaluates ``_hold_for_review_reason``
     first and skips this check entirely on a hold.
 
+    Returns a ``GenreVerdict(genre, markers, branch)``. ``branch`` names
+    WHICH rule fired, so the outcome of each rule is a policy decision
+    made in ONE place (``_GENRE_BRANCH_ACTION``) rather than baked into
+    the detector.
+
     Same malformed-input tolerance as ``_hold_for_review_reason``.
     """
     raw_title, folded_title, folded_path = _content_gate_subject(entry, article)
 
     # (A) Subject position — title-only (word order + punctuation, which a
     # slug does not preserve). Sufficient on its own.
-    subject = _genre_video_subject_marker(raw_title)
+    subject = _genre_video_subject_marker(raw_title, folded_title)
     video = _content_gate_hits(folded_title, folded_path, _GENRE_VIDEO_FOLDED)
     review = _content_gate_hits(
         folded_title, folded_path, _GENRE_VIDEO_REVIEW_FOLDED)
     if subject:
-        return ('video', [subject] + video + review)
+        marker, branch = subject
+        return GenreVerdict('video', [marker] + video + review, branch)
     # (B) Two independent signals: a genre word plus either a review
     # co-marker or a second, distinct genre word.
     if video and (review or len(video) >= 2):
-        return ('video', video + review)
+        return GenreVerdict('video', video + review, 'video_signals')
 
     names = _content_gate_hits(
         folded_title, folded_path, _GENRE_EVENT_NAME_FOLDED)
     org = _content_gate_hits(
         folded_title, folded_path, _GENRE_EVENT_ORG_FOLDED)
     if names and org:
-        return ('event', names + org)
+        return GenreVerdict('event', names + org, 'event')
 
-    return (None, [])
+    return GenreVerdict(None, [], None)
 
 
 #: Hard-block threshold for cross-source dedup (tech-spec Decision 7,
@@ -3710,41 +3849,59 @@ def job():
 
         if not hold_markers:
             try:
-                genre, genre_markers = _is_rejected_genre(entry, article)
+                verdict = _is_rejected_genre(entry, article)
             except Exception as exc:
                 logger.error(
                     "content-gate genre check failed for %s, treating as "
                     "not-rejected: %s", link, sanitize_error_message(exc),
                 )
-                genre, genre_markers = None, []
-            if genre:
-                funnel['dropped_genre'] += 1
-                logger.info(
-                    "[E037] Genre dropped %s genre=%s (markers: %s)",
-                    link, genre, ", ".join(genre_markers),
-                )
-                # Pin the link (E015/E035 precedent): a video review stays
-                # a video review — without the pin the same post would be
-                # re-fetched and re-alerted every daily tick.
-                mark_processed(
-                    link,
-                    article.get('title') or entry.get('title') or '',
-                    entry.get('published') or entry.get('pub_date') or '',
-                )
-                try:
-                    send_admin_notification(
-                        admin_alerts.alert_genre_blocked(
-                            link,
-                            article.get('title') or entry.get('title') or '',
-                            genre,
-                            genre_markers,
+                verdict = GenreVerdict(None, [], None)
+            if verdict.genre:
+                # What the matched branch DOES is policy, looked up in one
+                # place — the detector only says which rule fired. An
+                # unknown branch falls back to 'drop' (today's behaviour
+                # for every branch).
+                action = _GENRE_BRANCH_ACTION.get(verdict.branch, 'drop')
+                if action == 'hold':
+                    # Route this branch into the poster/catalog HOLD path
+                    # instead: staged but parked, [E036] with buttons.
+                    # Falls through to the shared row assembly below.
+                    hold_markers = list(verdict.markers)
+                    logger.info(
+                        "[E036] Genre held for review %s genre=%s branch=%s",
+                        link, verdict.genre, verdict.branch,
+                    )
+                else:
+                    funnel['dropped_genre'] += 1
+                    logger.info(
+                        "[E037] Genre dropped %s genre=%s branch=%s "
+                        "(markers: %s)",
+                        link, verdict.genre, verdict.branch,
+                        ", ".join(verdict.markers),
+                    )
+                    # Pin the link (E015/E035 precedent): a video review
+                    # stays a video review — without the pin the same post
+                    # would be re-fetched and re-alerted every daily tick.
+                    mark_processed(
+                        link,
+                        article.get('title') or entry.get('title') or '',
+                        entry.get('published') or entry.get('pub_date') or '',
+                    )
+                    try:
+                        send_admin_notification(
+                            admin_alerts.alert_genre_blocked(
+                                link,
+                                article.get('title')
+                                or entry.get('title') or '',
+                                verdict.genre,
+                                verdict.markers,
+                            )
                         )
-                    )
-                except Exception as notify_err:
-                    logger.error(
-                        "Failed to send E037 notification: %s", notify_err,
-                    )
-                continue
+                    except Exception as notify_err:
+                        logger.error(
+                            "Failed to send E037 notification: %s", notify_err,
+                        )
+                    continue
 
         # --------------------------------------------------------------
         # Cross-source dedup gate (cross-source-dedup feature, Wave 2).

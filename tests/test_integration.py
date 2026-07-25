@@ -4791,6 +4791,105 @@ class TestContentGateIntake(_PrepPhaseBase):
         self.assertEqual(self._calls_with(mock_admin, '[E036]'), [])
         self.assertEqual(self._calls_with(mock_admin, '[E037]'), [])
 
+    # -- branch → action routing ------------------------------------------
+
+    @patch('news_bot.REVIEW_BUTTONS_ENABLED', True)
+    @patch('news_bot.fetch_full_article')
+    @patch('news_bot.fetch_rss')
+    @patch('news_bot.load_feeds')
+    @patch('news_bot.send_admin_notification')
+    def test_a_branch_mapped_to_hold_routes_into_the_hold_path(
+        self, mock_admin, mock_load_feeds, mock_fetch_rss, mock_fetch_article,
+    ):
+        """The detector reports WHICH rule fired; ``_GENRE_BRANCH_ACTION``
+        decides what that rule DOES. The operator is weighing whether the
+        softer video branches should HOLD instead of DROP (a wrong hold
+        costs a tap, a wrong drop is irreversible) — this proves that
+        flipping one entry in that map is all it takes, so the decision is
+        a tested one-line change rather than a rewrite."""
+        link = 'https://t-hunted.blogspot.com/2026/07/unboxing-caixa-j.html'
+        title = 'Unboxing da caixa J de 2026 da Hot Wheels'
+        self._feed(mock_load_feeds, mock_fetch_rss, mock_fetch_article,
+                   link, title,
+                   {'title': title, 'subtitle': '',
+                    'paragraphs': ['Abrimos a caixa.'], 'images': []})
+
+        repointed = dict(news_bot._GENRE_BRANCH_ACTION, video_np='hold')
+        with patch.dict(news_bot._GENRE_BRANCH_ACTION, repointed, clear=True):
+            news_bot.job()
+
+        # Staged and PARKED, not dropped: still in the DB, out of the
+        # publishable queue, and offered to the operator with buttons.
+        row = pending_articles_repo.get_pending(link)
+        self.assertIsNotNone(row)
+        self.assertTrue(row['hold_reason'])
+        self.assertEqual(pending_articles_repo.count_pending(), 0)
+        self.assertEqual(
+            [r['link'] for r in pending_articles_repo.list_held()], [link])
+        e036 = self._calls_with(mock_admin, '[E036]')
+        self.assertEqual(len(e036), 1)
+        self.assertIsNotNone(e036[0].kwargs.get('reply_markup'))
+        # No drop happened: no [E037], and the link is NOT pinned.
+        self.assertEqual(self._calls_with(mock_admin, '[E037]'), [])
+        conn = sqlite3.connect(self.db_path)
+        try:
+            processed = {r[0] for r in conn.execute(
+                'SELECT link FROM processed_news').fetchall()}
+        finally:
+            conn.close()
+        self.assertNotIn(link, processed)
+
+    @patch('news_bot.fetch_full_article')
+    @patch('news_bot.fetch_rss')
+    @patch('news_bot.load_feeds')
+    @patch('news_bot.send_admin_notification')
+    def test_default_map_drops_every_branch(
+        self, mock_admin, mock_load_feeds, mock_fetch_rss, mock_fetch_article,
+    ):
+        """Today's shipped policy: every branch drops. Guards against the
+        re-point being left half-applied."""
+        self.assertEqual(
+            set(news_bot._GENRE_BRANCH_ACTION.values()), {'drop'})
+        link = 'https://t-hunted.blogspot.com/2026/07/unboxing-caixa-h.html'
+        title = 'Unboxing da caixa H de 2026 da Hot Wheels'
+        self._feed(mock_load_feeds, mock_fetch_rss, mock_fetch_article,
+                   link, title,
+                   {'title': title, 'subtitle': '',
+                    'paragraphs': ['Abrimos a caixa.'], 'images': []})
+
+        news_bot.job()
+
+        self.assertIsNone(pending_articles_repo.get_pending(link))
+        self.assertEqual(len(self._calls_with(mock_admin, '[E037]')), 1)
+        self.assertEqual(self._calls_with(mock_admin, '[E036]'), [])
+
+    @patch('news_bot.fetch_full_article')
+    @patch('news_bot.fetch_rss')
+    @patch('news_bot.load_feeds')
+    @patch('news_bot.send_admin_notification')
+    def test_news_clause_video_headline_reaches_the_queue(
+        self, mock_admin, mock_load_feeds, mock_fetch_rss, mock_fetch_article,
+    ):
+        """Review round 2, R1 end-to-end: «Video of the X leaked online» is
+        a reveal story and must publish normally."""
+        link = 'https://example.com/2026/07/z06-video-leak.html'
+        title = 'Video of the 2027 Corvette Z06 reveal leaked online'
+        self._feed(mock_load_feeds, mock_fetch_rss, mock_fetch_article,
+                   link, title,
+                   {'title': title, 'subtitle': '',
+                    'paragraphs': ['The clip shows the casting.'],
+                    'images': []})
+
+        news_bot.job()
+
+        row = pending_articles_repo.get_pending(link)
+        self.assertIsNotNone(row)
+        self.assertIsNone(row['hold_reason'])
+        self.assertIn(
+            link, [r['link'] for r in pending_articles_repo.list_pending()])
+        self.assertEqual(self._calls_with(mock_admin, '[E037]'), [])
+        self.assertEqual(self._calls_with(mock_admin, '[E036]'), [])
+
     # -- fail-open --------------------------------------------------------
 
     @patch('news_bot._hold_for_review_reason', side_effect=RuntimeError('boom'))
