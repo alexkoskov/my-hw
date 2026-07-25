@@ -252,3 +252,18 @@ Rejected finding:
 - Targeted: `TestInFlightCancelGuard` 2, `TestMoves` +2, `TestMainHealthChecks` 4 (incl. new wiring pin), `TestReviewListener` +3, `TestDedupReviewButtons` +1 — all green
 - `python3 -m pytest tests/ -q` → **1333 passed, 0 failed** (65 s)
 - Mutations: M-2 wiring removed → FAIL/restored; CA-3 token guard removed → FAIL/restored; SEC-A8-1 bare-flag restored → FAIL/restored
+
+## Task 10: Pre-deploy QA
+
+**Status:** Done
+**Commit:** none (терминальная приёмка — код и тесты не менялись)
+**Agent:** qa-runner
+**Summary:** QA **passed** — 0 critical, 0 major, 0 minor. Полный набор: `python3 -m pytest tests/ -q` → **1333 passed, 0 failed** (48.9 s; watch-item `test_main_wires_review_listener` прошёл с первого раза, флейк не повторился). Все 20 критериев приёмки проверены с доказательствами: **19 passed, 1 not_verifiable** (U8 — живое «слушает только прод»/409 на общем токене), 0 failed. Coverage: каждый файл scope фичи покрыт тестами, все обязательные edge-cases (устаревший токен, не-админ, гонка у слота, database is locked, fail-closed гейт, изоляция listener) имеют тесты, исполняющие реальное поведение (real SQLite, real job(), assertLogs INFO, mutation-verified пины). Smoke-команды задач 1/2/5 повторно прогнаны — все ok. Блокеров нет.
+**Deferred to post-deploy:** 3 пункта → Task 12 (U8 живой single-listener/нет-409; визуальная часть U3/U4/U5 — реальный тап и edit в чате; строка «review listener active» в docker logs для T7). См. `deferredToPostDeploy` в qa-report.json.
+**Deviations:** Нет. Примечание: отчёт записан в `logs/working/task-10/qa-report.json` (по указанию лида — единый формат task-N; текст задачи называл `logs/working/qa-report.json`).
+
+**Verification:**
+- `python3 -m pytest tests/ -q` → 1333 passed, 0 failed
+- Фокус-набор 4 файлов фичи → 228 passed
+- Smoke tasks 1/2/5 → ok / ok / True
+- Full report: [logs/working/task-10/qa-report.json](logs/working/task-10/qa-report.json)
