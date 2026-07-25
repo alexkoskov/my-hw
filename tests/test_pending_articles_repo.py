@@ -1394,8 +1394,88 @@ class TestReviewTokenStore(_TmpDbCase):
                 ('tok',),
             ).fetchone()
         self.assertIsNotNone(prefixed)
-        self.assertEqual(prefixed[0], 'http://x/a')
+        # Value carries the kind (SEC-CG-2), key layout unchanged.
+        self.assertEqual(prefixed[0], 'dedup|http://x/a')
         self.assertIsNone(bare)
+
+
+class TestReviewTokenKinds(_TmpDbCase):
+    """Audit SEC-CG-2 — tokens record WHICH keyboard minted them.
+
+    The store is one flat namespace and the listener dispatches by action
+    word, so without a kind a token from one keyboard can be redeemed by
+    the other resolver. Encoded in the VALUE (``<kind>|<link>``) rather
+    than the key, so no migration and no janitor are needed: values
+    written before this change have no prefix and read back as ``dedup``,
+    which is what they are — the hold keyboard did not exist then.
+    """
+
+    def test_kind_roundtrips(self):
+        repo.put_review_token('t1', 'http://x/a',
+                              kind=repo.REVIEW_TOKEN_KIND_HOLD)
+        self.assertEqual(repo.get_review_token('t1'),
+                         (repo.REVIEW_TOKEN_KIND_HOLD, 'http://x/a'))
+
+    def test_default_kind_is_dedup(self):
+        """Back-compat for every existing call site."""
+        repo.put_review_token('t2', 'http://x/b')
+        self.assertEqual(repo.get_review_token('t2'),
+                         (repo.REVIEW_TOKEN_KIND_DEDUP, 'http://x/b'))
+
+    def test_legacy_bare_link_value_reads_as_dedup(self):
+        """A token minted before this change (raw link, no prefix) must
+        still resolve sanely rather than becoming an unusable button."""
+        with self._conn() as c:
+            c.execute(
+                "INSERT INTO bot_state (key, value) VALUES (?, ?)",
+                ('review_token:legacy', 'http://x/legacy'),
+            )
+            c.commit()
+        self.assertEqual(repo.get_review_token('legacy'),
+                         (repo.REVIEW_TOKEN_KIND_DEDUP, 'http://x/legacy'))
+        self.assertEqual(repo.get_review_token_link('legacy'),
+                         'http://x/legacy')
+
+    def test_a_link_containing_the_separator_is_not_mangled(self):
+        """Split on the FIRST separator and only for a KNOWN kind, so a
+        URL with a pipe in the query string round-trips intact."""
+        link = 'http://x/a?q=1|2|3'
+        repo.put_review_token('t3', link, kind=repo.REVIEW_TOKEN_KIND_HOLD)
+        self.assertEqual(repo.get_review_token('t3'),
+                         (repo.REVIEW_TOKEN_KIND_HOLD, link))
+
+    def test_unknown_prefix_is_treated_as_a_legacy_link(self):
+        """A value whose prefix is not a known kind is a link, not a
+        kind — never silently reinterpreted."""
+        with self._conn() as c:
+            c.execute(
+                "INSERT INTO bot_state (key, value) VALUES (?, ?)",
+                ('review_token:weird', 'ftp|http://x/c'),
+            )
+            c.commit()
+        self.assertEqual(repo.get_review_token('weird'),
+                         (repo.REVIEW_TOKEN_KIND_DEDUP, 'ftp|http://x/c'))
+
+    def test_unknown_token_returns_none(self):
+        self.assertIsNone(repo.get_review_token('never-stored'))
+
+    def test_put_rejects_an_unknown_kind(self):
+        """Fail loudly at the mint site rather than writing a token no
+        resolver will ever accept."""
+        with self.assertRaises(ValueError):
+            repo.put_review_token('t4', 'http://x/d', kind='banana')
+        self.assertIsNone(repo.get_review_token('t4'))
+
+    def test_get_review_token_link_is_kind_agnostic(self):
+        """The listener's decision log records what was acted on, whatever
+        keyboard it came from."""
+        repo.put_review_token('t5', 'http://x/e',
+                              kind=repo.REVIEW_TOKEN_KIND_HOLD)
+        self.assertEqual(repo.get_review_token_link('t5'), 'http://x/e')
+
+    def test_kinds_are_distinct(self):
+        self.assertNotEqual(repo.REVIEW_TOKEN_KIND_DEDUP,
+                            repo.REVIEW_TOKEN_KIND_HOLD)
 
 
 class TestConnectBusyTimeout(_TmpDbCase):
@@ -1765,6 +1845,184 @@ class TestHoldState(_TmpDbCase):
                 ('http://held/reject',),
             ).fetchone()
         self.assertIsNotNone(row)
+
+
+class TestColumnMigrationHardening(unittest.TestCase):
+    """Audit SEC-CG-1 — the idempotent column migration must VERIFY, not
+    assume.
+
+    The old shape (`try: ALTER / except sqlite3.OperationalError: pass`)
+    could not distinguish "already migrated" from "the ALTER failed":
+    a writer holding an IMMEDIATE lock past the busy timeout raises
+    `database is locked`, which is ALSO an OperationalError. The migration
+    would report success with the column absent — and because
+    `list_pending` / `count_pending` / `insert_pending` name the migrated
+    columns unconditionally, every subsequent tick would die on
+    `no such column` with nothing pointing at the real cause.
+    """
+
+    def _fresh(self):
+        conn = sqlite3.connect(':memory:')
+        self.addCleanup(conn.close)
+        return conn
+
+    def _locked_db_missing_hold_reason(self):
+        """A REAL locked database, not a mocked exception: migrate a
+        tempfile DB, drop ``hold_reason`` back off it, then have a second
+        connection hold an IMMEDIATE (write) lock. Reads still work — so
+        the existence check succeeds — but the ALTER needs EXCLUSIVE and
+        genuinely raises ``database is locked`` once the busy timeout
+        expires. Returns the connection init_schema should choke on."""
+        fd, path = tempfile.mkstemp(suffix='.db')
+        os.close(fd)
+        self.addCleanup(lambda: os.path.exists(path) and os.unlink(path))
+
+        migrating = sqlite3.connect(path, timeout=0.1)
+        self.addCleanup(migrating.close)
+        repo.init_schema(migrating)
+        migrating.execute(
+            "ALTER TABLE pending_articles DROP COLUMN hold_reason")
+        migrating.commit()
+
+        blocker = sqlite3.connect(path, timeout=0.1)
+        self.addCleanup(blocker.close)
+        blocker.execute("BEGIN IMMEDIATE")
+        blocker.execute(
+            "INSERT OR REPLACE INTO bot_state (key, value) VALUES ('x', '1')")
+        self.addCleanup(blocker.rollback)
+        return migrating, path
+
+    #: The migration entry under test, read from the live tuple.
+    HOLD_MIGRATION = ('pending_articles', 'hold_reason',
+                      "ALTER TABLE pending_articles ADD COLUMN hold_reason TEXT")
+
+    def test_hold_migration_entry_is_the_live_one(self):
+        """The lock tests below drive ``_ensure_column`` with this triple;
+        pin it against the real table so they can't test a fossil."""
+        self.assertIn(self.HOLD_MIGRATION, repo._COLUMN_MIGRATIONS)
+
+    def test_locked_db_during_alter_raises_instead_of_silently_passing(self):
+        """THE finding, reproduced against a REAL lock (not a mocked
+        exception): the ALTER genuinely raises `database is locked`, which
+        is an OperationalError just like `duplicate column name` — and it
+        must NOT be mistaken for an already-migrated no-op.
+
+        Drives ``_ensure_column`` rather than ``init_schema`` because the
+        preceding ``CREATE TABLE IF NOT EXISTS`` statements need the write
+        lock too and would fail first; ``init_schema``'s propagation is
+        covered by ``test_verification_catches_an_alter_that_did_not_take``.
+        """
+        migrating, _path = self._locked_db_missing_hold_reason()
+
+        with self.assertRaises(repo.SchemaMigrationError) as ctx:
+            repo._ensure_column(migrating, *self.HOLD_MIGRATION)
+
+        # The error names the column so the operator can act on it.
+        self.assertIn('hold_reason', str(ctx.exception))
+        # And the column really is still absent — i.e. had this been
+        # swallowed, every subsequent tick would die on `no such column`.
+        self.assertFalse(repo._column_exists(
+            migrating, 'pending_articles', 'hold_reason'))
+
+    def test_locked_db_failure_is_logged_before_it_is_raised(self):
+        migrating, _path = self._locked_db_missing_hold_reason()
+        with self.assertLogs('pending_articles_repo', level='ERROR') as cm:
+            with self.assertRaises(repo.SchemaMigrationError):
+                repo._ensure_column(migrating, *self.HOLD_MIGRATION)
+        self.assertTrue(
+            any('schema migration failed' in line for line in cm.output),
+            cm.output,
+        )
+
+    def test_a_swallowed_lock_would_break_the_publish_path(self):
+        """Why this is HIGH and not cosmetic: with the column absent, the
+        every-tick queries that name it fail. Pinning the consequence
+        keeps the severity argument honest if anyone relaxes the guard."""
+        migrating, path = self._locked_db_missing_hold_reason()
+        with self.assertRaises(repo.SchemaMigrationError):
+            repo._ensure_column(migrating, *self.HOLD_MIGRATION)
+
+        with patch.object(news_bot, 'DB_FILE', path):
+            for call in (repo.count_pending, repo.list_pending, repo.list_held):
+                with self.subTest(call=call.__name__):
+                    with self.assertRaises(sqlite3.OperationalError) as ctx:
+                        call()
+                    self.assertIn('hold_reason', str(ctx.exception))
+
+    def test_duplicate_column_race_is_still_tolerated(self):
+        """The one benign OperationalError: another process added the
+        column between our check and our ALTER. Simulated by forcing the
+        existence check to report 'missing' on an already-migrated DB, so
+        the real ALTER raises a real `duplicate column name`."""
+        conn = self._fresh()
+        repo.init_schema(conn)
+        with patch.object(repo, '_column_exists', return_value=False):
+            repo.init_schema(conn)  # must not raise
+        # And the DB is still intact.
+        self.assertTrue(repo._column_exists(
+            conn, 'pending_articles', 'hold_reason'))
+
+    def test_alter_is_skipped_entirely_when_the_column_exists(self):
+        """Idempotent path stays cheap and side-effect-free: a second
+        init_schema issues no ALTER at all. ``sqlite3.Connection.execute``
+        is read-only, so spy through a thin proxy."""
+        conn = self._fresh()
+        repo.init_schema(conn)
+        seen = []
+
+        class _SpyConn:
+            def __init__(self, inner):
+                self._inner = inner
+
+            def execute(self, sql, *args, **kwargs):
+                seen.append(sql)
+                return self._inner.execute(sql, *args, **kwargs)
+
+            def commit(self):
+                return self._inner.commit()
+
+        repo.init_schema(_SpyConn(conn))
+        self.assertEqual(
+            [s for s in seen if s.strip().upper().startswith('ALTER')], [])
+
+    def test_verification_catches_an_alter_that_did_not_take(self):
+        """Belt-and-braces: ALTER reports success but the column is not
+        there → fatal, never trusted."""
+        conn = self._fresh()
+
+        class _LyingConn:
+            """ALTER silently does nothing; everything else is real."""
+
+            def __init__(self, inner):
+                self._inner = inner
+
+            def execute(self, sql, *args, **kwargs):
+                if sql.strip().upper().startswith('ALTER'):
+                    return None
+                return self._inner.execute(sql, *args, **kwargs)
+
+            def commit(self):
+                return self._inner.commit()
+
+        with self.assertRaises(repo.SchemaMigrationError) as ctx:
+            repo.init_schema(_LyingConn(conn))
+        self.assertIn('missing after a successful ALTER', str(ctx.exception))
+
+    def test_every_migration_entry_is_verifiable(self):
+        """Structural invariant: the (table, column) pair that drives the
+        existence check must match the DDL literal, or the check would
+        silently guard the wrong column."""
+        for table, column, ddl in repo._COLUMN_MIGRATIONS:
+            with self.subTest(column=f'{table}.{column}'):
+                self.assertIn(f'ALTER TABLE {table} ', ddl)
+                self.assertIn(f'ADD COLUMN {column} ', ddl)
+
+    def test_all_migrated_columns_exist_after_init_on_a_fresh_db(self):
+        conn = self._fresh()
+        repo.init_schema(conn)
+        for table, column, _ddl in repo._COLUMN_MIGRATIONS:
+            with self.subTest(column=f'{table}.{column}'):
+                self.assertTrue(repo._column_exists(conn, table, column))
 
 
 class TestSqlAudit(unittest.TestCase):

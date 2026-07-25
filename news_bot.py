@@ -629,10 +629,16 @@ def resolve_dedup_callback(action, token, from_user_id):
     if not _is_admin_press(from_user_id):
         return (None, "")
 
-    # 2. Token resolve.
-    link = pending_repo.get_review_token_link(token)
-    if link is None:
+    # 2. Token resolve + KIND check (audit SEC-CG-2). A token minted by
+    # the [E036] hold keyboard must never be redeemed here: 'keep' would
+    # consume it with no state change and orphan the held article
+    # forever (still frozen, no live button, no re-mint path). Treated as
+    # a stale button and — critically — the token is NOT consumed, so the
+    # real [E036] button still works.
+    entry = pending_repo.get_review_token(token)
+    if entry is None or entry[0] != pending_repo.REVIEW_TOKEN_KIND_DEDUP:
         return ("⚠️ Кнопка устарела", "⚠️ Кнопка устарела")
+    link = entry[1]
 
     # 3/4. Action branches.
     if action == 'keep':
@@ -703,10 +709,14 @@ def resolve_hold_callback(action, token, from_user_id):
     if not _is_admin_press(from_user_id):
         return (None, "")
 
-    # 2. Token resolve.
-    link = pending_repo.get_review_token_link(token)
-    if link is None:
+    # 2. Token resolve + KIND check (audit SEC-CG-2). A token minted by
+    # the [E014] dedup keyboard must never be redeemed here: 'reject'
+    # would silently skip_pending an article that was never held. Stale
+    # answer, and the token is NOT consumed so its own buttons still work.
+    entry = pending_repo.get_review_token(token)
+    if entry is None or entry[0] != pending_repo.REVIEW_TOKEN_KIND_HOLD:
         return ("⚠️ Кнопка устарела", "⚠️ Кнопка устарела")
+    link = entry[1]
 
     # 3. Action branches.
     if action == 'approve':
@@ -1880,9 +1890,15 @@ _HOLD_TITLE_MARKERS = (
     'box art',
 )
 
-#: VIDEO markers (category 2): the post's SUBJECT is a video — a review,
-#: an unboxing, a "watch this" pointer. 'vídeo' folds to 'video', which
-#: also catches the EN word and the «Video:» headline form.
+#: VIDEO markers (category 2), matched ANYWHERE in the subject: words that
+#: name the genre. 'vídeo' folds to 'video', which also catches the EN word.
+#:
+#: NEVER sufficient on their own — see ``_is_rejected_genre`` for the
+#: two-branch rule. Review round 1 (F1/F2) found the bare word being used
+#: as ordinary headline language in genuine car reveals («Mattel drops
+#: video revealing the 2027 Corvette Z06», «Vídeo revela o novo Porsche
+#: 911 GT3 RS», «Unboxing surprises us: … Supra revealed»), and unlike a
+#: HOLD a DROP is permanent and unrecoverable.
 _GENRE_VIDEO_MARKERS = (
     'vídeo',
     'vídeos',
@@ -1892,15 +1908,61 @@ _GENRE_VIDEO_MARKERS = (
     'youtube',
 )
 
-#: EN «Watch: …» headline form. Handled by a regex rather than a marker
-#: because folding strips the colon, and a bare word-bounded 'watch' would
-#: eat ordinary editorial English («watch out for these five Treasure
-#: Hunts», «a casting worth watching»). Anchored at the start of the title
-#: and required to be followed by punctuation, which is exactly what the
-#: "watch this video" headline convention looks like.
-_GENRE_VIDEO_LEAD_RE = re.compile(r'^\s*watch\s*[:\-–—]', re.IGNORECASE)
-#: Marker name reported for a ``_GENRE_VIDEO_LEAD_RE`` hit.
-_GENRE_VIDEO_LEAD_MARKER = 'watch:'
+#: Genre words that count ONLY in subject position, never as an
+#: anywhere-marker: 'watch' is ordinary editorial English elsewhere
+#: («watch out for these five Treasure Hunts», «a casting worth watching»).
+_GENRE_VIDEO_LEAD_ONLY_MARKERS = (
+    'watch',
+)
+
+#: REVIEW co-markers — the second independent signal for branch (B). These
+#: describe the ACT of reviewing/opening rather than the subject of the
+#: post, so «vídeo» + one of these is a video review, while «vídeo» alone
+#: is just a word. Deliberately contains no video marker as a substring
+#: (a phrase like 'case unboxing' would supply both signals by itself and
+#: silently collapse the two-signal bar — the promo filter's round-1 bug).
+_GENRE_VIDEO_REVIEW_MARKERS = (
+    # EN
+    'review',
+    'reviews',
+    'hands-on',
+    'first impressions',
+    'full case',
+    'assortment',
+    'we open',
+    # PT
+    'análise',
+    'análises',
+    'abrimos',
+    'caixa completa',
+    'caixa fechada',
+    'lote completo',
+)
+
+#: Every genre word eligible for SUBJECT POSITION (branch A).
+_GENRE_VIDEO_LEAD_MARKERS = (
+    _GENRE_VIDEO_MARKERS + _GENRE_VIDEO_LEAD_ONLY_MARKERS
+)
+
+#: Determiners / prepositions that turn a leading genre word into the HEAD
+#: OF A NOUN PHRASE — «Unboxing THE 2026 H case», «Unboxing DA caixa J»,
+#: «Assista AO review». This is what separates a genre post from a news
+#: clause: a leading genre word followed by a VERB («Vídeo REVELA o
+#: Porsche», «Unboxing SURPRISES us») is a sentence ABOUT something, not a
+#: label for the post's subject. Kept to closed-class function words only —
+#: no verbs, and deliberately NOT 'out' (which would re-open «Watch out
+#: for these five Treasure Hunts»).
+_GENRE_VIDEO_NP_HEADS = (
+    # EN
+    'the', 'a', 'an', 'this', 'these', 'that', 'those', 'all', 'every',
+    'my', 'our', 'of', 'with',
+    # PT
+    'o', 'os', 'as', 'um', 'uma', 'uns', 'umas',
+    'do', 'da', 'dos', 'das', 'de',
+    'no', 'na', 'nos', 'nas', 'ao', 'aos', 'com',
+    'todo', 'toda', 'todos', 'todas',
+    'este', 'esta', 'esse', 'essa',
+)
 
 #: EVENT NAME markers (category 3, first half): the name of a gathering.
 #: NEVER sufficient on its own — see ``_GENRE_EVENT_ORG_MARKERS``.
@@ -1954,10 +2016,84 @@ _GENRE_EVENT_ORG_MARKERS = (
 #: substring checks (same shape as ``_PROMO_STRONG_FOLDED``).
 _HOLD_TITLE_FOLDED = tuple((m, _promo_fold(m)) for m in _HOLD_TITLE_MARKERS)
 _GENRE_VIDEO_FOLDED = tuple((m, _promo_fold(m)) for m in _GENRE_VIDEO_MARKERS)
+_GENRE_VIDEO_REVIEW_FOLDED = tuple(
+    (m, _promo_fold(m)) for m in _GENRE_VIDEO_REVIEW_MARKERS)
 _GENRE_EVENT_NAME_FOLDED = tuple(
     (m, _promo_fold(m)) for m in _GENRE_EVENT_NAME_MARKERS)
 _GENRE_EVENT_ORG_FOLDED = tuple(
     (m, _promo_fold(m)) for m in _GENRE_EVENT_ORG_MARKERS)
+
+
+def _content_gate_deaccent(text):
+    """NFKD accent-strip + lowercase, PUNCTUATION PRESERVED.
+
+    ``_promo_fold`` throws punctuation away to get word-bounded tokens,
+    which is right for marker matching but destroys the very signal the
+    subject-position rule reads: the «Vídeo:» headline colon. This is the
+    same normalisation minus the tokenisation, so the lead regexes can be
+    written against plain ASCII while still matching accented titles.
+    """
+    if not isinstance(text, str):
+        return ''
+    text = unicodedata.normalize('NFKD', text)
+    return ''.join(
+        ch for ch in text if not unicodedata.combining(ch)).lower()
+
+
+#: Folded token → canonical (accented) marker, for reporting a subject-
+#: position hit under the same name the operator sees everywhere else.
+_GENRE_VIDEO_LEAD_CANON = {
+    _promo_fold(m).strip(): m for m in _GENRE_VIDEO_LEAD_MARKERS
+}
+
+#: Longest-first alternation so 'vídeos' wins over 'vídeo' (otherwise
+#: «Vídeos:» would fail to match — after 'video' comes 's', not a
+#: separator). Built FROM the marker tuples so the two cannot drift.
+_GENRE_VIDEO_LEAD_ALT = '|'.join(
+    re.escape(tok).replace(r'\ ', r'\s+')
+    for tok in sorted(_GENRE_VIDEO_LEAD_CANON, key=len, reverse=True)
+)
+
+#: Branch (A1) — genre word at the head of the title, immediately followed
+#: by a separator: «Vídeo: …», «Watch: …», «Unboxing — …». The classic
+#: "the subject is the video" headline convention.
+_GENRE_VIDEO_LEAD_SEP_RE = re.compile(
+    rf'^\s*({_GENRE_VIDEO_LEAD_ALT})\s*[:\-–—]')
+
+#: Branch (A2) — genre word at the head of the title followed by a
+#: determiner/preposition, i.e. heading a NOUN PHRASE: «Unboxing the 2026
+#: H case …», «Assista ao …». A leading genre word followed by anything
+#: else (a verb: «Vídeo revela …», «Unboxing surprises …») is a clause
+#: reporting news, and is deliberately NOT matched.
+_GENRE_VIDEO_LEAD_NP_RE = re.compile(
+    rf'^\s*({_GENRE_VIDEO_LEAD_ALT})\s+'
+    rf'(?:{"|".join(re.escape(w) for w in _GENRE_VIDEO_NP_HEADS)})\b'
+)
+
+
+def _genre_video_subject_marker(raw_title):
+    """Return a marker string when a video genre word occupies SUBJECT
+    POSITION at the head of ``raw_title``, else ``None``.
+
+    Two accepted shapes (see the regexes above): ``'vídeo:'`` for the
+    separator form and ``'vídeo …'`` for the noun-phrase form — both read
+    back to the operator as "the title LEADS with this word".
+
+    Title-only by design: subject position is a property of word order and
+    punctuation, neither of which a URL slug preserves (a reveal whose
+    slug happens to start with 'video-' must not be dropped).
+    """
+    text = _content_gate_deaccent(raw_title)
+    for regex, suffix in (
+        (_GENRE_VIDEO_LEAD_SEP_RE, ':'),
+        (_GENRE_VIDEO_LEAD_NP_RE, ' …'),
+    ):
+        match = regex.match(text)
+        if match:
+            token = re.sub(r'\s+', ' ', match.group(1))
+            canonical = _GENRE_VIDEO_LEAD_CANON.get(token, token)
+            return f'{canonical}{suffix}'
+    return None
 
 
 def _content_gate_subject(entry, article):
@@ -2040,19 +2176,42 @@ def _is_rejected_genre(entry, article):
     ``'event'`` (convention / expo announcement). Markers are returned for
     the alert so a false positive is diagnosable at a glance.
 
-    Rules:
+    Both genres demand TWO independent signals, for the same reason: a
+    single content word is not proof of genre, and a DROP is permanent and
+    unrecoverable (unlike a HOLD, which costs one button press).
 
-      * VIDEO — one marker in the title/slug, or the «Watch: …» headline
-        lead. A post that merely EMBEDS a video is NOT a video review: the
-        body is never scanned, so the incident post's «no vídeo abaixo»
-        cannot trip this (and neither can a car reveal whose reveal clip
-        is quoted in the lead paragraph).
+      * VIDEO — the video must be the SUBJECT of the post, not a word the
+        post happens to use. Either:
+          (A) SUBJECT POSITION — the genre word HEADS the title, followed
+              by a separator («Vídeo: …», «Watch: …») or by a
+              determiner/preposition so it heads a noun phrase («Unboxing
+              the 2026 H case …», «Assista ao …»); or
+          (B) TWO SIGNALS — a genre word plus a review-shaped co-marker
+              (review / análise / hands-on / assortment / abrimos …), or
+              two DISTINCT genre words («Assista ao unboxing …»).
+        Review round 1 (F1/F2): the previous single-marker rule dropped
+        genuine car reveals that merely used the word — «Mattel drops
+        video revealing the 2027 Corvette Z06», «Vídeo revela o novo
+        Porsche 911 GT3 RS», «Unboxing surprises us: … Supra revealed».
+        A leading genre word followed by a VERB is a news clause, which is
+        exactly why branch (A) requires a separator or a function word.
+        A post that merely EMBEDS a video was already safe (the body is
+        never scanned) — this closes the TITLE-language hole.
       * EVENT — an event NAME **and** an ORGANIZATIONAL word, both in the
         subject. Two independent signals are required because a
         convention-exclusive CAR REVEAL is legitimate model news: the name
         of a convention says WHERE a casting was announced, not that the
         post is about the convention. Conversely the org words alone are
         ordinary release language ("2026 release dates").
+
+    Reveal language ('revealing'/'revela'/'first look'/'unveils') is
+    deliberately NOT used as a blanket negative signal. It cannot apply to
+    branch (A) — the operator's own required case «Watch: FIRST LOOK at
+    the 2027 HW Nationals mainline» carries reveal language and must still
+    drop — and on branch (B) it would punch a hole through «Video review:
+    … reveals …», a genuine video review. The two-signal bar already
+    closes the reported false-drop class without a third, subtler rule
+    whose failure mode (an undropped video review) is silent.
 
     Video is checked first; on a title that satisfies both, either verdict
     is a drop, so the order is a tie-break, not a policy. HOLD outranks
@@ -2063,11 +2222,18 @@ def _is_rejected_genre(entry, article):
     """
     raw_title, folded_title, folded_path = _content_gate_subject(entry, article)
 
+    # (A) Subject position — title-only (word order + punctuation, which a
+    # slug does not preserve). Sufficient on its own.
+    subject = _genre_video_subject_marker(raw_title)
     video = _content_gate_hits(folded_title, folded_path, _GENRE_VIDEO_FOLDED)
-    if _GENRE_VIDEO_LEAD_RE.match(raw_title):
-        video.append(_GENRE_VIDEO_LEAD_MARKER)
-    if video:
-        return ('video', video)
+    review = _content_gate_hits(
+        folded_title, folded_path, _GENRE_VIDEO_REVIEW_FOLDED)
+    if subject:
+        return ('video', [subject] + video + review)
+    # (B) Two independent signals: a genre word plus either a review
+    # co-marker or a second, distinct genre word.
+    if video and (review or len(video) >= 2):
+        return ('video', video + review)
 
     names = _content_gate_hits(
         folded_title, folded_path, _GENRE_EVENT_NAME_FOLDED)
@@ -3671,7 +3837,11 @@ def job():
                             kb = None
                             if _review_listener_enabled():
                                 token = secrets.token_urlsafe(9)
-                                pending_repo.put_review_token(token, link)
+                                pending_repo.put_review_token(
+                                    token, link,
+                                    kind=pending_repo.
+                                    REVIEW_TOKEN_KIND_DEDUP,
+                                )
                                 kb = admin_alerts.build_dedup_review_keyboard(
                                     token,
                                 )
@@ -3790,7 +3960,10 @@ def job():
                         kb = None
                         if _review_listener_enabled():
                             token = secrets.token_urlsafe(9)
-                            pending_repo.put_review_token(token, link)
+                            pending_repo.put_review_token(
+                                token, link,
+                                kind=pending_repo.REVIEW_TOKEN_KIND_HOLD,
+                            )
                             kb = admin_alerts.build_hold_review_keyboard(token)
                         send_admin_notification(
                             admin_alerts.alert_held_for_review(

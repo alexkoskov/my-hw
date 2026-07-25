@@ -1243,6 +1243,13 @@ class TestIsRejectedGenre(_ContentGateFixtures, unittest.TestCase):
     ``test_convention_exclusive_car_reveal_survives``: a convention name
     is a place, not a subject. Only an ORGANIZATIONAL signal (dates,
     tickets, registration, schedule…) makes the post about the event.
+
+    Review round 1 (F1/F2) applied the SAME discipline to VIDEO: the bare
+    word «video»/«vídeo»/«unboxing» used as ordinary headline language in
+    a genuine car reveal used to be dropped — and a DROP is permanent.
+    The video rule now needs either SUBJECT POSITION (the genre word heads
+    the title) or a second review-shaped signal. See
+    ``TestVideoRuleVerificationMatrix`` for the full both-sides matrix.
     """
 
     # --- video reviews ----------------------------------------------------
@@ -1252,14 +1259,16 @@ class TestIsRejectedGenre(_ContentGateFixtures, unittest.TestCase):
             'Vídeo: Hot Wheels 2026 linha básica completa')
         genre, markers = _is_rejected_genre(entry, article)
         self.assertEqual(genre, 'video')
-        self.assertIn('vídeo', markers)
+        self.assertIn('vídeo:', markers)
 
     def test_unboxing_post_is_dropped(self):
+        """Subject position without a colon: «Unboxing DA caixa …» — the
+        genre word heads a noun phrase, so the unboxing IS the subject."""
         entry, article = self._entry(
             'Unboxing da caixa J de 2026 da Hot Wheels')
         genre, markers = _is_rejected_genre(entry, article)
         self.assertEqual(genre, 'video')
-        self.assertIn('unboxing', markers)
+        self.assertIn('unboxing …', markers)
 
     def test_assista_post_is_dropped(self):
         entry, article = self._entry(
@@ -1274,13 +1283,25 @@ class TestIsRejectedGenre(_ContentGateFixtures, unittest.TestCase):
         self.assertIn('watch:', markers)
 
     def test_en_video_post_is_dropped(self):
+        """Not subject position («Video review:» — the separator follows
+        `review`, not `video`), but two independent signals."""
         entry, article = self._entry(
             'Video review: every 2026 Hot Wheels Super Treasure Hunt')
+        genre, markers = _is_rejected_genre(entry, article)
+        self.assertEqual(genre, 'video')
+        self.assertIn('vídeo', markers)
+        self.assertIn('review', markers)
+
+    def test_youtube_post_with_a_review_signal_is_dropped(self):
+        entry, article = self._entry(
+            'Novo vídeo no YouTube: análise completa da caixa H de 2026')
         self.assertEqual(_is_rejected_genre(entry, article)[0], 'video')
 
-    def test_youtube_in_the_title_is_dropped(self):
+    def test_two_genre_words_satisfy_the_second_signal(self):
+        """Two distinct genre words are two independent signals in their
+        own right — no review word needed."""
         entry, article = self._entry(
-            'Novo canal no YouTube mostra a linha 2026')
+            'Assista ao unboxing do lote Q de 2026')
         self.assertEqual(_is_rejected_genre(entry, article)[0], 'video')
 
     # --- video: the false-positive side -----------------------------------
@@ -1300,7 +1321,7 @@ class TestIsRejectedGenre(_ContentGateFixtures, unittest.TestCase):
         self.assertEqual(_is_rejected_genre(entry, article), (None, []))
 
     def test_watch_out_for_is_not_a_video_post(self):
-        """`watch` only counts as the «Watch:» lead form — otherwise
+        """`watch` only ever counts in subject position — otherwise
         ordinary editorial English («watch out for…», «a car worth
         watching») would be dropped."""
         for title in (
@@ -1310,6 +1331,13 @@ class TestIsRejectedGenre(_ContentGateFixtures, unittest.TestCase):
             with self.subTest(title=title):
                 entry, article = self._entry(title)
                 self.assertEqual(_is_rejected_genre(entry, article), (None, []))
+
+    def test_youtube_channel_news_without_a_review_signal_survives(self):
+        """One genre word and nothing else is not proof of genre — news
+        ABOUT a channel is still news."""
+        entry, article = self._entry(
+            'Novo canal no YouTube mostra a linha 2026')
+        self.assertEqual(_is_rejected_genre(entry, article), (None, []))
 
     # --- events -----------------------------------------------------------
 
@@ -1422,6 +1450,100 @@ class TestIsRejectedGenre(_ContentGateFixtures, unittest.TestCase):
             _is_rejected_genre(entry, {'paragraphs': []}), (None, []))
 
 
+class TestVideoRuleVerificationMatrix(_ContentGateFixtures, unittest.TestCase):
+    """Review round 1, findings F1 + F2 — the both-sides matrix for the
+    VIDEO rule.
+
+    F1 (blocking): a genuine car-REVEAL headline that merely CONTAINS the
+    word «video»/«vídeo» used as ordinary language was dropped — and a
+    DROP is permanent and unrecoverable. F2 (same class): «Unboxing» used
+    as an ordinary verb. The video rule had no equivalent of the AND-guard
+    the event rule got for the convention-name case.
+
+    Fixed rule — a video post must prove the video is the SUBJECT, either:
+
+      (A) SUBJECT POSITION — the genre word HEADS the title, followed
+          either by a separator («Vídeo: …», «Watch: …») or by a
+          determiner/preposition that makes it head a noun phrase
+          («Unboxing THE 2026 H case …», «Assista AO …»). A genre word
+          followed by a VERB is a clause, i.e. news ABOUT something
+          («Vídeo revela o Porsche», «Unboxing surprises us»), and does
+          NOT count; or
+      (B) TWO INDEPENDENT SIGNALS — a genre word plus a review-shaped
+          co-marker (review / análise / hands-on / assortment / abrimos /
+          full case …), or two distinct genre words.
+
+    Every row below is a required outcome, taken verbatim from the review.
+    """
+
+    # Genuine model news — a false DROP here is unrecoverable.
+    MUST_NOT_DROP = (
+        # F1, EN: 'video' as an ordinary noun in a reveal headline.
+        'Mattel drops video revealing the 2027 Corvette Z06 in Super '
+        'Treasure Hunt spec',
+        # F1, PT: 'Vídeo' heads the title but is the SUBJECT OF A VERB.
+        'Vídeo revela o novo Porsche 911 GT3 RS da linha premium',
+        # F2: 'Unboxing' as an ordinary verb heading a clause.
+        'Unboxing surprises us: 2027 Toyota Supra revealed in mainline spec',
+        # Pre-existing guard — must stay passing.
+        'Watch out for these five Treasure Hunts in the 2026 J case',
+    )
+
+    # The genre the operator actually rejected.
+    MUST_DROP = (
+        # Subject position via separator.
+        'Watch: first look at the 2027 HW Nationals mainline',
+        # Subject position via noun-phrase head + a pile of review words.
+        'Unboxing the 2026 H case: full assortment review',
+        'Vídeo: abrimos a caixa do lote Q completo',
+        # PT equivalents of our own.
+        'Vídeo: unboxing da caixa J completa de 2026',
+        'Assista à análise completa da linha Boulevard 2026',
+    )
+
+    def test_genuine_model_news_is_never_dropped(self):
+        for title in self.MUST_NOT_DROP:
+            with self.subTest(title=title):
+                entry, article = self._entry(title)
+                self.assertEqual(
+                    _is_rejected_genre(entry, article), (None, []),
+                    f"{title!r} is genuine model news — a DROP here is "
+                    f"permanent and unrecoverable",
+                )
+
+    def test_real_video_posts_are_still_dropped(self):
+        for title in self.MUST_DROP:
+            with self.subTest(title=title):
+                entry, article = self._entry(title)
+                genre, markers = _is_rejected_genre(entry, article)
+                self.assertEqual(
+                    genre, 'video',
+                    f"{title!r} is the genre the operator rejected",
+                )
+                self.assertTrue(markers)
+
+    def test_reveal_language_does_not_rescue_a_subject_position_video(self):
+        """Justifies NOT adding reveal words as a blanket negative signal:
+        the operator's own required case «Watch: FIRST LOOK at …» carries
+        reveal language and must still drop. Suppression would have to be
+        limited to branch (B), where it would instead punch a hole through
+        «Video review: … reveals …» — a real video review."""
+        entry, article = self._entry(
+            'Watch: first look at the 2027 HW Nationals mainline')
+        self.assertEqual(_is_rejected_genre(entry, article)[0], 'video')
+
+    def test_the_slug_alone_cannot_prove_subject_position(self):
+        """Subject position is a TITLE property (it needs word order and
+        punctuation a slug does not preserve). A reveal whose slug happens
+        to start with the genre word must survive."""
+        entry = {
+            'title': 'Mattel drops video revealing the 2027 Corvette Z06',
+            'link': 'https://example.com/2026/07/video-revealing-z06.html',
+        }
+        article = {'title': entry['title'], 'paragraphs': ['Body.']}
+        self.assertEqual(_is_rejected_genre(entry, article), (None, []))
+
+
 class TestContentGatePrecedence(_ContentGateFixtures, unittest.TestCase):
     """HOLD beats DROP. The incident post is about a poster AND says «no
     vídeo abaixo» — it must reach the operator for a decision, not be
@@ -1455,6 +1577,8 @@ class TestContentGateMarkerSets(unittest.TestCase):
     ALL_TIERS = (
         '_HOLD_TITLE_MARKERS',
         '_GENRE_VIDEO_MARKERS',
+        '_GENRE_VIDEO_LEAD_ONLY_MARKERS',
+        '_GENRE_VIDEO_REVIEW_MARKERS',
         '_GENRE_EVENT_NAME_MARKERS',
         '_GENRE_EVENT_ORG_MARKERS',
     )
@@ -1499,6 +1623,7 @@ class TestContentGateMarkerSets(unittest.TestCase):
         for name, folded_name in (
             ('_HOLD_TITLE_MARKERS', '_HOLD_TITLE_FOLDED'),
             ('_GENRE_VIDEO_MARKERS', '_GENRE_VIDEO_FOLDED'),
+            ('_GENRE_VIDEO_REVIEW_MARKERS', '_GENRE_VIDEO_REVIEW_FOLDED'),
             ('_GENRE_EVENT_NAME_MARKERS', '_GENRE_EVENT_NAME_FOLDED'),
             ('_GENRE_EVENT_ORG_MARKERS', '_GENRE_EVENT_ORG_FOLDED'),
         ):
@@ -1507,6 +1632,48 @@ class TestContentGateMarkerSets(unittest.TestCase):
                     {m for m, _f in getattr(news_bot, folded_name)},
                     set(getattr(news_bot, name)),
                 )
+
+    def test_no_review_marker_contains_a_video_marker(self):
+        """Double-count guard (the promo filter's round-1 bug): a review
+        co-marker like 'case unboxing' would supply BOTH signals from one
+        phrase and silently collapse the two-signal bar back to one."""
+        video = [news_bot._promo_fold(m).strip()
+                 for m in news_bot._GENRE_VIDEO_MARKERS]
+        for marker in news_bot._GENRE_VIDEO_REVIEW_MARKERS:
+            folded = news_bot._promo_fold(marker)
+            for word in video:
+                with self.subTest(review=marker, video=word):
+                    self.assertNotIn(
+                        f' {word} ', folded,
+                        f"review marker {marker!r} contains video marker "
+                        f"{word!r} — one phrase would satisfy both signals",
+                    )
+
+    def test_lead_markers_are_the_union_of_anywhere_and_lead_only(self):
+        """Subject position must consider EVERY genre word; a word missing
+        here would be undetectable in the «Vídeo: …» headline form."""
+        self.assertEqual(
+            set(news_bot._GENRE_VIDEO_LEAD_MARKERS),
+            set(news_bot._GENRE_VIDEO_MARKERS)
+            | set(news_bot._GENRE_VIDEO_LEAD_ONLY_MARKERS),
+        )
+        # Every one of them is reachable from the compiled lead regexes.
+        for marker in news_bot._GENRE_VIDEO_LEAD_MARKERS:
+            token = news_bot._promo_fold(marker).strip()
+            with self.subTest(marker=marker):
+                self.assertEqual(
+                    news_bot._genre_video_subject_marker(f'{token}: x'),
+                    f'{marker}:',
+                )
+
+    def test_np_heads_contain_no_verbs_that_would_reopen_the_fp(self):
+        """The noun-phrase branch is what separates «Unboxing THE case»
+        from «Unboxing SURPRISES us». Any verb (or 'out') slipping into
+        this closed-class list re-opens F1/F2."""
+        for forbidden in ('out', 'surprises', 'revela', 'reveals',
+                          'shows', 'mostra', 'revealing'):
+            with self.subTest(word=forbidden):
+                self.assertNotIn(forbidden, news_bot._GENRE_VIDEO_NP_HEADS)
 
     def test_content_gate_markers_do_not_collide_with_promo_markers(self):
         """The two filters run back to back on the same article; an

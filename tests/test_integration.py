@@ -68,47 +68,86 @@ UTC = dt.timezone.utc
 
 
 class _IntegrationBase(unittest.TestCase):
-    """Tempfile DB + safe env-var stubs, shared by every test class below."""
+    """Tempfile DB + safe env-var stubs, shared by every test class below.
+
+    Cleanup uses ``addCleanup``, NOT a ``tearDown`` chain (2026-07-25 —
+    this was a real intermittent-flake source). The old ``tearDown`` stopped
+    seven patchers with seven sequential statements: the FIRST one to raise
+    aborted the rest, and ``notify_patcher`` sat fifth in that line. Leaking
+    it left ``news_bot.send_admin_notification`` replaced by a MagicMock for
+    the REST OF THE SESSION, so unrelated tests that assert on the real
+    function (``test_news_bot_dispatcher``, ``test_no_token_leak_in_logs``)
+    failed far away from the actual culprit — the classic "fails only in
+    combination, never in isolation" signature.
+
+    ``addCleanup`` fixes it structurally: every registered cleanup runs even
+    if an earlier one raises, and each is registered the instant its patch
+    starts, so a failure part-way through ``setUp`` cannot leak the patches
+    that already started either.
+
+    Ordering contract for subclasses: cleanups run LIFO, so a subclass that
+    stops ``notify_patcher`` in its own ``setUp`` and re-arms it with
+    ``self.addCleanup(self.notify_patcher.start)`` is correctly paired —
+    its ``start`` runs BEFORE this class's ``stop``. The stop below is also
+    tolerant of an already-stopped patcher, so the older
+    ``tearDown``-based subclasses in this file keep working unchanged.
+    """
 
     def setUp(self):
         self.db_fd, self.db_path = tempfile.mkstemp(suffix='.db')
         os.close(self.db_fd)
+        self.addCleanup(self._unlink_db)
         # ``patch('news_bot.DB_FILE', ...)`` reaches outage_state too —
         # outage_state._connect() reads ``news_bot.DB_FILE`` at call time.
-        self.db_patcher = patch('news_bot.DB_FILE', self.db_path)
-        self.db_patcher.start()
+        self.db_patcher = self._start_patch(
+            patch('news_bot.DB_FILE', self.db_path))
         news_bot.init_db()
-        self.token_patcher = patch('news_bot.TELEGRAM_BOT_TOKEN', 'mock_token')
-        self.channel_patcher = patch('news_bot.TELEGRAM_CHANNEL_ID', '@mock_channel')
-        self.admin_patcher = patch('news_bot.TELEGRAM_ADMIN_ID', '@admin')
-        self.token_patcher.start()
-        self.channel_patcher.start()
-        self.admin_patcher.start()
+        self.token_patcher = self._start_patch(
+            patch('news_bot.TELEGRAM_BOT_TOKEN', 'mock_token'))
+        self.channel_patcher = self._start_patch(
+            patch('news_bot.TELEGRAM_CHANNEL_ID', '@mock_channel'))
+        self.admin_patcher = self._start_patch(
+            patch('news_bot.TELEGRAM_ADMIN_ID', '@admin'))
         # Silence admin notifications by default. Individual tests stop
         # this patch and introspect the mock when they care.
         self.notify_patcher = patch('news_bot.send_admin_notification')
         self.mock_notify = self.notify_patcher.start()
+        self.addCleanup(self._stop_quietly, self.notify_patcher)
         # Mattel source returns nothing unless a test overrides it.
-        self.mattel_patcher = patch('news_bot.fetch_mattel_news', return_value=[])
-        self.mattel_patcher.start()
+        self.mattel_patcher = self._start_patch(
+            patch('news_bot.fetch_mattel_news', return_value=[]))
         # Orangetrack source returns nothing unless a test overrides it
         # (avoids real network calls to orangetrackdiecast.com). Patch
         # SOURCES to a narrower list — patching the function attribute
         # alone doesn't work because SOURCES holds the original reference.
-        self.sources_patcher = patch(
+        self.sources_patcher = self._start_patch(patch(
             'news_bot.SOURCES',
             [news_bot._fetch_rss_entries, news_bot._fetch_mattel_entries],
-        )
-        self.sources_patcher.start()
+        ))
 
-    def tearDown(self):
-        self.db_patcher.stop()
-        self.token_patcher.stop()
-        self.channel_patcher.stop()
-        self.admin_patcher.stop()
-        self.notify_patcher.stop()
-        self.mattel_patcher.stop()
-        self.sources_patcher.stop()
+    def _start_patch(self, patcher):
+        """Start ``patcher`` and register its stop immediately."""
+        patcher.start()
+        self.addCleanup(self._stop_quietly, patcher)
+        return patcher
+
+    @staticmethod
+    def _stop_quietly(patcher):
+        """Stop a patcher, tolerating one a subclass already stopped.
+
+        Subclasses in this file legitimately stop ``notify_patcher`` inside
+        their own ``setUp`` so a per-test ``@patch`` can own the name. If
+        such a test errors before re-arming it, the unpaired stop here would
+        raise and — before ``addCleanup`` — take the remaining cleanups with
+        it. Swallowing only this specific condition keeps cleanup total.
+        """
+        try:
+            patcher.stop()
+        except RuntimeError:
+            # "stop called on unstarted patcher" — already stopped.
+            pass
+
+    def _unlink_db(self):
         if os.path.exists(self.db_path):
             os.unlink(self.db_path)
 
@@ -124,17 +163,98 @@ class _PrepPhaseBase(_IntegrationBase):
         super().setUp()
         # Task 8's distributed-publish loop sleeps until each slot. For
         # prep-only invariants that's irrelevant — neuter sleep entirely.
-        self.sleep_patcher = patch('news_bot.time.sleep')
-        self.sleep_patcher.start()
+        self.sleep_patcher = self._start_patch(patch('news_bot.time.sleep'))
         # Make sure the publish loop is a no-op for prep-only tests so we
         # only assert what landed in pending_articles.
-        self.fallback_patcher = patch('news_bot._fallback_publish')
-        self.fallback_patcher.start()
+        self.fallback_patcher = self._start_patch(
+            patch('news_bot._fallback_publish'))
 
-    def tearDown(self):
-        self.fallback_patcher.stop()
-        self.sleep_patcher.stop()
-        super().tearDown()
+
+class TestIntegrationBaseCleanupIsolation(unittest.TestCase):
+    """Regression guard for the 2026-07-25 cross-test leak.
+
+    ``_IntegrationBase`` patches seven module attributes, and several
+    subclasses deliberately stop ``notify_patcher`` in their own ``setUp``
+    so a per-test ``@patch`` can own the name. Under the old sequential
+    ``tearDown`` a single unpaired/raising stop aborted the remaining
+    stops, leaving ``news_bot.send_admin_notification`` as a MagicMock for
+    the rest of the session — which then failed unrelated tests that
+    assert on the REAL function (``test_news_bot_dispatcher``,
+    ``test_no_token_leak_in_logs``), far away from the culprit.
+
+    These tests run a deliberately broken inner TestCase and assert the
+    module is left exactly as it was found.
+    """
+
+    ATTRS = ('send_admin_notification', 'DB_FILE', 'TELEGRAM_BOT_TOKEN',
+             'TELEGRAM_CHANNEL_ID', 'TELEGRAM_ADMIN_ID', 'SOURCES',
+             'fetch_mattel_news')
+
+    def _snapshot(self):
+        return {name: getattr(news_bot, name) for name in self.ATTRS}
+
+    def _assert_restored(self, before):
+        for name, value in before.items():
+            with self.subTest(attr=name):
+                self.assertIs(
+                    getattr(news_bot, name), value,
+                    f"news_bot.{name} leaked out of the test case — "
+                    f"every later test in the session now sees a stub",
+                )
+
+    def test_cleanup_is_total_when_a_test_errors_after_stopping_a_patcher(self):
+        before = self._snapshot()
+
+        class _Leaky(_IntegrationBase):
+            def setUp(inner):
+                super().setUp()
+                # The pattern used by TestContentGateIntake &co.
+                inner.notify_patcher.stop()
+
+            def runTest(inner):
+                raise RuntimeError('boom mid-test')
+
+        result = unittest.TestResult()
+        _Leaky().run(result)
+        self.assertTrue(
+            result.errors, "inner test was supposed to error out")
+        self._assert_restored(before)
+
+    def test_cleanup_is_total_when_setup_itself_raises_part_way(self):
+        before = self._snapshot()
+
+        class _BrokenSetUp(_IntegrationBase):
+            def setUp(inner):
+                super().setUp()
+                raise RuntimeError('boom during setUp')
+
+            def runTest(inner):
+                pass
+
+        result = unittest.TestResult()
+        _BrokenSetUp().run(result)
+        self.assertTrue(result.errors)
+        self._assert_restored(before)
+
+    def test_a_subclass_re_arming_via_addcleanup_pairs_correctly(self):
+        """LIFO ordering contract: a subclass that stops ``notify_patcher``
+        in ``setUp`` and re-arms it with ``addCleanup`` must end up with
+        the patch STOPPED, not left running."""
+        before = self._snapshot()
+
+        class _ReArming(_IntegrationBase):
+            def setUp(inner):
+                super().setUp()
+                inner.notify_patcher.stop()
+                inner.addCleanup(inner.notify_patcher.start)
+
+            def runTest(inner):
+                pass
+
+        result = unittest.TestResult()
+        _ReArming().run(result)
+        self.assertEqual((result.errors, result.failures), ([], []))
+        self._assert_restored(before)
 
 
 # ---------------------------------------------------------------------------
@@ -3910,13 +4030,14 @@ class TestResolveHoldCallback(_IntegrationBase):
 
     def setUp(self):
         super().setUp()
-        self.numeric_admin_patcher = patch(
-            'news_bot.TELEGRAM_ADMIN_ID', str(self.ADMIN_ID))
-        self.numeric_admin_patcher.start()
-
-    def tearDown(self):
-        self.numeric_admin_patcher.stop()
-        super().tearDown()
+        # addCleanup, not a tearDown pair: cleanup is registered the
+        # instant the patch starts, so a failure LATER in setUp can never
+        # leak a patched module attribute into the rest of the run (the
+        # shape that turns one broken test into a cascade of unrelated
+        # ones). Same reason everywhere in this feature's classes.
+        patcher = patch('news_bot.TELEGRAM_ADMIN_ID', str(self.ADMIN_ID))
+        patcher.start()
+        self.addCleanup(patcher.stop)
 
     # -- helpers ----------------------------------------------------------
 
@@ -3935,7 +4056,8 @@ class TestResolveHoldCallback(_IntegrationBase):
         })
 
     def _stage_token(self, link, token='tok-hold-1234'):
-        pending_articles_repo.put_review_token(token, link)
+        pending_articles_repo.put_review_token(
+            token, link, kind=pending_articles_repo.REVIEW_TOKEN_KIND_HOLD)
         return token
 
     def _in_processed_news(self, link):
@@ -4132,13 +4254,9 @@ class TestReviewCallbackGrammarsCoexist(_IntegrationBase):
 
     def setUp(self):
         super().setUp()
-        self.numeric_admin_patcher = patch(
-            'news_bot.TELEGRAM_ADMIN_ID', str(self.ADMIN_ID))
-        self.numeric_admin_patcher.start()
-
-    def tearDown(self):
-        self.numeric_admin_patcher.stop()
-        super().tearDown()
+        patcher = patch('news_bot.TELEGRAM_ADMIN_ID', str(self.ADMIN_ID))
+        patcher.start()
+        self.addCleanup(patcher.stop)
 
     def test_parser_accepts_both_grammars(self):
         self.assertEqual(
@@ -4199,6 +4317,84 @@ class TestReviewCallbackGrammarsCoexist(_IntegrationBase):
             'cancel', 'tok-dd', self.ADMIN_ID)
         self.assertEqual(status, "✅ Отменено оператором")
         self.assertIsNone(pending_articles_repo.get_pending(link))
+
+    # -- SEC-CG-2: cross-grammar token confusion --------------------------
+
+    def test_dedup_token_redeemed_by_the_hold_resolver_is_refused(self):
+        """Audit SEC-CG-2, direction (a): a token minted for an ordinary
+        [E014] row must not let «🚫 Не публиковать» from the HOLD keyboard
+        skip a NON-held article. Refused as stale, no state change, and
+        the token survives so its own buttons still work."""
+        link = 'https://example.com/dedup-token-abuse'
+        _seed_pending_row(link)
+        pending_articles_repo.put_review_token(
+            'tok-x', link,
+            kind=pending_articles_repo.REVIEW_TOKEN_KIND_DEDUP)
+
+        for action in ('reject', 'approve'):
+            with self.subTest(action=action):
+                status, answer = news_bot.resolve_hold_callback(
+                    action, 'tok-x', self.ADMIN_ID)
+                self.assertEqual(status, "⚠️ Кнопка устарела")
+                self.assertEqual(answer, "⚠️ Кнопка устарела")
+                # Article untouched — still queued, never skipped.
+                self.assertIsNotNone(
+                    pending_articles_repo.get_pending(link))
+                # Token NOT consumed.
+                self.assertEqual(
+                    pending_articles_repo.get_review_token_link('tok-x'), link)
+
+        # ...and the legitimate [E014] button still resolves afterwards.
+        status, _ = news_bot.resolve_dedup_callback(
+            'cancel', 'tok-x', self.ADMIN_ID)
+        self.assertEqual(status, "✅ Отменено оператором")
+
+    def test_hold_token_redeemed_by_the_dedup_resolver_is_refused(self):
+        """Audit SEC-CG-2, direction (b) — the worse one: «👍 Оставить»
+        on a HOLD token used to consume the token with NO state change,
+        leaving the held article permanently orphaned (frozen, no live
+        button, no re-mint path, only DB surgery). Must be refused
+        WITHOUT consuming the token."""
+        link = 'https://example.com/hold-token-abuse'
+        pending_articles_repo.insert_pending({
+            'link': link, 'source_name': 't-hunted', 'feed_url': None,
+            'title': 'Poster post', 'subtitle': '',
+            'paragraphs': ['p'], 'images': [], 'blocks': None,
+            'pub_date': '2026-07-25', 'hold_reason': 'poster',
+        })
+        pending_articles_repo.put_review_token(
+            'tok-y', link, kind=pending_articles_repo.REVIEW_TOKEN_KIND_HOLD)
+
+        for action in ('keep', 'cancel'):
+            with self.subTest(action=action):
+                status, _ = news_bot.resolve_dedup_callback(
+                    action, 'tok-y', self.ADMIN_ID)
+                self.assertEqual(status, "⚠️ Кнопка устарела")
+                # Still held, token still live.
+                self.assertEqual(
+                    pending_articles_repo.get_pending(link)['hold_reason'],
+                    'poster')
+                self.assertEqual(
+                    pending_articles_repo.get_review_token_link('tok-y'), link)
+
+        # NOT orphaned: the real [E036] button still releases it.
+        status, _ = news_bot.resolve_hold_callback(
+            'approve', 'tok-y', self.ADMIN_ID)
+        self.assertEqual(status, "✅ Одобрено — выйдет в ближайший слот")
+        self.assertIn(
+            link, [r['link'] for r in pending_articles_repo.list_pending()])
+
+    def test_cross_grammar_refusal_runs_after_the_admin_gate(self):
+        """Order matters: a non-admin press is still ignored outright
+        (``(None, "")``), never answered with a kind-mismatch message that
+        would confirm the token exists."""
+        link = 'https://example.com/hold-token-nonadmin'
+        pending_articles_repo.put_review_token(
+            'tok-z', link, kind=pending_articles_repo.REVIEW_TOKEN_KIND_HOLD)
+        self.assertEqual(
+            news_bot.resolve_dedup_callback('keep', 'tok-z', self.ADMIN_ID + 1),
+            (None, ""),
+        )
 
     def test_handler_dispatches_each_grammar_to_its_own_resolver(self):
         """The listener's dispatch, not just the parser: an ``hd:`` press
@@ -4263,17 +4459,16 @@ class TestContentGateIntake(_PrepPhaseBase):
     def setUp(self):
         super().setUp()
         self.notify_patcher.stop()
+        # Re-arm the base silencer FIRST (LIFO cleanup order means it runs
+        # last), so _IntegrationBase.tearDown always has something to stop
+        # even if the patch below fails to start.
+        self.addCleanup(self.notify_patcher.start)
         # SEC-A8-1: the [E036] send site gates buttons on
         # _review_listener_enabled() (flag + token + NUMERIC admin); the
         # base class patches a non-numeric '@admin'.
-        self.numeric_admin_patcher = patch(
-            'news_bot.TELEGRAM_ADMIN_ID', '424242')
-        self.numeric_admin_patcher.start()
-
-    def tearDown(self):
-        self.numeric_admin_patcher.stop()
-        self.notify_patcher.start()
-        super().tearDown()
+        patcher = patch('news_bot.TELEGRAM_ADMIN_ID', '424242')
+        patcher.start()
+        self.addCleanup(patcher.stop)
 
     # -- helpers ----------------------------------------------------------
 

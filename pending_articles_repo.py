@@ -201,6 +201,113 @@ def _connect() -> sqlite3.Connection:
 # Schema
 # ---------------------------------------------------------------------------
 
+class SchemaMigrationError(RuntimeError):
+    """A column migration in ``init_schema`` did not take effect.
+
+    Raised LOUDLY and early (audit SEC-CG-1). The alternative — swallowing
+    the failure — is far worse than a failed startup: every-tick queries
+    (`list_pending`, `count_pending`, `insert_pending`) name the migrated
+    columns unconditionally, so a silently-absent column turns into
+    `no such column` inside `job()` on every tick and restart, with
+    nothing in the logs pointing at the migration.
+    """
+
+
+#: SQLite's error text for "this column is already there". The ONLY
+#: OperationalError the column migration may treat as success — everything
+#: else (`database is locked`, `no such table`, disk I/O) means the ALTER
+#: did not happen and must not be mistaken for an already-migrated DB.
+_DUPLICATE_COLUMN_ERROR = 'duplicate column name'
+
+
+def _column_exists(conn: sqlite3.Connection, table: str, column: str) -> bool:
+    """True iff ``table`` already has ``column``.
+
+    Uses the ``pragma_table_info`` table-valued function rather than the
+    ``PRAGMA table_info(x)`` statement form specifically so the table name
+    goes through a ``?`` placeholder — no SQL string interpolation
+    anywhere in this module (``TestSqlAudit``).
+    """
+    rows = conn.execute(
+        "SELECT name FROM pragma_table_info(?)", (table,),
+    ).fetchall()
+    return any(r[0] == column for r in rows)
+
+
+def _ensure_column(conn: sqlite3.Connection, table: str, column: str,
+                   ddl: str) -> None:
+    """Idempotently add ``column`` to ``table``, VERIFYING the result.
+
+    SQLite has no ``ADD COLUMN IF NOT EXISTS``. The historical pattern here
+    was `try: ALTER / except sqlite3.OperationalError: pass`, which cannot
+    tell "already migrated" from "the ALTER failed" — a writer holding an
+    IMMEDIATE lock past the busy timeout raises `database is locked`, also
+    an OperationalError, and the migration would report success with the
+    column absent (audit SEC-CG-1).
+
+    Three steps: check → ALTER only if genuinely missing → re-read and
+    confirm. A `duplicate column name` error is the one benign outcome
+    (another process won the race between our check and our ALTER, so the
+    column IS there); anything else is logged and raised.
+
+    ``ddl`` is a module-level literal, never caller data — the parameters
+    exist so the check and the statement cannot drift apart.
+    """
+    if _column_exists(conn, table, column):
+        return
+    try:
+        conn.execute(ddl)
+    except sqlite3.OperationalError as exc:
+        if _DUPLICATE_COLUMN_ERROR in str(exc).lower():
+            # Raced by a concurrent init_schema — the column is present.
+            return
+        logger.error(
+            "schema migration failed: could not add %s.%s (%s: %s)",
+            table, column, type(exc).__name__, exc,
+        )
+        raise SchemaMigrationError(
+            f"could not add column {table}.{column}: {exc}"
+        ) from exc
+    if not _column_exists(conn, table, column):
+        # ALTER reported success but the column is not there. Should be
+        # unreachable; treated as fatal rather than trusted.
+        logger.error(
+            "schema migration verification failed: %s.%s still missing "
+            "after ALTER reported success", table, column,
+        )
+        raise SchemaMigrationError(
+            f"column {table}.{column} missing after a successful ALTER"
+        )
+
+
+#: Column migrations applied by ``init_schema``, as
+#: ``(table, column, DDL literal)``. The table/column pair drives the
+#: existence check; the DDL is a constant string (no interpolation).
+_COLUMN_MIGRATIONS = (
+    # 2026-04-30 (manual-review-workflow, Decision 9 idempotency): preserve
+    # telegraph_url + telegraph_path on the failed row so retry_from_failed
+    # can restore them and a retry doesn't create a second Telegraph page.
+    ('failed_articles', 'telegraph_url',
+     "ALTER TABLE failed_articles ADD COLUMN telegraph_url TEXT"),
+    ('failed_articles', 'telegraph_path',
+     "ALTER TABLE failed_articles ADD COLUMN telegraph_path TEXT"),
+    # 2026-06-XX (cross-source-dedup, Decision 11): model fingerprint JSON
+    # on both pending and published.
+    ('pending_articles', 'model_fingerprint',
+     "ALTER TABLE pending_articles ADD COLUMN model_fingerprint TEXT"),
+    ('published_articles', 'model_fingerprint',
+     "ALTER TABLE published_articles ADD COLUMN model_fingerprint TEXT"),
+    # 2026-07-25 (content-gate): nullable TEXT holding the matched
+    # content-gate markers. NULL (what every pre-migration row gets for
+    # free) means "publishable"; non-NULL means "HELD, awaiting the
+    # operator's «✅ Опубликовать»" and is filtered out of list_pending /
+    # count_pending. Nullable + no default, so the ALTER is safe on the
+    # live prod DB with rows in it.
+    ('pending_articles', 'hold_reason',
+     "ALTER TABLE pending_articles ADD COLUMN hold_reason TEXT"),
+)
+
+
 def init_schema(conn: sqlite3.Connection) -> None:
     """Create the four feature tables if missing. Idempotent.
 
@@ -216,35 +323,12 @@ def init_schema(conn: sqlite3.Connection) -> None:
     conn.execute(_FAILED_DDL)
     conn.execute(_BOT_STATE_DDL)
 
-    # Migration (2026-04-30): preserve telegraph_url + telegraph_path on
-    # the failed row so ``retry_from_failed`` can restore them and a
-    # retry doesn't create a second Telegraph page (Decision 9 idempotency).
-    # SQLite has no ``ADD COLUMN IF NOT EXISTS``; use a try/except so the
-    # ALTER is a no-op on already-migrated DBs.
-    #
-    # Migration (2026-06-XX, cross-source-dedup, Decision 11): store the
-    # model fingerprint JSON on both pending and published — same idempotent
-    # try/except OperationalError pattern.
-    #
-    # Migration (2026-07-25, content-gate): ``pending_articles.hold_reason``
-    # — nullable TEXT holding the matched content-gate markers. NULL (the
-    # value every pre-migration row gets for free) means "publishable";
-    # non-NULL means "HELD, awaiting the operator's «✅ Опубликовать»" and
-    # is filtered out of ``list_pending`` / ``count_pending``. Nullable +
-    # no default, so the ALTER is safe on the live prod DB with rows in it.
-    for ddl in (
-        "ALTER TABLE failed_articles ADD COLUMN telegraph_url TEXT",
-        "ALTER TABLE failed_articles ADD COLUMN telegraph_path TEXT",
-        "ALTER TABLE pending_articles ADD COLUMN model_fingerprint TEXT",
-        "ALTER TABLE published_articles ADD COLUMN model_fingerprint TEXT",
-        "ALTER TABLE pending_articles ADD COLUMN hold_reason TEXT",
-    ):
-        try:
-            conn.execute(ddl)
-        except sqlite3.OperationalError:
-            # Column already exists — idempotent path on subsequent
-            # init_schema calls.
-            pass
+    # Column migrations (see ``_COLUMN_MIGRATIONS`` for what and why).
+    # Each one is check → ALTER-if-missing → verify (``_ensure_column``);
+    # a migration that does not take effect raises SchemaMigrationError
+    # rather than silently leaving the column absent (audit SEC-CG-1).
+    for table, column, ddl in _COLUMN_MIGRATIONS:
+        _ensure_column(conn, table, column, ddl)
     conn.commit()
 
 
@@ -1205,25 +1289,52 @@ def mark_dedup_degraded_pinged(conn: sqlite3.Connection) -> None:
 # ``finally`` — because the callers (listener thread, alert sender) hold no
 # connection of their own.
 
+#: Token KINDS — which keyboard minted a token (audit SEC-CG-2). The
+#: token store is one flat namespace, and dispatch is by action word, so
+#: without this a token minted for one keyboard could be redeemed by the
+#: other resolver. Reproduced both directions: a dedup token redeemed as
+#: ``hold``/``reject`` silently ``skip_pending``s a NON-held article; a
+#: hold token redeemed as ``dedup``/``keep`` consumes the token with no
+#: state change, leaving the held article PERMANENTLY orphaned (frozen,
+#: no live button, no re-mint path). Each resolver checks the kind and
+#: treats a mismatch as a stale button — without consuming the token.
+REVIEW_TOKEN_KIND_DEDUP = 'dedup'
+REVIEW_TOKEN_KIND_HOLD = 'hold'
+_REVIEW_TOKEN_KINDS = (REVIEW_TOKEN_KIND_DEDUP, REVIEW_TOKEN_KIND_HOLD)
+
+#: Separator between kind and link in the stored value.
+_REVIEW_TOKEN_SEP = '|'
+
+
 def _review_token_key(token: str) -> str:
     """Build the bot_state key for a review token: prefix + token."""
     return f"{_KEY_REVIEW_TOKEN_PREFIX}{token}"
 
 
-def put_review_token(token: str, link: str) -> None:
-    """UPSERT ``review_token:<token>`` → ``link`` in ``bot_state``.
+def put_review_token(token: str, link: str,
+                     kind: str = REVIEW_TOKEN_KIND_DEDUP) -> None:
+    """UPSERT ``review_token:<token>`` → ``<kind>|<link>`` in ``bot_state``.
 
-    A repeat put with the same token overwrites the stored link.
+    A repeat put with the same token overwrites the stored value.
     ``BEGIN IMMEDIATE`` mirrors ``outage_state._set`` — grab the write
     lock up front so the busy handler (not a lock-upgrade deadlock)
     resolves contention with the publish loop.
+
+    ``kind`` records WHICH keyboard minted the token (audit SEC-CG-2).
+    Encoded in the VALUE rather than the key so the change needs no
+    migration and no janitor: tokens written before this change have no
+    kind prefix and read back as ``dedup``, which is what they are — the
+    hold keyboard did not exist then. Defaults to ``dedup`` for the same
+    reason.
     """
+    if kind not in _REVIEW_TOKEN_KINDS:
+        raise ValueError(f"unknown review token kind: {kind!r}")
     conn = _connect()
     try:
         conn.execute("BEGIN IMMEDIATE")
         conn.execute(
             "INSERT OR REPLACE INTO bot_state (key, value) VALUES (?, ?)",
-            (_review_token_key(token), link),
+            (_review_token_key(token), f"{kind}{_REVIEW_TOKEN_SEP}{link}"),
         )
         conn.commit()
     except Exception:
@@ -1233,18 +1344,46 @@ def put_review_token(token: str, link: str) -> None:
         conn.close()
 
 
-def get_review_token_link(token: str) -> Optional[str]:
-    """Return the link stored for ``token``, or ``None`` if unknown
-    (expired, bot restarted, already consumed)."""
+def get_review_token(token: str) -> Optional[tuple]:
+    """Return ``(kind, link)`` for ``token``, or ``None`` if unknown
+    (expired, bot restarted, already consumed).
+
+    Tolerates the pre-SEC-CG-2 value format (a bare link with no kind
+    prefix) by reporting it as ``dedup`` — the only keyboard that existed
+    when such a token could have been written. Splits on the FIRST
+    separator and only when the prefix is a known kind, so a link that
+    happens to contain ``|`` is never mangled.
+    """
     conn = _connect()
     try:
         row = conn.execute(
             "SELECT value FROM bot_state WHERE key=?",
             (_review_token_key(token),),
         ).fetchone()
-        return row[0] if row is not None else None
     finally:
         conn.close()
+    if row is None:
+        return None
+    value = row[0]
+    if not isinstance(value, str):
+        return None
+    prefix, sep, rest = value.partition(_REVIEW_TOKEN_SEP)
+    if sep and prefix in _REVIEW_TOKEN_KINDS:
+        return (prefix, rest)
+    # Legacy value: bare link, minted before token kinds existed.
+    return (REVIEW_TOKEN_KIND_DEDUP, value)
+
+
+def get_review_token_link(token: str) -> Optional[str]:
+    """Return just the link stored for ``token``, or ``None`` if unknown.
+
+    Kind-agnostic convenience wrapper over ``get_review_token`` — used by
+    the listener's decision log, which records what the operator acted on
+    regardless of which keyboard it came from. Resolvers must use
+    ``get_review_token`` so they can enforce the kind.
+    """
+    entry = get_review_token(token)
+    return entry[1] if entry is not None else None
 
 
 def delete_review_token(token: str) -> None:

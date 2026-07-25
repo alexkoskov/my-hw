@@ -1,0 +1,220 @@
+{
+  "reviewer": "test-reviewer",
+  "feature": "content-gate",
+  "commit": "98cadd7be0e0536a34a00f353252f34ad49c847d",
+  "date": "2026-07-25",
+  "verdict": "no-ship-until-fixed",
+  "summary": "Mechanically the feature is excellent: 11/11 claimed mutations verified (4 re-run directly, all correctly break the intended test), tree restored clean, full suite at 1520 passed/187 subtests both before and after. Test quality is high (real assertions, boundary coverage, structural invariants on marker sets, a genuine end-to-end integration test that drives the real slot-loop selection path rather than mocking it away). BUT the false-positive hunt requested by the task surfaced exactly the risk it was most worried about: a genuine car-REVEAL headline that merely contains the word 'video' (EN 'video' / PT 'vídeo' used as an ordinary noun, not as 'this is a video review') is unconditionally DROPPED and permanently lost, in both English and Portuguese. No test in the +130 added covers this pattern — every existing video-negative test guards against the word appearing in the BODY, none guard against 'video' being used as ordinary headline language while the SUBJECT is still a car. Given DROP is irreversible and the video rule (unlike the event rule) never got the two-signal AND-guard the team explicitly designed for the convention-name case, this is a real, not contrived, gap that should be closed (or the video rule's asymmetry consciously accepted and documented) before shipping.",
+  "findings": [
+    {
+      "id": "F1-video-word-false-drop",
+      "severity": "high",
+      "category": "false-negative-detection (results in false DROP)",
+      "title": "A genuine car-reveal headline containing the word 'video'/'vídeo' is dropped forever, in both EN and PT",
+      "detail": "Probed directly against _is_rejected_genre: 'Mattel drops video revealing the 2027 Corvette Z06 in Super Treasure Hunt spec' -> ('video', ['vídeo']), and 'Vídeo revela o novo Porsche 911 GT3 RS da linha premium' -> ('video', ['vídeo']). Both are genuine car-reveal headlines, not video reviews/unboxings, yet the single-marker VIDEO rule fires on the bare word. Unlike the EVENT rule -- which the team deliberately hardened with a two-signal AND (event name + organizational word) specifically because a convention NAME alone is not enough to prove the post is ABOUT the convention -- the VIDEO rule has no equivalent guard: the mere word 'video' is treated as sufficient proof the post's SUBJECT is a video review. 'Video reveals the car' and 'video review of the car' are structurally the same to the detector. This is exactly the asymmetry the reviewer was asked to hunt for, and it reproduces on the very first probe.",
+      "reproduction": "python3 -c \"import news_bot as nb; print(nb._is_rejected_genre({'title': 'Mattel drops video revealing the 2027 Corvette Z06 in Super Treasure Hunt spec', 'link': 'https://x/z06'}, {'title': 'Mattel drops video revealing the 2027 Corvette Z06 in Super Treasure Hunt spec'}))\"  -> ('video', ['vídeo'])",
+      "test_gap": "No test in TestIsRejectedGenre (tests/test_relevance_filter.py:1234-1422) or TestContentGateIntake (tests/test_integration.py:4238+) covers a car-reveal headline that USES the word video/watch as ordinary language while the subject is a car, not a review. test_article_that_merely_embeds_a_video_survives (line 1288) only proves the body can mention video; it does not test the word appearing in the TITLE of a genuine reveal. This is the one false-positive angle the marker design (single-marker, no AND-guard) structurally cannot catch, and the suite does not flag it as a known gap the way the event rule's negatives do.",
+      "recommendation": "Either (a) add a secondary signal requirement for the VIDEO rule analogous to the EVENT rule (e.g. require a review/unboxing-shaped co-marker, or exclude common reveal verbs like 'reveals'/'revela' adjacent to 'video'), or (b) if the team consciously accepts this trade-off (mirroring the session doc's stance that some misses are 'uncovered ground, not a regression'), the SESSION doc and code comments should say so explicitly for VIDEO the way they do for the deliberately narrow EVENT rule -- right now the docstring for _is_rejected_genre implies the video rule is precise ('the video has to be the subject') when in practice a two-word verb phrase defeats that intent."
+    },
+    {
+      "id": "F2-unboxing-verb-false-drop",
+      "severity": "medium",
+      "category": "false-negative-detection (results in false DROP)",
+      "title": "'Unboxing' used as an ordinary verb in a reveal headline also drops",
+      "detail": "'Unboxing surprises us: 2027 Toyota Supra revealed in Then and Now series' -> ('video', ['unboxing']). Less likely in practice than F1 (site style guides tend to reserve 'unboxing' for actual unboxing content), but the same structural cause: a single content word is treated as proof of genre regardless of surrounding sentence shape.",
+      "test_gap": "Same as F1 -- not covered by any existing negative test.",
+      "recommendation": "Lower priority than F1; note as the same class of risk. If F1 is fixed with a general mechanism (e.g. requiring the marker to be genre-defining rather than incidental), this case should be swept up by the same fix."
+    },
+    {
+      "id": "F3-incidental-poster-mention-false-hold",
+      "severity": "low",
+      "category": "false-positive-hold (acceptable per design)",
+      "title": "A car reveal that only incidentally mentions 'poster art' in the title holds",
+      "detail": "'First look: 2027 Nissan Skyline GT-R joins the Fast & Furious series, poster art teased' -> hold_markers=['poster']. This is a plausible real headline shape (tie-in franchise poster art mentioned alongside a genuine reveal) that gets held rather than published immediately. Per the team's own stated asymmetry (HOLD costs one button press, DROP is irreversible), this is an accepted and reasonable trade-off, not a defect -- flagging only for completeness since the task asked for this exact scenario.",
+      "test_gap": "Not specifically covered, but the design intent (one marker anywhere in title/slug holds) is thoroughly tested elsewhere (TestHoldForReviewReason), so this is a known and intended consequence of the strict threshold, not an untested edge.",
+      "recommendation": "No action required. Confirms operator intent as implemented."
+    }
+  ],
+  "mutation_verification": {
+    "claimed": 11,
+    "verified_by_reviewer": 4,
+    "method": "Re-introduced each mutation by hand in the working tree, ran the targeted test file(s), confirmed failure, then `git checkout --` to restore, confirming `git diff --stat` was empty before moving to the next. Full suite re-run before and after the whole exercise: 1520 passed / 187 subtests both times.",
+    "results": [
+      {
+        "mutation": "Remove `hold_reason IS NULL` filter from list_pending()",
+        "file": "pending_articles_repo.py",
+        "expected_to_break": "list_pending hold filter",
+        "outcome": "CONFIRMED BREAKS",
+        "failing_tests": [
+          "tests/test_pending_articles_repo.py::TestHoldState::test_list_pending_excludes_held_rows",
+          "tests/test_integration.py::TestResolveHoldCallback::test_held_row_is_never_selected_by_the_slot_loop",
+          "tests/test_integration.py::TestContentGateIntake::test_poster_post_is_staged_but_held"
+        ]
+      },
+      {
+        "mutation": "Drop the organizational-word requirement in _is_rejected_genre's event branch (`if names:` instead of `if names and org:`)",
+        "file": "news_bot.py",
+        "expected_to_break": "event ORG requirement",
+        "outcome": "CONFIRMED BREAKS",
+        "failing_tests": [
+          "tests/test_relevance_filter.py::TestIsRejectedGenre::test_convention_exclusive_car_reveal_survives (4 subtests)",
+          "tests/test_relevance_filter.py::TestIsRejectedGenre::test_event_body_details_do_not_drop_a_car_reveal"
+        ]
+      },
+      {
+        "mutation": "Remove HOLD-before-DROP precedence in job() (drop the `if not hold_markers:` guard so genre-drop runs unconditionally)",
+        "file": "news_bot.py",
+        "expected_to_break": "precedence",
+        "outcome": "CONFIRMED BREAKS",
+        "failing_tests": [
+          "tests/test_integration.py::TestContentGateIntake::test_hold_wins_over_the_genre_drop"
+        ]
+      },
+      {
+        "mutation": "Remove the 'actually held' guard from clear_hold's UPDATE WHERE clause (drop `AND hold_reason IS NOT NULL`)",
+        "file": "pending_articles_repo.py",
+        "expected_to_break": "clear_hold held-check",
+        "outcome": "CONFIRMED BREAKS",
+        "failing_tests": [
+          "tests/test_pending_articles_repo.py::TestHoldState::test_clear_hold_returns_false_when_the_row_is_not_held"
+        ]
+      }
+    ],
+    "not_independently_re_run": [
+      "remove filter from count_pending",
+      "make 'watch' a bare marker",
+      "raise HOLD threshold to 3 markers",
+      "do not write hold_reason to the row",
+      "always advise 'press button' regardless of gate state",
+      "shared dd: prefix across both keyboards",
+      "remove mark_processed pin on genre drop"
+    ],
+    "tree_state_after": "git status --short and git diff --stat both empty; full suite re-run at 1520 passed / 187 subtests, matching the pre-mutation baseline."
+  },
+  "test_quality_assessment": {
+    "test_count_check": "git show diffstat claims +130 tests. Counted new `def test_` methods added by the commit: test_admin_alerts.py +34, test_integration.py +28, test_pending_articles_repo.py +18, test_relevance_filter.py +50 = 130. Matches exactly.",
+    "meaningful_assertions": "Yes throughout the sampled classes (TestHoldForReviewReason, TestIsRejectedGenre, TestContentGatePrecedence, TestContentGateMarkerSets, TestHoldState, TestResolveHoldCallback, TestContentGateIntake). Assertions check real return values (marker lists, DB row state, list_pending/list_held membership) rather than mock-was-called checks.",
+    "boundary_coverage": "Good: word-boundary tests (posterior/cataloguing must not match poster/catalog), char-cap test mirroring the promo filter's 2000-char scan bound, case/accent-fold tests, slug-only vs title-only marker location, empty/malformed/non-dict/non-str/unparseable-URL inputs on both detectors, structural marker-set invariants (tiers non-empty, pairwise disjoint, no two markers fold to the same token, no marker folds to empty, promo/content-gate marker sets do not collide).",
+    "determinism": "No unmocked time.sleep, random, or wall-clock reads found in the new content-gate test code; existing time.sleep patches in test_integration.py predate this diff and are reused correctly. One threading-based test in test_pending_articles_repo.py exists but is pre-existing (not part of this diff) and unrelated to content-gate.",
+    "integration_test_proves_the_core_guarantee": "Yes, verified by reading test_held_row_is_never_selected_by_the_slot_loop (tests/test_integration.py:3952): it seeds a held row and an ordinary row, then drives the REAL selection path -- a while-loop calling list_pending() and news_bot._fallback_publish(rows[0]) repeatedly, with only the outbound Telegram side-effect stubbed -- rather than mocking list_pending or the loop itself. It asserts the held link never appears in the publish call log, remains gettable via get_pending, and still shows up in list_held() afterward. This is a genuine behavioral proof, not a mock-satisfaction test.",
+    "gaps": "The one meaningful coverage gap is F1/F2 above: no test exercises a genre-word (video/vídeo/unboxing) used as ordinary language in a genuine reveal headline. Everything else sampled (HOLD marker set, EVENT AND-guard, precedence, callback grammar coexistence, funnel counters, held_count line, fail-open behavior) is well covered with both positive and adversarial negative cases."
+  },
+  "probe": [
+    {
+      "headline": "Mattel drops video revealing the 2027 Corvette Z06 in Super Treasure Hunt spec",
+      "lang": "en",
+      "hold": false,
+      "dropped": true,
+      "genre": "video",
+      "markers": ["vídeo"]
+    },
+    {
+      "headline": "Vídeo revela o novo Porsche 911 GT3 RS da linha premium",
+      "lang": "pt",
+      "hold": false,
+      "dropped": true,
+      "genre": "video",
+      "markers": ["vídeo"]
+    },
+    {
+      "headline": "Hot Wheels Convention 2026 exclusive Datsun 510 revealed",
+      "lang": "en",
+      "hold": false,
+      "dropped": false,
+      "genre": null,
+      "markers": []
+    },
+    {
+      "headline": "Hot Wheels Convenção 2026: datas e ingressos anunciados",
+      "lang": "pt",
+      "hold": false,
+      "dropped": true,
+      "genre": "event",
+      "markers": ["convenção", "datas", "ingressos"]
+    },
+    {
+      "headline": "Hot Wheels redesigns mainline packaging for 2027",
+      "lang": "en",
+      "hold": true,
+      "dropped": false,
+      "genre": null,
+      "markers": ["packaging"]
+    },
+    {
+      "headline": "First look: 2027 Nissan Skyline GT-R joins the Fast & Furious series, poster art teased",
+      "lang": "en",
+      "hold": true,
+      "dropped": false,
+      "genre": null,
+      "markers": ["poster"]
+    },
+    {
+      "headline": "Unboxing the 2026 H case: full assortment review",
+      "lang": "en",
+      "hold": false,
+      "dropped": true,
+      "genre": "video",
+      "markers": ["unboxing"]
+    },
+    {
+      "headline": "Unboxing surprises us: 2027 Toyota Supra revealed in Then and Now series",
+      "lang": "en",
+      "hold": false,
+      "dropped": true,
+      "genre": "video",
+      "markers": ["unboxing"]
+    },
+    {
+      "headline": "Watch: first look at the 2027 Hot Wheels Nationals mainline",
+      "lang": "en",
+      "hold": false,
+      "dropped": true,
+      "genre": "video",
+      "markers": ["watch:"]
+    },
+    {
+      "headline": "Watch out for these five Treasure Hunts on pegs this month",
+      "lang": "en",
+      "hold": false,
+      "dropped": false,
+      "genre": null,
+      "markers": []
+    },
+    {
+      "headline": "Catálogo 2027 da linha mainline da Hot Wheels vaza online",
+      "lang": "pt",
+      "hold": true,
+      "dropped": false,
+      "genre": null,
+      "markers": ["catálogo"]
+    },
+    {
+      "headline": "Hot Wheels 2027 mainline release dates and case numbers revealed",
+      "lang": "en",
+      "hold": false,
+      "dropped": false,
+      "genre": null,
+      "markers": []
+    },
+    {
+      "headline": "Diecast meetup registration now open for the fall swap meet",
+      "lang": "en",
+      "hold": false,
+      "dropped": true,
+      "genre": "event",
+      "markers": ["meetup", "swap meet", "registration"]
+    },
+    {
+      "headline": "First look at the 2027 Ford Mustang Dark Horse in Super Treasure Hunt trim",
+      "lang": "en",
+      "hold": true,
+      "dropped": false,
+      "genre": null,
+      "markers": ["url:poster"]
+    }
+  ],
+  "ship_recommendation": {
+    "decision": "no-ship-until-F1-addressed",
+    "reasoning": "Engineering quality, mutation coverage, and test discipline are all strong -- this is a well-built feature. But the task's explicit priority was the false-positive (false-DROP) hunt, weighted heavily because a wrong DROP silently and permanently loses a real news story with no recovery path (no timer, no backlog view, nothing -- per the feature's own design). The very first scenario the task asked to check for ('is a car reveal dropped just because the word video is in the title?') reproduces as a genuine, unconditional false DROP in both EN and PT on realistic headline phrasing for this niche (Hot Wheels reveals are frequently announced via video). This is not a contrived adversarial input -- it is squarely inside the feature's stated target genre boundary ('genuine car reveal', not a review). Recommend fixing or consciously and explicitly accepting F1 (with the same level of documented rationale the team gave the EVENT rule's AND-guard) before this ships to prod. Everything else in the diff -- HOLD mechanics, precedence, callback grammar, funnel counters, mutation coverage -- is ready as-is."
+  }
+}

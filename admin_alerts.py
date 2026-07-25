@@ -918,9 +918,37 @@ def alert_dedup_degraded(reason: str) -> str:
     )
 
 
-#: Cap for the untrusted article title rendered in the [E035] ping —
-#: same idea as ``_RECAP_REASON_MAXLEN`` for E034 reasons.
+#: Cap for the untrusted article title rendered in the intake-filter pings
+#: ([E035] promo, [E036] hold, [E037] genre) — same idea as
+#: ``_RECAP_REASON_MAXLEN`` for E034 reasons.
 _PROMO_TITLE_MAXLEN = 200
+
+
+def _intake_alert_title(title) -> str:
+    """Render an untrusted article title for an intake-filter ping.
+
+    Shared by [E035]/[E036]/[E037]: the title is source text, so it is
+    truncated to ``_PROMO_TITLE_MAXLEN`` so a pathological title can't
+    push the ping past Telegram's 4096-char limit (audit SEC-PROMO-4), and
+    a non-str value renders instead of raising (these builders are called
+    from best-effort send sites).
+    """
+    title_s = title if isinstance(title, str) else str(title)
+    if len(title_s) > _PROMO_TITLE_MAXLEN:
+        return title_s[:_PROMO_TITLE_MAXLEN] + "…"
+    return title_s
+
+
+def _intake_alert_markers(markers) -> str:
+    """Render a matched-marker list for an intake-filter ping.
+
+    Markers are our own module constants, so they are safe verbatim; an
+    empty/absent list renders as «—» rather than leaking "None".
+    """
+    try:
+        return ", ".join(str(m) for m in markers) if markers else "—"
+    except Exception:
+        return "—"
 
 
 # ---------------------------------------------------------------------------
@@ -930,23 +958,17 @@ _PROMO_TITLE_MAXLEN = 200
 # ---------------------------------------------------------------------------
 def alert_promo_blocked(link: str, title: str, markers: List[str]) -> str:
     """[E035] intake promo-filter drop. ``markers`` — the matched promo
-    markers from ``news_bot._is_promo_article`` (our own constants, safe
-    to render verbatim); ``title`` is untrusted source text — truncated
-    to ``_PROMO_TITLE_MAXLEN`` so a pathological title can't push the
-    ping past Telegram's 4096-char limit (audit SEC-PROMO-4) — and it
-    passes through the send path's ``_redact_text`` like every other
-    alert."""
+    markers from ``news_bot._is_promo_article``; ``title`` is untrusted
+    source text. Both go through the shared intake-alert renderers above
+    (truncation per audit SEC-PROMO-4), and the whole message passes
+    through the send path's ``_redact_text`` like every other alert."""
     # Подстрока 'Отсечена реклама' — substring-якорь интеграционных
     # тестов, не менять.
-    marker_line = ", ".join(markers) if markers else "—"
-    title_s = title if isinstance(title, str) else str(title)
-    if len(title_s) > _PROMO_TITLE_MAXLEN:
-        title_s = title_s[:_PROMO_TITLE_MAXLEN] + "…"
     return (
         f"[E035] 🛒 Отсечена реклама\n\n"
-        f"Заголовок:\n{title_s}\n\n"
+        f"Заголовок:\n{_intake_alert_title(title)}\n\n"
         f"Ссылка:\n{link}\n\n"
-        f"Сработавшие маркеры: {marker_line}\n\n"
+        f"Сработавшие маркеры: {_intake_alert_markers(markers)}\n\n"
         f"Что произошло:\n"
         f"статья похожа на рекламу магазина,\n"
         f"отброшена до перевода — токены не потрачены.\n\n"
@@ -974,23 +996,6 @@ _GENRE_LABELS = {
     'video': 'видео-обзор',
     'event': 'ивент',
 }
-
-
-def _gate_title(title) -> str:
-    """Truncate an untrusted article title for a content-gate ping — same
-    cap and rationale as ``alert_promo_blocked`` (audit SEC-PROMO-4)."""
-    title_s = title if isinstance(title, str) else str(title)
-    if len(title_s) > _PROMO_TITLE_MAXLEN:
-        return title_s[:_PROMO_TITLE_MAXLEN] + "…"
-    return title_s
-
-
-def _gate_markers(markers) -> str:
-    """Render the matched marker list (our own constants — safe verbatim)."""
-    try:
-        return ", ".join(str(m) for m in markers) if markers else "—"
-    except Exception:
-        return "—"
 
 
 # ---------------------------------------------------------------------------
@@ -1036,9 +1041,9 @@ def alert_held_for_review(link: str, title: str, markers: List[str], *,
         )
     return (
         f"[E036] 🖼 На утверждение\n\n"
-        f"Заголовок:\n{_gate_title(title)}\n\n"
+        f"Заголовок:\n{_intake_alert_title(title)}\n\n"
         f"Ссылка:\n{link}\n\n"
-        f"Сработавшие маркеры: {_gate_markers(markers)}\n\n"
+        f"Сработавшие маркеры: {_intake_alert_markers(markers)}\n\n"
         f"Что произошло:\n"
         f"похоже на пост про постер / каталог / упаковку.\n"
         f"Такие мы не публикуем автоматически — статья\n"
@@ -1083,9 +1088,9 @@ def alert_genre_blocked(link: str, title: str, genre: str,
     return (
         f"[E037] 🚫 Отсечён жанр\n\n"
         f"Жанр: {genre_label}\n\n"
-        f"Заголовок:\n{_gate_title(title)}\n\n"
+        f"Заголовок:\n{_intake_alert_title(title)}\n\n"
         f"Ссылка:\n{link}\n\n"
-        f"Сработавшие маркеры: {_gate_markers(markers)}\n\n"
+        f"Сработавшие маркеры: {_intake_alert_markers(markers)}\n\n"
         f"Что произошло:\n"
         f"такие посты мы не публикуем — статья отброшена\n"
         f"на приёме, до перевода: токены не потрачены.\n\n"
