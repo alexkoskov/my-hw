@@ -1,0 +1,107 @@
+{
+  "reviewer": "test-reviewer",
+  "round": 2,
+  "commitReviewed": "1fe0f38",
+  "baseCommit": "7de12e6",
+  "priorReport": "work/promo-filter-review/test-reviewer.json",
+  "verdict": "conditional-pass",
+  "verdictReason": "All three round-1 blocking/medium findings are genuinely fixed and independently re-verified, not just claimed: the original 10-snippet false-positive probe now returns 0/10 blocked (re-ran verbatim, unmodified), the word-boundary regression test now actually fails under a mutation that reverts word-bounded folding to naive substring matching (round 1's version would NOT have caught that regression), and the fail-open wrapping + input coercion eliminates every crash scenario from round 1's crash probe. The incident case still blocks. HOWEVER: probing the new SELLER-VOICE discriminator specifically (as requested) found a new, narrower false-positive class it introduces — human-interest/interview journalism that quotes a shop owner or community member using first-person 'our store'/'nossa loja' phrasing. 4 of 5 new adversarial-but-legit snippets were blocked, including a plausible lamley-style 'shop closes after 30 years, owner interviewed' piece and a PT t-hunted-style closing-interview piece — genres directly adjacent to the ones this fix was tuned against. Recommend either a small follow-up (don't let a seller-voice hit alone complete the bar together with only generic WEAK words like 'in stock'/'discount' — require a second STRONG, or require an actual CTA-flavored strong marker, not just presence) or an explicit, logged acceptance of this narrower trade-off (the same way SEC-PROMO-3/5 were explicitly accepted in this same commit). Not blocking release given the self-correcting [E035] alert/tuning loop already in place, but should not be left silently unaddressed."
+  ,
+  "round1FindingsStatus": [
+    {
+      "id": "F1",
+      "title": "URL-token STRONG bonus + ordinary commerce vocabulary silently drops real news",
+      "status": "resolved",
+      "verification": "Re-ran the original, unmodified round-1 probe script (10 snippets: mattel_creations_discount, mattel_creations_store_url, premium_line_roundup, hobby_shop_closing_news, mattel_ecommerce_relaunch, pt_restock_loja_url, convention_exclusive_sale, secondary_market_coupon_mention, anniversary_sale_news, target_exclusive_drop) against the new code. Result: 0/10 blocked, matching the coder's claim exactly. The 4 previously-blocked snippets (Mattel Creations store drop, hobby shop closing, Mattel storefront relaunch, PT restock roundup) all now pass. Root-cause fix (URL token demoted STRONG->WEAK, seller-voice gate added) verified directly against source, not just via the new test file."
+    },
+    {
+      "id": "F2",
+      "title": "Word-boundary claim had no regression test that would actually fail if the guard broke",
+      "status": "resolved",
+      "verification": "Monkey-patched _promo_fold to a naive (non-tokenized, non-word-bounded) folder and re-ran TestIsPromoArticle. The NEW test test_word_boundary_guard_is_what_keeps_these_below_the_bar fails cleanly under this mutation (PT fixture: markers become ['nossa loja','estoque','desconto'] instead of [] because 'estoque'/'desconto' would wrongly match inside 'estoques'/'descontos'), proving it is a genuine regression guard — unlike the round-1 test, which passed vacuously regardless of boundary correctness. Two other tests also caught the same mutation as a side effect (marker-list assertions), giving 3 failing tests total under the mutation vs 0 under correct code."
+    },
+    {
+      "id": "F3",
+      "title": "_is_promo_article call site not wrapped in try/except; non-string link/entry crashes",
+      "status": "resolved",
+      "verification": "Re-ran the round-1 crash probe (link=int, link=list, entry=list/non-dict, title=None, paragraphs containing None/int/list items) directly against _is_promo_article: all 5 cases now return a marker list instead of raising. Call site in job() is now wrapped in try/except mirroring the dedup gate's Decision 12 pattern (fail-open, logs and treats as not-promo), and this is covered by a real integration test (test_promo_filter_crash_is_fail_open, patches _is_promo_article to raise and asserts job() doesn't crash and the article still reaches pending_articles)."
+    },
+    {
+      "id": "F4",
+      "title": "(info, positive) Integration re-fetch proof pattern",
+      "status": "unchanged/still-valid",
+      "verification": "No regression; test_promo_article_dropped_at_intake's reset-mock-then-rerun pattern is untouched by this commit."
+    }
+  ],
+  "newProbe_original10_rerun": [
+    {"snippet_id": "mattel_creations_discount", "lang": "EN", "blocked": false, "markers": []},
+    {"snippet_id": "mattel_creations_store_url", "lang": "EN", "blocked": false, "markers": [], "note": "was blocked in round 1 (url:store, store, in stock, discount)"},
+    {"snippet_id": "premium_line_roundup", "lang": "EN", "blocked": false, "markers": []},
+    {"snippet_id": "hobby_shop_closing_news", "lang": "EN", "blocked": false, "markers": [], "note": "was blocked in round 1 (url:shop, on sale, in stock)"},
+    {"snippet_id": "mattel_ecommerce_relaunch", "lang": "EN", "blocked": false, "markers": [], "note": "was blocked in round 1 (shop now, free shipping, url:store, store)"},
+    {"snippet_id": "pt_restock_loja_url", "lang": "PT", "blocked": false, "markers": [], "note": "was blocked in round 1 (url:loja, estoque, desconto)"},
+    {"snippet_id": "convention_exclusive_sale", "lang": "EN", "blocked": false, "markers": []},
+    {"snippet_id": "secondary_market_coupon_mention", "lang": "EN", "blocked": false, "markers": []},
+    {"snippet_id": "anniversary_sale_news", "lang": "EN", "blocked": false, "markers": []},
+    {"snippet_id": "target_exclusive_drop", "lang": "EN", "blocked": false, "markers": []}
+  ],
+  "falsePositiveProbe": [
+    {
+      "snippet": "'After 30 Years, a Beloved Hot Wheels Shop Says Goodbye' (lamleygroup.com/.../hot-wheels-shop-owner-interview-closing.html) — human-interest piece: 'For three decades, collectors up and down the coast made the pilgrimage to this unassuming strip-mall storefront. \"Our store has always focused on giving collectors a place to dig through boxes nobody else bothers with,\" the owner told us in an interview last week. \"We still have plenty in stock, and everything left is at a discount until the doors close for good.\" The closure reflects a broader trend of independent hobby shops struggling against online resellers.'",
+      "lang": "EN",
+      "blocked": true,
+      "markers": ["our store", "in stock", "discount", "url:shop"]
+    },
+    {
+      "snippet": "'Loja histórica de Hot Wheels anuncia fechamento após 15 anos' (t-hunted.blogspot.com/.../loja-historica-fechamento-entrevista.html) — 'Depois de 15 anos atendendo colecionadores na capital, uma loja tradicional de Hot Wheels anunciou o fechamento das portas nesta semana. \"Em nossa loja sempre tivemos o cuidado de separar peças raras para quem realmente entende do assunto\", disse o dono ao anunciar o fim das atividades. \"Ainda temos bom estoque, e estamos com desconto em tudo até o último dia.\" A notícia pegou de surpresa boa parte da comunidade de colecionadores da região.' — the coordinator's suggested owner-quote-in-closing-news scenario, reproduced almost verbatim.",
+      "lang": "PT",
+      "blocked": true,
+      "markers": ["nossa loja", "loja", "estoque", "desconto", "url:loja"]
+    },
+    {
+      "snippet": "'Q&A: The Founder of a Legendary Hot Wheels Shop Looks Back' (lamleygroup.com/.../hot-wheels-shop-founder-qa-retrospective.html) — 'We sat down with the founder of one of the hobby's most recognizable retail names to talk about three decades in business. \"Our store started as a card table at a swap meet,\" he recalled with a laugh. \"People still ask why our shop never moved to a bigger building -- honestly, we just never wanted to lose that feeling.\" The interview continues next week with a look at the shop's most memorable finds.' — a retrospective Q&A quoting the owner using two different seller-voice synonyms.",
+      "lang": "EN",
+      "blocked": true,
+      "markers": ["our store", "our shop", "url:shop"]
+    },
+    {
+      "snippet": "'Meet the Owner Behind a Local Hot Wheels Institution' — '\"Our store is really just an extension of my own collection,\" the owner said, describing how the shop grew from a garage hobby into a full storefront over twenty years. He credits word of mouth and a loyal customer base for keeping the business alive through several industry downturns.' — same interview genre, but only ONE weak-adjacent signal total (control case to confirm the seller+weak boundary is still symmetric).",
+      "lang": "EN",
+      "blocked": false,
+      "markers": []
+    },
+    {
+      "snippet": "'Community Roundup: Collectors Share Their Best 2026 Finds' — 'Every month we round up highlights from the collector community Discord -- this time, a restock story from a regular member. \"Our store finally got the new Boulevard wave back in stock this week,\" one member wrote, \"and there was even a discount code floating around for early birds.\" As always, thanks to everyone who shares their pickups with the group.' — a fan/community member's own colloquial 'our store' (meaning 'the store we shop at'), not the shop itself speaking.",
+      "lang": "EN",
+      "blocked": true,
+      "markers": ["our store", "discount code", "in stock"]
+    }
+  ],
+  "residualRiskAssessment": {
+    "category": "quoted-speech / interview journalism",
+    "mechanism": "The seller-voice gate ('nossa loja'/'our store'/'our shop' present) is a substring match with no concept of quotation marks, attribution, or speaker identity. A news article that quotes a shop owner, a community member, or an interview subject using first-person '(nossa) nossa loja'/'our store' phrasing is textually indistinguishable from ad copy to the detector, and only needs ONE more ordinary weak word (in stock/discount/estoque/desconto — words any such quote would naturally contain) to cross the bar.",
+    "severity": "medium",
+    "scope": "Narrower than round 1's gap: round 1 broke ordinary day-to-day retail/restock coverage (this channel's bread and butter). This residual gap is specific to human-interest/interview-style pieces (shop-owner profiles, closing-announcement interviews, retrospectives, community-roundup quotes) — a real but less frequent genre for lamley/t-hunted/autoevolution.",
+    "mitigatingFactor": "Not fully silent: an [E035] alert still fires with the matched markers shown, and the alert's own copy explicitly invites the operator to report false positives for pattern tuning — so the existing feedback loop can catch and correct these, unlike a channel that had no filter and no alert at all.",
+    "recommendation": "Either (a) don't let a bare seller-voice marker complete the bar together with only 2 generic WEAK words — require the second signal to be an actual CTA-flavored STRONG marker (cupom/buy now/use code/etc.), not just weak commerce vocabulary that any first-person quote would naturally contain, or (b) explicitly log this as an accepted trade-off in the session notes the same way SEC-PROMO-3 (homoglyph evasion) and SEC-PROMO-5 (pin permanence) were accepted-as-is with stated rationale, so it's a documented decision rather than an unexamined gap."
+  },
+  "testExecution": {
+    "targetedRun": {
+      "command": "python3 -m pytest tests/test_relevance_filter.py::TestIsPromoArticle tests/test_admin_alerts.py::TestPromoBlockedAlert tests/test_admin_alerts.py::TestIntakeFunnel tests/test_integration.py::TestPromoIntakeFilter -v",
+      "result": "53 passed, 23 subtests passed"
+    },
+    "fullSuiteRun": {
+      "command": "python3 -m pytest -q",
+      "result": "1371 passed, 23 subtests passed",
+      "matchesCommitClaim": true
+    },
+    "mutationTest": {
+      "description": "Patched _promo_fold to naive (non-word-bounded) substring folding to verify the new boundary-regression test is a real guard.",
+      "result": "test_word_boundary_guard_is_what_keeps_these_below_the_bar fails under the mutation (3 tests fail total in TestIsPromoArticle vs 0 under correct code) — confirms F2 is genuinely closed, not just renamed."
+    },
+    "incidentRecheck": {
+      "description": "Direct re-run of the original 2026-07-25 t-hunted incident fixture against current code.",
+      "result": "blocked=true, markers=['nossa loja','garanta o seu','não perca','loja','estoque','url:loja']"
+    }
+  }
+}

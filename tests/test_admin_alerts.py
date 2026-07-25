@@ -8,9 +8,12 @@ Each E0XX builder is a pure str -> str / params -> str function. Tests cover:
 - Substrings that integration tests rely on are preserved verbatim.
 """
 import os
+import secrets
 import sys
 import unittest
 from datetime import datetime, timezone, timedelta
+
+from telegram import InlineKeyboardMarkup
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
@@ -490,6 +493,48 @@ class TestAdminAlerts(unittest.TestCase):
             self.assertRegex(code, r"^\[E\d{3}\]$")
 
 
+class TestDedupReviewKeyboard(unittest.TestCase):
+    """build_dedup_review_keyboard — inline keyboard for the E014 review
+    buttons (dedup-review-buttons Decision 3 callback_data grammar:
+    ``dd:c:<token>`` cancel / ``dd:k:<token>`` keep, cancel FIRST)."""
+
+    @staticmethod
+    def _flat_buttons(kb):
+        """Flatten rows in order — row layout (1x2 vs 2x1) is not part of
+        the contract, the button ORDER is."""
+        return [b for row in kb.inline_keyboard for b in row]
+
+    def test_returns_inline_keyboard_markup(self):
+        kb = admin_alerts.build_dedup_review_keyboard("tok")
+        self.assertIsInstance(kb, InlineKeyboardMarkup)
+
+    def test_two_buttons_callback_data(self):
+        kb = admin_alerts.build_dedup_review_keyboard("tok")
+        buttons = self._flat_buttons(kb)
+        self.assertEqual(len(buttons), 2)
+        self.assertEqual(
+            [b.callback_data for b in buttons],
+            ["dd:c:tok", "dd:k:tok"],  # cancel first, keep second
+        )
+
+    def test_button_labels(self):
+        kb = admin_alerts.build_dedup_review_keyboard("tok")
+        texts = [b.text for b in self._flat_buttons(kb)]
+        self.assertIn("🚫 Не публиковать", texts[0])
+        self.assertIn("👍 Оставить", texts[1])
+
+    def test_callback_data_under_64_bytes(self):
+        # Realistic token as minted by the sender (Task 3):
+        # secrets.token_urlsafe(9) → ~12 url-safe chars.
+        token = secrets.token_urlsafe(9)
+        kb = admin_alerts.build_dedup_review_keyboard(token)
+        for b in self._flat_buttons(kb):
+            self.assertLessEqual(
+                len(b.callback_data.encode("utf-8")), 64,
+                f"callback_data over Telegram 64-byte limit: {b.callback_data!r}",
+            )
+
+
 class TestIntakeFunnel(unittest.TestCase):
     """intake-funnel diagnostic (watchdog) — E009/E008 enrichment + the
     pure ``_format_funnel`` helper. The funnel is a plain-int dict built in
@@ -581,6 +626,19 @@ class TestIntakeFunnel(unittest.TestCase):
         'staged': 0,
     }
 
+    # new > 0, nothing staged, promo-filter ([E035]) is the dominant stage.
+    PROMO_MAX = {
+        'sources_fetched': 6,
+        'sources_failed': 0,
+        'new_count': 5,
+        'dropped_no_article': 1,
+        'dropped_checklist': 0,
+        'dropped_promo': 4,
+        'dropped_dedup_block': 0,
+        'dedup_degraded': 0,
+        'staged': 0,
+    }
+
     # ------------------------------------------------------------------
     # _format_funnel — pure helper shape + fail-safety
     # ------------------------------------------------------------------
@@ -654,6 +712,20 @@ class TestIntakeFunnel(unittest.TestCase):
         self.assertIn("Где схлопнулось: чеклист без текста (4)", block)
         # The runner-up (no-article) must NOT be the one pinpointed.
         self.assertNotIn("Где схлопнулось: нет статьи", block)
+
+    def test_collapse_note_promo_dominant(self):
+        # new > 0, nothing staged, promo-filter is the max drop → name it,
+        # and the breakdown bullet renders the promo counter.
+        block = admin_alerts._format_funnel(self.PROMO_MAX)
+        self.assertIn("реклама 4", block)
+        self.assertIn("Где схлопнулось: реклама (4)", block)
+        self.assertNotIn("Где схлопнулось: нет статьи", block)
+
+    def test_funnel_line_counts_promo_in_dropped(self):
+        # Compact busy-day line folds promo drops into the «отсеяно» sum
+        # (1 no-article + 4 promo = 5).
+        line = admin_alerts._format_funnel_line(self.PROMO_MAX)
+        self.assertIn("отсеяно 5", line)
 
     # ------------------------------------------------------------------
     # E009 — alert_quiet_day enrichment + back-compat
@@ -883,6 +955,68 @@ class TestPublishRecap(unittest.TestCase):
         msg = admin_alerts.alert_publish_recap(self.HELD_AND_FAILED)
         for token in ("**", "```", "__", "]("):
             self.assertNotIn(token, msg)
+
+
+class TestPromoBlockedAlert(unittest.TestCase):
+    """[E035] — intake promo-filter drop (реклама отсечена до перевода)."""
+
+    def test_e035_promo_blocked(self):
+        msg = admin_alerts.alert_promo_blocked(
+            "https://t-hunted.blogspot.com/2026/07/"
+            "hot-wheels-antigos-e-raros-na-loja.html",
+            "Hot Wheels antigos e raros na loja Universo Hot Wheels",
+            ["nossa loja", "não perca", "url:loja"],
+        )
+        self.assertIn("[E035]", msg)
+        self.assertIn("🛒", msg)
+        # Substring-якорь интеграционных тестов — не менять.
+        self.assertIn("Отсечена реклама", msg)
+        self.assertIn(
+            "https://t-hunted.blogspot.com/2026/07/"
+            "hot-wheels-antigos-e-raros-na-loja.html",
+            msg,
+        )
+        self.assertIn(
+            "Hot Wheels antigos e raros na loja Universo Hot Wheels", msg,
+        )
+        # Every matched marker is listed so the operator sees WHY.
+        self.assertIn("nossa loja", msg)
+        self.assertIn("não perca", msg)
+        self.assertIn("url:loja", msg)
+        # Operator-guidance blocks follow the file's builder conventions.
+        self.assertIn("Что произошло", msg)
+        self.assertIn("Что сделать", msg)
+        self.assertIn("ложное срабатывание", msg)
+        # Plain text only.
+        for token in ("**", "```", "__", "]("):
+            self.assertNotIn(token, msg)
+
+    def test_e035_empty_markers_render_safely(self):
+        # Defensive: an empty marker list must not leak 'None' / raise.
+        msg = admin_alerts.alert_promo_blocked("http://u", "T", [])
+        self.assertIn("[E035]", msg)
+        self.assertIn("Отсечена реклама", msg)
+        self.assertNotIn("None", msg)
+
+    def test_e035_long_title_truncated(self):
+        # Audit SEC-PROMO-4: the untrusted title is capped so a
+        # pathological title can't push the ping past Telegram's
+        # 4096-char message limit.
+        msg = admin_alerts.alert_promo_blocked(
+            "http://u", "T" * 5000, ["nossa loja"],
+        )
+        self.assertIn("[E035]", msg)
+        self.assertIn("Отсечена реклама", msg)
+        self.assertLess(len(msg), 4096)
+        self.assertIn("…", msg)
+        self.assertNotIn("T" * 500, msg)
+
+    def test_e035_non_string_title_does_not_raise(self):
+        # Belt-and-braces: the builder is called from a best-effort send
+        # site; a non-str title must render, not explode.
+        msg = admin_alerts.alert_promo_blocked("http://u", None, ["cupom"])
+        self.assertIn("[E035]", msg)
+        self.assertIn("cupom", msg)
 
 
 class TestOpenRouterLowBalanceAlert(unittest.TestCase):

@@ -40,6 +40,52 @@ Deployment process, infrastructure, and production operations for AI agents.
 
 ---
 
+## Серверная шпаргалка (все данные бота — не искать заново)
+
+> Обновлено 2026-07-25. Секретов здесь нет и быть не должно: токены/пароли — в
+> менеджере паролей оператора и в серверном `.env` (не коммитится).
+>
+> **Бот теперь ОДИН — прод.** NL-сервер `148.135.207.54` (DeluxHost) **больше
+> не оплачивается**, тест-бот там **удалён** (подтверждено оператором
+> 2026-07-25). IP отдан хостером другому клиенту — на нём отвечает ЧУЖОЙ sshd
+> («Connection closed» при попытке входа — это он). Никогда не ходить на этот
+> адрес и ничего туда не деплоить. Тест-инстанса и staging НЕТ.
+
+| | **ПРОД (единственный инстанс)** |
+|---|---|
+| Сервер | Москва `45.90.216.165` (Firstbyte) |
+| Вход | `ssh root@45.90.216.165` — **root, по паролю** (пароль в менеджере паролей) |
+| Как запущен | Docker-контейнер **`hw-news-bot`** (+ sidecar `route-setup`) |
+| Папка | `/root/hw-news` |
+| Ветка | `main` |
+| `.env` | `/root/hw-news/.env` — **правится только руками** |
+| База | `/root/hw-news/data/news.db` (в контейнере `/data/news.db`) |
+| Логи | `ssh root@45.90.216.165 "docker logs hw-news-bot --tail 200"` |
+| Канал | `-1004027529994` (боевой) |
+| INSTANCE_LABEL | `prod` |
+| Деплой | **только руками, ВНЕ окна 10:00–20:00 МСК**: `ssh root@45.90.216.165 "cd /root/hw-news && git pull && docker compose up -d --build"` |
+| Бэкап БД | cron 05:00 МСК → `/root/hw-news/backups` (TODO: копия вне хоста) |
+| Watchdog | host cron 01:00 МСК → `docker exec hw-news-bot /bin/bash /app/watchdog.sh` |
+
+**Ключевые факты:** числовой Telegram-id оператора — **`8481233034`**
+(`TELEGRAM_ADMIN_ID`; это id, не секрет — аутентификацию делает сам Telegram).
+`REVIEW_BUTTONS_ENABLED=1` — включён только здесь (инстанс один, конфликтовать
+за getUpdates некому, но флаг остаётся выключателем фичи). Egress — через
+VPN-шлюз `shared-vpn` (Москва без VPN не достаёт Telegram). Хост живёт в UTC;
+МСК — только внутри контейнера.
+
+**⚠️ Грабли:**
+- Оба GitHub-workflow деплоя **обезврежены**: `deploy.yml` (2026-07-07) и
+  `deploy_test.yml` (2026-07-25, NL списан). Пуш в `dev`/`main` гоняет ТОЛЬКО
+  тесты (ci.yml); на сервера CI не ходит. Прод обновляется только руками.
+- Тестировать «на живом» негде — staging нет. Проверка фич: pytest локально +
+  аккуратная первая раскатка на прод с готовым откатом.
+- В GitHub-секретах остались реквизиты мёртвого NL (`SSH_HOST`,
+  `DEPLOY_PATH*`, `SSH_PRIVATE_KEY`) — использоваться не могут (workflows
+  выключены); при случае почистить.
+
+---
+
 ## Deployment Platform
 
 **Prod (since 2026-07-06):** a **Docker container** (`hw-news-bot`) on the Moscow VPS
@@ -59,7 +105,7 @@ reproducible image + isolated egress routing without changing the bot code.
 
 **SSH Access:**
 - **Prod:** `ssh root@45.90.216.165` (Moscow VPS, password auth). Repo/deploy dir: `/root/hw-news`; state on `/root/hw-news/data`.
-- **Test + other bots:** `ssh hwbot@148.135.207.54` (NL VPS, key auth); root also available. Test bot dir: `/home/hwbot/bot_test`.
+- **Test + other bots:** `ssh hwbot@148.135.207.54` (NL VPS, key auth); root exists on the box but is NOT used from the operator's Mac — failed root attempts trigger the fail2ban IP ban (see Шпаргалка → грабли). Test bot dir: `/home/hwbot/bot_test`.
 
 > Operator runs all server-side ops (SSH, deploy, restart); Claude prepares the commands.
 
@@ -86,6 +132,7 @@ reproducible image + isolated egress routing without changing the bot code.
 - `INSTANCE_LABEL` — short label distinguishing this bot instance in admin pings. When set (e.g. `prod` or `test`), `send_admin_notification` prepends `[<label>] ` to every admin-bound message. Empty / unset → no prefix. Set ONCE manually in each instance's `.env`. Prod = `prod` — also drives the startup DB guard (below). Used by the two-instance topology.
 - `DB_FILE` — SQLite path, env-overridable (2026-07-06). **Prod container MUST set `DB_FILE=/data/news.db`** so state lands on the mounted volume, not the ephemeral image layer. Default `"news.db"` (relative) keeps NL/test/local behaviour. A prod instance with a relative `DB_FILE` or an empty `processed_news` triggers a startup `[E018]` admin ping (re-flood guard).
 - `HEARTBEAT_FILE` — heartbeat marker path, env-overridable. Prod container sets `HEARTBEAT_FILE=/data/last_tick.ts` (persistent + readable by the `docker exec` watchdog). Default `~/.cache/news_bot/last_tick.ts`.
+- `REVIEW_BUTTONS_ENABLED` — review buttons under the `[E014]` dedup ping (dedup-review-buttons feature). **Default off**; enable (`=1`) ONLY in the hand-managed prod `.env`. Double gate: the same effective gate (flag + non-empty `TELEGRAM_BOT_TOKEN` + numeric `TELEGRAM_ADMIN_ID`, fail-closed otherwise) enables BOTH the background `get_updates` listener AND keyboard rendering at the E014 send site — an instance that can't listen renders no buttons. Exactly ONE instance may poll the shared bot token — a second poller gets HTTP 409. See § Feature rollout: dedup-review-buttons.
 
 **How env reaches each instance:** **prod** — `docker-compose.yml` (`env_file: .env` + `environment: HEARTBEAT_FILE`); the prod `.env` is **hand-managed on the Moscow host** (copied once from NL, not CI-written). **test** — CI-written: `deploy_test.yml` writes `ANTHROPIC_API_KEY`/`ANTHROPIC_MODEL`/`TZ` etc. to the NL server `.env` idempotently on every dev push (TELEGRAM_*, TELEGRAPH_ACCESS_TOKEN, INSTANCE_LABEL, DB_FILE preserved). The archived `hw_review.py` would read a local `.env` if revived (dormant).
 
@@ -287,6 +334,54 @@ already ran) — verify the shape with
 > operator removes it via `hw_review.py`. So expect **more visible `[E014]`
 > pings and fewer silent drops** right after enabling; that is the feature
 > working, not a false positive.
+
+---
+
+## Feature rollout: `dedup-review-buttons` (`REVIEW_BUTTONS_ENABLED` toggle)
+
+Enables the inline «🚫 Не публиковать» / «👍 Оставить» buttons under the `[E014]`
+«Похож на дубль» admin ping + the background listener that receives the presses
+(the bot's first inbound Telegram path — see architecture.md § Inbound review
+path). This is a **feature-specific procedure on top of** the general Pre-Deploy
+Checklist. **Operator applies all server commands; Claude only prepares them.**
+No deploy FILES changes — the feature lives entirely in already-deployed files.
+
+> **⚠️ One bot token, ONE poller.** The Telegram bot account is shared prod+test,
+> and Telegram allows exactly one `get_updates` consumer per token — a second
+> poller gets HTTP 409. Enable `REVIEW_BUTTONS_ENABLED=1` on the **prod instance
+> only**, never on test. The flag is default-off, and `deploy_test.yml` does not
+> manage this var, so the test instance stays off (no polling, no buttons) unless
+> someone hand-edits its `.env` — don't.
+
+> **⚠️ Rebuild OUTSIDE the 10:00–20:00 МСК publish window.**
+> `docker compose up -d --build` restarts the container and resets the in-process
+> daily schedule (slots 10:00 / 15:00 / **19:30**). The Moscow host is on UTC.
+
+### Enable (prod, Moscow host)
+
+1. **Pre-check admin id** — the hand-managed prod `.env` must have a **numeric**
+   `TELEGRAM_ADMIN_ID` (personal chat_id, not `@username`). Non-numeric →
+   fail-closed: the listener refuses to start and logs a startup warning.
+2. **Set the flag** — in the hand-managed prod `.env` (NOT CI-written) add
+   `REVIEW_BUTTONS_ENABLED=1`.
+3. **Rebuild** — outside the window: `cd /root/hw-news && git pull && docker compose up -d --build`.
+4. **Verify the listener** — `docker logs hw-news-bot` must show the startup line
+   **«review listener active»**. Missing line = gate closed (flag off or
+   non-numeric admin id) — check the `.env`.
+5. **Verify test stays out** — no 409 errors in either instance's logs (a 409
+   means two pollers, i.e. the flag leaked onto test); the test channel's
+   `[E014]` pings carry **no buttons** (flag off there → keyboard not rendered).
+6. **First live press** — on a real `[E014]`, tap «🚫 Не публиковать» → the
+   article does not publish in its slot and the buttons become «✅ Отменено
+   оператором»; «👍 Оставить» → publishes as usual, «👍 Оставлено». A press
+   after the slot already published resolves to «⚠️ Уже опубликовано, отменить
+   нельзя» — expected, not a bug.
+
+### Disable / rollback
+
+Remove the `REVIEW_BUTTONS_ENABLED=1` line from the prod `.env` (default is off)
+and rebuild outside the window. Buttons stop rendering and the listener does not
+start; already-sent buttons become inert (stale tokens are harmless).
 
 ---
 

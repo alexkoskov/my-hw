@@ -1,0 +1,121 @@
+{
+  "reviewer": "test-reviewer",
+  "round": 3,
+  "commitReviewed": "8e43ea4",
+  "baseCommits": ["7de12e6", "1fe0f38"],
+  "priorReports": [
+    "work/promo-filter-review/test-reviewer.json",
+    "work/promo-filter-review/test-reviewer-round2.json"
+  ],
+  "verdict": "ship",
+  "verdictReason": "Round 1 and round 2 false-positive classes are both genuinely closed — re-ran my own unmodified probe scripts (not the coder's copies) for all 15 prior snippets against 8e43ea4: 0/15 blocked, matching the claimed matrix. The 4 must-still-block cases (incident, EN our-store+use-code, dense CTA stack, seller+2 offers) all still block. The reworked word-boundary test genuinely fails under a naive-fold mutation at the verdict level (not just the marker list), and TestPromoMarkerSets genuinely fails when a marker is duplicated across two tiers -- both are real regression guards, independently verified by mutation, not just present in the diff. Full suite reproduces at 1384 passed. However, attacking the new tiered rule found two live, reproducible seams: a FALSE-NEGATIVE class (a minimal, first-person 'our store/nossa loja' post with exactly one OFFER-tier word and no imperative -- e.g. 'our store now offers free shipping' -- passes through completely undetected, 3/3 confirmed) and a narrower FALSE-POSITIVE class (investigative/analytical journalism that quotes 3+ ad-copy phrases editorially with no seller voice -- a scalper-marketing exposé or 'worst ad copy of the year' roundup -- still blocks via the no-seller >=3-CTA branch, 3/3 confirmed). Neither is severe enough to withhold shipping: the false-negative class is bounded to the SAME behavior this content had before the filter existed (no regression, just partial coverage), and the false-positive class is self-diagnosing via the existing [E035] alert + tune-the-patterns feedback loop, and is a narrower genre than what round 1/2 fixed. Recommend shipping now and tracking both seams as known, named residual risk rather than chasing a fourth iteration -- each prior round's fix for one class risked reopening another, and this is a natural point of diminishing returns for a heuristic keyword rule."
+  ,
+  "requestedChecks": {
+    "1_rerun_both_probe_sets": {
+      "description": "Re-ran my own scripts (fp_probe.py: round-1 nine baseline snippets; fp_probe2.py: round-1 refinement six snippets incl. the 4 originally-blocked; round2_adversarial.py: round-2 five interview/quote snippets) against current HEAD (8e43ea4), not the coder's copies in the test file.",
+      "round1_probe_9": {"blocked_count": 0, "total": 9},
+      "round1_refinement_probe_6": {"blocked_count": 0, "total": 6, "note": "includes the 4 snippets that were false positives at 7de12e6: mattel_creations_store_url, hobby_shop_closing_news, mattel_relaunch_isolated_shopnow_collision, pt_restock_loja_url -- all now pass"},
+      "round2_adversarial_probe_5": {"blocked_count": 0, "total": 5, "note": "includes the 4 snippets that were false positives at 1fe0f38: shop-closing interview (EN+PT), founder Q&A with two seller synonyms, community-roundup member quote -- all now pass"},
+      "combined_15": {"blocked_count": 0, "total": 15, "matchesClaim": true}
+    },
+    "2_must_still_block_4": {
+      "description": "Re-ran the 4 cases the commit message claims must still block.",
+      "results": [
+        {"case": "incident (t-hunted 2026-07-25 fixture)", "blocked": true, "markers": ["garanta o seu", "não perca", "nossa loja", "em nossa loja", "loja", "estoque", "url:loja"]},
+        {"case": "EN our-store + use-code", "blocked": true, "markers": ["use code", "our store"]},
+        {"case": "dense CTA stack (compre já + frete grátis + cupom)", "blocked": true, "markers": ["compre já", "cupom", "frete grátis"]},
+        {"case": "seller + 2 offers (em nossa loja + frete grátis + cupom)", "blocked": true, "markers": ["cupom", "frete grátis", "nossa loja", "em nossa loja"]}
+      ],
+      "matchesClaim": true
+    },
+    "3_mutation_tests": {
+      "word_boundary_at_verdict_level": {
+        "method": "Monkey-patched _promo_fold to a naive (non-tokenized, non-word-bounded) folder, reloaded the test module, ran test_word_boundary_guard_is_what_keeps_these_below_the_bar in isolation.",
+        "result": "FAILS under the mutation (PT fixture: 'não percam' wrongly matches 'não perca' -> markers become ['não perca','nossa loja','em nossa loja','loja'] instead of []). Confirms the test is a genuine regression guard at the decision/verdict level under the new tiered rule, not just on the marker list."
+      },
+      "tier_disjointness_invariant": {
+        "method": "Duplicated 'our store' into both _PROMO_CTA_DIRECT_MARKERS and _PROMO_SELLER_MARKERS (simulating an editor accidentally re-filing a marker), rebuilt _PROMO_STRONG_MARKERS/_PROMO_STRONG_FOLDED, reloaded the test module, ran TestPromoMarkerSets.",
+        "result": "test_decision_tiers_are_pairwise_disjoint FAILS with 'our store: marker(s) in both direct and seller' -- confirms TestPromoMarkerSets genuinely pins the tier invariant, exactly the scenario the test's own docstring warns about (a marker in two tiers would let seller voice alone complete the bar)."
+      }
+    }
+  },
+  "newAttackProbe": [
+    {
+      "snippet": "PT minimal ad: 'Novidades na loja' / 'Nossa loja agora oferece frete grátis em todos os pedidos nacionais. Confira as novidades da semana e siga nossas redes sociais para acompanhar os próximos lançamentos.'",
+      "lang": "PT",
+      "kind": "false-negative-probe",
+      "blocked": false,
+      "markers": [],
+      "assessment": "ESCAPES. Seller voice ('nossa loja') + exactly 1 OFFER-tier CTA ('frete grátis'), no imperative -- a real, if soft, shop self-promotion post reads as ordinary news to the filter."
+    },
+    {
+      "snippet": "EN minimal ad: 'Store news' / 'Our store now offers free shipping on every domestic order. Follow our socials to keep up with upcoming restocks and new arrivals throughout the month.'",
+      "lang": "EN",
+      "kind": "false-negative-probe",
+      "blocked": false,
+      "markers": [],
+      "assessment": "ESCAPES. Same pattern in English: seller voice + 1 offer, no imperative."
+    },
+    {
+      "snippet": "PT minimal ad, seller phrase 'Em nossa loja': 'Atualização da loja' / 'Em nossa loja você encontra um cupom válido para a primeira compra de clientes cadastrados neste mês.'",
+      "lang": "PT",
+      "kind": "false-negative-probe",
+      "blocked": false,
+      "markers": [],
+      "assessment": "ESCAPES. Confirms the gap holds for both seller-voice spellings ('nossa loja' and 'em nossa loja'), not just one."
+    },
+    {
+      "snippet": "'Inside the Aggressive Marketing Playbook of Diecast Resellers' (lamleygroup.com) -- 'Collectors say scalper storefronts on marketplace apps are relentless: listings are plastered with \"shop now,\" \"buy now,\" and \"order yours before they're gone,\" regardless of whether the item is actually scarce. Consumer advocates argue the tactic manufactures urgency where none exists...'",
+      "lang": "EN",
+      "kind": "false-positive-probe",
+      "blocked": true,
+      "markers": ["shop now", "buy now", "order yours"],
+      "assessment": "FALSE POSITIVE. A critical exposé about reseller marketing tactics, quoting the tactics rather than using them, blocked purely by 3 distinct CTA-DIRECT markers with zero seller voice."
+    },
+    {
+      "snippet": "'Como lojas parceiras usam gatilhos mentais para vender mais' (t-hunted.blogspot.com) -- 'A campanha de verão de uma rede parceira aposta em frases como \"compre já\", \"frete grátis\" e \"cupom de boas-vindas\" para atrair novos clientes, segundo especialistas em marketing digital...'",
+      "lang": "PT",
+      "kind": "false-positive-probe",
+      "blocked": true,
+      "markers": ["compre já", "cupom", "frete grátis", "oferta"],
+      "assessment": "FALSE POSITIVE. A marketing-analysis piece quoting a partner store's ad slogans for critique, in third person throughout -- blocked by the same no-seller >=3-CTA branch."
+    },
+    {
+      "snippet": "'The Cheesiest Hot Wheels Ad Copy We Saw This Year' (lamleygroup.com) -- 'Every collector has seen it: a listing screaming \"buy now,\" another begging you to \"use code\" for five percent off, and a third promising \"free shipping\" like it is a groundbreaking perk. We rounded up the funniest examples the community flagged this year for a laugh, not a purchase.'",
+      "lang": "EN",
+      "kind": "false-positive-probe",
+      "blocked": true,
+      "markers": ["buy now", "use code", "free shipping"],
+      "assessment": "FALSE POSITIVE. A tongue-in-cheek community roundup mocking bad ad copy -- explicitly 'for a laugh, not a purchase' -- still trips the dense-CTA-stack branch."
+    }
+  ],
+  "seamAssessment": {
+    "false_negative_seam": {
+      "description": "Deviation (a) from the coordinator's spec (seller + 1 OFFER does not block) has a real cost: any minimally-worded ad that speaks in first person and mentions exactly one offer-style perk, with no imperative verb, is classified not-promo and proceeds through the normal pipeline (staged, translated at real token cost, and eligible for posting) exactly as if the filter did not exist.",
+      "severity": "medium",
+      "visibility": "None -- unlike a false positive, a false negative fires no [E035] alert and leaves no diagnostic trail. It is only caught if a human notices the post in the channel.",
+      "boundedness": "Not a regression versus the pre-feature baseline (this content type was equally undetected before 7de12e6) -- it is uncovered ground, not lost ground."
+    },
+    "false_positive_seam": {
+      "description": "Deviation (b) (>= 3 CTA blocks without seller voice) reopens a narrow slice of round-1's problem: editorial pieces that quote or discuss ad language in the third person -- marketing-tactics critiques, scalper-listing exposés, 'worst ad copy' roundups -- can accumulate 3 distinct CTA markers with zero seller voice and get blocked.",
+      "severity": "low-medium",
+      "visibility": "Self-diagnosing: the [E035] alert fires with the exact matched markers, and the alert copy already invites the operator to report false positives for pattern tuning.",
+      "scope": "Narrower and less frequent than round 1 (everyday retail news) or round 2 (interview/community pieces) -- an investigative/analytical genre, not the channel's typical content mix."
+    }
+  },
+  "shipRecommendation": {
+    "decision": "ship",
+    "oneSentenceResidualRisk": "A softly-worded, first-person shop post that names only ONE perk (e.g. 'our store now offers free shipping') with no imperative CTA will pass the filter completely undetected and reach the channel like any other article -- watch for quiet single-signal shop-voice posts that read a little too clean to be journalism, and separately expect an occasional false-positive [E035] on marketing-analysis or 'worst ad copy' pieces that quote 3+ CTA phrases without speaking as a seller."
+  },
+  "testExecution": {
+    "targetedRun": {
+      "command": "python3 -m pytest tests/test_relevance_filter.py::TestIsPromoArticle tests/test_relevance_filter.py::TestPromoMarkerSets -q",
+      "result": "43 passed, 68 subtests passed"
+    },
+    "fullSuiteRun": {
+      "command": "python3 -m pytest -q",
+      "result": "1384 passed, 68 subtests passed",
+      "matchesCommitClaim": true
+    }
+  }
+}

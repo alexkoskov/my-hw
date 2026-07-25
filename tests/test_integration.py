@@ -44,8 +44,9 @@ import os
 import sqlite3
 import sys
 import tempfile
+import threading
 import unittest
-from unittest.mock import MagicMock, patch
+from unittest.mock import AsyncMock, MagicMock, patch
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
@@ -1085,7 +1086,8 @@ class TestCrossSourceDedup(_PrepPhaseBase):
             'images': [],
         }
 
-        news_bot.job()
+        with self.assertLogs('news_bot', level='INFO') as cm:
+            news_bot.job()
 
         self.assertEqual(pending_articles_repo.count_pending(), 0)
         conn = sqlite3.connect(self.db_path)
@@ -1110,6 +1112,18 @@ class TestCrossSourceDedup(_PrepPhaseBase):
             m = c.args[0] if c.args else ''
             self.assertNotIn('[E014]', m)
             self.assertNotIn('[E016]', m)
+
+        # Full logging: the hard-block decision is recorded in the log itself
+        # ([E015] + link + match), not only in the Telegram alert.
+        block_lines = [
+            l for l in cm.output
+            if '[E015]' in l and 'http://autoevolution.example/new' in l
+        ]
+        self.assertTrue(
+            block_lines,
+            "expected an [E015] hard-block log line naming the blocked link; "
+            "got:\n" + "\n".join(cm.output),
+        )
 
     @patch('news_bot.fetch_full_article')
     @patch('news_bot.fetch_rss')
@@ -1201,7 +1215,8 @@ class TestCrossSourceDedup(_PrepPhaseBase):
             'images': [],
         }
 
-        news_bot.job()
+        with self.assertLogs('news_bot', level='INFO') as cm:
+            news_bot.job()
 
         # Soft flag → article still publishes.
         self.assertEqual(pending_articles_repo.count_pending(), 1)
@@ -1228,6 +1243,83 @@ class TestCrossSourceDedup(_PrepPhaseBase):
             m = c.args[0] if c.args else ''
             self.assertNotIn('[E015]', m)
             self.assertNotIn('[E016]', m)
+
+        # Full logging: the soft-flag decision is recorded in the log itself
+        # (link + [E014] + match), not only in the Telegram alert — so a dedup
+        # flag is diagnosable straight from the logs.
+        soft_lines = [l for l in cm.output if '[E014]' in l and new_link in l]
+        self.assertTrue(
+            soft_lines,
+            f"expected a soft-flag [E014] log line naming {new_link}; got:\n"
+            + "\n".join(cm.output),
+        )
+
+    @patch('news_bot.fetch_full_article')
+    @patch('news_bot.fetch_rss')
+    @patch('news_bot.load_feeds')
+    @patch('news_bot.send_admin_notification')
+    def test_soft_flag_logged_even_when_alert_rate_limited(
+        self, mock_admin, mock_load_feeds, mock_fetch_rss, mock_fetch_article,
+    ):
+        """Full-logging headline: a soft-flag decision is recorded in the LOG
+        even when the per-pair 7-day alert rate-limit (AC5) suppresses the
+        Telegram [E014] ping. Pins the log line's placement OUTSIDE the
+        ``if alerted:`` guard — a rate-limited flag would otherwise be invisible
+        in BOTH channels. (Reverting the log line back inside ``if alerted:``
+        makes this test go red while the non-rate-limited AC2 still passes.)"""
+        existing_link = 'http://t-hunted.example/existing'
+        new_link = 'http://autoevolution.example/new'
+        self._seed_published(
+            existing_link,
+            {
+                'strict': ['toyota supra'],
+                'brands': ['toyota'],
+                'series': ['car culture'],
+                'pairs': ['toyota supra|car culture|B'],
+            },
+            source='t-hunted',
+        )
+        # Pre-seed the pair rate-limit so the flag's Telegram ping is suppressed.
+        conn = pending_articles_repo._connect()
+        try:
+            pending_articles_repo.mark_pair_pinged(conn, new_link, existing_link)
+            conn.commit()
+        finally:
+            conn.close()
+
+        mock_load_feeds.return_value = ['http://example.com/feed1.xml']
+        mock_fetch_rss.return_value = [self._make_entry(new_link)]
+        mock_fetch_article.return_value = {
+            'title': 'Toyota Supra joins the Car Culture line',
+            'subtitle': '',
+            'paragraphs': ['A new release.'],
+            'images': [],
+        }
+
+        with self.assertLogs('news_bot', level='INFO') as cm:
+            news_bot.job()
+
+        # Soft flag is non-terminal → article still publishes.
+        self.assertIsNotNone(pending_articles_repo.get_pending(new_link))
+        # Rate-limited → NO [E014] Telegram ping this run.
+        e014_calls = [
+            c for c in mock_admin.call_args_list
+            if '[E014]' in (c.args[0] if c.args else '')
+        ]
+        self.assertEqual(
+            len(e014_calls), 0,
+            f"rate-limited flag must not ping; got: {mock_admin.call_args_list}",
+        )
+        # BUT the decision IS logged, tagged rate-limited.
+        rl_lines = [
+            l for l in cm.output
+            if '[E014]' in l and new_link in l and 'rate-limited' in l
+        ]
+        self.assertTrue(
+            rl_lines,
+            "expected a rate-limited [E014] soft-flag log line naming "
+            f"{new_link}; got:\n" + "\n".join(cm.output),
+        )
 
     @patch('news_bot.fetch_full_article')
     @patch('news_bot.fetch_rss')
@@ -2578,6 +2670,1206 @@ class TestPublishRecapIntegration(_IntegrationBase):
         with patch('news_bot.DB_FILE', self.db_path):
             self.assertEqual(pending_articles_repo.list_pending(), [])
             self.assertIsNotNone(pending_articles_repo.get_failed(link))
+
+
+# ---------------------------------------------------------------------------
+# Dedup-review callback decision logic (dedup-review-buttons Task 4).
+# ---------------------------------------------------------------------------
+
+
+class TestResolveDedupCallback(_IntegrationBase):
+    """Every branch of ``news_bot.resolve_dedup_callback`` on a real
+    tempfile SQLite DB (user-spec: the Telegram finger-press E2E is not
+    automatable, so the pure decision core carries the full coverage).
+
+    Return contract under test (fixed with Task 5's listener):
+      * terminal outcome → ``(status_text, answer_text)``, both non-empty
+        strings (listener edits the message + answers the callback);
+      * ignored press (non-admin / non-numeric admin id) →
+        ``(None, "")`` — listener must NOT edit the message.
+    """
+
+    ADMIN_ID = 424242
+
+    def setUp(self):
+        super().setUp()
+        # _IntegrationBase patches TELEGRAM_ADMIN_ID to the non-numeric
+        # '@admin'; these tests need the numeric-admin contract
+        # (tech-spec Decision 5), so layer a numeric patch on top.
+        self.numeric_admin_patcher = patch(
+            'news_bot.TELEGRAM_ADMIN_ID', str(self.ADMIN_ID))
+        self.numeric_admin_patcher.start()
+
+    def tearDown(self):
+        self.numeric_admin_patcher.stop()
+        super().tearDown()
+
+    # -- helpers ----------------------------------------------------------
+
+    def _stage_token(self, link, token='tok-test-1234'):
+        pending_articles_repo.put_review_token(token, link)
+        return token
+
+    def _in_processed_news(self, link):
+        conn = sqlite3.connect(self.db_path)
+        try:
+            row = conn.execute(
+                "SELECT 1 FROM processed_news WHERE link=?", (link,),
+            ).fetchone()
+            return row is not None
+        finally:
+            conn.close()
+
+    def _insert_published(self, link):
+        conn = sqlite3.connect(self.db_path)
+        try:
+            conn.execute(
+                "INSERT INTO published_articles "
+                "(link, title, ru_title, telegraph_url, telegraph_path, "
+                " source_name, via_review) "
+                "VALUES (?, 'EN', 'RU', 'https://telegra.ph/x', '/x', "
+                "        'autoevolution', 0)",
+                (link,),
+            )
+            conn.commit()
+        finally:
+            conn.close()
+
+    # -- auth gate --------------------------------------------------------
+
+    def test_non_admin_press_ignored_no_state_change(self):
+        link = 'https://example.com/dedup-a'
+        _seed_pending_row(link)
+        token = self._stage_token(link)
+
+        with patch('news_bot.pending_repo.skip_pending') as mock_skip:
+            status, answer = news_bot.resolve_dedup_callback(
+                'cancel', token, self.ADMIN_ID + 1)
+
+        self.assertIsNone(status)   # "do not edit the message" signal
+        self.assertEqual(answer, "")
+        mock_skip.assert_not_called()
+        self.assertIsNotNone(pending_articles_repo.get_pending(link))
+        # Token survives an ignored press — the admin can still act later.
+        self.assertEqual(
+            pending_articles_repo.get_review_token_link(token), link)
+
+    def test_non_numeric_admin_id_fail_closed(self):
+        link = 'https://example.com/dedup-failclosed'
+        _seed_pending_row(link)
+        token = self._stage_token(link)
+
+        with patch('news_bot.TELEGRAM_ADMIN_ID', '@sunny413x'):
+            status, answer = news_bot.resolve_dedup_callback(
+                'cancel', token, self.ADMIN_ID)
+
+        self.assertIsNone(status)
+        self.assertEqual(answer, "")
+        self.assertIsNotNone(pending_articles_repo.get_pending(link))
+        self.assertFalse(self._in_processed_news(link))
+        self.assertEqual(
+            pending_articles_repo.get_review_token_link(token), link)
+
+    # -- cancel branches --------------------------------------------------
+
+    def test_cancel_pending_row_skips_and_returns_cancelled(self):
+        link = 'https://example.com/dedup-cancel'
+        _seed_pending_row(link)
+        token = self._stage_token(link)
+
+        status, answer = news_bot.resolve_dedup_callback(
+            'cancel', token, self.ADMIN_ID)
+
+        self.assertEqual(status, "✅ Отменено оператором")
+        self.assertEqual(answer, "✅ Отменено оператором")
+        self.assertIsNone(pending_articles_repo.get_pending(link))
+        self.assertTrue(self._in_processed_news(link))
+        # skip is NOT a publish (Decision 2).
+        self.assertIsNone(pending_articles_repo.get_published(link))
+        # Token consumed on the terminal outcome...
+        self.assertIsNone(pending_articles_repo.get_review_token_link(token))
+        # ...so a second press of the same button is a safe stale no-op
+        # (idempotence, Decision 9).
+        status2, answer2 = news_bot.resolve_dedup_callback(
+            'cancel', token, self.ADMIN_ID)
+        self.assertEqual(status2, "⚠️ Кнопка устарела")
+        self.assertEqual(answer2, "⚠️ Кнопка устарела")
+
+    def test_cancel_then_slot_publish_does_not_publish(self):
+        """User-spec: after the operator cancels, the article does not go
+        out to the channel in its slot. Drives the slot-selection path the
+        way the job loop does (head of ``list_pending()``) with the channel
+        side-effect ``_fallback_publish`` stubbed.
+        """
+        cancelled = 'https://example.com/dedup-cancelled-slot'
+        survivor = 'https://example.com/dedup-survivor'
+        _seed_pending_row(cancelled, title='Cancelled')
+        _seed_pending_row(survivor, title='Survivor')
+        token = self._stage_token(cancelled)
+
+        news_bot.resolve_dedup_callback('cancel', token, self.ADMIN_ID)
+
+        # The cancelled link is gone from the publish queue entirely.
+        queue_links = [r['link'] for r in pending_articles_repo.list_pending()]
+        self.assertNotIn(cancelled, queue_links)
+        self.assertIn(survivor, queue_links)
+
+        # Replay the slot loop's per-slot selection (rows[0] of
+        # list_pending) until the queue drains, with the publish
+        # side-effect stubbed: the cancelled link must never be handed
+        # to _fallback_publish.
+        with patch('news_bot._fallback_publish') as mock_pub:
+            mock_pub.side_effect = lambda row, via_review=False: (
+                pending_articles_repo.skip_pending(row['link']))
+            while True:
+                rows = pending_articles_repo.list_pending()
+                if not rows:
+                    break
+                news_bot._fallback_publish(rows[0])
+
+        published_links = [
+            call.args[0]['link'] for call in mock_pub.call_args_list]
+        self.assertNotIn(cancelled, published_links)
+        self.assertEqual(published_links, [survivor])
+        self.assertIsNone(pending_articles_repo.get_published(cancelled))
+
+    def test_cancel_race_published_between_check_and_skip(self):
+        """Slot-boundary race (security review round 1): the row is still
+        pending at the ``get_pending`` check, but the slot loop publishes
+        it before ``skip_pending`` runs — the skip silently no-ops. The
+        function must then answer the honest «уже опубликовано», not a
+        misleading «отменено» (user-spec promise).
+        """
+        link = 'https://example.com/dedup-race'
+        _seed_pending_row(link)
+        token = self._stage_token(link)
+
+        real_skip = pending_articles_repo.skip_pending
+
+        def _publish_wins_then_skip(l):
+            # Simulate the slot publish landing first: row leaves pending
+            # and appears in published_articles; the real skip_pending
+            # then no-ops on the missing pending row.
+            conn = sqlite3.connect(self.db_path)
+            try:
+                conn.execute(
+                    "DELETE FROM pending_articles WHERE link=?", (l,))
+                conn.commit()
+            finally:
+                conn.close()
+            self._insert_published(l)
+            real_skip(l)
+
+        with patch('news_bot.pending_repo.skip_pending',
+                   side_effect=_publish_wins_then_skip):
+            status, answer = news_bot.resolve_dedup_callback(
+                'cancel', token, self.ADMIN_ID)
+
+        self.assertEqual(status, "⚠️ Уже опубликовано, отменить нельзя")
+        self.assertEqual(answer, "⚠️ Уже опубликовано, отменить нельзя")
+        # Channel post untouched; terminal outcome consumes the token.
+        self.assertIsNotNone(pending_articles_repo.get_published(link))
+        self.assertIsNone(pending_articles_repo.get_review_token_link(token))
+
+    def test_cancel_published_returns_already_published(self):
+        link = 'https://example.com/dedup-published'
+        self._insert_published(link)
+        token = self._stage_token(link)
+
+        with patch('news_bot.pending_repo.skip_pending') as mock_skip:
+            status, answer = news_bot.resolve_dedup_callback(
+                'cancel', token, self.ADMIN_ID)
+
+        self.assertEqual(status, "⚠️ Уже опубликовано, отменить нельзя")
+        self.assertEqual(answer, "⚠️ Уже опубликовано, отменить нельзя")
+        mock_skip.assert_not_called()
+        # The channel post / published row is untouched.
+        self.assertIsNotNone(pending_articles_repo.get_published(link))
+        self.assertIsNone(pending_articles_repo.get_review_token_link(token))
+
+    def test_cancel_missing_returns_unavailable(self):
+        link = 'https://example.com/dedup-vanished'
+        token = self._stage_token(link)  # token valid, article gone
+
+        status, answer = news_bot.resolve_dedup_callback(
+            'cancel', token, self.ADMIN_ID)
+
+        self.assertEqual(status, "⚠️ Статья уже недоступна")
+        self.assertEqual(answer, "⚠️ Статья уже недоступна")
+        self.assertIsNone(pending_articles_repo.get_review_token_link(token))
+
+    # -- unknown action (defensive branch) --------------------------------
+
+    def test_unknown_action_safe_fallback_token_not_consumed(self):
+        """Defensive branch (code+test review round 1): the Task 5
+        listener maps ``c → 'cancel'`` / ``k → 'keep'`` before calling,
+        so a raw letter or garbage action should never arrive — but if
+        it does, the function answers the safe stale text WITHOUT
+        consuming the still-valid token and without touching state.
+        """
+        link = 'https://example.com/dedup-unknown-action'
+        _seed_pending_row(link)
+        token = self._stage_token(link)
+
+        for bad_action in ('c', 'k', 'nuke', '', None):
+            with patch('news_bot.pending_repo.skip_pending') as mock_skip:
+                status, answer = news_bot.resolve_dedup_callback(
+                    bad_action, token, self.ADMIN_ID)
+            self.assertEqual(status, "⚠️ Кнопка устарела",
+                             f"action={bad_action!r}")
+            self.assertEqual(answer, "⚠️ Кнопка устарела")
+            mock_skip.assert_not_called()
+
+        # No state change; token survives for the real button press.
+        self.assertIsNotNone(pending_articles_repo.get_pending(link))
+        self.assertFalse(self._in_processed_news(link))
+        self.assertEqual(
+            pending_articles_repo.get_review_token_link(token), link)
+
+    # -- keep / stale -----------------------------------------------------
+
+    def test_keep_returns_kept_no_state_change(self):
+        link = 'https://example.com/dedup-keep'
+        _seed_pending_row(link)
+        token = self._stage_token(link)
+
+        status, answer = news_bot.resolve_dedup_callback(
+            'keep', token, self.ADMIN_ID)
+
+        self.assertEqual(status, "👍 Оставлено")
+        self.assertEqual(answer, "👍 Оставлено")
+        # Queue untouched — the article publishes in its slot as usual.
+        self.assertIsNotNone(pending_articles_repo.get_pending(link))
+        self.assertFalse(self._in_processed_news(link))
+        self.assertIsNone(pending_articles_repo.get_review_token_link(token))
+
+    def test_stale_token_returns_expired(self):
+        link = 'https://example.com/dedup-stale'
+        _seed_pending_row(link)
+        # No token staged — simulates bot restart / already-consumed token.
+        status, answer = news_bot.resolve_dedup_callback(
+            'cancel', 'tok-unknown-9999', self.ADMIN_ID)
+
+        self.assertEqual(status, "⚠️ Кнопка устарела")
+        self.assertEqual(answer, "⚠️ Кнопка устарела")
+        self.assertIsNotNone(pending_articles_repo.get_pending(link))
+        self.assertFalse(self._in_processed_news(link))
+
+
+class TestInFlightCancelGuard(_IntegrationBase):
+    """Audit CA-1a: an operator cancel that lands while THIS article's own
+    publish is mid-flight (LLM → Telegraph take minutes) must abort the
+    publish before the Telegram teaser — the last irreversible step. The
+    row is deleted by ``skip_pending`` inside ``resolve_dedup_callback``;
+    ``_fallback_publish`` re-checks the pending row right before the
+    teaser send and honours the cancel: no channel post, no strike
+    (success-without-publish, mirroring the idempotency guard's return).
+    """
+
+    RU_RESULT = {
+        'title': 'РуЗаголовок',
+        'subtitle': 'РуПодзаголовок',
+        'paragraphs': ['Русский абзац.'],
+        'blocks': None,
+    }
+
+    def test_cancel_mid_publish_aborts_before_teaser(self):
+        link = 'https://example.com/inflight-cancel'
+        _seed_pending_row(link)
+        row = pending_articles_repo.get_pending(link)
+
+        def _cancel_lands_then_publish(**kwargs):
+            # The operator presses «🚫 Не публиковать» while Telegraph is
+            # being created: resolve's cancel branch deletes the pending
+            # row. The Telegraph page itself still gets made (harmless
+            # orphan) — the guard sits AFTER this step, BEFORE the teaser.
+            pending_articles_repo.skip_pending(link)
+            return 'https://telegra.ph/inflight-cancel'
+
+        with patch('news_bot.transcreate_via_claude',
+                   return_value=dict(self.RU_RESULT)), \
+                patch('news_bot.telegraph_publisher.publish_article',
+                      side_effect=_cancel_lands_then_publish), \
+                patch('news_bot.time.sleep'), \
+                patch('news_bot.send_telegraph_teaser') as mock_teaser:
+            with self.assertLogs('news_bot', level='INFO') as logs:
+                result = news_bot._fallback_publish(row)
+
+        # Success-without-publish: True (no strike in the slot loop) but
+        # the channel teaser was never sent and nothing was "published".
+        self.assertTrue(result)
+        mock_teaser.assert_not_called()
+        self.assertIsNone(pending_articles_repo.get_published(link))
+        self.assertIsNone(pending_articles_repo.get_pending(link))
+        # The abort is visible in the log for the operator.
+        self.assertTrue(
+            any('[review-cancel]' in line and link in line
+                for line in logs.output),
+            f"expected a [review-cancel] abort line; got {logs.output!r}")
+
+    def test_publish_proceeds_when_row_still_pending(self):
+        """Positive control: with no cancel racing it, the same publish
+        passes the pre-teaser guard and completes normally."""
+        link = 'https://example.com/inflight-nocancel'
+        _seed_pending_row(link)
+        row = pending_articles_repo.get_pending(link)
+
+        with patch('news_bot.transcreate_via_claude',
+                   return_value=dict(self.RU_RESULT)), \
+                patch('news_bot.telegraph_publisher.publish_article',
+                      return_value='https://telegra.ph/inflight-nocancel'), \
+                patch('news_bot.time.sleep'), \
+                patch('news_bot.send_telegraph_teaser',
+                      return_value=True) as mock_teaser:
+            result = news_bot._fallback_publish(row)
+
+        self.assertTrue(result)
+        mock_teaser.assert_called_once()
+        self.assertIsNotNone(pending_articles_repo.get_published(link))
+        self.assertIsNone(pending_articles_repo.get_pending(link))
+
+
+class TestDedupReviewButtons(_PrepPhaseBase):
+    """Flag-gated inline review keyboard on the [E014] soft-dupe admin ping
+    (dedup-review-buttons Task 3).
+
+    Contract under test:
+      * ``news_bot.REVIEW_BUTTONS_ENABLED`` is True → the E014 send mints a
+        token, persists ``token→link`` via ``put_review_token`` BEFORE the
+        send, and passes ``reply_markup`` with exactly two buttons
+        (``dd:c:<token>`` / ``dd:k:<token>``, cancel first).
+      * Flag False (the default) → the E014 send is byte-identical to the
+        pre-feature behaviour: no ``reply_markup``, no token minted, no
+        ``review_token:*`` row in ``bot_state``.
+      * Only E014 carries the keyboard — sibling alerts in the same
+        ``job()`` run (E015 hard-block, quiet-day E009, ...) never get one.
+
+    Helpers are REUSED from ``TestCrossSourceDedup`` by plain-function
+    assignment instead of subclassing it — inheriting would re-register its
+    20 test methods under this class and run them all twice.
+    """
+
+    _seed_published = TestCrossSourceDedup._seed_published
+    _make_entry = TestCrossSourceDedup._make_entry
+
+    #: Broad (tier B) pair fingerprint — soft-flags (E014) the matching
+    #: article, same seed as ``test_broad_pair_soft_flag_is_terminal``.
+    SOFT_FP = {
+        'strict': ['toyota supra'],
+        'brands': ['toyota'],
+        'series': ['car culture'],
+        'pairs': ['toyota supra|car culture|B'],
+    }
+    SOFT_ARTICLE = {
+        'title': 'Toyota Supra joins the Car Culture line',
+        'subtitle': '',
+        'paragraphs': ['A new release.'],
+        'images': [],
+    }
+
+    #: Distinctive (|D) pair fingerprint — hard-blocks (E015) the matching
+    #: article, same seed as ``test_distinctive_pair_cross_source_blocks``.
+    BLOCK_FP = {
+        'strict': ['porsche 911'],
+        'brands': ['porsche'],
+        'series': ['k-pop demon hunters'],
+        'pairs': ['porsche 911|k-pop demon hunters|D'],
+    }
+    BLOCK_ARTICLE = {
+        'title': 'Porsche 911 gets a K-Pop Demon Hunters makeover',
+        'subtitle': '',
+        'paragraphs': ['More photos inside.'],
+        'images': [],
+    }
+
+    def setUp(self):
+        super().setUp()
+        # Same dance as TestCrossSourceDedup: stop the base silencer so the
+        # per-test ``send_admin_notification`` patch OWNS the name.
+        self.notify_patcher.stop()
+        # SEC-A8-1: the send site now gates on _review_listener_enabled()
+        # (flag + bot token + numeric admin), not the bare flag — the base
+        # class patches TELEGRAM_ADMIN_ID to the non-numeric '@admin', so
+        # flag-ON tests need a numeric admin id for the keyboard to mint.
+        self.numeric_admin_patcher = patch(
+            'news_bot.TELEGRAM_ADMIN_ID', '424242')
+        self.numeric_admin_patcher.start()
+
+    def tearDown(self):
+        self.numeric_admin_patcher.stop()
+        # Re-start the base silencer so _IntegrationBase.tearDown's
+        # notify_patcher.stop() has something to stop.
+        self.notify_patcher.start()
+        super().tearDown()
+
+    # -- helpers ----------------------------------------------------------
+
+    @staticmethod
+    def _e014_calls(mock_admin):
+        return [
+            c for c in mock_admin.call_args_list
+            if '[E014]' in (c.args[0] if c.args else '')
+        ]
+
+    def _review_token_keys(self):
+        """All ``review_token:*`` keys currently in ``bot_state``."""
+        conn = sqlite3.connect(self.db_path)
+        try:
+            return [
+                r[0] for r in conn.execute(
+                    "SELECT key FROM bot_state "
+                    "WHERE key LIKE 'review_token:%'",
+                ).fetchall()
+            ]
+        finally:
+            conn.close()
+
+    # -- tests ------------------------------------------------------------
+
+    @patch('news_bot.REVIEW_BUTTONS_ENABLED', True)
+    @patch('news_bot.fetch_full_article')
+    @patch('news_bot.fetch_rss')
+    @patch('news_bot.load_feeds')
+    @patch('news_bot.send_admin_notification')
+    def test_flag_on_e014_send_includes_review_keyboard(
+        self, mock_admin, mock_load_feeds, mock_fetch_rss, mock_fetch_article,
+    ):
+        """Flag ON: the soft-flag run sends E014 WITH ``reply_markup`` —
+        exactly two buttons ``dd:c:<token>`` / ``dd:k:<token>`` (cancel
+        first) — and the token is persisted BEFORE the send: an
+        AT-CALL-TIME probe inside the ``send_admin_notification`` mock
+        resolves ``get_review_token_link(token)`` to the flagged link the
+        moment the send happens (test-review round 1: a post-``job()``
+        assertion alone stays green if the put is moved AFTER the send,
+        missing the button-tap-races-unwritten-token production race)."""
+        self._seed_published(
+            'http://t-hunted.example/existing', self.SOFT_FP,
+            source='t-hunted',
+        )
+        new_link = 'http://autoevolution.example/new'
+        mock_load_feeds.return_value = ['http://example.com/feed1.xml']
+        mock_fetch_rss.return_value = [self._make_entry(new_link)]
+        mock_fetch_article.return_value = dict(self.SOFT_ARTICLE)
+
+        # Ordering probe: runs INSIDE the send call, i.e. before job()
+        # continues past it. For the E014 (the only call carrying a
+        # keyboard) the token extracted from callback_data must ALREADY
+        # resolve in bot_state — pinning put_review_token-before-send.
+        probe_hits = []
+
+        def _assert_token_written_at_send(message, **kwargs):
+            kb_probe = kwargs.get('reply_markup')
+            if kb_probe is None:
+                return True  # other pings (E009, ...) — not under test
+            cd = kb_probe.inline_keyboard[0][0].callback_data
+            self.assertTrue(cd.startswith('dd:c:'), cd)
+            probe_token = cd[len('dd:c:'):]
+            self.assertEqual(
+                pending_articles_repo.get_review_token_link(probe_token),
+                new_link,
+                "token not persisted BEFORE send_admin_notification — "
+                "a button tap could race an unwritten token",
+            )
+            probe_hits.append(probe_token)
+            return True
+
+        mock_admin.side_effect = _assert_token_written_at_send
+
+        news_bot.job()
+
+        # The probe actually fired for the keyboard-carrying send —
+        # otherwise the at-call-time assertion above would be vacuous.
+        self.assertEqual(len(probe_hits), 1, probe_hits)
+
+        e014 = self._e014_calls(mock_admin)
+        self.assertEqual(
+            len(e014), 1,
+            f"expected exactly one E014; got {mock_admin.call_args_list!r}",
+        )
+        kb = e014[0].kwargs.get('reply_markup')
+        self.assertIsNotNone(kb, "E014 send is missing reply_markup")
+        buttons = [b for row in kb.inline_keyboard for b in row]
+        self.assertEqual(len(buttons), 2)
+        cds = [b.callback_data for b in buttons]
+        # Cancel FIRST, keep second — order is part of the Task 2 contract.
+        self.assertTrue(cds[0].startswith('dd:c:'), cds)
+        token = cds[0][len('dd:c:'):]
+        self.assertTrue(token, "empty token in callback_data")
+        self.assertEqual(cds, [f'dd:c:{token}', f'dd:k:{token}'])
+        # Same token the at-send probe saw, still resolvable after job().
+        self.assertEqual(probe_hits, [token])
+        self.assertEqual(
+            pending_articles_repo.get_review_token_link(token), new_link,
+        )
+
+    @patch('news_bot.REVIEW_BUTTONS_ENABLED', False)
+    @patch('news_bot.fetch_full_article')
+    @patch('news_bot.fetch_rss')
+    @patch('news_bot.load_feeds')
+    @patch('news_bot.send_admin_notification')
+    def test_flag_off_e014_send_has_no_keyboard(
+        self, mock_admin, mock_load_feeds, mock_fetch_rss, mock_fetch_article,
+    ):
+        """Flag OFF (the default): the very same soft-flag run sends E014
+        WITHOUT ``reply_markup`` and mints no token — ``bot_state`` holds no
+        ``review_token:*`` row. Byte-identical to pre-feature behaviour."""
+        # Guard the "default OFF" half of the contract: with the env var
+        # unset in the test environment the import-time constant is False.
+        self.assertNotIn('REVIEW_BUTTONS_ENABLED', os.environ)
+
+        self._seed_published(
+            'http://t-hunted.example/existing', self.SOFT_FP,
+            source='t-hunted',
+        )
+        new_link = 'http://autoevolution.example/new'
+        mock_load_feeds.return_value = ['http://example.com/feed1.xml']
+        mock_fetch_rss.return_value = [self._make_entry(new_link)]
+        mock_fetch_article.return_value = dict(self.SOFT_ARTICLE)
+
+        news_bot.job()
+
+        e014 = self._e014_calls(mock_admin)
+        self.assertEqual(
+            len(e014), 1,
+            f"expected exactly one E014; got {mock_admin.call_args_list!r}",
+        )
+        self.assertIsNone(e014[0].kwargs.get('reply_markup'))
+        # No token minted, nothing written to bot_state.
+        self.assertEqual(self._review_token_keys(), [])
+
+    @patch('news_bot.REVIEW_BUTTONS_ENABLED', True)
+    @patch('news_bot.fetch_full_article')
+    @patch('news_bot.fetch_rss')
+    @patch('news_bot.load_feeds')
+    @patch('news_bot.send_admin_notification')
+    def test_flag_on_non_numeric_admin_no_keyboard_no_token(
+        self, mock_admin, mock_load_feeds, mock_fetch_rss, mock_fetch_article,
+    ):
+        """Audit SEC-A8-1: flag ON but non-numeric admin id (the default
+        ``@sunny413x`` shape) — the listener can never start, so the E014
+        send site must not mint tokens or render buttons nobody will ever
+        serve (no eternal spinner, no orphan ``review_token:*`` rows).
+        The E014 alert itself still goes out, just without a keyboard —
+        exactly like flag-off."""
+        self._seed_published(
+            'http://t-hunted.example/existing', self.SOFT_FP,
+            source='t-hunted',
+        )
+        new_link = 'http://autoevolution.example/new'
+        mock_load_feeds.return_value = ['http://example.com/feed1.xml']
+        mock_fetch_rss.return_value = [self._make_entry(new_link)]
+        mock_fetch_article.return_value = dict(self.SOFT_ARTICLE)
+
+        with patch('news_bot.TELEGRAM_ADMIN_ID', '@sunny413x'):
+            news_bot.job()
+
+        e014 = self._e014_calls(mock_admin)
+        self.assertEqual(
+            len(e014), 1,
+            f"expected exactly one E014; got {mock_admin.call_args_list!r}",
+        )
+        self.assertIsNone(e014[0].kwargs.get('reply_markup'))
+        self.assertEqual(self._review_token_keys(), [])
+
+    @patch('news_bot.REVIEW_BUTTONS_ENABLED', True)
+    @patch('news_bot.fetch_full_article')
+    @patch('news_bot.fetch_rss')
+    @patch('news_bot.load_feeds')
+    @patch('news_bot.send_admin_notification')
+    def test_only_e014_carries_keyboard(
+        self, mock_admin, mock_load_feeds, mock_fetch_rss, mock_fetch_article,
+    ):
+        """Flag ON, mixed run: one entry soft-flags (E014) and a second
+        hard-blocks (E015). Only the E014 call carries ``reply_markup`` —
+        every other admin ping in the run goes out without buttons."""
+        self._seed_published(
+            'http://t-hunted.example/existing-soft', self.SOFT_FP,
+            source='t-hunted',
+        )
+        self._seed_published(
+            'http://t-hunted.example/existing-block', self.BLOCK_FP,
+            source='t-hunted', title='Existing Block Article',
+        )
+        soft_link = 'http://autoevolution.example/soft'
+        block_link = 'http://autoevolution.example/block'
+        mock_load_feeds.return_value = ['http://example.com/feed1.xml']
+        mock_fetch_rss.return_value = [
+            self._make_entry(soft_link, title='Soft Article'),
+            self._make_entry(block_link, title='Block Article'),
+        ]
+        articles = {
+            soft_link: dict(self.SOFT_ARTICLE),
+            block_link: dict(self.BLOCK_ARTICLE),
+        }
+        mock_fetch_article.side_effect = (
+            lambda entry: articles[entry['link']]
+        )
+
+        news_bot.job()
+
+        e014 = self._e014_calls(mock_admin)
+        self.assertEqual(
+            len(e014), 1,
+            f"expected exactly one E014; got {mock_admin.call_args_list!r}",
+        )
+        self.assertIsNotNone(e014[0].kwargs.get('reply_markup'))
+        # The E015 hard-block DID fire in this run (otherwise the "other
+        # alerts" half of the assertion below would be vacuous).
+        others = [c for c in mock_admin.call_args_list if c not in e014]
+        self.assertTrue(
+            any('[E015]' in (c.args[0] if c.args else '') for c in others),
+            f"expected an E015 in the run; got {mock_admin.call_args_list!r}",
+        )
+        for c in others:
+            self.assertIsNone(
+                c.kwargs.get('reply_markup'),
+                f"non-E014 alert unexpectedly carries buttons: {c!r}",
+            )
+
+
+class TestReviewListener(_IntegrationBase):
+    """Task 5 — background review listener + main() wiring.
+
+    The listener is the bot's first inbound Telegram path, so the tests
+    stay strictly synchronous: the per-update handler
+    (``news_bot._handle_review_update``) is exercised directly with mock
+    ``Bot``/``Update`` objects (no threads, no sockets), and the outer
+    loop (``news_bot._run_review_listener``) is driven in-thread via the
+    ``stop_event`` seam with backoff constants patched to 0.
+    """
+
+    ADMIN_ID = 424242
+
+    # -- fixtures ---------------------------------------------------------
+
+    def _make_bot(self):
+        """Mock Bot whose API methods are awaitable — the handler builds
+        a fresh ``Bot`` per call (cross-event-loop httpx safety), so the
+        tests patch ``news_bot.Bot`` to hand this mock back every time."""
+        bot = MagicMock()
+        bot.get_updates = AsyncMock(return_value=[])
+        bot.edit_message_text = AsyncMock()
+        bot.answer_callback_query = AsyncMock()
+        return bot
+
+    def _make_update(self, data, *, update_id=1, user_id=ADMIN_ID,
+                     text='[E014] original alert'):
+        update = MagicMock()
+        update.update_id = update_id
+        cq = update.callback_query
+        cq.data = data
+        cq.id = 'cbq-1'
+        cq.from_user.id = user_id
+        cq.message.text = text
+        cq.message.chat_id = 777
+        cq.message.message_id = 42
+        return update
+
+    # -- gate predicate + main() wiring -----------------------------------
+
+    def test_review_listener_starts_when_enabled_and_numeric_admin(self):
+        with patch('news_bot.REVIEW_BUTTONS_ENABLED', True), \
+                patch('news_bot.TELEGRAM_ADMIN_ID', str(self.ADMIN_ID)), \
+                patch('news_bot.threading.Thread') as mock_thread:
+            self.assertTrue(news_bot._review_listener_enabled())
+            with self.assertLogs('news_bot', level='INFO') as logs:
+                result = news_bot._maybe_start_review_listener()
+
+        mock_thread.assert_called_once_with(
+            target=news_bot._run_review_listener,
+            name='review-listener',
+            daemon=True,
+        )
+        mock_thread.return_value.start.assert_called_once()
+        self.assertIsNotNone(result)
+        self.assertTrue(
+            any('review listener active' in line for line in logs.output))
+        # Best-effort startup ping went out.
+        self.mock_notify.assert_called_once()
+
+    def test_review_listener_not_started_when_flag_off(self):
+        self.mock_notify.reset_mock()
+        with patch('news_bot.REVIEW_BUTTONS_ENABLED', False), \
+                patch('news_bot.TELEGRAM_ADMIN_ID', str(self.ADMIN_ID)), \
+                patch('news_bot.threading.Thread') as mock_thread:
+            self.assertFalse(news_bot._review_listener_enabled())
+            result = news_bot._maybe_start_review_listener()
+
+        self.assertIsNone(result)
+        mock_thread.assert_not_called()
+        # Flag off is the normal test-instance state: silent (no ping).
+        self.mock_notify.assert_not_called()
+
+    def test_review_listener_not_started_when_bot_token_missing(self):
+        """Audit CA-3: flag on + numeric admin + EMPTY bot token must be
+        fail-closed at the gate. Without this check the listener thread
+        starts and ``Bot(token=None)`` raises every poll — a perpetual
+        5s ERROR loop for the process lifetime."""
+        self.mock_notify.reset_mock()
+        with patch('news_bot.REVIEW_BUTTONS_ENABLED', True), \
+                patch('news_bot.TELEGRAM_ADMIN_ID', str(self.ADMIN_ID)), \
+                patch('news_bot.TELEGRAM_BOT_TOKEN', ''), \
+                patch('news_bot.threading.Thread') as mock_thread:
+            self.assertFalse(news_bot._review_listener_enabled())
+            with self.assertLogs('news_bot', level='WARNING') as logs:
+                result = news_bot._maybe_start_review_listener()
+
+        self.assertIsNone(result)
+        mock_thread.assert_not_called()
+        # The warning names the actual broken knob, not the admin id.
+        self.assertTrue(
+            any('TELEGRAM_BOT_TOKEN' in line for line in logs.output),
+            f"expected a TELEGRAM_BOT_TOKEN warning; got {logs.output!r}")
+        # Operator is told (best-effort) why the buttons are dead.
+        self.mock_notify.assert_called_once()
+
+    def test_review_listener_not_started_when_admin_non_numeric(self):
+        self.mock_notify.reset_mock()
+        # _IntegrationBase already patches TELEGRAM_ADMIN_ID='@admin'
+        # (non-numeric) — exactly the fail-closed default shape.
+        with patch('news_bot.REVIEW_BUTTONS_ENABLED', True), \
+                patch('news_bot.threading.Thread') as mock_thread:
+            self.assertFalse(news_bot._review_listener_enabled())
+            with self.assertLogs('news_bot', level='WARNING') as logs:
+                result = news_bot._maybe_start_review_listener()
+
+        self.assertIsNone(result)
+        mock_thread.assert_not_called()
+        self.assertTrue(
+            any('TELEGRAM_ADMIN_ID' in line for line in logs.output))
+        # Operator is told (best-effort) why the buttons are dead.
+        self.mock_notify.assert_called_once()
+
+    # -- outer loop resilience --------------------------------------------
+
+    def test_review_listener_error_does_not_propagate(self):
+        stop_event = threading.Event()
+        calls = []
+
+        def fake_get_updates(*args, **kwargs):
+            if not calls:
+                calls.append('boom')
+                raise RuntimeError('simulated network/DB failure')
+            stop_event.set()
+
+            async def _empty():
+                return []
+            return _empty()
+
+        mock_bot = MagicMock()
+        mock_bot.get_updates = fake_get_updates
+        with patch('news_bot.Bot', return_value=mock_bot), \
+                patch('news_bot.REVIEW_LISTENER_ERROR_BACKOFF_SECONDS', 0), \
+                patch('news_bot._review_listener_sleep',
+                      wraps=news_bot._review_listener_sleep) as sleep_spy:
+            with self.assertLogs('news_bot', level='ERROR') as logs:
+                # Must return normally — any escaping exception fails here.
+                news_bot._run_review_listener(stop_event=stop_event)
+
+        self.assertEqual(calls, ['boom'])  # error path was exercised
+        self.assertTrue(
+            any('review listener' in line for line in logs.output))
+        # Backoff is pinned (test review round 1): the generic error branch
+        # MUST sleep with the error-backoff constant (patched to 0) — a
+        # deleted sleep call would busy-loop on a repeating failure.
+        sleep_spy.assert_called_once_with(stop_event, 0)
+
+    def test_review_listener_conflict_409_logged_with_backoff(self):
+        from telegram.error import Conflict
+        stop_event = threading.Event()
+        calls = []
+
+        def fake_get_updates(*args, **kwargs):
+            if not calls:
+                calls.append('conflict')
+                raise Conflict('terminated by other getUpdates request')
+            stop_event.set()
+
+            async def _empty():
+                return []
+            return _empty()
+
+        mock_bot = MagicMock()
+        mock_bot.get_updates = fake_get_updates
+        with patch('news_bot.Bot', return_value=mock_bot), \
+                patch('news_bot.REVIEW_LISTENER_CONFLICT_BACKOFF_SECONDS', 0), \
+                patch('news_bot._review_listener_sleep',
+                      wraps=news_bot._review_listener_sleep) as sleep_spy:
+            with self.assertLogs('news_bot', level='ERROR') as logs:
+                news_bot._run_review_listener(stop_event=stop_event)
+
+        # Clear operator-facing message: shared token, exactly one listener.
+        self.assertTrue(
+            any('409' in line and 'one' in line.lower()
+                for line in logs.output),
+            f"expected a 409/single-listener ERROR line; got {logs.output!r}")
+        # Backoff is pinned (test review round 1): the Conflict branch MUST
+        # sleep with the CONFLICT backoff constant (patched to 0; the
+        # unpatched generic constant is 5, so using the wrong one — or
+        # deleting the sleep — fails this assertion).
+        sleep_spy.assert_called_once_with(stop_event, 0)
+
+    def test_review_listener_handler_error_advances_offset_and_survives(self):
+        stop_event = threading.Event()
+        seen_offsets = []
+        update = self._make_update('dd:c:tok-loop', update_id=7)
+
+        def fake_get_updates(*args, **kwargs):
+            seen_offsets.append(kwargs.get('offset'))
+            if len(seen_offsets) > 1:
+                stop_event.set()
+
+                async def _empty():
+                    return []
+                return _empty()
+
+            async def _one():
+                return [update]
+            return _one()
+
+        mock_bot = MagicMock()
+        mock_bot.get_updates = fake_get_updates
+        with patch('news_bot.Bot', return_value=mock_bot), \
+                patch('news_bot._handle_review_update',
+                      side_effect=sqlite3.OperationalError('db locked')), \
+                patch('news_bot.REVIEW_LISTENER_ERROR_BACKOFF_SECONDS', 0):
+            with self.assertLogs('news_bot', level='ERROR'):
+                news_bot._run_review_listener(stop_event=stop_event)
+
+        # The bad update was acked (offset advanced past it) and the loop
+        # lived on to poll again — one poisoned update can't wedge the
+        # listener or the publish process.
+        self.assertEqual(seen_offsets, [None, 8])
+
+    # -- callback_data grammar filter -------------------------------------
+
+    def test_callback_grammar_rejects_malformed_data(self):
+        bad_values = [
+            None,                          # missing data
+            '',                            # empty
+            'garbage',                     # no colons
+            'dd:c',                        # too few fields
+            'dd:c:tok:extra',              # too many fields
+            'dd:x:tok',                    # unknown action letter
+            'xx:c:tok',                    # wrong prefix
+            'dd:cancel:tok',               # full word not allowed on the wire
+            'dd:c:',                       # empty token
+            'dd:c:' + 'a' * 100,           # oversized (> Telegram 64-byte cap)
+            'dd:c:' + 'ю' * 30,            # 35 chars but 65 UTF-8 bytes —
+                                           # the cap is BYTES (audit CA-5)
+        ]
+        with patch('news_bot.Bot') as mock_bot_cls, \
+                patch('news_bot.resolve_dedup_callback') as mock_resolve:
+            for value in bad_values:
+                update = self._make_update(value)
+                news_bot._handle_review_update(update)
+
+            # An update with no callback_query at all is likewise a no-op.
+            empty_update = MagicMock()
+            empty_update.callback_query = None
+            news_bot._handle_review_update(empty_update)
+
+        mock_resolve.assert_not_called()
+        # Rejected updates never even construct a Bot — zero Telegram I/O.
+        mock_bot_cls.assert_not_called()
+
+    def test_keyboard_callback_data_round_trips_through_parser(self):
+        """Audit M-1: the ``dd:<c|k>:<token>`` grammar lives as literals
+        in two modules (``admin_alerts`` builder, ``news_bot`` parser),
+        each pinned by its own unit test — but a tandem edit of the
+        builder + its test would ship a mismatch whose failure mode is
+        silent by design (parser rejects, listener just advances the
+        offset). This round-trip pins the seam: the builder's REAL
+        output, with a real ``secrets.token_urlsafe(9)`` token, must be
+        accepted by the parser for BOTH buttons."""
+        import secrets
+
+        import admin_alerts
+
+        token = secrets.token_urlsafe(9)
+        kb = admin_alerts.build_dedup_review_keyboard(token)
+        buttons = [b for row in kb.inline_keyboard for b in row]
+        self.assertEqual(len(buttons), 2)
+        parsed = [
+            news_bot._parse_review_callback_data(b.callback_data)
+            for b in buttons
+        ]
+        # Cancel first, keep second — and the exact minted token back out.
+        self.assertEqual(parsed, [('cancel', token), ('keep', token)])
+
+    def test_callback_letter_maps_to_full_word(self):
+        bot = self._make_bot()
+        # Numeric admin matching the presser: the handler's own admin gate
+        # (SEC-T5-1, runs BEFORE resolve) must pass so the spy sees the
+        # mapped action words.
+        with patch('news_bot.Bot', return_value=bot), \
+                patch('news_bot.TELEGRAM_ADMIN_ID', '1'), \
+                patch('news_bot.resolve_dedup_callback',
+                      return_value=(None, "")) as mock_resolve:
+            news_bot._handle_review_update(
+                self._make_update('dd:c:tok-c', user_id=1))
+            news_bot._handle_review_update(
+                self._make_update('dd:k:tok-k', user_id=1))
+        self.assertEqual(
+            [c.args for c in mock_resolve.call_args_list],
+            [('cancel', 'tok-c', 1), ('keep', 'tok-k', 1)],
+        )
+
+    # -- terminal vs ignored outcomes -------------------------------------
+
+    def test_review_listener_dispatches_admin_cancel(self):
+        link = 'https://example.com/listener-cancel'
+        _seed_pending_row(link)
+        pending_articles_repo.put_review_token('tok-listener-1', link)
+        bot = self._make_bot()
+        update = self._make_update('dd:c:tok-listener-1')
+
+        with patch('news_bot.Bot', return_value=bot), \
+                patch('news_bot.TELEGRAM_ADMIN_ID', str(self.ADMIN_ID)), \
+                patch('news_bot.resolve_dedup_callback',
+                      wraps=news_bot.resolve_dedup_callback) as spy:
+            with self.assertLogs('news_bot', level='INFO') as logs:
+                news_bot._handle_review_update(update)
+
+        # Letter mapped to the full word BEFORE the pure resolver ran.
+        spy.assert_called_once_with('cancel', 'tok-listener-1', self.ADMIN_ID)
+        # Real DB effect: the pending row was skipped, not published.
+        self.assertIsNone(pending_articles_repo.get_pending(link))
+        self.assertIsNone(pending_articles_repo.get_published(link))
+        # Terminal outcome → message edited: status appended, keyboard gone.
+        bot.edit_message_text.assert_awaited_once_with(
+            chat_id=777,
+            message_id=42,
+            text='[E014] original alert\n\n✅ Отменено оператором',
+            reply_markup=None,
+        )
+        bot.answer_callback_query.assert_awaited_once_with(
+            'cbq-1', text='✅ Отменено оператором')
+        # Operator decision logged at INFO: action + link + status.
+        decision_lines = [
+            line for line in logs.output
+            if 'cancel' in line and link in line
+            and 'Отменено оператором' in line
+        ]
+        self.assertEqual(len(decision_lines), 1, logs.output)
+
+    def test_decision_logged_even_when_edit_fails(self):
+        """Audit CA-2: by the time the message edit runs, the decision is
+        already applied (row skipped, token consumed) — so the
+        operator-decision INFO line must be emitted BEFORE the Telegram
+        edit/answer calls. A transient ``TelegramError`` on the edit
+        must not cost the audit line (user-spec: every operator decision
+        lands in the log)."""
+        from telegram.error import TelegramError
+
+        link = 'https://example.com/listener-log-first'
+        _seed_pending_row(link)
+        pending_articles_repo.put_review_token('tok-log-first', link)
+        bot = self._make_bot()
+        bot.edit_message_text = AsyncMock(
+            side_effect=TelegramError('message to edit not found'))
+        update = self._make_update('dd:c:tok-log-first')
+
+        with patch('news_bot.Bot', return_value=bot), \
+                patch('news_bot.TELEGRAM_ADMIN_ID', str(self.ADMIN_ID)):
+            with self.assertLogs('news_bot', level='INFO') as logs:
+                # The per-update guard in _run_review_listener owns
+                # survival; at the handler seam the error propagates.
+                with self.assertRaises(TelegramError):
+                    news_bot._handle_review_update(update)
+
+        # State change happened (cancel applied) ...
+        self.assertIsNone(pending_articles_repo.get_pending(link))
+        # ... and the audit line was written despite the failed edit.
+        decision_lines = [
+            line for line in logs.output
+            if 'operator decision' in line and link in line
+            and 'Отменено оператором' in line
+        ]
+        self.assertEqual(len(decision_lines), 1, logs.output)
+
+    def test_ignored_press_answers_empty_and_never_edits(self):
+        link = 'https://example.com/listener-nonadmin'
+        _seed_pending_row(link)
+        pending_articles_repo.put_review_token('tok-listener-2', link)
+        bot = self._make_bot()
+        update = self._make_update(
+            'dd:c:tok-listener-2', user_id=self.ADMIN_ID + 1)
+
+        with patch('news_bot.Bot', return_value=bot), \
+                patch('news_bot.TELEGRAM_ADMIN_ID', str(self.ADMIN_ID)), \
+                patch('news_bot.pending_repo.get_review_token_link') \
+                as mock_link_read:
+            news_bot._handle_review_update(update)
+
+        bot.edit_message_text.assert_not_awaited()
+        bot.answer_callback_query.assert_awaited_once_with('cbq-1', text='')
+        # SEC-T5-1: a non-admin press performs ZERO DB reads — the handler
+        # gates on the admin id BEFORE any token lookup.
+        mock_link_read.assert_not_called()
+        # State untouched: row still pending, token still alive.
+        self.assertIsNotNone(pending_articles_repo.get_pending(link))
+        self.assertEqual(
+            pending_articles_repo.get_review_token_link('tok-listener-2'),
+            link)
+
+
+# ---------------------------------------------------------------------------
+# Intake promo-filter integration tests ([E035], prod incident 2026-07-25).
+# ---------------------------------------------------------------------------
+
+
+class TestPromoIntakeFilter(_PrepPhaseBase):
+    """A shop-promo post is dropped at INTAKE — before staging, way before
+    translation (zero LLM tokens spent): not in ``pending_articles``, the
+    funnel counts it, exactly one [E035] alert fires, and the link is
+    pinned in ``processed_news`` so it is not re-fetched daily.
+
+    Mocks the same surface as ``TestCrossSourceDedup`` (``load_feeds`` /
+    ``fetch_rss`` / ``fetch_full_article``); the base's generic
+    ``send_admin_notification`` silencer is stopped per-test so the
+    admin-ping mock can be introspected, and re-started in ``tearDown``.
+    """
+
+    PROMO_LINK = ('https://t-hunted.blogspot.com/2026/07/'
+                  'hot-wheels-antigos-e-raros-na-loja.html')
+    PROMO_TITLE = 'Hot Wheels antigos e raros na loja Universo Hot Wheels'
+
+    def setUp(self):
+        super().setUp()
+        self.notify_patcher.stop()
+
+    def tearDown(self):
+        self.notify_patcher.start()
+        super().tearDown()
+
+    @patch('news_bot.fetch_full_article')
+    @patch('news_bot.fetch_rss')
+    @patch('news_bot.load_feeds')
+    @patch('news_bot.send_admin_notification')
+    def test_promo_article_dropped_at_intake(
+        self, mock_admin, mock_load_feeds, mock_fetch_rss, mock_fetch_article,
+    ):
+        """Real-incident fixture end-to-end: promo entry → dropped at
+        intake, NOT staged, funnel promo counter incremented, one [E035]
+        alert (substring anchor «Отсечена реклама»), link marked
+        processed, and NO re-fetch on the next tick."""
+        mock_load_feeds.return_value = ['http://example.com/feed1.xml']
+        mock_fetch_rss.return_value = [{
+            'link': self.PROMO_LINK,
+            'title': self.PROMO_TITLE,
+            'published': '2026-07-25',
+            'summary': 'Summary',
+        }]
+        mock_fetch_article.return_value = {
+            'title': self.PROMO_TITLE,
+            'subtitle': '',
+            'paragraphs': [
+                'Em nossa loja Universo Hot Wheels você encontra Hot '
+                'Wheels antigos e raros para a sua coleção.',
+                'Não perca as novidades desta semana!',
+                'Garanta o seu antes que acabe o estoque.',
+            ],
+            'images': [],
+        }
+
+        with self.assertLogs('news_bot', level='INFO') as cm:
+            news_bot.job()
+
+        # Dropped at intake — never staged into pending_articles.
+        self.assertEqual(pending_articles_repo.count_pending(), 0)
+        self.assertIsNone(pending_articles_repo.get_pending(self.PROMO_LINK))
+
+        # Link pinned in processed_news so tomorrow's tick skips it at
+        # the b2 filter (no daily re-fetch + re-alert).
+        conn = sqlite3.connect(self.db_path)
+        try:
+            processed = {
+                r[0] for r in
+                conn.execute('SELECT link FROM processed_news').fetchall()
+            }
+        finally:
+            conn.close()
+        self.assertIn(self.PROMO_LINK, processed)
+
+        # Exactly one [E035] alert with the substring anchor + markers.
+        e035_calls = [
+            c for c in mock_admin.call_args_list
+            if '[E035]' in (c.args[0] if c.args else '')
+        ]
+        self.assertEqual(len(e035_calls), 1)
+        msg = e035_calls[0].args[0]
+        self.assertIn('Отсечена реклама', msg)
+        self.assertIn(self.PROMO_LINK, msg)
+        self.assertIn('nossa loja', msg)
+        # No dedup alerts fired for this drop.
+        for c in mock_admin.call_args_list:
+            m = c.args[0] if c.args else ''
+            self.assertNotIn('[E014]', m)
+            self.assertNotIn('[E015]', m)
+
+        # The drop is diagnosable straight from the logs: an [E035] line
+        # naming the link + the funnel line counting promo=1.
+        e035_lines = [
+            l for l in cm.output
+            if '[E035]' in l and self.PROMO_LINK in l
+        ]
+        self.assertTrue(
+            e035_lines,
+            "expected an [E035] log line naming the dropped link; got:\n"
+            + "\n".join(cm.output),
+        )
+        funnel_lines = [
+            l for l in cm.output if '[funnel]' in l and 'promo=1' in l
+        ]
+        self.assertTrue(
+            funnel_lines,
+            "expected the [funnel] line to count promo=1; got:\n"
+            + "\n".join(cm.output),
+        )
+
+        # Next tick: the processed pin means the entry is filtered at b2 —
+        # the article body is NOT fetched again.
+        mock_fetch_article.reset_mock()
+        news_bot.job()
+        mock_fetch_article.assert_not_called()
+
+    @patch('news_bot._is_promo_article', side_effect=RuntimeError('boom'))
+    @patch('news_bot.fetch_full_article')
+    @patch('news_bot.fetch_rss')
+    @patch('news_bot.load_feeds')
+    @patch('news_bot.send_admin_notification')
+    def test_promo_filter_crash_is_fail_open(
+        self, mock_admin, mock_load_feeds, mock_fetch_rss,
+        mock_fetch_article, _mock_promo,
+    ):
+        """Audit SEC-PROMO-1: the filter is wrapped like the dedup gate —
+        a crash inside it must NOT kill the tick (``job()`` runs inside a
+        bare ``while True`` scheduler, and the crash would land BEFORE
+        mark_processed, so the same entry would crash-loop the daemon on
+        every restart). Fail-open: the article is treated as not-promo
+        and still reaches the queue."""
+        link = 'http://example.com/2026/07/ordinary-news.html'
+        mock_load_feeds.return_value = ['http://example.com/feed1.xml']
+        mock_fetch_rss.return_value = [{
+            'link': link,
+            'title': 'Ordinary Hot Wheels news',
+            'published': '2026-07-25',
+            'summary': 'Summary',
+        }]
+        mock_fetch_article.return_value = {
+            'title': 'Ordinary Hot Wheels news',
+            'subtitle': '',
+            'paragraphs': ['A new casting was revealed this week.'],
+            'images': [],
+        }
+
+        news_bot.job()  # must not raise
+
+        # Fail-open: staged as usual, no [E035] fired.
+        self.assertIsNotNone(pending_articles_repo.get_pending(link))
+        for c in mock_admin.call_args_list:
+            self.assertNotIn('[E035]', c.args[0] if c.args else '')
 
 
 if __name__ == '__main__':

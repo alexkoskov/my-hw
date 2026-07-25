@@ -12,8 +12,11 @@ import sys
 import json
 import asyncio
 import fcntl
+import secrets
 import socket
+import threading
 import time
+import unicodedata
 from datetime import datetime, timedelta, timezone
 from urllib.parse import urlparse
 
@@ -44,7 +47,7 @@ import feedparser
 from deep_translator import GoogleTranslator
 import schedule
 from telegram import Bot, LinkPreviewOptions
-from telegram.error import TelegramError
+from telegram.error import Conflict, TelegramError
 
 from mattel_news_source import fetch_mattel_news, fetch_mattel_article
 import autoevolution_source
@@ -130,6 +133,21 @@ DB_FILE = os.getenv("DB_FILE", "news.db").strip() or "news.db"
 DEDUP_SERIES_ENABLED = os.getenv(
     "DEDUP_SERIES_ENABLED", "1"
 ).strip().lower() not in ("0", "false", "no", "off")
+
+# Feature toggle for the inline review keyboard on the [E014] soft-dupe
+# admin ping (dedup-review-buttons, tech-spec Decision 6). Same const↔env
+# name contract as ``DEDUP_SERIES_ENABLED`` above (a const↔env drift would
+# make the deploy silently no-op), and the same module-attribute read
+# pattern — the send site reads the bare name so tests can monkeypatch
+# ``news_bot.REVIEW_BUTTONS_ENABLED`` and the operator can flip it via
+# env + restart. CRITICAL, deliberately INVERTED default vs
+# DEDUP_SERIES_ENABLED: this flag is OFF unless the env var is an explicit
+# on-word (``1/true/yes/on``, case-insensitive); unset / blank / anything
+# else → disabled. Prod-only opt-in: buttons appear only where the
+# callback listener actually runs.
+REVIEW_BUTTONS_ENABLED = os.getenv(
+    "REVIEW_BUTTONS_ENABLED", ""
+).strip().lower() in ("1", "true", "yes", "on")
 LOG_LEVEL = logging.INFO
 
 # Distributed-publish constants (llm-transcreation-and-distributed-publishing
@@ -466,7 +484,9 @@ for _llm_logger_name in (
 ADMIN_NOTIFICATION_MAX_ATTEMPTS = 3
 
 
-def send_admin_notification(message, *, max_attempts=ADMIN_NOTIFICATION_MAX_ATTEMPTS):
+def send_admin_notification(
+    message, *, max_attempts=ADMIN_NOTIFICATION_MAX_ATTEMPTS, reply_markup=None,
+):
     """Send a notification message to the admin with bounded retry.
 
     Retries on ``TelegramError`` only (timeouts, transient network) —
@@ -479,6 +499,12 @@ def send_admin_notification(message, *, max_attempts=ADMIN_NOTIFICATION_MAX_ATTE
     payload is built so that any caller that accidentally embeds a secret
     (Telegram bot token, Anthropic API key) sees ``***`` in the chat
     rather than the raw value.  Per Decision 12.
+
+    ``reply_markup`` (keyword-only, dedup-review-buttons Task 2) is an
+    optional ready-made telegram keyboard object forwarded verbatim to
+    ``bot.send_message`` — NOT text, so it deliberately bypasses
+    ``_redact_text``. Default ``None`` keeps the call identical to the
+    pre-keyboard behaviour.
     """
     if not TELEGRAM_BOT_TOKEN or not TELEGRAM_ADMIN_ID:
         logging.error("Telegram credentials or admin ID not set.")
@@ -501,13 +527,18 @@ def send_admin_notification(message, *, max_attempts=ADMIN_NOTIFICATION_MAX_ATTE
         await bot.send_message(
             chat_id=TELEGRAM_ADMIN_ID,
             text=safe_message,
+            reply_markup=reply_markup,
         )
 
     last_err = None
     for attempt in range(1, max_attempts + 1):
         try:
             asyncio.run(_send())
-            logging.info(f"Admin notification sent: {safe_message[:50]}...")
+            # Full logging: log the ENTIRE (already-redacted) alert text, not a
+            # 50-char prefix — so alert content (e.g. the flagged article link +
+            # match in an [E014]/[E015] dedup ping) is diagnosable from the logs
+            # alone. safe_message has already passed through _redact_text.
+            logging.info("Admin notification sent: %s", safe_message)
             return True
         except TelegramError as e:
             last_err = e
@@ -526,7 +557,492 @@ def send_admin_notification(message, *, max_attempts=ADMIN_NOTIFICATION_MAX_ATTE
     return False
 
 
+def _is_admin_press(from_user_id):
+    """Fail-closed admin check — the single source of truth for "is this
+    press from the operator?" (tech-spec Decision 5).
+
+    Used by BOTH ``resolve_dedup_callback`` (its auth gate) and the
+    listener's ``_handle_review_update`` (security review round 1,
+    SEC-T5-1: the handler must gate BEFORE any DB read so arbitrary
+    users can't trigger token lookups). A non-numeric
+    ``TELEGRAM_ADMIN_ID`` (default ``@sunny413x``) or a non-int
+    ``from_user_id`` means nobody is authorized. Module attribute read
+    at call time so tests can patch it.
+    """
+    try:
+        admin_id = int(TELEGRAM_ADMIN_ID)
+    except (TypeError, ValueError):
+        # Non-numeric admin id (default '@sunny413x') — nobody matches.
+        return False
+    try:
+        return int(from_user_id) == admin_id
+    except (TypeError, ValueError):
+        return False
+
+
+def resolve_dedup_callback(action, token, from_user_id):
+    """Decide the outcome of a dedup-review button press (pure, no I/O).
+
+    The "brain" behind the ``[E014]`` review keyboard: Task 5's listener
+    parses ``callback_data`` (grammar ``dd:<c|k>:<token>``), maps the
+    letter to a full word (``c → 'cancel'``, ``k → 'keep'``), and calls
+    this function with the already-parsed fields. This function does NO
+    Telegram I/O — only config reads, ``pending_repo`` calls, and string
+    returns; the listener applies the result via ``edit_message_text`` +
+    ``answer_callback_query`` and owns the operator-decision INFO log.
+
+    Return contract (fixed with Task 5):
+        ``(status_text, answer_text)``
+        * terminal outcome — ``status_text`` is the line the listener
+          appends to the alert (``edit_message_text(original + "\\n\\n" +
+          status_text)``); ``answer_text`` is the short callback answer
+          (same string here);
+        * ignored press (non-admin, or non-numeric ``TELEGRAM_ADMIN_ID``)
+          — ``(None, "")``: the listener must NOT edit the message and
+          answers with an empty text.
+
+    Order of checks (security reviewer, wave 1): the admin gate runs
+    FIRST, before any token lookup — the repo token helpers accept any
+    string, so this function is the sole auth gate. Fail-closed
+    (Decision 5): a non-numeric ``TELEGRAM_ADMIN_ID`` (e.g. the default
+    ``@sunny413x``) means nobody is authorized. ``TELEGRAM_ADMIN_ID`` is
+    read from the module at call time so tests can patch it.
+
+    Terminal outcomes (Decisions 2/9/10):
+        * unknown token → «⚠️ Кнопка устарела» (bot restarted / token
+          already consumed) — nothing to delete, no DB writes;
+        * ``keep`` → «👍 Оставлено», queue untouched;
+        * ``cancel`` + link still pending → ``skip_pending(link)`` (the
+          only DB write; idempotent, never touches published_articles) →
+          «✅ Отменено оператором»;
+        * ``cancel`` + link already published → «⚠️ Уже опубликовано,
+          отменить нельзя» (channel post untouched);
+        * ``cancel`` + link nowhere → «⚠️ Статья уже недоступна».
+    The token is deleted exactly on terminal outcomes (keep + the three
+    cancel branches) — never on an ignored press, and an unknown action
+    (listener grammar should make this impossible) is a safe no-op that
+    keeps the token. Idempotent: a second press of a consumed button
+    resolves to the stale branch, never raises.
+    """
+    # 1. Admin gate — FIRST, before any token lookup (fail-closed).
+    # Shared with the listener's pre-DB gate — see _is_admin_press.
+    if not _is_admin_press(from_user_id):
+        return (None, "")
+
+    # 2. Token resolve.
+    link = pending_repo.get_review_token_link(token)
+    if link is None:
+        return ("⚠️ Кнопка устарела", "⚠️ Кнопка устарела")
+
+    # 3/4. Action branches.
+    if action == 'keep':
+        status = "👍 Оставлено"
+    elif action == 'cancel':
+        if pending_repo.get_pending(link) is not None:
+            pending_repo.skip_pending(link)
+            # Slot-boundary race (security review round 1): between the
+            # get_pending check above and skip_pending the slot loop may
+            # have published the row — skip_pending then no-ops silently
+            # (it never touches published_articles). Re-read state after
+            # the skip rather than trying to be transactional: a
+            # published row at this point means the publish won, so
+            # answer the honest «уже опубликовано», not «отменено».
+            if pending_repo.get_published(link) is not None:
+                status = "⚠️ Уже опубликовано, отменить нельзя"
+            else:
+                status = "✅ Отменено оператором"
+        elif pending_repo.get_published(link) is not None:
+            status = "⚠️ Уже опубликовано, отменить нельзя"
+        else:
+            status = "⚠️ Статья уже недоступна"
+    else:
+        # Unknown action — listener grammar filters these out; don't burn
+        # a still-valid token on a malformed callback.
+        return ("⚠️ Кнопка устарела", "⚠️ Кнопка устарела")
+
+    # 5. Terminal outcome — consume the token (idempotent delete).
+    pending_repo.delete_review_token(token)
+    return (status, status)
+
+
 logger = logging.getLogger(__name__)
+
+
+# ---------------------------------------------------------------------------
+# Background review listener (dedup-review-buttons Task 5) — the bot's first
+# INBOUND Telegram path. A daemon thread long-polls getUpdates for
+# callback_query presses under the [E014] keyboard, feeds them into the pure
+# resolve_dedup_callback above, and applies the outcome (edit + answer).
+# Isolation contract (tech-spec Decision 1 / Risk "listener thread crashes"):
+# nothing that happens in this thread may ever affect the publish loop.
+# ---------------------------------------------------------------------------
+
+#: Long-poll timeout (seconds) passed to getUpdates — the Telegram server
+#: holds the request open up to this long, so the loop is idle-cheap.
+REVIEW_LISTENER_POLL_TIMEOUT_SECONDS = 30
+#: Pause after a transient error (network blip, TelegramError, DB fault)
+#: before re-polling — prevents a busy-loop on a repeating failure.
+REVIEW_LISTENER_ERROR_BACKOFF_SECONDS = 5
+#: Longer pause after a 409 Conflict (another getUpdates consumer on the
+#: shared bot token) — the condition needs operator action, not fast retry.
+REVIEW_LISTENER_CONFLICT_BACKOFF_SECONDS = 60
+
+#: Exact callback_data grammar map: ``dd:<letter>:<token>``. The letters are
+#: the wire format (Telegram caps callback_data at 64 bytes); the values are
+#: the full-word actions ``resolve_dedup_callback`` expects (Task 4 contract
+#: — it takes ``'cancel'``/``'keep'``, never the bare letters).
+_REVIEW_CALLBACK_ACTIONS = {'c': 'cancel', 'k': 'keep'}
+
+#: Telegram hard-caps callback_data at 64 BYTES; anything longer never came
+#: from our keyboard, so the parser rejects it outright (wave-1 security
+#: note: accept ONLY the exact grammar, ignore everything else silently).
+#: Compared against the UTF-8 byte length, not the code-point count
+#: (audit CA-5): a ≤64-char multibyte payload can exceed 64 bytes.
+_REVIEW_CALLBACK_DATA_MAX_BYTES = 64
+
+
+def _parse_review_callback_data(data):
+    """Parse ``callback_data`` against the exact ``dd:<c|k>:<token>`` grammar.
+
+    Returns ``(action_word, token)`` — action already mapped to the full
+    word (``'cancel'``/``'keep'``) — or ``None`` for anything that is not
+    EXACTLY three ``:``-separated fields with prefix ``dd``, a known
+    single-letter action and a non-empty token. Defensive by design
+    (wave-1 security review): garbage, foreign prefixes, full-word
+    actions on the wire, empty tokens and oversized payloads are all
+    silently rejected — the caller just advances the offset.
+    """
+    if not isinstance(data, str):
+        return None
+    if len(data.encode('utf-8')) > _REVIEW_CALLBACK_DATA_MAX_BYTES:
+        return None
+    parts = data.split(':')
+    if len(parts) != 3:
+        return None
+    prefix, letter, token = parts
+    if prefix != 'dd' or letter not in _REVIEW_CALLBACK_ACTIONS or not token:
+        return None
+    return (_REVIEW_CALLBACK_ACTIONS[letter], token)
+
+
+async def _review_get_updates(offset):
+    """One long-poll cycle: fresh ``Bot`` + fresh event loop per call.
+
+    Matches ``send_admin_notification`` exactly (Bot constructed INSIDE
+    the coroutine, one ``asyncio.run`` per Telegram call). This is not
+    style pedantry: ``HTTPXRequest`` builds its ``httpx.AsyncClient`` in
+    ``__init__`` and pools keep-alive connections, and a pooled
+    connection is bound to the event loop that opened it — reusing one
+    ``Bot`` across successive ``asyncio.run`` loops makes every second
+    poll die with "Event loop is closed". A fresh Bot per call keeps
+    each connection's lifetime inside its own loop.
+    """
+    bot = Bot(token=TELEGRAM_BOT_TOKEN)
+    return await bot.get_updates(
+        offset=offset,
+        timeout=REVIEW_LISTENER_POLL_TIMEOUT_SECONDS,
+        allowed_updates=['callback_query'],
+    )
+
+
+async def _review_edit_message(chat_id, message_id, text):
+    """Apply a terminal outcome to the alert: append status, drop keyboard.
+
+    Fresh Bot per call — same cross-event-loop rationale as
+    ``_review_get_updates``. The text goes through ``_redact_text``
+    (audit SEC-A8-3, defense-in-depth parity with the send path's
+    Decision 12 belt-and-suspenders): today's inputs are Telegram's own
+    copy of an already-redacted alert plus a fixed status string, but
+    the edit path is an outgoing-message sink and must not silently
+    lose that property if a future caller feeds it dynamic text.
+    """
+    bot = Bot(token=TELEGRAM_BOT_TOKEN)
+    await bot.edit_message_text(
+        chat_id=chat_id,
+        message_id=message_id,
+        text=_redact_text(text),
+        reply_markup=None,
+    )
+
+
+async def _review_answer_callback(callback_query_id, text):
+    """Answer a button press (clears the client-side spinner).
+
+    Fresh Bot per call — same cross-event-loop rationale as
+    ``_review_get_updates``.
+    """
+    bot = Bot(token=TELEGRAM_BOT_TOKEN)
+    await bot.answer_callback_query(callback_query_id, text=text)
+
+
+def _handle_review_update(update):
+    """Process ONE getUpdates item: parse → resolve → edit/answer.
+
+    Synchronous by design (the testability seam): all Telegram I/O goes
+    through per-call ``asyncio.run`` on the ``_review_*`` coroutine
+    helpers above, matching the project's outgoing style. May raise —
+    the caller's per-update try/except owns survival (task-4 security
+    note: a DB error from pending_repo must never kill the listener
+    thread).
+
+    Outcome application (fixed contract with Task 4):
+      * terminal (``status_text`` is a string) → ``edit_message_text``
+        with the status line appended to the original alert text and the
+        keyboard removed (``reply_markup=None``), then
+        ``answer_callback_query`` with ``answer_text``; the operator
+        decision is logged at INFO (action + link + status);
+      * ignored press (``status_text is None``) → answer with empty text
+        only, NO edit, no log noise.
+    """
+    callback_query = getattr(update, 'callback_query', None)
+    if callback_query is None:
+        return  # allowed_updates should prevent this; be defensive anyway
+    parsed = _parse_review_callback_data(getattr(callback_query, 'data', None))
+    if parsed is None:
+        return  # not our grammar — silently ignore (offset advances upstream)
+    action, token = parsed
+    from_user = getattr(callback_query, 'from_user', None)
+    from_user_id = getattr(from_user, 'id', None)
+
+    if not _is_admin_press(from_user_id):
+        # Non-admin press (or fail-closed config): acknowledge the spinner
+        # with an empty answer, change nothing, edit nothing — and do it
+        # BEFORE any DB read (SEC-T5-1: arbitrary users must not be able
+        # to trigger token lookups).
+        asyncio.run(_review_answer_callback(callback_query.id, ""))
+        return
+
+    # Admin press — grab the link for the decision log BEFORE resolve
+    # consumes the token (single source of truth — resolve deletes it on
+    # a terminal outcome).
+    link = pending_repo.get_review_token_link(token)
+
+    status_text, answer_text = resolve_dedup_callback(
+        action, token, from_user_id)
+
+    if status_text is None:
+        # resolve's own gate declined (belt-and-braces — ours already
+        # passed): answer-only, no edit.
+        asyncio.run(_review_answer_callback(callback_query.id, ""))
+        return
+
+    # user-spec: every operator decision lands in the log — action + article
+    # link + final status. No token value here (log hygiene). Logged BEFORE
+    # the Telegram edit/answer calls (audit CA-2): the state change already
+    # happened inside resolve, so a transient Telegram failure below must
+    # not cost the audit line.
+    logger.info(
+        "[review] operator decision: action=%s link=%s status=%s",
+        action, link, status_text,
+    )
+    message = getattr(callback_query, 'message', None)
+    if message is not None:
+        original_text = getattr(message, 'text', None) or ''
+        asyncio.run(_review_edit_message(
+            message.chat_id,
+            message.message_id,
+            original_text + "\n\n" + status_text,
+        ))
+    asyncio.run(_review_answer_callback(callback_query.id, answer_text))
+
+
+def _review_listener_sleep(stop_event, seconds):
+    """Backoff that stays responsive to the test stop-seam."""
+    if stop_event is not None:
+        stop_event.wait(seconds)
+    else:
+        time.sleep(seconds)
+
+
+def _run_review_listener(stop_event=None):
+    """Daemon-thread target: long-poll getUpdates for [E014] button presses.
+
+    Own ``Bot`` instances + own offset; each Telegram call runs a fresh
+    ``Bot`` through a fresh ``asyncio.run`` (same per-call event-loop
+    style as ``send_admin_notification`` — see ``_review_get_updates``
+    for why the Bot must not outlive its loop; and no
+    ``telegram.ext.Application``, which wants signal handlers the main
+    thread owns).
+
+    Resilience contract: NO exception ever escapes this function. Each
+    update is handled inside its own try/except (one poisoned update is
+    logged, acked via offset and skipped), the poll cycle has its own
+    try/except with a short backoff (5s; 60s on 409 Conflict — that means
+    a second getUpdates consumer on the shared bot token, which needs the
+    operator to enforce the single-listener rule, not fast retries), and
+    a final belt-and-braces handler catches anything else so the daemon
+    thread dies quietly instead of stack-tracing over the publish loop.
+
+    ``stop_event`` is the testability seam: production passes nothing
+    (infinite loop, daemon thread dies with the process); tests set the
+    event to exit after a bounded number of iterations.
+    """
+    try:
+        offset = None
+        while stop_event is None or not stop_event.is_set():
+            try:
+                updates = asyncio.run(_review_get_updates(offset))
+            except Conflict as exc:
+                logger.error(
+                    "[review] getUpdates got 409 Conflict — another "
+                    "process is polling with the same bot token. Review "
+                    "buttons must be enabled on exactly ONE instance "
+                    "(shared prod+test token); disable "
+                    "REVIEW_BUTTONS_ENABLED on the other instance. "
+                    "Backing off %ss. (%s)",
+                    REVIEW_LISTENER_CONFLICT_BACKOFF_SECONDS,
+                    sanitize_error_message(exc),
+                )
+                _review_listener_sleep(
+                    stop_event, REVIEW_LISTENER_CONFLICT_BACKOFF_SECONDS)
+                continue
+            except Exception as exc:
+                # Long-poll timeout, network blip, TelegramError, event-loop
+                # weirdness — log, short backoff, poll again. Never busy-loop,
+                # never die.
+                logger.error(
+                    "[review] review listener poll failed "
+                    "(%s: %s); retrying in %ss.",
+                    type(exc).__name__, sanitize_error_message(exc),
+                    REVIEW_LISTENER_ERROR_BACKOFF_SECONDS,
+                )
+                _review_listener_sleep(
+                    stop_event, REVIEW_LISTENER_ERROR_BACKOFF_SECONDS)
+                continue
+
+            for update in updates:
+                try:
+                    # Ack first: even a poisoned update is consumed exactly
+                    # once — Telegram must not redeliver it forever.
+                    offset = update.update_id + 1
+                    _handle_review_update(update)
+                except Exception:
+                    # DB fault, Telegram edit/answer error, exotic update
+                    # shape — log with traceback and move on. The thread
+                    # (and the publish loop) must survive any single update.
+                    logger.exception(
+                        "[review] failed to handle update %s — skipped",
+                        getattr(update, 'update_id', '?'),
+                    )
+    except Exception:
+        # Belt and braces (e.g. Bot() constructor failure): a daemon thread
+        # must never stack-trace over the publish process.
+        logger.exception(
+            "[review] review listener thread crashed — [E014] buttons are "
+            "inactive until the next restart"
+        )
+
+
+def _review_listener_gate_reason():
+    """Classify the review-listener gate state (audit CA-3 + CA-6).
+
+    Returns one of:
+      * ``'ok'`` — flag on, bot token present, numeric admin id;
+      * ``'off'`` — flag off (the default / test-instance state);
+      * ``'no_token'`` — flag on but ``TELEGRAM_BOT_TOKEN`` is empty.
+        Fail-closed (audit CA-3): without this check the listener starts
+        and ``Bot(token=None)`` raises ``InvalidToken`` every poll — a
+        perpetual 5s ERROR loop. Mirrors the send path's credential
+        guard in ``send_admin_notification``;
+      * ``'bad_admin'`` — flag on but ``TELEGRAM_ADMIN_ID`` is not
+        numeric (the default ``@sunny413x`` can never equal a numeric
+        ``from_user.id``, so nobody could ever be authorized).
+
+    Single source for the flag read (audit CA-6): the three startup
+    shapes in ``_maybe_start_review_listener`` branch on this reason
+    instead of re-checking ``REVIEW_BUTTONS_ENABLED`` separately.
+    Module attributes are read at call time so tests can patch them.
+    """
+    if not REVIEW_BUTTONS_ENABLED:
+        return 'off'
+    if not TELEGRAM_BOT_TOKEN:
+        return 'no_token'
+    try:
+        int(TELEGRAM_ADMIN_ID)
+    except (TypeError, ValueError):
+        return 'bad_admin'
+    return 'ok'
+
+
+def _review_listener_enabled():
+    """Pure boolean gate (tech-spec Decisions 5 + 6) — True iff the
+    listener can actually serve presses (flag on + bot token + numeric
+    admin id). Shared by the listener startup AND the E014 send site
+    (audit SEC-A8-1): buttons are only rendered when a listener with
+    the exact same effective config would serve them — no dead buttons,
+    no orphan tokens."""
+    return _review_listener_gate_reason() == 'ok'
+
+
+def _maybe_start_review_listener():
+    """main() wiring: start the daemon listener thread iff the gate is open.
+
+    Returns the started ``threading.Thread`` or ``None``. Three shapes,
+    branching on ``_review_listener_gate_reason()`` (audit CA-6 — single
+    flag read):
+      * ``'off'`` (default — test instance) → silent no-op;
+      * ``'no_token'`` / ``'bad_admin'`` → WARNING + best-effort admin
+        ping naming the broken knob (fail-closed: the listener does not
+        start, and per SEC-A8-1 the E014 send site renders no buttons
+        under the same gate);
+      * ``'ok'`` → daemon thread + "review listener active" log/ping.
+    """
+    reason = _review_listener_gate_reason()
+    if reason == 'off':
+        return None
+    if reason != 'ok':
+        if reason == 'no_token':
+            warn_log = (
+                "[startup] review listener disabled — TELEGRAM_BOT_TOKEN "
+                "is empty (fail-closed); [E014] buttons will not work "
+                "until a bot token is configured."
+            )
+            warn_ping = (
+                "⚠️ REVIEW_BUTTONS_ENABLED включён, но TELEGRAM_BOT_TOKEN "
+                "пуст — слушатель нажатий выключен (fail-closed), кнопки "
+                "под [E014] работать не будут. Задайте TELEGRAM_BOT_TOKEN "
+                "и перезапустите бота."
+            )
+        else:  # 'bad_admin'
+            warn_log = (
+                "[startup] review listener disabled — TELEGRAM_ADMIN_ID is "
+                "not numeric (fail-closed); [E014] buttons will not work "
+                "until a numeric admin id is configured."
+            )
+            warn_ping = (
+                "⚠️ REVIEW_BUTTONS_ENABLED включён, но TELEGRAM_ADMIN_ID "
+                "не числовой — слушатель нажатий выключен (fail-closed), "
+                "кнопки под [E014] работать не будут. Укажите числовой "
+                "TELEGRAM_ADMIN_ID и перезапустите бота."
+            )
+        logger.warning(warn_log)
+        try:
+            send_admin_notification(warn_ping)
+        except Exception as notify_err:
+            logger.error(
+                f"[startup] failed to send review-listener warning ping: "
+                f"{sanitize_error_message(notify_err)}"
+            )
+        return None
+
+    listener_thread = threading.Thread(
+        target=_run_review_listener,
+        name='review-listener',
+        daemon=True,
+    )
+    listener_thread.start()
+    logger.info("[startup] review listener active (daemon thread started)")
+    try:
+        send_admin_notification(
+            "✅ Review listener active — кнопки под [E014] обрабатываются "
+            "этим инстансом."
+        )
+    except Exception as notify_err:
+        logger.error(
+            f"[startup] failed to send review-listener startup ping: "
+            f"{sanitize_error_message(notify_err)}"
+        )
+    return listener_thread
 
 
 class GoogleTranslationError(Exception):
@@ -938,6 +1454,253 @@ def _is_text_only_checklist(entry, article):
     paragraphs = (article or {}).get('paragraphs') or []
     total_text = sum(len(p) for p in paragraphs if isinstance(p, str))
     return total_text < _CHECKLIST_BODY_TEXT_FLOOR
+
+
+#: Scan bounds for the promo filter ([E035]). EVERY scanned input is
+#: capped: the title, the URL path and the joined body (first N
+#: paragraphs) are each sliced to ``_PROMO_SCAN_MAX_CHARS`` before
+#: folding. Shop pitches front-load their call-to-action language, so a
+#: bounded scan is enough — and a megabyte-sized title or body can
+#: never stall the intake loop (audit SEC-PROMO-2).
+_PROMO_SCAN_MAX_PARAGRAPHS = 8
+_PROMO_SCAN_MAX_CHARS = 2000
+
+#: Promo markers, three tiers. Stored in canonical accented form;
+#: matching is accent-stripped + lowercased on BOTH sides (see
+#: ``_promo_fold``), so "nao perca" / "NÃO PERCA" hit 'não perca'.
+#: Plain word-bounded substring matching — no regex on the marker side,
+#: ReDoS-safe. The block rule lives in ``_is_promo_article``.
+#:
+#: DIRECT call-to-action — an imperative addressed to the READER. This
+#: is the sharpest ad signal: ad copy tells you to act, journalism
+#: (even when quoting a shopkeeper) does not.
+_PROMO_CTA_DIRECT_MARKERS = (
+    # PT (t-hunted and friends)
+    'compre já',
+    'garanta o seu',
+    'garanta já',
+    'não perca',
+    'aproveite a oferta',
+    # EN
+    'shop now',
+    'buy now',
+    'use code',
+    'order yours',
+)
+
+#: OFFER call-to-action — noun phrases naming an offer or a
+#: purchase-urgency perk. Weaker than DIRECT because journalism reports
+#: them factually ("the revamped shop now offers free shipping",
+#: "a discount code was floating around the Discord"), so an OFFER
+#: marker never blocks on its own — see the rule.
+_PROMO_CTA_OFFER_MARKERS = (
+    # PT
+    'cupom',
+    'código de desconto',
+    'frete grátis',
+    'promoção',
+    # EN
+    'coupon code',
+    'discount code',
+    'free shipping',
+)
+
+#: SELLER-voice markers — the publisher speaking AS the shop ("our
+#: store"). Separates an ad from retail JOURNALISM, which writes about
+#: somebody else's store ("Mattel relaunches its online store",
+#: "beloved shop closes"). Not sufficient alone: review round 2 showed
+#: interview and community pieces quote owners and fans in exactly this
+#: first person, so a CTA marker is required alongside it.
+_PROMO_SELLER_MARKERS = (
+    'nossa loja',
+    'em nossa loja',
+    'our store',
+    'our shop',
+)
+
+#: Every marker whose span is blanked before the WEAK pass (see
+#: ``_promo_scan_markers``). Union of the three decision tiers; the
+#: structural invariants (disjoint tiers, all folded) are pinned by
+#: ``TestPromoMarkerSets``.
+_PROMO_STRONG_MARKERS = (
+    _PROMO_CTA_DIRECT_MARKERS
+    + _PROMO_CTA_OFFER_MARKERS
+    + _PROMO_SELLER_MARKERS
+)
+
+#: WEAK promo markers — commerce vocabulary that legit news also uses
+#: ("hits stores in September", "chega às lojas"). WEAK markers NEVER
+#: affect the verdict, whatever their count: they are collected purely
+#: so the [E035] ping shows the operator the full picture of what the
+#: article looked like.
+_PROMO_WEAK_MARKERS = (
+    # PT
+    'loja',
+    'à venda',
+    'estoque',
+    'desconto',
+    'oferta',
+    # EN
+    'store',
+    'on sale',
+    'in stock',
+    'discount',
+    'offer',
+)
+
+#: URL-path tokens counted as WEAK promo markers (rendered as
+#: ``url:<token>`` in the matched-marker list). Demoted from STRONG in
+#: review round 1: real outlets routinely put store/shop/loja in slugs
+#: for ordinary retail news ('mattel-creations-store-drop-rlc',
+#: 'hot-wheels-shop-closes-after-30-years'), so a slug alone must never
+#: help complete the block bar.
+_PROMO_URL_TOKENS = ('loja', 'shop', 'store')
+
+
+def _promo_fold(text):
+    """Fold ``text`` for promo-marker matching: NFKD accent-strip +
+    lowercase + collapse to single-space-separated word tokens, padded
+    with one space on each side so a plain ``in`` substring check is
+    word-bounded ('loja' never hits 'lojas', 'store' never hits
+    'restored'). Non-str input folds to the empty token string."""
+    if not isinstance(text, str):
+        text = ''
+    text = unicodedata.normalize('NFKD', text)
+    text = ''.join(ch for ch in text if not unicodedata.combining(ch))
+    return ' ' + ' '.join(re.findall(r'[a-z0-9]+', text.lower())) + ' '
+
+
+def _promo_scan_input(value):
+    """Coerce one scanned input to a bounded str. Non-str values (a
+    list/int/bool ``link`` from a malformed feed) degrade to '' instead
+    of raising — the filter must never crash the tick (audit
+    SEC-PROMO-1); the slice enforces the documented scan bound on EVERY
+    input, not just the body (SEC-PROMO-2)."""
+    if not isinstance(value, str):
+        return ''
+    return value[:_PROMO_SCAN_MAX_CHARS]
+
+
+#: Markers pre-folded once at import so the per-entry scan is pure
+#: substring checks.
+_PROMO_STRONG_FOLDED = tuple(
+    (m, _promo_fold(m)) for m in _PROMO_STRONG_MARKERS)
+_PROMO_WEAK_FOLDED = tuple(
+    (m, _promo_fold(m)) for m in _PROMO_WEAK_MARKERS)
+
+
+def _promo_scan_markers(text):
+    """Return ``(strong, weak)`` matched promo markers for ``text``.
+
+    A WEAK marker is counted ONLY when it occurs outside every matched
+    STRONG marker's span: five STRONG markers literally contain a WEAK
+    one ('nossa loja' ⊃ 'loja', 'our store' ⊃ 'store', 'código de
+    desconto' ⊃ 'desconto', 'discount code' ⊃ 'discount', 'aproveite a
+    oferta' ⊃ 'oferta'), so naive counting would let ONE phrase supply
+    both its own STRONG hit and a "corroborating" WEAK hit — collapsing
+    the intended two-independent-signals bar (review round 1, major).
+    Matched STRONG spans are blanked out of the folded text before the
+    WEAK pass; a weak word that ALSO appears independently elsewhere
+    still counts.
+    """
+    folded = _promo_fold(text)
+    strong = [m for m, f in _PROMO_STRONG_FOLDED if f in folded]
+    residual = folded
+    for _m, f in _PROMO_STRONG_FOLDED:
+        if f in residual:
+            # Replace with a single space: the padding that made the
+            # match word-bounded is preserved for neighbouring markers.
+            residual = residual.replace(f, ' ')
+    weak = [m for m, f in _PROMO_WEAK_FOLDED if f in residual]
+    return strong, weak
+
+
+def _is_promo_article(entry, article):
+    """Return the list of matched promo markers when the entry+article
+    look like a shop-promo/ad post (truthy → drop at intake, [E035]);
+    empty list otherwise. The list is surfaced in the operator alert so
+    a false positive is diagnosable at a glance.
+
+    Prod incident 2026-07-25: t-hunted.blogspot.com published a pure
+    store ad («Hot Wheels antigos e raros na loja Universo Hot Wheels»)
+    and the bot translated (wasted LLM tokens) + posted it.
+
+    Block rule, tuned across two review rounds against 15 realistic
+    lamley/autoevolution/t-hunted/orangetrack snippets:
+
+      * a SELLER-voice marker AND (>= 1 DIRECT call-to-action OR >= 2
+        call-to-action markers of any tier), OR
+      * >= 3 distinct call-to-action markers (a dense CTA stack — no
+        seller voice needed).
+
+    An ad TELLS THE READER TO ACT; journalism does not, even when it
+    quotes a shopkeeper. Round 1 established that seller voice is
+    needed (news covers somebody else's shop: "Mattel relaunches its
+    online store", "beloved Hot Wheels shop closes"); round 2 showed
+    seller voice is not sufficient, because interview / Q&A / community
+    pieces quote owners and fans in the first person ("Our store has
+    always focused on…", "our store finally got it back in stock") —
+    hence the CTA requirement on top.
+
+    Thresholds are deliberately one notch above the intuitive ones:
+    a lone OFFER marker beside seller voice does not block (the
+    community-roundup 'discount code' quote), and two CTA markers
+    without seller voice do not block (the storefront-relaunch story
+    where 'shop now' lands as an accidental bigram in "the revamped
+    shop now offers free shipping").
+
+    WEAK commerce words (including the 'loja'/'shop'/'store' URL-slug
+    token, rendered ``url:loja``) never affect the verdict — they are
+    reported in the marker list for the operator only, with hits inside
+    a matched marker's span suppressed (see ``_promo_scan_markers``).
+
+    Inputs scanned (source language, pre-translation): entry/article
+    title, the entry link's URL path, and the first
+    ``_PROMO_SCAN_MAX_PARAGRAPHS`` paragraphs of the body — each capped
+    at ``_PROMO_SCAN_MAX_CHARS`` chars.
+
+    Called from ``job()`` step (b3) right after the checklist reject —
+    before the (more expensive) dedup gate, per the cheapest-filter-
+    first ordering. Tolerates malformed input: non-dict ``entry`` /
+    ``article`` and non-str link/title/paragraph values degrade to
+    "not promo" instead of raising.
+    """
+    if not isinstance(entry, dict):
+        entry = {}
+    if not isinstance(article, dict):
+        article = {}
+    title = (_promo_scan_input(entry.get('title'))
+             or _promo_scan_input(article.get('title')))
+    paragraphs = article.get('paragraphs')
+    if not isinstance(paragraphs, (list, tuple)):
+        paragraphs = []
+    body = ' '.join(
+        p for p in paragraphs[:_PROMO_SCAN_MAX_PARAGRAPHS]
+        if isinstance(p, str)
+    )[:_PROMO_SCAN_MAX_CHARS]
+
+    strong, weak = _promo_scan_markers(f'{title} {body}')
+
+    try:
+        path = urlparse(_promo_scan_input(entry.get('link'))).path
+    except ValueError:
+        # Malformed URL (e.g. an unterminated IPv6 literal) — the slug
+        # signal is optional, the filter carries on without it.
+        path = ''
+    path_tokens = set(_promo_fold(path).split())
+    weak += [
+        f'url:{tok}' for tok in _PROMO_URL_TOKENS if tok in path_tokens
+    ]
+
+    seller = [m for m in strong if m in _PROMO_SELLER_MARKERS]
+    direct = [m for m in strong if m in _PROMO_CTA_DIRECT_MARKERS]
+    cta = direct + [m for m in strong if m in _PROMO_CTA_OFFER_MARKERS]
+
+    if seller and (direct or len(cta) >= 2):
+        return strong + weak
+    if len(cta) >= 3:
+        return strong + weak
+    return []
 
 
 #: Hard-block threshold for cross-source dedup (tech-spec Decision 7,
@@ -1809,6 +2572,26 @@ def _fallback_publish(row, via_review=False):
     # a duplicate. The marker is in-memory only (per publish call); it is set
     # ONLY after a successful send, so a teaser that FAILED is still re-tried.
     if not row.get('_teaser_sent'):
+        # In-flight cancel guard (audit CA-1a): the operator may press
+        # «🚫 Не публиковать» while THIS publish is mid-flight — the LLM +
+        # Telegraph steps above take minutes, and ``resolve_dedup_callback``'s
+        # cancel branch deletes the pending row via ``skip_pending`` and
+        # answers «✅ Отменено оператором». Re-check the row right before
+        # the LAST irreversible step (the channel teaser; an orphan
+        # Telegraph page is harmless): row gone → honour the cancel and
+        # abort. Return True mirrors the idempotency guard above —
+        # success-without-publish, so the slot loop neither strikes the
+        # row nor treats this as a failure. The teaser-already-sent retry
+        # path deliberately bypasses this guard: with a post in the
+        # channel, completing ``move_to_published`` (which dozapis-guards
+        # a missing row itself, CA-1b) is the consistent outcome.
+        if pending_repo.get_pending(link) is None:
+            logger.info(
+                f"[review-cancel] {link} pending row vanished mid-publish "
+                f"(operator cancelled via [E014] button) — aborting before "
+                f"the Telegram teaser; no channel post, no strike"
+            )
+            return True
         ok = send_telegraph_teaser(telegraph_url, link)
         if not ok:
             raise RuntimeError(
@@ -2222,6 +3005,7 @@ def job():
         'new_count': 0,           # len(new_entries) after both b2 filters
         'dropped_no_article': 0,  # b3: no link OR no article/paragraphs
         'dropped_checklist': 0,   # b3: text-only checklist reject
+        'dropped_promo': 0,       # b3: shop-promo/ad reject (E035)
         'dropped_dedup_block': 0, # b3: cross-source hard-block (E015)
         'dedup_degraded': 0,      # b3: dedup crashed → degraded (E016), still attempts to stage
         'staged': 0,              # == inserted
@@ -2296,6 +3080,53 @@ def job():
             )
             continue
 
+        # Reject shop-promo/ad posts BEFORE staging — zero LLM tokens
+        # spent (prod incident 2026-07-25: t-hunted published a pure
+        # store ad and the bot translated + posted it). Scoring rule in
+        # _is_promo_article; the matched markers go into the [E035]
+        # alert so a false positive is diagnosable at a glance. Placed
+        # before the (more expensive) dedup gate. Unlike the checklist
+        # drop the link is pinned in processed_news (E015 precedent):
+        # a shop ad stays a shop ad — without the pin the same post
+        # would be re-fetched and re-alerted every daily tick.
+        try:
+            promo_markers = _is_promo_article(entry, article)
+        except Exception as exc:
+            # Fail-open, mirroring the dedup gate's Decision 12 / AC9
+            # contract: an intake FILTER must never crash the tick or
+            # block publishing. A crash here would also land BEFORE
+            # mark_processed, so the same entry would be refetched and
+            # crash-loop the daemon on restart (audit SEC-PROMO-1).
+            logger.error(
+                "promo filter failed for %s, treating as not-promo: %s",
+                link, sanitize_error_message(exc),
+            )
+            promo_markers = []
+        if promo_markers:
+            funnel['dropped_promo'] += 1
+            logger.info(
+                "[E035] Promo article dropped %s (markers: %s)",
+                link, ", ".join(promo_markers),
+            )
+            mark_processed(
+                link,
+                article.get('title') or entry.get('title') or '',
+                entry.get('published') or entry.get('pub_date') or '',
+            )
+            try:
+                send_admin_notification(
+                    admin_alerts.alert_promo_blocked(
+                        link,
+                        article.get('title') or entry.get('title') or '',
+                        promo_markers,
+                    )
+                )
+            except Exception as notify_err:
+                logger.error(
+                    "Failed to send E035 notification: %s", notify_err,
+                )
+            continue
+
         # --------------------------------------------------------------
         # Cross-source dedup gate (cross-source-dedup feature, Wave 2).
         # Position: post-fetch, post-checklist, pre-row-assembly per
@@ -2330,7 +3161,7 @@ def job():
                 if decision == 'block':
                     funnel['dropped_dedup_block'] += 1
                     logger.info(
-                        "Skipping cross-source duplicate %s; matched %s "
+                        "[E015] Cross-source hard-block %s; matched %s "
                         "(overlap %d%%)",
                         link, match['link'], match['overlap_pct'],
                     )
@@ -2353,10 +3184,44 @@ def job():
                     continue
 
                 if decision == 'flag':
-                    if not pending_repo.is_pair_rate_limited(
+                    alerted = not pending_repo.is_pair_rate_limited(
                         dedup_conn, link, match['link'],
-                    ):
+                    )
+                    # Full logging: record EVERY soft-flag decision (link +
+                    # [E014] + match) so a dedup flag is diagnosable straight
+                    # from the logs — even when the per-pair 7-day alert
+                    # rate-limit (AC5) suppresses the Telegram ping.
+                    logger.info(
+                        "[E014] Cross-source soft-flag %s; matched %s "
+                        "(overlap %d%%, %s->%s)%s",
+                        link, match['link'], match['overlap_pct'],
+                        new_source, match['source_name'],
+                        "" if alerted else " (alert rate-limited)",
+                    )
+                    if alerted:
                         try:
+                            # dedup-review-buttons: when the LISTENER
+                            # gate is open (flag + bot token + numeric
+                            # admin — audit SEC-A8-1: same effective
+                            # gate as the listener, so we never mint
+                            # tokens / render buttons nothing will ever
+                            # serve), mint a short token, persist
+                            # token→link BEFORE the send (a button press
+                            # must never race an unwritten token), and
+                            # attach the two-button review keyboard.
+                            # Gate closed → kb stays None and the call
+                            # is identical to the pre-feature behaviour.
+                            # Mint/put live INSIDE this try so a
+                            # storage/build fault logs as a failed E014
+                            # ping instead of breaking the "dedup never
+                            # blocks publishing" contract.
+                            kb = None
+                            if _review_listener_enabled():
+                                token = secrets.token_urlsafe(9)
+                                pending_repo.put_review_token(token, link)
+                                kb = admin_alerts.build_dedup_review_keyboard(
+                                    token,
+                                )
                             send_admin_notification(
                                 admin_alerts.alert_cross_source_dupe(
                                     new_link=link,
@@ -2368,7 +3233,8 @@ def job():
                                     n_total=match['n_total'],
                                     models=match['models'],
                                     pairs=match.get('pairs'),
-                                )
+                                ),
+                                reply_markup=kb,
                             )
                         except Exception as notify_err:
                             logger.error(
@@ -2447,11 +3313,12 @@ def job():
     # cannot raise.
     logger.info(
         "[funnel] sources=%d(failed=%d) new=%d "
-        "dropped(no_article=%d,checklist=%d,dedup_block=%d,dedup_degraded=%d) "
-        "staged=%d",
+        "dropped(no_article=%d,checklist=%d,promo=%d,dedup_block=%d,"
+        "dedup_degraded=%d) staged=%d",
         funnel['sources_fetched'], funnel['sources_failed'],
         funnel['new_count'], funnel['dropped_no_article'],
-        funnel['dropped_checklist'], funnel['dropped_dedup_block'],
+        funnel['dropped_checklist'], funnel['dropped_promo'],
+        funnel['dropped_dedup_block'],
         funnel['dedup_degraded'], funnel['staged'],
     )
 
@@ -2798,6 +3665,13 @@ def main():
                 f"[startup] failed to send prod-DB-guard ping: "
                 f"{sanitize_error_message(notify_err)}"
             )
+
+    # Background review listener (dedup-review-buttons Task 5) — started
+    # BEFORE the cron registration and the immediate job() so the daemon
+    # thread lives through the whole process lifetime, including the long
+    # blocking publish window. Fail-closed gate inside; default (flag off)
+    # is a silent no-op.
+    _maybe_start_review_listener()
 
     # Daily fixed-time cron at 10:00 МСК (Decisions 2 + 4). pytz is the
     # only timezone API ``schedule==1.2.1`` accepts — see Decision 4.

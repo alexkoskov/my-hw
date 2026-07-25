@@ -1,0 +1,132 @@
+{
+  "reviewer": "test-reviewer",
+  "commit": "7de12e6",
+  "verdict": "changes-requested",
+  "verdictReason": "The 19 tests are well-written and all pass, and the integration test genuinely proves zero-token/pin behavior. But the false-positive hunt (weighted most important) found that 4 of 10 realistic legit Hot Wheels news snippets (official Mattel Creations store drop with member discount, Mattel's own storefront-relaunch news, a hobby shop closing, a PT restock piece) are silently blocked by the current rule. All four share one root cause: the URL-path token bonus ('loja'/'shop'/'store' in the slug counts as STRONG) combines with completely ordinary commerce vocabulary that legitimate autoevolution/lamley/mattel/t-hunted headlines routinely use. Recommend tuning before shipping, or accepting the tradeoff explicitly and adding regression tests that pin the current false-positive cases as known/accepted.",
+  "testsReviewed": {
+    "TestIsPromoArticle": {
+      "file": "tests/test_relevance_filter.py",
+      "count": 14,
+      "status": "pass",
+      "notes": "Meaningful, real-assertion tests (no mock-only checks). Good coverage of the scoring rule's documented boundaries: 2-STRONG-via-url-token blocks, 1 STRONG + 2 WEAK blocks, 1 STRONG + 1 WEAK does not, a single STRONG never blocks, weak-only (any count) never blocks. Accent/case folding is genuinely exercised (the 'nao perca' ASCII variant forces NFKD-fold to matter, not just a same-string round-trip). Scan-bound tests (paragraph count and char cap) are correct and match the implementation's slicing order. Crash-safety test covers None entry/article and empty/missing paragraphs, matching the documented contract."
+    },
+    "TestPromoBlockedAlert": {
+      "file": "tests/test_admin_alerts.py",
+      "count": 2,
+      "status": "pass",
+      "notes": "Verifies real message content (title, link, every matched marker, the 'Отсечена реклама' substring anchor used by the integration test, plain-text-only formatting) rather than just checking the function was called. Empty-markers case checks no 'None' leaks into the rendered text."
+    },
+    "TestIntakeFunnel (promo additions)": {
+      "file": "tests/test_admin_alerts.py",
+      "count": 2,
+      "status": "pass",
+      "notes": "test_collapse_note_promo_dominant and test_funnel_line_counts_promo_in_dropped both assert on rendered string content, not implementation details. Correctly show promo folded into both the per-stage bullet and the compact 'отсеяно' sum."
+    },
+    "TestPromoIntakeFilter": {
+      "file": "tests/test_integration.py",
+      "count": 1,
+      "status": "pass",
+      "notes": "Real SQLite, real job() run. Genuinely proves the zero-token/pre-translation claim: pending_articles count stays 0 and get_pending() is None for the link (translation only ever operates on rows in pending_articles, confirmed by reading job()'s later staging code, so this is real proof, not an assumption). Proves exactly one [E035] admin call fires and no E014/E015 fires for the same drop. Proves the mark_processed pin works operationally, not just that mark_processed was called: it resets the fetch_full_article mock and runs job() a second time, asserting fetch_full_article is never called again for that link — this is the strongest evidence in the whole diff and correctly targets the real regression risk (daily re-fetch/re-alert spam)."
+    }
+  },
+  "findings": [
+    {
+      "id": "F1",
+      "severity": "high",
+      "category": "false-positive-risk",
+      "title": "URL-token STRONG bonus + ordinary commerce vocabulary silently drops real news",
+      "detail": "4 of 10 realistic snippets modeled on plausible autoevolution/lamley/mattel/t-hunted content were blocked: an official Mattel Creations store-drop-with-member-discount announcement, a news piece about Mattel relaunching its own online store, a hobby shop closing after 30 years (community news, not an ad), and a PT restock roundup. In every case the trigger was 1 STRONG marker supplied by the URL-path token bonus ('store'/'shop'/'loja' in the slug) combined with 1-2 ordinary WEAK/STRONG words a journalist would naturally use ('discount', 'in stock', 'on sale', 'free shipping', or an incidental 'shop now offers' word sequence). None of these are ad copy — they are exactly the kind of coverage this channel's actual sources publish about Mattel Creations drops, retail exclusives, and community shop news. See falsePositiveProbe array for verbatim snippets and matched markers.",
+      "recommendation": "Either (a) demote the URL-token bonus from STRONG to WEAK so a slug containing 'store'/'shop'/'loja' alone can no longer complete the bar together with just one more incidental weak word, or (b) require 2 independent body-text STRONG markers before the URL token can contribute, or (c) if the team accepts this tradeoff (better to over-block than under-block, per the '[E035] false positive → report it, patterns get tuned' operator workflow already built into the alert), add these four cases as explicit regression tests documenting the accepted tradeoff so it's a decision, not a blind spot."
+    },
+    {
+      "id": "F2",
+      "severity": "medium",
+      "category": "test-coverage-gap",
+      "title": "Word-boundary claim ('loja' must not match 'lojas', 'store' must not match 'restored') has no regression test that would actually fail if the guard broke",
+      "detail": "Verified directly: fold('loja') is NOT a substring of fold('lojas'), and fold('store') is NOT a substring of fold('restored') — the implementation is correct today. But the only existing negative test that mentions 'lojas' (test_pt_news_chega_as_lojas_not_blocked) contains zero STRONG markers in its fixture, so `len(strong) >= 2 or (strong and len(weak) >= 2)` is False purely because `strong` is empty — the test would still pass unchanged even if the word-boundary guard were completely removed and 'loja' started matching inside 'lojas'. No test in the suite uses the word 'restored' at all (grepped tests/test_relevance_filter.py — zero hits), despite this exact case being called out in the module docstring and in this review's focus list.",
+      "recommendation": "Add a dedicated test pairing a genuine STRONG marker with a plural/compound word that would trip a naive substring matcher if the boundary logic regressed, e.g. 1 STRONG ('compre já') + body text containing only 'lojas' (plural) and 'restored'-like filler, asserting the result stays under the bar specifically because 'loja'/'store' do NOT match inside those words — not just that the overall verdict happens to be False for unrelated reasons."
+    },
+    {
+      "id": "F3",
+      "severity": "low",
+      "category": "defensive-coding",
+      "title": "_is_promo_article call site in job() is not wrapped in try/except, unlike the dedup gate",
+      "detail": "A non-string `entry['link']` (e.g. int or list — possible from a malformed/Atom-style feed) crashes `_is_promo_article` via `urlparse(entry.get('link') or '')`. This is NOT a regression introduced by this diff: `fetch_full_article`, called earlier in the same loop iteration on the same field, already does `urlparse(entry.get('link') or '')` unguarded, so a malformed link already crashes the tick before promo filtering is ever reached. Documenting for awareness only — not a defect specific to this change, and not blocking.",
+      "recommendation": "No action required for this diff. If the team ever hardens `fetch_full_article` against non-string links, extend the same guard to `_is_promo_article` at the same time."
+    },
+    {
+      "id": "F4",
+      "severity": "info",
+      "category": "test-quality-positive",
+      "title": "Integration test's re-fetch proof is the strongest test in the diff",
+      "detail": "test_promo_article_dropped_at_intake resets the fetch_full_article mock and re-runs job(), then asserts assert_not_called() — this is a real operational proof that the processed_news pin prevents next-tick re-fetch, not just a check that mark_processed() was invoked with the right arguments. Worth calling out as a pattern to reuse for other pin-on-drop features.",
+      "recommendation": "None — keep as reference pattern."
+    }
+  ],
+  "falsePositiveProbe": [
+    {
+      "snippet": "Title: 'Mattel Creations Drops Exclusive RLC Hot Wheels Set With Member Discount' / URL: lamleygroup.com/2026/07/mattel-creations-rlc-drop.html — 'Mattel Creations has opened orders for its latest Red Line Club exclusive, a limited-run set celebrating the 1968 Custom Camaro. RLC members get a 10 percent discount at checkout when they use their loyalty code, and the set is expected to sell out within hours based on past drops. The set will also be in stock at select retailers later this year for collectors who miss the online window.'",
+      "lang": "EN",
+      "blocked": false,
+      "markers": []
+    },
+    {
+      "snippet": "Title: 'Mattel Creations Opens RLC Store Drop With Member Discount' / URL: lamleygroup.com/2026/07/mattel-creations-store-drop-rlc.html — 'Mattel Creations opened orders today for its latest Red Line Club exclusive. RLC members get a discount at checkout, and the set is expected to sell out fast, with a restock likely to be in stock again next month for non-members.'",
+      "lang": "EN",
+      "blocked": true,
+      "markers": ["url:store", "store", "in stock", "discount"]
+    },
+    {
+      "snippet": "Title: 'Hot Wheels Premium Car Culture Wave Now In Stock at Retailers' / URL: autoevolution.com/news/hot-wheels-premium-car-culture-wave-in-stock.html — 'The latest Car Culture premium wave is now in stock at major retailers nationwide, featuring five new castings with real rider wheels. Collectors report the wave is already hard to find at some Walmart and Target locations, so don't miss it if you spot it on the pegs. Pricing remains at the usual premium point, with no major changes from the last wave.'",
+      "lang": "EN",
+      "blocked": false,
+      "markers": []
+    },
+    {
+      "snippet": "Title: 'Beloved Hot Wheels Shop Closes After 30 Years in Business' / URL: lamleygroup.com/2026/07/hot-wheels-shop-closes-after-30-years.html — 'Hot Wheels Shop, a fixture in the local diecast scene for three decades, is closing its doors next month, the owners announced this week. Remaining inventory is now on sale, with select cases still in stock for walk-in customers before the final day. Longtime collectors say the closure marks the end of an era for the region's hobby scene.'",
+      "lang": "EN",
+      "blocked": true,
+      "markers": ["url:shop", "on sale", "in stock"]
+    },
+    {
+      "snippet": "Title: 'Mattel Relaunches Hot Wheels Online Store With New Collector Perks' / URL: autoevolution.com/news/mattel-relaunches-hot-wheels-online-store.html — 'Mattel has relaunched its Hot Wheels e-commerce storefront with a cleaner design and faster checkout, the company announced Tuesday. The revamped shop now offers free shipping on orders over fifty dollars, part of a push to compete with third-party resellers. Collectors can also opt into early-access alerts for future RLC and convention releases.'",
+      "lang": "EN",
+      "blocked": true,
+      "markers": ["shop now", "free shipping", "url:store", "store"]
+    },
+    {
+      "snippet": "Title: 'Hot Wheels Reveals 2026 Convention Exclusive Ahead of October Show' / URL: lamleygroup.com/2026/07/hw-convention-exclusive-2026.html — 'Mattel unveiled the 2026 Hot Wheels Convention exclusive casting this week, a nod to the classic Deora II. Convention badge holders will be able to buy the car on-site, with a separate online sale planned for those who can't attend in person. As always, expect the piece to command a premium on the secondary market shortly after.'",
+      "lang": "EN",
+      "blocked": false,
+      "markers": []
+    },
+    {
+      "snippet": "Title: 'Hot Wheels Premium chega às lojas com desconto de lançamento' / URL: t-hunted.blogspot.com/2026/07/hot-wheels-premium-lancamento.html — 'A nova leva Premium da Hot Wheels chega às lojas físicas e ao e-commerce nesta semana, com um desconto de lançamento para quem comprar nos primeiros dias. Segundo a Mattel, o estoque inicial deve ser limitado, o que já preocupa colecionadores de plantão. A expectativa é de que os modelos sumam rápido das prateleiras, repetindo o cenário de lançamentos anteriores.'",
+      "lang": "PT",
+      "blocked": false,
+      "markers": []
+    },
+    {
+      "snippet": "Title: 'Hot Wheels Premium chega às lojas com novidades para julho' / URL: t-hunted.blogspot.com/2026/07/hot-wheels-premium-na-loja-julho.html — 'A nova leva Premium chega às lojas físicas e ao e-commerce nesta semana. O estoque inicial deve ser limitado, o que preocupa colecionadores de plantão à espera de um possível desconto de lançamento.'",
+      "lang": "PT",
+      "blocked": true,
+      "markers": ["url:loja", "estoque", "desconto"]
+    },
+    {
+      "snippet": "Title: 'Hot Wheels Turns 58: Mattel Marks Anniversary With Retailer Sale Events' / URL: autoevolution.com/news/hot-wheels-58th-anniversary-retailer-sales.html — 'Hot Wheels celebrates its 58th anniversary this year, and Mattel says several retail partners will run sale events throughout the month to mark the occasion. Shoppers can expect discounted multi-packs at some chains, though Mattel has not confirmed which retailers are participating. The anniversary follows a strong year for the brand, with premium lines outperforming expectations.'",
+      "lang": "EN",
+      "blocked": false,
+      "markers": []
+    },
+    {
+      "snippet": "Title: 'Why Hot Wheels Scalping Got Worse This Year, According to Collectors' / URL: lamleygroup.com/2026/07/hot-wheels-scalping-worse-2026.html — 'Collectors say scalping has gotten worse in 2026, with resellers buying entire cases off store shelves within minutes of restock. Some resellers even use a coupon code from big-box retailers to lower their own cost before flipping the cars online at a markup. Mattel has not commented publicly on the trend, though some fans want the company to impose per-customer purchase limits.'",
+      "lang": "EN",
+      "blocked": false,
+      "markers": []
+    }
+  ],
+  "testExecution": {
+    "command": "python3 -m pytest tests/test_relevance_filter.py::TestIsPromoArticle tests/test_admin_alerts.py::TestPromoBlockedAlert tests/test_admin_alerts.py::TestIntakeFunnel::test_collapse_note_promo_dominant tests/test_admin_alerts.py::TestIntakeFunnel::test_funnel_line_counts_promo_in_dropped tests/test_integration.py::TestPromoIntakeFilter -v",
+    "result": "19 passed"
+  }
+}

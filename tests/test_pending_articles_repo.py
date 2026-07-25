@@ -15,6 +15,7 @@ import os
 import sqlite3
 import sys
 import tempfile
+import threading
 import unittest
 from unittest.mock import patch
 
@@ -623,6 +624,65 @@ class TestMoves(_TmpDbCase):
 
         pub = repo.get_published(entry['link'])
         self.assertEqual(pub['via_review'], 0)
+
+    def test_move_to_published_missing_row_warns_and_dozapis_published(self):
+        """Audit CA-1b: the pending row can vanish between the Telegram
+        teaser send and ``move_to_published`` (operator cancel racing an
+        in-flight publish — ``skip_pending`` deleted it). The teaser IS in
+        the channel at that point, so a silent no-op would leave
+        ``published_articles`` without a row for a post that exists —
+        skewing the fingerprint window, E017 and E034. Contract: WARNING
+        log + defensive dozapis of the published row from the explicit
+        args (title recovered from ``processed_news``, where the skip
+        stamped it).
+        """
+        link = 'http://m/ghost'
+        entry = _sample_entry(link=link)
+        entry['title'] = 'Ghost Title'
+        repo.insert_pending(entry)
+        # The racing cancel: row leaves pending, title lands in
+        # processed_news.
+        repo.skip_pending(link)
+        self.assertIsNone(repo.get_pending(link))
+
+        with self.assertLogs('pending_articles_repo', level='WARNING') as logs:
+            repo.move_to_published(
+                link,
+                telegraph_url='https://telegra.ph/ghost',
+                telegraph_path='ghost',
+                via_review=False,
+            )
+
+        self.assertTrue(
+            any('move_to_published' in line and link in line
+                for line in logs.output),
+            f"expected a move_to_published WARNING; got {logs.output!r}")
+        # The completed publish is NEVER absent from published_articles.
+        pub = repo.get_published(link)
+        self.assertIsNotNone(pub)
+        self.assertEqual(pub['telegraph_url'], 'https://telegra.ph/ghost')
+        self.assertEqual(pub['telegraph_path'], 'ghost')
+        self.assertEqual(pub['via_review'], 0)
+        # Title recovered from the processed_news stamp left by the skip.
+        self.assertEqual(pub['title'], 'Ghost Title')
+
+    def test_move_to_published_missing_row_no_processed_news_uses_link(self):
+        """Dozapis fallback: no pending row AND no processed_news stamp
+        (row never existed) — the defensive insert still writes a row,
+        using the link for the NOT NULL title columns."""
+        link = 'http://m/ghost-bare'
+        with self.assertLogs('pending_articles_repo', level='WARNING'):
+            repo.move_to_published(
+                link,
+                telegraph_url='https://telegra.ph/ghost-bare',
+                telegraph_path='ghost-bare',
+                via_review=True,
+            )
+        pub = repo.get_published(link)
+        self.assertIsNotNone(pub)
+        self.assertEqual(pub['telegraph_url'], 'https://telegra.ph/ghost-bare')
+        self.assertEqual(pub['title'], link)
+        self.assertEqual(pub['via_review'], 1)
 
     def test_move_to_published_idempotent_on_duplicate_link(self):
         # Contract (Task 2): a second move_to_published with the same link
@@ -1283,6 +1343,219 @@ class TestDedupDegradedRateLimit(_TmpDbCase):
             c.commit()
         with self._conn() as c:
             self.assertFalse(repo.is_dedup_degraded_rate_limited(c))
+
+
+# ---------------- Review-token store (dedup-review-buttons Task 1) ----------
+
+
+class TestReviewTokenStore(_TmpDbCase):
+    """Cover ``put_review_token`` / ``get_review_token_link`` /
+    ``delete_review_token`` — the token→link mapping behind the [E014]
+    review buttons (callback_data is capped at 64 bytes, so a short token
+    stands in for the full article URL). Backed by the existing
+    ``bot_state`` table under the ``review_token:`` key prefix — no new
+    table / migration.
+    """
+
+    def test_put_get_roundtrip(self):
+        repo.put_review_token('tok', 'http://x/a')
+        self.assertEqual(repo.get_review_token_link('tok'), 'http://x/a')
+
+    def test_get_unknown_token_returns_none(self):
+        self.assertIsNone(repo.get_review_token_link('never-stored'))
+
+    def test_delete_removes_token(self):
+        repo.put_review_token('tok', 'http://x/a')
+        repo.delete_review_token('tok')
+        self.assertIsNone(repo.get_review_token_link('tok'))
+
+    def test_delete_unknown_token_is_noop(self):
+        # Must not raise — idempotent delete (double-click on a button,
+        # bot restart between put and delete, etc.).
+        repo.delete_review_token('nope')
+
+    def test_put_overwrites_existing(self):
+        repo.put_review_token('tok', 'http://x/first')
+        repo.put_review_token('tok', 'http://x/second')
+        self.assertEqual(repo.get_review_token_link('tok'), 'http://x/second')
+
+    def test_token_stored_under_prefixed_key(self):
+        repo.put_review_token('tok', 'http://x/a')
+        with self._conn() as c:
+            prefixed = c.execute(
+                "SELECT value FROM bot_state WHERE key=?",
+                ('review_token:tok',),
+            ).fetchone()
+            bare = c.execute(
+                "SELECT value FROM bot_state WHERE key=?",
+                ('tok',),
+            ).fetchone()
+        self.assertIsNotNone(prefixed)
+        self.assertEqual(prefixed[0], 'http://x/a')
+        self.assertIsNone(bare)
+
+
+class TestConnectBusyTimeout(_TmpDbCase):
+    """Pin the busy-timeout contract on ``repo._connect()`` (5000 ms).
+
+    The feature introduces a second concurrent writer (the callback
+    listener thread calling ``skip_pending`` while the publish loop holds
+    a write lock), so ``_connect()`` must wait out short lock windows
+    instead of failing with ``database is locked``. Set via the
+    ``timeout=5.0`` parameter of ``sqlite3.connect`` — deliberately NOT
+    via a ``PRAGMA busy_timeout`` execute() inside ``_connect()``, which
+    would shift the execute() counter in the fault-injection test
+    ``test_move_to_published_rollback_on_error``.
+    """
+
+    def test_connect_sets_busy_timeout(self):
+        conn = repo._connect()
+        try:
+            row = conn.execute("PRAGMA busy_timeout").fetchone()
+        finally:
+            conn.close()
+        self.assertEqual(row[0], 5000)
+
+    def test_connect_passes_explicit_timeout_parameter(self):
+        """Call-spy regression guard (test-review round 1, HIGH).
+
+        The PRAGMA check above also passes on a bare ``sqlite3.connect``
+        because the stdlib default ``timeout`` is already 5.0 — so it pins
+        the *behavior* but cannot catch someone reverting the explicit
+        parameter. This spy asserts the code line itself: ``_connect()``
+        must invoke ``sqlite3.connect(<DB_FILE>, timeout=5.0)`` explicitly,
+        keeping the 5 s contract in our code rather than in a stdlib
+        default that could drift.
+        """
+        calls = []
+        real_connect = sqlite3.connect
+
+        def spy_connect(path, *args, **kwargs):
+            calls.append({'path': path, 'args': args, 'kwargs': kwargs})
+            return real_connect(path, *args, **kwargs)
+
+        with patch.object(repo.sqlite3, 'connect', side_effect=spy_connect):
+            conn = repo._connect()
+            conn.close()
+
+        self.assertEqual(len(calls), 1)
+        self.assertEqual(calls[0]['path'], self.db_path)
+        self.assertEqual(calls[0]['kwargs'].get('timeout'), 5.0)
+
+
+class TestConcurrentWriters(_TmpDbCase):
+    """Carry-forward from tech-spec (Integration tests / Risks «database is
+    locked»): publish-loop writer and cancel writer hit the same DB file at
+    the same time — under busy_timeout the second writer WAITS for the lock
+    instead of failing. The negative counterpart (what the failure mode
+    looks like WITHOUT a busy-timeout) is
+    ``test_zero_timeout_control_raises_database_locked``.
+    """
+
+    def test_two_writers_no_database_locked(self):
+        entry = _sample_entry(link='http://c/concurrent')
+        repo.insert_pending(entry)
+
+        errors = []
+        write_reached = threading.Event()
+        real_connect = sqlite3.connect
+
+        class SignallingConn:
+            """Delegates to the real connection; sets ``write_reached``
+            immediately before the first WRITE statement of skip_pending
+            (its opening SELECT is lock-free under RESERVED). The main
+            thread holds the lock until this event fires, so the cancel
+            writer provably reaches its blocking write WHILE the lock is
+            held — deterministic contention, no sleep-based timing
+            (test-review round 1, MEDIUM)."""
+
+            def __init__(self, inner):
+                self._inner = inner
+
+            def execute(self, sql, params=()):
+                if 'INSERT OR IGNORE INTO processed_news' in sql:
+                    write_reached.set()
+                return self._inner.execute(sql, params)
+
+            def __getattr__(self, item):
+                return getattr(self._inner, item)
+
+        def signalling_connect(path, *a, **kw):
+            return SignallingConn(real_connect(path, *a, **kw))
+
+        def cancel_writer():
+            # Models the listener thread handling a "skip" button press
+            # while the publish loop is mid-transaction.
+            try:
+                repo.skip_pending(entry['link'])
+            except Exception as exc:  # noqa: BLE001 — recorded for assert
+                errors.append(exc)
+
+        # Publish-loop writer: open transaction holding the write lock
+        # (BEGIN IMMEDIATE acquires RESERVED immediately, like the
+        # multi-statement move_to_* transactions do on first write).
+        # Created BEFORE the connect patch so it uses a plain connection.
+        locker = real_connect(self.db_path)
+        try:
+            locker.execute("BEGIN IMMEDIATE")
+            locker.execute(
+                "INSERT OR REPLACE INTO bot_state (key, value) VALUES (?, ?)",
+                ('test_publish_loop_marker', 'busy'),
+            )
+
+            with patch.object(repo.sqlite3, 'connect',
+                              side_effect=signalling_connect):
+                t = threading.Thread(target=cancel_writer)
+                t.start()
+                # Event fires just before the writer's blocking INSERT;
+                # the lock is still held here (commit comes only after
+                # the wait returns), so contention is guaranteed.
+                self.assertTrue(
+                    write_reached.wait(timeout=10.0),
+                    'cancel writer never reached its write statement',
+                )
+                locker.commit()  # release — writer must now proceed
+                t.join(timeout=10.0)
+                self.assertFalse(t.is_alive(),
+                                 'cancel writer did not finish')
+        finally:
+            locker.close()
+
+        self.assertEqual(
+            errors, [],
+            f'cancel writer raised instead of waiting out the lock: {errors}',
+        )
+        # The cancel write went through: pending row gone, dedup stamped.
+        self.assertIsNone(repo.get_pending(entry['link']))
+        with self._conn() as c:
+            row = c.execute(
+                "SELECT 1 FROM processed_news WHERE link=?",
+                (entry['link'],),
+            ).fetchone()
+        self.assertIsNotNone(row)
+
+    def test_zero_timeout_control_raises_database_locked(self):
+        """Negative control (test-review round 1, LOW): demonstrate the
+        exact failure mode the busy-timeout protects against. A connection
+        with ``timeout=0`` (busy_timeout=0 — no busy handler) attempting a
+        write while another connection holds RESERVED fails IMMEDIATELY
+        with ``database is locked``. Single-threaded and lock-release-free
+        until teardown, so fully deterministic and fast."""
+        locker = sqlite3.connect(self.db_path)
+        zero_timeout = sqlite3.connect(self.db_path, timeout=0)
+        try:
+            locker.execute("BEGIN IMMEDIATE")
+            locker.execute(
+                "INSERT OR REPLACE INTO bot_state (key, value) VALUES (?, ?)",
+                ('test_publish_loop_marker', 'busy'),
+            )
+            with self.assertRaises(sqlite3.OperationalError) as ctx:
+                zero_timeout.execute("BEGIN IMMEDIATE")
+            self.assertIn('database is locked', str(ctx.exception))
+            locker.rollback()
+        finally:
+            zero_timeout.close()
+            locker.close()
 
 
 # ---------------- SQL audit ----------------

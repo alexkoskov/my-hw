@@ -1,0 +1,67 @@
+{
+  "reviewer": "code-reviewer",
+  "round": 2,
+  "commit": "1fe0f38",
+  "base_commit": "7de12e6",
+  "verdict": "approved",
+  "summary": "All four round-1 findings are correctly and verifiably fixed. The double-count bug (major) is resolved by _promo_scan_markers's span-blanking approach, independently reproduced as fixed and confirmed to still count genuinely-independent WEAK occurrences (constructed my own case beyond the author's test). The invariant test is not a vacuous/hardcoded check — I proved it is a real regression pin by simulating the pre-fix naive scan against the current marker tuples: 5 STRONG markers would self-supply a WEAK hit under the old logic, so the test would fail on 5 subtests if the fix were reverted. architecture.md's Data Flow (step 3 + step 6 funnel bullet) now accurately documents the implemented seller-voice rule, not the old one. Hunting-guide-genre FP regression tests were added and pass. Full suite: 1371 passed (python3 -m pytest -q); targeted runs also green. Two very minor, non-blocking observations noted below for future hygiene, not gating this round.",
+  "findings": [
+    {
+      "id": "R1-MAJOR-double-count",
+      "status": "fixed_verified",
+      "severity": "major",
+      "file": "news_bot.py",
+      "line": "1566-1589 (_promo_scan_markers)",
+      "verification": "Re-ran my round-1 repro directly: `_is_promo_article({'title':'Hot Wheels update','link':'https://example.com/2026/07/update.html'}, {'paragraphs':['Em nossa loja você encontra desconto em alguns itens selecionados.']})` now returns `[]` (was a false block before). Constructed an independent case the author's tests don't cover verbatim: text with 'our store' (STRONG, blanked) plus a SECOND, unrelated occurrence of the word 'store' elsewhere in the body plus a distinct 'discount' word — `_promo_scan_markers` correctly returns `weak=['store','discount']` (the independent 'store' outside the matched span still counts) and `_is_promo_article` correctly blocks (`['our store','store','discount']`). This confirms the span-blanking is correct in BOTH directions: subsumed occurrences don't count, independent occurrences of the same word elsewhere still do.",
+      "notes": "The blanking mechanism (`residual.replace(f, ' ')` per matched STRONG span, word-boundary padding preserved) is sound and matches the docstring's description exactly."
+    },
+    {
+      "id": "R1-MINOR-invariant-guard",
+      "status": "fixed_verified",
+      "severity": "minor",
+      "file": "tests/test_relevance_filter.py",
+      "line": "test_no_strong_marker_self_supplies_a_weak_hit",
+      "verification": "This is a live/dynamic test — it iterates the ACTUAL `_PROMO_STRONG_MARKERS` tuple and calls the ACTUAL `_promo_scan_markers` function, rather than asserting against a hardcoded list of 'the 5 known overlapping pairs'. I proved it is non-vacuous: reimplementing the OLD naive (pre-fix, no-blanking) scan and running it against every current STRONG marker in isolation reproduces weak self-hits for exactly 5 markers ('nossa loja'→'loja', 'código de desconto'→'desconto', 'aproveite a oferta'→'oferta', 'our store'→'store', 'discount code'→'discount') — so this test would fail on 5 subtests under a regression to the old logic, and would automatically re-check any FUTURE STRONG marker added later (no logic update needed for the test to keep working), which directly answers the coordinator's question: yes, it would catch someone adding a new overlapping STRONG marker.",
+      "notes": null
+    },
+    {
+      "id": "R1-MINOR-architecture-docs",
+      "status": "fixed_verified",
+      "severity": "minor",
+      "file": ".claude/skills/project-knowledge/references/architecture.md",
+      "line": "204-208",
+      "verification": "Step 3 now has a dedicated sub-bullet for the promo/ad filter naming `_is_promo_article`, [E035], the actual seller-voice + STRONG/WEAK rule (matches the implemented rule, not the old 2-STRONG/1-STRONG+2-WEAK rule from round 1), the WEAK-only slug demotion, the no-double-count guarantee, and the fail-open wrapping added in this same commit. Step 6's funnel-counter bullet now lists `promo` alongside `no_article`/`checklist`/`dedup_block`. Content matches the current code, not stale.",
+      "notes": null
+    },
+    {
+      "id": "R1-MINOR-fp-coverage",
+      "status": "fixed_verified",
+      "severity": "minor",
+      "file": "tests/test_relevance_filter.py",
+      "line": "test_fp_collector_hunting_guide_genre, test_fp_mattel_creations_store_drop, test_fp_hobby_shop_closes, test_fp_mattel_relaunches_online_store, test_fp_pt_premium_restock_roundup",
+      "verification": "A 5-item realistic false-positive regression set was added covering exactly the genre flagged in round 1 (hunting-guide/restock-alert content with incidental 'buy now'/'shop now'/'in stock' language and no seller voice), plus real Mattel/lamley-style retail journalism headlines. All pass against the new rule.",
+      "notes": null
+    }
+  ],
+  "new_observations": [
+    {
+      "severity": "minor",
+      "file": "news_bot.py",
+      "line": "1504 (_PROMO_SELLER_MARKERS)",
+      "issue": "`_PROMO_SELLER_MARKERS = ('nossa loja', 'our store', 'our shop')` duplicates literal strings that also live in `_PROMO_STRONG_MARKERS`, with no enforced subset relationship. If a future edit rewords one of those three phrases in `_PROMO_STRONG_MARKERS` (e.g. fixes a typo) without mirroring it in `_PROMO_SELLER_MARKERS`, the seller-voice signal for that phrase silently disappears — no exception, no test failure, just a quietly weaker block rule (falls back to needing >=3 STRONG instead of seller+corroborator). Given this same commit just added a live invariant test for the analogous STRONG/WEAK overlap risk, it would be consistent to add an equally cheap guard here.",
+      "fix": "Add a one-line test/assertion: `assert set(_PROMO_SELLER_MARKERS) <= set(_PROMO_STRONG_MARKERS)` (or the unittest equivalent), so a drift between the two tuples fails loudly instead of silently."
+    },
+    {
+      "severity": "minor",
+      "file": "news_bot.py",
+      "line": "1499",
+      "issue": "The `_PROMO_SELLER_MARKERS` docstring comment inlines a Russian gloss — `(\"наш магазин\")` — inside an otherwise all-English code comment. Every other code comment in this module (including the rest of this same docstring) is English; Russian is reserved for user-facing alert text in admin_alerts.py. Purely cosmetic, but worth normalizing for consistency.",
+      "fix": "Drop the Russian gloss or move it to an English paraphrase, e.g. '(the publisher refers to itself as \"our store\")'."
+    }
+  ],
+  "tests_run": {
+    "targeted": "pytest tests/test_relevance_filter.py tests/test_admin_alerts.py -q -> 136 passed, 23 subtests passed",
+    "integration": "pytest tests/test_integration.py -k Promo -q -> 2 passed",
+    "full_suite": "pytest -q -> 1371 passed, 23 subtests passed (matches commit message)"
+  }
+}

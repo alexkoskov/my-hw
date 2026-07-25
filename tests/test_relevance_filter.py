@@ -3,6 +3,7 @@
 sibling-brand filter (added after the Matchbox post leaked into the
 channel via autoevolution's cross-tagged RSS feed on 2026-04-28)."""
 
+import itertools
 import os
 import sys
 import unittest
@@ -13,6 +14,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 import news_bot
 from news_bot import (
     _is_hot_wheels_relevant,
+    _is_promo_article,
     _is_text_only_checklist,
     filter_new_entries,
 )
@@ -363,6 +365,679 @@ class TestIsTextOnlyChecklist(unittest.TestCase):
         }
         article = {'paragraphs': ['short']}
         self.assertFalse(_is_text_only_checklist(entry, article))
+
+
+class TestIsPromoArticle(unittest.TestCase):
+    """Intake promo/ad filter ([E035]). Prod incident 2026-07-25:
+    t-hunted.blogspot.com published a pure shop-promo post («Hot Wheels
+    antigos e raros na loja Universo Hot Wheels») and the bot translated
+    (wasted tokens) + posted it to the channel.
+
+    Block rule as tuned across two false-positive review rounds (15
+    realistic lamley/autoevolution/t-hunted/orangetrack snippets):
+
+      * a SELLER-voice marker AND (>= 1 DIRECT call-to-action OR >= 2
+        call-to-action markers of any tier), OR
+      * >= 3 distinct call-to-action markers (dense CTA stack).
+
+    An ad tells the READER TO ACT; journalism does not, even when it
+    quotes a shopkeeper. Round 1 established that seller voice is
+    required (news covers somebody else's shop); round 2 showed it is
+    not sufficient (interviews and community posts quote owners and
+    fans saying "our store…"). WEAK commerce words — including the
+    URL-slug token — never affect the verdict and are reported for the
+    operator only. Returns the matched-marker list (truthy = promo) so
+    the E035 alert can show WHY; empty = not promo.
+    """
+
+    # --- fixtures ---------------------------------------------------------
+
+    def _incident(self):
+        """Modeled on the real 2026-07-25 t-hunted incident post."""
+        entry = {
+            'title': 'Hot Wheels antigos e raros na loja Universo Hot Wheels',
+            'link': 'https://t-hunted.blogspot.com/2026/07/'
+                    'hot-wheels-antigos-e-raros-na-loja.html',
+        }
+        article = {
+            'title': 'Hot Wheels antigos e raros na loja Universo Hot Wheels',
+            'subtitle': '',
+            'paragraphs': [
+                'Em nossa loja Universo Hot Wheels você encontra Hot Wheels '
+                'antigos e raros para a sua coleção.',
+                'Não perca as novidades desta semana!',
+                'Garanta o seu antes que acabe o estoque.',
+            ],
+        }
+        return entry, article
+
+    # --- positives --------------------------------------------------------
+
+    def test_incident_pt_promo_blocked(self):
+        entry, article = self._incident()
+        markers = _is_promo_article(entry, article)
+        self.assertTrue(markers)
+
+    def test_incident_markers_name_the_reasons(self):
+        """The returned list carries the matched markers so the operator
+        alert can show WHY the article was dropped."""
+        entry, article = self._incident()
+        markers = _is_promo_article(entry, article)
+        self.assertIn('nossa loja', markers)
+        self.assertIn('não perca', markers)
+        self.assertIn('garanta o seu', markers)
+        self.assertIn('url:loja', markers)
+
+    def test_en_promo_blocked(self):
+        entry = {
+            'title': 'Rare Hot Wheels now available at our store',
+            'link': 'https://example.com/2026/07/rare-hot-wheels.html',
+        }
+        article = {
+            'paragraphs': [
+                'Visit our store and use code HW10 at checkout.',
+            ],
+        }
+        markers = _is_promo_article(entry, article)
+        self.assertTrue(markers)
+        self.assertIn('our store', markers)
+        self.assertIn('use code', markers)
+
+    def test_seller_voice_plus_two_offer_ctas_blocked(self):
+        """Seller voice + 2 CTA markers of the OFFER tier (no imperative
+        needed once two offers stack up)."""
+        entry = {'title': 'Hot Wheels novidades',
+                 'link': 'https://example.com/2026/07/novidades.html'}
+        article = {
+            'paragraphs': [
+                'Em nossa loja: frete grátis e cupom de 10% para novos '
+                'clientes.',
+            ],
+        }
+        markers = _is_promo_article(entry, article)
+        self.assertTrue(markers)
+        self.assertIn('nossa loja', markers)
+
+    def test_three_ctas_without_seller_voice_blocked(self):
+        """Second branch: a dense call-to-action stack blocks even with
+        no seller-voice phrase."""
+        entry = {'title': 'Hot Wheels novidades',
+                 'link': 'https://example.com/2026/07/novidades.html'}
+        article = {
+            'paragraphs': [
+                'Compre já! Frete grátis e cupom para novos clientes.',
+            ],
+        }
+        # CTA: 'compre já' (direct) + 'frete grátis' + 'cupom' = 3.
+        self.assertTrue(_is_promo_article(entry, article))
+
+    def test_url_slug_token_is_weak_only(self):
+        """Review round 1: the 'loja'/'shop'/'store' slug token was
+        demoted from STRONG to WEAK. A slug plus one strong body phrase
+        no longer reaches the bar (this fixture BLOCKED before the
+        demotion)."""
+        entry = {
+            'title': 'Hot Wheels raros e antigos',
+            'link': 'https://t-hunted.blogspot.com/2026/07/'
+                    'hot-wheels-antigos-e-raros-na-loja.html',
+        }
+        article = {'paragraphs': ['Garanta o seu hoje mesmo.']}
+        self.assertFalse(_is_promo_article(entry, article))
+
+    def test_url_slug_token_still_reported_as_marker_when_blocked(self):
+        """Demoted, but still diagnostic: when the article blocks on its
+        own merits the slug token is listed in the marker output."""
+        entry, article = self._incident()
+        self.assertIn('url:loja', _is_promo_article(entry, article))
+
+    def test_seller_voice_alone_is_not_enough(self):
+        """Round 2's core lesson: seller voice WITHOUT any call to
+        action never blocks, no matter how much commerce vocabulary
+        surrounds it. Interviews and community posts quote owners and
+        fans speaking in exactly this first person."""
+        entry = {'title': 'Hot Wheels novidades',
+                 'link': 'https://example.com/2026/07/novidades.html'}
+        article = {
+            'paragraphs': [
+                'Visite nossa loja! Estoque novo com desconto de '
+                'lançamento e muita oferta à venda.',
+            ],
+        }
+        self.assertFalse(_is_promo_article(entry, article))
+
+    def test_seller_voice_plus_single_offer_cta_not_blocked(self):
+        """Threshold pin: seller voice + ONE offer-tier CTA stays below
+        the bar — this is the community-roundup quote genre ('our store
+        … there was even a discount code floating around'). A DIRECT
+        imperative in the same position WOULD block (see
+        test_en_promo_blocked)."""
+        entry = {'title': 'Hot Wheels finds',
+                 'link': 'https://example.com/2026/07/finds.html'}
+        article = {
+            'paragraphs': [
+                'Our store finally restocked the wave, and a discount '
+                'code was going around for early birds.',
+            ],
+        }
+        self.assertFalse(_is_promo_article(entry, article))
+
+    def test_cta_plus_weak_without_seller_voice_not_blocked(self):
+        """Deliberate round-1 trade-off: a CTA verb plus commerce words,
+        with nobody speaking as the shop, no longer blocks. This is the
+        price of keeping retail journalism publishable — the dense-stack
+        branch (>= 3 CTA) still catches real ad copy."""
+        entry = {'title': 'Hot Wheels novidades',
+                 'link': 'https://example.com/2026/07/novidades.html'}
+        article = {
+            'paragraphs': [
+                'Compre já: desconto especial na loja parceira.',
+            ],
+        }
+        # strong: 'compre já' (no seller voice); weak: 'desconto', 'loja'.
+        self.assertFalse(_is_promo_article(entry, article))
+
+    def test_accent_and_case_insensitive(self):
+        """'NÃO PERCA' and the accent-less 'nao perca' both match the
+        canonical 'não perca' marker (accent-strip + lowercase on both
+        sides)."""
+        for phrase in ('NÃO PERCA', 'nao perca'):
+            entry = {'title': 'Hot Wheels raros',
+                     'link': 'https://example.com/2026/07/raros.html'}
+            article = {
+                'paragraphs': [f'{phrase}! Garanta o seu hoje em nossa loja.'],
+            }
+            markers = _is_promo_article(entry, article)
+            self.assertTrue(markers, f'phrase {phrase!r} must block')
+            self.assertIn('não perca', markers)
+
+    # --- negatives (must NOT block) --------------------------------------
+
+    def test_en_news_weak_only_not_blocked(self):
+        """Legit news uses commerce vocabulary ('hits stores', 'in
+        stock', 'discount') — weak markers alone never block, whatever
+        their count."""
+        entry = {
+            'title': 'New Hot Wheels line hits stores in September',
+            'link': 'https://example.com/2026/07/new-line-september.html',
+        }
+        article = {
+            'paragraphs': [
+                'The 2027 mainline will be in stock at retailers '
+                'nationwide, and collectors hunting a discount can wait '
+                'for the holiday season.',
+            ],
+        }
+        self.assertFalse(_is_promo_article(entry, article))
+
+    def test_pt_news_chega_as_lojas_not_blocked(self):
+        entry = {
+            'title': 'Novidades Hot Wheels chegam às lojas em setembro',
+            'link': 'https://t-hunted.blogspot.com/2026/07/'
+                    'novidades-setembro.html',
+        }
+        article = {
+            'paragraphs': [
+                'A nova série chega às lojas brasileiras em setembro, '
+                'com dez modelos inéditos.',
+            ],
+        }
+        self.assertFalse(_is_promo_article(entry, article))
+
+    def test_single_strong_marker_never_blocks(self):
+        """One lone STRONG marker (here 'promoção') is not enough — a
+        news piece may mention a promo in passing."""
+        entry = {'title': 'Hot Wheels em promoção na rede varejista',
+                 'link': 'https://example.com/2026/07/varejista.html'}
+        article = {
+            'paragraphs': ['A rede anunciou os novos preços nesta terça.'],
+        }
+        self.assertFalse(_is_promo_article(entry, article))
+
+    def test_one_strong_one_weak_not_blocked(self):
+        """Boundary below the bar: 1 STRONG + only 1 distinct WEAK."""
+        entry = {'title': 'Hot Wheels update',
+                 'link': 'https://example.com/2026/07/update.html'}
+        article = {'paragraphs': ['Compre já na loja parceira.']}
+        # strong: 'compre já'; weak: 'loja' only.
+        self.assertFalse(_is_promo_article(entry, article))
+
+    def test_checklist_post_not_blocked(self):
+        """A checklist post has no promo call-to-action — it is handled
+        by _is_text_only_checklist, not the promo filter."""
+        entry = {'title': '2026 Hot Wheels Mainline Checklist Q3 Update',
+                 'link': 'https://example.com/2026/07/checklist-q3.html'}
+        article = {'paragraphs': ['Mainline 2026', 'Q3 release wave']}
+        self.assertFalse(_is_promo_article(entry, article))
+
+    def test_empty_and_missing_inputs_do_not_crash(self):
+        """Defensive: empty/missing paragraphs or a None article must
+        not crash — and must not be promo."""
+        entry = {'title': 'Hot Wheels news',
+                 'link': 'https://example.com/2026/07/news.html'}
+        self.assertFalse(_is_promo_article(entry, {'paragraphs': []}))
+        self.assertFalse(_is_promo_article(entry, {}))
+        self.assertFalse(_is_promo_article(entry, None))
+        self.assertFalse(_is_promo_article({}, None))
+
+    def test_malformed_non_string_fields_do_not_raise(self):
+        """Audit SEC-PROMO-1: a malformed feed can hand us a non-str
+        link/title/paragraph (Atom oddities, list-valued fields). The
+        filter must degrade to 'not promo' instead of raising —
+        an exception here would crash the whole tick BEFORE
+        mark_processed and crash-loop on restart."""
+        cases = [
+            {'link': ['not', 'a', 'string'], 'title': 'Hot Wheels news'},
+            {'link': 42, 'title': None},
+            {'link': True, 'title': {'x': 'y'}},
+            {'link': {'href': 'http://x/loja'}, 'title': 'HW'},
+        ]
+        for entry in cases:
+            with self.subTest(entry=entry):
+                self.assertFalse(
+                    _is_promo_article(entry, {'paragraphs': ['Body.']}))
+        # Non-dict entry / article and non-str paragraph entries too.
+        self.assertFalse(_is_promo_article('not a dict', None))
+        self.assertFalse(_is_promo_article({}, 'not a dict'))
+        self.assertFalse(
+            _is_promo_article({'link': 'http://x/y'},
+                              {'paragraphs': [None, 7, ['x']]}))
+
+    def test_unparseable_url_does_not_raise(self):
+        """urlparse raises ValueError on some malformed hosts (e.g. an
+        unterminated IPv6 literal) — the slug signal is optional, the
+        filter must carry on."""
+        entry = {'title': 'Hot Wheels news', 'link': 'http://[::1/loja'}
+        self.assertFalse(_is_promo_article(entry, {'paragraphs': ['Body.']}))
+
+    # --- false-positive regression set (review round 1) -------------------
+    #
+    # Verbatim snippets from the reviewer's 10-item false-positive probe
+    # of realistic lamley/autoevolution/t-hunted coverage. All four were
+    # BLOCKED by the first version of the rule; they are exactly the
+    # retail/community journalism this channel aggregates and must stay
+    # publishable.
+
+    def test_fp_mattel_creations_store_drop(self):
+        entry = {
+            'title': 'Mattel Creations Opens RLC Store Drop With Member '
+                     'Discount',
+            'link': 'https://lamleygroup.com/2026/07/'
+                    'mattel-creations-store-drop-rlc.html',
+        }
+        article = {'paragraphs': [
+            'Mattel Creations opened orders today for its latest Red Line '
+            'Club exclusive. RLC members get a discount at checkout, and '
+            'the set is expected to sell out fast, with a restock likely '
+            'to be in stock again next month for non-members.',
+        ]}
+        self.assertFalse(_is_promo_article(entry, article))
+
+    def test_fp_hobby_shop_closes(self):
+        entry = {
+            'title': 'Beloved Hot Wheels Shop Closes After 30 Years in '
+                     'Business',
+            'link': 'https://lamleygroup.com/2026/07/'
+                    'hot-wheels-shop-closes-after-30-years.html',
+        }
+        article = {'paragraphs': [
+            'Hot Wheels Shop, a fixture in the local diecast scene for '
+            'three decades, is closing its doors next month, the owners '
+            'announced this week. Remaining inventory is now on sale, '
+            'with select cases still in stock for walk-in customers '
+            'before the final day.',
+        ]}
+        self.assertFalse(_is_promo_article(entry, article))
+
+    def test_fp_mattel_relaunches_online_store(self):
+        """The hardest false positive: 'shop now' arrives as an accidental
+        bigram ('the revamped shop now offers…') alongside a factual
+        'free shipping' — 2 STRONG markers with nobody speaking as the
+        shop. The seller-voice requirement is what keeps it publishable."""
+        entry = {
+            'title': 'Mattel Relaunches Hot Wheels Online Store With New '
+                     'Collector Perks',
+            'link': 'https://autoevolution.com/news/'
+                    'mattel-relaunches-hot-wheels-online-store.html',
+        }
+        article = {'paragraphs': [
+            'Mattel has relaunched its Hot Wheels e-commerce storefront '
+            'with a cleaner design and faster checkout, the company '
+            'announced Tuesday. The revamped shop now offers free '
+            'shipping on orders over fifty dollars, part of a push to '
+            'compete with third-party resellers.',
+        ]}
+        self.assertFalse(_is_promo_article(entry, article))
+
+    def test_fp_pt_premium_restock_roundup(self):
+        entry = {
+            'title': 'Hot Wheels Premium chega às lojas com novidades para '
+                     'julho',
+            'link': 'https://t-hunted.blogspot.com/2026/07/'
+                    'hot-wheels-premium-na-loja-julho.html',
+        }
+        article = {'paragraphs': [
+            'A nova leva Premium chega às lojas físicas e ao e-commerce '
+            'nesta semana. O estoque inicial deve ser limitado, o que '
+            'preocupa colecionadores de plantão à espera de um possível '
+            'desconto de lançamento.',
+        ]}
+        self.assertFalse(_is_promo_article(entry, article))
+
+    def test_fp_collector_hunting_guide_genre(self):
+        """The hunting-guide / collector-roundup genre this bot actually
+        aggregates: 'buy now' and 'shop now' show up as ordinary
+        editorial advice about WHERE OTHERS sell."""
+        entry = {
+            'title': 'Hunting Guide: Where to Find the 2026 Super Treasure '
+                     'Hunts',
+            'link': 'https://orangetrackdiecast.com/2026/07/'
+                    'super-treasure-hunt-hunting-guide.html',
+        }
+        article = {'paragraphs': [
+            'Collectors who spot the 2026 Super Treasure Hunts on the pegs '
+            'should buy now rather than wait — secondary-market prices '
+            'climb within days of a case landing. The big-box shop now '
+            'stocks the wave earlier than most hobby retailers, and a '
+            'few chains still offer an in-store discount on multi-packs.',
+        ]}
+        self.assertFalse(_is_promo_article(entry, article))
+
+    # --- false-positive regression set (review round 2) -------------------
+    #
+    # The seller-voice gate introduced in round 1 blocked a NARROWER but
+    # very valuable class: human-interest / interview / community pieces
+    # that QUOTE a shop owner or a fan in the first person. The
+    # shop-closing retrospective is exactly the lamley genre this channel
+    # wants to publish. Fixed by requiring a call to action alongside the
+    # seller voice — an ad tells the reader to act, an interview doesn't.
+
+    def test_fp_shop_owner_interview_closing(self):
+        entry = {
+            'title': 'After 30 Years, a Beloved Hot Wheels Shop Says '
+                     'Goodbye',
+            'link': 'https://lamleygroup.com/2026/07/'
+                    'hot-wheels-shop-owner-interview-closing.html',
+        }
+        article = {'paragraphs': [
+            'For three decades, collectors up and down the coast made the '
+            'pilgrimage to this unassuming strip-mall storefront. "Our '
+            'store has always focused on giving collectors a place to dig '
+            'through boxes nobody else bothers with," the owner told us in '
+            'an interview last week. "We still have plenty in stock, and '
+            'everything left is at a discount until the doors close for '
+            'good." The closure reflects a broader trend of independent '
+            'hobby shops struggling against online resellers.',
+        ]}
+        self.assertFalse(_is_promo_article(entry, article))
+
+    def test_fp_pt_shop_closing_owner_quote(self):
+        entry = {
+            'title': 'Loja histórica de Hot Wheels anuncia fechamento após '
+                     '15 anos',
+            'link': 'https://t-hunted.blogspot.com/2026/07/'
+                    'loja-historica-fechamento-entrevista.html',
+        }
+        article = {'paragraphs': [
+            'Depois de 15 anos atendendo colecionadores na capital, uma '
+            'loja tradicional de Hot Wheels anunciou o fechamento das '
+            'portas nesta semana. "Em nossa loja sempre tivemos o cuidado '
+            'de separar peças raras para quem realmente entende do '
+            'assunto", disse o dono ao anunciar o fim das atividades. '
+            '"Ainda temos bom estoque, e estamos com desconto em tudo até '
+            'o último dia."',
+        ]}
+        self.assertFalse(_is_promo_article(entry, article))
+
+    def test_fp_founder_qa_two_seller_synonyms(self):
+        """Two different seller-voice synonyms in quotes and no CTA at
+        all — under the round-1 rule the two seller markers alone
+        cleared the bar."""
+        entry = {
+            'title': 'Q&A: The Founder of a Legendary Hot Wheels Shop '
+                     'Looks Back',
+            'link': 'https://lamleygroup.com/2026/07/'
+                    'hot-wheels-shop-founder-qa-retrospective.html',
+        }
+        article = {'paragraphs': [
+            'We sat down with the founder of one of the hobby\'s most '
+            'recognizable retail names to talk about three decades in '
+            'business. "Our store started as a card table at a swap '
+            'meet," he recalled with a laugh. "People still ask why our '
+            'shop never moved to a bigger building -- honestly, we just '
+            'never wanted to lose that feeling."',
+        ]}
+        self.assertFalse(_is_promo_article(entry, article))
+
+    def test_fp_community_roundup_member_quote(self):
+        """A fan's colloquial "our store" (meaning 'the store we shop
+        at') plus a factually-reported 'discount code'."""
+        entry = {
+            'title': 'Community Roundup: Collectors Share Their Best 2026 '
+                     'Finds',
+            'link': 'https://orangetrackdiecast.com/2026/07/'
+                    'community-roundup-best-finds.html',
+        }
+        article = {'paragraphs': [
+            'Every month we round up highlights from the collector '
+            'community Discord -- this time, a restock story from a '
+            'regular member. "Our store finally got the new Boulevard '
+            'wave back in stock this week," one member wrote, "and there '
+            'was even a discount code floating around for early birds."',
+        ]}
+        self.assertFalse(_is_promo_article(entry, article))
+
+    def test_fp_owner_profile_single_signal(self):
+        """Round-2 control case: the same interview genre with only one
+        seller-voice signal and nothing else."""
+        entry = {
+            'title': 'Meet the Owner Behind a Local Hot Wheels Institution',
+            'link': 'https://lamleygroup.com/2026/07/owner-profile.html',
+        }
+        article = {'paragraphs': [
+            '"Our store is really just an extension of my own '
+            'collection," the owner said, describing how the shop grew '
+            'from a garage hobby into a full storefront over twenty '
+            'years.',
+        ]}
+        self.assertFalse(_is_promo_article(entry, article))
+
+    # --- WEAK-marker reporting hygiene (subsumption) ----------------------
+    #
+    # Since round 2 the WEAK tier no longer affects the verdict at all —
+    # it is reported to the operator in the [E035] ping. Subsumption
+    # keeps that report honest: a WEAK word swallowed by a matched
+    # marker's own span is not listed as if it were separate evidence.
+
+    def test_weak_inside_a_matched_marker_is_not_reported_twice(self):
+        entry, article = self._incident()
+        markers = _is_promo_article(entry, article)
+        # 'nossa loja' matched; the article ALSO says 'na loja' in the
+        # title, so 'loja' is genuine independent evidence here.
+        self.assertIn('nossa loja', markers)
+        self.assertIn('loja', markers)
+        # But scanning the seller phrase alone reports no bare 'loja'.
+        strong, weak = news_bot._promo_scan_markers('Em nossa loja.')
+        self.assertIn('nossa loja', strong)
+        self.assertNotIn('loja', weak)
+
+    def test_no_marker_self_supplies_a_weak_hit(self):
+        """Invariant guard over the marker tuples themselves: scanning a
+        text that is EXACTLY one decision-tier marker must never yield a
+        WEAK hit. Pins the subsumption rule for every current and future
+        marker pair, so editing the lists can't silently reintroduce the
+        double-count."""
+        for marker in news_bot._PROMO_STRONG_MARKERS:
+            with self.subTest(marker=marker):
+                strong, weak = news_bot._promo_scan_markers(marker)
+                self.assertIn(marker, strong)
+                self.assertEqual(
+                    weak, [],
+                    f"marker {marker!r} self-supplied WEAK {weak!r}",
+                )
+
+    def test_weak_word_outside_the_matched_span_still_reported(self):
+        """The subsumption rule removes only the matched span: the same
+        weak word used independently elsewhere is still reported."""
+        strong, weak = news_bot._promo_scan_markers(
+            'Em nossa loja e também na loja parceira do shopping.')
+        self.assertIn('nossa loja', strong)
+        self.assertIn('loja', weak)
+
+    # --- word-boundary regression ----------------------------------------
+
+    def test_word_boundary_guard_is_what_keeps_these_below_the_bar(self):
+        """Both fixtures sit exactly one CTA marker below the bar and
+        cross it the moment a marker starts matching inside a LONGER
+        word — i.e. this test fails if the space-padded word-boundary
+        folding regresses to naive substring matching. Kept at the
+        decision level (not the marker list) so it stays mutation-proof
+        under the round-2 rule, where WEAK words no longer count."""
+        pt_entry = {'title': 'Loja de Hot Wheels fecha as portas',
+                    'link': 'https://example.com/2026/07/fechamento.html'}
+        pt_article = {'paragraphs': [
+            'Em nossa loja o dono pediu que os fãs não percam a última '
+            'semana de atendimento.',
+        ]}
+        # 'não percam' must NOT match the DIRECT marker 'não perca'.
+        # Naive matching → seller + 1 direct CTA → blocked.
+        self.assertFalse(_is_promo_article(pt_entry, pt_article))
+
+        en_entry = {'title': 'Collectors swap tips on hunting the wave',
+                    'link': 'https://example.com/2026/07/tips.html'}
+        en_article = {'paragraphs': [
+            'Our store regulars traded coupon codes and discount codes '
+            'for the big-box chains this week.',
+        ]}
+        # Plural 'coupon codes' / 'discount codes' must NOT match the
+        # OFFER markers 'coupon code' / 'discount code'. Naive matching
+        # → seller + 2 CTA → blocked.
+        self.assertFalse(_is_promo_article(en_entry, en_article))
+
+    # --- scan bounds ------------------------------------------------------
+
+    def test_markers_beyond_paragraph_bound_not_scanned(self):
+        """Only the first paragraphs are scanned (bounded scan) — promo
+        text buried past the bound does not trigger."""
+        entry = {'title': 'Hot Wheels retrospective',
+                 'link': 'https://example.com/2026/07/retrospective.html'}
+        article = {
+            'paragraphs': (
+                ['Editorial paragraph about the new casting.'] * 10
+                + ['Compre já em nossa loja, não perca!']
+            ),
+        }
+        self.assertFalse(_is_promo_article(entry, article))
+
+    def test_markers_beyond_char_cap_not_scanned(self):
+        """The joined body is char-capped — a megabyte body cannot stall
+        intake and text past the cap does not trigger."""
+        entry = {'title': 'Hot Wheels deep dive',
+                 'link': 'https://example.com/2026/07/deep-dive.html'}
+        article = {
+            'paragraphs': [
+                'word ' * 500,  # 2500 chars, exceeds the scan cap
+                'Compre já em nossa loja, não perca!',
+            ],
+        }
+        self.assertFalse(_is_promo_article(entry, article))
+
+    def test_title_is_char_capped_too(self):
+        """Audit SEC-PROMO-2: the cap applies to the TITLE as well, not
+        just the body (a 10MB title measured ~0.6s of CPU per entry).
+        Same promo phrases block when they sit inside the cap and are
+        invisible past it — proving the slice, not an unrelated miss."""
+        promo_tail = 'Compre já em nossa loja: não perca, frete grátis!'
+        filler = 'palavra ' * 300  # ~2400 chars, past the 2000 cap
+        link = 'https://example.com/2026/07/x.html'
+        blocked = _is_promo_article(
+            {'title': promo_tail, 'link': link}, {'paragraphs': []})
+        self.assertTrue(blocked, 'sanity: the phrases block when scanned')
+        self.assertFalse(_is_promo_article(
+            {'title': filler + promo_tail, 'link': link},
+            {'paragraphs': []},
+        ))
+
+    def test_url_path_is_char_capped_too(self):
+        """The URL path is capped the same way: a slug token past the cap
+        contributes no marker. Asserted on an article that blocks on its
+        body anyway, so the absence of 'url:loja' is the only signal
+        under test."""
+        entry, article = self._incident()
+        entry = dict(entry, link='https://t-hunted.blogspot.com/'
+                                 + 'a' * 2100 + '/na-loja.html')
+        markers = _is_promo_article(entry, article)
+        self.assertTrue(markers, 'body markers still block the article')
+        self.assertNotIn('url:loja', markers)
+
+
+class TestPromoMarkerSets(unittest.TestCase):
+    """Structural invariants of the promo-marker tuples themselves
+    (review round 2, code-reviewer): the tiers carry the block rule, so
+    a reworded or misfiled marker must fail loudly here rather than
+    silently weaken the filter. Everything is derived from the LIVE
+    tuples — no hardcoded copy to drift out of sync."""
+
+    def test_tiers_are_non_empty(self):
+        for name in ('_PROMO_CTA_DIRECT_MARKERS', '_PROMO_CTA_OFFER_MARKERS',
+                     '_PROMO_SELLER_MARKERS', '_PROMO_WEAK_MARKERS'):
+            with self.subTest(tier=name):
+                self.assertTrue(getattr(news_bot, name))
+
+    def test_decision_tiers_are_pairwise_disjoint(self):
+        """A marker in two tiers would be counted twice by the rule (e.g.
+        a seller phrase that also counts as its own CTA would let seller
+        voice alone block — exactly the round-2 false-positive class)."""
+        tiers = {
+            'direct': set(news_bot._PROMO_CTA_DIRECT_MARKERS),
+            'offer': set(news_bot._PROMO_CTA_OFFER_MARKERS),
+            'seller': set(news_bot._PROMO_SELLER_MARKERS),
+            'weak': set(news_bot._PROMO_WEAK_MARKERS),
+        }
+        for a, b in itertools.combinations(sorted(tiers), 2):
+            with self.subTest(pair=(a, b)):
+                self.assertEqual(
+                    tiers[a] & tiers[b], set(),
+                    f"marker(s) in both {a} and {b}",
+                )
+
+    def test_strong_union_is_exactly_the_three_decision_tiers(self):
+        """``_PROMO_STRONG_MARKERS`` drives the span-blanking pass; if a
+        decision-tier marker were missing from it, that marker's span
+        would leak WEAK hits into the operator's marker list."""
+        self.assertEqual(
+            set(news_bot._PROMO_STRONG_MARKERS),
+            set(news_bot._PROMO_CTA_DIRECT_MARKERS)
+            | set(news_bot._PROMO_CTA_OFFER_MARKERS)
+            | set(news_bot._PROMO_SELLER_MARKERS),
+        )
+
+    def test_every_marker_used_by_the_rule_is_in_the_folded_lookup(self):
+        """The rule reads the raw tuples but matching runs off the
+        pre-folded lookups — a marker missing there would be dead
+        weight that never matches anything."""
+        folded_strong = {m for m, _f in news_bot._PROMO_STRONG_FOLDED}
+        folded_weak = {m for m, _f in news_bot._PROMO_WEAK_FOLDED}
+        self.assertEqual(folded_strong, set(news_bot._PROMO_STRONG_MARKERS))
+        self.assertEqual(folded_weak, set(news_bot._PROMO_WEAK_MARKERS))
+
+    def test_no_marker_folds_to_empty(self):
+        """A marker made only of punctuation/accents would fold to the
+        bare padding string and then match EVERY article."""
+        for marker in (news_bot._PROMO_STRONG_MARKERS
+                       + news_bot._PROMO_WEAK_MARKERS):
+            with self.subTest(marker=marker):
+                self.assertNotEqual(news_bot._promo_fold(marker).strip(), '')
+
+    def test_seller_markers_are_first_person(self):
+        """Seller voice means the publisher speaking AS the shop; a
+        third-person phrase here would re-open the round-1 class where
+        ordinary retail news blocked."""
+        for marker in news_bot._PROMO_SELLER_MARKERS:
+            with self.subTest(marker=marker):
+                self.assertTrue(
+                    marker.startswith(('nossa', 'em nossa', 'our')),
+                    f"{marker!r} is not a first-person seller phrase",
+                )
 
 
 if __name__ == '__main__':

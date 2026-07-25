@@ -22,6 +22,8 @@ from __future__ import annotations
 
 from typing import List, Optional
 
+from telegram import InlineKeyboardButton, InlineKeyboardMarkup
+
 
 # ---------------------------------------------------------------------------
 # E001 — feeds.json пуст / сломан / отсутствует
@@ -179,7 +181,7 @@ def _funnel_int(funnel: dict, key: str) -> int:
 
 def _funnel_collapse_note(
     sources: int, failed: int, new: int,
-    no_article: int, checklist: int, block: int, staged: int,
+    no_article: int, checklist: int, promo: int, block: int, staged: int,
 ) -> str:
     """One-line pinpoint of the stage where intake collapsed. Returns "" when
     something WAS staged (no collapse to report). ``dedup_degraded`` is not a
@@ -198,6 +200,7 @@ def _funnel_collapse_note(
             ("дубль-блок", block),
             ("нет статьи/текста", no_article),
             ("чеклист без текста", checklist),
+            ("реклама", promo),
         )
         stage, count = max(drops, key=lambda kv: kv[1])
         if count > 0:
@@ -223,6 +226,7 @@ def _format_funnel(funnel: dict) -> str:
         new = _funnel_int(funnel, "new_count")
         no_article = _funnel_int(funnel, "dropped_no_article")
         checklist = _funnel_int(funnel, "dropped_checklist")
+        promo = _funnel_int(funnel, "dropped_promo")
         block = _funnel_int(funnel, "dropped_dedup_block")
         degraded = _funnel_int(funnel, "dedup_degraded")
         staged = _funnel_int(funnel, "staged")
@@ -235,12 +239,12 @@ def _format_funnel(funnel: dict) -> str:
             f"• получено записей: {sources} (источников не ответило: {failed})",
             f"• новых после фильтров: {new}",
             f"• отсеяно: нет статьи {no_article}, "
-            f"чеклист {checklist}, дубль-блок {block}",
+            f"чеклист {checklist}, реклама {promo}, дубль-блок {block}",
             f"• дедуп degraded (всё равно опубликованы): {degraded}",
             f"• добавлено в очередь: {staged}",
         ]
         note = _funnel_collapse_note(
-            sources, failed, new, no_article, checklist, block, staged,
+            sources, failed, new, no_article, checklist, promo, block, staged,
         )
         if note:
             lines.append(note)
@@ -264,6 +268,7 @@ def _format_funnel_line(funnel: dict) -> str:
         dropped = (
             _funnel_int(funnel, "dropped_no_article")
             + _funnel_int(funnel, "dropped_checklist")
+            + _funnel_int(funnel, "dropped_promo")
             + _funnel_int(funnel, "dropped_dedup_block")
         )
         failed_part = f", источники-сбои {failed}" if failed else ""
@@ -749,6 +754,25 @@ def alert_cross_source_dupe(
     )
 
 
+def build_dedup_review_keyboard(token: str) -> InlineKeyboardMarkup:
+    """Инлайн-клавиатура для E014-пинга «Похож на дубль» (фича
+    dedup-review-buttons): две кнопки решения оператора.
+
+    ``callback_data`` — грамматика Decision 3: ``dd:c:<token>`` (cancel)
+    и ``dd:k:<token>`` (keep). Токен короткий (``secrets.token_urlsafe(9)``,
+    ~12 символов, минтится отправителем), поэтому payload заведомо
+    укладывается в лимит Telegram 64 байта — URL статьи (PK
+    ``pending_articles``) туда бы не влез.
+
+    Порядок кнопок — контракт: cancel ПЕРВОЙ, keep второй. Функция чистая
+    (str -> InlineKeyboardMarkup), без I/O — как все билдеры модуля.
+    """
+    return InlineKeyboardMarkup([[
+        InlineKeyboardButton("🚫 Не публиковать", callback_data=f"dd:c:{token}"),
+        InlineKeyboardButton("👍 Оставить", callback_data=f"dd:k:{token}"),
+    ]])
+
+
 # ---------------------------------------------------------------------------
 # E015 — hard-block visibility: дубль заблокирован
 # (set-overlap ≥50% ИЛИ совпавшая distinctive-пара)
@@ -805,4 +829,42 @@ def alert_dedup_degraded(reason: str) -> str:
         f"Что сделать:\n"
         f"посмотри traceback в логах,\n"
         f"починим хотфиксом."
+    )
+
+
+#: Cap for the untrusted article title rendered in the [E035] ping —
+#: same idea as ``_RECAP_REASON_MAXLEN`` for E034 reasons.
+_PROMO_TITLE_MAXLEN = 200
+
+
+# ---------------------------------------------------------------------------
+# E035 — intake promo-filter: рекламная статья отсечена до перевода
+# (prod-инцидент 2026-07-25: t-hunted опубликовал чистую рекламу магазина
+# «…na loja Universo Hot Wheels», бот перевёл и запостил её в канал).
+# ---------------------------------------------------------------------------
+def alert_promo_blocked(link: str, title: str, markers: List[str]) -> str:
+    """[E035] intake promo-filter drop. ``markers`` — the matched promo
+    markers from ``news_bot._is_promo_article`` (our own constants, safe
+    to render verbatim); ``title`` is untrusted source text — truncated
+    to ``_PROMO_TITLE_MAXLEN`` so a pathological title can't push the
+    ping past Telegram's 4096-char limit (audit SEC-PROMO-4) — and it
+    passes through the send path's ``_redact_text`` like every other
+    alert."""
+    # Подстрока 'Отсечена реклама' — substring-якорь интеграционных
+    # тестов, не менять.
+    marker_line = ", ".join(markers) if markers else "—"
+    title_s = title if isinstance(title, str) else str(title)
+    if len(title_s) > _PROMO_TITLE_MAXLEN:
+        title_s = title_s[:_PROMO_TITLE_MAXLEN] + "…"
+    return (
+        f"[E035] 🛒 Отсечена реклама\n\n"
+        f"Заголовок:\n{title_s}\n\n"
+        f"Ссылка:\n{link}\n\n"
+        f"Сработавшие маркеры: {marker_line}\n\n"
+        f"Что произошло:\n"
+        f"статья похожа на рекламу магазина,\n"
+        f"отброшена до перевода — токены не потрачены.\n\n"
+        f"Что сделать:\n"
+        f"глянь статью по ссылке; если это НЕ реклама —\n"
+        f"ложное срабатывание: сообщи, поправим паттерны."
     )
