@@ -1,0 +1,46 @@
+{
+  "reviewer": "code-reviewer",
+  "commit": "7de12e6",
+  "verdict": "changes_requested",
+  "summary": "Placement, wiring (mark_processed pin / try-except / continue / funnel rendering) and dedup non-interference all mirror the E015 precedent correctly, and the full suite (1352 tests) is green. But the scoring rule has a real correctness bug: 5 of the 19 STRONG markers textually contain a WEAK marker as a substring word ('nossa loja'⊃'loja', 'our store'⊃'store', 'código de desconto'/'discount code'⊃'desconto'/'discount', 'aproveite a oferta'⊃'oferta'). Because the WEAK scan doesn't exclude hits already implied by a matched STRONG marker, those 5 markers only need ONE further unrelated WEAK word to cross the '1 STRONG + >=2 distinct WEAK' bar instead of two — silently defeating the documented anti-false-positive safety margin for ~26% of the STRONG set, on a filter that runs globally across all sources and hard-drops (pinned in processed_news, unrecoverable without operator action). Recommend fixing the overlap before this ships broadly; everything else is solid.",
+  "findings": [
+    {
+      "severity": "major",
+      "file": "news_bot.py",
+      "line": "1575-1587 (interacting with the marker tuples at 1472-1513)",
+      "issue": "Scoring-rule / marker-overlap bug: `weak = [m for m, folded in _PROMO_WEAK_FOLDED if folded in text]` is computed independently of `strong`, over the same folded text, with no exclusion for WEAK hits that are already implied by an already-matched STRONG marker. 5 STRONG markers contain a WEAK marker as a literal substring word: 'nossa loja'⊃'loja', 'our store'⊃'store', 'código de desconto'⊃'desconto', 'discount code'⊃'discount', 'aproveite a oferta'⊃'oferta'. So whenever one of these 5 fires, its WEAK counterpart auto-fires too, meaning the intended '1 STRONG + >=2 distinct WEAK' bar collapses to '1 STRONG + 1 unrelated WEAK' for these markers — exactly the single-corroboration case the design explicitly says must never block. Repro (verified against the actual code, not hypothetical): `_is_promo_article({'title':'Hot Wheels update','link':'https://example.com/2026/07/update.html'}, {'paragraphs':['Em nossa loja você encontra desconto em alguns itens selecionados.']})` returns `['nossa loja', 'loja', 'desconto']` (blocks) even though there is only ONE truly independent extra weak signal ('desconto') beyond what 'nossa loja' itself already implies. Same reproduces for 'our store' + 'in stock' → `['our store', 'store', 'in stock']` (blocks). No test in `tests/test_relevance_filter.py::TestIsPromoArticle` exercises this overlap — all positive tests either use markers without this issue or already clear 2 STRONG on their own, masking the bug. Given the filter is applied to every source (not just the offending t-hunted feed) and a positive match is a hard, pinned drop that the operator must manually recover from, this materially raises false-positive risk on legitimate PT/EN text that happens to mention a store/discount/offer in passing alongside one of these 5 phrases (e.g. a journalist quoting a shop owner saying 'em nossa loja').",
+      "fix": "Exclude a WEAK hit when it is subsumed by an already-matched STRONG marker, e.g. `weak = [m for m, folded in _PROMO_WEAK_FOLDED if folded in text and not any(m in sm for sm in _PROMO_STRONG_MARKERS if _promo_fold(sm) in text)]`, or precompute a static `_PROMO_WEAK_SUBSUMED_BY` exclusion set at import time (cheaper, more explicit) and skip those weak markers whenever their subsuming strong marker matched. Add regression tests: '1 STRONG-with-overlap + 1 unrelated WEAK' must NOT block (mirrors the existing `test_one_strong_one_weak_not_blocked` case but specifically for 'nossa loja'/'our store'/'código de desconto'/'aproveite a oferta')."
+    },
+    {
+      "severity": "minor",
+      "file": ".claude/skills/project-knowledge/references/architecture.md",
+      "line": "204, 208",
+      "issue": "Every prior feature that touched this same job() intake/funnel path updated architecture.md's § Data Flow (pipeline-diagnostic-watchdog's funnel counters, publish-recap-diagnostic's E034, dedup-review-buttons' E014 flow are all documented there). This commit did not: step 3 ('Dedup + relevance...') doesn't mention `_is_promo_article`, and step 6's funnel bullet still lists only `dropped_no_article`/`checklist`/`dedup_block` — no `dropped_promo` / [E035]. work/SESSION-2026-07-25.md covers it, but the living architecture doc now drifts from the code, breaking the project's own documented convention (and the user's standing 'update project-knowledge/references/ for any infra/ops change' rule).",
+      "fix": "Add a clause to step 3 naming `_is_promo_article` next to `_is_text_only_checklist`, and extend the funnel-counter list in step 6/208 to include `dropped_promo` and a one-line mention of [E035], matching the style of the existing E034/E014 entries."
+    },
+    {
+      "severity": "minor",
+      "file": "news_bot.py",
+      "line": "1472-1513",
+      "issue": "Nothing enforces (test or import-time assertion) that `_PROMO_STRONG_MARKERS` and `_PROMO_WEAK_MARKERS` stay free of the substring-overlap class of bug described above. A future edit adding a new STRONG marker (e.g. 'nossa oferta especial') could silently reintroduce the same weakening of the corroboration bar without anyone noticing, since the marker tuples are plain data with no cross-check.",
+      "fix": "Add a small self-check (a unit test, or an assertion evaluated once at import next to `_PROMO_STRONG_FOLDED`/`_PROMO_WEAK_FOLDED`) that no WEAK marker is a word-substring of any STRONG marker. This both documents the invariant relied on by the scoring rule and guards it for future marker-list edits."
+    },
+    {
+      "severity": "minor",
+      "file": "tests/test_relevance_filter.py",
+      "line": "619-823 (TestIsPromoArticle)",
+      "issue": "Coverage gap on real-world phrasing: 'buy now' / 'shop now' are fairly generic CTA phrases that also show up as legitimate affiliate/'where to buy' language in the hunting-guide/restock-alert genre that this bot's real feeds (lamley, t-hunted, orangetrack) actually publish (e.g. 'Buy Now' affiliate link + 'in stock' + 'on sale' for two different retailers in one editorial roundup). No test models that shape of genuine content, only the pure-shop-ad incident fixture and single-marker/weak-only negatives.",
+      "fix": "Add 1-2 negative tests modeled on realistic lamley/orangetrack restock-alert phrasing (an editorial post with one incidental 'buy now'/'shop now' CTA plus ordinary commerce vocabulary) to confirm the filter doesn't fire on genuine hunting-guide content; keep monitoring live [E035] false-positive reports once shipped (the alert already surfaces matched markers for exactly this triage, which is good)."
+    }
+  ],
+  "positives": [
+    "Placement and docstring conventions match _is_text_only_checklist exactly (module constants above the function, 'Called from job() step (b3)...' contract note, None/malformed-input tolerance).",
+    "job() wiring precisely mirrors the E015 hard-block precedent: funnel counter, INFO log, mark_processed pin, best-effort admin notification in try/except, continue — verified mark_processed(link, title, pub_date) signature matches the call site.",
+    "Promo gate sits after the checklist drop and before the (more expensive) dedup gate, doesn't touch dedup_conn/fp state, and does not regress the E014/E015 paths — confirmed by reading the surrounding code and by the full test suite staying green.",
+    "_promo_fold (NFKD accent-strip + lowercase + word-bounded padding) is correct and well-documented; no regex on the marker side (ReDoS-safe); markers pre-folded once at import.",
+    "E035 code is collision-free — checked against all E0xx codes used in admin_alerts.py/news_bot.py, last one before it is E034 as claimed.",
+    "alert_promo_blocked's title correctly relies on the existing send_admin_notification -> _redact_text pass-through rather than re-scrubbing, consistent with every other alert builder in the file.",
+    "Scan bounds (8 paragraphs / 2000 chars) are correctly implemented and covered by dedicated boundary tests.",
+    "Full test suite: 1352 passed (python3 -m pytest -q), matching the commit message; targeted runs also green: pytest tests/test_relevance_filter.py tests/test_admin_alerts.py -q -> 118 passed; pytest tests/test_integration.py -k Promo -q -> 1 passed."
+  ]
+}

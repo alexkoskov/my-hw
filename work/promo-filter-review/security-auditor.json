@@ -1,0 +1,75 @@
+{
+  "reviewer": "security-auditor",
+  "commit": "7de12e6",
+  "scope": "news_bot.py (_is_promo_article, _promo_fold, marker tuples, job() wiring), admin_alerts.py (alert_promo_blocked / funnel rendering)",
+  "verdict": "changes_requested",
+  "summary": "The matching engine itself is ReDoS-safe (plain word-bounded substring checks over a pre-tokenized string, no marker-side regex) and NFKD folding does not raise on hostile Unicode (lone surrogates, RTL overrides, surrogateescape bytes, heavy combining-mark 'zalgo' text all measured, none crash, none show super-linear cost). The [E035] admin alert is sent as plain text (no parse_mode) through the existing _redact_text path, so untrusted title/link cannot inject/spoof Telegram formatting, and matched markers are our own fixed constants. However, one real, reproducible High-severity gap breaks the intake tick's failure-isolation contract: the _is_promo_article() call at news_bot.py:2976 is NOT wrapped in try/except, unlike the cross-source dedup gate immediately below it (which IS wrapped per Decision 12/AC9 specifically so a detector bug can never block publishing). A non-string but truthy entry['link'] (list/dict/int/float/bool) makes urlparse() raise AttributeError, uncaught, which propagates out of job() itself (job() has no wrapper at any call site) and can crash the whole daemon process before mark_processed() runs -- so the same offending entry is refetched and can crash again on the next run/restart. Also found: the scan-bound design ('title + URL + first 8 paragraphs / 2000 chars') is only partially implemented -- the 2000-char cap applies to the joined paragraph body only, title and the URL path are unbounded (measured: 10MB title ~0.63s CPU, 10MB URL path ~0.41s CPU per entry, linear not catastrophic, but a real gap versus the stated guarantee). Two low-severity, non-blocking evasion techniques were demonstrated (zero-width-character word-splitting and homoglyph substitution both fully defeat the filter on the real incident text) -- reported as feasibility findings per the review brief, not as blockers, since this is a heuristic spam filter and not a hard security boundary.",
+  "findings": [
+    {
+      "id": "SEC-PROMO-1",
+      "severity": "high",
+      "area": "failure isolation / availability (DoS)",
+      "location": "news_bot.py:2976 (promo_markers = _is_promo_article(entry, article)) and news_bot.py:1577 (path_tokens = set(_promo_fold(urlparse(entry.get('link') or '').path)...))",
+      "description": "_is_promo_article() re-derives entry.get('link') internally and passes it straight into urlparse() with no type check. The call site in job() step (b3) has no try/except around it, unlike the cross-source dedup gate a few lines below (news_bot.py ~3025) which explicitly wraps its entire block in try/except Exception per Decision 12 / user-spec AC9, with the comment 'any sub-call failure MUST NOT block publishing'. The promo detector reintroduces exactly the failure class that precedent was written to close.",
+      "reproduction": "python3 -c \"import news_bot as nb; nb._is_promo_article({'title': 'x', 'link': ['http://x/y']}, {'paragraphs': []})\" -> AttributeError: 'list' object has no attribute 'decode' (raised inside urllib.parse._decode_args, called from urlparse). Same crash for a dict, int, float, or bool link value. Confirmed by direct traceback capture.",
+      "impact": "job() has no top-level try/except around the (b3) entry loop, and job() itself is invoked with no wrapper -- once directly at startup, then via schedule.every().day.at(...).do(job) inside the bare `while True: schedule.run_pending()` loop (news_bot.py ~3551-3557). An uncaught exception here propagates out of job(), aborting the rest of that day's fetch/stage/publish tick (all remaining entries, the plan-of-day ping, and the publish pass never run), and, because nothing catches it above job(), crashes the daemon process. Since the crash happens before mark_processed() is called, the offending link is never pinned -- on container restart the same source is refetched, the same malformed entry reappears, and the process can crash-loop until an operator intervenes. This is a plausible trigger surface because job() treats entry/article as untrusted third-party feed data (the function's own docstring claims it 'tolerates None/malformed entry/article', which is true for missing/None fields but not for wrong-typed-but-present ones).",
+      "recommendation": "Wrap the `_is_promo_article(entry, article)` call in the same try/except Exception pattern already used for the dedup gate: on exception, log at ERROR with sanitize_error_message(exc), treat the entry as 'not promo' (fail-open, matching the 'filter never blocks publishing' contract), and continue processing. Additionally harden _is_promo_article itself to coerce entry.get('link') / entry.get('title') to str (or skip cleanly) before use, so the function actually satisfies its own 'tolerates malformed entry' docstring claim rather than only tolerating None/missing fields."
+    },
+    {
+      "id": "SEC-PROMO-2",
+      "severity": "medium",
+      "area": "CPU / scan-bound completeness",
+      "location": "news_bot.py:1540-1578 (_is_promo_article) -- `title = entry.get('title') or (article or {}).get('title') or ''` then `text = _promo_fold(f'{title} {body}')`; and the urlparse(...).path fold with no length cap",
+      "description": "The design comment and SESSION-2026-07-25.md both state the scan is bounded to 'title + URL + first 8 paragraphs / 2000 chars', and _PROMO_SCAN_MAX_CHARS=2000 IS applied -- but only to the joined paragraph body, via `body = ' '.join(...)[:_PROMO_SCAN_MAX_CHARS]`. `title` is concatenated with that already-capped body afterward, with no cap of its own, and the URL path passed to `urlparse(entry.get('link') or '').path` before folding is likewise uncapped.",
+      "reproduction": "python3 timing harness: a 10MB (10,000,011-char) title took 0.6325s CPU inside _is_promo_article; a 10MB URL path took 0.4109s CPU. A 700,400-char string built from stacked Unicode combining marks ('zalgo' text, worst case for NFKD canonical reordering) took only 0.0528s -- confirms the underlying fold is linear, not quadratic/catastrophic, so this is a bound-completeness gap rather than a ReDoS.",
+      "impact": "Not catastrophic per-entry (linear cost, no backtracking), but it contradicts the stated guarantee that 'a megabyte-sized body can never stall the intake loop' for the title/URL fields specifically, and the per-entry cost is unbounded and additive across a fetch batch with no overall tick-level budget -- a source returning several oversized-title/link entries in one poll could add a multi-second stall plus transient memory pressure (NFKD normalize + combining-filter + regex findall each allocate a fresh full-length copy) to a single intake tick.",
+      "recommendation": "Cap title (and ideally the URL path) the same way the body already is, e.g. slice title to _PROMO_SCAN_MAX_CHARS before folding, or fold `title + body` together and slice the result once so the 2000-char guarantee is actually total rather than partial."
+    },
+    {
+      "id": "SEC-PROMO-3",
+      "severity": "low",
+      "area": "filter evasion (informational, not a security boundary)",
+      "location": "news_bot.py:1521-1531 (_promo_fold) -- `re.findall(r'[a-z0-9]+', text.lower())`",
+      "description": "Because tokenization only keeps ASCII [a-z0-9] runs after NFKD+lowercasing, any character outside that set -- including zero-width space/joiner (U+200B/U+200C) or a homoglyph such as Cyrillic 'о'/'е' -- either splits a marker word into unmatched fragments or drops the character, so the folded marker string no longer occurs as a substring.",
+      "reproduction": "Two full-evasion repros against the real 2026-07-25 incident text (title + 3 paragraphs, which normally returns 4 markers and blocks): (1) inserting a zero-width space between every letter of each marker word ('n​o​s​s​a l​o​j​a', etc.) -> _is_promo_article returns [] (fully evaded). (2) swapping 2-3 Latin letters for visually-identical Cyrillic homoglyphs ('lоja', 'nãо', 'pеrca') -> _is_promo_article returns [] (fully evaded), despite being visually indistinguishable from the blocked original to a human reader.",
+      "impact": "Not a new vulnerability class -- worst case is the pre-existing failure mode this feature was built to close (a promo article gets translated and published) persisting for adversarially- or accidentally-formatted input. This is a keyword-heuristic spam filter, not an auth/data boundary, so evasion has no confidentiality/integrity impact beyond 'the ad gets through, same as before this feature existed'.",
+      "recommendation": "Optional hardening if operators observe this being exploited in practice: strip Unicode format/zero-width characters (category Cf) before tokenizing, and/or map common Cyrillic/Greek homoglyphs to Latin equivalents in _promo_fold. Not a merge blocker."
+    },
+    {
+      "id": "SEC-PROMO-4",
+      "severity": "low",
+      "area": "alert-send robustness",
+      "location": "admin_alerts.py:840-861 (alert_promo_blocked)",
+      "description": "The untrusted article title is embedded verbatim and unbounded into the [E035] message body. Telegram caps message length at 4096 UTF-8 chars server-side; an extreme hostile title could push the composed alert over that limit.",
+      "impact": "Low -- the send_admin_notification(...) call at the E035 drop site (news_bot.py ~2988-2999) is already wrapped in try/except Exception per the existing best-effort-notification pattern, so a send failure here does not affect the drop itself (the article is still correctly rejected and pinned) -- it only means that specific admin ping may silently not arrive.",
+      "recommendation": "Optional: truncate title (and/or the joined markers) defensively in alert_promo_blocked, e.g. title[:500], both for Telegram-length safety and operator readability. Confirmed independently: the message is sent with parse_mode unset (plain text) per news_bot.py send_admin_notification's documented 2026-04-30 decision, so there is no markdown/entity injection or layout-spoofing risk from the untrusted title/link, and the message passes through the shared _redact_text secret-scrubbing path unchanged."
+    },
+    {
+      "id": "SEC-PROMO-5",
+      "severity": "low",
+      "area": "business-logic / false-positive permanence (informational)",
+      "location": "news_bot.py:2976-3000 (mark_processed(...) inside the promo drop branch)",
+      "description": "Any article that crosses the >=2-STRONG or 1-STRONG+2-WEAK bar is permanently pinned into processed_news via mark_processed() before continue -- deliberately mirroring the existing E015 cross-source hard-block pattern (comment explicitly cites the precedent). A false positive (e.g. a legitimate 'where to buy' Hot Wheels news piece using phrasing like 'in stock' + 'buy now') is silently and permanently excluded from re-consideration; the only recovery path today is an operator noticing the [E035] alert, confirming it is not promo, and someone manually deleting that processed_news row -- there is no un-pin utility for this or for the E015 precedent it mirrors.",
+      "impact": "Not attacker-exploitable: SOURCES is a fixed, operator-configured list of feeds/scrapers, not open third-party submission, so there is no way for an outside party to target or pin a different party's content. This is a product/operability consideration shared with the already-accepted E015 pattern, not a new vulnerability introduced by this diff.",
+      "recommendation": "No change required to merge. If the promo filter's false-positive rate proves material in practice (broader heuristic surface than dedup's content-similarity check), consider a shared operator un-pin command/script usable for both the E015 and E035 drop paths."
+    }
+  ],
+  "checks_performed": [
+    "Confirmed no regex is used on the marker side of matching -- STRONG/WEAK markers and _PROMO_URL_TOKENS are matched via plain Python `in` substring checks against a pre-folded, space-padded token string (_PROMO_STRONG_FOLDED / _PROMO_WEAK_FOLDED, folded once at import time); the only regex in the hot path is `re.findall(r'[a-z0-9]+', ...)`, a simple character-class scan with no alternation/backtracking -> ReDoS-safe by construction.",
+    "Fuzzed _is_promo_article/_promo_fold directly with: lone UTF-16 surrogates, surrogateescape-decoded bytes, RTL-override control chars, zero-width-space-split words, homoglyph substitution, non-dict entry/article (None), non-string title (list), and 10MB title/URL strings -- all handled without raising except the non-string-link case (SEC-PROMO-1).",
+    "Timed a 700,400-char Unicode-combining-mark ('zalgo') string through _promo_fold -- 0.0528s, confirming NFKD normalization + combining-filter + tokenize is linear, not quadratic, ruling out a Unicode-normalization DoS.",
+    "Traced job() control flow from step (b3) entry loop through to main()'s job() invocations (immediate call + schedule.every().day.at(...).do(job) inside a bare while-loop) to confirm no try/except anywhere catches an exception raised by _is_promo_article, in contrast to the immediately-following cross-source dedup gate which is explicitly wrapped per Decision 12/AC9.",
+    "Verified mark_processed() uses a parameterized SQLite INSERT (no string formatting/concatenation) -- no SQL injection surface from the untrusted title/link/pub_date values.",
+    "Read send_admin_notification: confirmed bot.send_message is called with parse_mode left at its default (unset/plain text) specifically per a documented 2026-04-30 decision to avoid `[label](url)`-style spoofing from article-derived text, and confirmed the message is passed through _redact_text before send -- same path as every other admin alert, unchanged by this diff.",
+    "Read alert_promo_blocked: markers list is only ever populated from the fixed _PROMO_STRONG_MARKERS/_PROMO_WEAK_MARKERS/_PROMO_URL_TOKENS constants (or f'url:{tok}' from that same fixed token set) -- never raw attacker text -- so rendering it verbatim is safe as the code comment claims.",
+    "Confirmed article is non-None with paragraphs by the time _is_promo_article runs (guarded at news_bot.py:2950 `if not article or not article.get('paragraphs')`), so the article.get(...) calls in the drop branch (title, mark_processed, alert args) cannot themselves raise on None."
+  ],
+  "test_results": {
+    "targeted": [
+      "pytest tests/test_relevance_filter.py -q -> 46 passed",
+      "pytest tests/test_admin_alerts.py -k 'Promo or Funnel' -q -> 19 passed",
+      "pytest tests/test_integration.py -k Promo -q -> 1 passed"
+    ],
+    "full_suite": "Not re-run in this review (out of scope for a security-focused pass); commit message claims 1352 passed full-suite at commit time."
+  }
+}

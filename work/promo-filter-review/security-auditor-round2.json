@@ -1,0 +1,60 @@
+{
+  "reviewer": "security-auditor",
+  "round": 2,
+  "commit": "1fe0f38",
+  "base_commit": "7de12e6",
+  "prior_report": "work/promo-filter-review/security-auditor.json",
+  "verdict": "pass",
+  "summary": "All fixes claimed for round-1 findings are verified present and effective. SEC-PROMO-1 (High) is fixed with defense-in-depth: _promo_scan_input/_is_promo_article now coerce every non-str/non-dict/non-list scanned value (link, title, paragraphs, entry, article) to a safe default instead of raising, urlparse is guarded against ValueError, AND the job() call site is independently wrapped fail-open (mirroring the dedup gate's Decision 12/AC9 contract) so even a future/unknown exception type inside the detector cannot escape. Re-ran all 12 round-1 crash reproductions (non-string link as list/dict/int/float/bool/None, non-string title, non-list paragraphs as str/dict/int, None entry/article, str entry, list article, malformed IPv6 URL) -- none raise; all safely resolve to not-promo. The project's own new integration test (test_promo_filter_crash_is_fail_open, monkeypatches _is_promo_article to raise RuntimeError) confirms job() itself does not crash and the article is staged as usual -- fail-open end-to-end, not just at the function level. SEC-PROMO-2 (Medium) is fixed: title and URL path are now truncated to _PROMO_SCAN_MAX_CHARS (2000) via _promo_scan_input BEFORE any NFKD/regex work, so a 10MB title/link that previously cost 0.63s/0.41s CPU now costs ~0.0002s; confirmed the cap is a genuine content bound (not just a perf shortcut) by placing a marker phrase past the 2000-char threshold in both title and URL and confirming it is not detected. Stress-tested 50 entries each carrying three 10MB fields (title+link+paragraph): 0.51s total (~10ms/entry), no blowup. SEC-PROMO-4 (Low) is fixed: alert_promo_blocked truncates the untrusted title to 200 chars + an ellipsis (boundary-verified at 199/200/201/202 chars), the substring anchor 'Отсечена реклама' (used by the integration test suite) is untouched by the truncation and confirmed present even with a 550-char and a non-string (int) title. SEC-PROMO-3 (zero-width/homoglyph evasion) and SEC-PROMO-5 (permanent pin on false positive) were accepted as-is with rationale recorded in work/SESSION-2026-07-25.md -- both rationales are reasonable and consistent with my original low/informational severity assessment (heuristic spam filter, not a security boundary; same pattern as the accepted E015 precedent). Additionally sanity-checked the new seller-voice gate and STRONG-span-blanking logic (the double-count fix) for new failure modes: no STRONG-in-STRONG substring self-overlaps exist in the marker tuples (would have made the blanking loop order-sensitive/buggy), dense repeated-marker and adjacent/overlapping-marker inputs process correctly and fast (0.27ms/entry at scan-cap scale), and pathological Unicode (ZWSP, zalgo combining-mark stacking, lone surrogate in the link) mixed through the new seller/weak/blanking path together does not raise and stays sub-millisecond. No new findings. Targeted tests: tests/test_relevance_filter.py -q -> 62 passed (23 subtests); tests/test_admin_alerts.py -k 'Promo or Funnel' -> 21 passed; tests/test_integration.py -k Promo -> 2 passed (including the new fail-open crash test).",
+  "findings_disposition": [
+    {
+      "id": "SEC-PROMO-1",
+      "original_severity": "high",
+      "status": "fixed",
+      "verification": "Re-ran all round-1 crash repros (list/dict/int/float/bool/None link, list/int title, str/dict/int paragraphs, None entry, None article, str entry, list article, malformed-IPv6 URL) directly against _is_promo_article -- zero exceptions, all resolve to [] or correct marker matches from the still-valid fields. Confirmed two independent layers: (1) _promo_scan_input coerces every scanned field to a bounded str or '' instead of raising; urlparse is wrapped in try/except ValueError; (2) the job() call site independently wraps the whole _is_promo_article(...) call in try/except Exception, fail-open (promo_markers = [] on any exception, logged via sanitize_error_message, article proceeds to the dedup gate/staging as normal). Ran the project's own new test test_integration.py::TestPromoIntakeFilter::test_promo_filter_crash_is_fail_open (monkeypatches _is_promo_article to raise RuntimeError('boom')) -- passes: job() does not raise, and the article IS staged into pending_articles, no [E035] fired. This directly satisfies the ask: no exception escapes AND the tick continues with the article still processed.",
+      "residual_risk": "None materially remaining. Minor observation only: the inner urlparse guard catches ValueError specifically, not Exception broadly -- but this is fully backstopped by the outer job()-level try/except Exception, so no exception type can escape job() regardless of what urlparse or any other line inside _is_promo_article might someday raise. Not a blocking gap."
+    },
+    {
+      "id": "SEC-PROMO-2",
+      "original_severity": "medium",
+      "status": "fixed",
+      "verification": "10MB title: 0.63s -> 0.00022s. 10MB URL path: 0.41s -> 0.00017s. Confirmed the cap is a real content bound, not just an early-exit: placed a genuine marker phrase after 2500 chars of padding in the title and after a >2000-char path prefix in the URL -- neither is detected, proving truncation happens before the marker scan. Stress test: 50 entries each with 10MB title + 10MB link + 10MB paragraph body processed in 0.51s total (~10ms/entry, dominated by the pre-existing body join-then-slice, not a regression -- linear and bounded)."
+    },
+    {
+      "id": "SEC-PROMO-3",
+      "original_severity": "low",
+      "status": "accepted_as_is",
+      "verification": "Rationale recorded in work/SESSION-2026-07-25.md matches my original assessment: this is a keyword heuristic, not a security boundary, and the worst case of evasion is the pre-existing behavior (ad gets published) that the feature was reducing, not introducing. The new seller-voice markers ('nossa loja'/'our store'/'our shop') are matched through the same _promo_fold tokenizer, so they remain equally susceptible to zero-width-character word-splitting and homoglyph substitution as before -- this is an unchanged, already-accepted limitation, not a regression from the round-1 fix."
+    },
+    {
+      "id": "SEC-PROMO-4",
+      "original_severity": "low",
+      "status": "fixed",
+      "verification": "alert_promo_blocked truncates title to 200 chars + '…' (_PROMO_TITLE_MAXLEN). Boundary-tested: 199/200-char titles pass through unmodified, 201/202-char titles are cut to exactly 200 chars + ellipsis. Confirmed the 'Отсечена реклама' substring anchor (relied on by the integration test suite) is present and unaffected by truncation, tested with both a 550-char title and a non-string (int) title -- the latter is str()-coerced safely with no 'None' leakage."
+    },
+    {
+      "id": "SEC-PROMO-5",
+      "original_severity": "low",
+      "status": "accepted_as_is",
+      "verification": "Rationale recorded in work/SESSION-2026-07-25.md ('ровно та же схема, что у E015-дроп-пути') matches my original assessment: not attacker-exploitable (fixed, operator-configured sources; no third-party can target another party's content), and it deliberately mirrors an already-accepted precedent (E015). No change required."
+    }
+  ],
+  "new_findings": [],
+  "additional_checks_performed": [
+    "Static invariant check: no STRONG marker is a literal substring of another STRONG marker (empty overlap set) -- confirms the span-blanking loop in _promo_scan_markers can't hit self-overlap ordering bugs.",
+    "Dense repeated-marker title (all 19 STRONG markers concatenated, repeated to ~1900 chars, at the scan cap): processes in 0.2ms, returns exactly the 19 expected distinct STRONG matches, no exception.",
+    "Adjacent/repeated seller+strong markers ('nossa loja nossa loja ... cupom cupom cupom ...'): processes instantly, correct distinct-marker de-duplication (result length 4, matching the 4 distinct marker strings present).",
+    "Combined pathological-Unicode stress: zero-width-space-split words + Unicode-combining-mark ('zalgo') stacking in the title/body + a lone surrogate embedded in the link, all in one call -- no exception, sub-2ms.",
+    "50x and 500x batched adversarial-size-entry loops to rule out cumulative per-tick cost creep from the fix -- both stayed linear and fast (10ms/entry and 0.27ms/entry respectively, depending on payload size).",
+    "Confirmed no duplicate entries exist in _PROMO_STRONG_MARKERS / _PROMO_WEAK_MARKERS (would silently inflate the distinct-marker count used by the block-rule bar) and that _PROMO_SELLER_MARKERS is a proper subset of _PROMO_STRONG_MARKERS as the code assumes.",
+    "Re-confirmed the real-incident positive case and a genuinely promo title still block correctly post-fix (seller voice present, 2+ signals), so the fail-open/coercion hardening did not weaken true-positive detection."
+  ],
+  "test_results": {
+    "targeted": [
+      "pytest tests/test_relevance_filter.py -q -> 62 passed, 23 subtests passed",
+      "pytest tests/test_admin_alerts.py -k 'Promo or Funnel' -q -> 21 passed",
+      "pytest tests/test_integration.py -k Promo -q -> 2 passed (incl. test_promo_filter_crash_is_fail_open)"
+    ],
+    "full_suite": "Not re-run in this round-2 pass (out of scope for a security-focused re-verification); commit message claims 1371 passed full-suite at commit time."
+  }
+}
