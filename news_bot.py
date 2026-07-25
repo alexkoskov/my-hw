@@ -1465,48 +1465,74 @@ def _is_text_only_checklist(entry, article):
 _PROMO_SCAN_MAX_PARAGRAPHS = 8
 _PROMO_SCAN_MAX_CHARS = 2000
 
-#: STRONG promo markers — explicit shop / call-to-action phrases that
-#: news prose doesn't use. Stored in canonical accented form; matching
-#: is accent-stripped + lowercased on BOTH sides (see ``_promo_fold``),
-#: so "nao perca" / "NÃO PERCA" hit 'não perca' and "em nossa loja"
-#: hits 'nossa loja'. Plain word-bounded substring matching — no regex
-#: on marker side, ReDoS-safe.
-_PROMO_STRONG_MARKERS = (
+#: Promo markers, three tiers. Stored in canonical accented form;
+#: matching is accent-stripped + lowercased on BOTH sides (see
+#: ``_promo_fold``), so "nao perca" / "NÃO PERCA" hit 'não perca'.
+#: Plain word-bounded substring matching — no regex on the marker side,
+#: ReDoS-safe. The block rule lives in ``_is_promo_article``.
+#:
+#: DIRECT call-to-action — an imperative addressed to the READER. This
+#: is the sharpest ad signal: ad copy tells you to act, journalism
+#: (even when quoting a shopkeeper) does not.
+_PROMO_CTA_DIRECT_MARKERS = (
     # PT (t-hunted and friends)
-    'nossa loja',
-    'cupom',
-    'código de desconto',
     'compre já',
     'garanta o seu',
     'garanta já',
     'não perca',
-    'frete grátis',
-    'promoção',
     'aproveite a oferta',
     # EN
-    'our store',
-    'our shop',
     'shop now',
     'buy now',
     'use code',
+    'order yours',
+)
+
+#: OFFER call-to-action — noun phrases naming an offer or a
+#: purchase-urgency perk. Weaker than DIRECT because journalism reports
+#: them factually ("the revamped shop now offers free shipping",
+#: "a discount code was floating around the Discord"), so an OFFER
+#: marker never blocks on its own — see the rule.
+_PROMO_CTA_OFFER_MARKERS = (
+    # PT
+    'cupom',
+    'código de desconto',
+    'frete grátis',
+    'promoção',
+    # EN
     'coupon code',
     'discount code',
-    'order yours',
     'free shipping',
 )
 
-#: SELLER-voice markers — the subset of STRONG markers in which the
-#: publisher speaks as the shop ("наш магазин"). This is the signal that
-#: separates an ad from retail JOURNALISM: news writes about somebody
-#: else's store ("Mattel relaunches its online store", "beloved shop
-#: closes"), an ad writes about its own. Review round 1 found 4 of 10
-#: realistic legit snippets blocked without this distinction.
-_PROMO_SELLER_MARKERS = ('nossa loja', 'our store', 'our shop')
+#: SELLER-voice markers — the publisher speaking AS the shop ("our
+#: store"). Separates an ad from retail JOURNALISM, which writes about
+#: somebody else's store ("Mattel relaunches its online store",
+#: "beloved shop closes"). Not sufficient alone: review round 2 showed
+#: interview and community pieces quote owners and fans in exactly this
+#: first person, so a CTA marker is required alongside it.
+_PROMO_SELLER_MARKERS = (
+    'nossa loja',
+    'em nossa loja',
+    'our store',
+    'our shop',
+)
+
+#: Every marker whose span is blanked before the WEAK pass (see
+#: ``_promo_scan_markers``). Union of the three decision tiers; the
+#: structural invariants (disjoint tiers, all folded) are pinned by
+#: ``TestPromoMarkerSets``.
+_PROMO_STRONG_MARKERS = (
+    _PROMO_CTA_DIRECT_MARKERS
+    + _PROMO_CTA_OFFER_MARKERS
+    + _PROMO_SELLER_MARKERS
+)
 
 #: WEAK promo markers — commerce vocabulary that legit news also uses
-#: ("hits stores in September", "chega às lojas"). Weak markers alone
-#: NEVER block, whatever their count — they only corroborate a
-#: SELLER-voice marker (see the block rule in ``_is_promo_article``).
+#: ("hits stores in September", "chega às lojas"). WEAK markers NEVER
+#: affect the verdict, whatever their count: they are collected purely
+#: so the [E035] ping shows the operator the full picture of what the
+#: article looked like.
 _PROMO_WEAK_MARKERS = (
     # PT
     'loja',
@@ -1599,24 +1625,34 @@ def _is_promo_article(entry, article):
     store ad («Hot Wheels antigos e raros na loja Universo Hot Wheels»)
     and the bot translated (wasted LLM tokens) + posted it.
 
-    Block rule (tuned in review round 1 against a 10-snippet
-    false-positive probe of realistic lamley/autoevolution/t-hunted
-    headlines):
+    Block rule, tuned across two review rounds against 15 realistic
+    lamley/autoevolution/t-hunted/orangetrack snippets:
 
-      * a SELLER-voice marker ('nossa loja' / 'our store' / 'our shop')
-        AND (>= 2 distinct STRONG markers total OR >= 2 distinct WEAK
-        markers), OR
-      * >= 3 distinct STRONG markers (a dense call-to-action stack —
-        no seller voice needed).
+      * a SELLER-voice marker AND (>= 1 DIRECT call-to-action OR >= 2
+        call-to-action markers of any tier), OR
+      * >= 3 distinct call-to-action markers (a dense CTA stack — no
+        seller voice needed).
 
-    The seller-voice requirement is what keeps retail JOURNALISM
-    publishable: news covers somebody else's shop ("Mattel relaunches
-    its online store" — 'shop now' + 'free shipping' in the body,
-    "beloved Hot Wheels shop closes"), an ad speaks as the shop. A
-    'loja'/'shop'/'store' URL-path token is a WEAK corroborator only
-    (rendered ``url:loja``); WEAK markers alone never block, whatever
-    their count, and a WEAK hit inside a matched STRONG phrase is not
-    double-counted (see ``_promo_scan_markers``).
+    An ad TELLS THE READER TO ACT; journalism does not, even when it
+    quotes a shopkeeper. Round 1 established that seller voice is
+    needed (news covers somebody else's shop: "Mattel relaunches its
+    online store", "beloved Hot Wheels shop closes"); round 2 showed
+    seller voice is not sufficient, because interview / Q&A / community
+    pieces quote owners and fans in the first person ("Our store has
+    always focused on…", "our store finally got it back in stock") —
+    hence the CTA requirement on top.
+
+    Thresholds are deliberately one notch above the intuitive ones:
+    a lone OFFER marker beside seller voice does not block (the
+    community-roundup 'discount code' quote), and two CTA markers
+    without seller voice do not block (the storefront-relaunch story
+    where 'shop now' lands as an accidental bigram in "the revamped
+    shop now offers free shipping").
+
+    WEAK commerce words (including the 'loja'/'shop'/'store' URL-slug
+    token, rendered ``url:loja``) never affect the verdict — they are
+    reported in the marker list for the operator only, with hits inside
+    a matched marker's span suppressed (see ``_promo_scan_markers``).
 
     Inputs scanned (source language, pre-translation): entry/article
     title, the entry link's URL path, and the first
@@ -1657,9 +1693,12 @@ def _is_promo_article(entry, article):
     ]
 
     seller = [m for m in strong if m in _PROMO_SELLER_MARKERS]
-    if seller and (len(strong) >= 2 or len(weak) >= 2):
+    direct = [m for m in strong if m in _PROMO_CTA_DIRECT_MARKERS]
+    cta = direct + [m for m in strong if m in _PROMO_CTA_OFFER_MARKERS]
+
+    if seller and (direct or len(cta) >= 2):
         return strong + weak
-    if len(strong) >= 3:
+    if len(cta) >= 3:
         return strong + weak
     return []
 
