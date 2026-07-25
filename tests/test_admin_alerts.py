@@ -626,6 +626,19 @@ class TestIntakeFunnel(unittest.TestCase):
         'staged': 0,
     }
 
+    # new > 0, nothing staged, promo-filter ([E035]) is the dominant stage.
+    PROMO_MAX = {
+        'sources_fetched': 6,
+        'sources_failed': 0,
+        'new_count': 5,
+        'dropped_no_article': 1,
+        'dropped_checklist': 0,
+        'dropped_promo': 4,
+        'dropped_dedup_block': 0,
+        'dedup_degraded': 0,
+        'staged': 0,
+    }
+
     # ------------------------------------------------------------------
     # _format_funnel — pure helper shape + fail-safety
     # ------------------------------------------------------------------
@@ -699,6 +712,20 @@ class TestIntakeFunnel(unittest.TestCase):
         self.assertIn("Где схлопнулось: чеклист без текста (4)", block)
         # The runner-up (no-article) must NOT be the one pinpointed.
         self.assertNotIn("Где схлопнулось: нет статьи", block)
+
+    def test_collapse_note_promo_dominant(self):
+        # new > 0, nothing staged, promo-filter is the max drop → name it,
+        # and the breakdown bullet renders the promo counter.
+        block = admin_alerts._format_funnel(self.PROMO_MAX)
+        self.assertIn("реклама 4", block)
+        self.assertIn("Где схлопнулось: реклама (4)", block)
+        self.assertNotIn("Где схлопнулось: нет статьи", block)
+
+    def test_funnel_line_counts_promo_in_dropped(self):
+        # Compact busy-day line folds promo drops into the «отсеяно» sum
+        # (1 no-article + 4 promo = 5).
+        line = admin_alerts._format_funnel_line(self.PROMO_MAX)
+        self.assertIn("отсеяно 5", line)
 
     # ------------------------------------------------------------------
     # E009 — alert_quiet_day enrichment + back-compat
@@ -928,6 +955,48 @@ class TestPublishRecap(unittest.TestCase):
         msg = admin_alerts.alert_publish_recap(self.HELD_AND_FAILED)
         for token in ("**", "```", "__", "]("):
             self.assertNotIn(token, msg)
+
+
+class TestPromoBlockedAlert(unittest.TestCase):
+    """[E035] — intake promo-filter drop (реклама отсечена до перевода)."""
+
+    def test_e035_promo_blocked(self):
+        msg = admin_alerts.alert_promo_blocked(
+            "https://t-hunted.blogspot.com/2026/07/"
+            "hot-wheels-antigos-e-raros-na-loja.html",
+            "Hot Wheels antigos e raros na loja Universo Hot Wheels",
+            ["nossa loja", "não perca", "url:loja"],
+        )
+        self.assertIn("[E035]", msg)
+        self.assertIn("🛒", msg)
+        # Substring-якорь интеграционных тестов — не менять.
+        self.assertIn("Отсечена реклама", msg)
+        self.assertIn(
+            "https://t-hunted.blogspot.com/2026/07/"
+            "hot-wheels-antigos-e-raros-na-loja.html",
+            msg,
+        )
+        self.assertIn(
+            "Hot Wheels antigos e raros na loja Universo Hot Wheels", msg,
+        )
+        # Every matched marker is listed so the operator sees WHY.
+        self.assertIn("nossa loja", msg)
+        self.assertIn("não perca", msg)
+        self.assertIn("url:loja", msg)
+        # Operator-guidance blocks follow the file's builder conventions.
+        self.assertIn("Что произошло", msg)
+        self.assertIn("Что сделать", msg)
+        self.assertIn("ложное срабатывание", msg)
+        # Plain text only.
+        for token in ("**", "```", "__", "]("):
+            self.assertNotIn(token, msg)
+
+    def test_e035_empty_markers_render_safely(self):
+        # Defensive: an empty marker list must not leak 'None' / raise.
+        msg = admin_alerts.alert_promo_blocked("http://u", "T", [])
+        self.assertIn("[E035]", msg)
+        self.assertIn("Отсечена реклама", msg)
+        self.assertNotIn("None", msg)
 
 
 class TestOpenRouterLowBalanceAlert(unittest.TestCase):

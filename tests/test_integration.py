@@ -3714,5 +3714,126 @@ class TestReviewListener(_IntegrationBase):
             link)
 
 
+# ---------------------------------------------------------------------------
+# Intake promo-filter integration tests ([E035], prod incident 2026-07-25).
+# ---------------------------------------------------------------------------
+
+
+class TestPromoIntakeFilter(_PrepPhaseBase):
+    """A shop-promo post is dropped at INTAKE — before staging, way before
+    translation (zero LLM tokens spent): not in ``pending_articles``, the
+    funnel counts it, exactly one [E035] alert fires, and the link is
+    pinned in ``processed_news`` so it is not re-fetched daily.
+
+    Mocks the same surface as ``TestCrossSourceDedup`` (``load_feeds`` /
+    ``fetch_rss`` / ``fetch_full_article``); the base's generic
+    ``send_admin_notification`` silencer is stopped per-test so the
+    admin-ping mock can be introspected, and re-started in ``tearDown``.
+    """
+
+    PROMO_LINK = ('https://t-hunted.blogspot.com/2026/07/'
+                  'hot-wheels-antigos-e-raros-na-loja.html')
+    PROMO_TITLE = 'Hot Wheels antigos e raros na loja Universo Hot Wheels'
+
+    def setUp(self):
+        super().setUp()
+        self.notify_patcher.stop()
+
+    def tearDown(self):
+        self.notify_patcher.start()
+        super().tearDown()
+
+    @patch('news_bot.fetch_full_article')
+    @patch('news_bot.fetch_rss')
+    @patch('news_bot.load_feeds')
+    @patch('news_bot.send_admin_notification')
+    def test_promo_article_dropped_at_intake(
+        self, mock_admin, mock_load_feeds, mock_fetch_rss, mock_fetch_article,
+    ):
+        """Real-incident fixture end-to-end: promo entry → dropped at
+        intake, NOT staged, funnel promo counter incremented, one [E035]
+        alert (substring anchor «Отсечена реклама»), link marked
+        processed, and NO re-fetch on the next tick."""
+        mock_load_feeds.return_value = ['http://example.com/feed1.xml']
+        mock_fetch_rss.return_value = [{
+            'link': self.PROMO_LINK,
+            'title': self.PROMO_TITLE,
+            'published': '2026-07-25',
+            'summary': 'Summary',
+        }]
+        mock_fetch_article.return_value = {
+            'title': self.PROMO_TITLE,
+            'subtitle': '',
+            'paragraphs': [
+                'Em nossa loja Universo Hot Wheels você encontra Hot '
+                'Wheels antigos e raros para a sua coleção.',
+                'Não perca as novidades desta semana!',
+                'Garanta o seu antes que acabe o estoque.',
+            ],
+            'images': [],
+        }
+
+        with self.assertLogs('news_bot', level='INFO') as cm:
+            news_bot.job()
+
+        # Dropped at intake — never staged into pending_articles.
+        self.assertEqual(pending_articles_repo.count_pending(), 0)
+        self.assertIsNone(pending_articles_repo.get_pending(self.PROMO_LINK))
+
+        # Link pinned in processed_news so tomorrow's tick skips it at
+        # the b2 filter (no daily re-fetch + re-alert).
+        conn = sqlite3.connect(self.db_path)
+        try:
+            processed = {
+                r[0] for r in
+                conn.execute('SELECT link FROM processed_news').fetchall()
+            }
+        finally:
+            conn.close()
+        self.assertIn(self.PROMO_LINK, processed)
+
+        # Exactly one [E035] alert with the substring anchor + markers.
+        e035_calls = [
+            c for c in mock_admin.call_args_list
+            if '[E035]' in (c.args[0] if c.args else '')
+        ]
+        self.assertEqual(len(e035_calls), 1)
+        msg = e035_calls[0].args[0]
+        self.assertIn('Отсечена реклама', msg)
+        self.assertIn(self.PROMO_LINK, msg)
+        self.assertIn('nossa loja', msg)
+        # No dedup alerts fired for this drop.
+        for c in mock_admin.call_args_list:
+            m = c.args[0] if c.args else ''
+            self.assertNotIn('[E014]', m)
+            self.assertNotIn('[E015]', m)
+
+        # The drop is diagnosable straight from the logs: an [E035] line
+        # naming the link + the funnel line counting promo=1.
+        e035_lines = [
+            l for l in cm.output
+            if '[E035]' in l and self.PROMO_LINK in l
+        ]
+        self.assertTrue(
+            e035_lines,
+            "expected an [E035] log line naming the dropped link; got:\n"
+            + "\n".join(cm.output),
+        )
+        funnel_lines = [
+            l for l in cm.output if '[funnel]' in l and 'promo=1' in l
+        ]
+        self.assertTrue(
+            funnel_lines,
+            "expected the [funnel] line to count promo=1; got:\n"
+            + "\n".join(cm.output),
+        )
+
+        # Next tick: the processed pin means the entry is filtered at b2 —
+        # the article body is NOT fetched again.
+        mock_fetch_article.reset_mock()
+        news_bot.job()
+        mock_fetch_article.assert_not_called()
+
+
 if __name__ == '__main__':
     unittest.main()

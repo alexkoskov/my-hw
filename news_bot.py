@@ -16,6 +16,7 @@ import secrets
 import socket
 import threading
 import time
+import unicodedata
 from datetime import datetime, timedelta, timezone
 from urllib.parse import urlparse
 
@@ -1455,6 +1456,137 @@ def _is_text_only_checklist(entry, article):
     return total_text < _CHECKLIST_BODY_TEXT_FLOOR
 
 
+#: Scan bounds for the promo filter ([E035]): first N paragraphs of the
+#: body, joined and capped at M chars. Shop pitches front-load their
+#: call-to-action language, so a bounded scan is enough — and a
+#: megabyte-sized body can never stall the intake loop.
+_PROMO_SCAN_MAX_PARAGRAPHS = 8
+_PROMO_SCAN_MAX_CHARS = 2000
+
+#: STRONG promo markers — explicit shop / call-to-action phrases that
+#: news prose doesn't use. Stored in canonical accented form; matching
+#: is accent-stripped + lowercased on BOTH sides (see ``_promo_fold``),
+#: so "nao perca" / "NÃO PERCA" hit 'não perca' and "em nossa loja"
+#: hits 'nossa loja'. Plain word-bounded substring matching — no regex
+#: on marker side, ReDoS-safe.
+_PROMO_STRONG_MARKERS = (
+    # PT (t-hunted and friends)
+    'nossa loja',
+    'cupom',
+    'código de desconto',
+    'compre já',
+    'garanta o seu',
+    'garanta já',
+    'não perca',
+    'frete grátis',
+    'promoção',
+    'aproveite a oferta',
+    # EN
+    'our store',
+    'our shop',
+    'shop now',
+    'buy now',
+    'use code',
+    'coupon code',
+    'discount code',
+    'order yours',
+    'free shipping',
+)
+
+#: WEAK promo markers — commerce vocabulary that legit news also uses
+#: ("hits stores in September", "chega às lojas"). Weak markers alone
+#: NEVER block, whatever their count — they only corroborate a strong
+#: marker (see the block rule in ``_is_promo_article``).
+_PROMO_WEAK_MARKERS = (
+    # PT
+    'loja',
+    'à venda',
+    'estoque',
+    'desconto',
+    'oferta',
+    # EN
+    'store',
+    'on sale',
+    'in stock',
+    'discount',
+    'offer',
+)
+
+#: URL-path tokens counted as STRONG promo markers (rendered as
+#: ``url:<token>`` in the matched-marker list). News slugs don't carry
+#: them; shop-promo slugs do ('…-na-loja.html', '/shop/…').
+_PROMO_URL_TOKENS = ('loja', 'shop', 'store')
+
+
+def _promo_fold(text):
+    """Fold ``text`` for promo-marker matching: NFKD accent-strip +
+    lowercase + collapse to single-space-separated word tokens, padded
+    with one space on each side so a plain ``in`` substring check is
+    word-bounded ('loja' never hits 'lojas', 'store' never hits
+    'restored')."""
+    text = unicodedata.normalize('NFKD', text or '')
+    text = ''.join(ch for ch in text if not unicodedata.combining(ch))
+    return ' ' + ' '.join(re.findall(r'[a-z0-9]+', text.lower())) + ' '
+
+
+#: Markers pre-folded once at import so ``_is_promo_article`` does pure
+#: substring checks per entry.
+_PROMO_STRONG_FOLDED = tuple(
+    (m, _promo_fold(m)) for m in _PROMO_STRONG_MARKERS)
+_PROMO_WEAK_FOLDED = tuple(
+    (m, _promo_fold(m)) for m in _PROMO_WEAK_MARKERS)
+
+
+def _is_promo_article(entry, article):
+    """Return the list of matched promo markers when the entry+article
+    look like a shop-promo/ad post (truthy → drop at intake, [E035]);
+    empty list otherwise. The list is surfaced in the operator alert so
+    a false positive is diagnosable at a glance.
+
+    Prod incident 2026-07-25: t-hunted.blogspot.com published a pure
+    store ad («Hot Wheels antigos e raros na loja Universo Hot Wheels»)
+    and the bot translated (wasted LLM tokens) + posted it.
+
+    Scoring, not single-hit — news legitimately says "hits stores in
+    September" / "chega às lojas". Block rule:
+
+      * >= 2 distinct STRONG markers, OR
+      * 1 STRONG + >= 2 distinct WEAK markers.
+
+    One lone marker never blocks. Inputs scanned (source language,
+    pre-translation): entry/article title, the entry link's URL path
+    (a 'loja'/'shop'/'store' path token counts as STRONG), and a
+    bounded slice of the body (first ``_PROMO_SCAN_MAX_PARAGRAPHS``
+    paragraphs, capped at ``_PROMO_SCAN_MAX_CHARS`` chars).
+
+    Called from ``job()`` step (b3) right after the checklist reject —
+    before the (more expensive) dedup gate, per the cheapest-filter-
+    first ordering. Tolerates None/malformed ``entry``/``article``.
+    """
+    entry = entry or {}
+    title = entry.get('title') or (article or {}).get('title') or ''
+    paragraphs = (article or {}).get('paragraphs') or []
+    body = ' '.join(
+        p for p in paragraphs[:_PROMO_SCAN_MAX_PARAGRAPHS]
+        if isinstance(p, str)
+    )[:_PROMO_SCAN_MAX_CHARS]
+    text = _promo_fold(f'{title} {body}')
+
+    strong = [m for m, folded in _PROMO_STRONG_FOLDED if folded in text]
+
+    path_tokens = set(_promo_fold(urlparse(entry.get('link') or '').path)
+                      .split())
+    strong += [
+        f'url:{tok}' for tok in _PROMO_URL_TOKENS if tok in path_tokens
+    ]
+
+    weak = [m for m, folded in _PROMO_WEAK_FOLDED if folded in text]
+
+    if len(strong) >= 2 or (strong and len(weak) >= 2):
+        return strong + weak
+    return []
+
+
 #: Hard-block threshold for cross-source dedup (tech-spec Decision 7,
 #: user-spec AC3). Articles whose ``similarity`` against any candidate in
 #: the 7-day window meets or exceeds this value are dropped before
@@ -2757,6 +2889,7 @@ def job():
         'new_count': 0,           # len(new_entries) after both b2 filters
         'dropped_no_article': 0,  # b3: no link OR no article/paragraphs
         'dropped_checklist': 0,   # b3: text-only checklist reject
+        'dropped_promo': 0,       # b3: shop-promo/ad reject (E035)
         'dropped_dedup_block': 0, # b3: cross-source hard-block (E015)
         'dedup_degraded': 0,      # b3: dedup crashed → degraded (E016), still attempts to stage
         'staged': 0,              # == inserted
@@ -2829,6 +2962,41 @@ def job():
                 "Skipping checklist-only article (no editorial body): %s",
                 link,
             )
+            continue
+
+        # Reject shop-promo/ad posts BEFORE staging — zero LLM tokens
+        # spent (prod incident 2026-07-25: t-hunted published a pure
+        # store ad and the bot translated + posted it). Scoring rule in
+        # _is_promo_article; the matched markers go into the [E035]
+        # alert so a false positive is diagnosable at a glance. Placed
+        # before the (more expensive) dedup gate. Unlike the checklist
+        # drop the link is pinned in processed_news (E015 precedent):
+        # a shop ad stays a shop ad — without the pin the same post
+        # would be re-fetched and re-alerted every daily tick.
+        promo_markers = _is_promo_article(entry, article)
+        if promo_markers:
+            funnel['dropped_promo'] += 1
+            logger.info(
+                "[E035] Promo article dropped %s (markers: %s)",
+                link, ", ".join(promo_markers),
+            )
+            mark_processed(
+                link,
+                article.get('title') or entry.get('title') or '',
+                entry.get('published') or entry.get('pub_date') or '',
+            )
+            try:
+                send_admin_notification(
+                    admin_alerts.alert_promo_blocked(
+                        link,
+                        article.get('title') or entry.get('title') or '',
+                        promo_markers,
+                    )
+                )
+            except Exception as notify_err:
+                logger.error(
+                    "Failed to send E035 notification: %s", notify_err,
+                )
             continue
 
         # --------------------------------------------------------------
@@ -3017,11 +3185,12 @@ def job():
     # cannot raise.
     logger.info(
         "[funnel] sources=%d(failed=%d) new=%d "
-        "dropped(no_article=%d,checklist=%d,dedup_block=%d,dedup_degraded=%d) "
-        "staged=%d",
+        "dropped(no_article=%d,checklist=%d,promo=%d,dedup_block=%d,"
+        "dedup_degraded=%d) staged=%d",
         funnel['sources_fetched'], funnel['sources_failed'],
         funnel['new_count'], funnel['dropped_no_article'],
-        funnel['dropped_checklist'], funnel['dropped_dedup_block'],
+        funnel['dropped_checklist'], funnel['dropped_promo'],
+        funnel['dropped_dedup_block'],
         funnel['dedup_degraded'], funnel['staged'],
     )
 

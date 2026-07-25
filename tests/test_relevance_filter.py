@@ -13,6 +13,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 import news_bot
 from news_bot import (
     _is_hot_wheels_relevant,
+    _is_promo_article,
     _is_text_only_checklist,
     filter_new_entries,
 )
@@ -363,6 +364,213 @@ class TestIsTextOnlyChecklist(unittest.TestCase):
         }
         article = {'paragraphs': ['short']}
         self.assertFalse(_is_text_only_checklist(entry, article))
+
+
+class TestIsPromoArticle(unittest.TestCase):
+    """Intake promo/ad filter ([E035]). Prod incident 2026-07-25:
+    t-hunted.blogspot.com published a pure shop-promo post («Hot Wheels
+    antigos e raros na loja Universo Hot Wheels») and the bot translated
+    (wasted tokens) + posted it to the channel.
+
+    Scoring rule (never a single-hit block — news legitimately says
+    "hits stores in September" / "chega às lojas"):
+      * >= 2 distinct STRONG markers, OR
+      * 1 STRONG + >= 2 distinct WEAK markers.
+    URL-slug 'loja'/'shop'/'store' path token counts as STRONG.
+    Returns the matched-marker list (truthy = promo) so the E035 alert
+    can show WHY; empty list = not promo.
+    """
+
+    # --- fixtures ---------------------------------------------------------
+
+    def _incident(self):
+        """Modeled on the real 2026-07-25 t-hunted incident post."""
+        entry = {
+            'title': 'Hot Wheels antigos e raros na loja Universo Hot Wheels',
+            'link': 'https://t-hunted.blogspot.com/2026/07/'
+                    'hot-wheels-antigos-e-raros-na-loja.html',
+        }
+        article = {
+            'title': 'Hot Wheels antigos e raros na loja Universo Hot Wheels',
+            'subtitle': '',
+            'paragraphs': [
+                'Em nossa loja Universo Hot Wheels você encontra Hot Wheels '
+                'antigos e raros para a sua coleção.',
+                'Não perca as novidades desta semana!',
+                'Garanta o seu antes que acabe o estoque.',
+            ],
+        }
+        return entry, article
+
+    # --- positives --------------------------------------------------------
+
+    def test_incident_pt_promo_blocked(self):
+        entry, article = self._incident()
+        markers = _is_promo_article(entry, article)
+        self.assertTrue(markers)
+
+    def test_incident_markers_name_the_reasons(self):
+        """The returned list carries the matched markers so the operator
+        alert can show WHY the article was dropped."""
+        entry, article = self._incident()
+        markers = _is_promo_article(entry, article)
+        self.assertIn('nossa loja', markers)
+        self.assertIn('não perca', markers)
+        self.assertIn('garanta o seu', markers)
+        self.assertIn('url:loja', markers)
+
+    def test_en_promo_blocked(self):
+        entry = {
+            'title': 'Rare Hot Wheels now available at our store',
+            'link': 'https://example.com/2026/07/rare-hot-wheels.html',
+        }
+        article = {
+            'paragraphs': [
+                'Visit our store and use code HW10 at checkout.',
+            ],
+        }
+        markers = _is_promo_article(entry, article)
+        self.assertTrue(markers)
+        self.assertIn('our store', markers)
+        self.assertIn('use code', markers)
+
+    def test_url_slug_loja_counts_as_strong(self):
+        """A 'loja' path token is STRONG: together with one strong body
+        phrase it reaches the 2-STRONG block bar even when the title is
+        neutral."""
+        entry = {
+            'title': 'Hot Wheels raros e antigos',
+            'link': 'https://t-hunted.blogspot.com/2026/07/'
+                    'hot-wheels-antigos-e-raros-na-loja.html',
+        }
+        article = {'paragraphs': ['Garanta o seu hoje mesmo.']}
+        markers = _is_promo_article(entry, article)
+        self.assertTrue(markers)
+        self.assertIn('url:loja', markers)
+
+    def test_one_strong_two_weak_blocked(self):
+        """Boundary in the blocking direction: 1 STRONG + 2 distinct
+        WEAK crosses the bar."""
+        entry = {'title': 'Hot Wheels novidades',
+                 'link': 'https://example.com/2026/07/novidades.html'}
+        article = {
+            'paragraphs': [
+                'Compre já: desconto especial na loja parceira.',
+            ],
+        }
+        # strong: 'compre já'; weak: 'desconto' + 'loja'.
+        self.assertTrue(_is_promo_article(entry, article))
+
+    def test_accent_and_case_insensitive(self):
+        """'NÃO PERCA' and the accent-less 'nao perca' both match the
+        canonical 'não perca' marker (accent-strip + lowercase on both
+        sides)."""
+        for phrase in ('NÃO PERCA', 'nao perca'):
+            entry = {'title': 'Hot Wheels raros',
+                     'link': 'https://example.com/2026/07/raros.html'}
+            article = {
+                'paragraphs': [f'{phrase}! Garanta o seu hoje.'],
+            }
+            markers = _is_promo_article(entry, article)
+            self.assertTrue(markers, f'phrase {phrase!r} must block')
+            self.assertIn('não perca', markers)
+
+    # --- negatives (must NOT block) --------------------------------------
+
+    def test_en_news_weak_only_not_blocked(self):
+        """Legit news uses commerce vocabulary ('hits stores', 'in
+        stock', 'discount') — weak markers alone never block, whatever
+        their count."""
+        entry = {
+            'title': 'New Hot Wheels line hits stores in September',
+            'link': 'https://example.com/2026/07/new-line-september.html',
+        }
+        article = {
+            'paragraphs': [
+                'The 2027 mainline will be in stock at retailers '
+                'nationwide, and collectors hunting a discount can wait '
+                'for the holiday season.',
+            ],
+        }
+        self.assertFalse(_is_promo_article(entry, article))
+
+    def test_pt_news_chega_as_lojas_not_blocked(self):
+        entry = {
+            'title': 'Novidades Hot Wheels chegam às lojas em setembro',
+            'link': 'https://t-hunted.blogspot.com/2026/07/'
+                    'novidades-setembro.html',
+        }
+        article = {
+            'paragraphs': [
+                'A nova série chega às lojas brasileiras em setembro, '
+                'com dez modelos inéditos.',
+            ],
+        }
+        self.assertFalse(_is_promo_article(entry, article))
+
+    def test_single_strong_marker_never_blocks(self):
+        """One lone STRONG marker (here 'promoção') is not enough — a
+        news piece may mention a promo in passing."""
+        entry = {'title': 'Hot Wheels em promoção na rede varejista',
+                 'link': 'https://example.com/2026/07/varejista.html'}
+        article = {
+            'paragraphs': ['A rede anunciou os novos preços nesta terça.'],
+        }
+        self.assertFalse(_is_promo_article(entry, article))
+
+    def test_one_strong_one_weak_not_blocked(self):
+        """Boundary below the bar: 1 STRONG + only 1 distinct WEAK."""
+        entry = {'title': 'Hot Wheels update',
+                 'link': 'https://example.com/2026/07/update.html'}
+        article = {'paragraphs': ['Compre já na loja parceira.']}
+        # strong: 'compre já'; weak: 'loja' only.
+        self.assertFalse(_is_promo_article(entry, article))
+
+    def test_checklist_post_not_blocked(self):
+        """A checklist post has no promo call-to-action — it is handled
+        by _is_text_only_checklist, not the promo filter."""
+        entry = {'title': '2026 Hot Wheels Mainline Checklist Q3 Update',
+                 'link': 'https://example.com/2026/07/checklist-q3.html'}
+        article = {'paragraphs': ['Mainline 2026', 'Q3 release wave']}
+        self.assertFalse(_is_promo_article(entry, article))
+
+    def test_empty_and_missing_inputs_do_not_crash(self):
+        """Defensive: empty/missing paragraphs or a None article must
+        not crash — and must not be promo."""
+        entry = {'title': 'Hot Wheels news',
+                 'link': 'https://example.com/2026/07/news.html'}
+        self.assertFalse(_is_promo_article(entry, {'paragraphs': []}))
+        self.assertFalse(_is_promo_article(entry, {}))
+        self.assertFalse(_is_promo_article(entry, None))
+        self.assertFalse(_is_promo_article({}, None))
+
+    # --- scan bounds ------------------------------------------------------
+
+    def test_markers_beyond_paragraph_bound_not_scanned(self):
+        """Only the first paragraphs are scanned (bounded scan) — promo
+        text buried past the bound does not trigger."""
+        entry = {'title': 'Hot Wheels retrospective',
+                 'link': 'https://example.com/2026/07/retrospective.html'}
+        article = {
+            'paragraphs': (
+                ['Editorial paragraph about the new casting.'] * 10
+                + ['Compre já em nossa loja, não perca!']
+            ),
+        }
+        self.assertFalse(_is_promo_article(entry, article))
+
+    def test_markers_beyond_char_cap_not_scanned(self):
+        """The joined body is char-capped — a megabyte body cannot stall
+        intake and text past the cap does not trigger."""
+        entry = {'title': 'Hot Wheels deep dive',
+                 'link': 'https://example.com/2026/07/deep-dive.html'}
+        article = {
+            'paragraphs': [
+                'word ' * 500,  # 2500 chars, exceeds the scan cap
+                'Compre já em nossa loja, não perca!',
+            ],
+        }
+        self.assertFalse(_is_promo_article(entry, article))
 
 
 if __name__ == '__main__':

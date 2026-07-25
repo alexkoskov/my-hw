@@ -181,7 +181,7 @@ def _funnel_int(funnel: dict, key: str) -> int:
 
 def _funnel_collapse_note(
     sources: int, failed: int, new: int,
-    no_article: int, checklist: int, block: int, staged: int,
+    no_article: int, checklist: int, promo: int, block: int, staged: int,
 ) -> str:
     """One-line pinpoint of the stage where intake collapsed. Returns "" when
     something WAS staged (no collapse to report). ``dedup_degraded`` is not a
@@ -200,6 +200,7 @@ def _funnel_collapse_note(
             ("дубль-блок", block),
             ("нет статьи/текста", no_article),
             ("чеклист без текста", checklist),
+            ("реклама", promo),
         )
         stage, count = max(drops, key=lambda kv: kv[1])
         if count > 0:
@@ -225,6 +226,7 @@ def _format_funnel(funnel: dict) -> str:
         new = _funnel_int(funnel, "new_count")
         no_article = _funnel_int(funnel, "dropped_no_article")
         checklist = _funnel_int(funnel, "dropped_checklist")
+        promo = _funnel_int(funnel, "dropped_promo")
         block = _funnel_int(funnel, "dropped_dedup_block")
         degraded = _funnel_int(funnel, "dedup_degraded")
         staged = _funnel_int(funnel, "staged")
@@ -237,12 +239,12 @@ def _format_funnel(funnel: dict) -> str:
             f"• получено записей: {sources} (источников не ответило: {failed})",
             f"• новых после фильтров: {new}",
             f"• отсеяно: нет статьи {no_article}, "
-            f"чеклист {checklist}, дубль-блок {block}",
+            f"чеклист {checklist}, реклама {promo}, дубль-блок {block}",
             f"• дедуп degraded (всё равно опубликованы): {degraded}",
             f"• добавлено в очередь: {staged}",
         ]
         note = _funnel_collapse_note(
-            sources, failed, new, no_article, checklist, block, staged,
+            sources, failed, new, no_article, checklist, promo, block, staged,
         )
         if note:
             lines.append(note)
@@ -266,6 +268,7 @@ def _format_funnel_line(funnel: dict) -> str:
         dropped = (
             _funnel_int(funnel, "dropped_no_article")
             + _funnel_int(funnel, "dropped_checklist")
+            + _funnel_int(funnel, "dropped_promo")
             + _funnel_int(funnel, "dropped_dedup_block")
         )
         failed_part = f", источники-сбои {failed}" if failed else ""
@@ -826,4 +829,31 @@ def alert_dedup_degraded(reason: str) -> str:
         f"Что сделать:\n"
         f"посмотри traceback в логах,\n"
         f"починим хотфиксом."
+    )
+
+
+# ---------------------------------------------------------------------------
+# E035 — intake promo-filter: рекламная статья отсечена до перевода
+# (prod-инцидент 2026-07-25: t-hunted опубликовал чистую рекламу магазина
+# «…na loja Universo Hot Wheels», бот перевёл и запостил её в канал).
+# ---------------------------------------------------------------------------
+def alert_promo_blocked(link: str, title: str, markers: List[str]) -> str:
+    """[E035] intake promo-filter drop. ``markers`` — the matched promo
+    markers from ``news_bot._is_promo_article`` (our own constants, safe
+    to render verbatim); ``title`` is source text and passes through the
+    send path's ``_redact_text`` like every other alert."""
+    # Подстрока 'Отсечена реклама' — substring-якорь интеграционных
+    # тестов, не менять.
+    marker_line = ", ".join(markers) if markers else "—"
+    return (
+        f"[E035] 🛒 Отсечена реклама\n\n"
+        f"Заголовок:\n{title}\n\n"
+        f"Ссылка:\n{link}\n\n"
+        f"Сработавшие маркеры: {marker_line}\n\n"
+        f"Что произошло:\n"
+        f"статья похожа на рекламу магазина,\n"
+        f"отброшена до перевода — токены не потрачены.\n\n"
+        f"Что сделать:\n"
+        f"глянь статью по ссылке; если это НЕ реклама —\n"
+        f"ложное срабатывание: сообщи, поправим паттерны."
     )
