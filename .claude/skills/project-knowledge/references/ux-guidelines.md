@@ -171,7 +171,7 @@ The drift between manual and auto paths that this section used to describe is **
 
 What the auto path **cannot** do, and what manual review used to handle:
 
-- **Operator sign-off on titles.** The LLM picks one primary; the 2–3 alts requested by the prompt are emitted but currently unused (no human-in-the-loop). If a particular title is bad enough to warrant rework, the operator can either hand-edit the Telegra.ph page after publish or revive the manual path for that one article (`hw_review.py` is dormant, not deleted).
+- **Operator sign-off on titles.** The LLM picks one primary; the 2–3 alts requested by the prompt are emitted but currently unused (no human-in-the-loop). If a particular title is bad enough to warrant rework, the operator hand-edits the Telegra.ph page after publish. (Reviving the manual path is a **developer**, not an operator, move: `hw_review.py` is dormant-but-not-deleted and **is not deployed to the prod container** — it would only run in a local checkout against a copy of the DB. Never point an operator at it from an alert or a runbook.)
 - **Real-time judgment on edge cases.** «Drop this paragraph?» / «Merge these two lists?» — the LLM operates within the prompt's hard rules but can't ask the operator. So the prompt errs on the side of *translate everything, drop only noise* (allowed-drops list above) — over-translating beats under-translating.
 
 If the auto path's quality regresses (operator notices off-tone titles, dropped paragraphs, misapplied tone dial for a source), the fix is to tighten **this prompt** — not to revive the manual path.

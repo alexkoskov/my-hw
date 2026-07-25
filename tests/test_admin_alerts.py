@@ -7,6 +7,8 @@ Each E0XX builder is a pure str -> str / params -> str function. Tests cover:
 - Russian-language headers (no English leftovers).
 - Substrings that integration tests rely on are preserved verbatim.
 """
+import ast
+import inspect
 import os
 import secrets
 import sys
@@ -21,6 +23,37 @@ import admin_alerts
 
 
 MSK = timezone(timedelta(hours=3))
+
+
+def _operator_facing_literals():
+    """Every string literal in `admin_alerts` that can reach an operator.
+
+    That means all `str` constants (including the pieces of f-strings, which
+    is how every builder composes its text) MINUS module/class/function
+    docstrings. Comments never enter the AST at all.
+
+    Why not a plain substring scan over `inspect.getsource`: a source-level
+    ban cannot tell alert TEXT from a comment explaining why a given tool
+    must never be advertised — it would forbid the code from documenting its
+    own rationale, and it dumps the whole module into the failure message.
+    """
+    tree = ast.parse(inspect.getsource(admin_alerts))
+    docstrings = set()
+    for node in ast.walk(tree):
+        body = getattr(node, "body", None)
+        if not isinstance(node, (ast.Module, ast.ClassDef,
+                                 ast.FunctionDef, ast.AsyncFunctionDef)):
+            continue
+        if (body and isinstance(body[0], ast.Expr)
+                and isinstance(body[0].value, ast.Constant)
+                and isinstance(body[0].value.value, str)):
+            docstrings.add(id(body[0].value))
+    return [
+        node.value for node in ast.walk(tree)
+        if isinstance(node, ast.Constant)
+        and isinstance(node.value, str)
+        and id(node) not in docstrings
+    ]
 
 
 class TestAdminAlerts(unittest.TestCase):
@@ -49,6 +82,11 @@ class TestAdminAlerts(unittest.TestCase):
         self.assertIn("50", msg)
         self.assertIn("12", msg)
         self.assertIn("Очередь распухла", msg)
+        # The advice must stay actionable on prod: `hw_review.py` is archived
+        # (2026-04-30) and was never deployed to the server, so naming it sent
+        # the operator after a tool that does not exist there.
+        self.assertNotIn("hw_review", msg)
+        self.assertIn("Что сделать", msg)
 
     def test_e004_claude_probe_failed(self):
         msg = admin_alerts.alert_claude_probe_failed_at_startup()
@@ -326,6 +364,124 @@ class TestAdminAlerts(unittest.TestCase):
         self.assertIn("Что произошло", msg)
         self.assertIn("Что сделать", msg)
 
+    def test_e014_buttons_enabled_advises_pressing_the_buttons(self):
+        """`buttons_enabled=True` (send site: keyboard attached) — the advice
+        must point at the two inline buttons, the only operator action that
+        actually works on prod. Both match tiers are covered: the legacy
+        set-overlap shape and the broad `pairs=` shape share the advice
+        block, so neither may lose it."""
+        tiers = {
+            "set-overlap": dict(
+                overlap_pct=35, n_matches=2, n_total=6,
+                models=["toyota 4runner"],
+            ),
+            "broad-pair": dict(pairs=["*|stranger things|B"]),
+        }
+        for tier, kwargs in tiers.items():
+            with self.subTest(tier=tier):
+                msg = admin_alerts.alert_cross_source_dupe(
+                    new_link="https://orangetrack.example/p/a",
+                    existing_link="https://lamleygroup.com/p/b",
+                    new_source="orangetrack",
+                    existing_source="lamley",
+                    buttons_enabled=True,
+                    **kwargs,
+                )
+                # Anchor preserved verbatim (integration tests + rate-limit).
+                self.assertIn("Похож на дубль", msg)
+                self.assertIn("Что сделать", msg)
+                # Button labels quoted verbatim from the keyboard builder —
+                # the operator matches the text against what he sees.
+                self.assertIn("🚫 Не публиковать", msg)
+                self.assertIn("👍 Оставить", msg)
+
+    def test_e014_advice_quotes_the_real_button_labels(self):
+        """Label parity: the advice hardcodes the button captions, so a
+        rename in `build_dedup_review_keyboard` would silently reintroduce
+        the advice-vs-reality drift this alert text exists to prevent.
+        Pin the two against each other, not just each against a literal."""
+        labels = [
+            b.text
+            for row in admin_alerts.build_dedup_review_keyboard("tok").inline_keyboard
+            for b in row
+        ]
+        msg = admin_alerts.alert_cross_source_dupe(
+            "u", "v", "s1", "s2", 35, 2, 6, ["m1"], buttons_enabled=True,
+        )
+        for label in labels:
+            self.assertIn(
+                label, msg,
+                f"button caption {label!r} is not quoted in the [E014] "
+                f"advice — rename the caption and the advice together",
+            )
+
+    def test_e014_buttons_disabled_gives_no_tool_advice(self):
+        """`buttons_enabled=False` (the default — flag off, no keyboard):
+        the text must say POSITIVELY that there is nothing to do. Asserting
+        only the absence of `hw_review` would guard the bug by name — any
+        other phantom tool («открой админ-панель…») would pass. So we pin
+        the «no action exists» wording itself."""
+        msg = admin_alerts.alert_cross_source_dupe(
+            new_link="https://orangetrack.example/p/a",
+            existing_link="https://lamleygroup.com/p/b",
+            new_source="orangetrack",
+            existing_source="lamley",
+            overlap_pct=35,
+            n_matches=2,
+            n_total=6,
+            models=["toyota 4runner"],
+        )
+        self.assertIn("Похож на дубль", msg)
+        self.assertIn("Что сделать", msg)
+        # Positive semantic: the advice IS "ничего … нечем".
+        self.assertIn("ничего", msg)
+        self.assertIn("нечем", msg)
+        # No phantom buttons: nothing is rendered under this message.
+        self.assertNotIn("🚫 Не публиковать", msg)
+        self.assertNotIn("👍 Оставить", msg)
+
+    def test_no_alert_names_an_undeployed_operator_tool(self):
+        """Guard the bug CLASS, not one file name: no alert may send the
+        operator to a tool that does not exist on the prod container (no
+        CLI, no admin panel, no shell script). Covers every builder that
+        takes no required args plus the two that carried the bug."""
+        forbidden = (
+            "hw_review",      # archived 2026-04-30, never deployed
+            "админ-панел",    # no web UI exists
+            "админку",
+            "консол",         # no operator console on the container
+        )
+        messages = [
+            admin_alerts.alert_backlog_warning(80, 50, 12),
+            admin_alerts.alert_cross_source_dupe(
+                "u", "v", "s1", "s2", 35, 2, 6, ["m1"],
+            ),
+            admin_alerts.alert_cross_source_dupe(
+                "u", "v", "s1", "s2", 35, 2, 6, ["m1"], buttons_enabled=True,
+            ),
+        ]
+        for msg in messages:
+            for token in forbidden:
+                self.assertNotIn(
+                    token, msg.lower(),
+                    f"alert points the operator at a non-existent tool "
+                    f"({token!r}): {msg!r}",
+                )
+
+    def test_e014_buttons_enabled_is_keyword_only(self):
+        """The new arg must not shift the existing positional contract —
+        legacy positional callers keep working and land on the no-buttons
+        branch."""
+        with self.assertRaises(TypeError):
+            admin_alerts.alert_cross_source_dupe(
+                "u", "v", "s1", "s2", 35, 2, 6, ["m1"], True,
+            )
+        legacy = admin_alerts.alert_cross_source_dupe(
+            "u", "v", "s1", "s2", 35, 2, 6, ["m1"],
+        )
+        self.assertIn("Похож на дубль", legacy)
+        self.assertNotIn("🚫 Не публиковать", legacy)
+
     def test_e015_cross_source_blocked(self):
         msg = admin_alerts.alert_cross_source_blocked(
             new_link="https://orangetrack.example/p/a",
@@ -491,6 +647,24 @@ class TestAdminAlerts(unittest.TestCase):
         # And all match the [E0XX] format.
         for code in codes:
             self.assertRegex(code, r"^\[E\d{3}\]$")
+
+    def test_no_alert_advises_the_archived_hw_review_cli(self):
+        """Regression guard (2026-07-25): `hw_review.py` is archived since
+        2026-04-30 and was never deployed to the prod container, so no admin
+        alert may tell the operator to run it.
+
+        Checked over the module's string LITERALS (see `_operator_facing_literals`)
+        rather than raw source: it covers every builder, including ones the
+        sample list above misses, while leaving comments and docstrings free
+        to explain WHY the CLI must not be advertised."""
+        offenders = [
+            s for s in _operator_facing_literals() if "hw_review" in s
+        ]
+        self.assertEqual(
+            offenders, [],
+            "admin alert text must not point the operator at the archived, "
+            f"never-deployed hw_review.py CLI; offending literals: {offenders!r}",
+        )
 
 
 class TestDedupReviewKeyboard(unittest.TestCase):

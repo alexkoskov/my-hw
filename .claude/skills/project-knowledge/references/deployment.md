@@ -331,9 +331,12 @@ already ran) — verify the shape with
 > being dropped. This is intended (Decision 3 tiering: only a distinctive `|D`
 > pair may hard-block; broad `|B` pairs always publish-and-notify). The `[E014]`
 > ping IS the recovery signal — if it turns out to be a genuine dupe, the
-> operator removes it via `hw_review.py`. So expect **more visible `[E014]`
-> pings and fewer silent drops** right after enabling; that is the feature
-> working, not a false positive.
+> operator taps **«🚫 Не публиковать»** under the ping (requires
+> `REVIEW_BUTTONS_ENABLED=1` — see § Feature rollout: dedup-review-buttons; with
+> the flag off there is **no** way to pull the article back, the ping is
+> informational only and the alert text says so). So expect **more visible
+> `[E014]` pings and fewer silent drops** right after enabling; that is the
+> feature working, not a false positive.
 
 ---
 
