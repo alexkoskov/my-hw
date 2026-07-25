@@ -3201,6 +3201,12 @@ class TestDedupReviewButtons(_PrepPhaseBase):
         self.assertEqual(
             pending_articles_repo.get_review_token_link(token), new_link,
         )
+        # Advice matches reality: buttons ARE attached, so «Что сделать»
+        # names them (and never the archived hw_review.py CLI).
+        text = e014[0].args[0]
+        self.assertIn('🚫 Не публиковать', text)
+        self.assertIn('👍 Оставить', text)
+        self.assertNotIn('hw_review', text)
 
     @patch('news_bot.REVIEW_BUTTONS_ENABLED', False)
     @patch('news_bot.fetch_full_article')
@@ -3236,6 +3242,12 @@ class TestDedupReviewButtons(_PrepPhaseBase):
         self.assertIsNone(e014[0].kwargs.get('reply_markup'))
         # No token minted, nothing written to bot_state.
         self.assertEqual(self._review_token_keys(), [])
+        # Advice matches reality: no keyboard is rendered, so the text must
+        # NOT promise buttons — and must not name the archived CLI either.
+        text = e014[0].args[0]
+        self.assertNotIn('🚫 Не публиковать', text)
+        self.assertNotIn('👍 Оставить', text)
+        self.assertNotIn('hw_review', text)
 
     @patch('news_bot.REVIEW_BUTTONS_ENABLED', True)
     @patch('news_bot.fetch_full_article')
@@ -3250,7 +3262,14 @@ class TestDedupReviewButtons(_PrepPhaseBase):
         send site must not mint tokens or render buttons nobody will ever
         serve (no eternal spinner, no orphan ``review_token:*`` rows).
         The E014 alert itself still goes out, just without a keyboard —
-        exactly like flag-off."""
+        exactly like flag-off.
+
+        This is the ONLY case where the bare flag and the effective gate
+        disagree, so it is the case that pins WHY the send site derives
+        ``buttons_enabled`` from the keyboard object (``kb is not None``)
+        rather than re-reading ``REVIEW_BUTTONS_ENABLED``: with a second
+        flag read the advice would tell the operator to press buttons that
+        are not under the message."""
         self._seed_published(
             'http://t-hunted.example/existing', self.SOFT_FP,
             source='t-hunted',
@@ -3270,6 +3289,13 @@ class TestDedupReviewButtons(_PrepPhaseBase):
         )
         self.assertIsNone(e014[0].kwargs.get('reply_markup'))
         self.assertEqual(self._review_token_keys(), [])
+        # No keyboard → the advice must follow the KEYBOARD, not the flag.
+        # A `buttons_enabled=REVIEW_BUTTONS_ENABLED` regression at the send
+        # site fails exactly here: the flag is True but nothing is rendered.
+        text = e014[0].args[0]
+        self.assertNotIn('🚫 Не публиковать', text)
+        self.assertNotIn('👍 Оставить', text)
+        self.assertIn('нечем', text)
 
     @patch('news_bot.REVIEW_BUTTONS_ENABLED', True)
     @patch('news_bot.fetch_full_article')

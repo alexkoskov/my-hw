@@ -3233,6 +3233,14 @@ def job():
                                     n_total=match['n_total'],
                                     models=match['models'],
                                     pairs=match.get('pairs'),
+                                    # «Что сделать» must match what the
+                                    # operator actually sees: derive it from
+                                    # the SAME kb we are about to attach, not
+                                    # from a second flag read — so the advice
+                                    # can never promise buttons that are not
+                                    # rendered (gate closed, or the mint above
+                                    # left kb None).
+                                    buttons_enabled=kb is not None,
                                 ),
                                 reply_markup=kb,
                             )
