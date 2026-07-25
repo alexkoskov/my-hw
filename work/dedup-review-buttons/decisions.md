@@ -178,3 +178,77 @@ Rejected finding:
 - `pytest tests/test_integration.py::TestReviewListener -q` → 10 passed; `::TestResolveDedupCallback` → 10 passed (shared `_is_admin_press` refactor regression-free)
 - `python3 -m pytest -q` (full suite, after afe4944) → 1324 passed, 0 failed (baseline 1314 + 10 new, no regressions)
 - Mutation checks (round 1 fix): each `_review_listener_sleep` call deleted in turn → corresponding backoff test fails; restored → green.
+
+## Task 9: Test Audit
+
+**Status:** Done
+**Commit:** none (analysis-only task; no code/tests changed)
+**Agent:** test-auditor
+**Summary:** Audit verdict — **GO for Pre-deploy QA** (`passed` per test-master decision matrix): 0 critical, 0 high, 2 medium, 4 low. Full suite recorded green (1324 passed, 0 failed, 53 s; 1284→1324 = +40 matches tasks 1–5 exactly), all six+ `resolve_dedup_callback` branches, gate/fail-closed, concurrency (genuinely contended, sleep-free) and alert-regression coverage confirmed against code. The two mediums are cross-component seam gaps, not weak tests: (M-1) no builder→parser round-trip test for the `dd:<c|k>:<token>` grammar (silent-drift class); (M-2) `main()`'s `_maybe_start_review_listener()` call is unpinned — mutation-verified: deleting the line leaves all 1324 tests green (mitigated by the Task 12 «review listener active» runbook check). Both ≈5 LoC to close in the Task 10 window. Report: [logs/working/task-9/test-audit.md](logs/working/task-9/test-audit.md).
+**Deviations:** None. One temporary mutation spot-check on `news_bot.py` for M-2 was fully restored (`git checkout`, verified clean).
+
+**Reviews:**
+
+Нет — аудит-задача (`reviewers: []`), результат — сам отчёт.
+
+**Verification:**
+- `python3 -m pytest tests/ -q` → 1324 passed, 0 failed (recorded in report)
+- Targeted 4 audited files → 220 passed
+- Mutation spot-check (main() wiring removed) → full suite still green → gap M-2 confirmed, file restored
+
+## Task 7: Code Audit
+
+**Status:** Done
+**Agent:** code-auditor
+**Summary:** Holistic audit of the feature's final state (full-file reads, all 4 focus dimensions + general quality). Verdict: **issues found, no blockers** — 0 blocker / 1 major / 2 minor / 3 nit. Thread-safety, shared-resource compliance, Bot-init consistency and listener error isolation are all structurally sound; the major finding (CA-1) is a residual cancel-vs-in-flight-publish race the tech-spec believed `_fallback_publish`'s top idempotency guard covered but does not: a cancel pressed while that article's slot publish is mid-flight still posts to the channel, answers «✅ Отменено оператором» and leaves `published_articles` without the row (`move_to_published` silently no-ops). Full report with evidence + recommendations: [logs/working/task-7/code-audit.md](logs/working/task-7/code-audit.md).
+**Deviations:** None. Analysis only — no code changed (`git status` on feature source files clean).
+
+**Verification:**
+- `python3 -m pytest -q` (audit baseline) → 1324 passed, 0 failed
+- Report covers thread-safety, shared resources, Bot-init drift, error isolation + general quality; every finding has severity + file:line + evidence + recommendation
+
+## Task 8: Security Audit
+
+**Status:** Done
+**Commit:** — (analysis only, no code changes; audited state f50d974)
+**Agent:** security-auditor
+**Summary:** Full-feature security audit of the final state (OWASP Top 10 sweep + end-to-end auth chain, injection, secret hygiene, DoS on the public getUpdates path, cross-component trust incl. poisoned `bot_state` token values). Verdict: **PASS — 0 Critical, 0 High, 0 Medium, 3 Low** (flag-on+non-numeric-admin still renders dead buttons at the E014 send site; no TTL/cleanup for never-pressed `review_token:*` rows; `_review_edit_message` lacks a defense-in-depth `_redact_text` pass). All 8 tech-spec Risks confirmed closed; prior accepted/declined dispositions (SEC-T5-2 traceback redaction, token-not-secret, non-atomic token consume, builder-level token validation) re-verified as acceptable in the final state. Report: [logs/working/task-8/security-audit.md](logs/working/task-8/security-audit.md).
+**Deviations:** None. No implementation-vs-tech-spec deviations found; no spec updates required.
+
+**Reviews:**
+
+- none (this task IS the security review instance; deliverable is the report above)
+
+**Verification:**
+- `git status` clean at audit start; no source files modified by this audit. At audit close a PARALLEL audit task's in-flight mutation was observed in the working tree (`news_bot.py:3302` listener wiring → `pass  # MUTATION`) — left untouched, flagged to lead: must be restored before any commit (restored + mutation-pinned in ed10c58).
+- Report exists at `logs/working/task-8/security-audit.md` with verdict + per-severity findings + OWASP sweep + Risks-table closure
+- **Fix verification round (ed10c58):** SEC-A8-1 RESOLVED (E014 send site gates on `_review_listener_enabled()`, single-sourced with the listener gate incl. the CA-3 bot-token check); SEC-A8-3 RESOLVED (`_redact_text` on the edit path); SEC-A8-2 declined per documented no-janitor trade-off — accepted. Quick security pass over the full ed10c58 diff (gate refactor, CA-1a/1b race guards, CA-2 log reorder, CA-5 byte cap): no new findings. Fix round PASS — details appended to the report.
+
+## Ad-hoc: audit-wave fixes (fixer-audit)
+
+**Status:** Done
+**Commit:** ed10c58 (`fix: address audit wave findings — in-flight cancel race, wiring pin, gates`)
+**Agent:** fixer-audit (ad-hoc, post-Audit-Wave)
+**Summary:** All in-scope findings from the three audit reports (task-7 code, task-8 security, task-9 test) fixed in one commit, TDD where the finding was code behavior. Full suite **1333 passed, 0 failed** (baseline 1324 + 9 new tests). Scope additions beyond the fix list: `architecture.md` + `deployment.md` gate/race wording updated to match the new behavior (docs-are-deliverables rule).
+
+| Finding | Severity | Disposition |
+|---|---|---|
+| CA-1a (in-flight cancel: pre-teaser re-check) | major | **Applied** — `_fallback_publish` re-checks `get_pending(link)` right before the Telegram teaser (last irreversible step); row gone → INFO `[review-cancel]` line + `return True` (success-without-publish, mirrors idempotency guard: no strike, no post). Teaser-already-sent retry path deliberately bypasses the guard (post exists → completing the move is the consistent outcome). Tests: `TestInFlightCancelGuard` (race + positive control), red→green. |
+| CA-1b (move_to_published silent no-op) | major | **Applied** — `src is None` branch now WARN-logs + dozapis `published_articles` from the explicit args (`title` recovered from the `processed_news` stamp `skip_pending` left, link fallback; `ru_title`=title, `source_name`=''), plus `processed_news` re-stamp; mirrors the existing post-commit-verification style. Tests: 2 in `TestMoves`, red→green. |
+| CA-1c (tech-spec false coverage claim) | major (part) | **Applied** — tech-spec «How it works» sentence replaced with the actual two-sided guard description; same correction to the mirrored claim in `architecture.md`. |
+| M-2 (main() listener wiring unpinned) | medium | **Applied** — `test_main_wires_review_listener` spies `_maybe_start_review_listener` through the existing `_run_main_once` precedent. **Mutation-verified:** replacing the `main()` call with `pass` → test FAILS (AssertionError); restored → green. |
+| M-1 (builder→parser round-trip) | medium | **Applied** — `test_keyboard_callback_data_round_trips_through_parser`: real `secrets.token_urlsafe(9)` through `build_dedup_review_keyboard` → `_parse_review_callback_data` returns `('cancel', token)` / `('keep', token)` for both buttons. |
+| CA-3 (gate ignores empty bot token) | minor | **Applied** — gate refactored to `_review_listener_gate_reason()` (`'ok'|'off'|'no_token'|'bad_admin'`); empty `TELEGRAM_BOT_TOKEN` is fail-closed with a startup WARNING + ping naming the broken knob. Mutation-checked (guard removed → test fails). |
+| SEC-A8-1 (E014 send site on bare flag) | low | **Applied** — send site gates on `_review_listener_enabled()`; flag-on + non-numeric admin now mints no token, renders no buttons. `TestDedupReviewButtons` setUp got a numeric-admin patch; new negative test. Mutation-checked (bare flag restored → test fails). |
+| CA-2 (decision log after Telegram I/O) | minor | **Applied** — operator-decision INFO line moved BEFORE `edit_message_text`/`answer_callback_query`; test pins the line surviving a raising edit. |
+| SEC-A8-3 (edit path bypasses redaction) | low | **Applied** — `_review_edit_message` passes `text` through `_redact_text` (Decision-12 parity with the send path). |
+| CA-5 (64-byte cap counted in chars) | nit | **Applied** — `len(data.encode('utf-8'))` vs renamed `_REVIEW_CALLBACK_DATA_MAX_BYTES`; multibyte >64-byte case added to the grammar-rejection matrix. |
+| CA-6 (redundant flag check in startup wiring) | nit | **Applied** — via the `_review_listener_gate_reason()` refactor: single flag read, three startup shapes branch on the reason. |
+| CA-4 (duplicate token→link read, cosmetic TOCTOU) | nit | **Not applied** — deliberate, documented single-source-of-truth read; log-cosmetic only (audit's own assessment). |
+| SEC-A8-2 (token TTL/janitor) | low | **Declined per adjudication** — documented no-janitor trade-off stands. |
+| Test-audit lows L-1–L-4 | low | **Declined per adjudication** — recorded informational; no action. |
+
+**Verification:**
+- Targeted: `TestInFlightCancelGuard` 2, `TestMoves` +2, `TestMainHealthChecks` 4 (incl. new wiring pin), `TestReviewListener` +3, `TestDedupReviewButtons` +1 — all green
+- `python3 -m pytest tests/ -q` → **1333 passed, 0 failed** (65 s)
+- Mutations: M-2 wiring removed → FAIL/restored; CA-3 token guard removed → FAIL/restored; SEC-A8-1 bare-flag restored → FAIL/restored
