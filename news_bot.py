@@ -1456,10 +1456,12 @@ def _is_text_only_checklist(entry, article):
     return total_text < _CHECKLIST_BODY_TEXT_FLOOR
 
 
-#: Scan bounds for the promo filter ([E035]): first N paragraphs of the
-#: body, joined and capped at M chars. Shop pitches front-load their
-#: call-to-action language, so a bounded scan is enough — and a
-#: megabyte-sized body can never stall the intake loop.
+#: Scan bounds for the promo filter ([E035]). EVERY scanned input is
+#: capped: the title, the URL path and the joined body (first N
+#: paragraphs) are each sliced to ``_PROMO_SCAN_MAX_CHARS`` before
+#: folding. Shop pitches front-load their call-to-action language, so a
+#: bounded scan is enough — and a megabyte-sized title or body can
+#: never stall the intake loop (audit SEC-PROMO-2).
 _PROMO_SCAN_MAX_PARAGRAPHS = 8
 _PROMO_SCAN_MAX_CHARS = 2000
 
@@ -1493,10 +1495,18 @@ _PROMO_STRONG_MARKERS = (
     'free shipping',
 )
 
+#: SELLER-voice markers — the subset of STRONG markers in which the
+#: publisher speaks as the shop ("наш магазин"). This is the signal that
+#: separates an ad from retail JOURNALISM: news writes about somebody
+#: else's store ("Mattel relaunches its online store", "beloved shop
+#: closes"), an ad writes about its own. Review round 1 found 4 of 10
+#: realistic legit snippets blocked without this distinction.
+_PROMO_SELLER_MARKERS = ('nossa loja', 'our store', 'our shop')
+
 #: WEAK promo markers — commerce vocabulary that legit news also uses
 #: ("hits stores in September", "chega às lojas"). Weak markers alone
-#: NEVER block, whatever their count — they only corroborate a strong
-#: marker (see the block rule in ``_is_promo_article``).
+#: NEVER block, whatever their count — they only corroborate a
+#: SELLER-voice marker (see the block rule in ``_is_promo_article``).
 _PROMO_WEAK_MARKERS = (
     # PT
     'loja',
@@ -1512,9 +1522,12 @@ _PROMO_WEAK_MARKERS = (
     'offer',
 )
 
-#: URL-path tokens counted as STRONG promo markers (rendered as
-#: ``url:<token>`` in the matched-marker list). News slugs don't carry
-#: them; shop-promo slugs do ('…-na-loja.html', '/shop/…').
+#: URL-path tokens counted as WEAK promo markers (rendered as
+#: ``url:<token>`` in the matched-marker list). Demoted from STRONG in
+#: review round 1: real outlets routinely put store/shop/loja in slugs
+#: for ordinary retail news ('mattel-creations-store-drop-rlc',
+#: 'hot-wheels-shop-closes-after-30-years'), so a slug alone must never
+#: help complete the block bar.
 _PROMO_URL_TOKENS = ('loja', 'shop', 'store')
 
 
@@ -1523,18 +1536,57 @@ def _promo_fold(text):
     lowercase + collapse to single-space-separated word tokens, padded
     with one space on each side so a plain ``in`` substring check is
     word-bounded ('loja' never hits 'lojas', 'store' never hits
-    'restored')."""
-    text = unicodedata.normalize('NFKD', text or '')
+    'restored'). Non-str input folds to the empty token string."""
+    if not isinstance(text, str):
+        text = ''
+    text = unicodedata.normalize('NFKD', text)
     text = ''.join(ch for ch in text if not unicodedata.combining(ch))
     return ' ' + ' '.join(re.findall(r'[a-z0-9]+', text.lower())) + ' '
 
 
-#: Markers pre-folded once at import so ``_is_promo_article`` does pure
-#: substring checks per entry.
+def _promo_scan_input(value):
+    """Coerce one scanned input to a bounded str. Non-str values (a
+    list/int/bool ``link`` from a malformed feed) degrade to '' instead
+    of raising — the filter must never crash the tick (audit
+    SEC-PROMO-1); the slice enforces the documented scan bound on EVERY
+    input, not just the body (SEC-PROMO-2)."""
+    if not isinstance(value, str):
+        return ''
+    return value[:_PROMO_SCAN_MAX_CHARS]
+
+
+#: Markers pre-folded once at import so the per-entry scan is pure
+#: substring checks.
 _PROMO_STRONG_FOLDED = tuple(
     (m, _promo_fold(m)) for m in _PROMO_STRONG_MARKERS)
 _PROMO_WEAK_FOLDED = tuple(
     (m, _promo_fold(m)) for m in _PROMO_WEAK_MARKERS)
+
+
+def _promo_scan_markers(text):
+    """Return ``(strong, weak)`` matched promo markers for ``text``.
+
+    A WEAK marker is counted ONLY when it occurs outside every matched
+    STRONG marker's span: five STRONG markers literally contain a WEAK
+    one ('nossa loja' ⊃ 'loja', 'our store' ⊃ 'store', 'código de
+    desconto' ⊃ 'desconto', 'discount code' ⊃ 'discount', 'aproveite a
+    oferta' ⊃ 'oferta'), so naive counting would let ONE phrase supply
+    both its own STRONG hit and a "corroborating" WEAK hit — collapsing
+    the intended two-independent-signals bar (review round 1, major).
+    Matched STRONG spans are blanked out of the folded text before the
+    WEAK pass; a weak word that ALSO appears independently elsewhere
+    still counts.
+    """
+    folded = _promo_fold(text)
+    strong = [m for m, f in _PROMO_STRONG_FOLDED if f in folded]
+    residual = folded
+    for _m, f in _PROMO_STRONG_FOLDED:
+        if f in residual:
+            # Replace with a single space: the padding that made the
+            # match word-bounded is preserved for neighbouring markers.
+            residual = residual.replace(f, ' ')
+    weak = [m for m, f in _PROMO_WEAK_FOLDED if f in residual]
+    return strong, weak
 
 
 def _is_promo_article(entry, article):
@@ -1547,42 +1599,67 @@ def _is_promo_article(entry, article):
     store ad («Hot Wheels antigos e raros na loja Universo Hot Wheels»)
     and the bot translated (wasted LLM tokens) + posted it.
 
-    Scoring, not single-hit — news legitimately says "hits stores in
-    September" / "chega às lojas". Block rule:
+    Block rule (tuned in review round 1 against a 10-snippet
+    false-positive probe of realistic lamley/autoevolution/t-hunted
+    headlines):
 
-      * >= 2 distinct STRONG markers, OR
-      * 1 STRONG + >= 2 distinct WEAK markers.
+      * a SELLER-voice marker ('nossa loja' / 'our store' / 'our shop')
+        AND (>= 2 distinct STRONG markers total OR >= 2 distinct WEAK
+        markers), OR
+      * >= 3 distinct STRONG markers (a dense call-to-action stack —
+        no seller voice needed).
 
-    One lone marker never blocks. Inputs scanned (source language,
-    pre-translation): entry/article title, the entry link's URL path
-    (a 'loja'/'shop'/'store' path token counts as STRONG), and a
-    bounded slice of the body (first ``_PROMO_SCAN_MAX_PARAGRAPHS``
-    paragraphs, capped at ``_PROMO_SCAN_MAX_CHARS`` chars).
+    The seller-voice requirement is what keeps retail JOURNALISM
+    publishable: news covers somebody else's shop ("Mattel relaunches
+    its online store" — 'shop now' + 'free shipping' in the body,
+    "beloved Hot Wheels shop closes"), an ad speaks as the shop. A
+    'loja'/'shop'/'store' URL-path token is a WEAK corroborator only
+    (rendered ``url:loja``); WEAK markers alone never block, whatever
+    their count, and a WEAK hit inside a matched STRONG phrase is not
+    double-counted (see ``_promo_scan_markers``).
+
+    Inputs scanned (source language, pre-translation): entry/article
+    title, the entry link's URL path, and the first
+    ``_PROMO_SCAN_MAX_PARAGRAPHS`` paragraphs of the body — each capped
+    at ``_PROMO_SCAN_MAX_CHARS`` chars.
 
     Called from ``job()`` step (b3) right after the checklist reject —
     before the (more expensive) dedup gate, per the cheapest-filter-
-    first ordering. Tolerates None/malformed ``entry``/``article``.
+    first ordering. Tolerates malformed input: non-dict ``entry`` /
+    ``article`` and non-str link/title/paragraph values degrade to
+    "not promo" instead of raising.
     """
-    entry = entry or {}
-    title = entry.get('title') or (article or {}).get('title') or ''
-    paragraphs = (article or {}).get('paragraphs') or []
+    if not isinstance(entry, dict):
+        entry = {}
+    if not isinstance(article, dict):
+        article = {}
+    title = (_promo_scan_input(entry.get('title'))
+             or _promo_scan_input(article.get('title')))
+    paragraphs = article.get('paragraphs')
+    if not isinstance(paragraphs, (list, tuple)):
+        paragraphs = []
     body = ' '.join(
         p for p in paragraphs[:_PROMO_SCAN_MAX_PARAGRAPHS]
         if isinstance(p, str)
     )[:_PROMO_SCAN_MAX_CHARS]
-    text = _promo_fold(f'{title} {body}')
 
-    strong = [m for m, folded in _PROMO_STRONG_FOLDED if folded in text]
+    strong, weak = _promo_scan_markers(f'{title} {body}')
 
-    path_tokens = set(_promo_fold(urlparse(entry.get('link') or '').path)
-                      .split())
-    strong += [
+    try:
+        path = urlparse(_promo_scan_input(entry.get('link'))).path
+    except ValueError:
+        # Malformed URL (e.g. an unterminated IPv6 literal) — the slug
+        # signal is optional, the filter carries on without it.
+        path = ''
+    path_tokens = set(_promo_fold(path).split())
+    weak += [
         f'url:{tok}' for tok in _PROMO_URL_TOKENS if tok in path_tokens
     ]
 
-    weak = [m for m, folded in _PROMO_WEAK_FOLDED if folded in text]
-
-    if len(strong) >= 2 or (strong and len(weak) >= 2):
+    seller = [m for m in strong if m in _PROMO_SELLER_MARKERS]
+    if seller and (len(strong) >= 2 or len(weak) >= 2):
+        return strong + weak
+    if len(strong) >= 3:
         return strong + weak
     return []
 
@@ -2973,7 +3050,19 @@ def job():
         # drop the link is pinned in processed_news (E015 precedent):
         # a shop ad stays a shop ad — without the pin the same post
         # would be re-fetched and re-alerted every daily tick.
-        promo_markers = _is_promo_article(entry, article)
+        try:
+            promo_markers = _is_promo_article(entry, article)
+        except Exception as exc:
+            # Fail-open, mirroring the dedup gate's Decision 12 / AC9
+            # contract: an intake FILTER must never crash the tick or
+            # block publishing. A crash here would also land BEFORE
+            # mark_processed, so the same entry would be refetched and
+            # crash-loop the daemon on restart (audit SEC-PROMO-1).
+            logger.error(
+                "promo filter failed for %s, treating as not-promo: %s",
+                link, sanitize_error_message(exc),
+            )
+            promo_markers = []
         if promo_markers:
             funnel['dropped_promo'] += 1
             logger.info(

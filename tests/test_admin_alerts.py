@@ -998,6 +998,26 @@ class TestPromoBlockedAlert(unittest.TestCase):
         self.assertIn("Отсечена реклама", msg)
         self.assertNotIn("None", msg)
 
+    def test_e035_long_title_truncated(self):
+        # Audit SEC-PROMO-4: the untrusted title is capped so a
+        # pathological title can't push the ping past Telegram's
+        # 4096-char message limit.
+        msg = admin_alerts.alert_promo_blocked(
+            "http://u", "T" * 5000, ["nossa loja"],
+        )
+        self.assertIn("[E035]", msg)
+        self.assertIn("Отсечена реклама", msg)
+        self.assertLess(len(msg), 4096)
+        self.assertIn("…", msg)
+        self.assertNotIn("T" * 500, msg)
+
+    def test_e035_non_string_title_does_not_raise(self):
+        # Belt-and-braces: the builder is called from a best-effort send
+        # site; a non-str title must render, not explode.
+        msg = admin_alerts.alert_promo_blocked("http://u", None, ["cupom"])
+        self.assertIn("[E035]", msg)
+        self.assertIn("cupom", msg)
+
 
 class TestOpenRouterLowBalanceAlert(unittest.TestCase):
     def test_e019_openrouter_low_balance(self):

@@ -372,13 +372,18 @@ class TestIsPromoArticle(unittest.TestCase):
     antigos e raros na loja Universo Hot Wheels») and the bot translated
     (wasted tokens) + posted it to the channel.
 
-    Scoring rule (never a single-hit block — news legitimately says
-    "hits stores in September" / "chega às lojas"):
-      * >= 2 distinct STRONG markers, OR
-      * 1 STRONG + >= 2 distinct WEAK markers.
-    URL-slug 'loja'/'shop'/'store' path token counts as STRONG.
-    Returns the matched-marker list (truthy = promo) so the E035 alert
-    can show WHY; empty list = not promo.
+    Block rule as tuned in review round 1 (a 10-snippet false-positive
+    probe of realistic lamley/autoevolution/t-hunted headlines blocked
+    4 legit stories under the first version):
+
+      * a SELLER-voice marker ('nossa loja' / 'our store' / 'our shop')
+        AND (>= 2 distinct STRONG total OR >= 2 distinct WEAK), OR
+      * >= 3 distinct STRONG markers (dense CTA stack).
+
+    Seller voice is the ad-vs-journalism discriminator: news covers
+    somebody else's shop, an ad speaks as the shop. The URL-slug token
+    is a WEAK corroborator only. Returns the matched-marker list
+    (truthy = promo) so the E035 alert can show WHY; empty = not promo.
     """
 
     # --- fixtures ---------------------------------------------------------
@@ -434,23 +439,59 @@ class TestIsPromoArticle(unittest.TestCase):
         self.assertIn('our store', markers)
         self.assertIn('use code', markers)
 
-    def test_url_slug_loja_counts_as_strong(self):
-        """A 'loja' path token is STRONG: together with one strong body
-        phrase it reaches the 2-STRONG block bar even when the title is
-        neutral."""
+    def test_seller_voice_plus_two_weak_blocked(self):
+        """Second blocking branch: seller voice + 2 distinct WEAK
+        markers. 'loja' inside 'nossa loja' does NOT count towards the
+        two (subsumed), so 'estoque' + 'desconto' are what carry it."""
+        entry = {'title': 'Hot Wheels novidades',
+                 'link': 'https://example.com/2026/07/novidades.html'}
+        article = {
+            'paragraphs': [
+                'Visite nossa loja! Estoque novo com desconto de '
+                'lançamento.',
+            ],
+        }
+        markers = _is_promo_article(entry, article)
+        self.assertTrue(markers)
+        self.assertIn('nossa loja', markers)
+
+    def test_three_strong_without_seller_voice_blocked(self):
+        """Third branch: a dense call-to-action stack blocks even with
+        no seller-voice phrase."""
+        entry = {'title': 'Hot Wheels novidades',
+                 'link': 'https://example.com/2026/07/novidades.html'}
+        article = {
+            'paragraphs': [
+                'Compre já! Frete grátis e cupom para novos clientes.',
+            ],
+        }
+        # strong: 'compre já' + 'frete grátis' + 'cupom' = 3.
+        self.assertTrue(_is_promo_article(entry, article))
+
+    def test_url_slug_token_is_weak_only(self):
+        """Review round 1: the 'loja'/'shop'/'store' slug token was
+        demoted from STRONG to WEAK. A slug plus one strong body phrase
+        no longer reaches the bar (this fixture BLOCKED before the
+        demotion)."""
         entry = {
             'title': 'Hot Wheels raros e antigos',
             'link': 'https://t-hunted.blogspot.com/2026/07/'
                     'hot-wheels-antigos-e-raros-na-loja.html',
         }
         article = {'paragraphs': ['Garanta o seu hoje mesmo.']}
-        markers = _is_promo_article(entry, article)
-        self.assertTrue(markers)
-        self.assertIn('url:loja', markers)
+        self.assertFalse(_is_promo_article(entry, article))
 
-    def test_one_strong_two_weak_blocked(self):
-        """Boundary in the blocking direction: 1 STRONG + 2 distinct
-        WEAK crosses the bar."""
+    def test_url_slug_token_still_reported_as_marker_when_blocked(self):
+        """Demoted, but still diagnostic: when the article blocks on its
+        own merits the slug token is listed in the marker output."""
+        entry, article = self._incident()
+        self.assertIn('url:loja', _is_promo_article(entry, article))
+
+    def test_cta_plus_weak_without_seller_voice_not_blocked(self):
+        """Deliberate round-1 trade-off: a CTA verb plus commerce words,
+        with nobody speaking as the shop, no longer blocks. This is the
+        price of keeping retail journalism publishable — the dense-stack
+        branch (>= 3 STRONG) still catches real ad copy."""
         entry = {'title': 'Hot Wheels novidades',
                  'link': 'https://example.com/2026/07/novidades.html'}
         article = {
@@ -458,8 +499,8 @@ class TestIsPromoArticle(unittest.TestCase):
                 'Compre já: desconto especial na loja parceira.',
             ],
         }
-        # strong: 'compre já'; weak: 'desconto' + 'loja'.
-        self.assertTrue(_is_promo_article(entry, article))
+        # strong: 'compre já' (no seller voice); weak: 'desconto', 'loja'.
+        self.assertFalse(_is_promo_article(entry, article))
 
     def test_accent_and_case_insensitive(self):
         """'NÃO PERCA' and the accent-less 'nao perca' both match the
@@ -469,7 +510,7 @@ class TestIsPromoArticle(unittest.TestCase):
             entry = {'title': 'Hot Wheels raros',
                      'link': 'https://example.com/2026/07/raros.html'}
             article = {
-                'paragraphs': [f'{phrase}! Garanta o seu hoje.'],
+                'paragraphs': [f'{phrase}! Garanta o seu hoje em nossa loja.'],
             }
             markers = _is_promo_article(entry, article)
             self.assertTrue(markers, f'phrase {phrase!r} must block')
@@ -544,6 +585,202 @@ class TestIsPromoArticle(unittest.TestCase):
         self.assertFalse(_is_promo_article(entry, None))
         self.assertFalse(_is_promo_article({}, None))
 
+    def test_malformed_non_string_fields_do_not_raise(self):
+        """Audit SEC-PROMO-1: a malformed feed can hand us a non-str
+        link/title/paragraph (Atom oddities, list-valued fields). The
+        filter must degrade to 'not promo' instead of raising —
+        an exception here would crash the whole tick BEFORE
+        mark_processed and crash-loop on restart."""
+        cases = [
+            {'link': ['not', 'a', 'string'], 'title': 'Hot Wheels news'},
+            {'link': 42, 'title': None},
+            {'link': True, 'title': {'x': 'y'}},
+            {'link': {'href': 'http://x/loja'}, 'title': 'HW'},
+        ]
+        for entry in cases:
+            with self.subTest(entry=entry):
+                self.assertFalse(
+                    _is_promo_article(entry, {'paragraphs': ['Body.']}))
+        # Non-dict entry / article and non-str paragraph entries too.
+        self.assertFalse(_is_promo_article('not a dict', None))
+        self.assertFalse(_is_promo_article({}, 'not a dict'))
+        self.assertFalse(
+            _is_promo_article({'link': 'http://x/y'},
+                              {'paragraphs': [None, 7, ['x']]}))
+
+    def test_unparseable_url_does_not_raise(self):
+        """urlparse raises ValueError on some malformed hosts (e.g. an
+        unterminated IPv6 literal) — the slug signal is optional, the
+        filter must carry on."""
+        entry = {'title': 'Hot Wheels news', 'link': 'http://[::1/loja'}
+        self.assertFalse(_is_promo_article(entry, {'paragraphs': ['Body.']}))
+
+    # --- false-positive regression set (review round 1) -------------------
+    #
+    # Verbatim snippets from the reviewer's 10-item false-positive probe
+    # of realistic lamley/autoevolution/t-hunted coverage. All four were
+    # BLOCKED by the first version of the rule; they are exactly the
+    # retail/community journalism this channel aggregates and must stay
+    # publishable.
+
+    def test_fp_mattel_creations_store_drop(self):
+        entry = {
+            'title': 'Mattel Creations Opens RLC Store Drop With Member '
+                     'Discount',
+            'link': 'https://lamleygroup.com/2026/07/'
+                    'mattel-creations-store-drop-rlc.html',
+        }
+        article = {'paragraphs': [
+            'Mattel Creations opened orders today for its latest Red Line '
+            'Club exclusive. RLC members get a discount at checkout, and '
+            'the set is expected to sell out fast, with a restock likely '
+            'to be in stock again next month for non-members.',
+        ]}
+        self.assertFalse(_is_promo_article(entry, article))
+
+    def test_fp_hobby_shop_closes(self):
+        entry = {
+            'title': 'Beloved Hot Wheels Shop Closes After 30 Years in '
+                     'Business',
+            'link': 'https://lamleygroup.com/2026/07/'
+                    'hot-wheels-shop-closes-after-30-years.html',
+        }
+        article = {'paragraphs': [
+            'Hot Wheels Shop, a fixture in the local diecast scene for '
+            'three decades, is closing its doors next month, the owners '
+            'announced this week. Remaining inventory is now on sale, '
+            'with select cases still in stock for walk-in customers '
+            'before the final day.',
+        ]}
+        self.assertFalse(_is_promo_article(entry, article))
+
+    def test_fp_mattel_relaunches_online_store(self):
+        """The hardest false positive: 'shop now' arrives as an accidental
+        bigram ('the revamped shop now offers…') alongside a factual
+        'free shipping' — 2 STRONG markers with nobody speaking as the
+        shop. The seller-voice requirement is what keeps it publishable."""
+        entry = {
+            'title': 'Mattel Relaunches Hot Wheels Online Store With New '
+                     'Collector Perks',
+            'link': 'https://autoevolution.com/news/'
+                    'mattel-relaunches-hot-wheels-online-store.html',
+        }
+        article = {'paragraphs': [
+            'Mattel has relaunched its Hot Wheels e-commerce storefront '
+            'with a cleaner design and faster checkout, the company '
+            'announced Tuesday. The revamped shop now offers free '
+            'shipping on orders over fifty dollars, part of a push to '
+            'compete with third-party resellers.',
+        ]}
+        self.assertFalse(_is_promo_article(entry, article))
+
+    def test_fp_pt_premium_restock_roundup(self):
+        entry = {
+            'title': 'Hot Wheels Premium chega às lojas com novidades para '
+                     'julho',
+            'link': 'https://t-hunted.blogspot.com/2026/07/'
+                    'hot-wheels-premium-na-loja-julho.html',
+        }
+        article = {'paragraphs': [
+            'A nova leva Premium chega às lojas físicas e ao e-commerce '
+            'nesta semana. O estoque inicial deve ser limitado, o que '
+            'preocupa colecionadores de plantão à espera de um possível '
+            'desconto de lançamento.',
+        ]}
+        self.assertFalse(_is_promo_article(entry, article))
+
+    def test_fp_collector_hunting_guide_genre(self):
+        """The hunting-guide / collector-roundup genre this bot actually
+        aggregates: 'buy now' and 'shop now' show up as ordinary
+        editorial advice about WHERE OTHERS sell."""
+        entry = {
+            'title': 'Hunting Guide: Where to Find the 2026 Super Treasure '
+                     'Hunts',
+            'link': 'https://orangetrackdiecast.com/2026/07/'
+                    'super-treasure-hunt-hunting-guide.html',
+        }
+        article = {'paragraphs': [
+            'Collectors who spot the 2026 Super Treasure Hunts on the pegs '
+            'should buy now rather than wait — secondary-market prices '
+            'climb within days of a case landing. The big-box shop now '
+            'stocks the wave earlier than most hobby retailers, and a '
+            'few chains still offer an in-store discount on multi-packs.',
+        ]}
+        self.assertFalse(_is_promo_article(entry, article))
+
+    # --- WEAK-subsumption (double-counting) regression --------------------
+
+    def test_weak_inside_matched_strong_is_not_double_counted(self):
+        """Review round 1 (major): five STRONG markers contain a WEAK one
+        as a word ('nossa loja' ⊃ 'loja' …). Counting both let ONE phrase
+        supply its own STRONG hit AND a 'corroborating' WEAK hit, so the
+        bar silently collapsed to a single independent signal. Reviewer's
+        repro — seller voice + exactly one real weak word — must NOT
+        block; it DOES block under the old double-counting behaviour."""
+        entry = {'title': 'Hot Wheels novidades',
+                 'link': 'https://example.com/2026/07/novidades.html'}
+        article = {'paragraphs': [
+            'Em nossa loja você encontra desconto em alguns itens '
+            'selecionados.',
+        ]}
+        # strong: 'nossa loja'; genuinely independent weak: 'desconto'
+        # only — 'loja' is subsumed by the matched strong phrase.
+        self.assertFalse(_is_promo_article(entry, article))
+
+    def test_no_strong_marker_self_supplies_a_weak_hit(self):
+        """Invariant guard over the marker tuples themselves: scanning a
+        text that is EXACTLY one STRONG marker must never yield a WEAK
+        hit. Pins the subsumption rule for every current and future
+        marker pair, so editing the lists can't silently reintroduce the
+        double-count."""
+        for marker in news_bot._PROMO_STRONG_MARKERS:
+            with self.subTest(marker=marker):
+                strong, weak = news_bot._promo_scan_markers(marker)
+                self.assertIn(marker, strong)
+                self.assertEqual(
+                    weak, [],
+                    f"STRONG marker {marker!r} self-supplied WEAK {weak!r}",
+                )
+
+    def test_weak_word_outside_the_strong_span_still_counts(self):
+        """The subsumption rule removes only the matched STRONG span: the
+        same weak word used independently elsewhere still corroborates."""
+        strong, weak = news_bot._promo_scan_markers(
+            'Em nossa loja e também na loja parceira do shopping.')
+        self.assertIn('nossa loja', strong)
+        self.assertIn('loja', weak)
+
+    # --- word-boundary regression ----------------------------------------
+
+    def test_word_boundary_guard_is_what_keeps_these_below_the_bar(self):
+        """Both fixtures sit ONE weak marker below the bar and cross it
+        the moment 'loja'/'store'/'oferta' start matching inside
+        'lojas'/'restored'/'ofertas' — i.e. this test fails if the
+        space-padded word-boundary folding regresses to naive substring
+        matching. (The plain PT/EN news negatives can't catch that: they
+        have no STRONG marker at all.)"""
+        pt_entry = {'title': 'Hot Wheels novidades',
+                    'link': 'https://example.com/2026/07/novidades.html'}
+        pt_article = {'paragraphs': [
+            'Visite nossa loja! Chegaram novidades nos estoques regionais '
+            'e com descontos previstos para julho.',
+        ]}
+        # Real weak count: 0 ('loja' subsumed; 'estoques'/'descontos' are
+        # plurals). Naive substring matching would find 'estoque' and
+        # 'desconto' → seller + 2 weak → blocked.
+        self.assertFalse(_is_promo_article(pt_entry, pt_article))
+
+        en_entry = {'title': 'Hot Wheels collection news',
+                    'link': 'https://example.com/2026/07/collection.html'}
+        en_article = {'paragraphs': [
+            'Our store restored a classic display; discounted offerings '
+            'vary by retailer.',
+        ]}
+        # Real weak count: 0 ('store' subsumed by 'our store'; 'restored',
+        # 'discounted' and 'offerings' are longer words). Naive matching
+        # would find 'store', 'discount', 'offer' → blocked.
+        self.assertFalse(_is_promo_article(en_entry, en_article))
+
     # --- scan bounds ------------------------------------------------------
 
     def test_markers_beyond_paragraph_bound_not_scanned(self):
@@ -571,6 +808,34 @@ class TestIsPromoArticle(unittest.TestCase):
             ],
         }
         self.assertFalse(_is_promo_article(entry, article))
+
+    def test_title_is_char_capped_too(self):
+        """Audit SEC-PROMO-2: the cap applies to the TITLE as well, not
+        just the body (a 10MB title measured ~0.6s of CPU per entry).
+        Same promo phrases block when they sit inside the cap and are
+        invisible past it — proving the slice, not an unrelated miss."""
+        promo_tail = 'Compre já em nossa loja: não perca, frete grátis!'
+        filler = 'palavra ' * 300  # ~2400 chars, past the 2000 cap
+        link = 'https://example.com/2026/07/x.html'
+        blocked = _is_promo_article(
+            {'title': promo_tail, 'link': link}, {'paragraphs': []})
+        self.assertTrue(blocked, 'sanity: the phrases block when scanned')
+        self.assertFalse(_is_promo_article(
+            {'title': filler + promo_tail, 'link': link},
+            {'paragraphs': []},
+        ))
+
+    def test_url_path_is_char_capped_too(self):
+        """The URL path is capped the same way: a slug token past the cap
+        contributes no marker. Asserted on an article that blocks on its
+        body anyway, so the absence of 'url:loja' is the only signal
+        under test."""
+        entry, article = self._incident()
+        entry = dict(entry, link='https://t-hunted.blogspot.com/'
+                                 + 'a' * 2100 + '/na-loja.html')
+        markers = _is_promo_article(entry, article)
+        self.assertTrue(markers, 'body markers still block the article')
+        self.assertNotIn('url:loja', markers)
 
 
 if __name__ == '__main__':

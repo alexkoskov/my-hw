@@ -3834,6 +3834,43 @@ class TestPromoIntakeFilter(_PrepPhaseBase):
         news_bot.job()
         mock_fetch_article.assert_not_called()
 
+    @patch('news_bot._is_promo_article', side_effect=RuntimeError('boom'))
+    @patch('news_bot.fetch_full_article')
+    @patch('news_bot.fetch_rss')
+    @patch('news_bot.load_feeds')
+    @patch('news_bot.send_admin_notification')
+    def test_promo_filter_crash_is_fail_open(
+        self, mock_admin, mock_load_feeds, mock_fetch_rss,
+        mock_fetch_article, _mock_promo,
+    ):
+        """Audit SEC-PROMO-1: the filter is wrapped like the dedup gate —
+        a crash inside it must NOT kill the tick (``job()`` runs inside a
+        bare ``while True`` scheduler, and the crash would land BEFORE
+        mark_processed, so the same entry would crash-loop the daemon on
+        every restart). Fail-open: the article is treated as not-promo
+        and still reaches the queue."""
+        link = 'http://example.com/2026/07/ordinary-news.html'
+        mock_load_feeds.return_value = ['http://example.com/feed1.xml']
+        mock_fetch_rss.return_value = [{
+            'link': link,
+            'title': 'Ordinary Hot Wheels news',
+            'published': '2026-07-25',
+            'summary': 'Summary',
+        }]
+        mock_fetch_article.return_value = {
+            'title': 'Ordinary Hot Wheels news',
+            'subtitle': '',
+            'paragraphs': ['A new casting was revealed this week.'],
+            'images': [],
+        }
+
+        news_bot.job()  # must not raise
+
+        # Fail-open: staged as usual, no [E035] fired.
+        self.assertIsNotNone(pending_articles_repo.get_pending(link))
+        for c in mock_admin.call_args_list:
+            self.assertNotIn('[E035]', c.args[0] if c.args else '')
+
 
 if __name__ == '__main__':
     unittest.main()

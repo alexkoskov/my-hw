@@ -832,6 +832,11 @@ def alert_dedup_degraded(reason: str) -> str:
     )
 
 
+#: Cap for the untrusted article title rendered in the [E035] ping —
+#: same idea as ``_RECAP_REASON_MAXLEN`` for E034 reasons.
+_PROMO_TITLE_MAXLEN = 200
+
+
 # ---------------------------------------------------------------------------
 # E035 — intake promo-filter: рекламная статья отсечена до перевода
 # (prod-инцидент 2026-07-25: t-hunted опубликовал чистую рекламу магазина
@@ -840,14 +845,20 @@ def alert_dedup_degraded(reason: str) -> str:
 def alert_promo_blocked(link: str, title: str, markers: List[str]) -> str:
     """[E035] intake promo-filter drop. ``markers`` — the matched promo
     markers from ``news_bot._is_promo_article`` (our own constants, safe
-    to render verbatim); ``title`` is source text and passes through the
-    send path's ``_redact_text`` like every other alert."""
+    to render verbatim); ``title`` is untrusted source text — truncated
+    to ``_PROMO_TITLE_MAXLEN`` so a pathological title can't push the
+    ping past Telegram's 4096-char limit (audit SEC-PROMO-4) — and it
+    passes through the send path's ``_redact_text`` like every other
+    alert."""
     # Подстрока 'Отсечена реклама' — substring-якорь интеграционных
     # тестов, не менять.
     marker_line = ", ".join(markers) if markers else "—"
+    title_s = title if isinstance(title, str) else str(title)
+    if len(title_s) > _PROMO_TITLE_MAXLEN:
+        title_s = title_s[:_PROMO_TITLE_MAXLEN] + "…"
     return (
         f"[E035] 🛒 Отсечена реклама\n\n"
-        f"Заголовок:\n{title}\n\n"
+        f"Заголовок:\n{title_s}\n\n"
         f"Ссылка:\n{link}\n\n"
         f"Сработавшие маркеры: {marker_line}\n\n"
         f"Что произошло:\n"
