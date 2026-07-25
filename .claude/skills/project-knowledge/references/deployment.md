@@ -40,6 +40,52 @@ Deployment process, infrastructure, and production operations for AI agents.
 
 ---
 
+## Серверная шпаргалка (все данные бота — не искать заново)
+
+> Обновлено 2026-07-25. Секретов здесь нет и быть не должно: токены/пароли — в
+> менеджере паролей оператора и в серверном `.env` (не коммитится).
+>
+> **Бот теперь ОДИН — прод.** NL-сервер `148.135.207.54` (DeluxHost) **больше
+> не оплачивается**, тест-бот там **удалён** (подтверждено оператором
+> 2026-07-25). IP отдан хостером другому клиенту — на нём отвечает ЧУЖОЙ sshd
+> («Connection closed» при попытке входа — это он). Никогда не ходить на этот
+> адрес и ничего туда не деплоить. Тест-инстанса и staging НЕТ.
+
+| | **ПРОД (единственный инстанс)** |
+|---|---|
+| Сервер | Москва `45.90.216.165` (Firstbyte) |
+| Вход | `ssh root@45.90.216.165` — **root, по паролю** (пароль в менеджере паролей) |
+| Как запущен | Docker-контейнер **`hw-news-bot`** (+ sidecar `route-setup`) |
+| Папка | `/root/hw-news` |
+| Ветка | `main` |
+| `.env` | `/root/hw-news/.env` — **правится только руками** |
+| База | `/root/hw-news/data/news.db` (в контейнере `/data/news.db`) |
+| Логи | `ssh root@45.90.216.165 "docker logs hw-news-bot --tail 200"` |
+| Канал | `-1004027529994` (боевой) |
+| INSTANCE_LABEL | `prod` |
+| Деплой | **только руками, ВНЕ окна 10:00–20:00 МСК**: `ssh root@45.90.216.165 "cd /root/hw-news && git pull && docker compose up -d --build"` |
+| Бэкап БД | cron 05:00 МСК → `/root/hw-news/backups` (TODO: копия вне хоста) |
+| Watchdog | host cron 01:00 МСК → `docker exec hw-news-bot /bin/bash /app/watchdog.sh` |
+
+**Ключевые факты:** числовой Telegram-id оператора — **`8481233034`**
+(`TELEGRAM_ADMIN_ID`; это id, не секрет — аутентификацию делает сам Telegram).
+`REVIEW_BUTTONS_ENABLED=1` — включён только здесь (инстанс один, конфликтовать
+за getUpdates некому, но флаг остаётся выключателем фичи). Egress — через
+VPN-шлюз `shared-vpn` (Москва без VPN не достаёт Telegram). Хост живёт в UTC;
+МСК — только внутри контейнера.
+
+**⚠️ Грабли:**
+- Оба GitHub-workflow деплоя **обезврежены**: `deploy.yml` (2026-07-07) и
+  `deploy_test.yml` (2026-07-25, NL списан). Пуш в `dev`/`main` гоняет ТОЛЬКО
+  тесты (ci.yml); на сервера CI не ходит. Прод обновляется только руками.
+- Тестировать «на живом» негде — staging нет. Проверка фич: pytest локально +
+  аккуратная первая раскатка на прод с готовым откатом.
+- В GitHub-секретах остались реквизиты мёртвого NL (`SSH_HOST`,
+  `DEPLOY_PATH*`, `SSH_PRIVATE_KEY`) — использоваться не могут (workflows
+  выключены); при случае почистить.
+
+---
+
 ## Deployment Platform
 
 **Prod (since 2026-07-06):** a **Docker container** (`hw-news-bot`) on the Moscow VPS
@@ -59,7 +105,7 @@ reproducible image + isolated egress routing without changing the bot code.
 
 **SSH Access:**
 - **Prod:** `ssh root@45.90.216.165` (Moscow VPS, password auth). Repo/deploy dir: `/root/hw-news`; state on `/root/hw-news/data`.
-- **Test + other bots:** `ssh hwbot@148.135.207.54` (NL VPS, key auth); root also available. Test bot dir: `/home/hwbot/bot_test`.
+- **Test + other bots:** `ssh hwbot@148.135.207.54` (NL VPS, key auth); root exists on the box but is NOT used from the operator's Mac — failed root attempts trigger the fail2ban IP ban (see Шпаргалка → грабли). Test bot dir: `/home/hwbot/bot_test`.
 
 > Operator runs all server-side ops (SSH, deploy, restart); Claude prepares the commands.
 
