@@ -256,6 +256,76 @@ Different source parsers take different paths to image URLs. Each is tuned to ma
 - Source-level failures (Mattel, Lamley, autoevolution scrape) are isolated the same way, with admin notifications on hard failures.
 - The global limit (`limit=3`) is applied across all sources to prevent overloading external services.
 
+### Operator-facing inbound path (review buttons)
+
+Until 2026-07-25 the bot only ever SENT to Telegram. `_run_review_listener` in
+[news_bot.py](../../../../news_bot.py) is the single inbound path: a daemon
+thread long-polling `get_updates(allowed_updates=['callback_query'])`. Rules that
+hold for anything added here:
+
+- **A fresh `Bot` per call, never a long-lived one.** PTB 21.10 binds its httpx
+  client to the event loop that created it, so a `Bot` reused across successive
+  `asyncio.run(...)` calls fails on the second poll. Mirrors the per-call style
+  `send_admin_notification` already used.
+- **Decision logic stays pure and separate from I/O** (`resolve_dedup_callback`,
+  `resolve_hold_callback` — no Telegram calls inside), so every branch is unit-
+  testable without sockets or threads. The listener only parses, dispatches and
+  renders.
+- **Admin check first, before any DB read.** `_is_admin_press` is the single
+  fail-closed comparison shared by both resolvers; a non-admin press performs
+  zero queries.
+- **Callback grammar is exact and kind-scoped:** `dd:<c|k>:<token>` (dedup),
+  `hd:<a|r>:<token>` (hold). Tokens live in `bot_state` as `<kind>|<link>`, and a
+  resolver refuses a token of the wrong kind **without consuming it** — otherwise
+  a cross-grammar press silently burns the only button an article has.
+- **Three exception layers** (per update / per poll cycle / outer) with backoff;
+  a `Conflict` (409) means a second poller exists on the shared token. Nothing in
+  the listener may ever reach the publish loop.
+
+### Content gates on intake
+
+Four gates run before staging — checklist, promo `[E035]`, hold `[E036]`, genre
+`[E037]` — all before translation, so a rejected article costs zero LLM tokens.
+Conventions any new gate must follow:
+
+- **Decide on the title (+ URL slug), not the body.** Body scanning is what
+  produced every serious false positive during review; the subject of a post
+  lives in its headline.
+- **Asymmetric cost drives the action.** A wrong hold costs the operator one tap;
+  a wrong drop loses a real story permanently. Only unambiguous branches drop;
+  anything evidence-based holds. The branch→action policy is a single table
+  (`_GENRE_BRANCH_ACTION`) pinned by a guard test, so re-pointing a branch without
+  updating the test fails.
+- **Never single-keyword.** Scoring or two-signal rules only; the grammatical
+  discriminator that survived review is *genre word + function word = the post's
+  subject* vs *genre word + finite verb = a news clause*.
+- Wiring mirrors the promo gate exactly: fail-open `try/except` around the
+  detector, funnel counter, `processed_news` pin on drops (never on holds — a held
+  row must stay releasable), best-effort alert, `continue`.
+- **Regression corpus is mandatory.** Any marker change must be re-run against the
+  25-headline false-positive corpus in
+  [work/content-gate-review/](../../../../work/content-gate-review/); three review
+  rounds found five distinct FP classes there.
+
+### Held articles
+
+`pending_articles.hold_reason` freezes a row: the exclusion lives in **SQL**
+(`WHERE hold_reason IS NULL` in `list_pending`, `count_pending` and the other list
+helpers), not in application logic, so the slot loop cannot see a held row even by
+accident. `get_pending` deliberately does *not* filter — the intake guard must
+still see held rows or the article re-stages daily. Silence never publishes: there
+is no timer, reminder or auto-drop by operator decision.
+
+### Schema column migrations
+
+`_COLUMN_MIGRATIONS` + `_ensure_column` in
+[pending_articles_repo.py](../../../../pending_articles_repo.py): check via
+`pragma_table_info` → `ALTER` only if missing → **re-read and verify**. Only
+`duplicate column name` is tolerated; anything else (notably `database is locked`)
+raises `SchemaMigrationError`. The earlier broad-`except` version could swallow a
+lock error and leave the column absent, after which every queue query crash-loops
+the tick with no clue to the cause.
+
 ---
 
 ## Git Workflow
