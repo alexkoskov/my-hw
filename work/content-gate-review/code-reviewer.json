@@ -1,0 +1,84 @@
+{
+  "reviewer": "code-reviewer",
+  "feature": "content-gate",
+  "commit": "98cadd7be0e0536a34a00f353252f34ad49c847d",
+  "base_commit": "aec3ed0",
+  "date": "2026-07-25",
+  "verdict": "changes_requested",
+  "summary": "PRIORITY 1 (admin_alerts.py reconstruction integrity) is fully verified CLEAN: nothing was lost or altered when the author recovered from the `git checkout admin_alerts.py` mishap. Diffing aec3ed0..98cadd7 shows every function definition in the file in identical order/position except the 9 hunks the feature actually touches; all pre-existing builders ([E001]-[E035], the 9cc7549 buttons_enabled branch on alert_cross_source_dupe, alert_promo_blocked, build_dedup_review_keyboard, both funnel renderers) are byte-for-byte untouched. The 5 deleted lines are exactly 2 function signatures, 1 docstring closing line, 1 f-string bullet line and 1 call-site — each a pure extension (added `genre`/`held_count` params, correctly threaded through), never a dropped branch or removed behavior. Targeted alert tests (114 in test_admin_alerts.py) and the full suite (1520 passed / 187 subtests) are green. PRIORITY 2 (the feature): the SQL-only hold guarantee is real and complete — grepped every consumer of pending_articles (repo module is the only writer/reader; hw_review.py and news_bot.py never touch the table directly) and confirmed list_pending/count_pending/list_pending_stale/list_pending_for_eviction/list_notified_overdue all carry `WHERE hold_reason IS NULL`, while get_pending's two production call sites (news_bot.py:3421 intake re-stage guard, and both callback resolvers' by-link lookups) are legitimately unfiltered by-PK access, not a leak. The migration follows the exact idempotent try/except OperationalError ALTER pattern as model_fingerprint, and is proven safe by test (idempotent re-run, legacy rows read back NULL/publishable). The dd:/hd: dispatch fix is correct: `_handle_review_update` calls `resolve_hold_callback`/`resolve_dedup_callback` as bare global names (not through a dict), which is exactly what makes `patch('news_bot.resolve_dedup_callback')` work — verified by re-reading the module-attribute-lookup-at-call-time convention the rest of the file already follows. Duplication is well-factored, not copy-pasted: `_content_gate_subject`/`_content_gate_hits` are genuine new shared helpers between the HOLD and DROP detectors, built on the promo filter's pre-existing `_promo_fold`/`_promo_scan_input` primitives; the checklist filter is unrelated regex-based machinery, not part of this family. job() wiring for the promo/hold/genre gates is structurally identical (fail-open try/except, funnel counter, INFO log, mark_processed pin or insert_pending, notification in its own try/except, continue) with only the necessary HOLD divergence (stage instead of pin, best-effort ping after commit). HOWEVER: independently reproduced a MAJOR functional defect already flagged by test-reviewer's parallel report (work/content-gate-review/test-reviewer.json, verdict no-ship-until-fixed) — `_is_rejected_genre`'s VIDEO rule has no equivalent to the EVENT rule's deliberate two-signal AND-guard, so a genuine car-reveal headline that merely contains the word 'video'/'vídeo' (e.g. \"Mattel drops video revealing the 2027 Corvette Z06\") is unconditionally and irreversibly DROPPED at intake — no operator visibility, no hold, no recovery. Given this asymmetry sits right next to a rule the team clearly knew how to harden correctly (EVENT), and DROP has zero safety net by design, this should be fixed (or consciously documented as an accepted trade-off, mirroring how EVENT's asymmetry is documented) before shipping. Also observed a low-severity, non-reproducible-in-isolation test flake unrelated to this diff's correctness.",
+  "priority_1_admin_alerts_integrity": {
+    "verdict": "clean_no_loss",
+    "method": "git diff aec3ed0 98cadd7 -- admin_alerts.py (201 insertions / 5 deletions); cross-checked every `^def `/`^class ` line between both revisions (identical order and position outside the 9 touched hunks); grepped [E0xx] tags in both revisions (all of E001-E035 present unchanged in both, E036/E037 newly added); ran targeted + full test suite.",
+    "deleted_lines_classification": [
+      {
+        "line": "_funnel_collapse_note signature: `no_article: int, checklist: int, promo: int, block: int, staged: int,`",
+        "classification": "signature extension — replaced with the same list plus `genre: int,` inserted in the correct position; body's `drops` tuple and the call site were updated in lockstep (verified: `('жанр', genre)` added to the max() candidates)."
+      },
+      {
+        "line": "_funnel_collapse_note docstring closing line: `drop (those articles still publish) so it is never a collapse cause.\"\"\"`",
+        "classification": "docstring extension — a new paragraph about content-gate HOLD was appended before the closing triple-quote; no prior sentence was removed."
+      },
+      {
+        "line": "_format_funnel f-string bullet: `f\"чеклист {checklist}, реклама {promo}, дубль-блок {block}\",`",
+        "classification": "string extension — replaced with the same fields (нет статьи/чеклист/реклама/дубль-блок all still present) plus `жанр {genre}` inserted between реклама and дубль-блок; no field dropped."
+      },
+      {
+        "line": "_funnel_collapse_note call site: `sources, failed, new, no_article, checklist, promo, block, staged,`",
+        "classification": "call-site extension — `genre` inserted at the matching position relative to the updated signature; positional order verified correct."
+      },
+      {
+        "line": "`def alert_quiet_day(funnel: Optional[dict] = None) -> str:`",
+        "classification": "signature extension — split across two lines to add `*, held_count: int = 0`, a backward-compatible keyword-only param; body appends held_line only when non-empty, funnel handling untouched."
+      }
+    ],
+    "untouched_confirmed_intact": [
+      "alert_cross_source_dupe (E014) incl. the 9cc7549 buttons_enabled todo_block branch",
+      "build_dedup_review_keyboard",
+      "alert_promo_blocked (E035)",
+      "alert_backlog_warning (E003) archived-hw_review-free advice from 9cc7549",
+      "all of alert_no_rss_feeds through alert_dedup_degraded (E001-E028, E030-E035)"
+    ],
+    "tests_run": {
+      "targeted": "pytest tests/test_admin_alerts.py -q -> 114 passed, 8 subtests passed",
+      "targeted_regression_guard": "pytest tests/test_admin_alerts.py -q -k \"dupe or cross_source or backlog or hw_review or funnel or plan_of_day or quiet_day or promo_blocked or dedup_review_keyboard\" -> 37 passed, 4 subtests passed",
+      "full_suite": "pytest -q -> 1520 passed, 187 subtests passed (matches commit message 1390 -> 1520)"
+    }
+  },
+  "findings": [
+    {
+      "severity": "major",
+      "file": "news_bot.py",
+      "line": "2035-2079 (_is_rejected_genre, VIDEO branch)",
+      "issue": "The VIDEO drop rule fires on a single marker (vídeo/video/unboxing/assista/youtube/Watch:) with no corroborating signal, unlike the EVENT rule which deliberately requires an event name AND an organizational word specifically because a bare name is not proof the post is ABOUT that subject. As a result a genuine car-reveal headline that merely uses 'video'/'vídeo' as ordinary language (\"Mattel drops video revealing the 2027 Corvette Z06 in Super Treasure Hunt spec\") is classified exactly like an actual video review and DROPPED — pinned in processed_news, [E037] fired, gone forever. Independently reproduced: `news_bot._is_rejected_genre({'title': 'Mattel drops video revealing the 2027 Corvette Z06 in Super Treasure Hunt spec', 'link': 'https://x/z06'}, {'title': '...'})` returns `('video', ['vídeo'])`. Same result for 'unboxing surprises us: 2027 Toyota Supra revealed'. Unlike HOLD (one button reverses a false positive) or the promo filter (tuned across two review rounds specifically to require two independent signals), DROP has zero recovery path by this feature's own design (no timer, no backlog view, no re-fetch) — a false DROP silently deletes a real news story with no operator-visible trace beyond a rate-limited [E037] ping that reads exactly like a correct classification.",
+      "fix": "Either add a second required signal to the VIDEO rule (mirroring EVENT's AND-guard) — e.g. require a review/unboxing-shaped co-marker, or treat a reveal verb adjacent to the marker (revela/reveals, revealed, teased) as disqualifying — or, if the team consciously accepts the trade-off, document it explicitly in the `_is_rejected_genre` docstring and session log the same way the EVENT rule's narrowness is documented, so a future reader does not assume VIDEO got the same false-positive hardening EVENT did. Cross-reference: independently confirms test-reviewer's F1/F2 findings in work/content-gate-review/test-reviewer.json (verdict no-ship-until-fixed)."
+    },
+    {
+      "severity": "minor",
+      "file": "tests/test_integration.py",
+      "line": "TestResolveHoldCallback (class, ~3901-4125)",
+      "issue": "Observed intermittent, non-deterministic test failures (different test each time: test_held_row_is_never_selected_by_the_slot_loop once, test_approve_on_an_already_released_row_reports_unavailable twice) only when this class is run together with the pre-existing, unmodified TestReviewListener::test_review_listener_dispatches_admin_cancel in the same pytest invocation via `-k`. Reproduced 2 times out of roughly 90 combined runs. Could NOT reproduce: (a) running TestResolveHoldCallback alone via pytest (10/10 clean), (b) running the single failing test method 300 times back-to-back in-process via unittest directly (0/300 failures), (c) the full official suite run (1520/1520 clean, single invocation). TestReviewListener::test_review_listener_dispatches_admin_cancel does not spawn a real thread (calls _handle_review_update synchronously) and is untouched by this commit, so this does not look attributable to the reviewed diff's logic — most likely container/environment timing noise from rapid repeated pytest process spawning during this review, not a real race condition in clear_hold or resolve_hold_callback (both are simple sequential SQL operations with no concurrency in the test).",
+      "fix": "No action required against this diff. If CI shows this flake recurring, worth a dedicated investigation with `pytest --lf -x` under load, but out of scope for this review — flagging for awareness only."
+    },
+    {
+      "severity": "minor",
+      "file": "admin_alerts.py",
+      "line": "979-996 (_gate_title, _gate_markers)",
+      "issue": "`_gate_title` re-implements the same two-line title-truncation logic that already lives inline inside `alert_promo_blocked` (lines ~942-944, using the same `_PROMO_TITLE_MAXLEN` constant), and `_gate_markers` re-implements the same `\", \".join(markers) if markers else \"—\"` pattern from the same function. This is a very minor duplication (2-3 lines each) rather than the copy-paste-machinery risk the task asked to hunt for — `alert_promo_blocked`'s own logic was never factored into a helper in the first place, so the new code is arguably an improvement (it DID factor its own two call sites, alert_held_for_review + alert_genre_blocked, into shared helpers). Not blocking.",
+      "fix": "Optional follow-up: extract alert_promo_blocked's inline truncation/marker-join into `_gate_title`/`_gate_markers` (or a shared name) so all three content-related alerts (E035/E036/E037) share one implementation. Skip if the team prefers not to touch a working, tested E035 alert for a cosmetic DRY win."
+    }
+  ],
+  "dimension_notes": {
+    "hold_state_sql_guarantee": "Verified complete by grep: only pending_articles_repo.py contains SQL against pending_articles; news_bot.py, hw_review.py and backfill_fingerprints.py exclusively go through repo functions (grepped for 'FROM pending_articles' and raw SQL literals in all three — none found outside the repo module). All five list/count helpers claimed to filter (list_pending, count_pending, list_pending_stale, list_pending_for_eviction, list_notified_overdue) do carry `WHERE hold_reason IS NULL` verified by reading pending_articles_repo.py:488-651 directly. get_pending's only production callers are: news_bot.py:3421 (b2 intake re-stage guard — must see held rows or the article would re-stage and re-alert daily, exactly as documented), news_bot.py:641/721 (pre-existing E014 cancel/take-N races, unrelated to hold, correctly unfiltered by-PK reads), news_bot.py:2964 (in-flight-cancel guard, pre-existing), resolve_hold_callback's reject branch (news_bot.py:721, by-link lookup before skip_pending), and hw_review.py's cmd_publish/cmd_take (which resolve an index via the FILTERED list_pending first, so a held row's link can never even acquire an index — get_pending there is only a race-safe re-read of an already-unheld row, not a bypass). No missed consumer found.",
+    "migration_safety": "`ALTER TABLE pending_articles ADD COLUMN hold_reason TEXT` sits in the exact same for-loop, same try/except sqlite3.OperationalError pattern, as the pre-existing model_fingerprint migration (pending_articles_repo.py:235-247) — nullable, no default, so idempotent re-runs no-op and legacy rows get NULL for free. Confirmed by tests/test_pending_articles_repo.py::TestHoldState::test_column_add_is_idempotent_on_an_existing_db (inserts a row, calls init_schema twice, asserts data survives) and test_legacy_rows_get_null_hold_reason (row inserted without hold_reason reads back NULL and appears in list_pending). tests/test_migration.py's EXPECTED_PENDING_COLUMNS dict was correctly updated to include hold_reason.",
+    "dispatch_fix": "_handle_review_update dispatches via `if action in _HOLD_ACTION_WORDS: resolve_hold_callback(...) else: resolve_dedup_callback(...)` — a plain if/else calling module-level function names, which Python resolves via a global-namespace lookup AT CALL TIME, exactly what `unittest.mock.patch('news_bot.resolve_dedup_callback')` needs to intercept (patch replaces the module attribute; a dict literal built at import time would have already captured the original function object and be immune to the patch). Verified _HOLD_ACTION_WORDS = frozenset(_HOLD_CALLBACK_ACTIONS.values()) = {'approve','reject'}, disjoint from the dd: grammar's {'cancel','keep'}, so dispatch is unambiguous. tests/test_integration.py::TestReviewCallbackGrammarsCoexist::test_handler_dispatches_each_grammar_to_its_own_resolver exercises exactly this seam with both resolvers patched and passes.",
+    "duplication_assessment": "Not copy-paste. New shared layer `_content_gate_subject` (title+slug extraction, fail-safe on malformed input) + `_content_gate_hits` (single-tier marker matching, title vs url: prefix) sits between the pre-existing low-level primitives (_promo_fold, _promo_scan_input) and the two new detectors (_hold_for_review_reason, _is_rejected_genre), which both call it. The promo filter's own _promo_scan_markers (STRONG/WEAK tiering + span-blanking) is intentionally NOT reused because hold/genre only need single-tier matching — reusing it would have meant generalizing an already-narrow function for no benefit. The checklist filter (_is_text_only_checklist) is unrelated regex-based machinery, pre-existing, not part of this fold/scan/marker-tuple family. job() wiring for promo/hold/genre gates: verified structurally identical (try/except fail-open around the detector call, funnel counter increment, INFO log with the [Exxx] tag, mark_processed pin + notification-in-its-own-try/except + continue for the two DROP paths; insert_pending + best-effort post-commit ping for HOLD) by reading news_bot.py:3461-3834 in full.",
+    "style_consistency": "New code follows the file's established conventions throughout: fail-open try/except around every filter call with sanitize_error_message() in the log line, funnel dict keys read via _funnel_int (missing-key-safe), keyword-only additive params with defaults for backward compatibility (buttons_enabled, held_count, genre), Cyrillic operator-facing text vs English code comments, substring anchors called out in comments for the test suite, module-level FOLDED tuples precomputed at import."
+  },
+  "tests_run": {
+    "targeted": "pytest tests/test_admin_alerts.py -q -> 114 passed, 8 subtests passed",
+    "full_suite": "pytest -q -> 1520 passed, 187 subtests passed",
+    "manual_repro": [
+      "python3 -c \"import news_bot as nb; print(nb._is_rejected_genre({'title': 'Mattel drops video revealing the 2027 Corvette Z06 in Super Treasure Hunt spec', 'link': 'https://x/z06'}, {'title': 'Mattel drops video revealing the 2027 Corvette Z06 in Super Treasure Hunt spec'}))\" -> ('video', ['vídeo'])  # confirms major finding"
+    ]
+  }
+}

@@ -1,0 +1,136 @@
+{
+  "reviewer": "test-reviewer",
+  "round": 2,
+  "feature": "content-gate",
+  "commit": "0becb368a11d4e7d5d477a0396c17ac6e40a1b79",
+  "date": "2026-07-25",
+  "verdict": "no-ship-until-R1-addressed",
+  "summary": "F1/F2 from round 1 are genuinely fixed: every original round-1 probe headline now returns the expected verdict (0/14 mismatches), and the two round-1 exemplar false-drops -- 'Mattel drops video revealing the 2027 Corvette Z06...' and 'Vídeo revela o novo Porsche 911 GT3 RS...' -- both correctly survive now. The subject-position vs two-signal grammatical rule is a real improvement over the single-marker rule, mutation-verified on both branches, well documented, and the reasoning for NOT adding reveal-language as a blanket negative signal is sound and holds up under scrutiny (see judged_decision below). HOWEVER, attacking the new rule's own seam (the NP-head branch's preposition list, specifically 'of'/'do') reproduces a fresh, clean instance of the SAME F1-class bug: 'Video of the 2027 Corvette Z06 reveal leaked online' and two structurally identical variants all get permanently DROPPED, even though they are exactly the genre of headline ('genuine car reveal that uses the word video') the round-1 fix set out to protect. This is not a contrived edge case -- 'Video/Photos of the new X leaked' is one of the most standard headline templates in automotive journalism. A second, related but lower-confidence gap ('First hands-on video of the 2027 Corvette Z06...') shows branch (B)'s two-signal bar also over-fires on ordinary preview-journalism vocabulary. Given DROP is permanent and the task weights false-DROP severity far above false-HOLD or false-negative-keep, I am not clearing this for ship until the NP-head/preposition scope is tightened. Everything else in the commit (SEC-CG-1 migration hardening, SEC-CG-2 token kind-scoping, the addCleanup flake fix) checks out on inspection and is well tested.",
+  "f1_f2_regression_check": {
+    "status": "fixed",
+    "detail": "Re-ran the full round-1 14-headline battery against 0becb36 with a fresh script (not reusing round-1 code). 14/14 match round-1's stated expectations exactly, 0 mismatches. In particular both round-1 top-risk headlines now survive: 'Mattel drops video revealing the 2027 Corvette Z06...' -> kept, and 'Vídeo revela o novo Porsche 911 GT3 RS...' -> kept. 'Unboxing surprises us: 2027 Toyota Supra revealed...' -> kept. All previously-correct DROP/HOLD verdicts (event logistics, packaging hold, catalog hold, poster-in-slug hold, watch: lead drop, unboxing-case-review drop, editorial 'watch out for' survives) are unchanged."
+  },
+  "new_findings": [
+    {
+      "id": "R1-video-of-x-np-head-false-drop",
+      "severity": "high",
+      "category": "false-negative-detection (results in false DROP) -- same class as round-1 F1, new vector",
+      "title": "'Video of the [car] [leaked/surfaces/goes viral]' -- a standard automotive-journalism headline template -- is permanently dropped",
+      "detail": "The NP-head branch (A2) treats 'video' + a following determiner/preposition as proof the genre word heads a noun phrase that is the post's subject. 'of' is in `_GENRE_VIDEO_NP_HEADS`, so 'Video of the X ...' satisfies the regex exactly like 'Unboxing the 2026 H case ...' does. But 'Video of the 2027 Corvette Z06 reveal leaked online' is not a video review -- it is a genuine leak/reveal story where a video happens to be the vehicle for the leak, structurally identical in intent to the very headlines F1 was written to protect ('Mattel drops video revealing...'). The rule's own internal grammatical test (genre word heads an NP = post's subject) is satisfied here, but that grammatical test is not equivalent to the actual business question ('is this post a video review'), and the gap reopens permanent, unrecoverable data loss on a highly plausible headline shape for this niche (leaked convention-floor videos, employee-account reveal videos, etc. are a real recurring content category in Hot Wheels news).",
+      "reproduction": "python3 -c \"import news_bot as nb; print(nb._is_rejected_genre({'title': 'Video of the 2027 Corvette Z06 reveal leaked online', 'link': 'https://x/z06'}, {'title': 'Video of the 2027 Corvette Z06 reveal leaked online'}))\"  -> ('video', ['vídeo …', 'vídeo'])",
+      "additional_repros": [
+        "Video of the new Hot Wheels Legends Tour winner surfaces online -> dropped, genre=video",
+        "Video of the 2027 Toyota Supra Super Treasure Hunt debut goes viral -> dropped, genre=video"
+      ],
+      "test_gap": "TestVideoRuleVerificationMatrix's MUST_NOT_DROP list covers 'Vídeo revela ...' (genre word + VERB) and the bare-word case, but has no case for 'genre word + of/do + reveal-adjacent noun phrase'. The NP-head structural test (test_np_heads_contain_no_verbs_that_would_reopen_the_fp) checks that NP_HEADS contains no verbs and not 'out' -- it does not check whether a function word like 'of'/'do' can itself form a false-subject reading when the post's true subject is a leaked/revealed CAR, not a video.",
+      "recommendation": "Narrow branch (A2): either drop 'of'/'do' (and PT equivalents 'de'/'do'/'da' in the bare-preposition sense) from the NP-head list, or require the immediately following span to name a review-shaped object (case/assortment/lote/caixa) rather than accepting any noun phrase -- mirroring how the EVENT rule requires a second, independent, genre-defining signal rather than trusting grammatical position alone. At minimum, add 'Video of the X leaked/revealed/surfaces' to the MUST_NOT_DROP matrix as a red test before deciding whether to accept this as a residual, documented trade-off."
+    },
+    {
+      "id": "R2-handson-video-two-signal-overfire",
+      "severity": "medium",
+      "category": "false-negative-detection (results in false DROP)",
+      "title": "Branch (B)'s two-signal bar fires on ordinary preview-journalism vocabulary that co-occurs without indicating a review",
+      "detail": "'First hands-on video of the 2027 Corvette Z06 Super Treasure Hunt' is genuine early-look/preview coverage of a real, not-yet-released casting -- exactly the kind of post the channel exists for. Neither 'video' nor 'hands-on' is in subject position (the title doesn't start with either word), so branch (A) correctly does not fire. But branch (B) requires only a video word AND a review co-marker ANYWHERE in the subject, and 'hands-on' is literally in `_GENRE_VIDEO_REVIEW_MARKERS` -- so the two independent signals both fire on words that, together, describe legitimate preview coverage rather than a review of a settled product.",
+      "reproduction": "python3 -c \"import news_bot as nb; print(nb._is_rejected_genre({'title': 'First hands-on video of the 2027 Corvette Z06 Super Treasure Hunt', 'link': 'https://x/z06-handson'}, {'title': 'First hands-on video of the 2027 Corvette Z06 Super Treasure Hunt'}))\"  -> ('video', ['vídeo', 'hands-on'])",
+      "test_gap": "No test in the matrix covers 'hands-on' co-occurring with 'video' in a preview/reveal (as opposed to review) headline.",
+      "recommendation": "Lower priority than R1 -- 'hands-on' as a preview-journalism term is a narrower risk than 'video of' as a headline template. Worth a follow-up matrix row, but not necessarily blocking on its own; largely the same underlying design tension flagged in R1 (grammatical/lexical proximity is not semantic proof of genre)."
+    },
+    {
+      "id": "R3-verb-led-genuine-reviews-escape",
+      "severity": "low",
+      "category": "false-negative (results in a genuine video review being KEPT and published, not dropped)",
+      "title": "A genuine review/unboxing post phrased with a verb after the genre word and no review co-marker word survives both branches",
+      "detail": "'Video breaks down every 2026 Super Treasure Hunt casting we could find' and 'Unboxing reveals three limited-run castings from the September batch' both read as genuine review/unboxing content, but the genre word is followed by a verb (not a separator/NP-head, so branch A correctly does not fire) and neither title contains a review co-marker word or a second distinct genre word, so branch B also does not fire. Both survive and would publish as ordinary news.",
+      "severity_note": "Per the task's explicit weighting (a wrong DROP is unrecoverable; a wrong KEEP just means an unwanted review gets published, recoverable by the operator noticing and it is the SAME risk class as the pre-feature status quo, not a regression). Reported because the coordinator specifically asked whether branch B still catches a verb-led genuine review -- answer: not reliably.",
+      "recommendation": "Optional follow-up only. If the operator finds video reviews slipping through in practice, branch (B) could be broadened with a small set of review-implying verbs (breaks down, walks through, tours) as additional co-markers -- but this reopens exactly the trade-off the team already reasoned through for reveal-language, so any such addition needs the same two-sided verification (does it drop a genuine reveal that uses the same verb?)."
+    },
+    {
+      "id": "R4-unboxing-the-metaphor-ambiguous",
+      "severity": "low",
+      "category": "false-negative-detection (results in false DROP) -- same NP-head class as R1",
+      "title": "Figurative 'Unboxing the [X]' headlines are syntactically indistinguishable from literal ones",
+      "detail": "'Unboxing the mystery behind Hot Wheels Nationals 2026's venue reveal' matches branch (A2) ('unboxing' + determiner 'the') even though 'unboxing' is used metaphorically ('unpacking a mystery'), not literally. Judged lower-probability than R1 in this specific niche (model-car/collectible blogs tend to write literally rather than punnily), but it is the same underlying class of gap: the closed-class-function-word heuristic proves grammatical noun-phrase-hood, not literal genre.",
+      "recommendation": "No action required on its own; if R1 is fixed by narrowing the NP-head set or adding a semantic check, this case likely narrows too. Flagging for completeness per the coordinator's request to attack the discriminator specifically."
+    }
+  ],
+  "judged_decision": {
+    "question": "Was it correct NOT to add reveal-language ('revealing'/'revela'/'first look'/'unveils') as a blanket negative signal?",
+    "verdict": "agree_with_reasoning_but_it_does_not_cover_R1",
+    "reasoning": "The stated reasoning is sound and I independently verified both halves of it: (1) it cannot apply to branch (A), since the operator's own required case 'Watch: first look at the 2027 HW Nationals mainline' carries reveal language ('first look') and correctly still drops via the subject-position separator rule -- a blanket reveal-language exception would have broken this required case; I confirmed this row is still in MUST_DROP and passes. (2) On branch (B) it would create a silent hole in genuine video reviews that use reveal-adjacent language to describe what the video shows (e.g. 'Video review: every casting the box reveals') -- a real risk, since review content routinely narrates what gets 'revealed' on camera. Rejecting a third, semantically-fuzzy rule in favor of the existing two-signal bar is the right call, and matches the same philosophy applied to the EVENT rule (structural signals over keyword negation). That said, this decision is orthogonal to R1: R1 is not about reveal-language leaking through as a false negative-rescue, it is about the NP-head branch's preposition list ('of'/'do') being too permissive on its own terms, independent of whether reveal-language is ever consulted. The team's reasoning correctly defends the choice they made; it does not address the gap I found, because that gap lives one layer earlier (which words legitimately head a noun phrase) rather than at the reveal-language layer they were reasoning about."
+  },
+  "mutation_verification": {
+    "claimed_new_mutations": "4 (per coordinator message): single-marker video rule; NP branch accepting any word; (2 more not specified to me)",
+    "verified_by_reviewer": 2,
+    "method": "Re-introduced each mutation by hand in the working tree (starting from a clean tree matching HEAD 0becb36), ran the targeted test classes, confirmed failure, then `git checkout -- news_bot.py` to restore, confirming `git diff --stat` was empty before moving to the next.",
+    "results": [
+      {
+        "mutation": "Reintroduce the single-marker video rule: branch (B) drops on `if video:` alone, ignoring the review/second-marker requirement (subject-position branch A left intact)",
+        "file": "news_bot.py",
+        "location": "_is_rejected_genre, branch (B) condition `if video and (review or len(video) >= 2):` changed to `if video:`",
+        "outcome": "CONFIRMED BREAKS",
+        "failing_tests": [
+          "tests/test_relevance_filter.py::TestIsRejectedGenre::test_youtube_channel_news_without_a_review_signal_survives",
+          "tests/test_relevance_filter.py::TestVideoRuleVerificationMatrix::test_genuine_model_news_is_never_dropped (3 of 4 subtests: the two F1 exemplars + F2)",
+          "tests/test_relevance_filter.py::TestVideoRuleVerificationMatrix::test_the_slug_alone_cannot_prove_subject_position"
+        ]
+      },
+      {
+        "mutation": "NP branch accepts ANY word after the genre word, not just the closed-class function-word list -- `_GENRE_VIDEO_LEAD_NP_RE` loosened from an alternation over `_GENRE_VIDEO_NP_HEADS` to a bare `\\w+`",
+        "file": "news_bot.py",
+        "location": "_GENRE_VIDEO_LEAD_NP_RE definition",
+        "outcome": "CONFIRMED BREAKS",
+        "failing_tests": [
+          "tests/test_relevance_filter.py::TestIsRejectedGenre::test_watch_out_for_is_not_a_video_post (subtest 'Watch out for these five 2026 Treasure Hunts')",
+          "tests/test_relevance_filter.py::TestVideoRuleVerificationMatrix::test_genuine_model_news_is_never_dropped (2 of 4 subtests: 'Vídeo revela...' and 'Watch out for...')"
+        ]
+      }
+    ],
+    "not_independently_re_run": [
+      "the other 2 of the claimed 4 new mutations were not specified by name in the coordinator's message and were not independently re-run this round"
+    ],
+    "tree_state_after": "git status --short and git diff --stat both empty after each mutation and at the end of the exercise."
+  },
+  "other_commit_contents_spot_checked": {
+    "SEC-CG-1_migration_hardening": "Confirmed present: news_bot.py/pending_articles_repo.py now have a checked migration path (existence check -> ALTER only if missing -> re-read and confirm, tolerating only 'duplicate column name'). Not independently re-run against a real lock this round (out of scope per coordinator's ask), but the session doc's description matches the code structure I read and the dedicated test file changes (tests/test_database.py) are present in the diff.",
+    "SEC-CG-2_kind_scoped_tokens": "Confirmed present in principle (grep found kind-scoping references in the diff); not independently exercised this round -- out of scope per the coordinator's four numbered asks, which did not include this item.",
+    "flake_fix_addCleanup": "Verified by reading tests/test_integration.py: _IntegrationBase and _PrepPhaseBase now register cleanups via addCleanup at patch-start time rather than a sequential tearDown chain, _stop_quietly swallows exactly the 'stop called on unstarted patcher' RuntimeError, and a dedicated TestIntegrationBaseCleanupIsolation class deliberately breaks an inner TestCase in three ways and asserts all seven news_bot attributes are restored. This directly matches the root-cause narrative in the commit message and SESSION doc."
+  },
+  "test_suite_stability": {
+    "claimed": "1520 -> 1553 passing, deterministic across 6 consecutive full runs (commit message)",
+    "verified": "Ran the full suite twice independently: run 1 = 1553 passed, 354 subtests passed (68.79s); run 2 = 1553 passed, 354 subtests passed (57.37s). Identical pass count both times, no flakes observed, no skips.",
+    "note": "SESSION-2026-07-25.md states '1520 -> 1550 passed (+30, +146 subtests)' in prose, while the commit message and my own run both show 1553 / 354 subtests. This is a minor doc/commit inconsistency (30 vs 33 new tests, 146 vs additional subtests) worth a one-line fix in the session doc, not a functional issue -- the actual code and test count I observed (1553/354) match the commit message, not the prose paragraph."
+  },
+  "probe_original_14": [
+    {"headline": "Mattel drops video revealing the 2027 Corvette Z06 in Super Treasure Hunt spec", "lang": "en", "hold": false, "dropped": false, "genre": null, "markers": []},
+    {"headline": "Vídeo revela o novo Porsche 911 GT3 RS da linha premium", "lang": "pt", "hold": false, "dropped": false, "genre": null, "markers": []},
+    {"headline": "Hot Wheels Convention 2026 exclusive Datsun 510 revealed", "lang": "en", "hold": false, "dropped": false, "genre": null, "markers": []},
+    {"headline": "Hot Wheels Convenção 2026: datas e ingressos anunciados", "lang": "pt", "hold": false, "dropped": true, "genre": "event", "markers": ["convenção", "datas", "ingressos"]},
+    {"headline": "Hot Wheels redesigns mainline packaging for 2027", "lang": "en", "hold": true, "dropped": false, "genre": null, "markers": ["packaging"]},
+    {"headline": "First look: 2027 Nissan Skyline GT-R joins the Fast & Furious series, poster art teased", "lang": "en", "hold": true, "dropped": false, "genre": null, "markers": ["poster"]},
+    {"headline": "Unboxing the 2026 H case: full assortment review", "lang": "en", "hold": false, "dropped": true, "genre": "video", "markers": ["unboxing …", "unboxing", "review", "assortment"]},
+    {"headline": "Unboxing surprises us: 2027 Toyota Supra revealed in Then and Now series", "lang": "en", "hold": false, "dropped": false, "genre": null, "markers": []},
+    {"headline": "Watch: first look at the 2027 Hot Wheels Nationals mainline", "lang": "en", "hold": false, "dropped": true, "genre": "video", "markers": ["watch:"]},
+    {"headline": "Watch out for these five Treasure Hunts on pegs this month", "lang": "en", "hold": false, "dropped": false, "genre": null, "markers": []},
+    {"headline": "Catálogo 2027 da linha mainline da Hot Wheels vaza online", "lang": "pt", "hold": true, "dropped": false, "genre": null, "markers": ["catálogo"]},
+    {"headline": "Hot Wheels 2027 mainline release dates and case numbers revealed", "lang": "en", "hold": false, "dropped": false, "genre": null, "markers": []},
+    {"headline": "Diecast meetup registration now open for the fall swap meet", "lang": "en", "hold": false, "dropped": true, "genre": "event", "markers": ["meetup", "swap meet", "registration"]},
+    {"headline": "First look at the 2027 Ford Mustang Dark Horse in Super Treasure Hunt trim", "lang": "en", "hold": true, "dropped": false, "genre": null, "markers": ["url:poster"]}
+  ],
+  "probe_attack_set": [
+    {"headline": "Video breaks down every 2026 Super Treasure Hunt casting we could find", "lang": "en", "hold": false, "dropped": false, "genre": null, "markers": [], "want": "should-drop-if-genuinely-review-but-may-survive", "result": "false-negative (survives)"},
+    {"headline": "Unboxing reveals three limited-run castings from the September batch", "lang": "en", "hold": false, "dropped": false, "genre": null, "markers": [], "want": "should-drop-if-genuinely-review-but-may-survive", "result": "false-negative (survives)"},
+    {"headline": "Porsche 963 review model revealed at Le Mans Hot Wheels booth", "lang": "en", "hold": false, "dropped": false, "genre": null, "markers": [], "want": "must-not-drop", "result": "correct (kept)"},
+    {"headline": "First hands-on video of the 2027 Corvette Z06 Super Treasure Hunt", "lang": "en", "hold": false, "dropped": true, "genre": "video", "markers": ["vídeo", "hands-on"], "want": "must-not-drop", "result": "FALSE POSITIVE (R2)"},
+    {"headline": "Novo Camaro 2027 é revelado em vídeo pela Mattel", "lang": "pt", "hold": false, "dropped": false, "genre": null, "markers": [], "want": "must-not-drop", "result": "correct (kept)"},
+    {"headline": "Vídeo do novo Camaro 2027 é revelado pela Mattel", "lang": "pt", "hold": false, "dropped": true, "genre": "video", "markers": ["vídeo …", "vídeo"], "want": "ambiguous", "result": "likely FALSE POSITIVE (same class as R1)"},
+    {"headline": "Unboxing the mystery behind Hot Wheels Nationals 2026's venue reveal", "lang": "en", "hold": false, "dropped": true, "genre": "video", "markers": ["unboxing …", "unboxing"], "want": "ambiguous-likely-false-drop", "result": "likely FALSE POSITIVE (R4)"},
+    {"headline": "Vídeo, fotos e detalhes completos do novo Camaro revelado", "lang": "pt", "hold": false, "dropped": false, "genre": null, "markers": [], "want": "must-not-drop", "result": "correct (kept)"},
+    {"headline": "Video of the 2027 Corvette Z06 reveal leaked online", "lang": "en", "hold": false, "dropped": true, "genre": "video", "markers": ["vídeo …", "vídeo"], "want": "must-not-drop", "result": "FALSE POSITIVE (R1, primary finding)"},
+    {"headline": "Video of the new Hot Wheels Legends Tour winner surfaces online", "lang": "en", "hold": false, "dropped": true, "genre": "video", "markers": ["vídeo …", "vídeo"], "want": "must-not-drop", "result": "FALSE POSITIVE (R1, corroborating)"},
+    {"headline": "Video of the 2027 Toyota Supra Super Treasure Hunt debut goes viral", "lang": "en", "hold": false, "dropped": true, "genre": "video", "markers": ["vídeo …", "vídeo"], "want": "must-not-drop", "result": "FALSE POSITIVE (R1, corroborating)"}
+  ],
+  "ship_recommendation": {
+    "decision": "no-ship-until-R1-addressed",
+    "reasoning": "Round 1's F1/F2 are genuinely closed -- I re-ran the exact failing headlines and they now survive, and the fix's own reasoning about reveal-language holds up under independent scrutiny. But attacking the new rule's boundary surfaced a fresh, clean instance of the identical bug class through a different word ('of'/'do' in the NP-head list instead of a bare marker), reproduced on three independent, realistic 'Video of the [car] [leaked/surfaces/goes viral]' headlines -- a standard automotive-journalism template, not a contrived adversarial string. Since DROP remains permanent and unrecoverable and the task explicitly weights this failure mode far above a false hold or an undropped review, I'm not clearing this round either. Recommend narrowing the NP-head preposition list (or adding a semantic guard on what can follow 'of'/'do') and adding 'Video of the X leaked/revealed' to the verification matrix as a red test, then a quick round 3 re-check of just that fix. Everything else in the commit -- migration hardening, token kind-scoping, the flake fix, and the original F1/F2 closure -- is solid and does not need to be revisited."
+  }
+}

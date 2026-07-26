@@ -201,6 +201,113 @@ def _connect() -> sqlite3.Connection:
 # Schema
 # ---------------------------------------------------------------------------
 
+class SchemaMigrationError(RuntimeError):
+    """A column migration in ``init_schema`` did not take effect.
+
+    Raised LOUDLY and early (audit SEC-CG-1). The alternative — swallowing
+    the failure — is far worse than a failed startup: every-tick queries
+    (`list_pending`, `count_pending`, `insert_pending`) name the migrated
+    columns unconditionally, so a silently-absent column turns into
+    `no such column` inside `job()` on every tick and restart, with
+    nothing in the logs pointing at the migration.
+    """
+
+
+#: SQLite's error text for "this column is already there". The ONLY
+#: OperationalError the column migration may treat as success — everything
+#: else (`database is locked`, `no such table`, disk I/O) means the ALTER
+#: did not happen and must not be mistaken for an already-migrated DB.
+_DUPLICATE_COLUMN_ERROR = 'duplicate column name'
+
+
+def _column_exists(conn: sqlite3.Connection, table: str, column: str) -> bool:
+    """True iff ``table`` already has ``column``.
+
+    Uses the ``pragma_table_info`` table-valued function rather than the
+    ``PRAGMA table_info(x)`` statement form specifically so the table name
+    goes through a ``?`` placeholder — no SQL string interpolation
+    anywhere in this module (``TestSqlAudit``).
+    """
+    rows = conn.execute(
+        "SELECT name FROM pragma_table_info(?)", (table,),
+    ).fetchall()
+    return any(r[0] == column for r in rows)
+
+
+def _ensure_column(conn: sqlite3.Connection, table: str, column: str,
+                   ddl: str) -> None:
+    """Idempotently add ``column`` to ``table``, VERIFYING the result.
+
+    SQLite has no ``ADD COLUMN IF NOT EXISTS``. The historical pattern here
+    was `try: ALTER / except sqlite3.OperationalError: pass`, which cannot
+    tell "already migrated" from "the ALTER failed" — a writer holding an
+    IMMEDIATE lock past the busy timeout raises `database is locked`, also
+    an OperationalError, and the migration would report success with the
+    column absent (audit SEC-CG-1).
+
+    Three steps: check → ALTER only if genuinely missing → re-read and
+    confirm. A `duplicate column name` error is the one benign outcome
+    (another process won the race between our check and our ALTER, so the
+    column IS there); anything else is logged and raised.
+
+    ``ddl`` is a module-level literal, never caller data — the parameters
+    exist so the check and the statement cannot drift apart.
+    """
+    if _column_exists(conn, table, column):
+        return
+    try:
+        conn.execute(ddl)
+    except sqlite3.OperationalError as exc:
+        if _DUPLICATE_COLUMN_ERROR in str(exc).lower():
+            # Raced by a concurrent init_schema — the column is present.
+            return
+        logger.error(
+            "schema migration failed: could not add %s.%s (%s: %s)",
+            table, column, type(exc).__name__, exc,
+        )
+        raise SchemaMigrationError(
+            f"could not add column {table}.{column}: {exc}"
+        ) from exc
+    if not _column_exists(conn, table, column):
+        # ALTER reported success but the column is not there. Should be
+        # unreachable; treated as fatal rather than trusted.
+        logger.error(
+            "schema migration verification failed: %s.%s still missing "
+            "after ALTER reported success", table, column,
+        )
+        raise SchemaMigrationError(
+            f"column {table}.{column} missing after a successful ALTER"
+        )
+
+
+#: Column migrations applied by ``init_schema``, as
+#: ``(table, column, DDL literal)``. The table/column pair drives the
+#: existence check; the DDL is a constant string (no interpolation).
+_COLUMN_MIGRATIONS = (
+    # 2026-04-30 (manual-review-workflow, Decision 9 idempotency): preserve
+    # telegraph_url + telegraph_path on the failed row so retry_from_failed
+    # can restore them and a retry doesn't create a second Telegraph page.
+    ('failed_articles', 'telegraph_url',
+     "ALTER TABLE failed_articles ADD COLUMN telegraph_url TEXT"),
+    ('failed_articles', 'telegraph_path',
+     "ALTER TABLE failed_articles ADD COLUMN telegraph_path TEXT"),
+    # 2026-06-XX (cross-source-dedup, Decision 11): model fingerprint JSON
+    # on both pending and published.
+    ('pending_articles', 'model_fingerprint',
+     "ALTER TABLE pending_articles ADD COLUMN model_fingerprint TEXT"),
+    ('published_articles', 'model_fingerprint',
+     "ALTER TABLE published_articles ADD COLUMN model_fingerprint TEXT"),
+    # 2026-07-25 (content-gate): nullable TEXT holding the matched
+    # content-gate markers. NULL (what every pre-migration row gets for
+    # free) means "publishable"; non-NULL means "HELD, awaiting the
+    # operator's «✅ Опубликовать»" and is filtered out of list_pending /
+    # count_pending. Nullable + no default, so the ALTER is safe on the
+    # live prod DB with rows in it.
+    ('pending_articles', 'hold_reason',
+     "ALTER TABLE pending_articles ADD COLUMN hold_reason TEXT"),
+)
+
+
 def init_schema(conn: sqlite3.Connection) -> None:
     """Create the four feature tables if missing. Idempotent.
 
@@ -216,27 +323,12 @@ def init_schema(conn: sqlite3.Connection) -> None:
     conn.execute(_FAILED_DDL)
     conn.execute(_BOT_STATE_DDL)
 
-    # Migration (2026-04-30): preserve telegraph_url + telegraph_path on
-    # the failed row so ``retry_from_failed`` can restore them and a
-    # retry doesn't create a second Telegraph page (Decision 9 idempotency).
-    # SQLite has no ``ADD COLUMN IF NOT EXISTS``; use a try/except so the
-    # ALTER is a no-op on already-migrated DBs.
-    #
-    # Migration (2026-06-XX, cross-source-dedup, Decision 11): store the
-    # model fingerprint JSON on both pending and published — same idempotent
-    # try/except OperationalError pattern.
-    for ddl in (
-        "ALTER TABLE failed_articles ADD COLUMN telegraph_url TEXT",
-        "ALTER TABLE failed_articles ADD COLUMN telegraph_path TEXT",
-        "ALTER TABLE pending_articles ADD COLUMN model_fingerprint TEXT",
-        "ALTER TABLE published_articles ADD COLUMN model_fingerprint TEXT",
-    ):
-        try:
-            conn.execute(ddl)
-        except sqlite3.OperationalError:
-            # Column already exists — idempotent path on subsequent
-            # init_schema calls.
-            pass
+    # Column migrations (see ``_COLUMN_MIGRATIONS`` for what and why).
+    # Each one is check → ALTER-if-missing → verify (``_ensure_column``);
+    # a migration that does not take effect raises SchemaMigrationError
+    # rather than silently leaving the column absent (audit SEC-CG-1).
+    for table, column, ddl in _COLUMN_MIGRATIONS:
+        _ensure_column(conn, table, column, ddl)
     conn.commit()
 
 
@@ -264,11 +356,17 @@ def insert_pending(entry: dict) -> bool:
         # ``_dumps(None)`` returns None → NULL stored. NULL means "not
         # processed by the dedup gate"; ``{'strict':[],'brands':[]}`` (an
         # empty dict-shape, JSON-encoded) means "processed, no brands found".
+        # ``hold_reason`` (content-gate, 2026-07-25): callers that do not
+        # set the key get NULL → a normal publishable row. A non-NULL
+        # marker string parks the row: staged, visible to ``get_pending``,
+        # but invisible to ``list_pending`` / ``count_pending`` until the
+        # operator approves it. Plain TEXT, not JSON — it is a
+        # human-readable marker list rendered straight back into [E036].
         conn.execute(
             "INSERT INTO pending_articles "
             "(link, source_name, feed_url, title, subtitle, paragraphs, "
-            " images, blocks, pub_date, model_fingerprint) "
-            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            " images, blocks, pub_date, model_fingerprint, hold_reason) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
             (
                 entry['link'],
                 entry['source_name'],
@@ -280,6 +378,7 @@ def insert_pending(entry: dict) -> bool:
                 _dumps(entry.get('blocks')),  # NULL-preserving
                 entry.get('pub_date'),
                 _dumps(entry.get('model_fingerprint')),  # NULL-preserving
+                entry.get('hold_reason'),  # NULL-preserving, plain TEXT
             ),
         )
         conn.commit()
@@ -449,9 +548,35 @@ def get_failed(link: str) -> Optional[dict]:
         conn.close()
 
 
+# ---------------------------------------------------------------------------
+# Content-gate hold (2026-07-25).
+#
+# Every helper below that hands rows to a publish, eviction or nag path
+# carries the literal predicate ``hold_reason IS NULL``. A row with a
+# non-NULL ``hold_reason`` is HELD (poster / catalog / packaging post
+# awaiting the operator's «✅ Опубликовать») and must never reach any of
+# them. That predicate IS the operator's rule «нет ответа = не публикуем»:
+# no timer, no auto-publish, no auto-drop — an unapproved row simply stays
+# invisible to the queue forever.
+#
+# The predicate is spelled out inline in each query rather than shared via
+# a module constant on purpose: string-concatenating SQL fragments (even
+# constant ones) is exactly the shape ``TestSqlAudit`` forbids.
+#
+# Deliberately NOT filtered: ``get_pending`` (by-PK accessor — the intake
+# duplicate guard must keep seeing held rows or the same article would be
+# re-staged every tick, and both button resolvers look rows up by link).
+# ---------------------------------------------------------------------------
+
+
 def list_pending() -> list[dict]:
-    """All pending rows in publish order: today's batch first, then
-    the carry-over backlog **oldest-first**.
+    """All PUBLISHABLE pending rows in publish order: today's batch first,
+    then the carry-over backlog **oldest-first**.
+
+    Rows held by the content gate (``hold_reason IS NOT NULL``) are
+    EXCLUDED — the slot loop reads this function, so the exclusion is what
+    guarantees a held article never publishes without an explicit
+    «✅ Опубликовать». Use ``list_held()`` to see them.
 
     Two-tier ordering:
       * Tier 0 — rows whose ``date(fetched_at) = date('now')``: today's
@@ -471,6 +596,7 @@ def list_pending() -> list[dict]:
     try:
         cur = conn.execute(
             "SELECT * FROM pending_articles "
+            "WHERE hold_reason IS NULL "
             "ORDER BY "
             "  CASE WHEN date(fetched_at) = date('now') THEN 0 ELSE 1 END, "
             "  fetched_at ASC"
@@ -484,13 +610,18 @@ def list_pending() -> list[dict]:
 
 def list_pending_stale(hours: int = 48) -> list[dict]:
     """Rows older than ``hours`` with no heads-up ping yet (``notified_at IS
-    NULL``). Caller will ping + ``mark_notified`` for each (Decision 12)."""
+    NULL``). Caller will ping + ``mark_notified`` for each (Decision 12).
+
+    Held rows are excluded: a parked article is old ON PURPOSE, and nagging
+    the operator about it every run would train them to ignore the ping.
+    """
     conn = _connect()
     try:
         # `hours` is parameterised — the SQL body is constant.
         cur = conn.execute(
             "SELECT * FROM pending_articles "
-            "WHERE notified_at IS NULL "
+            "WHERE hold_reason IS NULL "
+            "AND notified_at IS NULL "
             "AND fetched_at < datetime('now', ? || ' hours') "
             "ORDER BY fetched_at ASC",
             (f"-{int(hours)}",),
@@ -504,12 +635,16 @@ def list_pending_stale(hours: int = 48) -> list[dict]:
 
 def list_notified_overdue(grace_hours: int = 2) -> list[dict]:
     """Rows whose ``notified_at`` is older than ``grace_hours`` AND whose
-    ``ru_paragraphs`` is still NULL — the idle-fallback GT-publish pool."""
+    ``ru_paragraphs`` is still NULL — the idle-fallback GT-publish pool.
+
+    Held rows excluded (uniform rule): this pool feeds a publish path.
+    """
     conn = _connect()
     try:
         cur = conn.execute(
             "SELECT * FROM pending_articles "
-            "WHERE notified_at IS NOT NULL "
+            "WHERE hold_reason IS NULL "
+            "AND notified_at IS NOT NULL "
             "AND ru_paragraphs IS NULL "
             "AND notified_at < datetime('now', ? || ' hours') "
             "ORDER BY notified_at ASC",
@@ -524,12 +659,41 @@ def list_notified_overdue(grace_hours: int = 2) -> list[dict]:
 
 def list_pending_for_eviction() -> list[dict]:
     """Rows eligible for overflow fast-track: ``ru_paragraphs IS NULL``,
-    oldest first (Decision 7 — staged rows are never evicted)."""
+    oldest first (Decision 7 — staged rows are never evicted).
+
+    Held rows excluded: the overflow drain exists to relieve the
+    PUBLISHABLE queue, and a held row is not in it. Evicting one would
+    also destroy a decision the operator has not made yet.
+    """
     conn = _connect()
     try:
         cur = conn.execute(
             "SELECT * FROM pending_articles "
-            "WHERE ru_paragraphs IS NULL "
+            "WHERE hold_reason IS NULL "
+            "AND ru_paragraphs IS NULL "
+            "ORDER BY fetched_at ASC"
+        )
+        rows = cur.fetchall()
+        desc = cur.description
+    finally:
+        conn.close()
+    return [_row_to_dict(r, desc, _PENDING_JSON_COLS) for r in rows]
+
+
+def list_held() -> list[dict]:
+    """Rows HELD by the content gate, oldest-first — the operator's
+    «на утверждении» backlog.
+
+    Exact complement of ``list_pending``'s filter: together they partition
+    ``pending_articles``. Read by the daily plan ping so a forgotten hold
+    stays visible instead of silently rotting (the operator's «нет ответа =
+    не публикуем» rule means nothing else will ever surface it).
+    """
+    conn = _connect()
+    try:
+        cur = conn.execute(
+            "SELECT * FROM pending_articles "
+            "WHERE hold_reason IS NOT NULL "
             "ORDER BY fetched_at ASC"
         )
         rows = cur.fetchall()
@@ -554,10 +718,18 @@ def list_failed() -> list[dict]:
 
 
 def count_pending() -> int:
-    """Number of rows currently in the queue."""
+    """Number of PUBLISHABLE rows in the queue (held rows excluded).
+
+    Feeds ``compute_fixed_slots(N=count_pending())`` and the `> 50` backlog
+    warning, so the exclusion keeps a held article from buying the day an
+    extra publish slot it can never fill, or from inflating the backlog
+    alarm with rows the queue cannot drain on its own.
+    """
     conn = _connect()
     try:
-        row = conn.execute("SELECT COUNT(*) FROM pending_articles").fetchone()
+        row = conn.execute(
+            "SELECT COUNT(*) FROM pending_articles WHERE hold_reason IS NULL"
+        ).fetchone()
         return int(row[0])
     finally:
         conn.close()
@@ -813,6 +985,39 @@ def skip_pending(link: str) -> None:
             (link,),
         )
         conn.commit()
+    except Exception:
+        conn.rollback()
+        raise
+    finally:
+        conn.close()
+
+
+def clear_hold(link: str) -> bool:
+    """Release a content-gate hold: ``hold_reason = NULL`` for ``link``.
+
+    The «✅ Опубликовать» half of the [E036] keyboard. The row is already
+    staged (title, body, images, fingerprint), so approval is a single
+    UPDATE — from the next slot on it is an ordinary queue member and
+    publishes in its turn.
+
+    Returns ``True`` when a HELD row was actually released, ``False`` when
+    there was nothing to release (row gone, or already approved). The
+    caller uses that to tell «одобрено» from «статья уже недоступна»
+    without a second round-trip, and a double press resolves to ``False``
+    instead of reporting a fresh approval.
+
+    Never touches ``processed_news`` / ``published_articles``: approving is
+    not publishing, it only unparks the row.
+    """
+    conn = _connect()
+    try:
+        cur = conn.execute(
+            "UPDATE pending_articles SET hold_reason=NULL "
+            "WHERE link=? AND hold_reason IS NOT NULL",
+            (link,),
+        )
+        conn.commit()
+        return cur.rowcount > 0
     except Exception:
         conn.rollback()
         raise
@@ -1084,25 +1289,52 @@ def mark_dedup_degraded_pinged(conn: sqlite3.Connection) -> None:
 # ``finally`` — because the callers (listener thread, alert sender) hold no
 # connection of their own.
 
+#: Token KINDS — which keyboard minted a token (audit SEC-CG-2). The
+#: token store is one flat namespace, and dispatch is by action word, so
+#: without this a token minted for one keyboard could be redeemed by the
+#: other resolver. Reproduced both directions: a dedup token redeemed as
+#: ``hold``/``reject`` silently ``skip_pending``s a NON-held article; a
+#: hold token redeemed as ``dedup``/``keep`` consumes the token with no
+#: state change, leaving the held article PERMANENTLY orphaned (frozen,
+#: no live button, no re-mint path). Each resolver checks the kind and
+#: treats a mismatch as a stale button — without consuming the token.
+REVIEW_TOKEN_KIND_DEDUP = 'dedup'
+REVIEW_TOKEN_KIND_HOLD = 'hold'
+_REVIEW_TOKEN_KINDS = (REVIEW_TOKEN_KIND_DEDUP, REVIEW_TOKEN_KIND_HOLD)
+
+#: Separator between kind and link in the stored value.
+_REVIEW_TOKEN_SEP = '|'
+
+
 def _review_token_key(token: str) -> str:
     """Build the bot_state key for a review token: prefix + token."""
     return f"{_KEY_REVIEW_TOKEN_PREFIX}{token}"
 
 
-def put_review_token(token: str, link: str) -> None:
-    """UPSERT ``review_token:<token>`` → ``link`` in ``bot_state``.
+def put_review_token(token: str, link: str,
+                     kind: str = REVIEW_TOKEN_KIND_DEDUP) -> None:
+    """UPSERT ``review_token:<token>`` → ``<kind>|<link>`` in ``bot_state``.
 
-    A repeat put with the same token overwrites the stored link.
+    A repeat put with the same token overwrites the stored value.
     ``BEGIN IMMEDIATE`` mirrors ``outage_state._set`` — grab the write
     lock up front so the busy handler (not a lock-upgrade deadlock)
     resolves contention with the publish loop.
+
+    ``kind`` records WHICH keyboard minted the token (audit SEC-CG-2).
+    Encoded in the VALUE rather than the key so the change needs no
+    migration and no janitor: tokens written before this change have no
+    kind prefix and read back as ``dedup``, which is what they are — the
+    hold keyboard did not exist then. Defaults to ``dedup`` for the same
+    reason.
     """
+    if kind not in _REVIEW_TOKEN_KINDS:
+        raise ValueError(f"unknown review token kind: {kind!r}")
     conn = _connect()
     try:
         conn.execute("BEGIN IMMEDIATE")
         conn.execute(
             "INSERT OR REPLACE INTO bot_state (key, value) VALUES (?, ?)",
-            (_review_token_key(token), link),
+            (_review_token_key(token), f"{kind}{_REVIEW_TOKEN_SEP}{link}"),
         )
         conn.commit()
     except Exception:
@@ -1112,18 +1344,46 @@ def put_review_token(token: str, link: str) -> None:
         conn.close()
 
 
-def get_review_token_link(token: str) -> Optional[str]:
-    """Return the link stored for ``token``, or ``None`` if unknown
-    (expired, bot restarted, already consumed)."""
+def get_review_token(token: str) -> Optional[tuple]:
+    """Return ``(kind, link)`` for ``token``, or ``None`` if unknown
+    (expired, bot restarted, already consumed).
+
+    Tolerates the pre-SEC-CG-2 value format (a bare link with no kind
+    prefix) by reporting it as ``dedup`` — the only keyboard that existed
+    when such a token could have been written. Splits on the FIRST
+    separator and only when the prefix is a known kind, so a link that
+    happens to contain ``|`` is never mangled.
+    """
     conn = _connect()
     try:
         row = conn.execute(
             "SELECT value FROM bot_state WHERE key=?",
             (_review_token_key(token),),
         ).fetchone()
-        return row[0] if row is not None else None
     finally:
         conn.close()
+    if row is None:
+        return None
+    value = row[0]
+    if not isinstance(value, str):
+        return None
+    prefix, sep, rest = value.partition(_REVIEW_TOKEN_SEP)
+    if sep and prefix in _REVIEW_TOKEN_KINDS:
+        return (prefix, rest)
+    # Legacy value: bare link, minted before token kinds existed.
+    return (REVIEW_TOKEN_KIND_DEDUP, value)
+
+
+def get_review_token_link(token: str) -> Optional[str]:
+    """Return just the link stored for ``token``, or ``None`` if unknown.
+
+    Kind-agnostic convenience wrapper over ``get_review_token`` — used by
+    the listener's decision log, which records what the operator acted on
+    regardless of which keyboard it came from. Resolvers must use
+    ``get_review_token`` so they can enforce the kind.
+    """
+    entry = get_review_token(token)
+    return entry[1] if entry is not None else None
 
 
 def delete_review_token(token: str) -> None:

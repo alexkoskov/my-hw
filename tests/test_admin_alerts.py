@@ -813,6 +813,121 @@ class TestIntakeFunnel(unittest.TestCase):
         'staged': 0,
     }
 
+    # new > 0, nothing staged, the content gate's genre drop ([E037]) is
+    # the dominant stage.
+    GENRE_MAX = {
+        'sources_fetched': 6,
+        'sources_failed': 0,
+        'new_count': 5,
+        'dropped_no_article': 1,
+        'dropped_checklist': 0,
+        'dropped_promo': 0,
+        'dropped_genre': 4,
+        'dropped_dedup_block': 0,
+        'dedup_degraded': 0,
+        'held_for_review': 0,
+        'staged': 0,
+    }
+
+    # A tick where the only intake result was a HOLD ([E036]): the row is
+    # staged, so there is no collapse to report, but the operator must see
+    # that the article is parked rather than queued.
+    HELD_ONLY = {
+        'sources_fetched': 3,
+        'sources_failed': 0,
+        'new_count': 1,
+        'dropped_no_article': 0,
+        'dropped_checklist': 0,
+        'dropped_promo': 0,
+        'dropped_genre': 0,
+        'dropped_dedup_block': 0,
+        'dedup_degraded': 0,
+        'held_for_review': 1,
+        'staged': 1,
+    }
+
+    # ------------------------------------------------------------------
+    # Content-gate counters (2026-07-25)
+    # ------------------------------------------------------------------
+    def test_format_funnel_renders_genre_drops(self):
+        block = admin_alerts._format_funnel(self.GENRE_MAX)
+        self.assertIn("жанр 4", block)
+
+    def test_collapse_note_genre_dominant(self):
+        block = admin_alerts._format_funnel(self.GENRE_MAX)
+        self.assertIn("Где схлопнулось: жанр (4)", block)
+        self.assertNotIn("Где схлопнулось: нет статьи", block)
+
+    def test_funnel_line_counts_genre_in_dropped(self):
+        # 1 no-article + 4 genre = 5.
+        self.assertIn("отсеяно 5",
+                      admin_alerts._format_funnel_line(self.GENRE_MAX))
+
+    def test_format_funnel_renders_held_for_review(self):
+        block = admin_alerts._format_funnel(self.HELD_ONLY)
+        self.assertIn("на утверждение: 1", block)
+
+    def test_held_rows_are_not_counted_as_dropped(self):
+        """A hold is not a drop — it is a deferred decision. Folding it
+        into the «отсеяно» sum would tell the operator the article is
+        gone when it is actually waiting for them."""
+        self.assertIn("отсеяно 0",
+                      admin_alerts._format_funnel_line(self.HELD_ONLY))
+
+    def test_held_only_tick_reports_no_collapse(self):
+        """staged > 0 → nothing collapsed, even though nothing publishable
+        came out of the tick."""
+        self.assertNotIn("Где схлопнулось",
+                         admin_alerts._format_funnel(self.HELD_ONLY))
+
+    def test_legacy_funnel_without_content_gate_keys_still_renders(self):
+        """Back-compat: a funnel dict from before this feature (no
+        `dropped_genre` / `held_for_review`) must render zeros, not raise."""
+        block = admin_alerts._format_funnel(self.DEDUP_COLLAPSE)
+        self.assertIn("жанр 0", block)
+        self.assertIn("Воронка", block)
+
+    # ------------------------------------------------------------------
+    # «На утверждении: N» — the held backlog line on the daily ping
+    # ------------------------------------------------------------------
+    def test_e008_plan_of_day_shows_the_held_backlog(self):
+        slots = [datetime(2026, 5, 10, 10, 0, tzinfo=MSK)]
+        msg = admin_alerts.alert_plan_of_day(2, 2, slots, 0, held_count=3)
+        self.assertIn("На утверждении: 3", msg)
+
+    def test_e008_plan_of_day_hides_the_line_when_nothing_is_held(self):
+        slots = [datetime(2026, 5, 10, 10, 0, tzinfo=MSK)]
+        self.assertNotIn(
+            "На утверждении",
+            admin_alerts.alert_plan_of_day(2, 2, slots, 0, held_count=0))
+
+    def test_e009_quiet_day_shows_the_held_backlog(self):
+        """The important case: the publishable queue is empty and the ONLY
+        thing in the DB is a held article. Nothing else would ever surface
+        it — «нет ответа = не публикуем» has no timer to remind anyone."""
+        msg = admin_alerts.alert_quiet_day(held_count=2)
+        self.assertIn("[E009]", msg)
+        self.assertIn("На утверждении: 2", msg)
+
+    def test_held_count_is_keyword_only_and_optional(self):
+        slots = [datetime(2026, 5, 10, 10, 0, tzinfo=MSK)]
+        # Legacy positional call unchanged.
+        self.assertNotIn(
+            "На утверждении", admin_alerts.alert_plan_of_day(2, 2, slots, 0))
+        self.assertNotIn("На утверждении", admin_alerts.alert_quiet_day())
+        with self.assertRaises(TypeError):
+            admin_alerts.alert_plan_of_day(2, 2, slots, 0, None, 3)
+
+    def test_broken_held_count_does_not_raise(self):
+        slots = [datetime(2026, 5, 10, 10, 0, tzinfo=MSK)]
+        for bad in ("boom", None, object(), -1):
+            with self.subTest(bad=bad):
+                msg = admin_alerts.alert_plan_of_day(
+                    1, 1, slots, 0, held_count=bad)
+                self.assertIn("[E008]", msg)
+                self.assertIn("[E009]",
+                              admin_alerts.alert_quiet_day(held_count=bad))
+
     # ------------------------------------------------------------------
     # _format_funnel — pure helper shape + fail-safety
     # ------------------------------------------------------------------
@@ -1191,6 +1306,298 @@ class TestPromoBlockedAlert(unittest.TestCase):
         msg = admin_alerts.alert_promo_blocked("http://u", None, ["cupom"])
         self.assertIn("[E035]", msg)
         self.assertIn("cupom", msg)
+
+
+class TestHeldForReviewAlert(unittest.TestCase):
+    """[E036] — content-gate HOLD: a poster/catalog/packaging post is
+    staged but parked, and goes out only if the operator approves it."""
+
+    LINK = ("https://t-hunted.blogspot.com/2026/07/"
+            "as-fotos-do-ultimo-poster-da-hot-wheels.html")
+    TITLE = "As fotos do último poster da Hot Wheels 2026"
+
+    def test_e036_core_fields(self):
+        msg = admin_alerts.alert_held_for_review(
+            self.LINK, self.TITLE, ["poster", "url:poster"],
+            buttons_enabled=True,
+        )
+        self.assertIn("[E036]", msg)
+        self.assertIn("🖼", msg)
+        # Substring anchor for the integration tests — do not change.
+        self.assertIn("На утверждение", msg)
+        self.assertIn(self.LINK, msg)
+        self.assertIn(self.TITLE, msg)
+        # Every matched marker is listed so the operator sees WHY.
+        self.assertIn("poster", msg)
+        self.assertIn("url:poster", msg)
+        self.assertIn("Что произошло", msg)
+        self.assertIn("Что сделать", msg)
+        for token in ("**", "```", "__", "]("):
+            self.assertNotIn(token, msg)
+
+    def test_e036_states_that_silence_means_no_publish(self):
+        """The operator's rule, spelled out in the ping: no answer = the
+        article never goes out. Without this line the honest reading of a
+        two-button prompt is «it'll go out if I do nothing»."""
+        msg = admin_alerts.alert_held_for_review(
+            self.LINK, self.TITLE, ["poster"], buttons_enabled=True)
+        self.assertIn("не отвечать", msg)
+        self.assertIn("НИКОГДА не опубликуется", msg)
+
+    def test_e036_both_branches_promise_no_silent_publish(self):
+        """Whether or not buttons render, the ping must never leave the
+        operator thinking the article will go out on its own."""
+        for enabled in (True, False):
+            with self.subTest(buttons_enabled=enabled):
+                msg = admin_alerts.alert_held_for_review(
+                    self.LINK, self.TITLE, ["poster"], buttons_enabled=enabled)
+                self.assertIn("НИКОГДА не опубликуется", msg)
+
+    def test_e036_buttons_enabled_advice_points_at_the_buttons(self):
+        msg = admin_alerts.alert_held_for_review(
+            self.LINK, self.TITLE, ["poster"], buttons_enabled=True)
+        self.assertIn("нажми", msg)
+
+    def test_e036_advice_quotes_the_real_button_labels(self):
+        """Label parity (same guard as [E014]): the advice hardcodes the
+        captions, so renaming a button without the text would re-open the
+        advice-vs-reality drift."""
+        labels = [
+            b.text
+            for row in admin_alerts.build_hold_review_keyboard("tok").inline_keyboard
+            for b in row
+        ]
+        msg = admin_alerts.alert_held_for_review(
+            self.LINK, self.TITLE, ["poster"], buttons_enabled=True)
+        for label in labels:
+            self.assertIn(
+                label, msg,
+                f"button caption {label!r} is not quoted in the [E036] "
+                f"advice — rename the caption and the advice together",
+            )
+
+    def test_e036_buttons_disabled_explains_the_article_is_stuck(self):
+        """Gate closed (default): there are no buttons under the message,
+        so the advice must NOT tell the operator to press one — and must
+        say plainly that this instance cannot release the article."""
+        msg = admin_alerts.alert_held_for_review(
+            self.LINK, self.TITLE, ["poster"], buttons_enabled=False)
+        self.assertIn("[E036]", msg)
+        self.assertIn("На утверждение", msg)
+        self.assertNotIn("нажми", msg)
+        self.assertIn("нечем", msg)
+
+    def test_e036_buttons_disabled_is_the_default(self):
+        """Fail-safe default: a caller that forgets the kwarg must get the
+        no-buttons text, never a promise of buttons that do not exist."""
+        self.assertEqual(
+            admin_alerts.alert_held_for_review(self.LINK, self.TITLE, ["poster"]),
+            admin_alerts.alert_held_for_review(
+                self.LINK, self.TITLE, ["poster"], buttons_enabled=False),
+        )
+
+    def test_e036_buttons_enabled_is_keyword_only(self):
+        with self.assertRaises(TypeError):
+            admin_alerts.alert_held_for_review(
+                self.LINK, self.TITLE, ["poster"], True)
+
+    # -- reason categories (operator split, 2026-07-25) --------------------
+
+    def test_e036_poster_reason_is_the_default(self):
+        """Back-compat: the original single-reason call renders the
+        poster/catalog wording verbatim."""
+        self.assertEqual(
+            admin_alerts.alert_held_for_review(
+                self.LINK, self.TITLE, ["poster"]),
+            admin_alerts.alert_held_for_review(
+                self.LINK, self.TITLE, ["poster"], reason="poster"),
+        )
+        msg = admin_alerts.alert_held_for_review(
+            self.LINK, self.TITLE, ["poster"])
+        self.assertIn("постер / каталог / упаковку", msg)
+
+    def test_e036_video_reason_explains_the_ambiguity(self):
+        """A suspected video review needs a different judgement call than
+        a poster dump — the operator must see WHICH question is being
+        asked, plus why the obvious ones never reach them."""
+        msg = admin_alerts.alert_held_for_review(
+            self.LINK, "Unboxing da caixa J de 2026", ["unboxing …", "unboxing"],
+            reason="video", buttons_enabled=True,
+        )
+        self.assertIn("[E036]", msg)
+        self.assertIn("На утверждение", msg)
+        self.assertIn("видео-обзор", msg)
+        self.assertNotIn("постер / каталог / упаковку", msg)
+        # Markers still say WHY it matched.
+        self.assertIn("unboxing", msg)
+        # And the standing promise holds in this reason too.
+        self.assertIn("НИКОГДА не опубликуется", msg)
+
+    def test_e036_reason_is_keyword_only(self):
+        with self.assertRaises(TypeError):
+            admin_alerts.alert_held_for_review(
+                self.LINK, self.TITLE, ["poster"], "video")
+
+    def test_e036_unknown_reason_falls_back_to_poster_wording(self):
+        """Never render a blank «Что произошло» — an unset/legacy caller
+        gets the original text rather than an empty section."""
+        msg = admin_alerts.alert_held_for_review(
+            self.LINK, self.TITLE, ["poster"], reason="banana")
+        self.assertIn("Что произошло", msg)
+        self.assertIn("постер / каталог / упаковку", msg)
+        self.assertNotIn("None", msg)
+
+    def test_e036_every_reason_keeps_both_advice_branches_honest(self):
+        """The «Что сделать» contract is independent of the reason: with
+        buttons it names them, without buttons it says so plainly."""
+        for reason in admin_alerts._HOLD_REASON_BLOCKS:
+            with self.subTest(reason=reason, buttons=True):
+                msg = admin_alerts.alert_held_for_review(
+                    self.LINK, self.TITLE, ["m"], reason=reason,
+                    buttons_enabled=True)
+                self.assertIn("нажми", msg)
+                self.assertIn("✅ Опубликовать", msg)
+                self.assertIn("НИКОГДА не опубликуется", msg)
+            with self.subTest(reason=reason, buttons=False):
+                msg = admin_alerts.alert_held_for_review(
+                    self.LINK, self.TITLE, ["m"], reason=reason,
+                    buttons_enabled=False)
+                self.assertNotIn("нажми", msg)
+                self.assertIn("нечем", msg)
+                self.assertIn("НИКОГДА не опубликуется", msg)
+
+    def test_e036_reason_blocks_are_non_empty_and_distinct(self):
+        blocks = admin_alerts._HOLD_REASON_BLOCKS
+        self.assertIn(admin_alerts._HOLD_REASON_DEFAULT, blocks)
+        self.assertEqual(len(set(blocks.values())), len(blocks))
+        for reason, text in blocks.items():
+            with self.subTest(reason=reason):
+                self.assertTrue(text.strip())
+
+    def test_e036_empty_markers_render_safely(self):
+        msg = admin_alerts.alert_held_for_review("http://u", "T", [])
+        self.assertIn("[E036]", msg)
+        self.assertNotIn("None", msg)
+
+    def test_e036_long_title_truncated(self):
+        msg = admin_alerts.alert_held_for_review(
+            "http://u", "T" * 5000, ["poster"])
+        self.assertLess(len(msg), 4096)
+        self.assertIn("…", msg)
+        self.assertNotIn("T" * 500, msg)
+
+    def test_e036_non_string_title_does_not_raise(self):
+        msg = admin_alerts.alert_held_for_review("http://u", None, ["poster"])
+        self.assertIn("[E036]", msg)
+        self.assertIn("poster", msg)
+
+
+class TestGenreBlockedAlert(unittest.TestCase):
+    """[E037] — content-gate DROP: a video review or an event
+    announcement is rejected at intake, like a promo post."""
+
+    def test_e037_video_genre(self):
+        msg = admin_alerts.alert_genre_blocked(
+            "https://example.com/2026/07/video.html",
+            "Vídeo: Hot Wheels 2026 linha básica",
+            "video", ["vídeo"],
+        )
+        self.assertIn("[E037]", msg)
+        self.assertIn("🚫", msg)
+        # Substring anchor for the integration tests — do not change.
+        self.assertIn("Отсечён жанр", msg)
+        self.assertIn("видео-обзор", msg)
+        self.assertIn("https://example.com/2026/07/video.html", msg)
+        self.assertIn("Vídeo: Hot Wheels 2026 linha básica", msg)
+        self.assertIn("vídeo", msg)
+        self.assertIn("Что произошло", msg)
+        self.assertIn("Что сделать", msg)
+        # Self-diagnosing: the operator is told how to report a bad rule.
+        self.assertIn("поправим", msg)
+        for token in ("**", "```", "__", "]("):
+            self.assertNotIn(token, msg)
+
+    def test_e037_event_genre(self):
+        msg = admin_alerts.alert_genre_blocked(
+            "https://example.com/2026/07/conv.html",
+            "Convenção Hot Wheels 2026: datas e ingressos",
+            "event", ["convenção", "ingressos"],
+        )
+        self.assertIn("[E037]", msg)
+        self.assertIn("ивент", msg)
+        self.assertIn("convenção", msg)
+        self.assertIn("ingressos", msg)
+
+    def test_e037_unknown_genre_falls_back_to_the_raw_key(self):
+        """Defensive: a future genre key with no Russian label must still
+        render something truthful instead of 'None'."""
+        msg = admin_alerts.alert_genre_blocked(
+            "http://u", "T", "podcast", ["x"])
+        self.assertIn("[E037]", msg)
+        self.assertIn("podcast", msg)
+        self.assertNotIn("None", msg)
+
+    def test_e037_empty_markers_render_safely(self):
+        msg = admin_alerts.alert_genre_blocked("http://u", "T", "video", [])
+        self.assertIn("[E037]", msg)
+        self.assertNotIn("None", msg)
+
+    def test_e037_long_title_truncated(self):
+        msg = admin_alerts.alert_genre_blocked(
+            "http://u", "T" * 5000, "video", ["vídeo"])
+        self.assertLess(len(msg), 4096)
+        self.assertIn("…", msg)
+        self.assertNotIn("T" * 500, msg)
+
+    def test_e037_non_string_title_does_not_raise(self):
+        msg = admin_alerts.alert_genre_blocked("http://u", None, "event", ["expo"])
+        self.assertIn("[E037]", msg)
+        self.assertIn("expo", msg)
+
+
+class TestHoldReviewKeyboard(unittest.TestCase):
+    """build_hold_review_keyboard — the [E036] keyboard. Callback grammar
+    ``hd:a:<token>`` (approve) / ``hd:r:<token>`` (reject), approve FIRST.
+    Coexists with the [E014] ``dd:`` grammar."""
+
+    @staticmethod
+    def _flat_buttons(kb):
+        return [b for row in kb.inline_keyboard for b in row]
+
+    def test_returns_inline_keyboard_markup(self):
+        self.assertIsInstance(
+            admin_alerts.build_hold_review_keyboard("tok"), InlineKeyboardMarkup)
+
+    def test_two_buttons_callback_data(self):
+        buttons = self._flat_buttons(
+            admin_alerts.build_hold_review_keyboard("tok"))
+        self.assertEqual(len(buttons), 2)
+        self.assertEqual(
+            [b.callback_data for b in buttons],
+            ["hd:a:tok", "hd:r:tok"],  # approve first, reject second
+        )
+
+    def test_button_labels(self):
+        texts = [b.text for b in self._flat_buttons(
+            admin_alerts.build_hold_review_keyboard("tok"))]
+        self.assertIn("✅ Опубликовать", texts[0])
+        self.assertIn("🚫 Не публиковать", texts[1])
+
+    def test_callback_data_under_64_bytes(self):
+        token = secrets.token_urlsafe(9)
+        for b in self._flat_buttons(
+                admin_alerts.build_hold_review_keyboard(token)):
+            self.assertLessEqual(len(b.callback_data.encode("utf-8")), 64)
+
+    def test_prefix_differs_from_the_dedup_keyboard(self):
+        """The two keyboards must never produce the same callback_data —
+        a shared prefix would route an approve press into the dedup
+        resolver (which would answer «устарела» and lose the decision)."""
+        hold = {b.callback_data for b in self._flat_buttons(
+            admin_alerts.build_hold_review_keyboard("tok"))}
+        dedup = {b.callback_data for b in self._flat_buttons(
+            admin_alerts.build_dedup_review_keyboard("tok"))}
+        self.assertEqual(hold & dedup, set())
 
 
 class TestOpenRouterLowBalanceAlert(unittest.TestCase):

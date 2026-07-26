@@ -51,6 +51,9 @@ EXPECTED_PENDING = {
     'pub_date':      {'type': 'TEXT',      'notnull': 0, 'dflt_value': None,                    'pk': 0},
     # Migration 2026-06-XX (cross-source-dedup, Decision 11).
     'model_fingerprint': {'type': 'TEXT',  'notnull': 0, 'dflt_value': None,                    'pk': 0},
+    # Migration 2026-07-25 (content-gate): NULL = publishable, non-NULL =
+    # held for operator approval and invisible to list_pending/count_pending.
+    'hold_reason':   {'type': 'TEXT',      'notnull': 0, 'dflt_value': None,                    'pk': 0},
 }
 
 EXPECTED_PUBLISHED = {
@@ -1391,8 +1394,88 @@ class TestReviewTokenStore(_TmpDbCase):
                 ('tok',),
             ).fetchone()
         self.assertIsNotNone(prefixed)
-        self.assertEqual(prefixed[0], 'http://x/a')
+        # Value carries the kind (SEC-CG-2), key layout unchanged.
+        self.assertEqual(prefixed[0], 'dedup|http://x/a')
         self.assertIsNone(bare)
+
+
+class TestReviewTokenKinds(_TmpDbCase):
+    """Audit SEC-CG-2 — tokens record WHICH keyboard minted them.
+
+    The store is one flat namespace and the listener dispatches by action
+    word, so without a kind a token from one keyboard can be redeemed by
+    the other resolver. Encoded in the VALUE (``<kind>|<link>``) rather
+    than the key, so no migration and no janitor are needed: values
+    written before this change have no prefix and read back as ``dedup``,
+    which is what they are — the hold keyboard did not exist then.
+    """
+
+    def test_kind_roundtrips(self):
+        repo.put_review_token('t1', 'http://x/a',
+                              kind=repo.REVIEW_TOKEN_KIND_HOLD)
+        self.assertEqual(repo.get_review_token('t1'),
+                         (repo.REVIEW_TOKEN_KIND_HOLD, 'http://x/a'))
+
+    def test_default_kind_is_dedup(self):
+        """Back-compat for every existing call site."""
+        repo.put_review_token('t2', 'http://x/b')
+        self.assertEqual(repo.get_review_token('t2'),
+                         (repo.REVIEW_TOKEN_KIND_DEDUP, 'http://x/b'))
+
+    def test_legacy_bare_link_value_reads_as_dedup(self):
+        """A token minted before this change (raw link, no prefix) must
+        still resolve sanely rather than becoming an unusable button."""
+        with self._conn() as c:
+            c.execute(
+                "INSERT INTO bot_state (key, value) VALUES (?, ?)",
+                ('review_token:legacy', 'http://x/legacy'),
+            )
+            c.commit()
+        self.assertEqual(repo.get_review_token('legacy'),
+                         (repo.REVIEW_TOKEN_KIND_DEDUP, 'http://x/legacy'))
+        self.assertEqual(repo.get_review_token_link('legacy'),
+                         'http://x/legacy')
+
+    def test_a_link_containing_the_separator_is_not_mangled(self):
+        """Split on the FIRST separator and only for a KNOWN kind, so a
+        URL with a pipe in the query string round-trips intact."""
+        link = 'http://x/a?q=1|2|3'
+        repo.put_review_token('t3', link, kind=repo.REVIEW_TOKEN_KIND_HOLD)
+        self.assertEqual(repo.get_review_token('t3'),
+                         (repo.REVIEW_TOKEN_KIND_HOLD, link))
+
+    def test_unknown_prefix_is_treated_as_a_legacy_link(self):
+        """A value whose prefix is not a known kind is a link, not a
+        kind — never silently reinterpreted."""
+        with self._conn() as c:
+            c.execute(
+                "INSERT INTO bot_state (key, value) VALUES (?, ?)",
+                ('review_token:weird', 'ftp|http://x/c'),
+            )
+            c.commit()
+        self.assertEqual(repo.get_review_token('weird'),
+                         (repo.REVIEW_TOKEN_KIND_DEDUP, 'ftp|http://x/c'))
+
+    def test_unknown_token_returns_none(self):
+        self.assertIsNone(repo.get_review_token('never-stored'))
+
+    def test_put_rejects_an_unknown_kind(self):
+        """Fail loudly at the mint site rather than writing a token no
+        resolver will ever accept."""
+        with self.assertRaises(ValueError):
+            repo.put_review_token('t4', 'http://x/d', kind='banana')
+        self.assertIsNone(repo.get_review_token('t4'))
+
+    def test_get_review_token_link_is_kind_agnostic(self):
+        """The listener's decision log records what was acted on, whatever
+        keyboard it came from."""
+        repo.put_review_token('t5', 'http://x/e',
+                              kind=repo.REVIEW_TOKEN_KIND_HOLD)
+        self.assertEqual(repo.get_review_token_link('t5'), 'http://x/e')
+
+    def test_kinds_are_distinct(self):
+        self.assertNotEqual(repo.REVIEW_TOKEN_KIND_DEDUP,
+                            repo.REVIEW_TOKEN_KIND_HOLD)
 
 
 class TestConnectBusyTimeout(_TmpDbCase):
@@ -1559,6 +1642,388 @@ class TestConcurrentWriters(_TmpDbCase):
 
 
 # ---------------- SQL audit ----------------
+
+class TestHoldState(_TmpDbCase):
+    """``hold_reason`` — the content-gate hold state (2026-07-25).
+
+    A held row lives in ``pending_articles`` exactly like any other row,
+    but it is INVISIBLE to the publishable queue: ``list_pending`` (the
+    slot loop's row source) and ``count_pending`` (the slot-computation
+    and backlog-warning input) both filter it out. That single SQL
+    predicate is the load-bearing guarantee behind the operator's rule
+    «нет ответа = не публикуем»: with no approval the row simply never
+    reaches the publish path, forever, with no timer involved.
+    """
+
+    def _insert_held(self, link, reason='poster', fetched_at=None):
+        with self._conn() as c:
+            if fetched_at is None:
+                c.execute(
+                    "INSERT INTO pending_articles "
+                    "(link, source_name, title, paragraphs, hold_reason) "
+                    "VALUES (?, ?, ?, ?, ?)",
+                    (link, 't-hunted', 'held title', '[]', reason),
+                )
+            else:
+                c.execute(
+                    "INSERT INTO pending_articles "
+                    "(link, source_name, title, paragraphs, hold_reason, "
+                    " fetched_at) VALUES (?, ?, ?, ?, ?, ?)",
+                    (link, 't-hunted', 'held title', '[]', reason,
+                     fetched_at),
+                )
+            c.commit()
+
+    # -- schema -----------------------------------------------------------
+
+    def test_column_add_is_idempotent_on_an_existing_db(self):
+        """The ALTER runs on every ``init_schema`` call — including on the
+        live prod DB, which already has rows and (after the first run)
+        already has the column. Re-running must neither raise nor clobber."""
+        conn = sqlite3.connect(self.db_path)
+        try:
+            conn.execute(
+                "INSERT INTO pending_articles "
+                "(link, source_name, title, paragraphs, hold_reason) "
+                "VALUES ('http://x/keepme', 'mattel', 't', '[]', 'poster')"
+            )
+            conn.commit()
+            repo.init_schema(conn)
+            repo.init_schema(conn)
+            row = conn.execute(
+                "SELECT hold_reason FROM pending_articles WHERE link=?",
+                ('http://x/keepme',),
+            ).fetchone()
+            self.assertEqual(row[0], 'poster')
+        finally:
+            conn.close()
+
+    def test_legacy_rows_get_null_hold_reason(self):
+        """Prod-safety: rows written before the migration must come back as
+        publishable (NULL), never as accidentally-held."""
+        with self._conn() as c:
+            c.execute(
+                "INSERT INTO pending_articles "
+                "(link, source_name, title, paragraphs) "
+                "VALUES ('http://legacy/1', 'mattel', 't', '[]')"
+            )
+            c.commit()
+        row = repo.get_pending('http://legacy/1')
+        self.assertIsNone(row['hold_reason'])
+        self.assertEqual(
+            [r['link'] for r in repo.list_pending()], ['http://legacy/1'])
+
+    # -- insert -----------------------------------------------------------
+
+    def test_insert_pending_persists_hold_reason(self):
+        entry = _sample_entry(link='http://hold/insert')
+        entry['hold_reason'] = 'poster, url:poster'
+        self.assertTrue(repo.insert_pending(entry))
+        self.assertEqual(
+            repo.get_pending('http://hold/insert')['hold_reason'],
+            'poster, url:poster',
+        )
+
+    def test_insert_pending_without_hold_reason_stays_null(self):
+        entry = _sample_entry(link='http://hold/plain')
+        self.assertTrue(repo.insert_pending(entry))
+        self.assertIsNone(repo.get_pending('http://hold/plain')['hold_reason'])
+
+    # -- queue visibility -------------------------------------------------
+
+    def test_list_pending_excludes_held_rows(self):
+        repo.insert_pending(_sample_entry(link='http://free/1'))
+        self._insert_held('http://held/1')
+        self.assertEqual(
+            [r['link'] for r in repo.list_pending()], ['http://free/1'])
+
+    def test_count_pending_excludes_held_rows(self):
+        """Slot computation (``compute_fixed_slots(N=count_pending())``) and
+        the backlog warning both read this — a held row must not buy the
+        day an extra publish slot it can never fill."""
+        repo.insert_pending(_sample_entry(link='http://free/2'))
+        self._insert_held('http://held/2')
+        self._insert_held('http://held/3')
+        self.assertEqual(repo.count_pending(), 1)
+
+    def test_get_pending_still_sees_a_held_row(self):
+        """``get_pending`` is the by-PK accessor used by the intake
+        duplicate guard and both button resolvers — it must keep seeing
+        held rows, otherwise the same article would be re-staged daily."""
+        self._insert_held('http://held/4')
+        self.assertIsNotNone(repo.get_pending('http://held/4'))
+
+    def test_list_pending_stale_excludes_held_rows(self):
+        """The 48h «залежалась» heads-up must not nag forever about an
+        article that is deliberately parked awaiting approval."""
+        self._insert_held(
+            'http://held/stale', fetched_at="2020-01-01 00:00:00")
+        self.assertEqual(repo.list_pending_stale(48), [])
+
+    def test_list_notified_overdue_excludes_held_rows(self):
+        """Uniform rule: no repo helper that feeds a publish path may hand
+        out a held row (this pool is dormant, but the rule holds)."""
+        self._insert_held('http://held/overdue')
+        with self._conn() as c:
+            c.execute(
+                "UPDATE pending_articles SET notified_at=? WHERE link=?",
+                ("2020-01-01 00:00:00", 'http://held/overdue'),
+            )
+            c.commit()
+        self.assertEqual(repo.list_notified_overdue(2), [])
+
+    def test_list_pending_for_eviction_excludes_held_rows(self):
+        """Overflow fast-track drains the publishable queue; a held row is
+        not part of it and must not be evicted behind the operator's back."""
+        self._insert_held('http://held/evict')
+        self.assertEqual(repo.list_pending_for_eviction(), [])
+
+    # -- list_held --------------------------------------------------------
+
+    def test_list_held_returns_only_held_rows_oldest_first(self):
+        repo.insert_pending(_sample_entry(link='http://free/3'))
+        self._insert_held('http://held/new', fetched_at="2026-07-25 10:00:00")
+        self._insert_held('http://held/old', fetched_at="2026-07-01 10:00:00")
+        self.assertEqual(
+            [r['link'] for r in repo.list_held()],
+            ['http://held/old', 'http://held/new'],
+        )
+
+    def test_list_held_deserializes_json_columns(self):
+        entry = _sample_entry(link='http://held/json', paragraphs=['a', 'b'])
+        entry['hold_reason'] = 'catálogo'
+        repo.insert_pending(entry)
+        row = repo.list_held()[0]
+        self.assertEqual(row['paragraphs'], ['a', 'b'])
+        self.assertEqual(row['hold_reason'], 'catálogo')
+
+    def test_list_held_is_empty_when_nothing_is_held(self):
+        repo.insert_pending(_sample_entry(link='http://free/4'))
+        self.assertEqual(repo.list_held(), [])
+
+    # -- clear_hold -------------------------------------------------------
+
+    def test_clear_hold_releases_the_row_into_the_queue(self):
+        self._insert_held('http://held/approve')
+        self.assertTrue(repo.clear_hold('http://held/approve'))
+        self.assertIsNone(repo.get_pending('http://held/approve')['hold_reason'])
+        self.assertEqual(
+            [r['link'] for r in repo.list_pending()], ['http://held/approve'])
+        self.assertEqual(repo.count_pending(), 1)
+        self.assertEqual(repo.list_held(), [])
+
+    def test_clear_hold_returns_false_when_the_row_is_gone(self):
+        """Distinguishes «одобрено» from «статья уже недоступна» in the
+        button resolver without a second round-trip."""
+        self.assertFalse(repo.clear_hold('http://never/existed'))
+
+    def test_clear_hold_returns_false_when_the_row_is_not_held(self):
+        """Already approved (or never held): nothing to release. Keeps a
+        double press from reporting a fresh approval."""
+        repo.insert_pending(_sample_entry(link='http://free/5'))
+        self.assertFalse(repo.clear_hold('http://free/5'))
+
+    def test_clear_hold_touches_only_the_named_row(self):
+        self._insert_held('http://held/a')
+        self._insert_held('http://held/b')
+        repo.clear_hold('http://held/a')
+        self.assertEqual([r['link'] for r in repo.list_held()],
+                         ['http://held/b'])
+
+    # -- reject path ------------------------------------------------------
+
+    def test_skip_pending_removes_a_held_row_and_pins_it(self):
+        """«🚫 Не публиковать» reuses ``skip_pending`` — it must work on a
+        held row too (DELETE + processed_news pin so it never comes back)."""
+        self._insert_held('http://held/reject')
+        repo.skip_pending('http://held/reject')
+        self.assertIsNone(repo.get_pending('http://held/reject'))
+        self.assertEqual(repo.list_held(), [])
+        with self._conn() as c:
+            row = c.execute(
+                "SELECT 1 FROM processed_news WHERE link=?",
+                ('http://held/reject',),
+            ).fetchone()
+        self.assertIsNotNone(row)
+
+
+class TestColumnMigrationHardening(unittest.TestCase):
+    """Audit SEC-CG-1 — the idempotent column migration must VERIFY, not
+    assume.
+
+    The old shape (`try: ALTER / except sqlite3.OperationalError: pass`)
+    could not distinguish "already migrated" from "the ALTER failed":
+    a writer holding an IMMEDIATE lock past the busy timeout raises
+    `database is locked`, which is ALSO an OperationalError. The migration
+    would report success with the column absent — and because
+    `list_pending` / `count_pending` / `insert_pending` name the migrated
+    columns unconditionally, every subsequent tick would die on
+    `no such column` with nothing pointing at the real cause.
+    """
+
+    def _fresh(self):
+        conn = sqlite3.connect(':memory:')
+        self.addCleanup(conn.close)
+        return conn
+
+    def _locked_db_missing_hold_reason(self):
+        """A REAL locked database, not a mocked exception: migrate a
+        tempfile DB, drop ``hold_reason`` back off it, then have a second
+        connection hold an IMMEDIATE (write) lock. Reads still work — so
+        the existence check succeeds — but the ALTER needs EXCLUSIVE and
+        genuinely raises ``database is locked`` once the busy timeout
+        expires. Returns the connection init_schema should choke on."""
+        fd, path = tempfile.mkstemp(suffix='.db')
+        os.close(fd)
+        self.addCleanup(lambda: os.path.exists(path) and os.unlink(path))
+
+        migrating = sqlite3.connect(path, timeout=0.1)
+        self.addCleanup(migrating.close)
+        repo.init_schema(migrating)
+        migrating.execute(
+            "ALTER TABLE pending_articles DROP COLUMN hold_reason")
+        migrating.commit()
+
+        blocker = sqlite3.connect(path, timeout=0.1)
+        self.addCleanup(blocker.close)
+        blocker.execute("BEGIN IMMEDIATE")
+        blocker.execute(
+            "INSERT OR REPLACE INTO bot_state (key, value) VALUES ('x', '1')")
+        self.addCleanup(blocker.rollback)
+        return migrating, path
+
+    #: The migration entry under test, read from the live tuple.
+    HOLD_MIGRATION = ('pending_articles', 'hold_reason',
+                      "ALTER TABLE pending_articles ADD COLUMN hold_reason TEXT")
+
+    def test_hold_migration_entry_is_the_live_one(self):
+        """The lock tests below drive ``_ensure_column`` with this triple;
+        pin it against the real table so they can't test a fossil."""
+        self.assertIn(self.HOLD_MIGRATION, repo._COLUMN_MIGRATIONS)
+
+    def test_locked_db_during_alter_raises_instead_of_silently_passing(self):
+        """THE finding, reproduced against a REAL lock (not a mocked
+        exception): the ALTER genuinely raises `database is locked`, which
+        is an OperationalError just like `duplicate column name` — and it
+        must NOT be mistaken for an already-migrated no-op.
+
+        Drives ``_ensure_column`` rather than ``init_schema`` because the
+        preceding ``CREATE TABLE IF NOT EXISTS`` statements need the write
+        lock too and would fail first; ``init_schema``'s propagation is
+        covered by ``test_verification_catches_an_alter_that_did_not_take``.
+        """
+        migrating, _path = self._locked_db_missing_hold_reason()
+
+        with self.assertRaises(repo.SchemaMigrationError) as ctx:
+            repo._ensure_column(migrating, *self.HOLD_MIGRATION)
+
+        # The error names the column so the operator can act on it.
+        self.assertIn('hold_reason', str(ctx.exception))
+        # And the column really is still absent — i.e. had this been
+        # swallowed, every subsequent tick would die on `no such column`.
+        self.assertFalse(repo._column_exists(
+            migrating, 'pending_articles', 'hold_reason'))
+
+    def test_locked_db_failure_is_logged_before_it_is_raised(self):
+        migrating, _path = self._locked_db_missing_hold_reason()
+        with self.assertLogs('pending_articles_repo', level='ERROR') as cm:
+            with self.assertRaises(repo.SchemaMigrationError):
+                repo._ensure_column(migrating, *self.HOLD_MIGRATION)
+        self.assertTrue(
+            any('schema migration failed' in line for line in cm.output),
+            cm.output,
+        )
+
+    def test_a_swallowed_lock_would_break_the_publish_path(self):
+        """Why this is HIGH and not cosmetic: with the column absent, the
+        every-tick queries that name it fail. Pinning the consequence
+        keeps the severity argument honest if anyone relaxes the guard."""
+        migrating, path = self._locked_db_missing_hold_reason()
+        with self.assertRaises(repo.SchemaMigrationError):
+            repo._ensure_column(migrating, *self.HOLD_MIGRATION)
+
+        with patch.object(news_bot, 'DB_FILE', path):
+            for call in (repo.count_pending, repo.list_pending, repo.list_held):
+                with self.subTest(call=call.__name__):
+                    with self.assertRaises(sqlite3.OperationalError) as ctx:
+                        call()
+                    self.assertIn('hold_reason', str(ctx.exception))
+
+    def test_duplicate_column_race_is_still_tolerated(self):
+        """The one benign OperationalError: another process added the
+        column between our check and our ALTER. Simulated by forcing the
+        existence check to report 'missing' on an already-migrated DB, so
+        the real ALTER raises a real `duplicate column name`."""
+        conn = self._fresh()
+        repo.init_schema(conn)
+        with patch.object(repo, '_column_exists', return_value=False):
+            repo.init_schema(conn)  # must not raise
+        # And the DB is still intact.
+        self.assertTrue(repo._column_exists(
+            conn, 'pending_articles', 'hold_reason'))
+
+    def test_alter_is_skipped_entirely_when_the_column_exists(self):
+        """Idempotent path stays cheap and side-effect-free: a second
+        init_schema issues no ALTER at all. ``sqlite3.Connection.execute``
+        is read-only, so spy through a thin proxy."""
+        conn = self._fresh()
+        repo.init_schema(conn)
+        seen = []
+
+        class _SpyConn:
+            def __init__(self, inner):
+                self._inner = inner
+
+            def execute(self, sql, *args, **kwargs):
+                seen.append(sql)
+                return self._inner.execute(sql, *args, **kwargs)
+
+            def commit(self):
+                return self._inner.commit()
+
+        repo.init_schema(_SpyConn(conn))
+        self.assertEqual(
+            [s for s in seen if s.strip().upper().startswith('ALTER')], [])
+
+    def test_verification_catches_an_alter_that_did_not_take(self):
+        """Belt-and-braces: ALTER reports success but the column is not
+        there → fatal, never trusted."""
+        conn = self._fresh()
+
+        class _LyingConn:
+            """ALTER silently does nothing; everything else is real."""
+
+            def __init__(self, inner):
+                self._inner = inner
+
+            def execute(self, sql, *args, **kwargs):
+                if sql.strip().upper().startswith('ALTER'):
+                    return None
+                return self._inner.execute(sql, *args, **kwargs)
+
+            def commit(self):
+                return self._inner.commit()
+
+        with self.assertRaises(repo.SchemaMigrationError) as ctx:
+            repo.init_schema(_LyingConn(conn))
+        self.assertIn('missing after a successful ALTER', str(ctx.exception))
+
+    def test_every_migration_entry_is_verifiable(self):
+        """Structural invariant: the (table, column) pair that drives the
+        existence check must match the DDL literal, or the check would
+        silently guard the wrong column."""
+        for table, column, ddl in repo._COLUMN_MIGRATIONS:
+            with self.subTest(column=f'{table}.{column}'):
+                self.assertIn(f'ALTER TABLE {table} ', ddl)
+                self.assertIn(f'ADD COLUMN {column} ', ddl)
+
+    def test_all_migrated_columns_exist_after_init_on_a_fresh_db(self):
+        conn = self._fresh()
+        repo.init_schema(conn)
+        for table, column, _ddl in repo._COLUMN_MIGRATIONS:
+            with self.subTest(column=f'{table}.{column}'):
+                self.assertTrue(repo._column_exists(conn, table, column))
+
 
 class TestSqlAudit(unittest.TestCase):
     """Grep-style audit: repo source must not hand-roll SQL with f-strings / %

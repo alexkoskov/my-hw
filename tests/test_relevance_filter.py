@@ -13,8 +13,10 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 import news_bot
 from news_bot import (
+    _hold_for_review_reason,
     _is_hot_wheels_relevant,
     _is_promo_article,
+    _is_rejected_genre,
     _is_text_only_checklist,
     filter_new_entries,
 )
@@ -1038,6 +1040,798 @@ class TestPromoMarkerSets(unittest.TestCase):
                     marker.startswith(('nossa', 'em nossa', 'our')),
                     f"{marker!r} is not a first-person seller phrase",
                 )
+
+
+class _ContentGateFixtures:
+    """Article fixtures shared by the hold / genre detector suites."""
+
+    # The real 2026-07-25 prod post the operator complained about: four
+    # sentences of "here are the photos", 12 images, and a video our
+    # parser cannot embed. It also SAYS «no vídeo abaixo» — the precedence
+    # rule (hold beats drop) is tested against exactly this text.
+    POSTER_LINK = ('https://t-hunted.blogspot.com/2026/07/'
+                   'as-fotos-do-ultimo-poster-da-hot-wheels.html')
+    POSTER_TITLE = 'As fotos do último poster da Hot Wheels 2026'
+
+    def _poster(self):
+        return (
+            {'title': self.POSTER_TITLE, 'link': self.POSTER_LINK},
+            {
+                'title': self.POSTER_TITLE,
+                'subtitle': '',
+                'paragraphs': [
+                    'Saiu o último poster da Hot Wheels para 2026.',
+                    'As fotos mostram os carros da linha básica.',
+                    'Confira todas as imagens abaixo.',
+                    'Veja também no vídeo abaixo.',
+                ],
+            },
+        )
+
+    def _entry(self, title, link='https://example.com/2026/07/news.html'):
+        return ({'title': title, 'link': link},
+                {'title': title, 'paragraphs': ['Corpo do texto.']})
+
+
+class TestHoldForReviewReason(_ContentGateFixtures, unittest.TestCase):
+    """``_hold_for_review_reason`` — category 1 of the content gate
+    (2026-07-25): poster / catalog / packaging posts are STAGED BUT HELD
+    and go out only if the operator presses «✅ Опубликовать».
+
+    Detection is SUBJECT-anchored: only the title and the (title-derived)
+    URL slug are scanned. Body text is deliberately out of scope — an
+    article that merely MENTIONS a poster is not a poster post.
+
+    Threshold is strict on purpose: ONE marker holds. The operator said
+    they would not have published the incident post, and a hold is
+    cheap and reversible (one button press), unlike a publish.
+    """
+
+    # --- the incident -----------------------------------------------------
+
+    def test_incident_poster_post_is_held(self):
+        entry, article = self._poster()
+        self.assertTrue(_hold_for_review_reason(entry, article))
+
+    def test_incident_markers_name_the_reason(self):
+        entry, article = self._poster()
+        markers = _hold_for_review_reason(entry, article)
+        self.assertIn('poster', markers)
+
+    def test_incident_holds_on_the_title_alone(self):
+        """Slug is corroboration, not the anchor — strip it and the title
+        still holds."""
+        entry, article = self._poster()
+        entry['link'] = 'https://t-hunted.blogspot.com/2026/07/p1.html'
+        self.assertTrue(_hold_for_review_reason(entry, article))
+
+    def test_slug_hit_is_reported_with_a_url_prefix(self):
+        """A marker found only in the slug is diagnosable as such."""
+        entry, article = self._entry(
+            'Novidades da semana',
+            'https://t-hunted.blogspot.com/2026/07/o-catalogo-2026.html',
+        )
+        markers = _hold_for_review_reason(entry, article)
+        self.assertIn('url:catálogo', markers)
+
+    # --- positives --------------------------------------------------------
+
+    def test_pt_catalog_post_is_held(self):
+        entry, article = self._entry('O catálogo Hot Wheels 2026 completo')
+        self.assertIn('catálogo', _hold_for_review_reason(entry, article))
+
+    def test_en_catalog_post_is_held(self):
+        entry, article = self._entry(
+            'The full 2026 Hot Wheels catalog is here')
+        self.assertIn('catalog', _hold_for_review_reason(entry, article))
+
+    def test_en_catalogue_spelling_is_held(self):
+        entry, article = self._entry('2026 Hot Wheels catalogue leaked')
+        self.assertTrue(_hold_for_review_reason(entry, article))
+
+    def test_en_packaging_post_is_held(self):
+        entry, article = self._entry(
+            'Hot Wheels is changing its packaging in 2026')
+        self.assertIn('packaging', _hold_for_review_reason(entry, article))
+
+    def test_pt_packaging_post_is_held(self):
+        entry, article = self._entry(
+            'Hot Wheels muda a embalagem da linha básica em 2026')
+        self.assertIn('embalagem', _hold_for_review_reason(entry, article))
+
+    def test_blister_and_cardback_posts_are_held(self):
+        for title, marker in (
+            ('Novo blister da Hot Wheels chega em 2026', 'blister'),
+            ('New Hot Wheels cardback design revealed', 'cardback'),
+            ('Hot Wheels 2026 card art gets a redesign', 'card art'),
+        ):
+            with self.subTest(title=title):
+                entry, article = self._entry(title)
+                self.assertIn(
+                    marker, _hold_for_review_reason(entry, article))
+
+    def test_case_and_accent_insensitive(self):
+        entry, article = self._entry('AS FOTOS DO ULTIMO POSTER DA HOT WHEELS')
+        self.assertTrue(_hold_for_review_reason(entry, article))
+
+    # --- negatives --------------------------------------------------------
+
+    def test_convention_exclusive_car_reveal_is_not_held(self):
+        entry, article = self._entry(
+            'Hot Wheels Convention 2026 exclusive Datsun revealed')
+        self.assertFalse(_hold_for_review_reason(entry, article))
+
+    def test_ordinary_model_news_is_not_held(self):
+        entry, article = self._entry(
+            'Hot Wheels 2026 Super Treasure Hunt Nissan Skyline revealed')
+        self.assertFalse(_hold_for_review_reason(entry, article))
+
+    def test_restock_news_is_not_held(self):
+        entry, article = self._entry(
+            'Hot Wheels Premium chega às lojas em setembro')
+        self.assertFalse(_hold_for_review_reason(entry, article))
+
+    def test_checklist_post_is_not_held(self):
+        entry, article = self._entry(
+            'Hot Wheels 2026 J Case Contents Checklist')
+        self.assertFalse(_hold_for_review_reason(entry, article))
+
+    def test_body_mention_of_a_poster_does_not_hold(self):
+        """Subject-anchored, not keyword soup: the body may talk about the
+        poster all it likes as long as the post is about something else."""
+        entry = {'title': 'Hot Wheels reveals the 2026 Datsun 510',
+                 'link': 'https://example.com/2026/07/datsun-510.html'}
+        article = {
+            'title': 'Hot Wheels reveals the 2026 Datsun 510',
+            'paragraphs': [
+                'The car also shows up on the 2026 poster and in the '
+                'catalog spread, next to the new packaging.',
+            ],
+        }
+        self.assertFalse(_hold_for_review_reason(entry, article))
+
+    def test_word_boundaries_are_respected(self):
+        """Folding is word-bounded: a marker must not fire on a longer
+        word that merely contains it."""
+        for title in (
+            'Hot Wheels posterior wing redesign explained',
+            'Hot Wheels cataloguing tips for collectors',
+        ):
+            with self.subTest(title=title):
+                entry, article = self._entry(title)
+                self.assertFalse(_hold_for_review_reason(entry, article))
+
+    # --- robustness -------------------------------------------------------
+
+    def test_empty_and_missing_inputs_do_not_crash(self):
+        for entry, article in (
+            ({}, {}),
+            ({'title': None, 'link': None}, {'paragraphs': None}),
+            (None, None),
+            ({'link': 'https://example.com/x'}, {}),
+        ):
+            with self.subTest(entry=entry):
+                self.assertEqual(_hold_for_review_reason(entry, article), [])
+
+    def test_malformed_non_string_fields_do_not_raise(self):
+        entry = {'title': ['not', 'a', 'string'], 'link': 42}
+        article = {'title': None, 'paragraphs': 'not a list'}
+        self.assertEqual(_hold_for_review_reason(entry, article), [])
+
+    def test_unparseable_url_does_not_raise(self):
+        entry = {'title': 'Ordinary news', 'link': 'http://[oops'}
+        self.assertEqual(
+            _hold_for_review_reason(entry, {'paragraphs': []}), [])
+
+    def test_title_is_char_capped(self):
+        """Scan bound: a megabyte-sized title cannot stall intake, so a
+        marker past the cap is not scanned."""
+        title = 'a' * (news_bot._PROMO_SCAN_MAX_CHARS + 50) + ' poster'
+        entry, article = self._entry(title)
+        self.assertFalse(_hold_for_review_reason(entry, article))
+
+
+class TestIsRejectedGenre(_ContentGateFixtures, unittest.TestCase):
+    """``_is_rejected_genre`` — categories 2 and 3 of the content gate:
+    video reviews and events/conventions are DROPPED at intake (like the
+    promo filter), with an [E037] ping.
+
+    Returns ``(genre, markers)``; ``(None, [])`` means keep. Same
+    subject-anchored scan as the hold detector (title + URL slug only).
+
+    The event rule is deliberately NARROW — see
+    ``test_convention_exclusive_car_reveal_survives``: a convention name
+    is a place, not a subject. Only an ORGANIZATIONAL signal (dates,
+    tickets, registration, schedule…) makes the post about the event.
+
+    Review round 1 (F1/F2) applied the SAME discipline to VIDEO: the bare
+    word «video»/«vídeo»/«unboxing» used as ordinary headline language in
+    a genuine car reveal used to be dropped — and a DROP is permanent.
+    The video rule now needs either SUBJECT POSITION (the genre word heads
+    the title) or a second review-shaped signal. See
+    ``TestVideoRuleVerificationMatrix`` for the full both-sides matrix.
+    """
+
+    # --- video reviews ----------------------------------------------------
+
+    def test_pt_video_post_is_dropped(self):
+        entry, article = self._entry(
+            'Vídeo: Hot Wheels 2026 linha básica completa')
+        genre, markers, _branch = _is_rejected_genre(entry, article)
+        self.assertEqual(genre, 'video')
+        self.assertIn('vídeo:', markers)
+
+    def test_unboxing_post_is_dropped(self):
+        """Subject position without a colon: «Unboxing DA caixa …» — the
+        genre word heads a noun phrase, so the unboxing IS the subject."""
+        entry, article = self._entry(
+            'Unboxing da caixa J de 2026 da Hot Wheels')
+        genre, markers, _branch = _is_rejected_genre(entry, article)
+        self.assertEqual(genre, 'video')
+        self.assertIn('unboxing …', markers)
+
+    def test_assista_post_is_dropped(self):
+        entry, article = self._entry(
+            'Assista ao review da linha Boulevard 2026')
+        self.assertEqual(_is_rejected_genre(entry, article).genre, 'video')
+
+    def test_watch_colon_lead_is_dropped(self):
+        entry, article = self._entry(
+            'Watch: the 2026 Hot Wheels Legends Tour final run')
+        genre, markers, _branch = _is_rejected_genre(entry, article)
+        self.assertEqual(genre, 'video')
+        self.assertIn('watch:', markers)
+
+    def test_en_video_post_is_dropped(self):
+        """Not subject position («Video review:» — the separator follows
+        `review`, not `video`), but two independent signals."""
+        entry, article = self._entry(
+            'Video review: every 2026 Hot Wheels Super Treasure Hunt')
+        genre, markers, _branch = _is_rejected_genre(entry, article)
+        self.assertEqual(genre, 'video')
+        self.assertIn('vídeo', markers)
+        self.assertIn('review', markers)
+
+    def test_youtube_post_with_a_review_signal_is_dropped(self):
+        entry, article = self._entry(
+            'Novo vídeo no YouTube: análise completa da caixa H de 2026')
+        self.assertEqual(_is_rejected_genre(entry, article).genre, 'video')
+
+    def test_two_genre_words_satisfy_the_second_signal(self):
+        """Two distinct genre words are two independent signals in their
+        own right — no review word needed.
+
+        The title deliberately does NOT lead with a genre word: an earlier
+        version of this test used «Assista ao unboxing …», which actually
+        resolves via branch (A2)'s noun-phrase form and so never reached
+        branch (B) at all (code review round 2)."""
+        entry, article = self._entry(
+            'Check the full video unboxing here for the 2027 lineup')
+        genre, _markers, branch = _is_rejected_genre(entry, article)
+        self.assertEqual(genre, 'video')
+        self.assertEqual(branch, 'video_signals')
+
+    # --- video: the false-positive side -----------------------------------
+
+    def test_article_that_merely_embeds_a_video_survives(self):
+        """The operator's rule: a post that CONTAINS a video is not a video
+        review — the video has to be the subject."""
+        entry = {'title': 'Hot Wheels reveals the 2026 Datsun 510',
+                 'link': 'https://example.com/2026/07/datsun-510.html'}
+        article = {
+            'title': 'Hot Wheels reveals the 2026 Datsun 510',
+            'paragraphs': [
+                'Watch the reveal in the video below, and assista também '
+                'ao unboxing no canal do YouTube.',
+            ],
+        }
+        self.assertEqual(_is_rejected_genre(entry, article).genre, None)
+
+    def test_watch_out_for_is_not_a_video_post(self):
+        """`watch` only ever counts in subject position — otherwise
+        ordinary editorial English («watch out for…», «a car worth
+        watching») would be dropped."""
+        for title in (
+            'Watch out for these five 2026 Treasure Hunts',
+            'The 2026 casting worth watching this year',
+        ):
+            with self.subTest(title=title):
+                entry, article = self._entry(title)
+                self.assertEqual(_is_rejected_genre(entry, article).genre, None)
+
+    def test_youtube_channel_news_without_a_review_signal_survives(self):
+        """One genre word and nothing else is not proof of genre — news
+        ABOUT a channel is still news."""
+        entry, article = self._entry(
+            'Novo canal no YouTube mostra a linha 2026')
+        self.assertEqual(_is_rejected_genre(entry, article).genre, None)
+
+    # --- events -----------------------------------------------------------
+
+    def test_pt_convention_with_dates_and_tickets_is_dropped(self):
+        entry, article = self._entry(
+            'Convenção Hot Wheels 2026: datas e ingressos já disponíveis')
+        genre, markers, _branch = _is_rejected_genre(entry, article)
+        self.assertEqual(genre, 'event')
+        self.assertIn('convenção', markers)
+        self.assertIn('ingressos', markers)
+
+    def test_en_convention_with_organizational_words_is_dropped(self):
+        entry, article = self._entry(
+            'Hot Wheels Collectors Convention 2026 will be held in Chicago')
+        genre, markers, _branch = _is_rejected_genre(entry, article)
+        self.assertEqual(genre, 'event')
+        self.assertIn('convention', markers)
+        self.assertIn('will be held', markers)
+
+    def test_expo_with_registration_is_dropped(self):
+        entry, article = self._entry(
+            'Diecast Expo 2026: registration opens Monday')
+        self.assertEqual(_is_rejected_genre(entry, article).genre, 'event')
+
+    def test_pt_meetup_with_schedule_is_dropped(self):
+        entry, article = self._entry(
+            'Encontro de colecionadores: programação e credenciamento')
+        self.assertEqual(_is_rejected_genre(entry, article).genre, 'event')
+
+    def test_nationals_with_tickets_is_dropped(self):
+        entry, article = self._entry(
+            'Hot Wheels Nationals 2026 tickets sell out in a day')
+        self.assertEqual(_is_rejected_genre(entry, article).genre, 'event')
+
+    # --- events: the CRITICAL false-positive side -------------------------
+
+    def test_convention_exclusive_car_reveal_survives(self):
+        """THE guard rail. A convention-exclusive casting reveal is real
+        model news — the kind of post the channel exists for. The mere
+        NAME of a convention must never be enough to drop."""
+        for title in (
+            'Hot Wheels Convention 2026 exclusive Datsun revealed',
+            'Exclusivo da convenção 2026: o Datsun 510 revelado',
+            'Nationals 2026 exclusive Mustang gets a Spectraflame finish',
+            'Every Hot Wheels Legends Tour winner, ranked',
+        ):
+            with self.subTest(title=title):
+                entry, article = self._entry(title)
+                self.assertEqual(
+                    _is_rejected_genre(entry, article).genre, None,
+                    f"{title!r} is model news, not an event announcement",
+                )
+
+    def test_event_body_details_do_not_drop_a_car_reveal(self):
+        """Subject-anchored: the organizational detail may live in the
+        BODY of a car-reveal post without turning it into an event post."""
+        entry = {'title': 'Hot Wheels Convention 2026 exclusive Datsun revealed',
+                 'link': 'https://example.com/2026/07/conv-datsun.html'}
+        article = {
+            'title': 'Hot Wheels Convention 2026 exclusive Datsun revealed',
+            'paragraphs': [
+                'The convention will be held in Los Angeles; tickets and '
+                'registration open in March, and the full schedule is out.',
+            ],
+        }
+        self.assertEqual(_is_rejected_genre(entry, article).genre, None)
+
+    def test_organizational_words_without_an_event_name_survive(self):
+        """The other half of the AND: «dates» alone is ordinary release
+        language («release dates», «datas de lançamento»)."""
+        for title in (
+            'Hot Wheels 2026 mainline release dates confirmed',
+            'Datas de lançamento da linha básica 2026',
+        ):
+            with self.subTest(title=title):
+                entry, article = self._entry(title)
+                self.assertEqual(_is_rejected_genre(entry, article).genre, None)
+
+    # --- other negatives --------------------------------------------------
+
+    def test_ordinary_news_is_not_a_rejected_genre(self):
+        entry, article = self._entry(
+            'Hot Wheels Premium chega às lojas em setembro')
+        self.assertEqual(_is_rejected_genre(entry, article).genre, None)
+
+    def test_checklist_post_is_not_a_rejected_genre(self):
+        entry, article = self._entry(
+            'Hot Wheels 2026 J Case Contents Checklist')
+        self.assertEqual(_is_rejected_genre(entry, article).genre, None)
+
+    # --- robustness -------------------------------------------------------
+
+    def test_empty_and_missing_inputs_do_not_crash(self):
+        for entry, article in (
+            ({}, {}),
+            ({'title': None, 'link': None}, {'paragraphs': None}),
+            (None, None),
+        ):
+            with self.subTest(entry=entry):
+                self.assertEqual(_is_rejected_genre(entry, article).genre, None)
+
+    def test_malformed_non_string_fields_do_not_raise(self):
+        entry = {'title': {'nope': 1}, 'link': ['a']}
+        article = {'title': 7, 'paragraphs': 'not a list'}
+        self.assertEqual(_is_rejected_genre(entry, article).genre, None)
+
+    def test_unparseable_url_does_not_raise(self):
+        entry = {'title': 'Ordinary news', 'link': 'http://[oops'}
+        self.assertEqual(
+            _is_rejected_genre(entry, {'paragraphs': []}).genre, None)
+
+
+class TestVideoRuleVerificationMatrix(_ContentGateFixtures, unittest.TestCase):
+    """Review round 1, findings F1 + F2 — the both-sides matrix for the
+    VIDEO rule.
+
+    F1 (blocking): a genuine car-REVEAL headline that merely CONTAINS the
+    word «video»/«vídeo» used as ordinary language was dropped — and a
+    DROP is permanent and unrecoverable. F2 (same class): «Unboxing» used
+    as an ordinary verb. The video rule had no equivalent of the AND-guard
+    the event rule got for the convention-name case.
+
+    Fixed rule — a video post must prove the video is the SUBJECT, either:
+
+      (A) SUBJECT POSITION — the genre word HEADS the title, followed
+          either by a separator («Vídeo: …», «Watch: …») or by a
+          determiner/preposition that makes it head a noun phrase
+          («Unboxing THE 2026 H case …», «Assista AO …»). A genre word
+          followed by a VERB is a clause, i.e. news ABOUT something
+          («Vídeo revela o Porsche», «Unboxing surprises us»), and does
+          NOT count; or
+      (B) TWO INDEPENDENT SIGNALS — a genre word plus a review-shaped
+          co-marker (review / análise / hands-on / assortment / abrimos /
+          full case …), or two distinct genre words.
+
+    Every row below is a required outcome, taken verbatim from the review.
+    """
+
+    # Genuine model news — a false DROP here is unrecoverable.
+    MUST_NOT_DROP = (
+        # F1, EN: 'video' as an ordinary noun in a reveal headline.
+        'Mattel drops video revealing the 2027 Corvette Z06 in Super '
+        'Treasure Hunt spec',
+        # F1, PT: 'Vídeo' heads the title but is the SUBJECT OF A VERB.
+        'Vídeo revela o novo Porsche 911 GT3 RS da linha premium',
+        # F2: 'Unboxing' as an ordinary verb heading a clause.
+        'Unboxing surprises us: 2027 Toyota Supra revealed in mainline spec',
+        # Pre-existing guard — must stay passing.
+        'Watch out for these five Treasure Hunts in the 2026 J case',
+        # --- review ROUND 2 -------------------------------------------
+        # R1: "Video of the [thing] [verb]" — a standard automotive-
+        # journalism template. Grammatically identical to the required-drop
+        # «Unboxing da caixa J» (genre word + genitive + noun phrase); the
+        # FINITE VERB is what makes it a news clause.
+        'Video of the 2027 Corvette Z06 reveal leaked online',
+        'Video of the new HW Legends Tour winner surfaces online',
+        'Video of the 2027 Toyota Supra STH debut goes viral',
+        # R2: preview coverage of a real casting — 'hands-on' is
+        # preview-journalism vocabulary, not proof of a review.
+        'First hands-on video of the 2027 Corvette Z06 STH',
+        # --- code review ROUND 2 ---------------------------------------
+        # 'watch' is an imperative VERB, not a noun heading a labelled
+        # headline, so "Watch <determiner> …" is just ordinary English and
+        # says nothing about video content. The noun-phrase branch must
+        # never accept it — only the explicit «Watch:» convention does.
+        'Watch this space for more Treasure Hunt reveals coming soon',
+        'Watch these five castings climb in value',
+        'Watch our favourite 2026 mainline picks',
+        'Watch every Treasure Hunt from the J case',
+        'Watch this collector build a full 2026 set',
+        'Watch all the 2027 Corvette Z06 details',
+    )
+
+    # The genre the operator actually rejected.
+    MUST_DROP = (
+        # Subject position via separator.
+        'Watch: first look at the 2027 HW Nationals mainline',
+        # Subject position via noun-phrase head + a pile of review words.
+        'Unboxing the 2026 H case: full assortment review',
+        'Vídeo: abrimos a caixa do lote Q completo',
+        # PT equivalents of our own.
+        'Vídeo: unboxing da caixa J completa de 2026',
+        'Assista à análise completa da linha Boulevard 2026',
+    )
+
+    def test_genuine_model_news_is_never_dropped(self):
+        for title in self.MUST_NOT_DROP:
+            with self.subTest(title=title):
+                entry, article = self._entry(title)
+                self.assertEqual(
+                    _is_rejected_genre(entry, article).genre, None,
+                    f"{title!r} is genuine model news — a DROP here is "
+                    f"permanent and unrecoverable",
+                )
+
+    def test_real_video_posts_are_still_dropped(self):
+        for title in self.MUST_DROP:
+            with self.subTest(title=title):
+                entry, article = self._entry(title)
+                genre, markers, branch = _is_rejected_genre(entry, article)
+                self.assertEqual(
+                    genre, 'video',
+                    f"{title!r} is the genre the operator rejected",
+                )
+                self.assertTrue(markers)
+                # Every drop names the rule that fired, so the outcome can
+                # be re-pointed per branch without touching the detector.
+                self.assertIn(branch, news_bot._GENRE_BRANCH_ACTION)
+
+    def test_reveal_language_does_not_rescue_a_subject_position_video(self):
+        """Justifies NOT adding reveal words as a blanket negative signal:
+        the operator's own required case «Watch: FIRST LOOK at …» carries
+        reveal language and must still drop. Suppression would have to be
+        limited to branch (B), where it would instead punch a hole through
+        «Video review: … reveals …» — a real video review."""
+        entry, article = self._entry(
+            'Watch: first look at the 2027 HW Nationals mainline')
+        self.assertEqual(_is_rejected_genre(entry, article).genre, 'video')
+
+    def test_a_headline_verb_suppresses_the_noun_phrase_branch(self):
+        """R1's mechanism, isolated: the SAME noun-phrase shape drops
+        without a finite verb and survives with one. Pins the
+        discriminator rather than the individual headlines."""
+        pairs = (
+            ('Unboxing da caixa J de 2026 da Hot Wheels',
+             'Unboxing da caixa J de 2026 vazou online'),
+            ('Unboxing the 2026 H case from the September batch',
+             'Unboxing the 2026 H case leaked online'),
+        )
+        for label, news_clause in pairs:
+            with self.subTest(label=label):
+                entry, article = self._entry(label)
+                self.assertEqual(
+                    _is_rejected_genre(entry, article).branch, 'video_np',
+                    f"{label!r} is a label-style title — it should drop",
+                )
+            with self.subTest(news_clause=news_clause):
+                entry, article = self._entry(news_clause)
+                self.assertIsNone(
+                    _is_rejected_genre(entry, article).genre,
+                    f"{news_clause!r} has a finite verb — it is news",
+                )
+
+    def test_headline_verbs_do_not_suppress_the_separator_branch(self):
+        """Branch (A1) is unambiguous and stays unconditional: «Vídeo: …»
+        announces a video whatever the rest of the sentence does."""
+        entry, article = self._entry('Vídeo: o Corvette Z06 vazou online')
+        self.assertEqual(
+            _is_rejected_genre(entry, article).branch, 'video_lead')
+
+    def test_separator_only_markers_never_reach_the_noun_phrase_branch(self):
+        """Structural half of the «Watch this …» fix: the two lead regexes
+        are built from DIFFERENT marker sets, so the separator-only words
+        are unreachable via branch (A2) by construction, not by luck."""
+        for marker in news_bot._GENRE_VIDEO_LEAD_ONLY_MARKERS:
+            token = news_bot._promo_fold(marker).strip()
+            with self.subTest(marker=marker):
+                # A1 accepts it...
+                self.assertIsNotNone(
+                    news_bot._GENRE_VIDEO_LEAD_SEP_RE.match(f'{token}: x'))
+                # ...A2 never does, for any noun-phrase head.
+                for head in news_bot._GENRE_VIDEO_NP_HEADS:
+                    self.assertIsNone(
+                        news_bot._GENRE_VIDEO_LEAD_NP_RE.match(
+                            f'{token} {head} thing'),
+                        f"{marker!r} must not qualify via the NP branch",
+                    )
+
+    def test_noun_like_markers_still_reach_the_noun_phrase_branch(self):
+        """...and the fix must not disarm branch (A2) for the markers it
+        exists for."""
+        for marker in news_bot._GENRE_VIDEO_MARKERS:
+            token = news_bot._promo_fold(marker).strip()
+            with self.subTest(marker=marker):
+                self.assertIsNotNone(
+                    news_bot._GENRE_VIDEO_LEAD_NP_RE.match(f'{token} the x'))
+
+    def test_hands_on_is_no_longer_a_review_marker(self):
+        """R2: preview vocabulary must not complete the two-signal bar."""
+        for word in ('hands-on', 'first impressions'):
+            with self.subTest(word=word):
+                self.assertNotIn(word, news_bot._GENRE_VIDEO_REVIEW_MARKERS)
+
+    def test_the_slug_alone_cannot_prove_subject_position(self):
+        """Subject position is a TITLE property (it needs word order and
+        punctuation a slug does not preserve). A reveal whose slug happens
+        to start with the genre word must survive."""
+        entry = {
+            'title': 'Mattel drops video revealing the 2027 Corvette Z06',
+            'link': 'https://example.com/2026/07/video-revealing-z06.html',
+        }
+        article = {'title': entry['title'], 'paragraphs': ['Body.']}
+        self.assertEqual(_is_rejected_genre(entry, article).genre, None)
+
+
+class TestContentGatePrecedence(_ContentGateFixtures, unittest.TestCase):
+    """HOLD beats DROP. The incident post is about a poster AND says «no
+    vídeo abaixo» — it must reach the operator for a decision, not be
+    silently binned as a video post.
+
+    The precedence lives in ``job()`` (hold is evaluated first and the
+    genre check is skipped on a hold), so it is pinned here at the
+    detector level and again end-to-end in ``test_integration``.
+    """
+
+    def test_incident_post_holds_even_though_it_mentions_a_video(self):
+        entry, article = self._poster()
+        self.assertTrue(_hold_for_review_reason(entry, article))
+
+    def test_poster_video_title_is_both_but_hold_wins(self):
+        """Worst case: BOTH detectors fire on the same title. The gate
+        must hold, never drop."""
+        entry, article = self._entry(
+            'Vídeo: as fotos do novo poster da Hot Wheels 2026')
+        self.assertTrue(_hold_for_review_reason(entry, article))
+        self.assertEqual(_is_rejected_genre(entry, article).genre, 'video')
+        # job()'s ordering resolves the tie — see
+        # tests/test_integration.py::TestContentGateIntake.
+
+
+class TestContentGateMarkerSets(unittest.TestCase):
+    """Structural invariants of the content-gate marker tuples, mirroring
+    ``TestPromoMarkerSets``. Derived from the LIVE tuples so a reworded or
+    misfiled marker fails loudly instead of silently weakening the gate."""
+
+    ALL_TIERS = (
+        '_HOLD_TITLE_MARKERS',
+        '_GENRE_VIDEO_MARKERS',
+        '_GENRE_VIDEO_LEAD_ONLY_MARKERS',
+        '_GENRE_VIDEO_REVIEW_MARKERS',
+        '_GENRE_EVENT_NAME_MARKERS',
+        '_GENRE_EVENT_ORG_MARKERS',
+    )
+
+    def test_tiers_are_non_empty(self):
+        for name in self.ALL_TIERS:
+            with self.subTest(tier=name):
+                self.assertTrue(getattr(news_bot, name))
+
+    def test_tiers_are_pairwise_disjoint(self):
+        """A marker in two tiers would make one category silently satisfy
+        another's rule (e.g. an event ORG word that also names an event
+        would drop on its own, re-opening the reveal false positive)."""
+        tiers = {name: set(getattr(news_bot, name)) for name in self.ALL_TIERS}
+        for a, b in itertools.combinations(sorted(tiers), 2):
+            with self.subTest(pair=(a, b)):
+                self.assertEqual(
+                    tiers[a] & tiers[b], set(), f"marker(s) in both {a} and {b}")
+
+    def test_no_two_markers_fold_to_the_same_token(self):
+        """Matching runs on the folded form, so «catálogo» and «catalogo»
+        would be one rule with two names — and would be reported twice in
+        the operator's marker list."""
+        for name in self.ALL_TIERS:
+            folded = [news_bot._promo_fold(m) for m in getattr(news_bot, name)]
+            with self.subTest(tier=name):
+                self.assertEqual(
+                    len(folded), len(set(folded)),
+                    f"{name} has markers that fold to the same token",
+                )
+
+    def test_no_marker_folds_to_empty(self):
+        """A marker made only of punctuation would fold to the bare
+        padding string and then match EVERY article."""
+        for name in self.ALL_TIERS:
+            for marker in getattr(news_bot, name):
+                with self.subTest(marker=marker):
+                    self.assertNotEqual(
+                        news_bot._promo_fold(marker).strip(), '')
+
+    def test_every_marker_is_in_its_folded_lookup(self):
+        for name, folded_name in (
+            ('_HOLD_TITLE_MARKERS', '_HOLD_TITLE_FOLDED'),
+            ('_GENRE_VIDEO_MARKERS', '_GENRE_VIDEO_FOLDED'),
+            ('_GENRE_VIDEO_REVIEW_MARKERS', '_GENRE_VIDEO_REVIEW_FOLDED'),
+            ('_GENRE_EVENT_NAME_MARKERS', '_GENRE_EVENT_NAME_FOLDED'),
+            ('_GENRE_EVENT_ORG_MARKERS', '_GENRE_EVENT_ORG_FOLDED'),
+        ):
+            with self.subTest(tier=name):
+                self.assertEqual(
+                    {m for m, _f in getattr(news_bot, folded_name)},
+                    set(getattr(news_bot, name)),
+                )
+
+    def test_no_review_marker_contains_a_video_marker(self):
+        """Double-count guard (the promo filter's round-1 bug): a review
+        co-marker like 'case unboxing' would supply BOTH signals from one
+        phrase and silently collapse the two-signal bar back to one."""
+        video = [news_bot._promo_fold(m).strip()
+                 for m in news_bot._GENRE_VIDEO_MARKERS]
+        for marker in news_bot._GENRE_VIDEO_REVIEW_MARKERS:
+            folded = news_bot._promo_fold(marker)
+            for word in video:
+                with self.subTest(review=marker, video=word):
+                    self.assertNotIn(
+                        f' {word} ', folded,
+                        f"review marker {marker!r} contains video marker "
+                        f"{word!r} — one phrase would satisfy both signals",
+                    )
+
+    def test_lead_markers_are_the_union_of_anywhere_and_lead_only(self):
+        """Subject position must consider EVERY genre word; a word missing
+        here would be undetectable in the «Vídeo: …» headline form."""
+        self.assertEqual(
+            set(news_bot._GENRE_VIDEO_LEAD_MARKERS),
+            set(news_bot._GENRE_VIDEO_MARKERS)
+            | set(news_bot._GENRE_VIDEO_LEAD_ONLY_MARKERS),
+        )
+        # Every one of them is reachable from the compiled lead regexes.
+        for marker in news_bot._GENRE_VIDEO_LEAD_MARKERS:
+            token = news_bot._promo_fold(marker).strip()
+            title = f'{token}: x'
+            with self.subTest(marker=marker):
+                self.assertEqual(
+                    news_bot._genre_video_subject_marker(
+                        title, news_bot._promo_fold(title)),
+                    (f'{marker}:', 'video_lead'),
+                )
+
+    def test_headline_verbs_are_disjoint_from_genre_and_np_heads(self):
+        """A word that is both a genre marker and a 'this is a clause'
+        verb would make the rule fight itself; one that is both an NP head
+        and a verb would suppress the very branch it enables."""
+        verbs = set(news_bot._GENRE_HEADLINE_VERBS)
+        self.assertEqual(verbs & set(news_bot._GENRE_VIDEO_LEAD_MARKERS), set())
+        self.assertEqual(verbs & set(news_bot._GENRE_VIDEO_NP_HEADS), set())
+        self.assertEqual(
+            verbs & set(news_bot._GENRE_VIDEO_REVIEW_MARKERS), set())
+
+    def test_no_headline_verb_folds_onto_a_common_function_word(self):
+        """Accent folding makes PT «é» collapse to «e» ("and"), which
+        would suppress branch (A2) on nearly every Portuguese title. Pin
+        the whole class, not just that one word."""
+        common = {'e', 'a', 'o', 'os', 'as', 'de', 'do', 'da', 'em', 'um',
+                  'the', 'of', 'and', 'to', 'in'}
+        for verb in news_bot._GENRE_HEADLINE_VERBS:
+            folded = news_bot._promo_fold(verb).strip()
+            with self.subTest(verb=verb):
+                self.assertNotIn(folded, common)
+
+    def test_every_branch_has_a_declared_action(self):
+        """``_GENRE_BRANCH_ACTION`` is the single policy table: a branch
+        missing from it would silently fall back to 'drop'.
+
+        The SHIPPED values are pinned separately in
+        ``TestContentGateIntake::test_branch_action_map_matches_the_operator_decision``;
+        this one guards the table's shape."""
+        self.assertEqual(
+            set(news_bot._GENRE_BRANCH_ACTION),
+            {'video_lead', 'video_np', 'video_signals', 'event'},
+        )
+        for branch, action in news_bot._GENRE_BRANCH_ACTION.items():
+            with self.subTest(branch=branch):
+                self.assertIn(action, ('drop', 'hold'))
+
+    def test_only_unambiguous_branches_are_allowed_to_drop(self):
+        """Operator decision 2026-07-25 «очевидные резать, спорные
+        спрашивать», stated as an invariant rather than a value list: a
+        DROP is unrecoverable, so only branches that need no judgement may
+        take it. The two evidence-based video branches must HOLD."""
+        for branch in ('video_np', 'video_signals'):
+            with self.subTest(branch=branch):
+                self.assertEqual(
+                    news_bot._GENRE_BRANCH_ACTION[branch], 'hold',
+                    f"{branch} is evidence, not proof — a wrong drop here "
+                    f"is unrecoverable, a wrong hold costs one button press",
+                )
+
+    def test_np_heads_contain_no_verbs_that_would_reopen_the_fp(self):
+        """The noun-phrase branch is what separates «Unboxing THE case»
+        from «Unboxing SURPRISES us». Any verb (or 'out') slipping into
+        this closed-class list re-opens F1/F2."""
+        for forbidden in ('out', 'surprises', 'revela', 'reveals',
+                          'shows', 'mostra', 'revealing'):
+            with self.subTest(word=forbidden):
+                self.assertNotIn(forbidden, news_bot._GENRE_VIDEO_NP_HEADS)
+
+    def test_content_gate_markers_do_not_collide_with_promo_markers(self):
+        """The two filters run back to back on the same article; an
+        overlapping marker would make one drop reason masquerade as the
+        other in the operator's alert."""
+        gate = set()
+        for name in self.ALL_TIERS:
+            gate |= set(getattr(news_bot, name))
+        promo = (set(news_bot._PROMO_STRONG_MARKERS)
+                 | set(news_bot._PROMO_WEAK_MARKERS))
+        self.assertEqual(gate & promo, set())
 
 
 if __name__ == '__main__':

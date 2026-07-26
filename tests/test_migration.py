@@ -60,6 +60,10 @@ EXPECTED_PENDING_COLUMNS = {
     # `{strict:[...], brands:[...]}` populated by the dedup gate; NULL on
     # pre-feature rows / dedup-degraded path.
     'model_fingerprint': {'type': 'TEXT',  'notnull': 0, 'dflt_value': None,                'pk': 0},
+    # Migration 2026-07-25 (content-gate): NULL = publishable; a non-NULL
+    # marker string means the row is HELD for operator approval and is
+    # filtered out of list_pending / count_pending until «✅ Опубликовать».
+    'hold_reason':   {'type': 'TEXT',      'notnull': 0, 'dflt_value': None,                'pk': 0},
 }
 
 

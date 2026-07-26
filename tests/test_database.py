@@ -12,7 +12,34 @@ import subprocess
 import tempfile
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
+import pending_articles_repo
 from news_bot import init_db, is_processed, mark_processed, DB_FILE
+
+
+def _stub_schema_probe(mock_conn):
+    """Teach a MagicMock connection to answer the column-existence probe.
+
+    Since audit SEC-CG-1 the column migration VERIFIES itself: it reads
+    ``SELECT name FROM pragma_table_info(?)`` before and after each ALTER
+    and raises ``SchemaMigrationError`` if the column is not there. A bare
+    MagicMock iterates as empty, i.e. "every column missing, and the ALTER
+    changed nothing" — which is exactly the failure the guard exists to
+    catch. These tests only care that the CREATE TABLE DDL is issued, so
+    report every migrated column as already present; ``_ensure_column``
+    then short-circuits and no ALTER is attempted.
+    """
+    def _execute(sql, *_args, **_kwargs):
+        result = MagicMock()
+        if 'pragma_table_info' in sql:
+            result.fetchall.return_value = [
+                (column,)
+                for _table, column, _ddl
+                in pending_articles_repo._COLUMN_MIGRATIONS
+            ]
+        return result
+
+    mock_conn.execute.side_effect = _execute
+    return mock_conn
 
 
 class TestDatabaseFunctions(unittest.TestCase):
@@ -29,7 +56,7 @@ class TestDatabaseFunctions(unittest.TestCase):
         the ``processed_news`` DDL appears *among* the execute calls rather
         than being the single/last one.
         """
-        mock_conn = MagicMock()
+        mock_conn = _stub_schema_probe(MagicMock())
         mock_cursor = MagicMock()
         mock_connect.return_value = mock_conn
         mock_conn.cursor.return_value = mock_cursor
@@ -62,7 +89,7 @@ class TestDatabaseFunctions(unittest.TestCase):
     @patch('news_bot.sqlite3.connect')
     def test_init_db_also_creates_pending_tables(self, mock_connect):
         """init_db delegates DDL for the three new tables to the repo."""
-        mock_conn = MagicMock()
+        mock_conn = _stub_schema_probe(MagicMock())
         mock_cursor = MagicMock()
         mock_connect.return_value = mock_conn
         mock_conn.cursor.return_value = mock_cursor
