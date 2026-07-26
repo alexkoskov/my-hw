@@ -1787,7 +1787,11 @@ class TestContentGateMarkerSets(unittest.TestCase):
 
     def test_every_branch_has_a_declared_action(self):
         """``_GENRE_BRANCH_ACTION`` is the single policy table: a branch
-        missing from it would silently fall back to 'drop'."""
+        missing from it would silently fall back to 'drop'.
+
+        The SHIPPED values are pinned separately in
+        ``TestContentGateIntake::test_branch_action_map_matches_the_operator_decision``;
+        this one guards the table's shape."""
         self.assertEqual(
             set(news_bot._GENRE_BRANCH_ACTION),
             {'video_lead', 'video_np', 'video_signals', 'event'},
@@ -1795,6 +1799,19 @@ class TestContentGateMarkerSets(unittest.TestCase):
         for branch, action in news_bot._GENRE_BRANCH_ACTION.items():
             with self.subTest(branch=branch):
                 self.assertIn(action, ('drop', 'hold'))
+
+    def test_only_unambiguous_branches_are_allowed_to_drop(self):
+        """Operator decision 2026-07-25 «очевидные резать, спорные
+        спрашивать», stated as an invariant rather than a value list: a
+        DROP is unrecoverable, so only branches that need no judgement may
+        take it. The two evidence-based video branches must HOLD."""
+        for branch in ('video_np', 'video_signals'):
+            with self.subTest(branch=branch):
+                self.assertEqual(
+                    news_bot._GENRE_BRANCH_ACTION[branch], 'hold',
+                    f"{branch} is evidence, not proof — a wrong drop here "
+                    f"is unrecoverable, a wrong hold costs one button press",
+                )
 
     def test_np_heads_contain_no_verbs_that_would_reopen_the_fp(self):
         """The noun-phrase branch is what separates «Unboxing THE case»

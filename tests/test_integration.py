@@ -4689,11 +4689,13 @@ class TestContentGateIntake(_PrepPhaseBase):
     @patch('news_bot.fetch_rss')
     @patch('news_bot.load_feeds')
     @patch('news_bot.send_admin_notification')
-    def test_video_review_is_dropped_at_intake(
+    def test_unambiguous_video_review_is_dropped_at_intake(
         self, mock_admin, mock_load_feeds, mock_fetch_rss, mock_fetch_article,
     ):
-        link = 'https://t-hunted.blogspot.com/2026/07/unboxing-caixa-j.html'
-        title = 'Unboxing da caixa J de 2026 da Hot Wheels'
+        """Operator policy «очевидные резать»: only the explicit
+        «Vídeo: …» / «Watch: …» headline form is dropped outright."""
+        link = 'https://t-hunted.blogspot.com/2026/07/video-caixa-j.html'
+        title = 'Vídeo: unboxing da caixa J de 2026 da Hot Wheels'
         self._feed(mock_load_feeds, mock_fetch_rss, mock_fetch_article,
                    link, title,
                    {'title': title, 'subtitle': '',
@@ -4798,15 +4800,17 @@ class TestContentGateIntake(_PrepPhaseBase):
     @patch('news_bot.fetch_rss')
     @patch('news_bot.load_feeds')
     @patch('news_bot.send_admin_notification')
-    def test_a_branch_mapped_to_hold_routes_into_the_hold_path(
+    def test_ambiguous_video_post_is_staged_held_not_dropped(
         self, mock_admin, mock_load_feeds, mock_fetch_rss, mock_fetch_article,
     ):
-        """The detector reports WHICH rule fired; ``_GENRE_BRANCH_ACTION``
-        decides what that rule DOES. The operator is weighing whether the
-        softer video branches should HOLD instead of DROP (a wrong hold
-        costs a tap, a wrong drop is irreversible) — this proves that
-        flipping one entry in that map is all it takes, so the decision is
-        a tested one-line change rather than a rewrite."""
+        """Operator policy «спорные спрашивать» (2026-07-25), end to end
+        against the REAL map — no patching.
+
+        ``video_np`` is strong evidence but not proof (two review rounds
+        found genuine reveals in this exact grammatical shape), so a wrong
+        drop here would be unrecoverable. It now takes the same HOLD path
+        as a poster: staged, parked, and offered to the operator.
+        """
         link = 'https://t-hunted.blogspot.com/2026/07/unboxing-caixa-j.html'
         title = 'Unboxing da caixa J de 2026 da Hot Wheels'
         self._feed(mock_load_feeds, mock_fetch_rss, mock_fetch_article,
@@ -4814,22 +4818,36 @@ class TestContentGateIntake(_PrepPhaseBase):
                    {'title': title, 'subtitle': '',
                     'paragraphs': ['Abrimos a caixa.'], 'images': []})
 
-        repointed = dict(news_bot._GENRE_BRANCH_ACTION, video_np='hold')
-        with patch.dict(news_bot._GENRE_BRANCH_ACTION, repointed, clear=True):
-            news_bot.job()
+        news_bot.job()
 
         # Staged and PARKED, not dropped: still in the DB, out of the
         # publishable queue, and offered to the operator with buttons.
         row = pending_articles_repo.get_pending(link)
         self.assertIsNotNone(row)
-        self.assertTrue(row['hold_reason'])
+        self.assertIn('unboxing', row['hold_reason'])
         self.assertEqual(pending_articles_repo.count_pending(), 0)
+        self.assertNotIn(
+            link, [r['link'] for r in pending_articles_repo.list_pending()])
         self.assertEqual(
             [r['link'] for r in pending_articles_repo.list_held()], [link])
+
         e036 = self._calls_with(mock_admin, '[E036]')
-        self.assertEqual(len(e036), 1)
-        self.assertIsNotNone(e036[0].kwargs.get('reply_markup'))
-        # No drop happened: no [E037], and the link is NOT pinned.
+        self.assertEqual(len(e036), 1, mock_admin.call_args_list)
+        msg = e036[0].args[0]
+        self.assertIn('На утверждение', msg)
+        self.assertIn(link, msg)
+        # The REASON is legible: this is a suspected video review, NOT a
+        # poster dump, and the matched markers say why.
+        self.assertIn('видео-обзор', msg)
+        self.assertNotIn('постер / каталог / упаковку', msg)
+        self.assertIn('unboxing', msg)
+        cds = [b.callback_data
+               for r in e036[0].kwargs['reply_markup'].inline_keyboard
+               for b in r]
+        self.assertTrue(cds[0].startswith('hd:a:'), cds)
+
+        # No drop happened: no [E037], and — critically — the link is NOT
+        # pinned, so an approved article stays releasable.
         self.assertEqual(self._calls_with(mock_admin, '[E037]'), [])
         conn = sqlite3.connect(self.db_path)
         try:
@@ -4839,29 +4857,127 @@ class TestContentGateIntake(_PrepPhaseBase):
             conn.close()
         self.assertNotIn(link, processed)
 
+    @patch('news_bot.REVIEW_BUTTONS_ENABLED', True)
     @patch('news_bot.fetch_full_article')
     @patch('news_bot.fetch_rss')
     @patch('news_bot.load_feeds')
     @patch('news_bot.send_admin_notification')
-    def test_default_map_drops_every_branch(
+    def test_two_signal_video_post_is_also_held(
         self, mock_admin, mock_load_feeds, mock_fetch_rss, mock_fetch_article,
     ):
-        """Today's shipped policy: every branch drops. Guards against the
-        re-point being left half-applied."""
+        """The other soft branch (``video_signals``) takes the same path."""
+        link = 'https://example.com/2026/07/video-unboxing-2027.html'
+        title = 'Check the full video unboxing here for the 2027 lineup'
+        self._feed(mock_load_feeds, mock_fetch_rss, mock_fetch_article,
+                   link, title,
+                   {'title': title, 'subtitle': '',
+                    'paragraphs': ['Body.'], 'images': []})
+
+        news_bot.job()
+
         self.assertEqual(
-            set(news_bot._GENRE_BRANCH_ACTION.values()), {'drop'})
-        link = 'https://t-hunted.blogspot.com/2026/07/unboxing-caixa-h.html'
-        title = 'Unboxing da caixa H de 2026 da Hot Wheels'
+            [r['link'] for r in pending_articles_repo.list_held()], [link])
+        self.assertEqual(len(self._calls_with(mock_admin, '[E036]')), 1)
+        self.assertEqual(self._calls_with(mock_admin, '[E037]'), [])
+
+    @patch('news_bot.REVIEW_BUTTONS_ENABLED', True)
+    @patch('news_bot.fetch_full_article')
+    @patch('news_bot.fetch_rss')
+    @patch('news_bot.load_feeds')
+    @patch('news_bot.send_admin_notification')
+    def test_a_held_genre_article_publishes_once_approved(
+        self, mock_admin, mock_load_feeds, mock_fetch_rss, mock_fetch_article,
+    ):
+        """The whole point of holding instead of dropping: the operator can
+        still release it. Unpinned + still staged means «✅ Опубликовать»
+        puts it straight back in the queue."""
+        link = 'https://t-hunted.blogspot.com/2026/07/unboxing-caixa-k.html'
+        title = 'Unboxing da caixa K de 2026 da Hot Wheels'
         self._feed(mock_load_feeds, mock_fetch_rss, mock_fetch_article,
                    link, title,
                    {'title': title, 'subtitle': '',
                     'paragraphs': ['Abrimos a caixa.'], 'images': []})
 
-        news_bot.job()
+        with patch('news_bot.TELEGRAM_ADMIN_ID', '424242'):
+            news_bot.job()
+            e036 = self._calls_with(mock_admin, '[E036]')
+            cd = e036[0].kwargs['reply_markup'].inline_keyboard[0][0]
+            token = cd.callback_data[len('hd:a:'):]
+            status, _ = news_bot.resolve_hold_callback('approve', token, 424242)
 
-        self.assertIsNone(pending_articles_repo.get_pending(link))
+        self.assertEqual(status, "✅ Одобрено — выйдет в ближайший слот")
+        self.assertIn(
+            link, [r['link'] for r in pending_articles_repo.list_pending()])
+        self.assertEqual(pending_articles_repo.count_pending(), 1)
+
+    def test_branch_action_map_matches_the_operator_decision(self):
+        """Pins the SHIPPED policy table exactly (operator 2026-07-25:
+        «очевидные резать, спорные спрашивать»). Re-pointing any branch
+        without updating this test — or leaving a re-point half-applied —
+        fails here rather than silently changing what the bot publishes."""
+        self.assertEqual(
+            news_bot._GENRE_BRANCH_ACTION,
+            {
+                'video_lead': 'drop',     # «Vídeo:» / «Watch:» — explicit
+                'video_np': 'hold',       # grammatical position — evidence
+                'video_signals': 'hold',  # two lexical signals — evidence
+                'event': 'drop',          # name + organisational word
+            },
+        )
+
+    @patch('news_bot.REVIEW_BUTTONS_ENABLED', True)
+    @patch('news_bot.fetch_full_article')
+    @patch('news_bot.fetch_rss')
+    @patch('news_bot.load_feeds')
+    @patch('news_bot.send_admin_notification')
+    def test_funnel_separates_genre_holds_from_genre_drops(
+        self, mock_admin, mock_load_feeds, mock_fetch_rss, mock_fetch_article,
+    ):
+        """One tick with BOTH outcomes: a held article must be counted as
+        `held_for_review`, never as `dropped_genre` — otherwise the plan
+        ping would tell the operator the article is gone when it is
+        actually waiting for them."""
+        held_link = 'https://t-hunted.blogspot.com/2026/07/unboxing-lote-q.html'
+        held_title = 'Unboxing do lote Q de 2026 da Hot Wheels'
+        dropped_link = 'https://t-hunted.blogspot.com/2026/07/video-lote-q.html'
+        dropped_title = 'Vídeo: abrimos a caixa do lote Q da Hot Wheels'
+
+        mock_load_feeds.return_value = ['http://example.com/feed1.xml']
+        mock_fetch_rss.return_value = [
+            {'link': held_link, 'title': held_title,
+             'published': '2026-07-25', 'summary': 's'},
+            {'link': dropped_link, 'title': dropped_title,
+             'published': '2026-07-25', 'summary': 's'},
+        ]
+        mock_fetch_article.side_effect = lambda entry: {
+            'title': entry['title'], 'subtitle': '',
+            'paragraphs': ['Abrimos a caixa.'], 'images': [],
+        }
+
+        with self.assertLogs('news_bot', level='INFO') as cm:
+            news_bot.job()
+
+        # One of each, attributed to the right counter.
+        self.assertTrue(
+            [l for l in cm.output
+             if '[funnel]' in l and 'genre=1' in l and 'held=1' in l],
+            "expected [funnel] to show genre=1 held=1; got:\n"
+            + "\n".join(l for l in cm.output if '[funnel]' in l),
+        )
+        self.assertEqual(
+            [r['link'] for r in pending_articles_repo.list_held()],
+            [held_link])
+        self.assertIsNone(pending_articles_repo.get_pending(dropped_link))
+        self.assertEqual(len(self._calls_with(mock_admin, '[E036]')), 1)
         self.assertEqual(len(self._calls_with(mock_admin, '[E037]')), 1)
-        self.assertEqual(self._calls_with(mock_admin, '[E036]'), [])
+
+        # Operator-facing rendering: the held one is NOT in «отсеяно», and
+        # the plan ping shows it as awaiting approval.
+        plan = [c.args[0] for c in mock_admin.call_args_list
+                if c.args and ('[E008]' in c.args[0] or '[E009]' in c.args[0])]
+        self.assertTrue(plan)
+        self.assertTrue(any('На утверждении: 1' in m for m in plan), plan)
+        self.assertTrue(any('отсеяно 1' in m for m in plan), plan)
 
     @patch('news_bot.fetch_full_article')
     @patch('news_bot.fetch_rss')

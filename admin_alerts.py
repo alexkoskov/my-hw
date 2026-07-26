@@ -1001,9 +1001,38 @@ _GENRE_LABELS = {
 # ---------------------------------------------------------------------------
 # E036 — content gate: пост придержан до решения оператора
 # ---------------------------------------------------------------------------
+#: «Что произошло» body per HOLD reason (operator decision 2026-07-25:
+#: «очевидные резать, спорные спрашивать»). The operator needs to see WHY
+#: they are being asked — a poster photo-dump and a suspected video review
+#: call for completely different judgement calls. An unknown key falls
+#: back to the poster wording, which is the original single-reason
+#: behaviour, so an unset/legacy caller is never left with a blank reason.
+_HOLD_REASON_BLOCKS = {
+    'poster': (
+        "похоже на пост про постер / каталог / упаковку.\n"
+        "Такие мы не публикуем автоматически — статья\n"
+        "придержана в очереди и ждёт твоего решения."
+    ),
+    'video': (
+        "похоже на видео-обзор, но без явных признаков.\n"
+        "Однозначные («Видео: …», «Watch: …») отсекаем\n"
+        "сразу, а такие спорные — придерживаем и\n"
+        "спрашиваем, чтобы не потерять живую новость."
+    ),
+}
+_HOLD_REASON_DEFAULT = 'poster'
+
+
 def alert_held_for_review(link: str, title: str, markers: List[str], *,
+                          reason: str = _HOLD_REASON_DEFAULT,
                           buttons_enabled: bool = False) -> str:
-    """[E036] a poster/catalog/packaging post was STAGED BUT HELD.
+    """[E036] an article was STAGED BUT HELD for operator approval.
+
+    ``reason`` (keyword-only) selects the «Что произошло» explanation:
+    ``'poster'`` (poster / catalog / packaging — the original case) or
+    ``'video'`` (an ambiguous video-review candidate routed here by
+    ``_GENRE_BRANCH_ACTION``). Unknown values fall back to the poster
+    wording rather than rendering an empty reason.
 
     ``buttons_enabled`` (keyword-only, default False = fail-safe) mirrors
     the [E014] contract: it is derived at the send site from the SAME
@@ -1045,9 +1074,7 @@ def alert_held_for_review(link: str, title: str, markers: List[str], *,
         f"Ссылка:\n{link}\n\n"
         f"Сработавшие маркеры: {_intake_alert_markers(markers)}\n\n"
         f"Что произошло:\n"
-        f"похоже на пост про постер / каталог / упаковку.\n"
-        f"Такие мы не публикуем автоматически — статья\n"
-        f"придержана в очереди и ждёт твоего решения.\n\n"
+        f"{_HOLD_REASON_BLOCKS.get(reason, _HOLD_REASON_BLOCKS[_HOLD_REASON_DEFAULT])}\n\n"
         f"{todo_block}"
     )
 

@@ -1401,6 +1401,79 @@ class TestHeldForReviewAlert(unittest.TestCase):
             admin_alerts.alert_held_for_review(
                 self.LINK, self.TITLE, ["poster"], True)
 
+    # -- reason categories (operator split, 2026-07-25) --------------------
+
+    def test_e036_poster_reason_is_the_default(self):
+        """Back-compat: the original single-reason call renders the
+        poster/catalog wording verbatim."""
+        self.assertEqual(
+            admin_alerts.alert_held_for_review(
+                self.LINK, self.TITLE, ["poster"]),
+            admin_alerts.alert_held_for_review(
+                self.LINK, self.TITLE, ["poster"], reason="poster"),
+        )
+        msg = admin_alerts.alert_held_for_review(
+            self.LINK, self.TITLE, ["poster"])
+        self.assertIn("постер / каталог / упаковку", msg)
+
+    def test_e036_video_reason_explains_the_ambiguity(self):
+        """A suspected video review needs a different judgement call than
+        a poster dump — the operator must see WHICH question is being
+        asked, plus why the obvious ones never reach them."""
+        msg = admin_alerts.alert_held_for_review(
+            self.LINK, "Unboxing da caixa J de 2026", ["unboxing …", "unboxing"],
+            reason="video", buttons_enabled=True,
+        )
+        self.assertIn("[E036]", msg)
+        self.assertIn("На утверждение", msg)
+        self.assertIn("видео-обзор", msg)
+        self.assertNotIn("постер / каталог / упаковку", msg)
+        # Markers still say WHY it matched.
+        self.assertIn("unboxing", msg)
+        # And the standing promise holds in this reason too.
+        self.assertIn("НИКОГДА не опубликуется", msg)
+
+    def test_e036_reason_is_keyword_only(self):
+        with self.assertRaises(TypeError):
+            admin_alerts.alert_held_for_review(
+                self.LINK, self.TITLE, ["poster"], "video")
+
+    def test_e036_unknown_reason_falls_back_to_poster_wording(self):
+        """Never render a blank «Что произошло» — an unset/legacy caller
+        gets the original text rather than an empty section."""
+        msg = admin_alerts.alert_held_for_review(
+            self.LINK, self.TITLE, ["poster"], reason="banana")
+        self.assertIn("Что произошло", msg)
+        self.assertIn("постер / каталог / упаковку", msg)
+        self.assertNotIn("None", msg)
+
+    def test_e036_every_reason_keeps_both_advice_branches_honest(self):
+        """The «Что сделать» contract is independent of the reason: with
+        buttons it names them, without buttons it says so plainly."""
+        for reason in admin_alerts._HOLD_REASON_BLOCKS:
+            with self.subTest(reason=reason, buttons=True):
+                msg = admin_alerts.alert_held_for_review(
+                    self.LINK, self.TITLE, ["m"], reason=reason,
+                    buttons_enabled=True)
+                self.assertIn("нажми", msg)
+                self.assertIn("✅ Опубликовать", msg)
+                self.assertIn("НИКОГДА не опубликуется", msg)
+            with self.subTest(reason=reason, buttons=False):
+                msg = admin_alerts.alert_held_for_review(
+                    self.LINK, self.TITLE, ["m"], reason=reason,
+                    buttons_enabled=False)
+                self.assertNotIn("нажми", msg)
+                self.assertIn("нечем", msg)
+                self.assertIn("НИКОГДА не опубликуется", msg)
+
+    def test_e036_reason_blocks_are_non_empty_and_distinct(self):
+        blocks = admin_alerts._HOLD_REASON_BLOCKS
+        self.assertIn(admin_alerts._HOLD_REASON_DEFAULT, blocks)
+        self.assertEqual(len(set(blocks.values())), len(blocks))
+        for reason, text in blocks.items():
+            with self.subTest(reason=reason):
+                self.assertTrue(text.strip())
+
     def test_e036_empty_markers_render_safely(self):
         msg = admin_alerts.alert_held_for_review("http://u", "T", [])
         self.assertIn("[E036]", msg)

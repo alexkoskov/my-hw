@@ -2250,23 +2250,34 @@ class GenreVerdict(NamedTuple):
 #: and ``'hold'`` (stage but park for operator approval, [E036] — the same
 #: path posters take).
 #:
-#: Today every branch drops, which is the operator's stated intent. A
-#: pending question is whether the SOFTER video branches should hold
-#: instead, since a wrong hold costs one tap while a wrong drop is
-#: irreversible; ``'video_lead'`` (the unambiguous «Vídeo:»/«Watch:»
-#: headline form) would stay a drop either way. Re-pointing is exactly
-#: this dict — no detector or call-site change:
+#: Operator decision 2026-07-25 — «очевидные резать, спорные спрашивать»:
 #:
-#:     'video_np': 'hold', 'video_signals': 'hold',
+#:   * ``video_lead``  → drop. «Vídeo: …» / «Watch: …» is an explicit
+#:     headline convention; there is nothing to weigh up.
+#:   * ``video_np``    → HOLD. Grammatical position is strong evidence but
+#:     not proof (two review rounds found real reveals in this shape).
+#:   * ``video_signals`` → HOLD. Two lexical signals, same caveat.
+#:   * ``event``       → drop. The name+organisational-word bar is high
+#:     confidence and the convention-exclusive reveal guard is verified
+#:     independently, so «ивенты отсекаем» stands.
 #:
-#: ``TestGenreBranchActionRouting`` proves the hold route works by
-#: patching this map, so flipping it is a tested one-line change.
+#: The asymmetry is the whole argument: a wrong HOLD costs the operator one
+#: button press, a wrong DROP is unrecoverable (the link is pinned in
+#: processed_news and the article is never seen again). So only the branch
+#: we are certain about is allowed to drop.
 _GENRE_BRANCH_ACTION = {
     'video_lead': 'drop',
-    'video_np': 'drop',
-    'video_signals': 'drop',
+    'video_np': 'hold',
+    'video_signals': 'hold',
     'event': 'drop',
 }
+
+#: Which HOLD reason a held article carries into the [E036] ping, so the
+#: operator can see WHY they are being asked. ``'poster'`` comes from
+#: ``_hold_for_review_reason``; the genre branches routed to 'hold' above
+#: come in as ``'video'``.
+_HOLD_REASON_POSTER = 'poster'
+_HOLD_REASON_VIDEO = 'video'
 
 
 def _hold_for_review_reason(entry, article):
@@ -3838,6 +3849,7 @@ def job():
         # Fail-open means "publish as usual" for BOTH — a detector fault
         # must not silently park articles either.
         # --------------------------------------------------------------
+        hold_reason_kind = _HOLD_REASON_POSTER
         try:
             hold_markers = _hold_for_review_reason(entry, article)
         except Exception as exc:
@@ -3863,13 +3875,19 @@ def job():
                 # for every branch).
                 action = _GENRE_BRANCH_ACTION.get(verdict.branch, 'drop')
                 if action == 'hold':
-                    # Route this branch into the poster/catalog HOLD path
-                    # instead: staged but parked, [E036] with buttons.
-                    # Falls through to the shared row assembly below.
+                    # Route this branch into the same HOLD path posters
+                    # take: staged but parked, [E036] with buttons. Falls
+                    # through to the shared row assembly below. The reason
+                    # kind travels with it so the ping explains WHY the
+                    # operator is being asked (a suspected video review
+                    # reads very differently from a poster dump).
                     hold_markers = list(verdict.markers)
+                    hold_reason_kind = _HOLD_REASON_VIDEO
                     logger.info(
-                        "[E036] Genre held for review %s genre=%s branch=%s",
-                        link, verdict.genre, verdict.branch,
+                        "[content-gate] %s branch=%s → HOLD for %s "
+                        "(markers: %s)",
+                        verdict.genre, verdict.branch, link,
+                        ", ".join(verdict.markers),
                     )
                 else:
                     funnel['dropped_genre'] += 1
@@ -4128,6 +4146,9 @@ def job():
                                 article.get('title')
                                 or entry.get('title') or '',
                                 hold_markers,
+                                # Why the operator is being asked — poster
+                                # dump vs suspected video review.
+                                reason=hold_reason_kind,
                                 # Derived from the SAME kb about to be
                                 # attached, so «Что сделать» can never
                                 # promise a button that is not there.
