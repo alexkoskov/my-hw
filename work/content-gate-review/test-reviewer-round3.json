@@ -1,0 +1,104 @@
+{
+  "reviewer": "test-reviewer",
+  "round": 3,
+  "feature": "content-gate",
+  "commit": "d4eac813e0a91873d2dcc62b6237e6a2eab3fd24",
+  "commit_prior": "ab95a4ff502700574f7697a7fc286cad3155b017",
+  "date": "2026-07-26",
+  "verdict": "ship",
+  "summary": "The finite-verb suppression on branch A2 (ab95a4f) closes R1 and R2 cleanly: every headline that previously false-dropped ('Video of the X reveal leaked online' and its two siblings, 'First hands-on video of the 2027 Corvette Z06...') now resolves to a plain PUBLISH, not even a hold. The 'watch' NP-branch fix (code-reviewer's 'Watch this space...' finding) is independently verified fixed. The policy split (d4eac81) means the one remaining ambiguous case I found in round 2 ('Unboxing the mystery behind...') no longer matters at the severity I flagged it at -- it now resolves to HOLD, costing a button press instead of losing the story. Attacking the split specifically confirms the coordinator's framing is exactly right: video_lead (colon-form 'Vídeo:'/'Watch:') is now the ONLY branch that can still cause irreversible loss, and it is structurally still reachable by a genuine-news headline -- but only through a narrow, deliberate editorial convention ('WATCH:'/'VIDEO:' as a headline prefix) that in real-world online journalism is used almost exclusively to flag actual video content, and which the operator explicitly, by name, required to stay unconditional ('Watch: first look at the 2027 HW Nationals mainline' must still drop). I could not construct a headline in this shape that reads as clearly non-video content without resorting to a stretch (an editorial 'Watch:' used as a pure attention-getter for a text listicle) that has no precedent in the four cited source styles. The hold path is verified genuinely real end-to-end via two independent routes: the existing job()-level integration tests (all pass) and my own from-scratch repo-layer probe bypassing job() entirely. Suite is 1574 passed / 435 subtests, identical across two runs. Recommending ship, with the video_lead colon-convention noted as a residual, low-probability, and explicitly-accepted trade-off rather than a blocker."
+  ,
+  "action_table": {
+    "note": "ACTION is the real end-state the content gate alone would produce (publish / hold / drop), computed by mirroring job()'s exact decision order: _hold_for_review_reason -> _is_rejected_genre -> _GENRE_BRANCH_ACTION lookup. 'publish' means the content gate does not stop the article (later gates such as dedup are out of scope here, as in rounds 1-2).",
+    "original_14": [
+      {"headline": "Mattel drops video revealing the 2027 Corvette Z06 in Super Treasure Hunt spec", "lang": "en", "action": "publish", "branch": null, "markers": []},
+      {"headline": "Vídeo revela o novo Porsche 911 GT3 RS da linha premium", "lang": "pt", "action": "publish", "branch": null, "markers": []},
+      {"headline": "Hot Wheels Convention 2026 exclusive Datsun 510 revealed", "lang": "en", "action": "publish", "branch": null, "markers": []},
+      {"headline": "Hot Wheels Convenção 2026: datas e ingressos anunciados", "lang": "pt", "action": "drop", "branch": "event", "markers": ["convenção", "datas", "ingressos"]},
+      {"headline": "Hot Wheels redesigns mainline packaging for 2027", "lang": "en", "action": "hold", "reason": "poster", "branch": null, "markers": ["packaging"]},
+      {"headline": "First look: 2027 Nissan Skyline GT-R joins the Fast & Furious series, poster art teased", "lang": "en", "action": "hold", "reason": "poster", "branch": null, "markers": ["poster"]},
+      {"headline": "Unboxing the 2026 H case: full assortment review", "lang": "en", "action": "hold", "reason": "video", "branch": "video_np", "markers": ["unboxing …", "unboxing", "review", "assortment"]},
+      {"headline": "Unboxing surprises us: 2027 Toyota Supra revealed in Then and Now series", "lang": "en", "action": "publish", "branch": null, "markers": []},
+      {"headline": "Watch: first look at the 2027 Hot Wheels Nationals mainline", "lang": "en", "action": "drop", "branch": "video_lead", "markers": ["watch:"]},
+      {"headline": "Watch out for these five Treasure Hunts on pegs this month", "lang": "en", "action": "publish", "branch": null, "markers": []},
+      {"headline": "Catálogo 2027 da linha mainline da Hot Wheels vaza online", "lang": "pt", "action": "hold", "reason": "poster", "branch": null, "markers": ["catálogo"]},
+      {"headline": "Hot Wheels 2027 mainline release dates and case numbers revealed", "lang": "en", "action": "publish", "branch": null, "markers": []},
+      {"headline": "Diecast meetup registration now open for the fall swap meet", "lang": "en", "action": "drop", "branch": "event", "markers": ["meetup", "swap meet", "registration"]},
+      {"headline": "First look at the 2027 Ford Mustang Dark Horse in Super Treasure Hunt trim", "lang": "en", "action": "publish", "branch": null, "markers": []}
+    ],
+    "round2_attack_8": [
+      {"headline": "Video breaks down every 2026 Super Treasure Hunt casting we could find", "lang": "en", "action": "publish", "branch": null, "markers": []},
+      {"headline": "Unboxing reveals three limited-run castings from the September batch", "lang": "en", "action": "publish", "branch": null, "markers": []},
+      {"headline": "Porsche 963 review model revealed at Le Mans Hot Wheels booth", "lang": "en", "action": "publish", "branch": null, "markers": []},
+      {"headline": "First hands-on video of the 2027 Corvette Z06 Super Treasure Hunt", "lang": "en", "action": "publish", "branch": null, "markers": [], "note": "R2 (round 2 false positive) now CLEAN: no longer even held, correctly a plain publish."},
+      {"headline": "Novo Camaro 2027 é revelado em vídeo pela Mattel", "lang": "pt", "action": "publish", "branch": null, "markers": []},
+      {"headline": "Vídeo do novo Camaro 2027 é revelado pela Mattel", "lang": "pt", "action": "publish", "branch": null, "markers": [], "note": "Round-2 'ambiguous' PT case now resolves cleanly to publish -- the finite-verb suppression (revelado) catches this too."},
+      {"headline": "Unboxing the mystery behind Hot Wheels Nationals 2026's venue reveal", "lang": "en", "action": "hold", "reason": "video", "branch": "video_np", "markers": ["unboxing …", "unboxing"], "note": "Round-2 R4 'likely false positive' -- still triggers branch A2 (no headline verb present), but the policy split demotes it from drop to hold. No longer an irreversible-loss risk, just a button press."},
+      {"headline": "Vídeo, fotos e detalhes completos do novo Camaro revelado", "lang": "pt", "action": "publish", "branch": null, "markers": []}
+    ],
+    "video_of_x_verb_3": [
+      {"headline": "Video of the 2027 Corvette Z06 reveal leaked online", "lang": "en", "action": "publish", "branch": null, "markers": [], "note": "R1 primary finding -- now CLEAN, plain publish."},
+      {"headline": "Video of the new Hot Wheels Legends Tour winner surfaces online", "lang": "en", "action": "publish", "branch": null, "markers": []},
+      {"headline": "Video of the 2027 Toyota Supra Super Treasure Hunt debut goes viral", "lang": "en", "action": "publish", "branch": null, "markers": []}
+    ]
+  },
+  "video_lead_attack": {
+    "question": "Is there any headline that still lands in video_lead (the only remaining irreversible branch) while being genuine news?",
+    "answer": "Yes, structurally -- but only through the deliberate, explicit 'Vídeo:'/'Watch:' colon-prefix convention the operator required to stay unconditional, not through an accidental grammatical seam like R1/R2. All 6 attack headlines still drop via video_lead. I could not find a realistic headline in the 4 cited source styles (autoevolution/lamley/t-hunted/orangetrack) that uses a bare 'Watch:'/'Vídeo:' colon-lead for genuinely non-video content -- in real online-journalism convention that specific prefix is reserved almost universally for actual video content, which is presumably why the operator picked it as the one unambiguous, no-judgement-required signal.",
+    "cases": [
+      {"id": "colon-subtitle-not-label-pt", "headline": "Vídeo: novo Camaro é revelado", "action": "drop", "branch": "video_lead", "markers": ["vídeo:", "vídeo"], "assessment": "Structurally identical in intent to the operator's own required-drop case ('Watch: first look at...'). Accepted trade-off, not a bug."},
+      {"id": "colon-subtitle-not-label-en", "headline": "Video: new Camaro revealed at Mattel event", "action": "drop", "branch": "video_lead", "markers": ["vídeo:", "vídeo"], "assessment": "Same as above, EN."},
+      {"id": "watch-colon-genuine-reveal-clause", "headline": "Watch: new 2027 Corvette Z06 breaks cover at Mattel event", "action": "drop", "branch": "video_lead", "markers": ["watch:"], "assessment": "Control case -- exact shape of the operator's own required case. Correctly still drops; A1 has no verb-suppression by design, and that is intentional (only A2 needed it, because A2's NP-heads are ALSO how a news clause names its subject)."},
+      {"id": "video-colon-list-not-review", "headline": "Vídeo: fotos e detalhes completos do novo Camaro revelado", "action": "drop", "branch": "video_lead", "markers": ["vídeo:", "vídeo"], "assessment": "Minor asymmetry worth noting: the comma-led sibling of this exact headline ('Vídeo, fotos e detalhes...', tested in round 2) correctly survives, because the comma separator regex only recognises colon/hyphen/en-dash/em-dash. The colon variant of an otherwise-identical multi-asset list headline drops. Narrow, low-frequency stylistic difference (comma vs colon after the lead word) -- flagging for awareness, not blocking."},
+      {"id": "watch-colon-imperative-not-video", "headline": "Watch: five 2026 Treasure Hunts you might have missed on pegs", "action": "drop", "branch": "video_lead", "markers": ["watch:"], "assessment": "The closest thing to a genuine miss I could construct: 'Watch:' used as a pure editorial imperative ('pay attention to:') for a text/photo roundup with no actual video asset. I rate this LOW real-world probability for this specific niche -- the 'WATCH:' headline prefix is an extremely strong, near-universal online-journalism convention specifically for video content, and I found no precedent for it being used as a bare attention-getter in the cited source styles. Still, it is the one case where the branch's unconditional nature (no verb-suppression) could theoretically misfire on non-video content, unlike A2 which now has that suppression."},
+      {"id": "pt-assista-colon-schedule-not-video", "headline": "Assista: confira os horários da loja pop-up da Hot Wheels neste fim de semana", "action": "drop", "branch": "video_lead", "markers": ["assista:", "assista"], "assessment": "Same class as above, PT, contrived store-hours example. Low real-world probability for the same reason."}
+    ]
+  },
+  "watch_this_space_regression_check": {
+    "detail": "Independently re-verified the code-reviewer's round-2 finding (bare 'watch' + a determiner/possessive dropping unconditionally via A2) is fixed, using headlines outside the existing test suite.",
+    "probes": [
+      {"headline": "Watch this space for our full 2027 Nationals lineup reveal", "action": "publish"},
+      {"headline": "Watch these five castings closely this quarter", "action": "publish"},
+      {"headline": "Watch our channel for the 2027 reveal schedule", "action": "publish"}
+    ],
+    "result": "confirmed fixed -- 'watch' is unreachable via A2 by construction (A2's regex is built only from _GENRE_VIDEO_MARKERS, excluding the separator-only marker set that 'watch' belongs to)."
+  },
+  "hold_path_end_to_end_verification": {
+    "method_1_existing_integration_tests": {
+      "ran": "pytest tests/test_integration.py -k TestContentGateIntake -v",
+      "result": "18 passed, 0 failed",
+      "key_tests_inspected_and_confirmed_passing": [
+        "test_ambiguous_video_post_is_staged_held_not_dropped -- video_np verdict: row staged with hold_reason set, count_pending()==0, absent from list_pending(), present in list_held(), [E036] sent with hd:a:/hd:r: buttons, reason text says 'видео-обзор' not the poster wording, no [E037], link NOT pinned in processed_news",
+        "test_two_signal_video_post_is_also_held -- video_signals branch takes the identical hold path",
+        "test_a_held_genre_article_publishes_once_approved -- resolve_hold_callback('approve', token, admin_id) returns the approval string, the row reappears in list_pending(), count_pending() becomes 1",
+        "test_branch_action_map_matches_the_operator_decision -- pins the exact shipped policy dict, would fail if any branch were re-pointed without updating the test"
+      ]
+    },
+    "method_2_independent_repo_layer_probe": {
+      "description": "Wrote a from-scratch script (not reusing any test-suite code) against a fresh temp SQLite DB via news_bot.DB_FILE + pending_articles_repo, bypassing job()'s mocking entirely: called the REAL _is_rejected_genre on 'Unboxing da caixa J de 2026 da Hot Wheels', confirmed branch='video_np' and the REAL _GENRE_BRANCH_ACTION maps it to 'hold', inserted a row with hold_reason set from the verdict markers via the real insert_pending, then exercised the full lifecycle.",
+      "observed_sequence": [
+        "verdict = GenreVerdict(genre='video', markers=['unboxing …', 'unboxing'], branch='video_np')",
+        "action = 'hold'",
+        "insert_pending(...) -> True",
+        "link in list_pending() -> False (correctly excluded)",
+        "count_pending() -> 0",
+        "link in list_held() -> True",
+        "get_pending(link) -> row present, hold_reason='unboxing …, unboxing'",
+        "clear_hold(link) -> True (row was actually held)",
+        "link in list_pending() -> True (correctly returned to the queue)",
+        "count_pending() -> 1",
+        "get_pending(link)['hold_reason'] -> None"
+      ],
+      "conclusion": "The hold guarantee is real at the DB layer independent of job()'s routing logic, and job()'s routing logic independently matches it (method 1). Two independent lines of evidence agree."
+    }
+  },
+  "test_suite_stability": {
+    "claimed": "1564 -> 1574 passing, deterministic across 3 consecutive full runs (commit message)",
+    "verified": "Ran the full suite twice independently: run 1 = 1574 passed, 435 subtests passed (53.21s); run 2 = 1574 passed, 435 subtests passed (49.67s). Identical pass count both times, no flakes, no skips."
+  },
+  "residual_risk_one_sentence": "The only remaining irreversible-loss surface is the colon-form video_lead branch ('Vídeo:'/'Watch:' + separator, unconditional by design), which is structurally reachable by genuine non-video content in principle but in practice matches a narrow, deliberate editorial convention that real automotive-journalism headlines reserve almost exclusively for actual video content, and which the operator explicitly required to stay unconditional with their own named test case.",
+  "ship_recommendation": {
+    "decision": "ship",
+    "reasoning": "Both round-1 (F1/F2) and round-2 (R1/R2) false-drop findings are now fully closed -- not merely demoted to hold, but resolved to plain publish, which is the strongest possible fix. The one round-2 finding that remains structurally reachable ('Unboxing the mystery behind...', R4) now costs a button press instead of the article, because of the policy split -- exactly the mitigation the coordinator's proposed design was meant to provide, and it works as advertised end-to-end (verified two independent ways). Attacking the one remaining unconditional-drop branch (video_lead) surfaced only a narrow, low-probability, and explicitly-operator-accepted trade-off, not a fresh instance of the F1/R1 bug class. Suite is green and stable. I see no remaining blocking issue."
+  }
+}
