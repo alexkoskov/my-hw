@@ -237,3 +237,15 @@ Review details — in JSON files via links. QA report — in logs/working/.
 - Calibration fixture gained **pair-9** (the real prod bodies) + a THIRD hard invariant `test_calibration_non_dupes_share_no_pair` (`any_shared is False` for every non-duplicate pair). Needed because the old invariants are blind to this bug class: the incident was a shared `|B` key, so `expected_any_distinctive is False` was already satisfied by the buggy code. Floor moved ≥7/8 → ≥8/9 (same one-error budget) and now also asserts `expected_shared_pairs` per pair.
 - Mutation-verified: forcing `_theme_only_eligible` to `return True` (pre-fix behaviour) fails `test_calibration_non_dupes_share_no_pair` AND the new gate-level `test_broad_line_prose_comention_does_not_soft_flag`; both pass again on restore.
 - Existing fixture pairs unaffected: pair-1/pair-7 ride on `<model>|car culture|B`, pair-6 on `*|stranger things|B` (a one-off franchise, still eligible)
+
+## Post-deploy fix 2: recurring programmes are BROAD, not distinctive (2026-07-28, вечер)
+
+**Status:** Done
+**Agent:** main agent
+**Summary:** Прод-инцидент через 4 минуты после выкатки первого фикса. `[E015]` жёстко заблокировал и ОТБРОСИЛ пост t-hunted про один RLC-эксклюзив (1985 Audi Sport Quattro S1, $28, Mattel Creations) против статьи autoevolution «Unboxing: 10 Affordable Cars for July of 2026». Совпавшая пара — `audi sport|red line club|D`. Общего у статей нет: один конкретный премиум-дроп против распаковки десяти дешёвых мейнлайнов. Причина — незакрытая асимметрия, которую утренняя запись выше сама же пометила как «пересмотреть, если всплывёт ложный `[E015]`»: `_RECURRING_PROGRAMS` гасил только тема-ключ, а на пути с моделью `super treasure hunt` / `red line club` сохраняли тир `D`. Обоснование «та же модель + та же программа = тот же релиз» ломается о статью-ПОДБОРКУ: она называет десяток кастингов, поэтому любой из них может столкнуться с мимоходом упомянутой программой. Исправлено в лексиконе — обе программы перетегированы в `broad`; `_RECURRING_PROGRAMS` остался как документированный список с load-time проверкой «каждый элемент обязан быть broad», чтобы обратное перетегирование падало на импорте, а не молча возвращало необратимый ложный блок в прод.
+**Deviations:** None. Принятый размен: два поста об одном и том же RLC-кастинге теперь дают мягкий флаг вместо жёсткого блока. Это верное направление — ложный жёсткий блок необратим (статья дропается И пиннится в `processed_news`), пропущенный дубль оператор просто удаляет.
+
+**Verification:**
+- `python3 -m pytest -q` → 1620 passed
+- Реальная прод-пара закреплена end-to-end (`test_prod_false_block_roundup_vs_single_drop`): совпадение остаётся, но только `|B` → мягкий флаг
+- Тест `test_recurring_program_still_pairs_with_a_model`, фиксировавший ровно неверное намерение, заменён на `test_recurring_program_with_a_model_is_broad_not_distinctive` — и теперь идёт через РЕАЛЬНЫЙ лексикон, а не через тир, переданный руками

@@ -144,11 +144,24 @@ SERIES_LEXICON: Dict[str, Tuple[str, str]] = {
     'san diego comic-con':  ('san diego comic-con', 'distinctive'),
     'comic-con':            ('san diego comic-con', 'distinctive'),
     'sdcc':                 ('san diego comic-con', 'distinctive'),
-    'red line club':        ('red line club',       'distinctive'),
-    'rlc':                  ('red line club',       'distinctive'),
-    'super treasure hunt':  ('super treasure hunt', 'distinctive'),
-    'sth':                  ('super treasure hunt', 'distinctive'),
     # ---- broad: frequent recurrent car-lines / themes ----
+    # Super Treasure Hunt and Red Line Club were tagged 'distinctive' until
+    # 2026-07-28. They are NOT one-off franchises — Hot Wheels ships both
+    # continuously — and the mistag caused a false [E015] hard block in prod
+    # within hours of the theme-only fix: a t-hunted post about an RLC Audi
+    # Quattro was DROPPED against an autoevolution «10 affordable cars»
+    # round-up that merely listed an Audi Sport among ten castings and
+    # mentioned Red Line Club in passing. The cartesian model x series product
+    # made `audi sport|red line club|D` on both sides.
+    # The earlier fix suppressed only their THEME-ONLY key, on the reasoning
+    # that «same casting + same programme = same release». A round-up article
+    # breaks that reasoning: it names many castings, so any one of them can
+    # collide with a passing programme mention. Broad tier ⇒ soft flag ⇒ the
+    # operator decides, and nothing is dropped irreversibly.
+    'red line club':        ('red line club',       'broad'),
+    'rlc':                  ('red line club',       'broad'),
+    'super treasure hunt':  ('super treasure hunt', 'broad'),
+    'sth':                  ('super treasure hunt', 'broad'),
     'car culture':          ('car culture',         'broad'),
     'boulevard':            ('boulevard',           'broad'),
     'team transport':       ('team transport',      'broad'),
@@ -199,27 +212,32 @@ _SERIES_CANONICALS = frozenset(
     canonical for canonical, _tier in SERIES_LEXICON.values()
 )
 
-# Canonical series that are lexicon-DISTINCTIVE but name a recurring release
-# PROGRAM rather than a one-off franchise/event. A shared `model + program` pair
-# is still the strongest signal we have (same casting in the same program = the
-# same release), but the program name ALONE identifies no particular news item:
-# Hot Wheels ships Super Treasure Hunts and Red Line Club releases continuously,
-# so two unrelated articles both naming one is the norm, not a coincidence.
-# Excluded from theme-only key emission by `_theme_only_eligible`.
+# Recurring release PROGRAMMES: named, collectible, and shipped CONTINUOUSLY.
+# They read like one-off franchises but behave like recurrent car-lines, which
+# is why they are tagged 'broad' above and why that tagging is asserted here
+# rather than left to a reviewer's memory.
 #
-# Named *_PROGRAMS, not *_SERIES, on purpose: every BROAD line is recurring too,
-# yet none of them belong here — they are already excluded by the tier test. This
-# set means specifically "distinctive BUT a recurring program", so adding e.g.
-# `pop culture` here would be redundant, not helpful.
+# This set is documentation with teeth: it does not drive matching (the 'broad'
+# tier already does that on both the theme-only and the model-bearing path) —
+# it exists so that re-tagging either one 'distinctive' fails at import instead
+# of silently re-arming an irreversible false hard block in production.
 _RECURRING_PROGRAMS = frozenset({'super treasure hunt', 'red line club'})
 
 # Load-time integrity assertion (same family as the pipe/newline and
-# tier-consistency asserts above): every entry must be a real lexicon CANONICAL.
-# A rename or typo would otherwise silently stop excluding the entry and quietly
-# restore the noisy theme-only key.
+# tier-consistency asserts above): every recurring programme must be a real
+# lexicon canonical AND must be tagged broad.
 assert _RECURRING_PROGRAMS <= _SERIES_CANONICALS, (
     "_RECURRING_PROGRAMS entries must be canonical SERIES_LEXICON names: "
     f"{sorted(_RECURRING_PROGRAMS - _SERIES_CANONICALS)}"
+)
+assert all(
+    tier == 'broad'
+    for canonical, tier in SERIES_LEXICON.values()
+    if canonical in _RECURRING_PROGRAMS
+), (
+    "a recurring programme must be tagged 'broad' — tagging one 'distinctive' "
+    "lets a round-up article that merely mentions it hard-block an unrelated "
+    "post (prod false [E015], 2026-07-28)"
 )
 
 
