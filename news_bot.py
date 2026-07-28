@@ -2402,6 +2402,16 @@ def _is_rejected_genre(entry, article):
 #: not re-fetched on subsequent ticks (Decision 8).
 _DEDUP_BLOCK_THRESHOLD = 0.50
 
+#: How long an [E014] soft-flagged article is withheld from the queue so the
+#: operator can actually use the «🚫 Не публиковать» button (operator decision
+#: 2026-07-28). Before this, the flag and the first publish slot both landed at
+#: intake time: on 2026-07-28 the ping went out at 10:00:10 and the article was
+#: published at 10:00:17 — SEVEN SECONDS later. The operator pressed cancel at
+#: 10:14 and got «Уже опубликовано, отменить нельзя». Silence still means
+#: PUBLISH: the row simply becomes visible to the queue again once the delay
+#: elapses, so an unavailable operator never costs the channel an article.
+_DEDUP_DEFER_HOURS = 24
+
 #: Soft-flag threshold for cross-source dedup (Decision 7, user-spec AC4).
 #: Articles in ``[0.30, 0.50)`` pass through to ``insert_pending`` but
 #: trigger a per-pair-rate-limited E014 ping so the operator can review.
@@ -3951,6 +3961,9 @@ def job():
         # and the operator gets one rate-limited [E016] ping per hour.
         # --------------------------------------------------------------
         fp = None
+        # Set by the soft-flag branch below; reaches the row dict so the
+        # article is staged but withheld from the queue for a day.
+        dedup_defer_until = None
         new_source = entry.get('source_name') or _resolve_source_name(link)
         try:
             dedup_conn = pending_repo._connect()
@@ -3986,6 +3999,15 @@ def job():
                     continue
 
                 if decision == 'flag':
+                    # Withhold from the queue for a day REGARDLESS of the
+                    # alert rate-limit: the delay protects the article, the
+                    # rate-limit only protects the operator's notifications.
+                    # Tying them together would publish a flagged dupe
+                    # immediately just because a similar pair pinged recently.
+                    dedup_defer_until = (
+                        datetime.now(timezone.utc)
+                        + timedelta(hours=_DEDUP_DEFER_HOURS)
+                    ).strftime('%Y-%m-%d %H:%M:%S')
                     alerted = not pending_repo.is_pair_rate_limited(
                         dedup_conn, link, match['link'],
                     )
@@ -4110,6 +4132,10 @@ def job():
             'blocks': article.get('blocks'),
             'pub_date': entry.get('published') or entry.get('pub_date') or '',
             'model_fingerprint': fp,
+            # Cross-source dedup soft flag: staged now, invisible to
+            # list_pending/count_pending until the timestamp passes, then
+            # published automatically unless the operator cancelled it.
+            'publish_after': dedup_defer_until,
             # Content gate: a non-NULL hold_reason parks the row — staged,
             # but invisible to list_pending/count_pending until approved.
             # Stored as the human-readable marker list so [E036] can be

@@ -1339,7 +1339,14 @@ class TestCrossSourceDedup(_PrepPhaseBase):
             news_bot.job()
 
         # Soft flag → article still publishes.
-        self.assertEqual(pending_articles_repo.count_pending(), 1)
+        # Soft flag DEFERS publication by 24h (2026-07-28): the row is
+        # staged but withheld from the publishable queue, so the «🚫 Не
+        # публиковать» button has a real window. It had none before —
+        # on 2026-07-28 the [E014] ping and the publish landed seven
+        # seconds apart. Silence still PUBLISHES: the row reappears on
+        # its own once the delay elapses (see test_deferred_row_*).
+        self.assertEqual(pending_articles_repo.count_pending(), 0)
+        self.assertEqual(pending_articles_repo.list_pending(), [])
         self.assertIsNotNone(pending_articles_repo.get_pending(new_link))
         # Not marked processed (only hard blocks are).
         conn = sqlite3.connect(self.db_path)
@@ -1931,7 +1938,14 @@ class TestCrossSourceDedup(_PrepPhaseBase):
         news_bot.job()
 
         # Both rows in pending+published; the new one is in pending.
-        self.assertEqual(pending_articles_repo.count_pending(), 1)
+        # Soft flag DEFERS publication by 24h (2026-07-28): the row is
+        # staged but withheld from the publishable queue, so the «🚫 Не
+        # публиковать» button has a real window. It had none before —
+        # on 2026-07-28 the [E014] ping and the publish landed seven
+        # seconds apart. Silence still PUBLISHES: the row reappears on
+        # its own once the delay elapses (see test_deferred_row_*).
+        self.assertEqual(pending_articles_repo.count_pending(), 0)
+        self.assertEqual(pending_articles_repo.list_pending(), [])
         new_row = pending_articles_repo.get_pending(
             'http://autoevolution.example/new'
         )
@@ -1997,7 +2011,14 @@ class TestCrossSourceDedup(_PrepPhaseBase):
         news_bot.job()
 
         # Article staged (soft-flag still passes through), no E014.
-        self.assertEqual(pending_articles_repo.count_pending(), 1)
+        # Soft flag DEFERS publication by 24h (2026-07-28): the row is
+        # staged but withheld from the publishable queue, so the «🚫 Не
+        # публиковать» button has a real window. It had none before —
+        # on 2026-07-28 the [E014] ping and the publish landed seven
+        # seconds apart. Silence still PUBLISHES: the row reappears on
+        # its own once the delay elapses (see test_deferred_row_*).
+        self.assertEqual(pending_articles_repo.count_pending(), 0)
+        self.assertEqual(pending_articles_repo.list_pending(), [])
         e014_calls = [
             c for c in mock_admin.call_args_list
             if '[E014]' in (c.args[0] if c.args else '')
@@ -2305,6 +2326,83 @@ class TestCrossSourceDedup(_PrepPhaseBase):
     @patch('news_bot.fetch_rss')
     @patch('news_bot.load_feeds')
     @patch('news_bot.send_admin_notification')
+    def test_soft_flag_defers_publication_by_a_day(
+        self, mock_admin, mock_load_feeds, mock_fetch_rss, mock_fetch_article,
+    ):
+        """The [E014] soft flag stamps `publish_after` ~24h ahead.
+
+        Pins the DURATION, not merely "some defer": the whole point is that
+        the operator gets a usable window. On 2026-07-28 the ping and the
+        publish were seven seconds apart and the cancel press at 10:14 got
+        «Уже опубликовано, отменить нельзя».
+        """
+        self._seed_published(
+            'http://t-hunted.example/existing',
+            {'strict': [], 'brands': [],
+             'series': ['k-pop demon hunters'],
+             'pairs': ['*|k-pop demon hunters|B']},
+            source='t-hunted',
+        )
+        new_link = 'http://autoevolution.example/new'
+        mock_load_feeds.return_value = ['http://example.com/feed1.xml']
+        mock_fetch_rss.return_value = [self._make_entry(new_link)]
+        mock_fetch_article.return_value = {
+            'title': 'K-Pop Demon Hunters joins the Hot Wheels lineup',
+            'subtitle': '',
+            'paragraphs': ['The K-Pop Demon Hunters tie-in is here.',
+                           'No specific casting was announced.'],
+            'images': [],
+        }
+
+        news_bot.job()
+
+        row = pending_articles_repo.get_pending(new_link)
+        self.assertIsNotNone(row)
+        stamped = row.get('publish_after')
+        self.assertIsNotNone(stamped, "soft flag must stamp publish_after")
+        delta = (
+            dt.datetime.strptime(stamped, '%Y-%m-%d %H:%M:%S')
+            .replace(tzinfo=dt.timezone.utc)
+            - dt.datetime.now(dt.timezone.utc)
+        )
+        self.assertGreater(delta, dt.timedelta(hours=23))
+        self.assertLess(delta, dt.timedelta(hours=25))
+
+    @patch('news_bot.fetch_full_article')
+    @patch('news_bot.fetch_rss')
+    @patch('news_bot.load_feeds')
+    @patch('news_bot.send_admin_notification')
+    def test_unflagged_article_is_not_deferred(
+        self, mock_admin, mock_load_feeds, mock_fetch_rss, mock_fetch_article,
+    ):
+        """Ordinary articles keep publishing the same day.
+
+        The defer must be scoped to suspected duplicates — a blanket delay
+        would silently slow the whole channel by a day, which is NOT what was
+        asked for.
+        """
+        new_link = 'http://autoevolution.example/plain'
+        mock_load_feeds.return_value = ['http://example.com/feed1.xml']
+        mock_fetch_rss.return_value = [self._make_entry(new_link)]
+        mock_fetch_article.return_value = {
+            'title': 'Toyota 4Runner joins the mainline',
+            'subtitle': '',
+            'paragraphs': ['A 2018 Toyota 4Runner casting arrives.',
+                           'It ships in the next case.'],
+            'images': [],
+        }
+
+        news_bot.job()
+
+        row = pending_articles_repo.get_pending(new_link)
+        self.assertIsNotNone(row)
+        self.assertIsNone(row.get('publish_after'))
+        self.assertEqual(pending_articles_repo.count_pending(), 1)
+
+    @patch('news_bot.fetch_full_article')
+    @patch('news_bot.fetch_rss')
+    @patch('news_bot.load_feeds')
+    @patch('news_bot.send_admin_notification')
     def test_theme_only_pop_culture_flags_no_model(
         self, mock_admin, mock_load_feeds, mock_fetch_rss, mock_fetch_article,
     ):
@@ -2350,7 +2448,14 @@ class TestCrossSourceDedup(_PrepPhaseBase):
         news_bot.job()
 
         # Soft flag → article still publishes.
-        self.assertEqual(pending_articles_repo.count_pending(), 1)
+        # Soft flag DEFERS publication by 24h (2026-07-28): the row is
+        # staged but withheld from the publishable queue, so the «🚫 Не
+        # публиковать» button has a real window. It had none before —
+        # on 2026-07-28 the [E014] ping and the publish landed seven
+        # seconds apart. Silence still PUBLISHES: the row reappears on
+        # its own once the delay elapses (see test_deferred_row_*).
+        self.assertEqual(pending_articles_repo.count_pending(), 0)
+        self.assertEqual(pending_articles_repo.list_pending(), [])
         self.assertIsNotNone(pending_articles_repo.get_pending(new_link))
 
         e014_calls = [

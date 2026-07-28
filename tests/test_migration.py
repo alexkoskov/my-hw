@@ -64,6 +64,8 @@ EXPECTED_PENDING_COLUMNS = {
     # marker string means the row is HELD for operator approval and is
     # filtered out of list_pending / count_pending until «✅ Опубликовать».
     'hold_reason':   {'type': 'TEXT',      'notnull': 0, 'dflt_value': None,                'pk': 0},
+    # dedup defer (2026-07-28): timed sibling of hold_reason.
+    'publish_after': {'type': 'TIMESTAMP', 'notnull': 0, 'dflt_value': None, 'pk': 0},
 }
 
 
@@ -152,7 +154,7 @@ class TestMigration(unittest.TestCase):
     # ------------------------------------------------------------------
 
     def test_pending_articles_has_expected_columns(self):
-        """``pending_articles`` has all 19 tech-spec columns with correct
+        """``pending_articles`` has all tech-spec columns with correct
         types / NOT-NULL / defaults / PK flags."""
         news_bot.init_db()
 
