@@ -1,6 +1,6 @@
 """Calibration fixture for the ``dedup-model-series`` pair-tier verdict.
 
-Eight labelled article-pairs consumed by ``tests/test_model_extractor.py``.
+Nine labelled article-pairs consumed by ``tests/test_model_extractor.py``.
 This fixture is calibrated for the NEW **pair-rule** (``shares_pair`` over the
 ``(model + series/theme)`` fingerprint) — NOT the old car-set ``similarity``
 Jaccard. The classifier that scores these pairs (``shares_pair`` →
@@ -11,9 +11,11 @@ the labelled data.
 - ``DUPE_PAIRS`` — 4 real cross/same-source dupes (3 SDCC 2026 pop-culture
   exclusives that share a distinctive ``(model|series)`` pair + 1 recurring
   Car Culture line pair that shares only broad pairs).
-- ``NON_DUPE_PAIRS`` — 4 probes that MUST NOT hard-block: same car in a
+- ``NON_DUPE_PAIRS`` — 5 probes that MUST NOT hard-block: same car in a
   different series; theme-only Stranger Things mainline-vs-SDCC; same-source
-  near-miss on a broad car-line; distinct-but-similar tie-ins.
+  near-miss on a broad car-line; distinct-but-similar tie-ins; and the real
+  2026-07-28 prod false-flag (prose "pop culture" vs a Pop Culture lot, both
+  model-less) which must not share ANY pair, not merely no ``|D`` pair.
 
 Pair-dict shape (new pair-tier harness):
     {
@@ -471,6 +473,60 @@ NON_DUPE_PAIRS: list[dict] = [
             '(+ `porsche 911|san diego comic-con|D`), B emits '
             '`ford f-150|stranger things|D`. Different model AND series → '
             'pass. Guards against treating any two tie-ins as duplicates.'
+        ),
+    },
+    # Pair 9 — the REAL 2026-07-28 prod false-flag. Two unrelated articles that
+    # both mention a broad recurrent line, neither with an extractable model:
+    # t-hunted's Lotus Esprit Turbo yields a brand-only token (the case-sensitive
+    # `Lotus` pass captures no model) and autoevolution's Lincoln is outside the
+    # 36-brand lexicon. Before the theme-only precision fix both degraded to
+    # `*|pop culture|B` and soft-flagged each other — note that autoevolution's
+    # "pop culture" is ORDINARY PROSE, not a line name. This is the probe that
+    # makes the fixture sensitive to that bug class: it is the only pair whose
+    # verdict flips when `_theme_only_eligible` is disabled.
+    {
+        'label': 'pair-9-real-2026-07-28-prose-broad-line',
+        'a': {
+            'title': 'Mais um novo lote da série Pop Culture de 2026, e com novidade',
+            'subtitle': '',
+            'paragraphs': [
+                'Uma das séries mais colecionadas pelos fãs de Hot Wheels é a '
+                'Pop Culture, com suas réplicas de veículos que apareceram em '
+                'filmes, séries de TV, desenhos ou jogos, e dessa vez tem um '
+                'novo lote com uma novidade: o Lotus Esprit Turbo do 007 com '
+                'esquis na traseira.',
+                'Você pode ver tudo o que já postamos sobre a série Pop '
+                'Culture no link acima.',
+            ],
+            'source_name': 't-hunted',
+        },
+        'b': {
+            'title': 'First Hot Wheels Super Treasure Hunt for 2027 Is a Lincoln',
+            'subtitle': 'The 2027 mainline opens with an unexpected chase',
+            'paragraphs': [
+                'The Lincoln Continental Mark IV is a pop culture icon that '
+                'Hot Wheels has finally cast in Super Treasure Hunt form.',
+                'Super Treasure Hunt cars remain the holy grail of the '
+                'mainline, hidden roughly one per sealed case.',
+            ],
+            'source_name': 'autoevolution',
+        },
+        'expected_verdict': 'non-duplicate',
+        'expected_any_distinctive': False,
+        'expected_shared_pairs': [],
+        'note': (
+            'REAL prod pair, 2026-07-28 (t-hunted PT ↔ autoevolution EN). '
+            't-hunted side is the real page text; autoevolution side is '
+            'synthesised to the shape of the real page (Cloudflare 403 on '
+            'fetch), same convention as the SDCC pairs. Completely different '
+            'subjects. Both sides have EMPTY `strict`, so before the '
+            '2026-07-28 fix both emitted `*|pop culture|B` → shared broad pair '
+            '→ [E014] soft-flag. Now broad lines emit no theme-only key, and '
+            'autoevolution`s `super treasure hunt` is excluded as a recurring '
+            'PROGRAM, so nothing is shared. NOTE: an `expected_any_distinctive'
+            '=False` assertion alone does NOT catch this regression — the bug '
+            'was a soft flag, not a hard block; `test_calibration_non_dupes_'
+            'share_no_pair` is what pins it.'
         ),
     },
 ]

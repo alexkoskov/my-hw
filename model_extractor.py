@@ -22,10 +22,12 @@ Public API:
   with sorted lists for JSON-stable / test-deterministic output. ``series``
   holds canonical series/theme names (Hot Wheels car-lines, events, pop-culture
   franchises); ``pairs`` holds ``"<model>|<series>|<tier>"`` keys (theme-only
-  variant ``"*|<series>|B"`` when a series is recognised but no concrete model
-  was extracted). ``tier`` is ``D`` (distinctive) iff the series is lexicon-tagged
-  distinctive AND a concrete model exists, else ``B`` (broad) — the fail-safe
-  polarity (dedup-model-series tech-spec Decision 2).
+  variant ``"*|<series>|B"`` when no concrete model was extracted AND the series
+  is a one-off franchise/event — see ``_theme_only_eligible``; a broad car-line
+  or a recurring program yields NO key without a model). ``tier`` is ``D``
+  (distinctive) iff the series is lexicon-tagged distinctive AND a concrete model
+  exists, else ``B`` (broad) — the fail-safe polarity (dedup-model-series
+  tech-spec Decision 2, amended 2026-07-28).
 - ``extract_series(article_or_text)`` → sorted list of canonical series names.
 - ``shares_pair(fp_a, fp_b)`` → ``(any_shared, sorted_shared_pairs,
   any_distinctive)`` — pure set-intersection of the two ``pairs`` lists;
@@ -57,7 +59,8 @@ from typing import Dict, Iterable, List, Optional, Set, Tuple
 #   'series' — list of canonical series/theme names (e.g. "car culture",
 #              "san diego comic-con")
 #   'pairs'  — list of "<model>|<series>|<tier>" keys (theme-only variant
-#              "*|<series>|B"); tier ∈ {D, B}
+#              "*|<series>|B", franchises/events only — see
+#              `_theme_only_eligible`); tier ∈ {D, B}
 # All values are List[str]; lists are sorted for deterministic JSON
 # serialisation and test equality.
 Fingerprint = Dict[str, List[str]]
@@ -190,6 +193,70 @@ def _tier_suffix(tier: str) -> str:
     return _TIER_SUFFIX.get(tier, _TIER_SUFFIX[_SERIES_DEFAULT_TIER])
 
 
+# Every canonical in the lexicon, derived once (used by the integrity assertion
+# below; the lexicon is a module-level literal, so this can never drift).
+_SERIES_CANONICALS = frozenset(
+    canonical for canonical, _tier in SERIES_LEXICON.values()
+)
+
+# Canonical series that are lexicon-DISTINCTIVE but name a recurring release
+# PROGRAM rather than a one-off franchise/event. A shared `model + program` pair
+# is still the strongest signal we have (same casting in the same program = the
+# same release), but the program name ALONE identifies no particular news item:
+# Hot Wheels ships Super Treasure Hunts and Red Line Club releases continuously,
+# so two unrelated articles both naming one is the norm, not a coincidence.
+# Excluded from theme-only key emission by `_theme_only_eligible`.
+#
+# Named *_PROGRAMS, not *_SERIES, on purpose: every BROAD line is recurring too,
+# yet none of them belong here — they are already excluded by the tier test. This
+# set means specifically "distinctive BUT a recurring program", so adding e.g.
+# `pop culture` here would be redundant, not helpful.
+_RECURRING_PROGRAMS = frozenset({'super treasure hunt', 'red line club'})
+
+# Load-time integrity assertion (same family as the pipe/newline and
+# tier-consistency asserts above): every entry must be a real lexicon CANONICAL.
+# A rename or typo would otherwise silently stop excluding the entry and quietly
+# restore the noisy theme-only key.
+assert _RECURRING_PROGRAMS <= _SERIES_CANONICALS, (
+    "_RECURRING_PROGRAMS entries must be canonical SERIES_LEXICON names: "
+    f"{sorted(_RECURRING_PROGRAMS - _SERIES_CANONICALS)}"
+)
+
+
+def _theme_only_eligible(canonical: str, tier: str) -> bool:
+    """May *canonical* stand alone as a theme-only ``"*|<series>|B"`` key?
+
+    Only when the series name BY ITSELF identifies a specific news item — i.e.
+    a one-off franchise or event (K-Pop Demon Hunters, Stranger Things, Top Gun,
+    San Diego Comic-Con). Two classes are excluded:
+
+    - **Broad recurrent car-lines** — anything whose tier does not resolve to the
+      distinctive suffix (Pop Culture, Car Culture, Boulevard, Zamac, Monster
+      Trucks, Team Transport). They ship continuously, and several read as
+      ordinary prose — "a pop culture icon" in an autoevolution body is not a Hot
+      Wheels line mention at all.
+    - **Recurring release programs** (`_RECURRING_PROGRAMS`) —
+      lexicon-distinctive but just as continuous.
+
+    The tier test goes through ``_tier_suffix`` rather than comparing the tier
+    string directly. Today the two are equivalent (`_TIER_SUFFIX` maps exactly
+    one key to ``'D'``), so this is defensive rather than load-bearing: it keeps
+    the unknown-tier→broad fail-safe as the single place that decides what counts
+    as distinctive, and would keep this predicate correct if a second D-tier were
+    ever added.
+
+    Prod incident 2026-07-28: a t-hunted Pop Culture lot (Lotus Esprit Turbo →
+    brand-only, empty ``strict``) and an autoevolution Lincoln Super Treasure
+    Hunt (Lincoln is outside the 36-brand lexicon → empty ``strict``) both
+    degraded to ``*|pop culture|B`` and soft-flagged each other. Model-bearing
+    keys are untouched — this narrows matching, never the lexicon.
+    """
+    return (
+        _tier_suffix(tier) == _TIER_SUFFIX['distinctive']
+        and canonical not in _RECURRING_PROGRAMS
+    )
+
+
 # ---------------------------------------------------------------------------
 # Compiled regex (module-level singletons, bounded quantifiers throughout)
 # ---------------------------------------------------------------------------
@@ -259,11 +326,14 @@ _MODEL_EXTRA_KEEP_RE = re.compile(r'^(?:[A-Z0-9]+|[A-Za-z0-9]*\d[A-Za-z0-9\-]*|[
 # SCOPED to the pair-building path only (dedup-model-series code-review round 1,
 # major #1): a connector-phrase primary token is dropped from the pair-key
 # `<model>` set, so the article degrades to the theme-only `*|<series>|B`
-# fail-safe key instead of emitting a bogus distinctive key like
-# `porsche de k-pop|...|D` that can never match a differently-worded companion
-# (and, worse, could hard-block on connector noise if two articles share the
-# same garbage phrasing). The `strict`/`brands` outputs — and therefore the
-# shipped `similarity()` Jaccard path — are left UNCHANGED; only `pairs` differs.
+# fail-safe key — or, since 2026-07-28, to NO key at all when the series is a
+# broad line / recurring program (`_theme_only_eligible`) — instead of emitting a
+# bogus distinctive key like `porsche de k-pop|...|D` that can never match a
+# differently-worded companion (and, worse, could hard-block on connector noise
+# if two articles share the same garbage phrasing). Both outcomes are the same
+# fail-safe direction: at most a lost soft flag, never a false hard block. The
+# `strict`/`brands` outputs — and therefore the shipped `similarity()` Jaccard
+# path — are left UNCHANGED; only `pairs` differs.
 _MODEL_CONNECTOR_STOPWORDS = frozenset({
     # Portuguese (t-hunted PT feed): "Porsche de K-Pop", "carro do evento".
     'de', 'do', 'da', 'dos', 'das', 'e', 'em', 'no', 'na', 'nos', 'nas',
@@ -447,9 +517,13 @@ def _build_pairs(strict: set, series_with_tier: Iterable[Tuple[str, str]]) -> Li
 
     - With concrete models: one key per (model, series); tier suffix is ``D``
       iff the series is tagged distinctive, else ``B``.
-    - With NO concrete model but a recognised series: a single theme-only key
-      ``"*|<series>|B"`` — theme-only keys are ALWAYS broad (keeps the fail-safe
-      honest: a pop-culture tie-in with no casting can only ever soft-flag).
+    - With NO concrete model: a single theme-only key ``"*|<series>|B"`` —
+      always broad, and only for series that pass ``_theme_only_eligible``
+      (one-off franchises/events). A recurrent car-line or a recurring release
+      program contributes NO key at all without a concrete model: on its own it
+      is not evidence, and it produced prod false-flags (see
+      ``_theme_only_eligible``). Theme-only keys stay ALWAYS broad, so a
+      franchise with no casting can still only ever soft-flag.
 
     ``|`` is a safe separator: model tokens are ``[a-z0-9 -]`` and series
     tokens are lexicon canonicals (guaranteed pipe-free by the load-time
@@ -462,9 +536,12 @@ def _build_pairs(strict: set, series_with_tier: Iterable[Tuple[str, str]]) -> Li
             suffix = _tier_suffix(tier)
             for model in models:
                 pairs.add(f"{model}|{canonical}|{suffix}")
-        else:
+        elif _theme_only_eligible(canonical, tier):
             # Theme-only — always broad, regardless of the series' own tier.
             pairs.add(f"*|{canonical}|B")
+        # Ineligible series + no model → no key. Deliberate under-match in the
+        # fail-safe direction: it can only ever cost a soft flag, never cause
+        # a silent hard block.
     return sorted(pairs)
 
 
@@ -476,12 +553,17 @@ def _pass3_series(text: str, pair_models: Set[str]) -> Tuple[List[str], List[str
 
     - ``series`` — sorted canonical series/theme names found in *text*.
     - ``pairs``  — sorted ``"<model>|<series>|<tier>"`` keys from the cartesian
-      of *pair_models* × recognised series (theme-only ``"*|<series>|B"`` when
-      *pair_models* is empty).
+      of *pair_models* × recognised series (when *pair_models* is empty:
+      theme-only ``"*|<series>|B"`` for franchises/events, nothing for broad
+      lines and recurring programs — see ``_theme_only_eligible``).
 
     *pair_models* is the pair-eligible subset of ``strict`` tokens (primary
     model word passed the connector-stopword filter) — NOT the full ``strict``
-    set, so a garbage connector-phrase token degrades to the theme-only key.
+    set, so a garbage connector-phrase token degrades to the theme-only key
+    (or, for an ineligible series, to no key).
+
+    Note that ``series`` is built from ALL recognised series regardless of
+    pair-key eligibility — extraction is unchanged, only MATCHING narrows.
     """
     series_with_tier = _scan_series(text)
     series = sorted({canonical for canonical, _tier in series_with_tier})
@@ -545,6 +627,7 @@ def extract_fingerprint(article: dict) -> Fingerprint:
     # model word is a prose connector ("de"/"do"/"of"/…). `strict_tokens` (and
     # thus `similarity()`) is unaffected; only pair-key building uses this set,
     # so a connector-phrase token degrades to the theme-only `*|<series>|B` key
+    # (or, for a broad line / recurring program, to no key at all)
     # rather than a bogus distinctive key (code-review round 1, major #1).
     pair_strict_tokens: set = set()
 
@@ -582,7 +665,8 @@ def extract_fingerprint(article: dict) -> Fingerprint:
         # Pair-key eligibility: the primary model word must not be a prose
         # connector. A garbage primary ("de" in "porsche de k-pop") is kept in
         # `strict_tokens` (so `similarity()` is unchanged) but excluded from the
-        # pair-key set, degrading the article to the theme-only fail-safe key.
+        # pair-key set, degrading the article to the theme-only fail-safe key —
+        # or to no key at all when the series is not theme-only-eligible.
         if model_lower not in _MODEL_CONNECTOR_STOPWORDS:
             pair_strict_tokens.add(token)
 
@@ -594,7 +678,8 @@ def extract_fingerprint(article: dict) -> Fingerprint:
 
     # Pass 3: series/theme extraction + pair-key build (factored into
     # `_pass3_series`). Pairs are keyed on the pair-eligible model subset so a
-    # connector-phrase token degrades to the theme-only "*|<series>|B" key.
+    # connector-phrase token degrades to the theme-only "*|<series>|B" key (or,
+    # for an ineligible series, to no key — `_theme_only_eligible`).
     series, pairs = _pass3_series(text, pair_strict_tokens)
 
     return {

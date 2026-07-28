@@ -54,11 +54,43 @@ def test_empty_nodes_produce_valid_document():
 
 @pytest.mark.parametrize(
     "tag",
-    ["p", "figure", "figcaption", "h3", "h4", "i", "b"],
+    ["p", "figure", "figcaption", "h3", "h4", "i", "b", "strong", "u", "s"],
 )
 def test_renders_allowed_container_tags(tag):
     out = pr.render_html([{"tag": tag, "children": ["x"]}], "t")
     assert f"<{tag}>x</{tag}>" in out
+
+
+@pytest.mark.parametrize("tag", ["strong", "u", "s"])
+def test_format_tags_emitted_by_the_publisher_survive_preview(tag):
+    """REGRESSION 2026-07-28 — the allowlist was missing the tags the publisher
+    actually emits for runs metadata.
+
+    `telegraph_publisher._FORMAT_TAGS` maps bold->strong, underline->u,
+    strikethrough->s, but only `b`/`i` were allowed here — and `_render_node`
+    drops an unknown tag TOGETHER WITH ITS CHILDREN, so the formatted WORD
+    disappeared from the preview entirely rather than merely losing its style.
+    Telegraph accepts the tags, so published pages were always correct; the
+    preview is what lied, which matters because the preview is how a human
+    verifies formatting before/after a change.
+    """
+    nodes = [{"tag": "p", "children": [
+        "Hello ", {"tag": tag, "children": ["kept"]}, " world",
+    ]}]
+    out = pr.render_html(nodes, "t")
+    assert f"<p>Hello <{tag}>kept</{tag}> world</p>" in out
+
+
+def test_allowlist_covers_every_tag_the_publisher_can_emit():
+    """Guard the lock-step the comment above `_ALLOWED_TAGS` promises: any
+    format tag the publisher can produce must be renderable here."""
+    import telegraph_publisher as tp
+    emitted = {tag for _fmt, tag in tp._FORMAT_TAGS}
+    missing = emitted - pr._ALLOWED_TAGS
+    assert not missing, (
+        f"publisher emits {sorted(missing)} but the preview allowlist drops "
+        "them together with their text"
+    )
 
 
 def test_renders_allowed_a_with_href():

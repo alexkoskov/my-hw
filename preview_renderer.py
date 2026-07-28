@@ -46,9 +46,19 @@ __all__ = ["render_html"]
 
 # Tags the Telegra.ph publisher is allowed to emit. Any other tag is dropped.
 # Must stay in lock-step with `telegraph_publisher._build_content*`.
+#
+# `strong`/`u`/`s` added 2026-07-28. The publisher has emitted them since the
+# orangetrack runs renderer shipped (`telegraph_publisher._FORMAT_TAGS` maps
+# bold→strong, underline→u, strikethrough→s), but they were never mirrored
+# here — and `_render_node` drops an unknown tag TOGETHER WITH ITS CHILDREN, so
+# `<p>Hello <strong>bold</strong> world</p>` previewed as `<p>Hello  world</p>`
+# with the word gone. Telegraph itself accepts the tag, so published pages were
+# always fine; only the preview lied — which matters precisely because the
+# preview is what a human checks the formatting with.
 _ALLOWED_TAGS = frozenset({
     "p", "figure", "img", "figcaption", "iframe",
     "h3", "h4", "hr", "i", "b", "a",
+    "strong", "u", "s",
 })
 
 # Tags without a closing form. `br` is listed for future proofing even though

@@ -186,6 +186,7 @@ Both are stored as `vars` (not `secrets`) because they aren't sensitive — visi
 - llm-transcreation runtime modules (added by the llm-transcreation feature; all imported by `news_bot.py` at startup — without any of them, `news_bot` crashes with `ImportError` on the first cron tick): `claude_transcreation.py`, `compute_publish_slots.py`, `outage_state.py`.
 - Config: `feeds.json`, `requirements.txt`, `.env.example`.
 - Claude API system prompt: `.claude/skills/project-knowledge/references/ux-guidelines.md`. **Note (Decision 8 deploy quirk):** `scp` is invoked WITHOUT `-r`, so subdirs are flattened — on the server the file lands at `$DEPLOY_PATH/ux-guidelines.md` (NOT inside a subdir). `claude_transcreation._load_prompt` tries the original subdir path first, then falls back to the flat filename — both layouts work, so the operator should not be surprised to find the file at the top level of `DEPLOY_PATH`.
+  - **Current path (Docker prod, added 2026-07-28):** the scp flattening above is the LEGACY route. Today the file reaches prod inside the repo checkout via `git pull && docker compose up -d --build`, at its normal subdir path — the `_load_prompt` subdir attempt wins and the flat fallback never fires. Practical consequence: **editing the prompt is a production behaviour change and needs that rebuild.** Like any restart it resets the single in-process daily schedule, so run it OUTSIDE the 10:00–20:00 МСК publishing window. Prompt-only edits ship no code, so there is nothing to verify beyond reading the next few publications — the LLM output cannot be asserted by tests.
 
 The list lives in two places — `.github/workflows/deploy.yml` and `deploy.sh` — and is asserted byte-for-byte identical by the headline comments. **INVARIANT:** any new first-party import added to `news_bot.py` MUST be mirrored into both FILES arrays. Otherwise the server hits `ImportError` on the next cron tick with no CI signal beforehand.
 
@@ -497,7 +498,9 @@ present, but the operator override via `LLM_PROVIDER` env var pins it. Variant B
 
 **Where to watch:** https://openrouter.ai/activity → daily breakdown by model. (For the legacy Anthropic path: https://console.anthropic.com → Usage.)
 
-**Expected cost (default Haiku 4.5):** ~$3/month at ~10 articles/day. Each transcreation call uses ~3,200 system-prompt tokens (`ux-guidelines.md`) + ~1,000–2,000 user-message tokens (one English article) + ~1,000–2,500 output tokens. Prompt caching is intentionally NOT used (slot interval ≥ 40 min ≫ 5-min cache TTL — Decision 6).
+**Expected cost (default Haiku 4.5):** ~$3/month at ~10 articles/day. Each transcreation call uses **~7–8k system-prompt tokens** (`ux-guidelines.md`) + ~1,000–2,000 user-message tokens (one English article) + ~1,000–2,500 output tokens. Prompt caching is intentionally NOT used (slot interval ≥ 40 min ≫ 5-min cache TTL — Decision 6).
+
+> **System-prompt size is a live cost line — re-measure when you edit the prompt.** `_build_system_prompt` ships the file's ENTIRE body on every article, so every paragraph added there is billed per article forever. The figure above was `~3,200` from May 2026 and went stale as the file grew (13.3 KB → 23.4 KB of text); the 2026-07-28 «машинка» edit is the first re-measure. It is an ESTIMATE — there is no offline tokenizer in this repo, so it is derived from character count for Cyrillic-heavy text, not counted exactly. For an exact number use the provider's token-count endpoint against the deployed file. Nothing has ever been REMOVED from this prompt; a prune pass is overdue.
 
 **Sonnet 4.6 override:** ~$15/month for higher quality. Set `ANTHROPIC_MODEL=claude-sonnet-4-6` in repo `vars` and redeploy.
 

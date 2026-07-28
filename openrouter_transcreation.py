@@ -202,6 +202,9 @@ _BLOCK_TRANSLATE_SYSTEM = (
     "idiomatic Russian suitable for a Telegram channel. "
     "Brand and model names (Hot Wheels, Mattel, Nissan GT-R, Bugatti, "
     "Matchbox, etc.) stay in English. Keep tone enthusiastic but factual. "
+    "Call the collectible itself «машинка» — never «миниатюра», "
+    "«фигурка», «моделька» or «изделие». Exception: a real character "
+    "figure (a person or creature) stays «фигурка». "
     'Return strictly JSON: {"translations": ["ru1", "ru2", ...]} — same '
     "count and order as the input."
 )

@@ -1170,6 +1170,69 @@ class TestInlineFormatRuns:
         bold_runs = [r for r in runs if "bold" in (r.get("formats") or [])]
         assert any("bold" in r["text"] for r in bold_runs)
 
+    def test_plain_prefix_does_not_inherit_the_following_format(self):
+        """REGRESSION 2026-07-28 — bold used to bleed BACKWARDS.
+
+        `flush()` stamps the CURRENT format stack onto the buffered text, and it
+        used to run AFTER the push, so everything before the first formatted
+        span in a paragraph came out bold on the published page:
+        `<p>Plain <strong>bold</strong> tail.</p>` rendered as
+        `<strong>Plain </strong><strong>bold</strong> tail.`
+
+        The pre-existing `test_strong_tag_emits_bold_format` above could not
+        catch it: it asserts only that SOME bold run exists, never that the
+        prefix is plain. That asymmetry is the whole reason the defect survived
+        in production.
+        """
+        runs = self._runs_for("<p>Plain <strong>bold</strong> tail.</p>")
+        by_text = {r["text"].strip(): r.get("formats") or [] for r in runs}
+        assert by_text.get("Plain") == [], (
+            f"prefix must carry NO formats, got {by_text}"
+        )
+        assert by_text.get("bold") == ["bold"]
+        assert by_text.get("tail.") == []
+
+    def test_only_the_wrapped_span_is_formatted_with_several_spans(self):
+        # Same invariant with two different formats in one paragraph: each
+        # plain segment between them must stay plain.
+        runs = self._runs_for("<p>a <em>i</em> b <strong>s</strong> c</p>")
+        got = [(r["text"].strip(), tuple(r.get("formats") or [])) for r in runs]
+        assert got == [
+            ("a", ()),
+            ("i", ("italic",)),
+            ("b", ()),
+            ("s", ("bold",)),
+            ("c", ()),
+        ], got
+
+    def test_flattened_text_has_no_doubled_spaces(self):
+        """REGRESSION 2026-07-28 — runs were joined with `" "` although each run
+        already carries its own surrounding whitespace, so every format boundary
+        gained a second space (`'Plain  bold  tail.'`).
+
+        Load-bearing beyond cosmetics: this `text` is what the promo filter, the
+        content gate and the dedup fingerprint scan, and what
+        `_render_paragraph_with_runs` runs `text.find(run_text)` against.
+        """
+        html = "<article><p>Plain <strong>bold</strong> tail.</p></article>"
+        out = _parse_content_encoded(html, self.LINK)
+        paragraph = [b for b in out["blocks"] if b["type"] == "paragraph"][0]
+        assert paragraph["text"] == "Plain bold tail."
+        assert "  " not in paragraph["text"]
+
+    def test_every_run_is_locatable_in_the_flattened_text(self):
+        """The renderer locates each run via `text.find(run_text)`. If the
+        flattening ever diverges from the run texts, formatting silently
+        vanishes at render time instead of failing loudly here.
+        """
+        html = "<article><p>a <em>i</em> b <strong>s</strong> c</p></article>"
+        out = _parse_content_encoded(html, self.LINK)
+        paragraph = [b for b in out["blocks"] if b["type"] == "paragraph"][0]
+        for run in paragraph["runs"]:
+            assert run["text"] in paragraph["text"], (
+                f"run {run['text']!r} not found in {paragraph['text']!r}"
+            )
+
     def test_b_tag_emits_bold_format(self):
         runs = self._runs_for("<p>Plain <b>bold</b> tail.</p>")
         bold_runs = [r for r in runs if "bold" in (r.get("formats") or [])]

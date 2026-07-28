@@ -86,6 +86,24 @@ over-match); a stored tier avoids re-deriving it at compare time. Serves **AC1, 
 **Alternatives:** brand-level pairs (rejected — over-blocks); new DB column
 (rejected — needless migration).
 
+> **Amended 2026-07-28 (post-deploy, prod false-flag).** The theme-only variant
+> is emitted only for **one-off franchises / events** — gated by
+> `_theme_only_eligible(canonical, tier)`: lexicon-`distinctive` (derived through
+> `_tier_suffix`, so the unknown-tier→broad fail-safe governs here too) AND not in
+> `_RECURRING_SERIES` (`super treasure hunt`, `red line club`). A **broad recurrent
+> car-line** (pop culture, car culture, boulevard, zamac, monster trucks, team
+> transport) or a **recurring release program** now contributes NO key at all when
+> the article has no concrete model. Rationale: those series ship continuously, and
+> several read as ordinary prose — «a pop culture icon» in an autoevolution body is
+> not a line mention. Prod incident: a t-hunted Pop Culture lot (Lotus → brand-only)
+> and an autoevolution Lincoln Super Treasure Hunt (Lincoln is outside the 36-brand
+> lexicon) both degraded to `*|pop culture|B` and soft-flagged each other. Scope: the
+> `pairs` key only — `strict`/`brands`/`series`/`similarity()` are byte-unchanged, so
+> this narrows MATCHING, not the lexicon. Accepted trade-off: two genuine dupes about
+> the same broad-line drop where NEITHER names an extractable model no longer
+> soft-flag — an under-match in the fail-safe direction. A load-time assertion pins
+> every `_RECURRING_SERIES` entry to a real lexicon canonical.
+
 ### Decision 2: Two-tier verdict + fail-safe polarity
 **Decision:** Distinctive pair (model + lexicon-tagged-distinctive series) →
 hard-block `[E015]`. Broad pair (theme-only, or recurring car-line) → soft-flag
