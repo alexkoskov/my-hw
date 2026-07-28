@@ -267,6 +267,22 @@ _INLINE_FORMAT_TAGS = {
 }
 
 
+def _text_from_runs(runs: List[Dict]) -> str:
+    """Flatten ``runs`` into the block's ``text`` field.
+
+    Joined with NO separator: each run already carries its own surrounding
+    whitespace from the source HTML, so a `" ".join` inserted a SECOND space at
+    every format boundary (`<p>Plain <strong>bold</strong> tail.</p>` flattened
+    to ``'Plain  bold  tail.'``). Fixed 2026-07-28 — four call sites had drifted
+    into three different spellings of this join, only one of which collapsed.
+
+    Runs are preserved verbatim by the caller; only this flattened `text` field
+    is normalised, so ``text.find(run_text)`` in
+    ``telegraph_publisher._render_paragraph_with_runs`` still locates every run.
+    """
+    return re.sub(r"\s+", " ", "".join(r["text"] for r in runs)).strip()
+
+
 def _has_color_class(node) -> bool:
     """True if this BS4 element carries any WordPress-Gutenberg color class.
 
@@ -383,6 +399,25 @@ def _runs_from_tag(tag) -> List[Dict]:
             fmt = _INLINE_FORMAT_TAGS.get(name)
             color_fmt = "bold" if _has_color_class(child) else None
             pushed: List[str] = []
+            # Decide whether a format actually OPENS here before touching the
+            # stack. A color class whose format is already on the stack pushes
+            # nothing, and must not trigger the pre-flush below (it would split
+            # one run into two adjacent runs carrying identical formats).
+            opens_format = bool(fmt) or bool(
+                color_fmt and color_fmt not in fmt_stack
+            )
+            if opens_format:
+                # Flush the pending plain-text buffer BEFORE the new format goes
+                # onto the stack — `flush()` stamps the CURRENT stack onto the
+                # buffered text, so flushing afterwards back-dates this format
+                # onto the prefix that precedes the span.
+                # Fixed 2026-07-28: the flush used to sit inside `if pushed:`,
+                # below the pushes, so `<p>Plain <strong>bold</strong> tail.</p>`
+                # published as `<strong>Plain </strong><strong>bold</strong>` —
+                # everything before the first bold span in a paragraph came out
+                # bold. The comment already described the correct order; only
+                # the code disagreed.
+                flush()
             if fmt:
                 fmt_stack.append(fmt)
                 pushed.append(fmt)
@@ -390,10 +425,6 @@ def _runs_from_tag(tag) -> List[Dict]:
                 fmt_stack.append(color_fmt)
                 pushed.append(color_fmt)
             if pushed:
-                # Flush any pending plain-text buffer BEFORE we descend into
-                # the formatted span — otherwise the unformatted prefix would
-                # incorrectly get this format attached when flushed later.
-                flush()
                 walk(child)
                 flush()
                 for _ in pushed:
@@ -543,7 +574,7 @@ def _parse_content_encoded(html_str: str, link: str) -> Optional[Dict]:
             runs = _runs_from_tag(p_tag)
             if not runs:
                 return
-            text = " ".join(r["text"] for r in runs).strip()
+            text = _text_from_runs(runs)
             if not text:
                 return
             blocks.append({"type": "paragraph", "text": text, "runs": runs})
@@ -571,7 +602,7 @@ def _parse_content_encoded(html_str: str, link: str) -> Optional[Dict]:
             # tag (e.g. "#151 – " + " " + "Alphard"). Preserve runs verbatim —
             # only the flattened `text` field is normalised; `text.find(run_text)`
             # in the renderer still works since each run substring is intact.
-            text = re.sub(r"\s+", " ", " ".join(r["text"] for r in runs)).strip()
+            text = _text_from_runs(runs)
             if not text:
                 continue
             blocks.append({"type": "paragraph", "text": text, "runs": runs})
@@ -594,7 +625,7 @@ def _parse_content_encoded(html_str: str, link: str) -> Optional[Dict]:
         runs = _runs_from_tag(h_tag)
         if not runs:
             return
-        text = " ".join(r["text"] for r in runs).strip()
+        text = _text_from_runs(runs)
         if not text:
             return
         if level in (2, 3, 4):
@@ -755,7 +786,7 @@ def _parse_content_encoded(html_str: str, link: str) -> Optional[Dict]:
                 li_runs = _runs_from_tag(child)
                 if not li_runs:
                     continue
-                li_text = " ".join(r["text"] for r in li_runs).strip()
+                li_text = _text_from_runs(li_runs)
                 if not li_text:
                     continue
                 blocks.append({
