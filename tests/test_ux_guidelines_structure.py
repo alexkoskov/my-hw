@@ -16,6 +16,11 @@ These tests pin those three edits structurally so that a future merge or
 refactor cannot silently revert them. All assertions are **content-anchored**
 (string / heading lookups) — no line-number coupling, so they survive future
 prompt-text drift in other features.
+
+A second group (2026-07-28) pins the «машинка» object canon and the single
+sanctioned slang carve-out «машонка» — including the caption-pass guard, which
+reaches into the four engine modules because ``_BLOCK_TRANSLATE_SYSTEM`` never
+loads this file.
 """
 
 import re
@@ -120,3 +125,173 @@ def test_input_language_prompt_widened():
         "'английский' AND 'португальский' so the LLM accepts PT input "
         "(tech-spec Decision 5). Found sentence: " + match.group(0)
     )
+
+
+# ---------------------------------------------------------------------------
+# «Машинка» canon + the single sanctioned slang carve-out (2026-07-28).
+#
+# Channel feedback: readers do not say «миниатюра» / «фигурка» — the calque
+# reads as unnatural. «Машинка» is the canon for the object itself, and the
+# chat's own slang «машонка» is allowed in strictly bounded doses.
+#
+# These assertions pin a PROMPT-BEHAVIOUR contract, not prose: the object canon,
+# the carve-out, its four limits, and — critically — that the carve-out did not
+# dissolve the general ban on invented words it is an exception to.
+# ---------------------------------------------------------------------------
+
+
+def _glossary_rows() -> list[str]:
+    """Data rows of the glossary table, lowercased."""
+    rows = []
+    for line in _section(_read(), "## Glossary — PT/EN/RU").splitlines():
+        stripped = line.strip()
+        if not stripped.startswith("|"):
+            continue
+        if re.fullmatch(r"\|[\s\-:|]+\|", stripped):
+            continue
+        if "PT" in stripped and "EN" in stripped and "RU" in stripped:
+            continue
+        rows.append(stripped.lower())
+    return rows
+
+
+def test_glossary_pins_mashinka_as_object_canon():
+    """The bans must live in the TABLE ROW, not merely somewhere in the section.
+
+    Scoped to the row on purpose: «фигурка» also appears in the figurine
+    carve-out prose below, so a section-wide `in` check stays green even if the
+    ban is deleted from the row.
+    """
+    rows = [r for r in _glossary_rows() if "miniatura" in r]
+    assert rows, (
+        "Glossary must carry a `Miniatura` row — PT bodies use the word "
+        "constantly and without a row the LLM calques it to «миниатюра»."
+    )
+    row = rows[0]
+    assert "машинка" in row, "«Машинка» must be the RU canon for the object."
+    for banned in ("миниатюра", "фигурка", "моделька", "изделие", "экземпляр"):
+        assert banned in row, (
+            f"The `Miniatura` row must name «{banned}» as a rejected "
+            "translation. A positive-only rule does not stop a calque the "
+            "model already produces, and the row / prose / red-flag ban lists "
+            "must agree — a word banned in one and missing from another is "
+            "invisible to the self-check that exists to catch it."
+        )
+
+
+def test_object_canon_has_exactly_one_glossary_row():
+    """`Carrinho` and `Miniatura` must not be two rows with different licence.
+
+    They previously were: `Carrinho` offered «Машинка / дайкаст» (free
+    alternation — itself against the one-term-one-word rule right below the
+    table) while `Miniatura` made «дайкаст» conditional. Both EN columns cover
+    *diecast car*, so an EN article matched two rows granting different
+    permissions.
+    """
+    matching = [
+        r for r in _glossary_rows()
+        if "carrinho" in r or "miniatura" in r
+    ]
+    assert len(matching) == 1, (
+        "Expected ONE merged row covering carrinho/miniatura; found "
+        f"{len(matching)}: {matching}"
+    )
+
+
+def test_figurine_exception_is_scoped_to_actual_figurines():
+    """«Фигурка» → «машинка» ONLY when the subject IS the car.
+
+    Hot Wheels franchise sets occasionally ship a real character figurine;
+    rewriting that to «машинка» would be a factual error, not a style fix.
+    """
+    section = _section(_read(), "## Glossary — PT/EN/RU").lower()
+    assert "фигурка персонажа" in section, (
+        "The «фигурка» rule must carve out real character figurines "
+        "(anchor phrase «фигурка персонажа»), otherwise the substitution "
+        "introduces factual errors on franchise sets."
+    )
+
+
+def test_mashonka_slang_carveout_is_bounded():
+    content = _read()
+    lowered = content.lower()
+    assert "машонка" in lowered, (
+        "The sanctioned slang «машонка» must be named in the prompt — it is "
+        "otherwise forbidden by the invented-words rule."
+    )
+    section = _section(content, "## Glossary — PT/EN/RU").lower()
+    # All limits live together with the carve-out, so the LLM cannot read the
+    # permission without the constraints.
+    assert "норма — ноль" in section, (
+        "Carve-out must state a FLOOR, not only a ceiling. A named glossary "
+        "entry plus explicit permission reads as a quota to fill, so a "
+        "ceiling-only rule produces the slang in ~every eligible article "
+        "instead of the operator's «иногда»."
+    )
+    assert "потолок — один" in section, "Missing the once-per-article ceiling."
+    assert "заголов" in section, "Carve-out must forbid the slang in titles."
+    assert "t-hunted" in section and "autoevolution" in section, (
+        "Carve-out must name its two permitted sources as an ALLOWLIST. "
+        "Gating on Mattel alone silently permits lamley and orangetrack."
+    )
+    assert "сноск" in section or "первом упоминании" in section, (
+        "Carve-out must require the first-mention gloss for readers who are "
+        "not in the chat."
+    )
+
+
+def test_invented_words_ban_survives_the_carveout():
+    """Regression guard: the carve-out is ONE named exception, not an opening.
+
+    The blockquote ban and the red-flag self-check are what keep «коллективка»
+    /«эксклюзивка» out. A future edit that widens «машонка is allowed» into
+    «slang is allowed» must fail here.
+    """
+    content = _read()
+    assert "Запрещены выдуманные слова и сленговые неологизмы" in content, (
+        "The system-prompt ban on invented words / slang neologisms was "
+        "removed or reworded — the «машонка» carve-out depends on it still "
+        "standing as the default."
+    )
+    red_flags = _section(content, "## Red flags to self-check before stage")
+    assert red_flags, "## Red flags section missing."
+    assert "коллективка" in red_flags, (
+        "The red-flag self-check against non-dictionary words must survive."
+    )
+
+
+def test_caption_pass_carries_the_object_canon():
+    """The image-caption second pass has its OWN system prompt.
+
+    ``_translate_block_strings`` in every engine uses ``_BLOCK_TRANSLATE_SYSTEM``
+    and never loads ``ux-guidelines.md``, so the «машинка» canon does not reach
+    captions unless it is stated there too. Without this guard the body would
+    say «машинка» while the picture caption under it said «миниатюра».
+
+    Slang is deliberately NOT propagated: a caption is one line, too short to
+    carry the required first-mention gloss.
+    """
+    engines = [
+        "claude_transcreation.py",
+        "openrouter_transcreation.py",
+        "openai_transcreation.py",
+        "gemini_transcreation.py",
+    ]
+    for name in engines:
+        source = (REPO_ROOT / name).read_text(encoding="utf-8")
+        marker = "_BLOCK_TRANSLATE_SYSTEM"
+        assert marker in source, f"{name}: {marker} not found."
+        start = source.index(marker)
+        block = source[start:start + 1200]
+        assert "машинка" in block, (
+            f"{name}: the caption system prompt must pin «машинка» as the "
+            "object canon — it never loads ux-guidelines.md."
+        )
+        assert "фигурка" in block, (
+            f"{name}: the caption prompt must carry the character-figure "
+            "exception too, or captions will mislabel real figurines."
+        )
+        assert "машонка" not in block, (
+            f"{name}: slang must NOT be propagated to captions — a caption is "
+            "too short to carry the mandatory first-mention gloss."
+        )
