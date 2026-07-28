@@ -697,14 +697,58 @@ class TestPairs:
         # theme-only key (the `_tier_suffix` fail-safe governs eligibility too).
         assert me._build_pairs(set(), {('k-pop demon hunters', 'distinct')}) == []
 
-    def test_recurring_program_still_pairs_with_a_model(self):
-        # Only the THEME-ONLY key is withheld — a recurring program paired with
-        # a concrete casting is still the strongest signal we have and keeps its
-        # distinctive |D tier (same model + same program = same release).
-        pairs = me._build_pairs(
-            {'nissan skyline'}, {('super treasure hunt', 'distinctive')}
-        )
-        assert pairs == ['nissan skyline|super treasure hunt|D']
+    def test_recurring_program_with_a_model_is_broad_not_distinctive(self):
+        """PROD REGRESSION 2026-07-28 — a recurring programme must NEVER reach
+        the |D tier, not even with a concrete casting.
+
+        This test used to assert the opposite, on the reasoning «same casting +
+        same programme = same release». A ROUND-UP article breaks that: an
+        autoevolution «10 affordable cars» unboxing names ten castings and
+        mentions Red Line Club in passing, so the cartesian product produced
+        `audi sport|red line club|D` — and hard-blocked an unrelated t-hunted
+        post about a single $28 RLC Audi Quattro exclusive. The article was
+        DROPPED and pinned, i.e. irreversibly lost without operator action.
+
+        Driven through the REAL lexicon rather than a hand-passed tier, so the
+        assertion cannot pass while the lexicon says something else.
+        """
+        for alias in ('super treasure hunt', 'red line club'):
+            canonical, tier = me.SERIES_LEXICON[alias]
+            pairs = me._build_pairs({'nissan skyline'}, {(canonical, tier)})
+            assert pairs == [f'nissan skyline|{canonical}|B'], pairs
+            assert not any(p.endswith('|D') for p in pairs)
+
+    def test_prod_false_block_roundup_vs_single_drop(self):
+        """The exact prod pair that hard-blocked (2026-07-28, 19:57 МСК).
+
+        A round-up is the worst case for pair matching: N castings x M series
+        is a combinatorial spray of keys, so it collides with almost anything.
+        The defence is the tier — a series that appears in round-ups by nature
+        must never be distinctive.
+        """
+        t_hunted = extract_fingerprint(_article(
+            title='A volta do Audi Quattro para o Red Line Club!',
+            paragraphs=[
+                'A Mattel vai vender hoje uma variação de cor do 1985 Audi '
+                'Sport Quattro S1 através do site Mattel Creations (você '
+                'precisa ser membro do Red Line Club).',
+            ],
+        ))
+        autoevolution = extract_fingerprint(_article(
+            title='Hot Wheels Unboxing: 10 Affordable Cars for July of 2026',
+            paragraphs=[
+                'This month brings a mix of castings, including an Audi Sport '
+                'Quattro and a few JDM icons.',
+                'Collectors chasing Red Line Club exclusives will find plenty '
+                'here too.',
+            ],
+        ))
+        any_shared, shared, any_distinctive = shares_pair(t_hunted, autoevolution)
+        # They DO still share a broad key — that is fine and even useful: the
+        # operator gets an [E014] to glance at. What must never happen again is
+        # the silent, irreversible drop.
+        assert any_distinctive is False, shared
+        assert all(p.endswith('|B') for p in shared), shared
 
     def test_franchise_and_broad_line_no_model_emits_only_the_franchise(self):
         # Mixed input, no concrete model: the one-off franchise still stands
