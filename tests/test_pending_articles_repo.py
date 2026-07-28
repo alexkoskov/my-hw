@@ -17,6 +17,7 @@ import sys
 import tempfile
 import threading
 import unittest
+from datetime import datetime, timedelta, timezone
 from unittest.mock import patch
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
@@ -54,6 +55,8 @@ EXPECTED_PENDING = {
     # Migration 2026-07-25 (content-gate): NULL = publishable, non-NULL =
     # held for operator approval and invisible to list_pending/count_pending.
     'hold_reason':   {'type': 'TEXT',      'notnull': 0, 'dflt_value': None,                    'pk': 0},
+    # dedup defer (2026-07-28) — timed sibling of hold_reason; NULL = publishable now.
+    'publish_after': {'type': 'TIMESTAMP', 'notnull': 0, 'dflt_value': None,                    'pk': 0},
 }
 
 EXPECTED_PUBLISHED = {
@@ -2068,3 +2071,97 @@ class TestSqlAudit(unittest.TestCase):
 
 if __name__ == '__main__':
     unittest.main()
+
+
+pending_articles_repo = repo
+
+
+class TestPublishAfterDefer(unittest.TestCase):
+    """``publish_after`` — the timed sibling of ``hold_reason`` (2026-07-28).
+
+    A hold waits FOREVER for the operator; a defer expires by itself. That
+    asymmetry is deliberate and is the operator's rule per gate: «нет ответа =
+    не публикуем» for the content gate, «нет ответа = публикуем» for a
+    suspected duplicate.
+    """
+
+    def setUp(self):
+        self.tmp = tempfile.NamedTemporaryFile(suffix='.db', delete=False)
+        self.tmp.close()
+        self._orig_db = news_bot.DB_FILE
+        news_bot.DB_FILE = self.tmp.name
+        news_bot.init_db()
+
+    def tearDown(self):
+        news_bot.DB_FILE = self._orig_db
+        os.unlink(self.tmp.name)
+
+    def _stage(self, link, publish_after=None):
+        return pending_articles_repo.insert_pending({
+            'link': link,
+            'source_name': 't-hunted',
+            'title': 'T',
+            'paragraphs': ['body'],
+            'publish_after': publish_after,
+        })
+
+    def _offset(self, hours):
+        return (
+            datetime.now(timezone.utc) + timedelta(hours=hours)
+        ).strftime('%Y-%m-%d %H:%M:%S')
+
+    def test_future_timestamp_hides_row_from_the_queue(self):
+        self._stage('http://x/deferred', self._offset(24))
+        self.assertEqual(pending_articles_repo.count_pending(), 0)
+        self.assertEqual(pending_articles_repo.list_pending(), [])
+
+    def test_deferred_row_is_still_staged_and_findable(self):
+        """Withheld from the QUEUE, not from the database.
+
+        ``get_pending`` must keep seeing it or the intake duplicate guard
+        would re-stage the same article every tick, and both button resolvers
+        look rows up by link — the cancel button has to work while the row is
+        deferred, which is the entire point of the delay.
+        """
+        self._stage('http://x/deferred', self._offset(24))
+        row = pending_articles_repo.get_pending('http://x/deferred')
+        self.assertIsNotNone(row)
+        self.assertIsNotNone(row['publish_after'])
+        self.assertFalse(pending_articles_repo.insert_pending({
+            'link': 'http://x/deferred', 'source_name': 't-hunted',
+            'title': 'T', 'paragraphs': ['body'],
+        }), "duplicate guard must still reject a re-stage of a deferred row")
+
+    def test_elapsed_timestamp_returns_the_row_to_the_queue(self):
+        """Silence publishes — this is the auto-release the operator chose."""
+        self._stage('http://x/ripe', self._offset(-1))
+        self.assertEqual(pending_articles_repo.count_pending(), 1)
+        self.assertEqual(
+            [r['link'] for r in pending_articles_repo.list_pending()],
+            ['http://x/ripe'],
+        )
+
+    def test_null_is_publishable_now(self):
+        """Every pre-migration row has NULL here and must stay publishable."""
+        self._stage('http://x/plain', None)
+        self.assertEqual(pending_articles_repo.count_pending(), 1)
+
+    def test_deferred_row_is_not_evicted_by_the_overflow_drain(self):
+        """Evicting a deferred row would destroy a decision the operator has
+        not made yet — the same argument ``list_pending_for_eviction`` already
+        makes for held rows."""
+        self._stage('http://x/deferred', self._offset(24))
+        self._stage('http://x/plain', None)
+        links = [r['link'] for r in
+                 pending_articles_repo.list_pending_for_eviction()]
+        self.assertEqual(links, ['http://x/plain'])
+
+    def test_defer_and_hold_are_independent(self):
+        """A row can be both; either one alone must keep it out of the queue."""
+        pending_articles_repo.insert_pending({
+            'link': 'http://x/both', 'source_name': 't-hunted', 'title': 'T',
+            'paragraphs': ['body'], 'hold_reason': 'poster',
+            'publish_after': self._offset(-1),
+        })
+        self.assertEqual(pending_articles_repo.count_pending(), 0,
+                         "elapsed defer must not release a HELD row")

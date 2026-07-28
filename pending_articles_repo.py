@@ -305,6 +305,14 @@ _COLUMN_MIGRATIONS = (
     # live prod DB with rows in it.
     ('pending_articles', 'hold_reason',
      "ALTER TABLE pending_articles ADD COLUMN hold_reason TEXT"),
+    # 2026-07-28 (dedup defer): nullable UTC 'YYYY-MM-DD HH:MM:SS' timestamp.
+    # NULL (what every pre-migration row gets for free) means "publishable
+    # now"; a future value means "staged but withheld until then", and is
+    # filtered out of list_pending / count_pending exactly like hold_reason.
+    # Unlike hold_reason this expires BY ITSELF — silence means publish.
+    # Nullable + no default, so the ALTER is safe on the live prod DB.
+    ('pending_articles', 'publish_after',
+     "ALTER TABLE pending_articles ADD COLUMN publish_after TIMESTAMP"),
 )
 
 
@@ -365,8 +373,9 @@ def insert_pending(entry: dict) -> bool:
         conn.execute(
             "INSERT INTO pending_articles "
             "(link, source_name, feed_url, title, subtitle, paragraphs, "
-            " images, blocks, pub_date, model_fingerprint, hold_reason) "
-            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            " images, blocks, pub_date, model_fingerprint, hold_reason,"
+            " publish_after) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
             (
                 entry['link'],
                 entry['source_name'],
@@ -379,6 +388,7 @@ def insert_pending(entry: dict) -> bool:
                 entry.get('pub_date'),
                 _dumps(entry.get('model_fingerprint')),  # NULL-preserving
                 entry.get('hold_reason'),  # NULL-preserving, plain TEXT
+                entry.get('publish_after'),  # NULL-preserving, UTC timestamp
             ),
         )
         conn.commit()
@@ -569,6 +579,28 @@ def get_failed(link: str) -> Optional[dict]:
 # ---------------------------------------------------------------------------
 
 
+# ---------------------------------------------------------------------------
+# Cross-source dedup defer (2026-07-28).
+#
+# ``publish_after`` is the timed sibling of ``hold_reason``: a row whose
+# timestamp is still in the future is staged but invisible to the publish
+# path, exactly like a held row. The difference is what happens when nobody
+# acts — a hold waits FOREVER for «✅ Опубликовать», a defer expires by
+# itself and the row publishes. That asymmetry is the operator's rule for
+# each gate: «нет ответа = не публикуем» for the content gate, «нет ответа =
+# публикуем» for a suspected duplicate.
+#
+# The predicate is ``(publish_after IS NULL OR publish_after <=
+# CURRENT_TIMESTAMP)``. NULL is the pre-migration default and means «now»,
+# so every existing row stays publishable. SQLite's CURRENT_TIMESTAMP is UTC
+# 'YYYY-MM-DD HH:MM:SS' — the same format the writer stores — so the lexical
+# ``<=`` compare is chronological.
+#
+# Spelled out inline per query for the same reason as ``hold_reason``:
+# ``TestSqlAudit`` forbids string-concatenating SQL fragments.
+# ---------------------------------------------------------------------------
+
+
 def list_pending() -> list[dict]:
     """All PUBLISHABLE pending rows in publish order: today's batch first,
     then the carry-over backlog **oldest-first**.
@@ -597,6 +629,7 @@ def list_pending() -> list[dict]:
         cur = conn.execute(
             "SELECT * FROM pending_articles "
             "WHERE hold_reason IS NULL "
+            "AND (publish_after IS NULL OR publish_after <= CURRENT_TIMESTAMP) "
             "ORDER BY "
             "  CASE WHEN date(fetched_at) = date('now') THEN 0 ELSE 1 END, "
             "  fetched_at ASC"
@@ -670,6 +703,7 @@ def list_pending_for_eviction() -> list[dict]:
         cur = conn.execute(
             "SELECT * FROM pending_articles "
             "WHERE hold_reason IS NULL "
+            "AND (publish_after IS NULL OR publish_after <= CURRENT_TIMESTAMP) "
             "AND ru_paragraphs IS NULL "
             "ORDER BY fetched_at ASC"
         )
@@ -728,7 +762,9 @@ def count_pending() -> int:
     conn = _connect()
     try:
         row = conn.execute(
-            "SELECT COUNT(*) FROM pending_articles WHERE hold_reason IS NULL"
+            "SELECT COUNT(*) FROM pending_articles "
+            "WHERE hold_reason IS NULL "
+            "AND (publish_after IS NULL OR publish_after <= CURRENT_TIMESTAMP)"
         ).fetchone()
         return int(row[0])
     finally:
