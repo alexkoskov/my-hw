@@ -946,3 +946,183 @@ class TestDoSBounds:
 
 if __name__ == "__main__":
     pytest.main([__file__, "-v"])
+
+
+# ---------------------------------------------------------------------------
+# Literal `**` markers must never reach a reader (prod complaint 2026-07-28).
+#
+# The LLM is primed to emit `**bold**` on EVERY article — the system prompt
+# explains the markers unconditionally — but before this fix the decode step
+# ran ONLY on the variant-B block-patch path. Every other route published the
+# raw asterisks: a flat-`paragraphs` source, a model that returned its own
+# `blocks`, the page title, an image caption. Rendering is where all routes
+# converge, so that is where the guarantee is made and where it is pinned.
+# ---------------------------------------------------------------------------
+
+
+def _flatten(node):
+    """Yield every string in a node tree (order not significant)."""
+    if isinstance(node, str):
+        yield node
+    elif isinstance(node, dict):
+        for child in node.get("children") or []:
+            yield from _flatten(child)
+        attrs = node.get("attrs") or {}
+        for value in attrs.values():
+            if isinstance(value, str):
+                yield value
+    elif isinstance(node, list):
+        for item in node:
+            yield from _flatten(item)
+
+
+def _strong_texts(nodes):
+    """Every text wrapped in a <strong> node, anywhere in the tree."""
+    found = []
+
+    def walk(n):
+        if isinstance(n, dict):
+            if n.get("tag") == "strong":
+                found.extend(_flatten(n))
+            for child in n.get("children") or []:
+                walk(child)
+        elif isinstance(n, list):
+            for item in n:
+                walk(item)
+
+    walk(nodes)
+    return found
+
+
+class TestBoldMarkerDecoding:
+    def test_prod_case_whole_paragraph_marked_becomes_bold(self):
+        # The literal text the operator saw on the published page.
+        nodes = tp._build_content(
+            subtitle="",
+            paragraphs=["**Все ли старые Hot Wheels ценны?**"],
+            images=[],
+            source_url="https://example.com/a",
+        )
+        assert "Все ли старые Hot Wheels ценны?" in _strong_texts(nodes)
+        assert not any("**" in s for s in _flatten(nodes))
+
+    def test_flat_paragraph_partial_span_becomes_bold(self):
+        nodes = tp._build_content(
+            subtitle="",
+            paragraphs=["Обычный текст с **выделенным** куском."],
+            images=[],
+            source_url="https://example.com/a",
+        )
+        assert _strong_texts(nodes) == ["выделенным"]
+        # The surrounding prose must stay plain — the same backwards-bleed
+        # invariant the orangetrack walker regressed on.
+        assert "Обычный текст с " in list(_flatten(nodes))
+
+    def test_flat_subtitle_markers_stripped(self):
+        nodes = tp._build_content(
+            subtitle="Лид с **выделением**",
+            paragraphs=["body"],
+            images=[],
+            source_url="https://example.com/a",
+        )
+        assert not any("**" in s for s in _flatten(nodes))
+        assert any("Лид с выделением" in s for s in _flatten(nodes))
+
+    @pytest.mark.parametrize("block,expected_bold", [
+        ({"type": "paragraph", "text": "Блок с **жирным**."}, "жирным"),
+        ({"type": "heading", "text": "**Заголовок**", "level": 3}, "Заголовок"),
+        ({"type": "list_item", "text": "• пункт с **жирным**"}, "жирным"),
+    ])
+    def test_blocks_path_decodes_markers(self, block, expected_bold):
+        nodes = tp._build_content_from_blocks(
+            subtitle="", blocks=[block], source_url="https://example.com/a",
+        )
+        assert expected_bold in _strong_texts(nodes)
+        assert not any("**" in s for s in _flatten(nodes))
+
+    def test_image_caption_markers_stripped(self):
+        # Captions come from a SEPARATE second LLM pass, so they carry markers
+        # independently of the body.
+        nodes = tp._build_content_from_blocks(
+            subtitle="",
+            blocks=[{"type": "image", "src": "https://x/i.jpg",
+                     "caption": "Подпись **жирная**"}],
+            source_url="https://example.com/a",
+        )
+        assert not any("**" in s for s in _flatten(nodes))
+        assert any("Подпись жирная" in s for s in _flatten(nodes))
+
+    def test_existing_runs_win_over_llm_markers(self):
+        """Source formatting outranks the model's guesses.
+
+        When a block already carries `runs` (a source that preserves markup),
+        those runs are kept as-is and the stray markers are merely stripped —
+        we do not let the model's opinion override the author's.
+        """
+        nodes = tp._build_content_from_blocks(
+            subtitle="",
+            blocks=[{
+                "type": "paragraph",
+                "text": "Настоящий жирный и **догадка** модели.",
+                "runs": [{"text": "Настоящий жирный", "formats": ["bold"]}],
+            }],
+            source_url="https://example.com/a",
+        )
+        assert _strong_texts(nodes) == ["Настоящий жирный"]
+        assert not any("**" in s for s in _flatten(nodes))
+
+    def test_unbalanced_marker_is_stripped_not_published(self):
+        nodes = tp._build_content(
+            subtitle="",
+            paragraphs=["Непарная **звёздочка тут."],
+            images=[],
+            source_url="https://example.com/a",
+        )
+        assert not any("**" in s for s in _flatten(nodes))
+        assert any("Непарная звёздочка тут." in s for s in _flatten(nodes))
+        # Nothing to bold — an unplaceable emphasis is dropped, not guessed at.
+        assert _strong_texts(nodes) == []
+
+    def test_page_title_markers_stripped(self):
+        """The title is plain text on Telegraph AND is what the Telegram link
+        preview shows — the most visible leak of all."""
+        captured = {}
+
+        def fake_api_call(method, data, session=None):
+            captured.update(data)
+            return {"url": "https://telegra.ph/x"}
+
+        with patch.object(tp, "_api_call", fake_api_call):
+            tp.publish_article(
+                title="**Жирный заголовок**",
+                paragraphs=["body"],
+                images=[],
+                source_url="https://example.com/a",
+                access_token="tok",
+            )
+        assert captured["title"] == "Жирный заголовок"
+        assert "**" not in captured["content"]
+
+    def test_no_literal_markers_survive_anywhere(self):
+        """Belt-and-braces sweep over a marker-heavy article: not a single `**`
+        may appear in the produced node tree, whichever route built it."""
+        nodes = tp._build_content(
+            subtitle="**Лид**",
+            paragraphs=["**Заголовок раздела**", "Текст с **выделением**.",
+                        "Непарная ** тут", "Без разметки"],
+            images=["https://x/1.jpg"],
+            source_url="https://example.com/a",
+        )
+        assert not any("**" in s for s in _flatten(nodes))
+
+    def test_text_without_markers_is_untouched(self):
+        """Fast path: an article with no markers must render exactly as before
+        — plain strings, no runs machinery, no behaviour change."""
+        nodes = tp._build_content(
+            subtitle="Обычный лид",
+            paragraphs=["Просто текст."],
+            images=[],
+            source_url="https://example.com/a",
+        )
+        body = [n for n in nodes if n.get("tag") == "p"]
+        assert any(n["children"] == ["Просто текст."] for n in body)

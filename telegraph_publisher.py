@@ -17,6 +17,7 @@ Public surface:
 import json
 import logging
 import os
+import re
 from typing import List, Optional
 from urllib.parse import urlparse
 
@@ -185,6 +186,68 @@ def _wrap_with_formats(child_text, formats):
     return node_text
 
 
+#: Paired ``**bold**`` markers in LLM output. Non-greedy body so two adjacent
+#: spans on one line don't merge; no newline in the body so a stray unbalanced
+#: ``**`` can't swallow the rest of the paragraph. Mirrors
+#: ``_llm_common._BOLD_MARKER_RE`` — deliberately duplicated rather than
+#: imported: the publisher must not depend on the LLM-engine layer, and this
+#: is the LAST line of defence before text reaches a reader.
+_BOLD_MARKER_RE = re.compile(r"\*\*([^*\n]+?)\*\*")
+
+#: Any leftover asterisk pair after paired decoding (i.e. an UNBALANCED marker).
+_STRAY_MARKER_RE = re.compile(r"\*\*")
+
+
+def _decode_bold_markers(text, runs=None):
+    """Turn ``**bold**`` markers in *text* into real formatting.
+
+    Returns ``(clean_text, effective_runs)``.
+
+    Why this lives in the publisher rather than in the translation layer: the
+    LLM is primed to emit these markers on EVERY article (the system prompt
+    explains them unconditionally), but the decode step that existed before
+    2026-07-28 ran only on the variant-B block-patch path. Every other route —
+    a flat-``paragraphs`` source, a model that returned its own ``blocks``, the
+    page title, an image caption — carried the raw markers all the way onto the
+    page, where readers saw literal ``**Все ли старые Hot Wheels ценны?**``.
+    Rendering is the one place every route converges, so the guarantee "no
+    literal ``**`` ever reaches a reader" can only be made here.
+
+    Behaviour:
+
+    * Paired markers become ``{'text': …, 'formats': ['bold']}`` runs, honouring
+      bold the model added on its own (operator decision 2026-07-28).
+    * When *runs* are already present they WIN and are returned unchanged — the
+      source's own formatting outranks the model's guesses. The markers are
+      still stripped from the text. Existing runs stay locatable afterwards:
+      ``_render_paragraph_with_runs`` finds them with ``str.find`` and marker
+      removal never alters a run's own substring.
+    * An UNBALANCED marker matches nothing, so its asterisks are removed by
+      ``_STRAY_MARKER_RE`` rather than published. Losing an emphasis we cannot
+      place beats showing punctuation the author never wrote.
+    """
+    if not isinstance(text, str) or "**" not in text:
+        return text, runs
+    decoded = []
+    parts = []
+    cursor = 0
+    for match in _BOLD_MARKER_RE.finditer(text):
+        parts.append(text[cursor:match.start()])
+        body = match.group(1)
+        parts.append(body)
+        decoded.append({"text": body, "formats": ["bold"]})
+        cursor = match.end()
+    parts.append(text[cursor:])
+    clean = "".join(parts)
+    if _STRAY_MARKER_RE.search(clean):
+        logger.warning(
+            "[markers] unbalanced ** stripped from rendered text (%d chars)",
+            len(clean),
+        )
+        clean = _STRAY_MARKER_RE.sub("", clean)
+    return clean, (runs if runs else (decoded or None))
+
+
 def _render_paragraph_with_runs(text, runs, source_url):
     """Return list of children for the given block text and runs metadata.
 
@@ -342,10 +405,12 @@ def _build_content_from_blocks(
     nodes: list = []
     if first_image_idx is not None:
         hero = blocks[first_image_idx]
-        nodes.append(figure_img(hero["src"], hero.get("caption", "")))
+        nodes.append(figure_img(
+            hero["src"], _decode_bold_markers(hero.get("caption", ""))[0],
+        ))
 
     if subtitle:
-        nodes.append(p(i_(f"💬 «{subtitle}»")))
+        nodes.append(p(i_(f"💬 «{_decode_bold_markers(subtitle)[0]}»")))
         nodes.append({"tag": "hr"})
 
     # Block-level rendering: paragraph/heading/list_item flow through the
@@ -358,25 +423,28 @@ def _build_content_from_blocks(
             continue
         t = block.get("type")
         if t == "paragraph":
+            text, runs = _decode_bold_markers(block["text"], block.get("runs"))
             nodes.append(p(*_render_paragraph_with_runs(
-                block["text"], block.get("runs"), source_url,
+                text, runs, source_url,
             )))
         elif t == "lead":
-            nodes.append(p(b_(block["text"])))
+            nodes.append(p(b_(_decode_bold_markers(block["text"])[0])))
         elif t == "heading":
+            text, runs = _decode_bold_markers(block["text"], block.get("runs"))
             nodes.append(heading(
                 block.get("level", 3),
-                *_render_paragraph_with_runs(
-                    block["text"], block.get("runs"), source_url,
-                ),
+                *_render_paragraph_with_runs(text, runs, source_url),
             ))
         elif t == "list_item":
             text = (block.get("text") or "").lstrip(" •\t\n")  # Decision 10 — strip leading bullet/whitespace before prepending
+            text, runs = _decode_bold_markers(text, block.get("runs"))
             nodes.append(p("• ", *_render_paragraph_with_runs(
-                text, block.get("runs"), source_url,
+                text, runs, source_url,
             )))
         elif t == "image":
-            nodes.append(figure_img(block["src"], block.get("caption", "")))
+            nodes.append(figure_img(
+                block["src"], _decode_bold_markers(block.get("caption", ""))[0],
+            ))
         elif t == "video":
             nodes.append(iframe(block["src"]))
 
@@ -433,11 +501,17 @@ def _build_content(
         nodes.append(figure_img(remaining.pop(0)))
 
     if subtitle:
-        nodes.append(p(i_(f"💬 «{subtitle}»")))
+        nodes.append(p(i_(f"💬 «{_decode_bold_markers(subtitle)[0]}»")))
         nodes.append({"tag": "hr"})
 
     for i, para in enumerate(paragraphs):
-        nodes.append(p(para))
+        # Flat sources have no runs container, so the model's own `**` markers
+        # are the ONLY formatting signal here — decode them into real bold
+        # instead of publishing the asterisks (prod complaint 2026-07-28).
+        para_text, para_runs = _decode_bold_markers(para)
+        nodes.append(p(*_render_paragraph_with_runs(
+            para_text, para_runs, source_url,
+        )))
         if remaining and (i + 1) % 3 == 0:
             nodes.append(figure_img(remaining.pop(0)))
 
@@ -530,6 +604,12 @@ def publish_article(
     token = access_token or os.environ.get(ENV_TOKEN_KEY)
     if not token:
         raise TelegraphError(f"{ENV_TOKEN_KEY} is not set; call ensure_access_token first")
+
+    # The page title is plain text on Telegraph — it cannot carry formatting,
+    # and it is ALSO what the Telegram link preview shows, so a stray `**` here
+    # is the most visible leak of all. Strip the markers without trying to
+    # render them (2026-07-28).
+    title = _decode_bold_markers(title)[0]
 
     content = preview_nodes(
         title=title,

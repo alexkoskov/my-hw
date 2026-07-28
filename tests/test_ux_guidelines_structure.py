@@ -222,18 +222,17 @@ def test_mashonka_slang_carveout_is_bounded():
     section = _section(content, "## Glossary — PT/EN/RU").lower()
     # All limits live together with the carve-out, so the LLM cannot read the
     # permission without the constraints.
-    assert "норма — ноль" in section, (
-        "Carve-out must state a FLOOR, not only a ceiling. A named glossary "
-        "entry plus explicit permission reads as a quota to fill, so a "
-        "ceiling-only rule produces the slang in ~every eligible article "
-        "instead of the operator's «иногда»."
+    # Dosage, as the operator finally set it (2026-07-28): every article, at
+    # most once. Deliberately a PER-ARTICLE rule — the earlier «one article in
+    # five» draft was unimplementable, since each article is translated by an
+    # independent call with no memory of the previous ones, so the model cannot
+    # ration across articles and falls back to using the word whenever allowed.
+    # Counting inside one article it can do.
+    assert "ровно один раз в статье" in section, (
+        "Carve-out must state the per-article dosage the operator chose."
     )
-    assert "потолок — один" in section, "Missing the once-per-article ceiling."
+    assert "не больше" in section, "Missing the once-per-article ceiling."
     assert "заголов" in section, "Carve-out must forbid the slang in titles."
-    assert "t-hunted" in section and "autoevolution" in section, (
-        "Carve-out must name its two permitted sources as an ALLOWLIST. "
-        "Gating on Mattel alone silently permits lamley and orangetrack."
-    )
     assert "сноск" in section or "первом упоминании" in section, (
         "Carve-out must require the first-mention gloss for readers who are "
         "not in the chat."
