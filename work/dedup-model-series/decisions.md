@@ -219,3 +219,21 @@ Review details — in JSON files via links. QA report — in logs/working/.
 - `tests/test_integration.py::TestCrossSourceDedup` → 18 passed
 - `tests/test_admin_alerts.py` + `tests/test_backfill_fingerprints.py` + `tests/test_deploy_files_invariant.py` → 64 passed
 - Toggle-parse + SDCC-pair + backfill widened-select smoke → all as expected
+
+## Post-deploy fix: theme-only key precision (2026-07-28)
+
+**Status:** Done
+**Agent:** main agent (`/write-code` shortcut — S-size, 2 files)
+**Summary:** Prod `[E014]` false-flag: a t-hunted PT «lote da série Pop Culture» post and an autoevolution EN «Super Treasure Hunt … Is a Lincoln» article soft-flagged each other. Neither side had an extractable model (Lincoln is outside the 36-brand lexicon; the case-sensitive `Lotus` pass captures brand-only), so both degraded to the theme-only key `*|pop culture|B` — and autoevolution's «pop culture» was ordinary prose («a pop culture icon»), not a Hot Wheels line name. Amends **Decision 1**: the theme-only variant is no longer emitted for every recognised series. New `_theme_only_eligible(canonical, tier)` gates it to one-off franchises/events — lexicon-`distinctive` (derived through `_tier_suffix`, so the unknown-tier→broad fail-safe governs here too) AND not in the new `_RECURRING_SERIES` frozenset (`super treasure hunt`, `red line club`: distinctive, but shipped continuously, so the program name alone identifies no particular news item). Broad recurrent car-lines and recurring programs now contribute NO key without a concrete model. Model-bearing keys `"<model>|<series>|<tier>"` and the whole `strict`/`brands`/`series`/`similarity()` path are byte-unchanged, so the change narrows MATCHING, never the lexicon — `series` still lists `pop culture` on both sides. A load-time assertion pins every `_RECURRING_SERIES` entry to a real lexicon canonical (a rename would otherwise silently restore the noisy key).
+**Deviations:** None. Trade-off accepted: two genuine dupes about the same broad-line drop where NEITHER names an extractable model no longer soft-flag — an under-match in the fail-safe direction (costs a flag, can never cause a silent hard block).
+
+**Open asymmetry (noted, not changed):** `super treasure hunt` / `red line club` lose theme-only power but keep full `|D` HARD-BLOCK power on the model-bearing path — two STH articles naming the same casting within 30 days block irreversibly. That is the intended reading (same casting + same program = the same release), but it rests on the model token being right; the comment justifying `_RECURRING_PROGRAMS` («shipped continuously») argues the opposite way for the theme-only path, so the two paths are deliberately, not accidentally, asymmetric. Revisit if a false `[E015]` on an STH pair ever appears.
+
+**Reviews:** code-reviewer (`approved_with_suggestions`, 0 critical / 2 major / 5 minor) + test-reviewer (`needs_improvement`, 2 major / 5 minor) → [logs/working/task-standalone/]. All 14 findings applied except one perf-only suggestion (dropping the now-dead `and not series` clause from the gate short-circuit) — skipped as out of scope: it is behaviour-neutral, and retiring it would also retire `test_theme_only_pop_culture_not_short_circuited`, whose only observation is exactly that fetch. Comment corrected instead.
+
+**Verification:**
+- `python3 -m pytest -q` → 1582 passed
+- `tests/test_model_extractor.py` → 70 passed; `TestCrossSourceDedup` → 21 passed
+- Calibration fixture gained **pair-9** (the real prod bodies) + a THIRD hard invariant `test_calibration_non_dupes_share_no_pair` (`any_shared is False` for every non-duplicate pair). Needed because the old invariants are blind to this bug class: the incident was a shared `|B` key, so `expected_any_distinctive is False` was already satisfied by the buggy code. Floor moved ≥7/8 → ≥8/9 (same one-error budget) and now also asserts `expected_shared_pairs` per pair.
+- Mutation-verified: forcing `_theme_only_eligible` to `return True` (pre-fix behaviour) fails `test_calibration_non_dupes_share_no_pair` AND the new gate-level `test_broad_line_prose_comention_does_not_soft_flag`; both pass again on restore.
+- Existing fixture pairs unaffected: pair-1/pair-7 ride on `<model>|car culture|B`, pair-6 on `*|stranger things|B` (a one-off franchise, still eligible)

@@ -9,15 +9,19 @@ Covers:
 - ``TestSimilarity`` — the Decision 4 guarded two-level Jaccard formula
   (AC6 empty-fp guard, AC8 1-token / brand-count guards, AC10 two-level max).
 - ``test_calibration_pair_tier_accuracy`` — runs ``extract_fingerprint`` +
-  ``shares_pair`` on the 8-pair calibration fixture and asserts ≥7/8 correct
-  tier-verdicts (``duplicate`` / ``soft-flag`` / ``non-duplicate``), the
-  user-spec AC11 floor.
+  ``shares_pair`` on the 9-pair calibration fixture and asserts ≥8/9 correct
+  tier-verdicts (``duplicate`` / ``soft-flag`` / ``non-duplicate``) AND the
+  concrete ``expected_shared_pairs`` per pair — the user-spec AC11 floor with a
+  one-error budget.
 - ``test_calibration_sdcc_dupes_hard_block`` — the 3 real SDCC 2026 dupes MUST
   hard-block (``any_distinctive is True``). A SEPARATE hard invariant, kept out
-  of the ≥7/8 budget: a missed hard block is a silent, irreversible drop.
+  of the aggregate budget: a missed hard block is a silent, irreversible drop.
 - ``test_calibration_not_dupes_never_hard_block`` — every not-dupe probe MUST
   NOT hard-block (``any_distinctive is False``), the other half of the
   asymmetric invariant.
+- ``test_calibration_non_dupes_share_no_pair`` — third hard invariant
+  (2026-07-28): every ``'non-duplicate'`` pair must share NO key at all. The
+  prod false-flag was a shared ``|B`` key, which both older invariants accept.
 """
 
 from __future__ import annotations
@@ -366,46 +370,89 @@ def _pair_tier_verdict(pair: dict) -> tuple:
       * shared ``|B`` only   → ``'soft-flag'``    (publishes + ping, ``[E014]``)
       * no shared pair       → ``'non-duplicate'`` (pass through)
 
-    Returns ``(any_distinctive, verdict)`` so callers can assert both the
-    aggregate tier-verdict and the load-bearing hard-block polarity.
+    Returns ``(any_distinctive, verdict, shared)`` so callers can assert the
+    aggregate tier-verdict, the load-bearing hard-block polarity, AND the
+    concrete shared keys (``expected_shared_pairs``) — the last of which is what
+    makes a spurious SOFT flag visible; verdict+polarity alone do not.
     """
     fp_a = extract_fingerprint(pair['a'])
     fp_b = extract_fingerprint(pair['b'])
-    any_shared, _shared, any_distinctive = shares_pair(fp_a, fp_b)
+    any_shared, shared, any_distinctive = shares_pair(fp_a, fp_b)
     if any_distinctive:
         verdict = 'duplicate'
     elif any_shared:
         verdict = 'soft-flag'
     else:
         verdict = 'non-duplicate'
-    return any_distinctive, verdict
+    return any_distinctive, verdict, shared
 
 
 def test_calibration_pair_tier_accuracy():
-    """≥7/8 pairs must map to the correct tier-verdict (user-spec AC11 floor).
+    """≥8/9 pairs must map to the correct tier-verdict (user-spec AC11 floor).
 
-    The aggregate budget allows exactly ONE misclassification. The two hard
-    invariants below (SDCC-must-block / not-dupe-must-not-block) are pinned
-    separately so an irreversible silent hard block can never hide inside this
-    budget.
+    The aggregate budget allows exactly ONE misclassification (unchanged by the
+    2026-07-28 addition of pair-9; the floor moved 7/8 → 8/9 to keep the same
+    one-error budget). The three hard invariants below (SDCC-must-block /
+    not-dupe-must-not-block / non-dupes-share-no-pair) are pinned separately so
+    neither an irreversible silent hard block nor a noise-generating spurious
+    soft flag can hide inside this budget.
+
+    The concrete ``expected_shared_pairs`` are asserted per pair as part of the
+    verdict: a pair that lands on the right verdict via the WRONG keys is a
+    misclassification, not a pass.
     """
     pairs = DUPE_PAIRS + NON_DUPE_PAIRS
     correct = 0
     misclassified = []
     for pair in pairs:
-        _any_distinctive, verdict = _pair_tier_verdict(pair)
+        _any_distinctive, verdict, shared = _pair_tier_verdict(pair)
         expected = pair['expected_verdict']
-        if verdict == expected:
+        expected_shared = sorted(pair['expected_shared_pairs'])
+        if verdict == expected and sorted(shared) == expected_shared:
             correct += 1
-        else:
+        elif verdict != expected:
             misclassified.append(
                 f"{pair['label']}: {verdict} (expected {expected})"
             )
+        else:
+            misclassified.append(
+                f"{pair['label']}: right verdict {verdict} but shared "
+                f"{sorted(shared)} (expected {expected_shared})"
+            )
     total = len(pairs)
-    assert correct >= 7, (
+    assert correct >= total - 1, (
         f"Calibration floor: {correct}/{total} correct tier-verdicts "
-        f"(need ≥7/8). Misclassified: {misclassified}"
+        f"(need ≥{total - 1}/{total}). Misclassified: {misclassified}"
     )
+
+
+def test_calibration_non_dupes_share_no_pair():
+    """Every ``'non-duplicate'`` pair must share NO key at all — not merely no
+    ``|D`` key.
+
+    A THIRD hard invariant, added 2026-07-28 alongside pair-9. The existing
+    must-NOT-hard-block invariant is asymmetric in one direction only: it pins
+    ``any_distinctive is False``, which the prod false-flag ALREADY satisfied —
+    that bug produced a shared ``|B`` key, i.e. a soft flag. Without this test
+    the fixture is provably blind to the whole bug class: forcing
+    ``_theme_only_eligible`` to return True (restoring the pre-fix behaviour)
+    leaves the aggregate and both older invariants green.
+
+    Scoped to ``expected_verdict == 'non-duplicate'`` — the soft-flag pairs
+    (1, 6, 7) are SUPPOSED to share broad keys.
+    """
+    non_dupes = [
+        p for p in DUPE_PAIRS + NON_DUPE_PAIRS
+        if p['expected_verdict'] == 'non-duplicate'
+    ]
+    # Guard against a fixture change silently emptying the selection.
+    assert non_dupes, "expected at least one non-duplicate pair to pin"
+    for pair in non_dupes:
+        _any_distinctive, _verdict, shared = _pair_tier_verdict(pair)
+        assert shared == [], (
+            f"{pair['label']} MUST share no pair key (a shared key is at "
+            f"minimum a noisy [E014] soft flag), got {shared}"
+        )
 
 
 def test_calibration_sdcc_dupes_hard_block():
@@ -426,7 +473,7 @@ def test_calibration_sdcc_dupes_hard_block():
         f"{[p['label'] for p in sdcc_dupes]}"
     )
     for pair in sdcc_dupes:
-        any_distinctive, _verdict = _pair_tier_verdict(pair)
+        any_distinctive, _verdict, _shared = _pair_tier_verdict(pair)
         assert any_distinctive is True, (
             f"{pair['label']} MUST hard-block (shared |D pair), "
             f"got any_distinctive={any_distinctive!r}"
@@ -458,7 +505,7 @@ def test_calibration_not_dupes_never_hard_block():
     # loop would vacuously pass and drop the whole invariant).
     assert non_distinctive, "expected at least one non-distinctive pair to pin"
     for pair in non_distinctive:
-        any_distinctive, _verdict = _pair_tier_verdict(pair)
+        any_distinctive, _verdict, _shared = _pair_tier_verdict(pair)
         assert any_distinctive is False, (
             f"{pair['label']} MUST NOT hard-block, "
             f"got any_distinctive={any_distinctive!r}"
@@ -483,6 +530,25 @@ class TestSeriesLexicon:
         # Fail-safe polarity (tech-spec Decision 2 / code-research §7.2): any
         # resolvable-but-untagged path must default to broad, never distinctive.
         assert me._SERIES_DEFAULT_TIER == 'broad'
+
+    def test_recurring_programs_are_real_lexicon_canonicals(self):
+        # `_RECURRING_PROGRAMS` is matched against CANONICAL names, so a rename or
+        # a typo would silently stop excluding the entry and quietly restore the
+        # noisy theme-only key. Mirrors the module load-time assertion.
+        canonicals = {canonical for canonical, _tier in me.SERIES_LEXICON.values()}
+        assert me._RECURRING_PROGRAMS <= canonicals
+
+    def test_theme_only_eligibility_is_fail_safe_on_unknown_tier(self):
+        # Pins the unknown-tier → ineligible fallback. Routing through
+        # `_tier_suffix` instead of a direct `tier == 'distinctive'` compare is
+        # DEFENSIVE, not load-bearing: today `_TIER_SUFFIX` maps exactly one key
+        # to 'D', so both spellings behave identically and this test would not
+        # catch the swap. It keeps the fail-safe fallback as the single place
+        # that decides what counts as distinctive.
+        assert me._theme_only_eligible('k-pop demon hunters', 'distinctive') is True
+        assert me._theme_only_eligible('k-pop demon hunters', 'distinct') is False
+        assert me._theme_only_eligible('pop culture', 'broad') is False
+        assert me._theme_only_eligible('super treasure hunt', 'distinctive') is False
 
     def test_unrecognized_tier_defaults_to_broad(self):
         # Fail-safe fallback exercised through the REAL code path, not the bare
@@ -611,15 +677,44 @@ class TestPairs:
         )
         assert pairs == ['porsche 911|k-pop demon hunters|D']
 
-    def test_theme_only_pair_is_broad(self):
-        # Series recognised, no concrete model → theme-only "*|<series>|B".
-        # Use a BROAD-tagged series (car culture) to prove the no-models branch
-        # is unconditionally |B regardless of the series' own tier — this is a
-        # genuinely different input from the distinctive-no-model case pinned by
-        # `test_distinctive_requires_concrete_model` (de-redundancy per
-        # test-review round 1 minor).
-        pairs = me._build_pairs(set(), {('car culture', 'broad')})
-        assert pairs == ['*|car culture|B']
+    def test_broad_series_alone_emits_no_pair(self):
+        # theme-only-precision fix (2026-07-28): a BROAD recurrent car-line with
+        # no concrete model must emit NO key at all. "Both articles mention Pop
+        # Culture / Car Culture" is not evidence — the line ships continuously
+        # and the phrase also occurs in ordinary prose ("a pop culture icon"),
+        # which produced the prod false-flag this test guards.
+        assert me._build_pairs(set(), {('car culture', 'broad')}) == []
+        assert me._build_pairs(set(), {('pop culture', 'broad')}) == []
+
+    def test_recurring_program_alone_emits_no_pair(self):
+        # Same precision rule for lexicon-DISTINCTIVE series that name a
+        # recurring release program rather than a one-off franchise: Hot Wheels
+        # ships Super Treasure Hunts and RLC releases continuously, so the
+        # series name alone identifies no particular news item.
+        assert me._build_pairs(set(), {('super treasure hunt', 'distinctive')}) == []
+        assert me._build_pairs(set(), {('red line club', 'distinctive')}) == []
+        # Mistyped tier through the REAL branch: ineligible, never a re-opened
+        # theme-only key (the `_tier_suffix` fail-safe governs eligibility too).
+        assert me._build_pairs(set(), {('k-pop demon hunters', 'distinct')}) == []
+
+    def test_recurring_program_still_pairs_with_a_model(self):
+        # Only the THEME-ONLY key is withheld — a recurring program paired with
+        # a concrete casting is still the strongest signal we have and keeps its
+        # distinctive |D tier (same model + same program = same release).
+        pairs = me._build_pairs(
+            {'nissan skyline'}, {('super treasure hunt', 'distinctive')}
+        )
+        assert pairs == ['nissan skyline|super treasure hunt|D']
+
+    def test_franchise_and_broad_line_no_model_emits_only_the_franchise(self):
+        # Mixed input, no concrete model: the one-off franchise still stands
+        # alone, the recurrent line does not. Pins that the filter is per-series
+        # and not an all-or-nothing switch on the no-models branch.
+        pairs = me._build_pairs(
+            set(),
+            {('stranger things', 'distinctive'), ('pop culture', 'broad')},
+        )
+        assert pairs == ['*|stranger things|B']
 
     def test_distinctive_requires_concrete_model(self):
         # A distinctive franchise WITHOUT a model must be broad (|B), not |D —
@@ -647,7 +742,10 @@ class TestPairs:
         assert not any(p.endswith('|D') for p in fp['pairs'])
 
     def test_broad_line_tier_is_B(self):
-        # Broad recurrent car-line + concrete model → still |B.
+        # Broad recurrent car-line + concrete model → still |B. Also the
+        # counterpart to `test_broad_series_alone_emits_no_pair`: withholding the
+        # theme-only key must not weaken the MODEL-BEARING path — the calibration
+        # fixture's pair-1 and pair-7 dupes ride on exactly these keys.
         pairs = me._build_pairs({'toyota supra'}, {('car culture', 'broad')})
         assert pairs == ['toyota supra|car culture|B']
         assert all(p.endswith('|B') for p in pairs)
@@ -670,6 +768,58 @@ class TestPairs:
         assert fp['strict'] == []
         assert '*|san diego comic-con|B' in fp['pairs']
         assert not any(p.endswith('|D') for p in fp['pairs'])
+
+    def test_prod_false_flag_prose_pop_culture_shares_no_pair(self):
+        # PROD REGRESSION 2026-07-28 — the [E014] false flag that motivated the
+        # theme-only-precision fix. Two unrelated articles:
+        #   t-hunted PT   — a genuine Pop Culture lot; its Lotus Esprit Turbo
+        #                   yields a brand-only token (the case-sensitive Lotus
+        #                   pass captures no model), so `strict` is empty;
+        #   autoevolution — a Lincoln Super Treasure Hunt; "Lincoln" is not in
+        #                   the 36-brand lexicon, so `strict` is empty too, and
+        #                   the body uses "pop culture" as ORDINARY PROSE.
+        # Both degraded to `*|pop culture|B` and flagged each other. With the
+        # theme-only key withheld for broad lines they share nothing.
+        # t-hunted side is the real page text; the autoevolution side is
+        # synthesised to the shape of the real page (Cloudflare 403 on fetch),
+        # same convention as `tests/fixtures/cross_source_dedup_pairs.py`.
+        t_hunted = extract_fingerprint(_article(
+            title='Mais um novo lote da série Pop Culture de 2026, e com novidade',
+            paragraphs=[
+                'Uma das séries mais colecionadas pelos fãs de Hot Wheels é a '
+                'Pop Culture, com suas réplicas de veículos que apareceram em '
+                'filmes, séries de TV, desenhos ou jogos, e dessa vez tem um '
+                'novo lote com uma novidade: o Lotus Esprit Turbo do 007 com '
+                'esquis na traseira.',
+            ],
+        ))
+        autoevolution = extract_fingerprint(_article(
+            title='First Hot Wheels Super Treasure Hunt for 2027 Is a Lincoln',
+            paragraphs=[
+                'The Lincoln Continental Mark IV is a pop culture icon that '
+                'Hot Wheels has finally cast in Super Treasure Hunt form.',
+            ],
+        ))
+        # Premise of the incident: neither side yields a concrete model, so both
+        # can only ever produce theme-only keys.
+        assert t_hunted['strict'] == []
+        assert autoevolution['strict'] == []
+        # Both sides still RECOGNISE the series (extraction is unchanged) —
+        # only the pair keys are withheld, so the fix is a matching-precision
+        # change, not a lexicon regression.
+        assert 'pop culture' in t_hunted['series']
+        assert 'pop culture' in autoevolution['series']
+        # The recurring-program exclusion is load-bearing on the autoevolution
+        # side too: without it this article would keep `*|super treasure hunt|B`
+        # and false-flag against any other model-less STH post.
+        assert 'super treasure hunt' in autoevolution['series']
+        assert t_hunted['pairs'] == []
+        assert autoevolution['pairs'] == []
+
+        any_shared, shared, any_distinctive = shares_pair(t_hunted, autoevolution)
+        assert any_shared is False
+        assert shared == []
+        assert any_distinctive is False
 
 
 # ---------------------------------------------------------------------------

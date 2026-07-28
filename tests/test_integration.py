@@ -2371,6 +2371,89 @@ class TestCrossSourceDedup(_PrepPhaseBase):
     @patch('news_bot.fetch_rss')
     @patch('news_bot.load_feeds')
     @patch('news_bot.send_admin_notification')
+    def test_broad_line_prose_comention_does_not_soft_flag(
+        self, mock_admin, mock_load_feeds, mock_fetch_rss, mock_fetch_article,
+    ):
+        """PROD REGRESSION 2026-07-28 — the [E014] false flag, pinned at the
+        GATE, not just at ``shares_pair``.
+
+        Two unrelated articles, neither with an extractable model (t-hunted's
+        Lotus yields a brand-only token; autoevolution's Lincoln is outside the
+        36-brand lexicon), that merely CO-MENTION a broad recurrent line — and
+        on the autoevolution side "pop culture" is ordinary prose, not a line
+        name. Before the theme-only precision fix both degraded to
+        ``*|pop culture|B`` and the gate fired an [E014].
+
+        This also exercises a fingerprint shape that could not exist before that
+        fix — ``strict == []`` and ``pairs == []`` with a NON-empty ``series``.
+        It skips Rule 1 (no pairs), misses the AC8 short-circuit (``series`` is
+        non-empty) and lands in the set-overlap backstop, which is a no-op on an
+        empty ``strict``. Expected end state: the article publishes with NO ping
+        of any kind.
+        """
+        # Existing published row — the real autoevolution-side body, fingerprint
+        # built by the ACTUAL extractor (a hand-written fingerprint would not
+        # prove the extractor still produces this shape).
+        autoevo_article = {
+            'title': 'First Hot Wheels Super Treasure Hunt for 2027 Is a Lincoln',
+            'subtitle': '',
+            'paragraphs': [
+                'The Lincoln Continental Mark IV is a pop culture icon that '
+                'Hot Wheels has finally cast in Super Treasure Hunt form.',
+            ],
+            'images': [],
+        }
+        autoevo_fp = news_bot.model_extractor.extract_fingerprint(autoevo_article)
+        self.assertEqual(autoevo_fp.get('strict'), [])
+        self.assertIn('pop culture', autoevo_fp.get('series') or [])
+        self.assertEqual(autoevo_fp.get('pairs'), [])
+        self._seed_published(
+            'http://autoevolution.example/lincoln-sth',
+            autoevo_fp,
+            source='autoevolution',
+        )
+
+        new_link = 'http://t-hunted.example/pop-culture-lote'
+        t_hunted_article = {
+            'title': 'Mais um novo lote da série Pop Culture de 2026, e com novidade',
+            'subtitle': '',
+            'paragraphs': [
+                'Uma das séries mais colecionadas pelos fãs de Hot Wheels é a '
+                'Pop Culture, com suas réplicas de veículos que apareceram em '
+                'filmes, séries de TV, desenhos ou jogos, e dessa vez tem um '
+                'novo lote com uma novidade: o Lotus Esprit Turbo do 007 com '
+                'esquis na traseira.',
+            ],
+            'images': [],
+        }
+        # The new-article side of the reachable-but-previously-impossible shape.
+        probe = news_bot.model_extractor.extract_fingerprint(t_hunted_article)
+        self.assertEqual(probe.get('strict'), [])
+        self.assertIn('pop culture', probe.get('series') or [])
+        self.assertEqual(probe.get('pairs'), [])
+
+        mock_load_feeds.return_value = ['http://example.com/feed1.xml']
+        mock_fetch_rss.return_value = [self._make_entry(new_link)]
+        mock_fetch_article.return_value = t_hunted_article
+
+        news_bot.job()
+
+        # Article passes the gate untouched and is staged.
+        self.assertEqual(pending_articles_repo.count_pending(), 1)
+        self.assertIsNotNone(pending_articles_repo.get_pending(new_link))
+        # And the operator is not pinged at all — not a flag, not a block, and
+        # not a degraded-mode fallback.
+        for code in ('[E014]', '[E015]', '[E016]'):
+            self.assertFalse(
+                any(code in (c.args[0] if c.args else '')
+                    for c in mock_admin.call_args_list),
+                f"unexpected {code}: {mock_admin.call_args_list}",
+            )
+
+    @patch('news_bot.fetch_full_article')
+    @patch('news_bot.fetch_rss')
+    @patch('news_bot.load_feeds')
+    @patch('news_bot.send_admin_notification')
     def test_theme_only_pop_culture_not_short_circuited(
         self, mock_admin, mock_load_feeds, mock_fetch_rss, mock_fetch_article,
     ):

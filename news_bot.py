@@ -2612,11 +2612,19 @@ def _check_cross_source_dedup(article: dict, fingerprint: dict,
             return (decision, match)
 
     # ---- Empty short-circuit (AC8, re-gated to strict AND series) ----
-    # A pop-culture tie-in has empty ``strict`` but non-empty ``series`` /
-    # ``pairs`` — it MUST reach the pair scan above, so we only short-circuit
-    # when BOTH are empty (nothing either rule could ever match). This
-    # replaces the old empty-``strict``-only short-circuit, which was the bug
-    # that let pop-culture dupes through.
+    # Reached only AFTER the pair scan above has run (or been skipped). The
+    # ``and not series`` clause is what makes a franchise tie-in with empty
+    # ``strict`` reach that scan at all: an empty-``strict``-only short-circuit
+    # would return before Rule 1 was ever consulted, which was the bug that let
+    # pop-culture dupes through.
+    #
+    # Since the 2026-07-28 theme-only precision fix a broad-line article can
+    # arrive here with non-empty ``series`` but EMPTY ``pairs`` (Rule 1 skipped).
+    # It then falls through to the backstop, which is a guaranteed no-op for it:
+    # ``similarity()`` returns 0.0 at its AC6 empty-``strict`` guard. Correct,
+    # but it costs one useless 30-day candidate fetch — a cheap ~200-row scan on
+    # a daily cron, left alone deliberately rather than adding a second
+    # short-circuit that would fork the AC8 contract.
     if not strict and not series:
         return ('pass', None)
 
