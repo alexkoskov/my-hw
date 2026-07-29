@@ -74,6 +74,49 @@ _LONG_BOILERPLATE_PATTERNS = [
     # "Кликай сюда ..." form, if a PT click-CTA variant ever slips past the
     # pre-translation filter.
     re.compile(r'^кликай(те)?\s+(по|на|сюда)\b', re.I),
+
+    # --- Store self-promo outro (incident 2026-07-29) ---------------------
+    # t-hunted appends its own shop's advertisement to ordinary articles:
+    #   "Na Universo Hot Wheels, você encontra modelos Mainline, Premium,
+    #    Treasure Hunts, Super-T ..."            (~150 chars)
+    #   "A Universo Hot Wheels é a maior loja especializada da América
+    #    Latina, oferecendo milhares de produtos ..."   (~164 chars)
+    # Both sail past the 120-char cap, and `_is_promo_article` ([E035]) does
+    # not catch them either — that gate is all-or-nothing and correctly did
+    # NOT drop the article, which is genuine editorial content with an ad
+    # TAIL bolted on. Nothing removed the tail, so it was translated and
+    # published.
+    #
+    # Anchored on the shop NAME **plus** a selling verb, never on the name
+    # alone: t-hunted is affiliated with the shop and may legitimately report
+    # on it ("A Universo Hot Wheels anunciou uma parceria..."), which must
+    # survive. `[^.]{0,80}` is bounded — no nested quantifiers, ReDoS-safe on
+    # uncapped input as this list requires.
+    #
+    # A second shop would need its own pair of patterns; this is deliberately
+    # a named-source rule, like the "Saiba mais sobre" outro above.
+    re.compile(
+        r'^n?a\s+universo\s+hot\s+wheels\b[^.]{0,80}\b'
+        r'(voc[eê]\s+(encontra|acha|vai\s+encontrar)|encontre)',
+        re.I,
+    ),
+    re.compile(
+        r'^a\s+universo\s+hot\s+wheels\s+[eé]\s+a\s+maior\s+loja\b',
+        re.I,
+    ),
+    # RU — defence in depth, in case a PT wording variant slips past the
+    # pre-translation pass. Leading `\*{0,2}` because the LLM bolds the shop
+    # name (`**Universo Hot Wheels** — крупнейший ...`) and this filter runs
+    # BEFORE the renderer decodes those markers.
+    re.compile(
+        r'^\*{0,2}в\s+\*{0,2}universo\s+hot\s+wheels\b[^.]{0,80}\b'
+        r'найд[её]те',
+        re.I,
+    ),
+    re.compile(
+        r'^\*{0,2}universo\s+hot\s+wheels\*{0,2}\s*[—–-]\s*крупнейш',
+        re.I,
+    ),
 ]
 
 # Platforms covered by author-plug patterns (variant A and B of the

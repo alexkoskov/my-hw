@@ -294,3 +294,45 @@ def test_caption_pass_carries_the_object_canon():
             f"{name}: slang must NOT be propagated to captions — a caption is "
             "too short to carry the mandatory first-mention gloss."
         )
+
+
+def test_page_navigation_pointers_are_a_named_allowed_drop():
+    """«Больше информации о них есть в видео ниже» reached a published post
+    (operator report 2026-07-29).
+
+    Not a translation error — the sentence was in the PT original and was
+    rendered faithfully. The defect is that it describes the SOURCE page's
+    layout, which the model cannot see and which our Telegraph page does not
+    reproduce: t-hunted articles carry no video blocks at all, and even when a
+    video does survive, our re-layout makes «ниже» unverifiable.
+
+    The rule has to live in the allowed-drops list (the prompt's «translate
+    everything, drop only noise» section is a HARD rule — anything not named
+    there must be translated), and it has to distinguish a pure pointer from a
+    sentence that also carries a fact, or the model will drop prices with it.
+    """
+    content = _read()
+    drops = _section(content, '## Length + structure — "translate everything, drop only noise"')
+    assert drops, "allowed-drops section missing"
+    lowered = drops.lower()
+    assert "в видео ниже" in lowered, (
+        "the allowed-drops list must name the reported phrase shape verbatim"
+    )
+    assert "факт" in lowered, (
+        "the rule must split pointer-only sentences from fact-carrying ones — "
+        "without that split the model drops «Цена — $28» along with the pointer"
+    )
+    # The escape hatch must stay closed: this is not licence to compress prose.
+    assert "не разрешение сокращать" in lowered, (
+        "the rule must state it does NOT authorise shortening real content"
+    )
+
+
+def test_page_navigation_pointer_is_in_the_red_flags():
+    red_flags = _section(_read(), "## Red flags to self-check before stage")
+    assert red_flags, "## Red flags section missing"
+    assert "чужую вёрстку" in red_flags or "чужой вёрстке" in red_flags, (
+        "the self-check list must carry the page-navigation pointer too — the "
+        "allowed-drops entry says what MAY be dropped, the red flag is what "
+        "catches it when it was not"
+    )
