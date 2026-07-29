@@ -1193,6 +1193,55 @@ _PLUG_PLATFORMS_NB = (
 )
 
 _PLUG_PATTERNS = [
+    # --- Cross-promo / navigation sentences (incident 2026-07-29) ---------
+    # t-hunted embeds "go read our other posts" CTAs INSIDE otherwise
+    # legitimate paragraphs:
+    #   "Вы можете посмотреть все, что мы уже публиковали о серии Pop
+    #    Culture, по этой ссылке. Нажмите здесь и посмотрите, что мы уже
+    #    показывали о серии Entertainment"
+    # `boilerplate_filter` could not help: its click-CTA pattern is
+    # ^-anchored at PARAGRAPH start, and here the CTA is the second
+    # sentence. Whole-paragraph removal would also destroy the real prose
+    # around it. Sentence-level is the only correct granularity, which is
+    # exactly what this list already does for author social plugs.
+    #
+    # Kept deliberately NARROW — these must match only sentences that are
+    # PURE navigation. A sentence carrying a fact ("Цена — $28, подробнее по
+    # ссылке") must survive, because dropping it would lose the price; the
+    # prompt's allowed-drop (d) handles that case by rewriting instead.
+    # Hence: the CTA pattern anchors the imperative at sentence START, and
+    # the "see everything we posted" pattern requires BOTH a viewing verb
+    # and the link phrase in the same sentence.
+    re.compile(
+        r'(?:(?<=[\.\!\?])\s*|^)'
+        r'\*{0,2}(?:нажми(?:те)?|кликни(?:те)?|жми(?:те)?)\s*\*{0,2}\s*'
+        r'(?:сюда|здесь|по\s+ссылке)'
+        r'[^\.\!\?]*?(?:[\.\!\?]+|$)\s*',
+        re.I,
+    ),
+    re.compile(
+        r'(?:(?<=[\.\!\?])\s*|^)'
+        r'[^\.\!\?]{0,120}?'
+        r'(?:посмотр|увид|прочит|показыва|публикова|постил)'
+        r'[^\.\!\?]{0,120}?'
+        r'по\s+\*{0,2}(?:этой\s+)?ссылке\*{0,2}'
+        r'[^\.\!\?]*?(?:[\.\!\?]+|$)\s*',
+        re.I,
+    ),
+    # Dangling pointer at OUR page layout — "подробнее в видео ниже",
+    # "смотрите на фото выше". The model cannot see the page it writes for:
+    # a t-hunted article carries no video blocks at all, and our re-layout
+    # makes «ниже» unverifiable even when a video does survive. Same
+    # narrowness rule — the viewing verb and the position word must sit in
+    # one sentence together.
+    re.compile(
+        r'(?:(?<=[\.\!\?])\s*|^)'
+        r'[^\.\!\?]{0,120}?'
+        r'(?:в|на)\s+\*{0,2}(?:видео|фото|картинке|изображении)\*{0,2}\s+'
+        r'(?:ниже|выше)'
+        r'[^\.\!\?]*?(?:[\.\!\?]+|$)\s*',
+        re.I,
+    ),
     # Parenthesised plug with mandatory @handle, regardless of verb.
     # Catches the canonical leak shape and Google-Translate variants:
     #   "(подписывайтесь на меня в Instagram @diecast215)"

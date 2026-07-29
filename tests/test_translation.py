@@ -216,3 +216,75 @@ class TestStripPlugs(unittest.TestCase):
 
 if __name__ == '__main__':
     unittest.main()
+
+
+# ---------------------------------------------------------------------------
+# Cross-promo / page-navigation sentences (operator reports 2026-07-29).
+#
+# Three leaks in three consecutive articles, one family: t-hunted embeds
+# "go read our other posts" CTAs and "see the video below" pointers INSIDE
+# otherwise legitimate paragraphs. `boilerplate_filter` cannot help — its
+# patterns are ^-anchored at PARAGRAPH start and drop the whole paragraph,
+# which would take the real prose with them. Sentence granularity is the only
+# correct one, which is what `_strip_plugs` already does for author plugs.
+# ---------------------------------------------------------------------------
+
+
+class TestCrossPromoSentenceStripping(unittest.TestCase):
+    def test_reported_cross_promo_pair_is_removed(self):
+        """The exact paragraph the operator reported."""
+        text = (
+            "Вы можете посмотреть все, что мы уже публиковали о серии Pop "
+            "Culture, по **этой ссылке**. Нажмите здесь и посмотрите, что мы "
+            "уже показывали о серии Entertainment."
+        )
+        self.assertEqual(_strip_plugs(text).strip(), "")
+
+    def test_reported_video_pointer_is_removed(self):
+        self.assertEqual(
+            _strip_plugs("Больше информации о них есть в видео ниже.").strip(),
+            "",
+        )
+
+    def test_only_the_pointer_sentence_goes_not_the_paragraph(self):
+        """The load-bearing property: real prose in the same paragraph stays.
+
+        A whole-paragraph filter would have deleted the casting news along
+        with the pointer — which is why this lives in `_strip_plugs` and not
+        in `boilerplate_filter`.
+        """
+        text = (
+            "Mattel показала три новых кастинга. "
+            "Больше информации о них есть в видео ниже."
+        )
+        self.assertEqual(
+            _strip_plugs(text).strip(),
+            "Mattel показала три новых кастинга.",
+        )
+
+    def test_bold_markers_do_not_defeat_the_match(self):
+        """The LLM bolds the link text, and this filter runs BEFORE the
+        renderer decodes `**` — so the patterns must tolerate the markers."""
+        self.assertEqual(
+            _strip_plugs("Нажмите **здесь** и посмотрите остальное.").strip(),
+            "",
+        )
+
+    def test_ordinary_prose_survives(self):
+        # A fact must never be collateral damage — the prompt's allowed-drop
+        # (d) rewrites fact-carrying pointers instead of dropping them.
+        keepers = [
+            "Цена — $28.",
+            "Коллекционеры делятся находками по всему миру.",
+            "В этой серии четыре машинки, и все с Real Riders.",
+            # Legitimate reporting that merely mentions a video existing.
+            "Mattel выложила промо-видео о новой линейке.",
+        ]
+        for keeper in keepers:
+            with self.subTest(keeper=keeper):
+                self.assertEqual(_strip_plugs(keeper).strip(), keeper.strip())
+
+    def test_idempotent(self):
+        text = "Ок. Нажмите здесь и смотрите."
+        once = _strip_plugs(text)
+        self.assertEqual(_strip_plugs(once), once)
