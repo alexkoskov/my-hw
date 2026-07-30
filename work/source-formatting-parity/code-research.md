@@ -1,12 +1,31 @@
 # Code Research: source-formatting-parity
 
-**Date:** 2026-07-28
-**Repo:** `/workspaces/debian-2/my-hw` (branch `dev`)
+**Date:** 2026-07-28 · **deepened 2026-07-30** (see [Part II](#part-ii--updated-2026-07-30))
+**Repo:** `/workspaces/debian-2/my-hw` (branch `dev`, HEAD `5b19f0d`)
 **Scope:** bring `t_hunted_source.py`, `lamley_source.py`, `mattel_news_source.py` from flat
 `paragraphs: list[str]` up to the `blocks` + `runs` contract already used by
 `orangetrack_source.py` and `autoevolution_source.py`.
 
 Facts and structure only — no design proposals.
+
+> ### ⚠️ Read Part II first — Part I is partly stale
+>
+> Part I was written **before** the approved user-spec and before the 2026-07-28/29 fixes landed.
+> Scope has narrowed and four Part-I findings are now resolved.
+>
+> | Part I section | Status as of 2026-07-30 |
+> |---|---|
+> | §1–§4 line numbers in `news_bot.py` | **SHIFTED +59** (`fetch_full_article` 3321 → **3380**). Other files unchanged. |
+> | §3.3, §6.2 (mattel rows), §7.3 (mattel) | **OUT OF SCOPE** — user-spec drops mattel |
+> | §5.5 (literal `**` leak) | **FIXED & OUT OF SCOPE** — `eaba4f6`, see II-0 |
+> | §7.2 (`preview_renderer` deletes `<strong>`) | **FIXED** — verified live, II-0 |
+> | §7.9 (bold bleeds onto preceding text) | **FIXED** — `a509722`, verified live, II-0 |
+> | §7.10 (run-join double-spaces `text`) | **FIXED** — `_text_from_runs`, but the *replacement* diverges from `get_text` in a NEW way, II-6 |
+> | §2.3 "bottom line" seam estimate | **SUPERSEDED** by the exhaustive AST map in II-1 |
+> | §6.2/§6.3/§6.4 "assertions at risk" | **MOSTLY REFUTED** — full suite is green and stays green, II-8 |
+> | §7.1 (off-by-one), §7.7 (image layout) | **CONFIRMED AND QUANTIFIED on real articles**, II-3 / II-4 |
+> | §9 "new module must be checked against `test_deploy_files_invariant`" | **WRONG** — that test is blind to new files; prod is Docker `COPY . .`, II-8 |
+> | everything else in §1–§10 | **re-verified, still accurate** |
 
 ---
 
@@ -842,3 +861,751 @@ formatting for that block.
 No new external library is implicated. BeautifulSoup4 `html.parser` is already the sole HTML
 backend in all five parsers; `Tag.children` / `Tag.find_all` / `NavigableString` are the only APIs
 the walker uses. `Tag.find_all` recursion semantics are the source of §3.4.
+
+---
+---
+
+# Part II — Updated: 2026-07-30
+
+Implementation-level research for the **approved** user-spec. Scope: `t_hunted_source`,
+`lamley_source`, `autoevolution_source` gain `blocks`+`runs`; the orangetrack walker is
+**extracted** into a shared module that orangetrack then imports; orangetrack output stays
+byte-identical. mattel excluded. Literal-`**` fix done.
+
+Method note: **network is available from this workspace.** t-hunted (Blogger) and lamley
+(WordPress, via `curl_cffi` impersonation) both fetch fine; **autoevolution article pages return
+HTTP 403** (its RSS returns 200). So the measurements below use **14 real articles** — 10 t-hunted,
+4 lamley — cached under
+`/tmp/claude-1000/-workspaces-debian-2/45eede25-ca2d-4b98-a382-455e2a943626/scratchpad/{th,lam}/`,
+with scripts `measure_th.py`, `measure_lam.py`, `lam_why.py`, `measure_heading.py`,
+`heur_risk.py`, `inv_img.py`, `diff_th.py` in the same directory. autoevolution is covered from
+test fixtures only.
+
+Baseline: `python3 -m pytest tests/ -q` → **1628 passed, 441 subtests passed**, 60s. Suite green.
+
+---
+
+## II-0. Re-verification of the four "changed since Part I" items
+
+| Claim | Verdict | Evidence |
+|---|---|---|
+| `_runs_from_tag` bold-bleed reordered, pre-flush gated on `opens_format` | **CONFIRMED** | `orangetrack_source.py:406-408` computes `opens_format`; `flush()` at **420**, *before* the pushes at 422/425. Live: `<p>Plain <strong>bold</strong> tail.</p>` → `[{'text':'Plain '}, {'text':'bold','formats':['bold']}, {'text':' tail.'}]` — the prefix run has **no** `formats` key. Part I §7.9 resolved. |
+| `_text_from_runs` helper replaced four divergent joins | **CONFIRMED** | New module-level fn `orangetrack_source.py:270-283`, `re.sub(r"\s+"," ", "".join(...)).strip()`. Called at **577, 605, 628, 789** (paragraph plain / paragraph `<br>`-segment / heading / list_item). Part I §7.10's double-space defect is gone. **But see II-6 — the replacement diverges from `get_text(" ", strip=True)` in the opposite direction.** |
+| `preview_renderer._ALLOWED_TAGS` gained `strong`/`u`/`s` | **CONFIRMED** | `preview_renderer.py:58-62`. Live end-to-end: a bold paragraph block renders `<p>Hello <strong>bold</strong> world</p>`. Part I §7.2 resolved. Note `render_html`'s real signature is `render_html(nodes: list, title: str)` — Part I §7.2 wrote it backwards. |
+| `telegraph_publisher._decode_bold_markers` + `_BOLD_MARKER_RE`/`_STRAY_MARKER_RE` | **CONFIRMED** | Helper `telegraph_publisher.py:201-248`; regexes 195/198. Call sites: `_build_content_from_blocks` hero caption **409**, subtitle **413**, paragraph **426**, lead **431**, heading **433**, list_item **440**, image caption **446**; `_build_content` subtitle **504**, paragraph **511**; `publish_article` page title **612**. Part I §5.5 is closed — **out of scope**. |
+| `model_extractor`: STH / RLC retagged `'broad'`, `_theme_only_eligible` added | **CONFIRMED** | `model_extractor.py:161-164` (`'broad'`), `224` `_RECURRING_PROGRAMS`, `244` `_theme_only_eligible`. No interaction with this feature. |
+| `pending_articles_repo` `publish_after` column + predicate | **CONFIRMED** | `insert_pending` now inserts **12** columns (`pending_articles_repo.py:373-393`), `publish_after` at 391. Part I §4.2's round-trip conclusion is unaffected: `blocks` is still `_dumps(entry.get('blocks'))` at **387**, NULL-preserving. |
+| `boilerplate_filter._LONG_BOILERPLATE_PATTERNS` shop-outros; `news_bot._PLUG_PATTERNS` sentence-level | **CONFIRMED** | `boilerplate_filter.py:54` (uncapped long patterns, bypass `_MAX_BOILERPLATE_LEN = 120` at 37); `news_bot.py:1195`. Relevant only as an input to II-6. |
+
+---
+
+## II-1. Extraction plan for the walker — exhaustive symbol map
+
+### II-1.1 What `_runs_from_tag` depends on
+
+`orangetrack_source.py:300-443`. AST-derived, complete:
+
+| Symbol | Where | Nature | Verdict |
+|---|---|---|---|
+| `re` | stdlib | whitespace normalisation (439) | move |
+| `List`, `Dict` | `typing` | annotations | move |
+| `_INLINE_FORMAT_TAGS` | **259-267** | `strong/b→bold, em/i→italic, u→underline, s/del→strikethrough` | **move verbatim — pure generic** |
+| `_safe_href` | **208-230** | scheme allowlist `_ALLOWED_HREF_SCHEMES` (79) | **move — pure, zero site knowledge** |
+| `_has_color_class` | **286-297** | `any("-color" in c for c in node.get("class"))` → `"bold"` | **WordPress/Gutenberg-specific — must become injectable** |
+
+Internal closures (`current_formats` 320, `flush` 328, `walk` 342, `collect` 356) and locals
+(`runs`, `buf`, `fmt_stack`, `inner_buf`, `inner_fmts`) are self-contained — they move with the
+function body, nothing to parameterise.
+
+**`_has_color_class` is the only seam in `_runs_from_tag`.** Two call sites: **362** (inside
+`collect`, for anchor children) and **400** (the main inline branch). Both feed the same
+`color_fmt = "bold" if … else None`. Injecting it as a keyword parameter with a default of
+"never colored" makes the function fully generic; passing orangetrack's version keeps orangetrack
+byte-identical.
+
+Note the color-class path is **not** WordPress-exclusive in practice: **lamley is WordPress too**
+(`div.entry-content`, JetPack chrome — see II-6), so lamley likely wants the same predicate.
+t-hunted (Blogger) and autoevolution do not.
+
+### II-1.2 What `_walk` depends on
+
+`_walk` is a **closure at `orangetrack_source.py:704-801`**, nested inside
+`_parse_content_encoded` (527-861). It is not importable today. AST-derived free variables:
+
+| Free variable | Defined at | Kind |
+|---|---|---|
+| `blocks` | **553** (`List[Dict] = []`) | **mutable accumulator, shared by all five emitters** |
+| `handled_tags` | **670-680** | local `set` literal — *not* a module constant |
+| `_has_chrome_class` | **695-702** | closure, reads `_CHROME_CLASS_MARKERS` |
+| `_emit_paragraph` | **561-608** | closure → `blocks`, `_runs_from_tag`, `_text_from_runs`, `BeautifulSoup` |
+| `_emit_heading` | **610-644** | closure → `blocks`, `_runs_from_tag`, `_text_from_runs` |
+| `_emit_image` | **646-657** | closure → `blocks`, **`seen_image_bases`** (554), `_best_img_src` |
+| `_emit_iframe` | **659-664** | closure → `blocks`, `_video_embed_url` |
+| `_runs_from_tag`, `_text_from_runs` | 300 / 270 | module-level, used directly in the `li` branch (786, 789) |
+
+Second-order module-level dependencies pulled in through the emitters:
+
+| Symbol | Where | Site-specific? |
+|---|---|---|
+| `_CHROME_CLASS_MARKERS` | **690-693**, a LOCAL inside `_parse_content_encoded` | `sharedaddy, sd-, taxonomies, jp-related, post-comments, comment-form` — **WordPress/JetPack.** Needed by lamley too. |
+| `_best_img_src` | **451-487** | srcset parser is generic; the "prefer largest ≤1024" pick (478-480) is tuned to WordPress.com's 300/600/1024 ladder |
+| `_safe_img_src` + `_ALLOWED_IMG_SCHEMES` | **233-248**, 84 | pure |
+| `_video_embed_url` | **138-169** | **orangetrack-specific**: `_YOUTUBE_HOSTS` (52-60) allowlist + `_YOUTUBE_ID_RE` (88-91) + `telegra.ph/embed/youtube` wrap. No Vimeo (autoevolution has its own at `autoevolution_source.py:106-124` *with* Vimeo and *without* a host allowlist) |
+| `BeautifulSoup` | 31 | used at **594** to re-parse each `<br>` segment as a fresh `<p>` |
+| `filter_blocks`, `filter_boilerplate`, `IMAGE_LIMIT` | 33, 73 | used in the **post-pass** (809/827/850), i.e. *after* `_walk`, not inside it |
+
+### II-1.3 Which behaviours are orangetrack policy, not mechanism
+
+These live in `_walk`/`_emit_*` and are **decisions**, pinned by orangetrack's own tests:
+
+| Behaviour | Line | Pinned by |
+|---|---|---|
+| h2/h3/h4 all normalise to `level=3` | **631-637** | `test_orangetrack_source.py:1084-1095` |
+| h5 → `type: "paragraph"` (carve-out `babc67c`) | **639-644**, dispatch 734-740 | `:145-164`, `:1097-1106` |
+| h1/h6 dropped from body | **741-743** | `:1108-1120` |
+| one `<p>` split into N paragraph blocks at each `<br>` | **583-608** | `:1028-1051` |
+| `<li>` gets **no** bullet at parse time | **776-796** | `:975-1082` (`"•" not in block["text"]`) |
+| `ul`/`ol` excluded from `handled_tags` so recursion reaches `<li>` | **670-680** | same |
+| `<p>` holding only an iframe → video blocks, text suppressed | **715-720** | — |
+| mixed `<p>`: text first, then nested iframes, then non-figure imgs | **721-729** | — |
+| image dedup key = `src.split("?",1)[0]` | **650** | — |
+| `subtitle = ""` hardcoded | **839** | `:115` |
+| flat list = `paragraph|heading|list_item` text, DOM order | **823-826** | `:1122-1142` |
+
+Directly conflicting with the three new sources:
+
+- **level normalisation.** autoevolution keeps the real tag number (`int(tag.name[1])` at
+  `autoevolution_source.py:297`, `312` → `level` can be **2**), pinned by
+  `test_autoevolution_source.py:216-226`. orangetrack forces 3. A shared emitter cannot do both
+  unconditionally.
+- **image dedup key.** orangetrack uses `split("?")`; **t-hunted needs
+  `_BLOGGER_SIZE_SUFFIX_RE.sub('', src.split("?",1)[0])`** (`t_hunted_source.py:64`, applied 244)
+  because Blogger encodes size in the *path*. lamley uses plain `split("?")`
+  (`lamley_source.py:420`) even though it has the same Blogger-lightbox shape.
+- **image src selection.** t-hunted/lamley lift the wrapping `<a href>` when
+  `_is_blogger_image_url(href)` (`t_hunted_source.py:239-243`, `lamley_source.py:415-419`);
+  orangetrack's `_best_img_src` knows nothing about that.
+- **video.** orangetrack: YouTube only, host-allowlisted. autoevolution: YouTube + Vimeo,
+  regex-only.
+
+### II-1.4 The minimal seam that exists in the code today
+
+The mechanism/policy boundary that already exists, stated as facts:
+
+1. **Fully portable as-is, zero parameters:** `_INLINE_FORMAT_TAGS` (259-267), `_safe_href`
+   (208-230), `_safe_img_src` (233-248) + their two `frozenset`s (79, 84), `_text_from_runs`
+   (270-283). ~55 lines.
+2. **Portable with one injected predicate:** `_runs_from_tag` (300-443, 144 lines) — inject
+   `_has_color_class`.
+3. **Portable with the emitters injected:** `_walk` (704-801, 98 lines). Its body contains **no**
+   site strings at all — every site-specific decision is reached through one of the six free
+   names in the table above. The dispatch table `handled_tags` (670-680) is data.
+4. **Not portable:** `_video_embed_url`, `_best_img_src`, `_CHROME_CLASS_MARKERS`, the
+   `seen_image_bases` dedup key, the h5/h-level policy, `subtitle=""`, the video-only title
+   synthesis (845-846), `IMAGE_LIMIT` (73).
+
+The single hardest structural fact: **`blocks` and `seen_image_bases` are mutable state captured
+by all five emitters plus `_walk`.** Any extraction must decide who owns that state; today it is
+`_parse_content_encoded`'s frame.
+
+---
+
+## II-2. The heading heuristic
+
+### II-2.1 Where each parser decides paragraph vs heading TODAY
+
+| Parser | Decision site | What it does |
+|---|---|---|
+| **t_hunted_source** | **196** | `body.find_all(["p","li","h2","h3","h4","blockquote"])` → `get_text(" ", strip=True)`. **There is no heading branch at all.** An `<h2>` becomes an ordinary string in `paragraphs`, indistinguishable from prose. |
+| **lamley_source** | **388** | byte-identical loop, same six tags, same absence of a branch |
+| **autoevolution_source** | **290-300** and **305-314** | Two branches. (a) `<h2>/<h3>/<h4>` **nested inside a `<p>`** — detached and emitted before the paragraph's residual text (this is autoevolution's invalid-HTML workaround, comment 277-289). (b) top-level `<h2>/<h3>/<h4>` children of `div.newstext`. Both set `level = int(tag.name[1])`, so **level 2 is emitted**. |
+| orangetrack (reference) | `_walk` **731-740** → `_emit_heading` **610-644** | h2/h3/h4 → `level=3`; h5 → `paragraph`; h1/h6 dropped |
+
+**No bold-paragraph→heading heuristic exists anywhere in the repo.** Verified by grep across all
+`.py` (excluding `tests/`, `archive/`): zero hits for a length threshold near a heading decision,
+zero for `endswith('.')`.
+
+### II-2.2 Real-tag headings must keep working — and they do exist
+
+Measured on the 14 real articles:
+
+| Source | real `<h2>/<h3>/<h4>` in body | `heading` blocks the walker produced |
+|---|---|---|
+| t-hunted (10 articles) | **0** in every article | 0 |
+| lamley `lamley-awards-2025…` | 25 | **22** |
+| lamley `…interview-bryan-zhao…` | 3 | **0** |
+| lamley `quick-look-how-do-bburagos…` | 3 | **0** |
+| lamley `recalibrating-alex-winsons…` | 3 | **0** |
+
+The 3-vs-0 gap is not a bug: those three `<h>` tags sit inside JetPack chrome (`Share this:`,
+`Like this:`, `Related`) that `_has_chrome_class` (695-702) discards. So **`_CHROME_CLASS_MARKERS`
+is load-bearing for lamley**, not orangetrack trivia.
+
+Consequence: **t-hunted has literally zero real heading tags** across 10 articles, so for t-hunted
+the bold-paragraph rule is the *only* possible source of headings. lamley needs **both** paths.
+
+### II-2.3 The rule measured against real data
+
+Implemented as specified (whole paragraph bold + `len ≤ 80` + does not end with `.`), applied to
+all **286 paragraph-type blocks** across the 14 articles:
+
+**24 paragraphs would become headings.** Every one reads as a genuine subheading:
+
+```
+[t-hunted] len= 33 'Todo Hot Wheels antigo é valioso?'      ← the "?" case from AC2
+[t-hunted] len= 37 'Treasure Hunts e Super Treasure Hunts'
+[t-hunted] len= 12 'Referências:'                            ← bold label, benign
+[lamley]   len= 42 'Highly commended: Hot Wheels Lotus Cortina'
+[lamley]   len= 73 'Trax Ford Cortina GT (Bob Jane/Harry Firth, Armstrong 500, Bathurst 1963)'
+… 19 more
+```
+
+**The user-spec's threshold evidence reproduces exactly for t-hunted.**
+`o-que-faz-um-hot-wheels-aumentar-de.html`: **12 headings, 18–37 chars; 34 non-heading paragraphs,
+81–207 chars.** Nothing between 38 and 80. (The user-spec says "44 обычных абзаца" — the actual
+count is 34; 12 + 34 = 46 total paragraph blocks. The *length range* 81–207 is exact.)
+
+**But the gap is t-hunted-only.** Across all 14 articles only **two** whole-bold paragraphs are
+rejected, and both are false negatives:
+
+| Rejected | Reason | Judgement |
+|---|---|---|
+| `'Lionel Racing NASCAR Authentics Ford Mustang Dark Horse, #12 Ryan Blaney, Team P…'` (**85 chars**) | `len > 80` | genuine lamley subheading, **missed by 5 chars** |
+| `'Also ran….'` | ends with `.` | genuine lamley subheading, missed |
+
+So on real data the rule scores **24 / 26 = 92 %**, with the longest accepted heading at **73
+chars** (7 chars of headroom) and the shortest rejection at **85**. There are **38** non-whole-bold
+paragraphs in the 38–80 char band, but none can be misclassified: they are not whole-bold. **Length
+alone is never a false-positive risk; only whole-bold + length is.** Both errors are misses, not
+false headings — matching user-spec Risk 7 ("ошибка косметическая и обратимая").
+
+### II-2.4 What "whole paragraph bold" has to mean mechanically
+
+Not "one run". `<p><strong>Part</strong> and <strong>two</strong></p>` yields
+`[{'Part',bold}, {' and '}, {'two',bold}]` — three runs, the middle one plain. The predicate that
+matched real data is: locate every bold run via `text.find(run_text)`, merge adjacent/overlapping
+spans, require exactly **one** merged span, and require `text[:start].strip() == ""` and
+`text[end:].strip() == ""`.
+
+This needs `(text, runs)` — i.e. it can only run **after** `_runs_from_tag`. The only place in the
+current architecture where both exist together and a block type is still being chosen is the
+paragraph emitter, `orangetrack_source.py:561-608` (both the no-`<br>` branch at 573-581 and the
+per-segment branch at 590-608 pick `{"type": "paragraph"}`).
+
+**AC10 constraint:** orangetrack's tests pin its exact block-type sequences
+(`test_orangetrack_source.py:145-164`, `1084-1095`, `1122-1142`). If the shared emitter applied the
+rule unconditionally, any orangetrack paragraph that is entirely bold and short would flip
+`paragraph`→`heading` and those tests would go red. So the rule has to be gated per source.
+Whether orangetrack has such paragraphs today is unmeasured (its feed was not fetched) — the tests
+are the binding constraint regardless.
+
+---
+
+## II-3. The subtitle-lift alignment
+
+### II-3.1 Exact lift sites
+
+| Parser | Lines | Code | Guard |
+|---|---|---|---|
+| `t_hunted_source.py` | **216-220** | `if len(paragraphs) >= 2: subtitle = paragraphs[0]; paragraphs = paragraphs[1:]` / `else: subtitle = ""` | conditional; rationale comment **207-215** |
+| `lamley_source.py` | **400-401** | `subtitle = paragraphs[0] if paragraphs else ""` / `paragraphs = paragraphs[1:]` | **unconditional** |
+| autoevolution | **180-185** | `subtitle` comes from a separate DOM node (`div.mgtop_10.mgbot_10.fsz19`) | never touches `paragraphs` — **no alignment problem** |
+
+Both lifts run **after** `filter_boilerplate` (t-hunted **205**, lamley **395**) — the ordering
+marked CRITICAL at `t_hunted_source.py:201-204` and pinned by
+`tests/test_t_hunted_source.py:309` (asserts `out["paragraphs"] == ["Second content paragraph."]`
+at **336**).
+
+The `len(paragraphs) >= 2` guard exists because t-hunted's dominant format is a photo-gallery post
+with one intro paragraph; lifting it would leave `paragraphs == []` and
+`news_bot.py:3827` (`if not article or not article.get('paragraphs')`) would drop the post. Pinned
+by `tests/test_t_hunted_source.py:300` (`out["subtitle"] == ""`) and `:302-304`.
+Corroborated at the LLM layer by `tests/test_llm_common.py:3-7` + `TestSanityFloorRelaxation`
+(265-329), whose docstring names this exact incident as the reason the 30-char sanity floor is
+skipped for 1-paragraph articles.
+
+### II-3.2 The invariant that must hold, and by how much it breaks
+
+The consumer is positional in **both** directions:
+
+- **encode** — `_llm_common._build_user_message` **223-241**: walks `blocks`, and for each block
+  whose `type` is in `_PATCHED_TEXT_BLOCK_TYPES` takes `next(para_iter)`. Mismatch is *tolerated
+  silently*: `except StopIteration: break` at **236-237**, then `marked.extend(para_iter)` at 240.
+- **decode** — `_llm_common._patch_text_with_ru_paragraphs` **466-491**: same sequential
+  consumption; short by one ⇒ `except StopIteration: pass` at **488-489** ⇒ **the trailing block
+  keeps its English text and is published in English.**
+
+`_PATCHED_TEXT_BLOCK_TYPES = ("lead","paragraph","heading","list_item")` — `_llm_common.py:115`.
+So the invariant is:
+
+```
+count(b for b in blocks if b['type'] in ('lead','paragraph','heading','list_item'))
+    == len(paragraphs)
+```
+
+**Measured** (script `inv_img.py`): building blocks with the orangetrack walker while keeping each
+parser's lift exactly as written today:
+
+| Source | articles | aligned | mismatch |
+|---|---|---|---|
+| t-hunted | 10 | **1** (`novidades-muito-interessantes-da-m2` — 1 paragraph, guard suppresses the lift) | 9, each off by exactly **1** |
+| lamley | 4 | **0** | 4, each off by exactly **1** |
+
+**13 of 14 real articles (93 %) break the invariant by exactly one.** This is not a corner case;
+it is the default outcome. It matches the SESSION-2026-05-06 incident that made orangetrack
+hardcode `subtitle = ""` (`orangetrack_source.py:839`, comment 829-838).
+
+The photo-gallery single-paragraph case is the *only* naturally aligned shape, and only because
+the guard fires.
+
+Second, independent divergence source in t-hunted/lamley — the **title-dedup filter**:
+`t_hunted_source.py:198` and `lamley_source.py:390` both skip a tag whose text equals `title`
+(`if text and text != title`). The orangetrack walker has no such check. If a blocks build omits
+it, a title-repeating `<p>` becomes a block with no matching flat entry. (Part I §7.4 framed the
+two filter passes as the second divergence source; in fact `filter_blocks`
+(`boilerplate_filter.py:318-362`) and `filter_boilerplate` (313-315) call the **same**
+`is_boilerplate` on the same string for pure-text blocks, so for `paragraph`/`heading`/`list_item`
+they agree — orangetrack's `filter_boilerplate` at **827** is effectively a no-op after
+`filter_blocks` at **809**. The real second source is the title-dedup filter, and it is
+parser-local.)
+
+### II-3.3 Where the AC8 runtime guard can sit
+
+Three candidate sites exist. Facts about each:
+
+| # | Call site | Sees | Covers | Notes |
+|---|---|---|---|---|
+| **A** | end of each parser, immediately before the `return` dict — `t_hunted_source.py:252-257`, `lamley_source.py:428-433`, `autoevolution_source.py:359-365` | its own `blocks` + `paragraphs` | only that parser | 3 edits; `logger` already bound in all three (`t_hunted_source.py:37`, `lamley` module logger, `autoevolution` logger). Dropping `blocks` here means downstream never learns blocks existed. |
+| **B** | `news_bot.py` row assembly, **4173-4193**, immediately before `pending_repo.insert_pending(row)` at **4195** | `article.get('blocks')` at **4181** and `article.get('paragraphs')` at **4179** for **every** source | all five sources incl. orangetrack | 1 edit, single choke point. `logger` in scope. This is the last point before the article is persisted; the `blocks` column is written by `insert_pending` at `pending_articles_repo.py:387`. |
+| **C** | inside `pending_articles_repo.insert_pending`, **347-401** | the same dict | all sources | The repo's stated contract is "the repo owns all JSON serialisation" (`news_bot.py:3816`) — it currently contains **no** content validation, only a `sqlite3.IntegrityError` catch (396-399). Adding policy here would be new responsibility for that layer. |
+| — | `_llm_common._build_user_message` **223** | `blocks` + `paragraphs` | all | **Cannot work as the guard**: it only builds the request string. Each engine independently reads `blocks_in = article.get("blocks")` and sets `expected_block_count = len(blocks_in)` (claude **375**, gemini **306**, openai **308**, openrouter **408**), then uses `blocks_in` at the variant-B branch (claude 439, gemini 370, openai 373, openrouter 480). Neutralising blocks here would not stop that. |
+
+What the guard must do, per AC8: compare
+`sum(1 for b in blocks if isinstance(b, dict) and b.get('type') in ('lead','paragraph','heading','list_item'))`
+against `len(paragraphs)`; on inequality set `blocks` to `None` (**not** `[]` — the distinction is
+live and tested: `tests/test_pending_articles_repo.py:276-287` `test_blocks_empty_list_vs_null_distinguished`,
+and `telegraph_publisher.preview_nodes:562` branches on truthiness so `[]` already falls back to
+the flat path, but `hw_review`'s parity gate at `hw_review.py:396-404` treats `[]` as "has blocks")
+and `logger.warning(...)` with link + both counts. Fail-open is already the house pattern
+(`news_bot.py:3853-3865` promo filter, `4165-4171` dedup bookkeeping).
+
+Note site **B** would also start guarding orangetrack. orangetrack satisfies the invariant by
+construction (flat list derived from blocks at **823-826**, `filter_boilerplate` a no-op after
+`filter_blocks`, `subtitle=""`), and its tests assert it explicitly
+(`test_orangetrack_source.py:124-130`, `162-165`) — so the guard would be inert there, which is
+consistent with AC10 but means the guard cannot be *tested* through orangetrack.
+
+---
+
+## II-4. Image limits on the blocks path (AC9)
+
+### II-4.1 PROVEN: non-empty `blocks` makes `images` entirely dead
+
+The chain, line by line:
+
+1. `news_bot._fallback_publish` **3274-3282** calls
+   `telegraph_publisher.publish_article(title=…, paragraphs=ru_paragraphs, images=row.get('images') or [], …, blocks=ru_blocks)`.
+2. `publish_article` **614-622** forwards everything to `preview_nodes`.
+3. `preview_nodes` **562-569**:
+   ```python
+   if blocks:
+       return _build_content_from_blocks(subtitle, blocks, source_url, auto_marker=auto_marker)
+   return _build_content(subtitle, paragraphs or [], images or [], source_url, auto_marker=auto_marker)
+   ```
+   `images` is **not a parameter** of `_build_content_from_blocks` (signature **358-363**).
+4. `_build_content_from_blocks` **400-454** emits one `figure_img` per `image` block: hero at
+   **406-410**, the rest at **444-447**. **There is no cap, no slice, no counter.**
+
+Docstring **592-593** states it outright: *"When provided, `paragraphs` and `images` are ignored."*
+Pinned by `tests/test_telegraph_publisher.py:455` (blocks path) and `:543`
+(`test_empty_blocks_falls_back_to_flat`). **Part I §7.7 / user-spec Risk 4 confirmed: today's caps
+become dead code the moment these sources emit blocks.**
+
+### II-4.2 Where the caps are applied today
+
+| Parser | Constant | Where applied | Mechanism |
+|---|---|---|---|
+| `t_hunted_source.py` | `_IMAGE_LIMIT = 30` (**49**) | **249-250** | `if len(images) >= _IMAGE_LIMIT: break` — inside the `body.find_all("img")` loop, so it caps the *flat* list only |
+| `lamley_source.py` | `IMAGE_LIMIT = 10` (**93**) | **425-426** | identical `break` |
+| `autoevolution_source.py` | `MAX_IMAGES = 10` (**39**) | **357** | `images = [b["src"] for b in blocks if b["type"]=="image"][:MAX_IMAGES]` — slices the derived flat list, **the blocks keep every image** |
+| orangetrack (reference) | `IMAGE_LIMIT = 10` (**73**) | **848-850** | same slice-the-flat-list-only shape |
+
+So **all four sources already leak past their cap on the blocks path** — orangetrack and
+autoevolution do it in production today. The three new sources would join them.
+
+### II-4.3 How bad, measured
+
+`image`-type block counts from the walker on the 14 real articles:
+
+| Source | cap | image blocks per article | over cap? |
+|---|---|---|---|
+| t-hunted | 30 | 1, 1, 3, 6, 8, 10, 15, 22, 24, **27** | 0 / 10 (closest: 27) |
+| lamley | 10 | **14, 41, 48, 50** | **4 / 4 — every article, 1.4× to 5×** |
+
+**Every single lamley article measured exceeds its 10-image cap on the blocks path**, by up to 5×.
+t-hunted stays under 30 in all 10 but one article reaches 27. AC9 is an immediate,
+100 %-of-lamley-publications problem, not a theoretical one.
+
+The minimal change consistent with the existing code: the cap has to be applied **to the block
+list**, not to the derived flat list — i.e. after the walk, drop `image`-type blocks beyond the
+Nth. Two facts constrain where: (a) `_build_content_from_blocks` promotes the **first** `image`
+block to hero (**400-403**), so dropping from the tail preserves the hero; (b) `filter_blocks`
+(`boilerplate_filter.py:318-362`) runs before the flat derivation in both block-emitting parsers
+(orangetrack **809**, autoevolution **347**) and keeps media blocks unconditionally, so capping
+must come after it or the count is wrong.
+
+---
+
+## II-5. The kill switch (AC11)
+
+### II-5.1 How the two existing flags are parsed — there is no helper
+
+Both are **inline module-level expressions in `news_bot.py`**. No shared parser exists anywhere in
+the repo (verified by grep for `_env_flag` / `_env_bool` / `_truthy`: zero hits).
+
+```python
+# news_bot.py:134-136  — default ON, off-words
+DEDUP_SERIES_ENABLED = os.getenv(
+    "DEDUP_SERIES_ENABLED", "1"
+).strip().lower() not in ("0", "false", "no", "off")
+
+# news_bot.py:149-151  — default OFF, on-words (deliberately INVERTED)
+REVIEW_BUTTONS_ENABLED = os.getenv(
+    "REVIEW_BUTTONS_ENABLED", ""
+).strip().lower() in ("1", "true", "yes", "on")
+```
+
+| | `DEDUP_SERIES_ENABLED` | `REVIEW_BUTTONS_ENABLED` |
+|---|---|---|
+| default | **ON** (`"1"`) | **OFF** (`""`) |
+| word set | off-words `0/false/no/off` | on-words `1/true/yes/on` |
+| unset / blank | enabled | disabled |
+| unrecognised value (`"maybe"`) | **enabled** | **disabled** |
+| read once at | import time | import time |
+| const name == env name | **yes, deliberately** — comments 125-127 and 139-141 both flag a const↔env drift as making a "dark" deploy silently no-op | yes |
+
+Gating style (documented at 130-133 and 141-144): call sites read the **bare module global**, never
+re-read `os.getenv`, so `unittest.mock.patch('news_bot.DEDUP_SERIES_ENABLED', False)` works and an
+operator flips it with env + restart. Consult sites:
+
+- `DEDUP_SERIES_ENABLED` → **one** site, `news_bot.py:2665` (`if DEDUP_SERIES_ENABLED and pairs:`)
+- `REVIEW_BUTTONS_ENABLED` → **one** site, `news_bot.py:1075` (`if not REVIEW_BUTTONS_ENABLED: …`),
+  which the docstring at 1072 explicitly presents as the single gate other code checks through
+  rather than re-testing the flag. `tests/test_integration.py:3578-3601` pins that the send site
+  must **not** re-read it.
+
+Test convention: `@patch('news_bot.REVIEW_BUTTONS_ENABLED', True/False)` — 16 occurrences in
+`tests/test_integration.py`; `with patch('news_bot.DEDUP_SERIES_ENABLED', False)` at
+`:1773`, `:2607`. `tests/test_integration.py:3532` additionally asserts
+`self.assertNotIn('REVIEW_BUTTONS_ENABLED', os.environ)` — the suite guards against the env var
+leaking into the test process.
+
+### II-5.2 The structural problem this feature has and the other two did not
+
+Both existing flags gate code **inside `news_bot.py`**. This feature's behaviour lives in three
+**separate parser modules** that do **not** import `news_bot` — and cannot: `news_bot.py` imports
+them (`t_hunted_source`, `lamley_source`, `autoevolution_source`), so the reverse import would be
+circular. `t_hunted_source.py` imports only `admin_alerts` + `boilerplate_filter` (34-35);
+`lamley_source.py` only `admin_alerts` + `boilerplate_filter` (26); `autoevolution_source.py`
+imports `boilerplate_filter` (26).
+
+So a `news_bot.py`-hosted constant cannot gate the parsers directly. The places where a flag
+**can** be consulted, as facts about the current call graph:
+
+| Option | Site | Blast radius | Byte-identical when off? |
+|---|---|---|---|
+| flag lives in the **new shared module**, parsers read it | inside each parser's blocks build | exactly the three sources | yes if the parsers skip emitting `blocks` entirely; the flat `paragraphs` build must then also stay on today's `find_all` path, otherwise the flat text still changes (II-6) |
+| flag lives in `news_bot.py`, consulted in **`fetch_full_article`** | **3380-3426**; the three branches are `lamleygroup.com` **3416-3417**, `autoevolution.com` **3418-3419**, `blogspot.com` **3420-3421** | the three sources; **must not touch** the orangetrack pass-through at **3396-3413** which forwards `entry['blocks']` at **3412** | strips `blocks` → publish falls back to `_build_content`. **But the flat `paragraphs` returned by the parser has already changed** (II-6), so the *rendered text* would not be byte-identical to today unless the parsers also keep the old flat build. |
+| flag consulted at **row assembly** | `news_bot.py:4181` (`'blocks': article.get('blocks')`) | all five sources — would also strip orangetrack's blocks | same caveat |
+
+The precise fact that decides this: "flag off ⇒ output byte-identical to today" is only achievable
+if the flag suppresses **both** the `blocks` emission **and** the new flat-text derivation. A
+switch placed downstream of the parser (`fetch_full_article` or row assembly) suppresses only the
+first. See II-6 for exactly how much the flat text moves.
+
+Also worth noting: prod restarts reset the in-process daily schedule
+(`.claude/skills/project-knowledge/references/deployment.md:253`), which is why AC11 exists — but
+an import-time constant still needs a restart to take effect. The two precedents accept that.
+
+---
+
+## II-6. Flat-text shrinkage (user-spec Risk 2) — MEASURED
+
+### II-6.1 The premise is largely wrong on real articles
+
+Nested `<li><p>` / `<blockquote><p>` occurrences:
+
+| Corpus | `li > p` | `blockquote > p` |
+|---|---|---|
+| 10 real t-hunted articles | **0** | **0** |
+| 4 real lamley articles | **0** | **0** |
+| all 15 inline HTML fixtures in `tests/test_{t_hunted,lamley,autoevolution}_source.py` + `test_boilerplate_filter.py` | **0** | **0** (no `<blockquote>` appears anywhere in the test suite) |
+
+The double-counting defect described in Part I §3.4 is **real as a mechanism** — a synthetic
+fixture (lead + 4×`<li><p>` + 1×`<blockquote><p>`) shrinks **924 → 462 chars, exactly −50 %** for
+t-hunted and **856 → 428, −50 %** for lamley, because each nested item's text is duplicated
+exactly once. But it **does not fire on any real article or any existing fixture**.
+
+`autoevolution_source.py` does not have the defect at all: it walks `body.children` in a single
+pass (**231-314**) and has **zero** `<li>`/`<blockquote>` handling, so list content is currently
+*dropped*, not duplicated.
+
+### II-6.2 What the text actually does change by
+
+| Source | articles | paragraph entries before → after | chars before → after | delta |
+|---|---|---|---|---|
+| **t-hunted** | 10 | identical in **all 10** | 23 043 → 23 020 | **−0.10 %** (worst single article −0.8 %) |
+| **lamley** | 4 | 79→74, 26→22, 18→13, 45→40 | 35 206 → 34 790 | **−1.18 %** (worst −2.5 %) |
+
+**t-hunted: the only differences are cosmetic whitespace.** Four articles differ at all, and every
+diff is one of two shapes (script `diff_th.py`):
+
+```
+OLD 'modelos típicos da época do filme.\xa0Foram 13 modelos…'    → NEW '…do filme. Foram 13 modelos…'   (nbsp collapsed)
+OLD 'Para saber mais sobre a série Boulevard, clique aqui . Para…' → NEW '…clique aqui. Para…'            (spurious space before '.' gone)
+```
+
+Both come from the `_text_from_runs` vs `get_text(" ", strip=True)` difference, not from
+de-duplication. `get_text(" ")` **inserts** a separator between every text node (so `</a>` + `"."`
+becomes `"aqui ."`), while `_text_from_runs` joins with nothing then collapses `\s+` (which in
+Python's `re` also matches `\xa0`). The new text is strictly cleaner.
+
+Full divergence table between the two flatteners (measured live, not inferred):
+
+| HTML | `get_text(" ", strip=True)` | `_text_from_runs` |
+|---|---|---|
+| `<p>Plain <strong>bold</strong> tail.</p>` | `'Plain bold tail.'` | `'Plain bold tail.'` — same |
+| `<p>See <a href=…>this link</a> now</p>` | `'See this link now'` | same |
+| `<li><p>Item text</p></li>` | `'Item text'` | same |
+| `<blockquote><p>Quote</p></blockquote>` | `'Quote'` | same |
+| `<p>a<strong>b</strong>c</p>` | `'a b c'` | **`'abc'`** |
+| `<p>Word<b>Joined</b></p>` | `'Word Joined'` | **`'WordJoined'`** |
+| `<p>Multi   spaces   here</p>` | `'Multi   spaces   here'` | **`'Multi spaces here'`** |
+| `<p>Line<br>Two</p>` | `'Line Two'` | **`'LineTwo'`** (moot for orangetrack — `_emit_paragraph` **573** splits on `<br>` into separate blocks) |
+
+This **inverts** Part I §7.10, which said the join *added* spaces. After `_text_from_runs` the join
+*removes* them where the source HTML had none between a text node and a tag.
+
+**lamley: the count drop is WordPress chrome removal, not de-duplication.** The entries that
+disappear (script `lam_why.py`) are:
+
+```
+'Share this:'
+'Email a link to a friend (Opens in new window) Email'
+'More'
+'Like this:'
+'Related'
+```
+
+These are JetPack `sharedaddy` / `jp-related` blocks that leak into lamley's flat `paragraphs`
+**today** — `filter_boilerplate` does not catch them — and that the walker's `_has_chrome_class`
+(695-702, markers 690-693) discards. Everything else in the lamley diff is the same
+whitespace-only pair as t-hunted (`'( find X on eBay )'` → `'(find X on eBay)'`).
+
+So for lamley the change is a **content improvement** (5 chrome strings per article stop reaching
+the LLM, the fingerprint, and the promo filter), and `_CHROME_CLASS_MARKERS` is required, not
+optional.
+
+### II-6.3 The `_is_text_only_checklist` threshold
+
+`news_bot.py:1597-1624`. Exact predicate — two independent triggers, either suffices:
+
+```
+A.  _CHECKLIST_URL_RE.search(entry['link'])                  # r'case-contents-checklist'  (1594)
+B.  _CHECKLIST_TITLE_RE.search(title)                        # r'\bcheck[\s-]?list\b'      (1573)
+    AND sum(len(p) for p in article['paragraphs'] if isinstance(p, str)) < 500   # 1582, 1623
+```
+
+`title` is `entry['title'] or article['title']` (**1619**). Only `article['paragraphs']` is summed
+— `subtitle` and `blocks` are **not** (**1622-1623**). Called from `job()` step (b3) at
+**3836**, right after the `not article.get('paragraphs')` guard at **3827**; a True return
+`continue`s and the row never reaches `insert_pending`.
+
+Measured body-char totals after the change, per article:
+
+```
+t-hunted:  280, 436, 515, 573, 611, 799, 882, 1310, 5022, 12592
+lamley:    3500, 8516, 9326, 13448
+```
+
+Five t-hunted articles already sit **below** 500 today (280, 436) or near it (515, 573, 611) — but
+that is their *current* state, not a consequence of this change: the measured delta on those
+articles is 0.0 % to −0.8 %, i.e. **at most 4 characters**. No article crosses the floor. And none
+of the 14 has a `checklist` title, so trigger B never arms for them regardless.
+
+Restated precisely: **on real articles the shrinkage is ~0.1–1.2 % and cannot move anything across
+a 500-char boundary.** The floor is only reachable by the synthetic 50 %-shrink shape — where
+924 → 462 does cross it. That shape (a review with a bulleted spec list plus a pull quote) is
+plausible but unobserved in 14 real articles and 15 fixtures.
+
+Downstream consumers of the same flat text, for completeness:
+
+| Consumer | Bound | Sensitivity to ~1 % |
+|---|---|---|
+| `_is_promo_article` `news_bot.py:1786` | `_PROMO_SCAN_MAX_PARAGRAPHS = 8`, `_PROMO_SCAN_MAX_CHARS = 2000` (declared 1633-1634) | The **paragraph count** matters more than chars: lamley loses 4-5 leading-or-trailing chrome entries, which shifts *which* paragraphs land in the first 8. On the four lamley articles the removed entries are trailing chrome, so the first 8 are unchanged — but this is not guaranteed. |
+| `model_extractor.extract_fingerprint` → `_gather_text` | `title + subtitle + paragraphs` | Fingerprint text changes for lamley (chrome gone). Fail-open at `news_bot.py:4128+` (`[E016]`), never blocks publishing. |
+| `news_bot.py:3827` staging guard | `not article.get('paragraphs')` | Only fires at zero. Non-issue: minimum measured is 1 entry. |
+
+---
+
+## II-7. Second LLM call / `list_item` (AC3)
+
+### II-7.1 Confirmed: all four engines omit `list_item`
+
+| Engine | local `_PATCHED_TEXT_BLOCK_TYPES` | line | value |
+|---|---|---|---|
+| `claude_transcreation.py` | local | **159** | `("lead", "paragraph", "heading")` |
+| `gemini_transcreation.py` | local | **132** | `("lead", "paragraph", "heading")` |
+| `openai_transcreation.py` | local | **129** | `("lead", "paragraph", "heading")` |
+| `openrouter_transcreation.py` | local | **217** | `("lead", "paragraph", "heading")` |
+| `_llm_common.py` (shared) | canonical | **115** | `("lead", "paragraph", "heading", "list_item")` |
+
+`list_item` is missing from all four. **These four line numbers are the exact constants to change.**
+
+### II-7.2 What it costs — the mechanism, in order
+
+Using openrouter (the prod engine) as the trace; the other three are structurally identical:
+
+1. **475** `if expected_block_count and not parsed.get("blocks"):` — the variant-B guard.
+   `expected_block_count = len(blocks_in)` (**408**), so it is truthy for **any** article carrying
+   blocks. The system envelope tells the model *"Do not output a `blocks` field"*
+   (`_llm_common.py:99`), so `parsed["blocks"]` is normally absent ⇒ **this branch fires on
+   essentially every blocks-carrying article.**
+2. **480-482** `_patch_text_with_ru_paragraphs(blocks_in, parsed["paragraphs"])` — uses the
+   **shared 4-tuple including `list_item`** (`_llm_common.py:475`), so every `list_item`'s `text`
+   is now **Russian**, and its `runs` were rebuilt from `**bold**` markers (479-487).
+3. **490-492** `_translate_block_strings(parsed["blocks"], client, model, timeout_s=…)` — a
+   **second LLM call**. Its skip test at **256-258** is
+   `if skip_patched_text and field == "text" and btype in _PATCHED_TEXT_BLOCK_TYPES` with the
+   **local 3-tuple**. `list_item` is not in it ⇒ **every list item's already-Russian text is put in
+   the numbered EN list and sent to the model again** (items built 250-261, prompt 266-267).
+
+Cost, concretely:
+- The second call happens per-article anyway (for image/video `caption` fields). `list_item` does
+  not *add* a call; it **inflates that call's payload** by one line per list item, both directions.
+- The system prompt for that call (`_BLOCK_TRANSLATE_SYSTEM`, `openrouter_transcreation.py:199-210`) instructs
+  *"Return strictly JSON: {"translations": [...]}"* with translate-to-Russian glossary rules
+  applied to text that is already Russian — a re-translation, i.e. the RU-degradation risk Part I
+  §5.4 flagged.
+- Failure mode is contained: a count mismatch or exception returns `blocks` unchanged
+  (**283-297**), so the already-correct Russian survives. The waste is tokens and latency, not
+  correctness.
+- The skip comment at **212-216** states the intent explicitly ("*to avoid re-translating already-RU
+  paragraphs (one wasted API call per long article)*") — the tuple simply was never extended when
+  `list_item` was added to the shared one.
+
+Blast radius of the fix: orangetrack list posts are the only current producer of `list_item`, so
+changing the four constants changes orangetrack's **second-call payload**. It does not change the
+published `blocks` on the happy path (the text was already Russian from step 2) — but it does
+change what a *failing* second call leaves behind, and it changes token counts. `AC10`
+(byte-identical orangetrack output) is satisfiable, but this is a real cross-source edit.
+
+---
+
+## II-8. Test inventory
+
+Baseline: **1628 passed, 441 subtests passed** — suite fully green, nothing pre-broken.
+
+### II-8.1 Will pass unchanged
+
+| File | Why |
+|---|---|
+| `tests/test_t_hunted_source.py` (17) | **No fixture contains `<li>`, `<h2>`, `<h3>`, `<h4>` or `<blockquote>` inside the body.** (`<h3 class="post-title">` is the title element, outside `body.find_all(...)` scope.) The two exact-equality assertions Part I §6.2 flagged — `:302-304` `out["paragraphs"] == ["A loja Universo Hot Wheels recebeu mais um set incrível."]` and `:336` `out["paragraphs"] == ["Second content paragraph."]` — both operate on plain-`<p>` bodies whose flattening is unchanged. Membership checks `:111-114`, `:333` likewise. No test asserts the returned key-set or `"blocks" not in out`. |
+| `tests/test_lamley_source.py` (26) | No exact-equality assertion on `paragraphs` exists in the file at all. `:81` `"Bullet one" in out["paragraphs"]` and `:82` `"A heading" in out["paragraphs"]` survive **iff** the new build keeps `heading`/`list_item` text in the flat list — which is exactly what orangetrack already does at `orangetrack_source.py:823-826` (12-line rationale comment 811-822). |
+| `tests/test_integration.py` (114) | Zero calls to `fetch_t_hunted_article` / `fetch_lamley_article` / `_scrape_article_page` / `enrich_entry`. Every `t-hunted`/`lamley`/`autoevolution` hit is a `source_name` string label in a seeded row. |
+| `tests/test_hw_review_cli.py` (46) | All tests use the synthetic `_sample_entry()` (**34-49**) with caller-supplied `blocks=` (default `None`) and only `{'type':'paragraph','text':…}` blocks. Never real parser output. The parity-gate tests `:375`, `:389`, `:401` are unaffected. |
+| `tests/test_job_prep_phase.py` (10) | `_article_payload()` (**102-108**) has **no `blocks` key**; `job()` is driven through `fetch_full_article` mocks. |
+| `tests/test_llm_common.py` (21) | Builds `article`/`blocks` dicts by hand; source-agnostic. This file is the **consumer contract** for the new format and already proves `_encode_format_markers` / `_decode_format_markers` / `_build_user_message` / `_patch_text_with_ru_paragraphs` handle `runs` with `formats: ['bold']`. |
+| `tests/test_boilerplate_filter.py` (60) integration classes | `TestLamleyIntegration::test_share_paragraphs_stripped` (**676-703**) and `TestAutoevolutionIntegration::…` (**768-798**) use plain-`<p>` fixtures. |
+| `tests/test_preview_renderer.py` (48) | Node-tree → HTML only, zero references to `blocks`/`runs`/`paragraphs`. |
+| `tests/test_telegraph_publisher.py` (69) | Feeds hand-built blocks; the blocks path is already exercised. |
+
+**Part I §6.2, §6.3 and §6.4 are therefore mostly refuted** — those assertions were listed as "at
+risk" on the assumption the flat list would change shape. Measured (II-6), it does not for these
+fixtures. §6.2's mattel rows are moot (out of scope).
+
+### II-8.2 Must be verified deliberately
+
+| File:line | Test | Assertion | Why it is the one at risk |
+|---|---|---|---|
+| `tests/test_autoevolution_source.py:180-184` | `test_parses_title_subtitle_and_ordered_blocks` | `porsche_para["runs"] == [{"text": "The rare Porsche is finally here. See "}, {"text": "Red Line Club", "href": "https://mattel.com/rlc"}, {"text": " for details."}]` | **Exact list equality with no `formats` key on any run.** Survives only if the shared `_runs_from_tag` keeps orangetrack's convention of adding `formats` **conditionally** (`orangetrack_source.py:336-338` `if fmts: run["formats"] = list(fmts)`). If the extraction ever sets `"formats": []` unconditionally, this breaks immediately. **Highest-risk assertion in the suite.** |
+| `tests/test_autoevolution_source.py:216-226` | `test_extracts_heading_nested_inside_paragraph` | `text_blocks == [("heading","BMW M1 Procar",2), ("paragraph",…,None), …, ("heading","Inline H3 Section",3), …]` | Pins that autoevolution keeps the **real** heading level (2 and 3). orangetrack normalises everything to 3 (`orangetrack_source.py:631-637`, pinned by `test_orangetrack_source.py:1084-1095`). A shared emitter must not force orangetrack's normalisation onto autoevolution. |
+| `tests/test_autoevolution_source.py:138-152` | same test | `types == ["image","lead","paragraph","paragraph","image","heading","paragraph","video","image","image"]` | Exact block-type sequence. Unaffected by bold runs, but any change to walk order / image handling shows up here first. |
+| `tests/test_autoevolution_source.py:74, 93, 98, 113, 329, 341` | `TestEnrichEntry.*`, RSS-fallback tests | various `out["paragraphs"] == [...]` | These go through `enrich_entry` (**409-435**, returns **four** keys, no `blocks`) or the RSS-fallback branch — **never** `_scrape_article_page`. Safe as long as the RSS path is left alone. |
+
+### II-8.3 `test_orangetrack_source.py` (94) — the AC10 checklist
+
+Must stay green **without edits**. What it pins about the walker, i.e. the refactor's acceptance
+surface:
+
+| Invariant | Test lines |
+|---|---|
+| `out["subtitle"] == ""` always | 115 |
+| `len(out["paragraphs"]) == count of paragraph-type blocks` | 124-130, 162-165 |
+| h2/h3/h4 → `heading` with `level == 3` regardless of tag | 1084-1095 |
+| h5 → `paragraph`, not `heading` (`babc67c`) | 145-164, 1097-1106 |
+| h1 → `title` only; h6 → dropped | 1108-1120 |
+| `<li>`/`<ol><li>` → `list_item` with `text`+`runs`, and `"•" not in block["text"]` | 975-1082 |
+| flat `paragraphs` includes `list_item` + `heading` text in DOM order | 1122-1142 |
+| `<br>` inside one `<p>` splits into multiple paragraph blocks | 1028-1051 |
+| all four formats: bold (`strong`/`b`/WP color class), italic (`em`/`i`), underline (`u`), strikethrough (`s`) | 1152-1306 |
+| `formats` key **omitted** on plain runs | ~1292-1295 |
+| **no format bleed backward** onto preceding plain text (`a509722`) | 1173-1207 |
+| flattened `text` has **no doubled spaces** from the run join (2026-07-28) | 1208-1221 |
+| every run's `text` is a literal substring of the block's `text` (renderer uses `text.find`) | 1223-1234 |
+| exact Telegraph node tree: `{"tag":"h3",…}` for any heading level; `{"tag":"p","children":["• ", …]}` for `list_item`; inline links render as plain text, href lives only in `runs` | 1323-1391 |
+
+Run `pytest tests/test_orangetrack_source.py -q` after any extraction step and diff against this
+table.
+
+### II-8.4 Gaps that are not test breaks
+
+| Gap | Location | Consequence |
+|---|---|---|
+| `hw_review._VALID_BLOCK_TYPES` lacks `list_item` | **`hw_review.py:104`** = `frozenset({'paragraph','lead','heading','image','video'})`; rejection at **304**; `_BLOCK_KEYS_BY_TYPE` **105-111** additionally rejects any extra key, so a `runs`-carrying block is refused outright | `tests/test_hw_review_cli.py:677-687` `test_valid_block_types` never exercises `list_item`, so nothing catches it. Once the three sources emit `list_item`, `hw_review stage N` for those rows is unusable. Mitigating fact: the manual path is **archived since 2026-04-30** (`architecture.md`, `ux-guidelines.md:11`); 100 % of posts go through `_fallback_publish`. Also already out of sync — `_validate_block` requires `heading.level in (3,4)` (**315-316**) while autoevolution emits level 2. |
+| `filter_blocks` is never tested with a `list_item` block | `tests/test_boilerplate_filter.py:806-878` `TestFilterBlocks` builds block dicts by hand, none of type `list_item` | Nobody asserts a boilerplate list item gets stripped. `filter_blocks` (`boilerplate_filter.py:344-361`) treats it correctly as a pure-text block, but that is untested. |
+| `_strip_plugs_in_blocks` drops empty blocks only for `('paragraph','lead','heading')` | **`news_bot.py:1325-1330`** vs the RU boilerplate re-filter 40 lines later at **3231** which uses `('paragraph','lead','heading','list_item')` | An emptied `list_item` survives `_strip_plugs_in_blocks` and renders as a bare `• `. Part I §7.8 item 1, re-verified, still present. |
+| `_build_content_from_blocks` ignores `runs` for `lead` blocks | **`telegraph_publisher.py:431`** `nodes.append(p(b_(_decode_bold_markers(block["text"])[0])))` | autoevolution is the only `lead` producer; its bold inside a lead would not render. Part I §7.8 item 3, still present. |
+
+### II-8.5 `test_deploy_files_invariant.py` — Part I §9 was wrong
+
+The file's **docstring** claims "every new first-party module imported by `news_bot.py` must appear
+in ALL THREE deploy FILES arrays". The **implementation** does not check that:
+
+```python
+EXPECTED_ENTRY = '"t_hunted_source.py"'          # tests/test_deploy_files_invariant.py:24
+```
+
+Three tests (**26-51**) do a plain substring search for that one literal in `deploy.sh`,
+`.github/workflows/deploy.yml`, `.github/workflows/deploy_test.yml`; three more (**61-84**) do the
+same for `watchdog.sh`. There is **no enumeration of the repo's modules**. A brand-new shared
+walker module is **invisible** to this test — it stays green whether or not the module is listed.
+
+What actually ships to prod, verified:
+
+- **`Dockerfile` does `COPY . .`** (line 19). `.dockerignore` excludes `.git`, `.github`, `tests`,
+  `work`, `logs`, `__pycache__`, `*.db`, `.env*` — and **not** `*.py`. So **a new module ships to
+  prod automatically** with `git pull && docker compose up -d --build`.
+- `deploy.sh` (**FILES array 37-60**) is the **legacy SCP fallback**;
+  `deployment.md:182` labels it exactly that, and `:149` records `deploy.yml`'s prod path as
+  **DISARMED**.
+- `deployment.md:191` still states the FILES-array invariant as binding, and `:189` notes the SCP
+  route is "the LEGACY route".
+
+So: adding a new module needs no deploy-file change for the Docker prod path, but leaving the FILES
+arrays un-updated silently breaks the documented emergency SCP fallback, and **no test will tell
+you**.
+
+---
+
+## II-9. Corrections to Part I worth carrying forward
+
+| Part I claim | Correction |
+|---|---|
+| §2.3 "`_walk` is ~80 % generic … not currently importable" | Accurate but imprecise. `_walk`'s **body contains zero site-specific strings**; all site knowledge arrives through 6 free names (II-1.2). `_CHROME_CLASS_MARKERS` was described as orangetrack/WordPress chrome — it is **required by lamley too** (II-6.2). |
+| §7.4 "filters for flat text and for blocks are two DIFFERENT passes over two different lists, and this is the second source of length divergence" | `filter_blocks` and `filter_boilerplate` call the **same** `is_boilerplate` on the same string for pure-text blocks, so they agree; orangetrack's `filter_boilerplate` at **827** is a no-op after `filter_blocks` at **809**. The real second divergence source is the **title-dedup filter** `if text and text != title` (`t_hunted_source.py:198`, `lamley_source.py:390`), which the walker lacks. |
+| §7.10 "copying the orangetrack pattern would insert double spaces" | Inverted since `_text_from_runs` landed: the join now **removes** separators `get_text(" ")` would have inserted (`a<strong>b</strong>c` → `'abc'` vs `'a b c'`). Measured net effect on real flat text: **−0.10 % (t-hunted) / −1.18 % (lamley)** (II-6.2). |
+| §6.5 "the alignment invariant is already an explicit test" | Still true, and now quantified: keeping the lift breaks it on **13 of 14** real articles by exactly 1 (II-3.2). |
+| §7.7 image-cap row | Confirmed and quantified: **4/4 lamley articles exceed their 10-image cap** on the blocks path (14/41/48/50); t-hunted max 27 vs cap 30 (II-4.3). |
+| §9 "a new module must be checked against `test_deploy_files_invariant`" | That test cannot see new modules; prod is Docker `COPY . .` (II-8.5). |
+| §1 line numbers for `news_bot.py` | All shifted **+59**. `fetch_full_article` **3380-3426**; dispatch **3396-3421**; staging guard **3827**; row assembly **4173-4193**; `insert_pending` call **4195**. |
