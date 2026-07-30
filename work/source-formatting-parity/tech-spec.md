@@ -39,10 +39,13 @@ becomes reachable once a parser starts emitting blocks:
 
 - **`dom_blocks.py` (new)** — the shared mechanism: inline-markup walker
   (`runs_from_tag`), run flattening (`text_from_runs`), the bold-paragraph heading
-  heuristic (`looks_like_heading`), and a `BlockBuilder` that owns the block
-  accumulator + image dedup and exposes the four `emit_*` operations. Per-site
-  behaviour arrives as three injected callables; everything else defaults to
-  orangetrack's current, test-pinned policy.
+  heuristic (`looks_like_heading`, opt-in — see Decision 2b), and a `BlockBuilder`
+  that owns the block accumulator + image dedup and exposes the four `emit_*`
+  operations. Per-site behaviour arrives as **four** policy inputs (chrome-class
+  predicate, image-src picker, image-dedup key, video-provider DATA). Structural
+  policy that already exists and is test-pinned (heading levels, `<br>`-splitting,
+  bullet-less `<li>`) becomes the shared default; the heading heuristic does NOT,
+  because it does not exist today in any parser.
 - **`orangetrack_source.py`** — becomes the first consumer. Its published output must
   not change; its existing tests must pass **without being edited**.
 - **`t_hunted_source.py`, `lamley_source.py`** — gain a block-building pass alongside
@@ -50,7 +53,10 @@ becomes reachable once a parser starts emitting blocks:
 - **`autoevolution_source.py`** — its weaker `_runs_from_tag` (href-only; bold and
   italic are flattened, by its own docstring's admission) is replaced by the shared one.
 - **`telegraph_publisher.py`** — image cap applied on the blocks path.
-- **`news_bot.py`** — runtime `blocks`/`paragraphs` count guard.
+- **`news_bot.py`** — runtime `blocks`/`paragraphs` count guard; threads the
+  per-source image cap into the renderer.
+- **`_llm_common.py`** — bounds the marker-encoding loop on the REQUEST path.
+- **`feature_flags.py` (new)** — the kill switch, importable by parsers.
 - **The four engine modules** — add `list_item` to the patchable-block-type tuples.
 
 ### How it works
@@ -91,10 +97,25 @@ articles.
 ## Decisions
 
 ### Decision 1: Share the walker via injected policy, not by copy
-**Decision:** New `dom_blocks.py` holds the walker body and leaf helpers. Three
-callables are injected per site: chrome-class predicate, image-src picker,
-video-embed wrapper. The heading-level policy, `<br>`-splitting and bullet-less `<li>`
-become shared defaults.
+**Decision:** New `dom_blocks.py` holds the walker body and leaf helpers. **Four**
+policy inputs per site: chrome-class predicate, image-src picker, **image-dedup key**,
+and — deliberately not a callable — **video-provider DATA** (host tuple + provider
+name). The heading-level policy, `<br>`-splitting and bullet-less `<li>` become shared
+defaults.
+
+The video seam is data, not a callable, for a security reason. `orangetrack_source`
+gates on `urlparse(...).hostname in _YOUTUBE_HOSTS` BEFORE running the ID regex, and
+its own docstring names the gap it closes: «autoevolution's regex-only path has this
+gap; we close it here». If the wrapper were injectable, autoevolution would inject that
+regex-only path and the extraction would *sanction* the defect behind an interface —
+the exact opposite of this decision's rationale. Keeping the host gate inside
+`dom_blocks` and injecting only the allowed hosts fixes it once for everyone. Vimeo
+hosts are added so autoevolution loses nothing.
+
+The image-dedup key is the fourth seam because the two sites encode size differently:
+orangetrack uses `src.split("?", 1)[0]`, t-hunted needs its Blogger size-suffix regex.
+Sharing orangetrack's key would regress t-hunted to duplicate thumbnails on its
+dominant post format.
 **Rationale:** Serves user-spec Risk 1 («перенос кода вместе с его багами») — the two
 functions that carried all three 2026-07-28 defects end up in ONE place, so the next
 such bug is fixed once, not four times. Research proves the walker body is
@@ -178,21 +199,43 @@ and dedup gate.
 raise and skip the article (rejected — violates fail-open, loses content).
 
 ### Decision 5: Image cap enforced inside the blocks renderer
-**Decision:** `_build_content_from_blocks` takes a cap and stops emitting image blocks
-past it, keeping the hero.
+**Decision:** `_build_content_from_blocks` takes the cap **as a parameter** and stops
+emitting image blocks past it, keeping the hero. The value is threaded from the single
+call site in `news_bot.py`, because the caps are per-source and different (t-hunted 30,
+lamley 10, orangetrack 10, autoevolution 10) while the renderer is source-agnostic — a
+single hard-coded default would violate AC9 for somebody.
 **Rationale:** Serves user-spec AC9. Proven that non-empty `blocks` makes the
 publisher ignore `images` entirely, so `IMAGE_LIMIT` becomes dead code — lamley pages
 would jump from 10 to up to 50 images.
+**Correction to an earlier claim:** an earlier draft said «orangetrack already caps in
+its post-pass». It does **not**. `IMAGE_LIMIT` slices only the derived flat
+`images_flat` list; `_emit_image` has no counter, and the publisher ignores `images`
+entirely when `blocks` is non-empty. So **orangetrack and autoevolution already publish
+more images than intended, today, in production.** This feature fixes that — which
+means orangetrack's rendered output WILL change on gallery posts. See User-Spec
+Deviations: that is an intended bug fix, not a regression, but it does collide with
+AC10 as literally worded.
 **Alternatives considered:** cap in each parser before returning blocks (rejected —
-three places to forget, and orangetrack already caps in its post-pass, so the renderer
-is the single choke point every source passes through).
+three places to forget); exempt orangetrack to preserve AC10 literally (rejected —
+that preserves a known defect to satisfy the letter of a criterion whose intent was
+«don't break orangetrack», not «keep its bugs»).
 
 ### Decision 6: Kill switch read from a parser-importable location
 **Decision:** One env flag, default ON, parsed with the same truthy/falsy word set as
 the existing two. It lives where the parsers can read it — **not** in `news_bot`.
-**Rationale:** Serves user-spec AC11. Research found the structural blocker: the three
-parsers cannot import `news_bot` (circular). Flag off ⇒ parsers skip block emission
-entirely.
+**Rationale:** Serves user-spec AC11. Default **ON**, chosen by the operator
+2026-07-30 against the security reviewer's recommendation of opt-in; the reviewer's
+point is recorded in Risks so the trade-off is visible rather than lost.
+Flag off ⇒ **the three new parsers** skip block emission. It must NOT gate emission
+inside `dom_blocks`, because orangetrack is the shared module's first consumer and
+flag-off would then strip its blocks too — a regression on a working source and an
+AC10 violation in the flag-off state.
+**Correction:** an earlier draft claimed the parsers *cannot* import `news_bot`
+(circular). Verified false: `from news_bot import X` does raise, but bare
+`import news_bot` with late attribute access works in both import orders and is the
+documented house style at `news_bot.py:131-133`. A separate `feature_flags.py` is still
+preferred — it keeps the parsers off a 4600-line module — but as a preference, not an
+impossibility.
 **Alternatives considered:** gate only downstream in `fetch_full_article` (rejected —
 strips `blocks` but the parser has already changed the flat text, so "off" would not
 mean "as before"); reuse `DEDUP_SERIES_ENABLED` (rejected — unrelated blast radius).
@@ -200,6 +243,41 @@ mean "as before"); reuse `DEDUP_SERIES_ENABLED` (rejected — unrelated blast ra
 text*, **not** byte-identical to today — measured drift is **−0.10 %** (t-hunted) and
 **−1.18 %** (lamley, and that delta is WordPress chrome removal, i.e. an improvement).
 Byte-identity would require keeping two text-derivation paths alive in parallel.
+
+### Decision 8: Resource bounds live where the work happens [TECHNICAL]
+**Decision:** Bound the marker-encoding loop on the REQUEST path in `_llm_common`, and
+bound runs/text at PARSE time in `dom_blocks`. Over the bound, strip runs and emit
+plain text — never truncate the article. The ReDoS contract (bounded quantifiers only,
+`str.endswith` rather than a regex for the heading-punctuation test) is stated here, in
+the tasks and in the acceptance criteria — not only in the audit task.
+**Rationale:** `[TECHNICAL]` — no user-spec requirement, but the security review found
+a live availability hazard. `_encode_format_markers` does a `text.find`-per-run scan
+with **no bound**, while the existing `_MAX_TEXT_FOR_RUNS` / `_MAX_RUNS_PER_BLOCK`
+bound only the RENDER path. Today the loop is free for autoevolution by accident — its
+href-only runs carry no `formats`, so every iteration short-circuits. Task «autoevolution
+uses the shared walker» removes that accident. Within t-hunted's existing 2 MB fetch
+cap, ~200k single-character bold spans give ~4·10¹⁰ character comparisons: tens of
+minutes to hours on a single-process bot whose restart is barred 10:00–20:00 МСК, with
+all three publish slots inside that window.
+This bound is a RESOURCE guard, not the editorial threshold AC7 forbids: it fires only
+on pathological input, and it deliberately does not gate the heading heuristic on
+length — a block whose runs were stripped simply stops being «entirely bold».
+
+### Decision 9: The evidence must be reproducible in the repo [TECHNICAL]
+**Decision:** Commit the 14 fetched article pages as HTML fixtures, and generate a
+golden file (`{title, subtitle, paragraphs, blocks, images}` + `preview_nodes(...)` for
+every orangetrack fixture) on the pre-extraction commit. The golden file is compared by
+string equality; editing it is a gate failure, checked the same way as editing the
+tests.
+**Rationale:** `[TECHNICAL]`. Two problems this closes. First, `tests/fixtures/`
+contains **zero HTML** today, so every number this spec leans on — 24/286 promotions,
+lamley's 14/41/48/50 images, 13-of-14 misalignment, the 73-vs-85 char headroom — is
+unreproducible, and the «measured 50-image lamley fixture» a planned integration test
+targets does not exist. Second, «orangetrack's existing tests pass unedited» is a
+weaker gate than it sounds: `grep` for `strong|<b>|<em>` returns **0** across all three
+parser test files, so they are structurally blind to this entire feature, and no
+fixture is a real article. `.dockerignore` already excludes `tests/`, so the corpus
+costs prod nothing.
 
 ### Decision 7: `list_item` added to the engines' patchable types
 **Decision:** Add `list_item` to the per-engine tuples (claude `:159`, gemini `:132`,
@@ -249,189 +327,236 @@ None.
 
 ## Testing Strategy
 
-**Feature size:** L
+**Feature size:** L. Delivered in **two phases** (operator decision 2026-07-30):
+**Phase 1** ships the shared module, all safety work and t-hunted; **Phase 2** adds
+lamley and autoevolution. The chain is proven on the source where the operator actually
+noticed the problem before two more parsers are touched.
 
 ### Unit tests
-- `dom_blocks`: bold inside a paragraph; whole-bold paragraph → heading; whole-bold
-  ending in `.` → NOT heading; ending in `…` / `….` / `?` / `!` → heading; nested
-  bold-in-italic; overlapping runs (first-wins); empty/whitespace runs skipped;
-  flattening produces no doubled spaces and every run stays locatable via `text.find`.
-- Heading-level policy defaults: h2/h3/h4 → level 3, h5 → paragraph, h1/h6 dropped.
+- `dom_blocks` positive: bold inside a paragraph; nested bold-in-italic; overlapping
+  runs (first-wins); empty/whitespace runs skipped; flattening yields no doubled spaces
+  and every run stays locatable via `text.find`.
+- Heading heuristic **negative controls** (the 2026-07-28 lesson — a one-sided
+  invariant misses the opposite failure):
+  - partially-bold short paragraph → NOT a heading;
+  - whole-bold paragraph ending in `.` → NOT a heading;
+  - whole-bold **long** paragraph → IS a heading, pinned deliberately so a future
+    re-added length cap fails a test rather than passing silently;
+  - `<p><strong>Part</strong> and <strong>two</strong></p>` → NOT whole-bold (the
+    predicate needs one merged span, and this is the mechanically load-bearing case);
+  - `<p><strong>Ford</strong> vs Ford</p>` → the span merge is built on `text.find`,
+    so a repeated substring must not fake full coverage.
+- Heuristic **off for orangetrack, on for the others** — asserted per source.
+- Heading-level defaults: h2/h3/h4 → level 3, h5 → paragraph, h1/h6 dropped.
 - `<br>`-splitting and bullet-less `<li>` preserved as shared defaults.
-- Per parser (t-hunted, lamley, autoevolution): bold survives into blocks; malformed
-  markup degrades to flat text; aligned lift keeps the two lists equal in length,
-  including t-hunted's single-paragraph gallery case where the guard does not fire.
-- Image cap: blocks path emits no more than the cap, hero preserved.
-- Kill switch: flag off ⇒ no `blocks` key emitted by any of the three parsers.
+- Image-dedup key: t-hunted's Blogger size-suffix collapses variants; orangetrack's
+  query-strip behaviour is unchanged.
+- Video: a non-YouTube host containing a YouTube-shaped path is NOT wrapped; Vimeo
+  hosts ARE.
+- Resource bounds: over-bound input strips runs and emits plain text, article intact.
+- Kill switch: flag off ⇒ the three new parsers emit no `blocks`; **orangetrack still
+  does** (it must not be gated).
 
 ### Integration tests
-- Bold survives parser → `insert_pending` (JSON in SQLite) → translation →
-  `telegraph_publisher` nodes, for each of the three sources.
-- Count mismatch ⇒ `blocks` dropped, article published, WARNING logged.
-- Image cap holds end-to-end on a gallery-heavy lamley fixture (the measured 50-image
-  case).
-- An article near the `_is_text_only_checklist` 500-char floor is not newly dropped
-  (measured delta is 0.1–1.2 %, but the boundary must be pinned).
-- orangetrack regression: its existing tests pass **unedited**.
+- Formatting survives parser → `insert_pending` (JSON in SQLite) → translation →
+  `telegraph_publisher` nodes. Phase 1: t-hunted. Phase 2: lamley, autoevolution.
+- Alignment guard: mismatch ⇒ `blocks` dropped, article published, WARNING logged;
+  plus a **false-positive control** — the guard does NOT fire on aligned articles. An
+  always-firing guard would disable the feature on 100 % of publications and still pass
+  every positive test. `None` vs `[]` is asserted, since that distinction is live.
+  The mismatch is reached through the REAL parser via the title-dedup divergence
+  (`t_hunted_source.py:198` / `lamley_source.py:390` skip a `<p>` equal to the title
+  while the walker does not), not via a fabricated dict.
+- Image cap: per-source value is threaded and honoured — t-hunted 30 AND lamley 10,
+  with a lower control so a single hard-coded 10 fails.
+- AC6 `markers_lost`: a translation with no markers publishes as plain text and
+  `send_admin_notification` is not called.
+- AC7 `bold_heavy`: an article ≥90 % bold keeps every span through to Telegraph nodes.
+- AC3 behavioural half: a `list_item` block is patched from the MAIN response and does
+  not reach the caption pass — currently untested in all four engine test files.
+- An article near the `_is_text_only_checklist` 500-char floor is not newly dropped.
+- orangetrack: golden-file equality (Decision 9), not merely «tests pass unedited».
+
+**Every `-k` selector named above must match at least one collected test.** `pytest -k`
+collecting zero exits 0, so an unwritten test is a silent pass — the QA task verifies
+collection counts, not just exit codes.
 
 ### E2E tests
-None. E2E would require live fetches; autoevolution article pages return **403** to our
-client (its RSS returns 200) and lamley is throttled 20 s + 24 h blacklist. The
-operator's side-by-side comparison after deploy is the E2E substitute.
+None live. autoevolution article pages return **403** to our client and lamley is
+throttled 20 s + 24 h blacklist, so a live gate would be flaky by construction. The
+substitute is the **committed HTML corpus** of Decision 9 — not the operator's
+post-deploy read, which cannot gate anything.
 
 ## Agent Verification Plan
 
 **Source:** user-spec "Как проверить" section.
 
 ### Verification approach
-Automated tests cover mechanism. Beyond them the agent renders a real fixture through
-`preview_renderer.render_html` and asserts the presence of `<h3>`, `<strong>` and list
-items — the preview allowlist was fixed on 2026-07-28 specifically so this check is
-honest. The agent also re-runs the measurement script from `code-research.md` Part II
-against live t-hunted articles (the only source reachable without a 403) to confirm the
-heading heuristic still scores as measured.
+All pre-deploy verification runs **offline against the committed corpus**. The
+heading-heuristic measurement is re-run over those fixtures with fixed expected values,
+so it is deterministic and CI-runnable. The preview check renders a blocks fixture
+through `preview_renderer.render_html` and asserts `<h3>`, `<strong>` and a list item
+are present.
+
+A live re-fetch of t-hunted (the only source reachable without a 403) is kept as
+**post-deploy drift monitoring**, where a network failure is explicitly
+**inconclusive** — never a failure. Rationale: deploys are barred 10:00–20:00 МСК, so a
+spurious network failure in a pre-deploy gate costs a whole day, and this project
+already has a logged incident where an outage alarm turned out to be server DNS.
 
 ### Tools required
-`bash`, `python3`, `pytest`, `curl_cffi` (already a project dependency, used by the
-research script). No MCP tools required pre-deploy. Post-deploy uses `ssh` +
-`docker logs` (operator-run) and manual reading of the channel.
+`bash`, `python3`, `pytest` pre-deploy — no network, no MCP. Post-deploy: `ssh` +
+`docker logs` (operator-run), `curl_cffi` for the optional drift check, and manual
+reading of the channel.
 
 ## Risks
 
 | Risk | Mitigation |
 |------|-----------|
-| orangetrack output drifts during extraction | Its existing tests must pass **unedited** — that is the acceptance gate for Wave 1, not a nice-to-have. The exact-`runs` equality assertion in `tests/test_autoevolution_source.py:180-184` is the analogous tripwire for Task 7. |
-| Whole-bold long paragraph becomes an oversized heading (Decision 2 residual) | Unobserved in 286 real paragraphs. Kill switch + operator's post-deploy read. Reversible: cosmetic, no content lost. |
-| Blocks/paragraphs desynchronise in a shape no fixture covers | Runtime guard (Decision 4) drops `blocks` and logs; the article still publishes. |
-| Image count explodes on gallery posts | Decision 5 caps inside the renderer, the single choke point. Pinned by an integration test on the measured 50-image lamley article. |
-| Flat text shifts which paragraphs the promo filter scans | `_is_promo_article` reads the first 8 paragraphs; lamley loses 4–5 chrome entries, which on the four sampled articles were trailing (so the first 8 are unchanged) — **not guaranteed in general**. Test pins a case where chrome sits at the head. |
-| `test_deploy_files_invariant.py` is blind to new modules | It greps only for literal existing filenames. `Dockerfile` does `COPY . .` so Docker prod ships `dom_blocks.py` automatically, but `deploy.sh`'s explicit FILES array does not — Task 1 adds it to both. |
-| Second LLM call cost grows on three more sources | Decision 7 stops list-item re-translation. Cost measured on the first publications after deploy; the operator's standing rule is quality over token cost, so this is monitored, not pre-emptively optimised. |
+| orangetrack output drifts during extraction | Golden-file string equality over every fixture (Decision 9). «Tests pass unedited» alone is a weak gate — `grep` for `strong\|<b>\|<em>` returns 0 across all three parser test files, so they are blind to this feature. |
+| Whole-bold long paragraph becomes an oversized heading | Unobserved in 286 real paragraphs. Pinned deliberately by a test so the behaviour is a decision, not an accident. Kill switch + operator's post-deploy read. Cosmetic and reversible. |
+| Heuristic changes orangetrack's live output | Decision 2b keeps it off there. Measured: 0 of 49 orangetrack paragraph blocks in its 37 fixtures would flip — but its live feed was never fetched, and its `has-*-color` spans map to bold, so the real exposure is unmeasured. Off-by-default is the answer to an unmeasured risk. |
+| Unbounded encode loop stalls the bot | Decision 8 bounds the request path. Consequence if missed: hours of stall on a process that cannot be restarted 10:00–20:00 МСК, with every publish slot inside that window. |
+| Injected video wrapper reintroduces the missing host allowlist | Decision 1 makes the seam DATA, not a callable; the `urlparse` host gate stays in `dom_blocks`. |
+| Image src reaches the page unvalidated | autoevolution's picker uses `startswith("http")` (so `httpx://evil/x.jpg` passes) and its gallery path applies no scheme test at all. The publisher — already «the single choke point» per Decision 5 — validates the scheme itself. |
+| Blocks/paragraphs desynchronise in an uncovered shape | Runtime guard (Decision 4) + false-positive control. |
+| Flag default ON was chosen against the security review | Recorded here deliberately. The reviewer's argument: no pre-deploy E2E is possible, Decision 3b silences every failure, and disabling requires a restart barred during the publishing day — so the switch cannot deliver the mitigation it is credited with, in time. The operator accepted this trade knowingly on 2026-07-30. Phase-1-only scope (t-hunted) narrows the blast radius. |
+| Flat text shifts which paragraphs the promo filter scans | `_is_promo_article` reads the first 8 paragraphs; a test pins a case where chrome sits at the head. |
+| Deploy-files invariant test asserts across THREE manifests | `deploy.sh`, `deploy.yml`, `deploy_test.yml` — a file list naming only `deploy.sh` produces two failing tests. |
+| Second LLM call cost grows | Decision 7 stops list-item re-translation. Measured on the first publications; the operator's standing rule is quality over token cost. |
 
 ## User-Spec Deviations
 
-- **AC2 (heading heuristic):** user-spec fixes the length limit at **≤80 chars** with
-  measured justification. Tech-spec **removes the length condition entirely** —
-  heading = whole-bold AND not ending in `.`. Reason: measurement across 286 real
-  paragraph blocks found **zero** whole-bold non-headings, so length discriminated
-  nothing and only clipped genuine headings (a lamley subheading at 85 chars). The
-  user-spec's own t-hunted evidence reproduced exactly; it simply does not generalise
-  to lamley. It also supersedes the user-spec's Тестирование line and «Как проверить»
-  step 3, which both pin the 80/81 boundary — that test is intentionally dropped, not
-  forgotten, and is replaced by negative controls (whole-bold LONG paragraph → still a
-  heading; whole-bold ending in `.` → not a heading). → **APPROVED by operator
-  2026-07-30**
-- **AC2 (trailing punctuation):** user-spec says «не заканчивается точкой». Tech-spec
-  additionally treats `…` and `….` as heading-compatible, to keep lamley's «Also ran….»
-  subheading. → **APPROVED by operator 2026-07-30**
-- **AC11 (kill switch):** user-spec says the flag returns «старое поведение (плоский
-  текст)». Tech-spec states explicitly that this means *no formatting, flat text* and
-  **not** byte-identical output — measured drift −0.10 % (t-hunted) / −1.18 % (lamley,
-  chrome removal). Byte-identity would require two parallel text-derivation paths. →
+- **AC2 (heading heuristic):** user-spec fixes the length limit at **≤80 chars**.
+  Tech-spec **removes the length condition entirely**. Reason: 286 real paragraph
+  blocks contain **zero** whole-bold non-headings, so length discriminated nothing and
+  only clipped genuine headings (a lamley subheading at 85 chars). Also supersedes the
+  user-spec's Тестирование line and «Как проверить» step 3, which pin the 80/81
+  boundary — that test is intentionally dropped and replaced by negative controls. →
   **APPROVED by operator 2026-07-30**
-- **Risk 2 (flat-text shrinkage) — downgraded.** User-spec treats this as a significant
-  risk on the premise that recursive `find_all` double-counts nested
-  `<li><p>` / `<blockquote><p>`. Measurement found **zero** such nesting in 14 real
-  articles and 15 fixtures; real delta is −0.10 % / −1.18 %, nowhere near the 500-char
-  checklist floor. The risk stays in the table at its true (low) weight with a boundary
-  test, rather than being deleted. → informational, no scope change
-- **Added: `dom_blocks.py` as a new module** (user-spec says «переиспользовать
-  обходчик», which reads as reuse-in-place). Reason: `_walk` is a closure over mutable
-  state and cannot be imported; the alternative is copy-paste, which user-spec Risk 1
-  forbids. → **implied by user-spec Risk 1; flagged for the record**
+- **AC2 (trailing punctuation):** `…` and `….` additionally count as
+  heading-compatible, to keep lamley's «Also ran….». → **APPROVED 2026-07-30**
+- **AC2 (scope):** the heuristic is opt-in per source and **off for orangetrack**
+  (Decision 2b). Not in the user-spec; required to keep AC10. → **implied by AC10**
+- **AC9 vs AC10 — a genuine collision.** AC9 requires the image cap on the blocks
+  path; AC10 requires orangetrack byte-identical. But orangetrack's cap is **not**
+  applied on the blocks path today (`IMAGE_LIMIT` slices only the derived flat list),
+  so it already publishes more images than intended. Honouring AC9 therefore CHANGES
+  orangetrack's rendered output on gallery posts. Tech-spec honours AC9 and treats this
+  as an intended bug fix, reading AC10's intent as «don't break orangetrack» rather
+  than «keep its bugs». The golden file will show the diff explicitly, so the change is
+  reviewed rather than discovered. → **[PENDING USER APPROVAL]**
+- **AC11 (kill switch):** means *no formatting, flat text*, not byte-identity —
+  measured drift −0.10 % / −1.18 %. Default **ON** per operator, against the security
+  review's opt-in recommendation (see Risks). → **APPROVED 2026-07-30**
+- **Risk 2 (flat-text shrinkage) — downgraded.** The nested-`<li><p>` premise is
+  measurably false (zero occurrences in 14 articles and 15 fixtures). Kept at its true
+  weight with a boundary test. → informational
+- **Added: `dom_blocks.py`, `feature_flags.py`, an HTML corpus and a golden file.**
+  Reason: Risk 1 forbids copy-paste; the corpus and golden file make the spec's own
+  evidence reproducible and its main gate real. → **flagged for the record**
+- **Added: resource bounds and the ReDoS contract** (Decision 8), `[TECHNICAL]`, from
+  the security review. → **flagged for the record**
 
 ## Acceptance Criteria
 
 Технические критерии приёмки (дополняют пользовательские из user-spec):
 
-- [ ] `orangetrack_source` tests pass **without any test file being edited**
-- [ ] No new package dependencies
-- [ ] No DB migration (the `blocks` column already exists)
-- [ ] `dom_blocks.py` present in `deploy.sh` FILES array AND in
-      `tests/test_deploy_files_invariant.py`
-- [ ] For every source emitting blocks: patchable-block count == paragraph count, or
-      `blocks` is dropped with a WARNING
-- [ ] Image blocks per page ≤ the source's existing cap
-- [ ] Flag off ⇒ no `blocks` emitted by any of the three parsers
-- [ ] All four engines list `list_item` as a patchable block type
-- [ ] Preview renders `<h3>` / `<strong>` / list items produced by this feature
-- [ ] The heading heuristic is OFF for orangetrack and ON for the other three
-- [ ] Full suite green with no regressions (baseline: 1628 passed, 441 subtests)
+- [ ] orangetrack golden file matches byte-for-byte, and the golden file itself is
+      unedited (the diff for the image-cap change is reviewed and accepted separately)
+- [ ] `grep -c "strong\|<b>\|<em>"` > 0 in the parser test files that previously
+      returned 0
+- [ ] Every `-k` selector in the verification plan collects ≥1 test
+- [ ] All parser regex uses bounded quantifiers; the heading-punctuation test uses
+      `str.endswith`, not a regex
+- [ ] Request-path marker encoding is bounded; over-bound input yields plain text and
+      an intact article
+- [ ] Video wrapping gates on host BEFORE the ID regex, for every source
+- [ ] Image `src` scheme is validated in the publisher, not only in the source picker
+- [ ] Per-source image caps are threaded (t-hunted 30, lamley 10) — a single
+      hard-coded value fails a test
+- [ ] Heading heuristic OFF for orangetrack, ON for the sources in scope
+- [ ] Flag off ⇒ the three new parsers emit no `blocks`; orangetrack still does
+- [ ] New modules registered in ALL THREE deploy manifests
+- [ ] No new package dependencies; no DB migration
+- [ ] Full suite green, no regressions (baseline: 1628 passed, 441 subtests)
 
 ## Implementation Tasks
 
+<!-- PHASE 1 ships. Phase 2 is listed at the end and will be decomposed separately. -->
+
 ### Wave 1 (независимые)
 
-#### Task 1: Extract `dom_blocks.py` and migrate orangetrack onto it
-- **Description:** Create the shared module — inline-markup walker, run flattening, the opt-in heading heuristic, and a `BlockBuilder` with per-site policy hooks — and make `orangetrack_source` its first consumer. Its published output must not change. Register the new module in `deploy.sh` FILES and in the deploy-files invariant test.
+#### Task 1: HTML corpus + orangetrack golden gate
+- **Description:** Commit the 14 fetched article pages as HTML fixtures so every measured number in this spec becomes reproducible, and generate the orangetrack golden file on the pre-extraction commit. Serves Decision 9; this must land before any extraction so the gate has a baseline.
 - **Skill:** code-writing
-- **Reviewers:** code-reviewer, security-auditor, test-reviewer
-- **Verify-smoke:** `python3 -m pytest tests/test_orangetrack_source.py -q` passes AND `git diff --stat tests/test_orangetrack_source.py` is empty
-- **Files to modify:** `dom_blocks.py` (new), `orangetrack_source.py`, `deploy.sh`, `tests/test_deploy_files_invariant.py`, `tests/test_dom_blocks.py` (new)
-- **Files to read:** `work/source-formatting-parity/code-research.md`, `telegraph_publisher.py`, `boilerplate_filter.py`
+- **Reviewers:** test-reviewer
+- **Verify-smoke:** `python3 -m pytest tests/test_orangetrack_golden.py -q` green on unmodified code
+- **Files to modify:** `tests/fixtures/*.html` (new), `tests/fixtures/orangetrack_golden.json` (new), `tests/test_orangetrack_golden.py` (new)
+- **Files to read:** `work/source-formatting-parity/code-research.md`, `orangetrack_source.py`, `telegraph_publisher.py`
 
-#### Task 2: Rendering surface — image cap + preview parity
-- **Description:** Apply the source's image cap inside `_build_content_from_blocks`, keeping the hero figure (AC9; Decision 5 explains why the renderer is the chosen place). In the same task, own AC12: prove the preview renders the headings, bold and list items this feature produces, and add whatever is still missing. Both halves are "what the reader and the operator actually see", and they touch different files.
-- **Skill:** code-writing
-- **Reviewers:** code-reviewer, security-auditor, test-reviewer
-- **Verify-smoke:** `python3 -m pytest tests/test_telegraph_publisher.py tests/test_preview_renderer.py -q`, then render a blocks fixture through `preview_renderer.render_html` and grep for `<h3>`, `<strong>` and a list item
-- **Files to modify:** `telegraph_publisher.py`, `preview_renderer.py`, `tests/test_telegraph_publisher.py`, `tests/test_preview_renderer.py`
-- **Files to read:** `orangetrack_source.py`, `lamley_source.py`, `t_hunted_source.py`
-
-#### Task 3: Feature flag module
-- **Description:** Add `feature_flags.py` exposing this feature's kill switch, readable by the parsers. Serves AC11; see Decision 6 for placement and default.
+#### Task 2: Feature flag module
+- **Description:** Add `feature_flags.py` exposing this feature's kill switch, importable by the parsers. Serves AC11; Decision 6 fixes the default and states that the flag must not gate emission inside the shared module.
 - **Skill:** code-writing
 - **Reviewers:** code-reviewer, security-auditor, test-reviewer
 - **Verify-smoke:** `python3 -c "import feature_flags; print(feature_flags.source_formatting_enabled())"` → `True` with no env set
-- **Files to modify:** `feature_flags.py` (new), `.env.example`, `tests/test_feature_flags.py` (new), `deploy.sh`, `tests/test_deploy_files_invariant.py`
+- **Files to modify:** `feature_flags.py` (new), `.env.example`, `tests/test_feature_flags.py` (new), `deploy.sh`, `.github/workflows/deploy.yml`, `.github/workflows/deploy_test.yml`, `tests/test_deploy_files_invariant.py`
 - **Files to read:** `news_bot.py`, `.claude/skills/project-knowledge/references/deployment.md`
 
-#### Task 4: `list_item` as a patchable block type in all four engines
-- **Description:** Align the four per-engine patchable-type tuples with the shared one so list items are patched from the main response. Serves AC3; see Decision 7.
+#### Task 3: `list_item` as a patchable block type in all four engines
+- **Description:** Align the four per-engine patchable-type tuples with the shared one so list items are patched from the main response instead of being re-translated by the caption pass. Serves AC3; see Decision 7.
 - **Skill:** code-writing
 - **Reviewers:** code-reviewer, test-reviewer
-- **Verify-smoke:** `python3 -m pytest tests/test_claude_transcreation.py -q`
-- **Files to modify:** `claude_transcreation.py`, `gemini_transcreation.py`, `openai_transcreation.py`, `openrouter_transcreation.py`, `tests/test_claude_transcreation.py`
+- **Verify-smoke:** `python3 -m pytest tests/test_claude_transcreation.py -q -k list_item` collects ≥1 test and passes
+- **Files to modify:** `claude_transcreation.py`, `gemini_transcreation.py`, `openai_transcreation.py`, `openrouter_transcreation.py`, and the four engine test files
 - **Files to read:** `_llm_common.py`
+
+#### Task 4: Bound the request-path marker encoding
+- **Description:** `_encode_format_markers` scans `text.find` per run with no bound, on the path that builds the LLM request. Bound it; over the bound, strip runs and send plain text. Serves Decision 8 — the security review's availability finding.
+- **Skill:** code-writing
+- **Reviewers:** code-reviewer, security-auditor, test-reviewer
+- **Verify-smoke:** encode a pathological 200k-run paragraph and assert it completes under a second with runs stripped
+- **Files to modify:** `_llm_common.py`, `tests/test_llm_common.py`
+- **Files to read:** `telegraph_publisher.py` (the existing render-path bounds)
 
 ### Wave 2 (зависит от Wave 1)
 
-#### Task 5: t-hunted emits blocks
-- **Description:** Drive `BlockBuilder` over the Blogger body so t-hunted returns `blocks` with `runs` alongside the flat list, with the subtitle lift and the title-dedup filter applied to both lists consistently. The bold-paragraph heuristic is enabled here and is t-hunted's only heading path.
+#### Task 5: Extract `dom_blocks.py` and migrate orangetrack onto it
+- **Description:** Create the shared module — inline-markup walker, run flattening, the opt-in heading heuristic, resource bounds, and a `BlockBuilder` with the four per-site policy inputs — and make `orangetrack_source` its first consumer. The golden file from Task 1 is the gate. Register the module in all three deploy manifests.
 - **Skill:** code-writing
 - **Reviewers:** code-reviewer, security-auditor, test-reviewer
-- **Verify-smoke:** parse a saved t-hunted fixture and assert `len(patchable blocks) == len(paragraphs)`
-- **Files to modify:** `t_hunted_source.py`, `tests/test_t_hunted_source.py`
-- **Files to read:** `work/source-formatting-parity/code-research.md`, `dom_blocks.py`, `orangetrack_source.py`, `boilerplate_filter.py`
+- **Verify-smoke:** `python3 -m pytest tests/test_orangetrack_source.py tests/test_orangetrack_golden.py -q` passes AND `git diff --stat tests/test_orangetrack_source.py tests/fixtures/orangetrack_golden.json` is empty
+- **Files to modify:** `dom_blocks.py` (new), `orangetrack_source.py`, `deploy.sh`, `.github/workflows/deploy.yml`, `.github/workflows/deploy_test.yml`, `tests/test_deploy_files_invariant.py`, `tests/test_dom_blocks.py` (new)
+- **Files to read:** `work/source-formatting-parity/code-research.md`, `telegraph_publisher.py`, `boilerplate_filter.py`
 
-#### Task 6: lamley emits blocks
-- **Description:** Same for lamley, which needs both heading paths (real tags and the heuristic) and whose lift is unconditional. WordPress chrome is removed via the shared chrome predicate.
+#### Task 6: Rendering surface — per-source image cap + src validation + preview parity
+- **Description:** Thread the per-source image cap from the call site into `_build_content_from_blocks` and enforce it there, validate image `src` schemes in the publisher rather than trusting each source's picker, and own AC12 by proving the preview renders this feature's headings, bold and list items. Note this changes orangetrack's gallery output — see the AC9/AC10 deviation.
 - **Skill:** code-writing
 - **Reviewers:** code-reviewer, security-auditor, test-reviewer
-- **Verify-smoke:** parse a saved lamley fixture and assert `len(patchable blocks) == len(paragraphs)`
-- **Files to modify:** `lamley_source.py`, `tests/test_lamley_source.py`
-- **Files to read:** `work/source-formatting-parity/code-research.md`, `dom_blocks.py`, `orangetrack_source.py`
-
-#### Task 7: autoevolution uses the shared runs walker
-- **Description:** Replace autoevolution's href-only inline walker with the shared one so its bold and italic survive. Its existing block/lead/heading structure must keep working.
-- **Skill:** code-writing
-- **Reviewers:** code-reviewer, security-auditor, test-reviewer
-- **Verify-smoke:** `python3 -m pytest tests/test_autoevolution_source.py -q` — the exact-`runs` equality assertion is the tripwire
-- **Files to modify:** `autoevolution_source.py`, `tests/test_autoevolution_source.py`
-- **Files to read:** `work/source-formatting-parity/code-research.md`, `dom_blocks.py`
+- **Verify-smoke:** `python3 -m pytest tests/test_telegraph_publisher.py tests/test_preview_renderer.py -q`
+- **Files to modify:** `telegraph_publisher.py`, `news_bot.py`, `preview_renderer.py`, `tests/test_telegraph_publisher.py`, `tests/test_preview_renderer.py`
+- **Files to read:** `orangetrack_source.py`, `lamley_source.py`, `t_hunted_source.py`
 
 ### Wave 3 (зависит от Wave 2)
 
+#### Task 7: t-hunted emits blocks
+- **Description:** Drive `BlockBuilder` over the Blogger body so t-hunted returns `blocks` with `runs` alongside the flat list, with the subtitle lift AND the title-dedup predicate applied consistently to both lists. The heading heuristic is enabled here and is t-hunted's only heading path; its Blogger image-dedup key is injected.
+- **Skill:** code-writing
+- **Reviewers:** code-reviewer, security-auditor, test-reviewer
+- **Verify-smoke:** parse every t-hunted corpus fixture and assert `len(patchable blocks) == len(paragraphs)` for each
+- **Files to modify:** `t_hunted_source.py`, `tests/test_t_hunted_source.py`
+- **Files to read:** `work/source-formatting-parity/code-research.md`, `dom_blocks.py`, `orangetrack_source.py`, `boilerplate_filter.py`
+
 #### Task 8: Runtime alignment guard
-- **Description:** Drop `blocks` and log a WARNING when the patchable-block count disagrees with the paragraph count, at the site where the row is assembled. Serves AC8; see Decision 4.
+- **Description:** Drop `blocks` and log a WARNING when the patchable-block count disagrees with the paragraph count, at the site where the row is assembled. Serves AC8; see Decision 4. Needs a false-positive control — an always-firing guard would silently disable the feature.
 - **Skill:** code-writing
 - **Reviewers:** code-reviewer, test-reviewer
-- **Verify-smoke:** `python3 -m pytest tests/test_integration.py -q -k mismatch`
+- **Verify-smoke:** `python3 -m pytest -q -k "mismatch or aligned"` collects ≥2 tests and passes
 - **Files to modify:** `news_bot.py`, `tests/test_news_bot_alignment.py` (new)
 - **Files to read:** `_llm_common.py`, `pending_articles_repo.py`, `dom_blocks.py`
 
-#### Task 9: End-to-end formatting suite
-- **Description:** Pin the whole chain for all three sources: formatting survives parser → queue → translation → Telegraph; the image cap holds on the measured 50-image lamley article; markers lost by the LLM degrade silently; a bold-heavy article keeps every span; an article near the checklist floor is not newly dropped.
+#### Task 9: End-to-end formatting suite (Phase 1 scope)
+- **Description:** Pin the chain for t-hunted: formatting survives parser → queue → translation → Telegraph; markers lost by the LLM degrade silently with no operator ping; a bold-heavy article keeps every span; the per-source image cap holds with a lower control; an article near the checklist floor is not newly dropped.
 - **Skill:** code-writing
 - **Reviewers:** test-reviewer
 - **Files to modify:** `tests/test_integration.py`
@@ -440,24 +565,24 @@ research script). No MCP tools required pre-deploy. Post-deploy uses `ssh` +
 ### Audit Wave
 
 #### Task 10: Code Audit
-- **Description:** Full-feature code quality audit. Read all source files created/modified in this feature. Review holistically for cross-component issues: whether the shared module removed duplication or merely relocated it, whether the per-site policy hooks are the right seam, `BlockBuilder` state ownership, and consistency with Decisions 1-7. Write audit report.
+- **Description:** Full-feature code quality audit. Read all source files created/modified. Review holistically for cross-component issues: whether the shared module removed duplication or relocated it, whether the four policy inputs are the right seams, `BlockBuilder` state ownership, and consistency with Decisions 1-9. Write audit report.
 - **Skill:** code-reviewing
 - **Reviewers:** none
 
 #### Task 11: Security Audit
-- **Description:** Full-feature security audit. Read all source files created/modified. OWASP Top 10 across components, with attention to the ReDoS contract the project requires of parser regex (bounded quantifiers only), href/img scheme allowlists surviving the extraction, the YouTube host allowlist that must run before the video-ID regex, and the DoS bounds in the runs renderer now that three more sources feed it. Write audit report.
+- **Description:** Full-feature security audit. OWASP Top 10 across components, with attention to the bounded-quantifier contract, the host-before-regex video gate for every source, image `src` scheme validation in the publisher, and the request-path encoding bound. Write audit report.
 - **Skill:** security-auditor
 - **Reviewers:** none
 
 #### Task 12: Test Audit
-- **Description:** Full-feature test quality audit. Read all test files created. Verify coverage and meaningful assertions, with attention to the 2026-07-28 lesson: one-sided invariants («bold appears») that miss the opposite failure («bold appears where it should not»). Confirm negative controls exist for the heading heuristic and for the alignment guard. Write audit report.
+- **Description:** Full-feature test quality audit. Verify coverage and meaningful assertions, with attention to the 2026-07-28 lesson about one-sided invariants. Confirm the heuristic negative controls and the alignment guard's false-positive control exist, and that every `-k` selector in the verification plan collects at least one test. Write audit report.
 - **Skill:** test-master
 - **Reviewers:** none
 
 ### Final Wave
 
 #### Task 13: Pre-deploy QA
-- **Description:** Acceptance testing: run all tests, verify every acceptance criterion from user-spec and this tech-spec. Explicitly confirm the orangetrack test files are unedited and the suite has no regressions against the 1628-passed baseline.
+- **Description:** Acceptance testing: run all tests, verify every acceptance criterion from user-spec and this tech-spec. Confirm the orangetrack golden file and test files are unedited, that every named `-k` selector collects tests, and that the suite has no regressions against the 1628-passed baseline.
 - **Skill:** pre-deploy-qa
 - **Reviewers:** none
 
@@ -468,10 +593,15 @@ research script). No MCP tools required pre-deploy. Post-deploy uses `ssh` +
 
 #### Task 15: Post-deploy verification
 - **Description:** Live verification after the operator deploys:
-  - first t-hunted publication — bold, subheadings and lists match the source page — tool: manual read + `curl_cffi` fetch of the original
-  - image count on a gallery post does not exceed the cap — tool: bash
-  - no WARNING about a blocks/paragraphs mismatch in the logs — tool: `ssh` + `docker logs`
+  - first t-hunted publication — bold, subheadings and lists match the source page — tool: manual read + `curl_cffi`
+  - image count on a gallery post does not exceed the cap, for t-hunted AND orangetrack (whose output intentionally changed) — tool: bash
+  - no blocks/paragraphs mismatch WARNING in the logs — tool: `ssh` + `docker logs`
   - decorated lead «💬 …» present and the last paragraph is not English — tool: manual read
+  A `curl_cffi` failure is INCONCLUSIVE, never a failure.
   Tools: `ssh`, `docker logs`, `bash`, `curl_cffi`, manual channel reading.
 - **Skill:** post-deploy-qa
 - **Reviewers:** none
+
+### Phase 2 (отдельная поставка, декомпозируется после Phase 1)
+
+Not decomposed here. Scope: `lamley_source` emits blocks (both heading paths, unconditional lift, WordPress chrome via the shared predicate); `autoevolution_source` swaps its href-only walker for the shared one; the end-to-end suite extends to both; then its own audit, QA and deploy waves. Phase 2 starts only after Phase 1 has been live long enough for the operator to read several t-hunted publications.
