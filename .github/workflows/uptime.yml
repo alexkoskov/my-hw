@@ -15,8 +15,13 @@ name: Uptime watch
 #   1. sshd completes the protocol GREETING (`ssh-keyscan`, no credentials
 #      needed — it fetches the host key, which requires sshd to fork and answer).
 #      This fails exactly the way the 2026-07-31 outage failed.
-#   2. the channel published something within the last DAY — the outcome the bot
-#      exists for. Catches "host fine, bot dead", which no host-level check can.
+#   2. a Telegra.ph page was created today or yesterday — every publication makes
+#      one, so this measures the OUTCOME the bot exists for and catches "host
+#      fine, bot dead", which no host-level check can.
+#      NOT the public channel feed: `t.me/s/<name>` was tried first and returns a
+#      stub with zero message blocks for this channel (it is not public), so that
+#      probe would have been permanently INCONCLUSIVE — i.e. silent false comfort.
+#      Verified against the live API before being trusted.
 #
 # ALERT DEDUP. GitHub Actions is stateless, so an open GitHub issue is used as
 # the outage flag: one Telegram message when it starts, one when it recovers,
@@ -45,9 +50,6 @@ concurrency:
 
 env:
   PROD_HOST: 45.90.216.165
-  # Public channel handle WITHOUT the leading @, e.g. myhwchannel. Leave the
-  # secret unset to skip the publication check and probe only the host.
-  CHANNEL: ${{ secrets.CHANNEL_PUBLIC_NAME }}
 
 jobs:
   probe:
@@ -78,28 +80,55 @@ jobs:
 
       - name: Probe last publication
         id: pub
-        if: env.CHANNEL != ''
+        env:
+          TELEGRAPH_TOKEN: ${{ secrets.TELEGRAPH_ACCESS_TOKEN }}
         run: |
-          # t.me/s/<name> renders the public channel feed as static HTML with
-          # ISO datetimes in <time datetime="...">. No bot token needed, so the
-          # prod bot's credentials never leave the server.
+          # Every publication creates a Telegra.ph page, and the API lists them
+          # newest-first. The page path carries the creation date as a -MM-DD
+          # suffix, which is all the granularity needed here.
+          # Unset secret => probe skipped, host probe still runs.
           ok=true
-          html=$(curl -fsSL --max-time 20 "https://t.me/s/${CHANNEL}" || true)
-          if [ -z "$html" ]; then
-            echo "could not read the public channel page — treating as INCONCLUSIVE, not a failure"
+          if [ -z "${TELEGRAPH_TOKEN:-}" ]; then
+            echo "TELEGRAPH_ACCESS_TOKEN not set — publication probe skipped"
           else
-            last=$(printf '%s' "$html" | grep -o 'datetime="[^"]*"' | tail -1 | cut -d'"' -f2)
-            if [ -z "$last" ]; then
-              echo "no timestamps on the page — INCONCLUSIVE"
+            body=$(curl -fsS --max-time 20 \
+              "https://api.telegra.ph/getPageList?access_token=${TELEGRAPH_TOKEN}&limit=1" || true)
+            if [ -z "$body" ]; then
+              echo "Telegraph API unreachable — INCONCLUSIVE, not a failure"
             else
-              age=$(( $(date -u +%s) - $(date -u -d "$last" +%s) ))
-              echo "last post: $last (${age}s ago)"
-              # 30h, not 24h: the last slot is 19:30 МСК and the first is 10:00,
-              # so a legitimate gap can exceed a day without anything being wrong.
-              if [ "$age" -gt 108000 ]; then
-                ok=false
-                echo "no publication for over 30 hours"
-              fi
+              ok=$(TELEGRAPH_BODY="$body" python3 - <<'PYEOF'
+          import datetime, json, os, re, sys
+          try:
+              data = json.loads(os.environ["TELEGRAPH_BODY"])
+          except Exception:
+              print("true"); sys.exit()          # unparsable => inconclusive
+          if not data.get("ok"):
+              print("true"); sys.exit()          # API error => inconclusive
+          pages = data["result"]["pages"]
+          if not pages:
+              print("true"); sys.exit()
+          m = re.search(r"-(\d{2})-(\d{2})$", pages[0]["path"])
+          if not m:
+              print("true"); sys.exit()          # unexpected path shape
+          today = datetime.date.today()
+          month, day = int(m.group(1)), int(m.group(2))
+          last = datetime.date(today.year, month, day)
+          if last > today:                       # published in December, now January
+              last = datetime.date(today.year - 1, month, day)
+          # Time-aware, because a plain "today or yesterday" rule stays silent
+          # for a day and a half: on the morning of an outage yesterday's post is
+          # still legitimately the newest. The last slot is 19:30 МСК, so after
+          # ~21:00 МСК a missing post for TODAY is real. Before that, yesterday
+          # is fine — the gap between 19:30 and the next 10:00 is normal.
+          msk_hour = (datetime.datetime.now(datetime.timezone.utc)
+                      + datetime.timedelta(hours=3)).hour
+          days = (today - last).days
+          sys.stderr.write("last page: %s (%d days ago), MSK hour %d\n"
+                           % (last, days, msk_hour))
+          stale = days > 1 or (days == 1 and msk_hour >= 21)
+          print("false" if stale else "true")
+          PYEOF
+              )
             fi
           fi
           echo "ok=$ok" >> "$GITHUB_OUTPUT"
@@ -112,7 +141,7 @@ jobs:
           [ -z "$pub_ok" ] && pub_ok=true   # publication check skipped
           reasons=""
           [ "$ssh_ok" != true ] && reasons="${reasons}• сервер не отвечает на SSH (не присылает приветствие)%0A"
-          [ "$pub_ok" != true ] && reasons="${reasons}• за последние 30 часов не вышло ни одной публикации%0A"
+          [ "$pub_ok" != true ] && reasons="${reasons}• больше суток не выходило ни одной публикации%0A"
           if [ -n "$reasons" ]; then
             echo "down=true" >> "$GITHUB_OUTPUT"
             echo "reasons=$reasons" >> "$GITHUB_OUTPUT"
