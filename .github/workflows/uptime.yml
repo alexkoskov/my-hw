@@ -1,0 +1,199 @@
+name: Uptime watch
+
+# EXTERNAL watchdog. The existing `watchdog.sh` runs ON the prod host via cron
+# (`docker exec hw-news-bot …`), so it can only catch "bot alive but stuck" — it
+# is silent by construction when the host itself stops serving, which is exactly
+# what happened on 2026-07-31: no daily ping, no publications, and SSH resetting
+# before sshd even sent its banner. A watchdog that lives on the machine it
+# watches cannot report that machine being down.
+#
+# WHY NOT A PLAIN PORT CHECK. Throughout that outage TCP/22 accepted
+# connections — `nc -vz` returned "succeeded". Any ordinary uptime service would
+# have reported the host healthy. So this workflow deliberately probes two
+# things that actually matter:
+#
+#   1. sshd completes the protocol GREETING (`ssh-keyscan`, no credentials
+#      needed — it fetches the host key, which requires sshd to fork and answer).
+#      This fails exactly the way the 2026-07-31 outage failed.
+#   2. a Telegra.ph page was created today or yesterday — every publication makes
+#      one, so this measures the OUTCOME the bot exists for and catches "host
+#      fine, bot dead", which no host-level check can.
+#      NOT the public channel feed: `t.me/s/<name>` was tried first and returns a
+#      stub with zero message blocks for this channel (it is not public), so that
+#      probe would have been permanently INCONCLUSIVE — i.e. silent false comfort.
+#      Verified against the live API before being trusted.
+#
+# ALERT DEDUP. GitHub Actions is stateless, so an open GitHub issue is used as
+# the outage flag: one Telegram message when it starts, one when it recovers,
+# silence in between. Without this the operator would get a message every 30
+# minutes for the whole outage.
+#
+# KNOWN LIMITS (stated so nobody trusts this more than it deserves):
+#   * scheduled workflows are best-effort — GitHub can delay them by 5-15 min,
+#     occasionally more, so treat the interval as "about half an hour";
+#   * GitHub disables scheduled workflows after 60 days with no repo activity;
+#   * if GitHub itself is down, so is this watchdog.
+# It is a second pair of eyes, not a guarantee.
+
+on:
+  schedule:
+    - cron: '*/30 * * * *'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  issues: write
+
+concurrency:
+  group: uptime-watch
+  cancel-in-progress: false
+
+env:
+  PROD_HOST: 45.90.216.165
+
+jobs:
+  probe:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Probe sshd greeting
+        id: ssh
+        run: |
+          # ssh-keyscan performs the real protocol start and needs no key.
+          # -T 15: bounded so a hung server fails rather than stalling the job.
+          # Retry three times 20s apart — a single reset can be transient, and a
+          # false alarm trains the operator to ignore this channel.
+          ok=false
+          for attempt in 1 2 3; do
+            if timeout 25 ssh-keyscan -T 15 -t ed25519 "$PROD_HOST" 2>/dev/null | grep -q ssh-ed25519; then
+              ok=true
+              break
+            fi
+            echo "attempt $attempt: no SSH greeting from $PROD_HOST"
+            sleep 20
+          done
+          echo "ok=$ok" >> "$GITHUB_OUTPUT"
+          if [ "$ok" = true ]; then
+            echo "sshd answered"
+          else
+            echo "sshd did NOT answer after 3 attempts"
+          fi
+
+      - name: Probe last publication
+        id: pub
+        env:
+          TELEGRAPH_TOKEN: ${{ secrets.TELEGRAPH_ACCESS_TOKEN }}
+        run: |
+          # Every publication creates a Telegra.ph page, and the API lists them
+          # newest-first. The page path carries the creation date as a -MM-DD
+          # suffix, which is all the granularity needed here.
+          # Unset secret => probe skipped, host probe still runs.
+          ok=true
+          if [ -z "${TELEGRAPH_TOKEN:-}" ]; then
+            echo "TELEGRAPH_ACCESS_TOKEN not set — publication probe skipped"
+          else
+            body=$(curl -fsS --max-time 20 \
+              "https://api.telegra.ph/getPageList?access_token=${TELEGRAPH_TOKEN}&limit=1" || true)
+            if [ -z "$body" ]; then
+              echo "Telegraph API unreachable — INCONCLUSIVE, not a failure"
+            else
+              ok=$(TELEGRAPH_BODY="$body" python3 - <<'PYEOF'
+          import datetime, json, os, re, sys
+          try:
+              data = json.loads(os.environ["TELEGRAPH_BODY"])
+          except Exception:
+              print("true"); sys.exit()          # unparsable => inconclusive
+          if not data.get("ok"):
+              print("true"); sys.exit()          # API error => inconclusive
+          pages = data["result"]["pages"]
+          if not pages:
+              print("true"); sys.exit()
+          m = re.search(r"-(\d{2})-(\d{2})$", pages[0]["path"])
+          if not m:
+              print("true"); sys.exit()          # unexpected path shape
+          today = datetime.date.today()
+          month, day = int(m.group(1)), int(m.group(2))
+          last = datetime.date(today.year, month, day)
+          if last > today:                       # published in December, now January
+              last = datetime.date(today.year - 1, month, day)
+          # Time-aware, because a plain "today or yesterday" rule stays silent
+          # for a day and a half: on the morning of an outage yesterday's post is
+          # still legitimately the newest. The last slot is 19:30 МСК, so after
+          # ~21:00 МСК a missing post for TODAY is real. Before that, yesterday
+          # is fine — the gap between 19:30 and the next 10:00 is normal.
+          msk_hour = (datetime.datetime.now(datetime.timezone.utc)
+                      + datetime.timedelta(hours=3)).hour
+          days = (today - last).days
+          sys.stderr.write("last page: %s (%d days ago), MSK hour %d\n"
+                           % (last, days, msk_hour))
+          stale = days > 1 or (days == 1 and msk_hour >= 21)
+          print("false" if stale else "true")
+          PYEOF
+              )
+            fi
+          fi
+          echo "ok=$ok" >> "$GITHUB_OUTPUT"
+
+      - name: Decide
+        id: verdict
+        run: |
+          ssh_ok='${{ steps.ssh.outputs.ok }}'
+          pub_ok='${{ steps.pub.outputs.ok }}'
+          [ -z "$pub_ok" ] && pub_ok=true   # publication check skipped
+          reasons=""
+          [ "$ssh_ok" != true ] && reasons="${reasons}• сервер не отвечает на SSH (не присылает приветствие)%0A"
+          [ "$pub_ok" != true ] && reasons="${reasons}• больше суток не выходило ни одной публикации%0A"
+          if [ -n "$reasons" ]; then
+            echo "down=true" >> "$GITHUB_OUTPUT"
+            echo "reasons=$reasons" >> "$GITHUB_OUTPUT"
+          else
+            echo "down=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Alert or recover
+        env:
+          GH_TOKEN: ${{ github.token }}
+          BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          CHAT_ID: ${{ secrets.TELEGRAM_ADMIN_ID }}
+          # Step outputs arrive as ENV, never interpolated into the shell body.
+          # GitHub's own hardening guidance: `${{ }}` inside `run:` is textual
+          # substitution before the shell sees it, so anything that ever becomes
+          # attacker-influenced turns into command injection. Nothing here is
+          # today — the strings are generated a few lines above — but the habit
+          # is what keeps it true after the next edit.
+          DOWN: ${{ steps.verdict.outputs.down }}
+          REASONS: ${{ steps.verdict.outputs.reasons }}
+        run: |
+          set -u
+          title="🔴 Прод не отвечает"
+          existing=$(gh issue list --state open --search "$title in:title" --json number --jq '.[0].number' || true)
+          reasons_text=$(printf '%s' "$REASONS" | sed 's/%0A/\n/g')
+
+          send() {
+            if [ -z "${BOT_TOKEN:-}" ] || [ -z "${CHAT_ID:-}" ]; then
+              echo "TELEGRAM_BOT_TOKEN / TELEGRAM_ADMIN_ID not set — skipping Telegram, issue state still updated"
+              return 0
+            fi
+            # --data-urlencode keeps the body out of the URL, so the token is
+            # never written into a log line alongside message text.
+            curl -fsS --max-time 20 \
+              "https://api.telegram.org/bot${BOT_TOKEN}/sendMessage" \
+              -d "chat_id=${CHAT_ID}" \
+              --data-urlencode "text=$1" >/dev/null || echo "Telegram send failed"
+          }
+
+          if [ "$DOWN" = true ]; then
+            if [ -z "$existing" ]; then
+              gh issue create --title "$title" \
+                --body "$(printf 'Автоматическая проверка не прошла.\n\n%b' "$reasons_text")" >/dev/null
+              send "$(printf '[watch] 🔴 Прод не отвечает\n\n%b\nЗайти по SSH может не получиться — используй консоль хостера.' "$reasons_text")"
+            else
+              echo "already alerted (issue #$existing) — staying silent"
+            fi
+          else
+            if [ -n "$existing" ]; then
+              gh issue close "$existing" --comment "Проверка снова проходит." >/dev/null
+              send "[watch] 🟢 Прод снова отвечает."
+            else
+              echo "all good"
+            fi
+          fi
