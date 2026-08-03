@@ -1,3 +1,11 @@
+# ВОЗОБНОВЛЯТЬ НЕЧЕГО — правка 2026-08-03.
+# фича выкачена 2026-05-05/06 (c420aae, ba64a4f, d346934); все 11 задач выполнены.
+# Значения ниже НЕ отражали действительность и могли заставить
+# feature-execution «продолжить» давно законченную работу: этот файл
+# читается именно для определения сценария возобновления.
+# Оставлен как история; для планирования не использовать.
+resume: false
+
 # Feature Execution Checkpoint
 # Written by feature-execution skill after each wave.
 # Read by SessionStart(compact) hook for context recovery.

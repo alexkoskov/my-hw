@@ -7,6 +7,17 @@ size: S
 
 # Tech Spec: author-plug-filter
 
+> **⚠️ Реализовано ИНАЧЕ — этот документ не описывает код (пометка 2026-08-03).**
+> Variant B был реализован не отдельным модулем, а функциями `_strip_plugs` /
+> `_strip_plugs_in_blocks` внутри `news_bot.py` (сейчас `news_bot.py:1285-1322`);
+> тесты — в `tests/test_translation.py`. Названные ниже
+> `author_plug_filter.py`, `tests/test_author_plug_filter.py` и записи в
+> манифестах деплоя **не существуют и никогда не существовали**.
+> Причина отклонения и его последствия — в `decisions.md` этой же папки.
+> Актуальное описание уровней фильтрации служебного текста —
+> `patterns.md § Service-text stripping — three granularities`.
+> Ниже — исторический документ: что задумывалось до реализации.
+
 ## Solution
 
 Two complementary regex-based filters that strip author social-media plugs from auto-published articles before they reach Telegraph + Telegram.

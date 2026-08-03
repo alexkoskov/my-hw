@@ -99,7 +99,8 @@ my-hw/
 ├── .github/workflows/       # ci.yml (pytest on push/PR to main+dev); uptime.yml (external
 │                              watchdog, every 30 min, live since 2026-07-31);
 │                              deploy.yml + deploy_test.yml — both DISARMED (`if: false`)
-├── tests/                   # pytest suite — 1628 tests across 47 files (counted 2026-08-03)
+├── tests/                   # pytest suite — 1626 tests across 47 files (2026-08-03; 1628 before
+│                            # test_deploy_files_invariant.py was rewritten 6 shallow → 4 real tests)
 ├── scripts/ archive/ logs/  # Helper scripts, retired code, local run logs
 ├── work/
 │   ├── completed/           # Finalized features (manual-review-workflow lands here)

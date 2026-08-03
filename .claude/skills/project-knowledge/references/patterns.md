@@ -551,7 +551,7 @@ tag; that is correct and is the whole point.
 no secret scanning. Both have existed for a long time; that text predates them.*
 
 - **On commit:** pre-commit hooks run automatically (see below). Run the suite
-  yourself before pushing: `python3 -m pytest -q` (1628 tests as of 2026-08-03,
+  yourself before pushing: `python3 -m pytest -q` (1626 tests as of 2026-08-03,
   a few seconds to collect).
 - **On push / PR to `dev` or `main`:** `.github/workflows/ci.yml` installs
   `requirements.txt` + `requirements-dev.txt` on Python 3.13 and runs
@@ -603,7 +603,7 @@ gap in knowledge: `work/<feature>/decisions.md` (per-task rationale),
 
 ### Test Infrastructure
 
-pytest suite lives in `tests/` — **1628 tests across 47 files** as of 2026-08-03.
+pytest suite lives in `tests/` — **1626 tests across 47 files (2026-08-03; was 1628 until `test_deploy_files_invariant.py` was rewritten that day — 6 shallow assertions became 4 real ones, so the count DROPPED while coverage grew)**.
 Run with `python3 -m pytest -q`; collection takes a couple of seconds and the
 whole suite is fast enough to run on every change. Fixtures and synthetic-payload
 builders are in `tests/fixtures/`.

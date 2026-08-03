@@ -1,11 +1,19 @@
 ---
 created: 2026-04-20
-status: draft
+status: approved
 branch: dev
 size: S
 ---
 
 # Tech Spec: Mattel Corporate News Source
+
+> **Пометка 2026-08-03.** Статус переведён `draft` → `approved` задним числом:
+> фича выкачена 2026-04-20 (`66bfe75`) и с тех пор переписана
+> (`work/completed/mattel-parser-rewrite/`). **Сам источник отключён
+> 2026-05-24** — закомментирован в реестре `SOURCES`
+> (`news_bot.py:3599-3611`): сайт перешёл на клиентский рендеринг, и за всю
+> историю Mattel не выдал ни одной статьи про Hot Wheels. Парсер и тесты
+> сохранены. Читать как исторический документ.
 
 ## Solution
 

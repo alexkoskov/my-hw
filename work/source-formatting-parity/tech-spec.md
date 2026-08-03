@@ -484,7 +484,7 @@ reading of the channel.
 - [ ] Flag off ⇒ the three new parsers emit no `blocks`; orangetrack still does
 - [ ] New modules registered in ALL THREE deploy manifests
 - [ ] No new package dependencies; no DB migration
-- [ ] Full suite green, no regressions (baseline: 1628 passed, 441 subtests)
+- [ ] Full suite green, no regressions (baseline: **1626** passed, 441 subtests — the 2026-08-03 rewrite of `test_deploy_files_invariant.py` replaced 6 shallow assertions with 4 real ones, so the old 1628 figure is not a regression)
 
 ## Implementation Tasks
 
@@ -587,7 +587,7 @@ reading of the channel.
 ### Final Wave
 
 #### Task 13: Pre-deploy QA
-- **Description:** Acceptance testing: run all tests, verify every acceptance criterion from user-spec and this tech-spec. Confirm the orangetrack golden file and test files are unedited, that every named `-k` selector collects tests, and that the suite has no regressions against the 1628-passed baseline.
+- **Description:** Acceptance testing: run all tests, verify every acceptance criterion from user-spec and this tech-spec. Confirm the orangetrack golden file and test files are unedited, that every named `-k` selector collects tests, and that the suite has no regressions against the 1626-passed baseline (1628 before 2026-08-03).
 - **Skill:** pre-deploy-qa
 - **Reviewers:** none
 
