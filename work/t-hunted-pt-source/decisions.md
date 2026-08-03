@@ -345,3 +345,33 @@ The `deploy_test.yml` workflow_run trigger runs the workflow YAML from the **rep
 1. Watch tomorrow 2026-06-03 10:00 МСК natural cron tick on test. Expected: t-hunted publish (if RSS has fresh entries) with clean RU body (no outro), correct `#thunted` hashtag, full-size hero image, and clean preview in `@myhwchannel123`.
 2. If clean publish verified → close T14 AC2/AC3, accumulate AC4 over next few days (5+ publishes for quality spot-check).
 3. After 5-7 days of green cadence on test (and no `[E031-E033]` alerts) → T14 sign-off → open `dev → main` PR bundling: PR #12 (feature) + PR #13/15/16/17 (hotfixes). Prod gets the whole package at once + workflow_run/FILES drift resolves automatically (main's YAML acquires t_hunted_source.py in FILES).
+
+---
+
+## Пост-деплой проверка на живом проде — 2026-08-03
+
+**Status:** Done
+**Agent:** main agent (оператор выполнил команды на сервере)
+**Метод:** `scripts/prod_check.py` против боевой базы `/root/hw-news/data/news.db`,
+только на чтение. Старые задачи пост-деплоя невыполнимы (описывают списанную
+инфраструктуру) и помечены SUPERSEDED; процедура — `work/PROD-VERIFICATION-2026-08-03.md`.
+
+**Общий срез прода на 2026-08-03 15:00 МСК:** 166 публикаций за всё время,
+24 за последние 14 дней (t-hunted 13, autoevolution 11), в очереди 3,
+в отказах 5, аварийная машина чиста.
+
+**Результат для этой фичи: РАБОТАЕТ.**
+
+- **13 публикаций из t-hunted за 14 дней**, последняя 2026-08-03 07:01 — то есть
+  источник не просто «однажды заработал», а несёт основную нагрузку канала
+  (13 из 24 постов, больше чем autoevolution).
+- Регрессии в существующих источниках нет: autoevolution публикуется в обычном
+  темпе (11 за окно, последняя 2026-08-02).
+- Отказов, связанных с парсингом t-hunted, в `failed_articles` нет. Единственная
+  запись с t-hunted-ссылкой (`O carro exclusivo do Red Line Club…`, 2026-07-14)
+  отвалилась не из-за парсера, а по `402 Insufficient credits` — кончился баланс
+  OpenRouter.
+
+**Что НЕ проверено:** качество русского текста и отсутствие португальских
+протечек — это операторская визуальная проверка по каналу (шаг 4 процедуры),
+базой не измеряется.

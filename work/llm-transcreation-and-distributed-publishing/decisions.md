@@ -410,3 +410,41 @@ Per task spec, QA task is itself the deliverable; no reviewers.
 - Smoke 3 (synthetic anthropic SDK exception text): key fully redacted; surrounding context preserved.
 - Smoke 4 (admin-notify path with patched FakeBot): outgoing Telegram payload contains `***` instead of plain key.
 - Full QA report: [logs/qa/pre-deploy-qa.md](logs/qa/pre-deploy-qa.md). JSON report: [logs/working/task-17/qa-report.json](logs/working/task-17/qa-report.json).
+
+---
+
+## Пост-деплой проверка на живом проде — 2026-08-03
+
+**Status:** Done
+**Agent:** main agent (оператор выполнил команды на сервере)
+**Метод:** `scripts/prod_check.py` против боевой базы `/root/hw-news/data/news.db`,
+только на чтение. Старые задачи пост-деплоя невыполнимы (описывают списанную
+инфраструктуру) и помечены SUPERSEDED; процедура — `work/PROD-VERIFICATION-2026-08-03.md`.
+
+**Общий срез прода на 2026-08-03 15:00 МСК:** 166 публикаций за всё время,
+24 за последние 14 дней (t-hunted 13, autoevolution 11), в очереди 3,
+в отказах 5, аварийная машина чиста.
+
+**Результат для этой фичи: РАБОТАЕТ.**
+
+- Авто-путь публикации живой и является единственным: 24 публикации за 14 дней,
+  все через LLM-транскреацию.
+- Очередь не растёт бесконтрольно — 3 статьи против порога 50. Потолок 3 поста
+  в день не является узким местом при нынешнем притоке (~1,7 поста в день).
+- Аварийная машина состояний чиста: ключа `outage_state` в `bot_state` нет,
+  залипших состояний нет.
+
+**Найденные отказы (5 записей в `failed_articles`), все с объяснением:**
+
+- **2× `APIStatusError 402 Insufficient credits` (2026-07-14)** — кончился баланс
+  OpenRouter. Ровно тот случай, ради которого 2026-07-10 сделали алерт `[E019]`;
+  оператор пополнил счёт 2026-07-15 (`work/SESSION-2026-07-15.md`). Механизм
+  сработал как задумано, но две статьи потерялись безвозвратно — они ушли в
+  `failed_articles` после трёх попыток, а не остались в очереди. **Это отличие
+  от режима hold-and-wait:** отказ биллинга классифицируется как per-article,
+  а не как API-level outage, поэтому статья выбывает, а не придерживается.
+  Кандидат на отдельную правку.
+- **1× `createPage failed: CONTENT_TOO_BIG` (2026-07-25)** — Telegraph отказался
+  принять страницу «Hot Wheels Unboxing: 10 Premium Collectibles». Подборки
+  бывают слишком большими для Telegraph. Ограничения размера на пути публикации
+  сейчас нет. **Не чинилось; известный незакрытый край.**

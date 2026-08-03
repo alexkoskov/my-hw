@@ -197,3 +197,38 @@ Review details — in JSON files via links. QA report — in logs/working/.
 - Smoke 1: `extract_fingerprint({'title':'2018 Toyota 4Runner gold chase', 'paragraphs':['Subaru Legacy GT (BP).']})` → strict `['subaru legacy gt', 'toyota 4runner']`, brands `['subaru', 'toyota']`, year 2018 absent
 - Smoke 2: identical fingerprints for "Land Rover S2" / "land rover s2 review" → `similarity = 1.0`
 - Smoke 3: `extract_fingerprint({'title':'bmwxyz123 lotus position'})` → `{'strict': [], 'brands': []}` (case-sensitivity guards active)
+
+---
+
+## Пост-деплой проверка на живом проде — 2026-08-03
+
+**Status:** Done
+**Agent:** main agent (оператор выполнил команды на сервере)
+**Метод:** `scripts/prod_check.py` против боевой базы `/root/hw-news/data/news.db`,
+только на чтение. Старые задачи пост-деплоя невыполнимы (описывают списанную
+инфраструктуру) и помечены SUPERSEDED; процедура — `work/PROD-VERIFICATION-2026-08-03.md`.
+
+**Общий срез прода на 2026-08-03 15:00 МСК:** 166 публикаций за всё время,
+24 за последние 14 дней (t-hunted 13, autoevolution 11), в очереди 3,
+в отказах 5, аварийная машина чиста.
+
+**Результат для этой фичи: РАБОТАЕТ, окно прогрето.**
+
+- **Отпечатки: 12 из 12 за последние 7 дней.** Именно семидневное окно шлюз и
+  сравнивает, так что дедуп не слепой. За всё время 94 из 166 — остаток это
+  статьи до появления фичи, на работу шлюза они не влияют.
+- Прогрев произошёл **сам**, без ручного `backfill_fingerprints.py`: окно
+  набирается за 7 дней обычной работы. Ловушка массового 403 (см.
+  `project_backfill_403_trap_selfwarm`) не понадобилась.
+- Шлюз реально срабатывает: в `bot_state` около 16 записей `softflag_pair:` —
+  отложенные на 24 ч мягкие срабатывания, преимущественно пары
+  t-hunted ↔ autoevolution, что и есть кросс-источниковый дедуп по назначению.
+- Выдано 4 токена ревью (`review_token:`) — кнопки `[E014]` доходят до оператора.
+
+**Поправка к записи Task 10.** Там значилось «prod DEFERRED, прод не тронут
+(a306e14)». Это устарело: код фичи (`model_extractor.py`,
+`backfill_fingerprints.py`) на `main` и на проде работает, что и подтверждают
+отпечатки выше.
+
+**Что НЕ проверено:** отсутствие видимых дублей в канале глазами — операторская
+проверка, базой не измеряется.
