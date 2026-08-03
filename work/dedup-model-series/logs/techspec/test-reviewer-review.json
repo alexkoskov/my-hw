@@ -1,0 +1,77 @@
+{
+  "status": "needs_improvement",
+  "summary": "Strategy has strong bones: real end-to-end integration scenarios through job() with actual state assertions (pending count, processed_news, ping codes), real extract_fingerprint/similarity in calibration, and both behaviour-reversal tests pin behaviour (state change) not implementation. The named gate branches (distinctive block, same-source block, broad flag, backstop, toggle-off, degraded) are covered, and the three over-block vectors (same-car-different-series, theme-only mainline-vs-SDCC, same-source recurring near-miss) are all present. Two major gaps remain: (1) the >=7/8 calibration bar is stale/ambiguous — it does not state that the classifier must be the new pair-tier logic (not old set-overlap similarity, which scores SDCC dupes ~0 by design) and its denominator does not match the described new fixture; (2) there is no asymmetric hard invariant preventing a silent hard-block from passing the aggregate >=7/8 budget, which is the feature's #1, unrecoverable risk (no manual re-publish). Several minors around AC2 carry-through, the AC8 both-empty branch and stale test_empty_fingerprint mock, a weak 'backstop runs' assertion, and the D-vs-B arbitration branch.",
+  "findings": [
+    {
+      "severity": "major",
+      "category": "anti_pattern",
+      "location": "Section: Testing Strategy > Calibration; work/dedup-model-series/tech-spec.md:176-180",
+      "issue": "The '>=7/8' bar is inherited verbatim from the shipped 8-pair set-overlap fixture and is under-specified for the new tiered rule in two ways. (a) It does not state that calibration must run the NEW pair-tier classifier (shares_pair + |D/|B tier), not the existing _classify(similarity(...)) at test_model_extractor.py:323-360. If it runs the old similarity classifier, the 3 SDCC pop-culture dupes have empty/thin 'strict' and score ~0 -> they classify as non-duplicate, i.e. the calibration would FAIL exactly the cases the feature exists to catch. (b) The denominator is stale: the described new fixture (3 SDCC dupes + 3 not-dupe probes) is 6 pairs, so '>=7/8' is not arithmetically evaluable; it must be restated for the new set (or the combined set with an explicit count).",
+      "recommendation": "In the Testing Strategy, state explicitly: 'Calibration runs the pair-tier verdict — for each pair compute shares_pair(extract_fingerprint(a), extract_fingerprint(b)); expected in {hard-block, soft-flag, pass}. Bar: correct >= ceil(0.875*N) over the N NEW pairs (not the old similarity fixture).' Add a dedicated harness distinct from test_calibration_accuracy so the pair-rule is measured, not the set-overlap backstop. Fix the denominator to the actual N."
+    },
+    {
+      "severity": "major",
+      "category": "missing_coverage",
+      "location": "Section: Testing Strategy > Calibration; work/dedup-model-series/tech-spec.md:176-180",
+      "issue": "There is no asymmetric must-pass invariant, so a silent hard-block can pass the aggregate >=7/8 budget. Over-block (a distinctive false-positive) is the load-bearing risk (Risks table row 1; user-spec Risk 1) because there is NO manual re-publish path — a false hard-block silently drops a real article. An aggregate accuracy bar with a 1-misclassification budget can absorb exactly this failure. The shipped fixture already recognised this need (test_calibration_real_pair_must_pass, test_model_extractor.py:363-380) but the new fixture has no analogue.",
+      "recommendation": "Add two hard invariants alongside the aggregate bar: (1) MUST-PASS — assert each of the 3 SDCC dupes yields a hard-block (any-source, incl. the same-source «mais fotos»), independent of the >=7/8 budget; (2) MUST-NOT-BLOCK — assert every not-dupe probe (theme-only mainline-vs-SDCC, same-car-different-series, same-source recurring near-miss) yields soft-flag or pass, NEVER hard-block. Assertions: shares_pair(...).any_distinctive is False for all not-dupes; is True for all 3 SDCC dupes."
+    },
+    {
+      "severity": "minor",
+      "category": "missing_coverage",
+      "location": "Section: Testing Strategy > Integration; work/dedup-model-series/tech-spec.md:167-174",
+      "issue": "AC2 (pairs/series migrate to published_articles.model_fingerprint on publish) has no test named in the Testing Strategy. code-research §6 lists extending TestFingerprintCarryThrough (test_integration.py:1339) but the tech-spec strategy omits it. The carry-through is via an opaque blob so risk is low, but a named AC should have a named assertion.",
+      "recommendation": "Add to the integration list: 'TestFingerprintCarryThrough — assert pairs and series keys survive move_to_published (AC2).' Concrete: seed pending row with pairs=['porsche 911|k-pop demon hunters|D'], call move_to_published, assert get_published(link)['model_fingerprint']['pairs'] == that list and ['series'] preserved."
+    },
+    {
+      "severity": "minor",
+      "category": "anti_pattern",
+      "location": "Section: Testing Strategy > Integration (AC8 branch); tests/test_integration.py:1240-1280",
+      "issue": "The both-empty AC8 branch (no strict AND no series -> pass, no SQL, publishes, non-null 4-key structure stored) is not explicitly named in the integration list; 'no series -> backstop runs' conflates two distinct branches (no-series-but-has-strict -> backstop, vs both-empty -> short-circuit pass). Separately, the existing test_empty_fingerprint mocks extract_fingerprint with the OLD 2-key shape return_value={'strict':[],'brands':[]} and asserts that exact dict — after the feature the real extractor returns 4 keys, so this test pins a shape the code no longer produces (stale/misleading; no longer verifies AC8's non-null structure).",
+      "recommendation": "Name a both-empty scenario in the strategy and update test_empty_fingerprint: mock/return {'strict':[],'brands':[],'series':[],'pairs':[]}; assert the pair scan is skipped (no 30-day SQL), article publishes, stored model_fingerprint is the non-null 4-key dict, and no E014/E015/E016 pings. Keep a companion 'empty strict but non-empty series' case that DOES run the pair scan (the pop-culture short-circuit fix, code-research §3.4)."
+    },
+    {
+      "severity": "minor",
+      "category": "anti_pattern",
+      "location": "Section: Testing Strategy > Integration (AC5 backstop); work/dedup-model-series/tech-spec.md:170",
+      "issue": "'Pair-rule passes ... -> 7-day set-overlap backstop runs' can pass vacuously — an assertion that the backstop merely 'runs' does not prove it produces a verdict. AC5 requires the OLD dedup to still BLOCK when the pair-rule finds nothing. Also the terminal-flag rule (code-research §3.1 pt 3: a broad soft-flag is terminal, backstop must NOT also run / must not double-ping) is not pinned.",
+      "recommendation": "Split into two positive scenarios: (a) pair-rule finds no shared pair, seeded candidate has strict-set overlap >=0.50 -> article BLOCKED via the old path (assert mark_processed + no pending row) — proves the backstop is live under composition; (b) broad-pair soft-flag -> exactly one E014, article published, and the set-overlap backstop is NOT additionally invoked (no second ping, no block)."
+    },
+    {
+      "severity": "minor",
+      "category": "missing_coverage",
+      "location": "Section: Testing Strategy > Integration (tier arbitration); work/dedup-model-series/tech-spec.md:167-174",
+      "issue": "The 'block wins over flag when a |D and a |B pair are shared in the same 30-day window' branch (code-research §3.1: scan-and-remember, D wins) has no scenario. A naive 'first shared pair wins' implementation would let a broad pair encountered earlier suppress a distinctive block -> the motivating SDCC dupe silently soft-flags (publishes) instead of hard-blocking, defeating AC3 for the primary case.",
+      "recommendation": "Add a scenario: candidate window contains one row sharing a broad |B pair and another (or the same row) sharing a distinctive |D pair with the incoming article -> assert verdict is BLOCK (E015 + mark_processed), not flag. This pins the arbitration independent of scan order."
+    },
+    {
+      "severity": "minor",
+      "category": "anti_pattern",
+      "location": "Section: Testing Strategy > Integration (reversal 2); work/dedup-model-series/tech-spec.md:174; tests/test_integration.py:1171-1232",
+      "issue": "'Flip test_within_source_not_deduped' must be a SPLIT, not a simple inversion. The current test's negative guard (same-source, high model overlap, NO series -> publishes, because the backstop is cross-source-only) protects against the 2026-06-14 F-100/Porsche brand-collision reversal being undone. If the flip only asserts the new positive (same-source + distinctive pair -> block) and drops the negative half, a regression that makes the backstop go any-source would go undetected.",
+      "recommendation": "State the split explicitly: (a) RETAIN same-source + no-series + strict overlap -> still PUBLISHES (backstop stays cross-source-only); (b) ADD same-source + shared distinctive pair -> BLOCKED (pair-rule is any-source). Both halves are required; the negative half is the reversal guard."
+    },
+    {
+      "severity": "minor",
+      "category": "missing_coverage",
+      "location": "Section: Testing Strategy > Unit (backfill) and Integration (broad rate-limit); work/dedup-model-series/tech-spec.md:165-166,170",
+      "issue": "Two smaller coverage points. (1) Backfill: the strategy names widened-select + idempotency but not that the --days 30 window (vs default 14) is honoured and that a NULL-fp row is warmed with BOTH car-fingerprint AND pairs (AC10). (2) Broad-tier E014 rate-limiting: user-spec explicitly flags 'не забыть про rate-limit широкого тира'. An existing test_soft_flag_rate_limited (test_integration.py:1115) covers the set-overlap flag path; the strategy should confirm the NEW broad-PAIR flag reuses is_pair_rate_limited (not a separate unthrottled path).",
+      "recommendation": "Backfill: add assertions that --days 30 selects a 20-day-old row a 14-day default would miss, and that a re-selected row gains both 'strict' and 'pairs'. Broad flag: add/extend a scenario asserting a second broad-pair match within the rate-limit window sends no second E014 (mark_pair_pinged reused)."
+    }
+  ],
+  "metrics": {
+    "filesReviewed": 6,
+    "litmusTest": {
+      "checked": 12,
+      "passed": 8,
+      "failed": 4
+    },
+    "coverageAssessment": "adequate",
+    "pyramidBalance": {
+      "unit": 4,
+      "integration": 7,
+      "e2e": 0,
+      "assessment": "healthy"
+    }
+  }
+}

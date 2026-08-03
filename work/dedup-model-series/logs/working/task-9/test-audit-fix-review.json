@@ -1,0 +1,69 @@
+{
+  "status": "passed",
+  "summary": "Re-review of the audit-fix for all 5 Task-9 test-audit findings (M-1, L-1, L-2, L-3, L-4). All five verified genuinely resolved, each confirmed by direct execution and/or mutation probe, not just by reading the diff. No existing assertion was weakened; no over-mocking introduced (new tests follow the same boundary-only-mock convention as the rest of the suite, or mock nothing at all). Full suite: 1244 passed (was 1241 pre-fix; +3 net new tests), matching the expected count exactly. A sixth, unrelated bundled fix (code-audit Task-7 finding 'M1' — zamac acronym case-insensitivity in model_extractor.py, not a test-audit-9 finding) rode along in the same diff; independently spot-checked and found correct with no regressions and added coverage (test_ambiguous_acronyms_stay_case_sensitive guards SDCC/RLC/STH stay strict).",
+  "findings": [],
+  "verifiedFindings": [
+    {
+      "id": "M-1",
+      "originalSeverity": "medium",
+      "claim": "test_calibration_not_dupes_never_hard_block now selects `[p for p in DUPE_PAIRS + NON_DUPE_PAIRS if not p['expected_any_distinctive']]` with a non-empty guard, directly pinning pair-1.",
+      "verdict": "confirmed_resolved",
+      "evidence": "tests/test_model_extractor.py:436-460 matches the claim verbatim; ran the selector directly — non_distinctive == ['pair-1-real-2026-06-03', 'pair-5...', 'pair-6...', 'pair-7...', 'pair-8...'] (5 pairs, pair-1 included). Mutation probe: monkeypatched SERIES_LEXICON['car culture'] tier to 'distinctive' and re-ran `_pair_tier_verdict` over the new selector — pair-1 now fails the assertion DIRECTLY (any_distinctive=True), not only via pair-7's coincidental car-culture overlap as before the fix. `pytest -k test_calibration_not_dupes_never_hard_block` passes on the real (unmutated) code."
+    },
+    {
+      "id": "L-2",
+      "originalSeverity": "low",
+      "claim": "TestSqlAudit now scans backfill_fingerprints.py in addition to pending_articles_repo.py.",
+      "verdict": "confirmed_resolved",
+      "evidence": "tests/test_pending_articles_repo.py:1292-1329 — sql_source_files = ['pending_articles_repo.py', 'backfill_fingerprints.py'], loop re-reads and re-scans both files against all forbidden_patterns per file (not a single concatenated blob, so per-file failure messages stay accurate). `pytest -k TestSqlAudit` → 1 passed, green against the real backfill_fingerprints.py source on disk."
+    },
+    {
+      "id": "L-3",
+      "originalSeverity": "low",
+      "claim": "New TestSharesPair::test_model_token_exact_match_limitation_documented pins the real model-token exact-match limitation (theme-only vs model-named companion, no shared pair).",
+      "verdict": "confirmed_resolved",
+      "evidence": "Independently ran the exact same two article bodies through the real extract_fingerprint/shares_pair outside pytest: theme_only['pairs'] == ['*|k-pop demon hunters|B'] (no '|D'), with_model['pairs'] contains 'porsche 911|k-pop demon hunters|D', shares_pair(theme_only, with_model) == (False, [], False) — byte-identical to the test's assertions. No mocking in this test; it calls the real extractor. The referenced companion test `test_connector_primary_model_degrades_to_theme_only` (test_model_extractor.py:631) does exist, so the docstring's cross-reference is accurate, not a mirage."
+    },
+    {
+      "id": "L-4",
+      "originalSeverity": "low",
+      "claim": "New TestCrossSourceDedup::test_both_empty_short_circuit_real_extraction drives a generic non-HW article through the REAL extractor (no forced extractor mock) and confirms it publishes via the both-empty short-circuit with no ping.",
+      "verdict": "confirmed_resolved",
+      "evidence": "tests/test_integration.py:1849-1904 — only fetch_full_article/fetch_rss/load_feeds/send_admin_notification are mocked (same I/O-boundary convention as every other TestCrossSourceDedup test); extract_fingerprint is NOT mocked. The test itself asserts probe.get('strict')==[] and probe.get('series')==[] against the real extractor before running job(), and a published candidate is seeded first so the no-ping assertion is non-vacuous (there is something the gate could have matched against if it hadn't short-circuited). `pytest -k test_both_empty_short_circuit_real_extraction` passes. Traced news_bot.py:1152-1159 to confirm this input path actually reaches the `if not strict and not series: return ('pass', None)` short-circuit line (pairs is empty so Rule 1 is skipped, short-circuit fires before Rule 2)."
+    },
+    {
+      "id": "L-1",
+      "originalSeverity": "low",
+      "claim": "Stale fixture comments referencing the removed test_calibration_real_pair_must_pass are refreshed with no misleading leftover.",
+      "verdict": "confirmed_resolved",
+      "evidence": "tests/fixtures/cross_source_dedup_pairs.py:140-150 and :190-206 — both comments now describe pair-1's current role (pinned by test_calibration_not_dupes_never_hard_block + the ≥7/8 aggregate) and only mention test_calibration_real_pair_must_pass in past tense ('was removed in Task 6'), which is factually correct and does not imply any current guard. Repo-wide grep confirms the only remaining hits for that identifier are (a) this one historical note inside the diff scope, and (b) planning/task docs belonging to the unrelated, already-shipped 'cross-source-dedup' feature — out of this diff's scope and not misleading in context."
+    }
+  ],
+  "additionalObservations": [
+    {
+      "note": "model_extractor.py and part of tests/test_model_extractor.py (test_zamac_acronym_dual_case renamed to test_zamac_acronym_case_insensitive, plus new test_ambiguous_acronyms_stay_case_sensitive) carry an unrelated bundled fix for code-audit Task-7 finding 'M1' (zamac acronym now matched case-insensitively). This is not one of the 5 test-audit-9 findings in scope, but since it touches an in-scope test file it was spot-checked: the flipped assertion (lowercase 'zamac' now matches) is a genuine, deliberate behavior change tied to the paired source fix, not a weakened test — coverage for the genuinely-ambiguous acronyms (SDCC/RLC/STH must stay case-sensitive) was added back as a dedicated test, so net coverage increased, not decreased. No issue found."
+    }
+  ],
+  "metrics": {
+    "filesReviewed": 4,
+    "litmusTest": {
+      "checked": 5,
+      "passed": 5,
+      "failed": 0
+    },
+    "coverageAssessment": "excellent",
+    "pyramidBalance": {
+      "unit": 60,
+      "integration": 38,
+      "e2e": 0,
+      "assessment": "healthy"
+    }
+  },
+  "testSuiteRun": {
+    "command": "python3 -m pytest -q",
+    "result": "1244 passed",
+    "expected": "~1244 passed",
+    "match": true
+  },
+  "verdict": "approve"
+}

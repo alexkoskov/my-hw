@@ -1,0 +1,27 @@
+{
+  "validator": "task-validator",
+  "batch": [11],
+  "status": "changes_required",
+  "findings": [
+    {
+      "severity": "critical",
+      "category": "decomposition",
+      "task": 11,
+      "section": "frontmatter",
+      "issue": "Task 11 has wave: 4 and depends_on: [10], but Task 10 is also in wave: 4. Per validator rule (Decomposition Quality / Dependency correctness): a task with depends_on: [X] must have wave > wave of X. With both tasks in the same wave, the orchestrator can spawn them in parallel and Task 11 may start before Task 10 (deploy) finishes — Task 11 explicitly requires the deploy timestamp from Task 10 (Step 1: '--since <deploy timestamp>') and the one-time SQL cleanup applied during Task 10 (Step 2: failed_articles count). Running them concurrently breaks the verification semantics.",
+      "fix": "Bump Task 11's wave to 5 (so it strictly follows Task 10's wave 4). Note: Task 9 (pre-deploy QA, wave 4) and Task 10 (deploy, wave 4, depends_on [9]) appear to have the same issue but are out of scope for this batch — flag separately if they also violate the rule. For Task 11 alone: change `wave: 4` to `wave: 5` in the frontmatter."
+    },
+    {
+      "severity": "minor",
+      "category": "structure",
+      "task": 11,
+      "section": "Reviewers",
+      "issue": "Reviewers section uses prose ('Нет ревьюеров (operational verification stage; результат фиксируется в decisions.md и подтверждается оператором).') instead of an explicit list with name + report path per template format. Acceptable for self-verifying QA tasks with reviewers: [], but slightly inconsistent with the template's bulleted format.",
+      "fix": "Optional. If preserving template format is desired, replace prose with: '- _none_ — operational verification stage, no review reports; outcomes recorded in decisions.md.' Otherwise leave as-is — current text is clear and frontmatter reviewers: [] is the source of truth."
+    }
+  ],
+  "stats": {
+    "tasks_checked": 1,
+    "issues_found": 2
+  }
+}

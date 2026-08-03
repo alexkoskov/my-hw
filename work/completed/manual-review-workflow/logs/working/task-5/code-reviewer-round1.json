@@ -1,0 +1,31 @@
+{
+  "reviewer": "code-reviewer",
+  "round": 1,
+  "task": "task-5 — SOURCES registry + source_name tagging",
+  "commit": "93b800419028b6bada0aee57c67be63f372c052f",
+  "mode": "inline-fallback (Task tool unavailable)",
+  "summary": "Implementation cleanly adds NETLOC_TO_SOURCE, _resolve_source_name, _fetch_rss_entries, _fetch_mattel_entries, and SOURCES per Decision 4. Named functions (not lambdas), per-feed error isolation, explicit field selection for FeedParserDict normalisation, and case-insensitive netloc lookup are all correct. One minor dead-code finding.",
+  "status": "pass-with-minor",
+  "findings": [
+    {
+      "severity": "minor",
+      "file": "news_bot.py",
+      "line": 575,
+      "description": "Module-level constant _RSS_ENTRY_FIELDS = ('link', 'title', 'published', 'summary') is defined but never referenced. The field list is already explicit in the dict literal inside _fetch_rss_entries, so the tuple is dead code — it documents intent redundantly with the surrounding comment and the dict itself.",
+      "recommendation": "Remove the _RSS_ENTRY_FIELDS tuple; the preceding comment + the explicit dict literal already document the field set. Alternatively, drive the dict construction from the tuple (item = {k: entry.get(k, '') for k in _RSS_ENTRY_FIELDS}), but that obscures the per-field default ('' vs None for link) and hurts readability. Prefer removal."
+    }
+  ],
+  "dimensions_evaluated": [
+    "architecture", "separation_of_concerns", "readability", "error_handling",
+    "type_safety", "testing", "dependencies", "security",
+    "performance", "cross_file_consistency", "resource_management"
+  ],
+  "good_practices_noted": [
+    "Named fetcher functions (not lambdas) keep stack traces readable — matches patterns.md guidance.",
+    "Per-feed try/except with continue prevents one bad feed from aborting the whole registry — matches existing job() error isolation at L431-438.",
+    "Explicit field selection avoids leaking feedparser internals (summary_detail, title_detail, links) into pending_articles JSON — matches task-file edge-case #5.",
+    "Defensive urlparse try/except in _resolve_source_name — never raises even for weird input.",
+    "WARNING log on unknown netloc includes both link and feed URL for operator triage.",
+    "NETLOC_TO_SOURCE docstring block explains Decision 4 rationale (why explicit map vs bare-netloc inference)."
+  ]
+}

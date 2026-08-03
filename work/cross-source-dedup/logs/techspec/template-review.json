@@ -1,0 +1,24 @@
+{
+  "status": "approved",
+  "findings": [
+    {
+      "severity": "minor",
+      "category": "tasks",
+      "issue": "Stale cross-reference in Agent Verification Plan. Line 331 says 'The integration test suite (Wave 2, Task 5) is the strongest pre-deploy smoke', but after the round-1 renumbering Task 5 is `backfill_fingerprints.py` — the integration tests now live in Task 4 (`Wire dedup gate in news_bot.job() + integration tests`).",
+      "fix": "Replace 'Wave 2, Task 5' with 'Wave 2, Task 4' on line 331 of tech-spec.md."
+    },
+    {
+      "severity": "minor",
+      "category": "tasks",
+      "issue": "Task 5 'Files to modify' lists only `deploy.sh` with the parenthetical 'none of the script files exist yet'. The task also creates a new top-level `backfill_fingerprints.py` and a new `tests/test_backfill_fingerprints.py`. Task 1 uses 'none (all new)' for an analogous case but its description enumerates the new files clearly; Task 5's note is ambiguous about which files are new.",
+      "fix": "Either list newly-created files explicitly (e.g. `backfill_fingerprints.py` (NEW), `tests/test_backfill_fingerprints.py` (NEW), `deploy.sh`), or rephrase the parenthetical to make 'new vs modified' obvious."
+    },
+    {
+      "severity": "minor",
+      "category": "standards",
+      "issue": "Line-number anchors survive in Architecture and Decisions sections (line 26: 'between line 1815 and line 1817'; line 201-202: 'lines 1801-1802'; Decision 5 line 128: 'at `pending_articles_repo.py:185-194`'; Decision 11 line 172: 'pending_articles_repo.py:185-194'). These live outside Implementation Tasks so they do not violate rule 8b, but they will go stale as soon as news_bot.py or pending_articles_repo.py is edited.",
+      "fix": "Optional: replace line-number anchors with symbolic anchors (function/method names, e.g. 'inside `init_schema` migration block', 'between `_is_text_only_checklist` and the `row` dict assembly in `job()`'). Already done in some places — make it consistent."
+    }
+  ],
+  "summary": "Round 2: approved. All round-1 critical and major findings resolved. Task count is 11 (5 implementation across Waves 1-2 + 3 audits + 3 final). Audit Wave correctly populated: Task 6 code-reviewing, Task 7 security-auditor, Task 8 test-master. Final Wave correctly populated: Task 9 pre-deploy-qa, Task 10 deploy-pipeline, Task 11 post-deploy-qa. Wave file-conflict check: clean — Wave 1 tasks (1: all-new model_extractor + fixture + tests; 2: pending_articles_repo.py + two test files; 3: admin_alerts.py + test_admin_alerts.py) and Wave 2 tasks (4: news_bot.py + test_integration.py; 5: deploy.sh + new backfill script + new backfill tests) have no overlapping files within either wave. Skill values all valid against the catalog; reviewers all from the standard catalog (code-reviewer, security-auditor, test-reviewer). Frontmatter valid (created 2026-06-04, status draft, branch dev, size L). All required sections present and non-empty. Three minor findings (stale Task 5→4 cross-reference, Task 5 Files-to-modify ambiguity for new files, residual line-number anchors in Architecture/Decisions) are informational and do not block approval."
+}

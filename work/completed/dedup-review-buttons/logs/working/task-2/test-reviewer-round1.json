@@ -1,0 +1,40 @@
+{
+  "reviewer": "test-reviewer",
+  "task": 2,
+  "round": 1,
+  "verdict": "approved",
+  "findings": [],
+  "notes": {
+    "commit": "3dbd896",
+    "tests_added": {
+      "tests/test_admin_alerts.py::TestDedupReviewKeyboard": [
+        "test_returns_inline_keyboard_markup",
+        "test_two_buttons_callback_data",
+        "test_button_labels",
+        "test_callback_data_under_64_bytes"
+      ],
+      "tests/test_admin_ping.py::TestReplyMarkupForwarding": [
+        "test_reply_markup_forwarded_when_passed",
+        "test_send_unchanged_when_omitted",
+        "test_reply_markup_is_keyword_only"
+      ]
+    },
+    "tdd_anchor_coverage": "all 7 anchors from task 2 present with matching names and matching assertions",
+    "commands_run": [
+      "python3 -m pytest tests/test_admin_alerts.py tests/test_admin_ping.py -q -> 89 passed",
+      "python3 -m pytest -q (full suite) -> 1299 passed, no regressions",
+      "python3 -m pytest tests/test_no_token_leak_in_logs.py -q -> 48 passed (TestAdminNotifyRedaction untouched and green)"
+    ],
+    "quality_checks": [
+      "Button order asserted exactly: flat callback_data list == ['dd:c:tok','dd:k:tok'], and labels checked positionally (texts[0]/texts[1]) — not just membership.",
+      "64-byte check uses a real secrets.token_urlsafe(9) token (as Task 3 will actually mint), not a synthetic fixed string — meaningful real-world assertion.",
+      "Keyword-only contract verified via pytest.raises(TypeError) on positional call — protects existing positional callers per task requirement.",
+      "Omitted-param test asserts both reply_markup is None AND text is unchanged, confirming byte-for-byte equivalent behavior, not just 'no crash'.",
+      "Forwarded-param test uses a sentinel object() and asserts identity ('is kb'), proving verbatim forwarding rather than a stringified/copied value.",
+      "AsyncMock used correctly for the awaited bot.send_message inside asyncio.run (matches existing TestAdminNotifyRedaction pattern) — avoids the vacuous-pass risk of a plain Mock.",
+      "alert_cross_source_dupe text/anchor 'Похож на дубль' untouched by the diff.",
+      "No excessive mocking: only Bot/credentials faked (project-standard pattern), consistent with unit-test scope.",
+      "No redundant tests: callback_data and label assertions cover distinct aspects; no unjustified duplication across the two test classes."
+    ]
+  }
+}

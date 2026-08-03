@@ -1,0 +1,69 @@
+{
+  "validator": "reality-checker",
+  "batch": [19],
+  "iteration": 1,
+  "status": "changes_required",
+  "findings": [
+    {
+      "severity": "critical",
+      "category": "missing_file",
+      "task": 19,
+      "issue": "Pre-deploy QA report filename mismatch. Task 19 step 2 and Context Files section reference 'logs/qa/pre-deploy-qa-report.md' as the Task 17 output to read. But Task 17 (pre-deploy-qa.md) specifies its artifact as 'logs/qa/pre-deploy-qa.md'. These are different filenames. At execution time, the agent will look for 'pre-deploy-qa-report.md', find nothing, and be unable to pick up deferred ACs from Task 17.",
+      "fix": "Change all occurrences of 'logs/qa/pre-deploy-qa-report.md' in Task 19 to 'logs/qa/pre-deploy-qa.md' to match the actual output filename specified in Task 17. Affected lines: step 2 ('Прочитать отчёт Task 17 (logs/qa/pre-deploy-qa-report.md...') and Context Files section ('logs/qa/pre-deploy-qa-report.md (если присутствует)')."
+    },
+    {
+      "severity": "major",
+      "category": "hallucination",
+      "task": 19,
+      "issue": "Smoke commands hardcode VPS path '/opt/hw-news/' (e.g. 'sqlite3 /opt/hw-news/data/news.db', 'cat /opt/hw-news/.env'). Deployment.md documents the deploy path as configurable via DEPLOY_PATH env var with default '/home/user/bot'. There is no '/opt/hw-news/' path documented anywhere in deployment.md, deploy.sh, or any project-knowledge file. These commands will fail if the operator's actual DEPLOY_PATH differs from this hardcoded guess.",
+      "fix": "Replace hardcoded '/opt/hw-news/' with '$DEPLOY_PATH' placeholder or instruct the agent to obtain the actual DEPLOY_PATH from the operator at step 3 ('Подтвердить через оператора...') and substitute it into all subsequent SSH commands. E.g., 'sqlite3 $DEPLOY_PATH/news.db' not 'sqlite3 /opt/hw-news/data/news.db'."
+    },
+    {
+      "severity": "major",
+      "category": "hallucination",
+      "task": 19,
+      "issue": "Smoke commands reference the database path as '/opt/hw-news/data/news.db' with a '/data/' subdirectory. Per deployment.md and the actual codebase (news.db is at the project root), the database lives directly in DEPLOY_PATH (e.g. '/home/user/bot/news.db'), not in a '/data/' subdirectory. No '/data/' subdirectory is mentioned anywhere in the project's deployment documentation or code.",
+      "fix": "Change all smoke command DB paths from '/opt/hw-news/data/news.db' to '$DEPLOY_PATH/news.db'. There are 3 occurrences in the Smoke section (steps for cron tick, first publication, and 24-hour observation)."
+    },
+    {
+      "severity": "major",
+      "category": "hallucination",
+      "task": 19,
+      "issue": "Smoke step uses 'journalctl -u hw-news-bot' and 'systemctl status hw-news-bot'. The service name 'hw-news-bot' does not appear in deployment.md, architecture.md, patterns.md, or any other project-knowledge file. The actual systemd service name is operator-defined and not documented. Using an invented service name will cause these commands to return 'Unit hw-news-bot.service not found'.",
+      "fix": "Replace hardcoded 'hw-news-bot' with a placeholder like '<service-name>' and add a note in step 4 (pre-tick preparation) instructing the agent to ask the operator for the actual systemd unit name (e.g., 'systemctl list-units --type=service | grep news') before running journalctl commands."
+    },
+    {
+      "severity": "major",
+      "category": "hallucination",
+      "task": 19,
+      "issue": "Step 6 says 'journalctl/docker logs контейнера' and smoke step 89 says 'systemctl status hw-news-bot || docker ps | grep hw-news'. Deployment.md explicitly states 'no container orchestration' and describes a systemd-managed long-running Python process, not Docker containers. The 'docker ps | grep hw-news' fallback and 'docker logs' reference are not applicable to this deployment model.",
+      "fix": "Remove all Docker references ('docker ps | grep hw-news', 'docker logs'). The deployment model is systemd only. Step 6 should read 'journalctl -u <service-name> ...' without the docker alternative. Step 89 should be 'systemctl status <service-name>' only."
+    },
+    {
+      "severity": "minor",
+      "category": "feasibility",
+      "task": 19,
+      "issue": "Context Files section lists project.md, architecture.md, deployment.md, and ux-guidelines.md with paths like '~/.claude/skills/project-knowledge/deployment.md' (missing '/references/' subdirectory). The actual files are in '~/.claude/skills/project-knowledge/references/deployment.md' etc. Task 17 (same wave) correctly references these with '/references/' in the path. An agent following the links as written would navigate to the wrong location.",
+      "fix": "Add '/references/' to all four affected context file paths: '~/.claude/skills/project-knowledge/references/project.md', '~/.claude/skills/project-knowledge/references/architecture.md', '~/.claude/skills/project-knowledge/references/deployment.md', '~/.claude/skills/project-knowledge/references/ux-guidelines.md'. See Task 17 context files for the correct pattern."
+    },
+    {
+      "severity": "minor",
+      "category": "hints",
+      "task": 19,
+      "issue": "Smoke step 90 ('ssh <vps> \"cat /opt/hw-news/.env | grep -E 'ANTHROPIC_MODEL|TZ='\"') outputs the values of ANTHROPIC_MODEL and TZ environment variables. The same step's note says 'значения не выводить в отчёт открытым текстом'. The command contradicts the note: it pipes the .env file through grep which prints KEY=VALUE lines including the values. While ANTHROPIC_MODEL and TZ are not secrets, the inconsistency between the command and the instruction creates confusion. Task 18 comparison: it explicitly uses 'sed \"s/=.*/=***/\"' to mask values before viewing.",
+      "fix": "Align the command with the stated guidance. Either: (a) add '| sed \"s/=.*/=***/\"' to mask the values (matching Task 18 pattern), or (b) remove the note about not displaying values if the values are indeed safe to display. Recommend option (a) for consistency with Task 18 security guidance."
+    },
+    {
+      "severity": "minor",
+      "category": "feasibility",
+      "task": 19,
+      "issue": "The task requires loading '/skill:post-deploy-qa' but that skill's SKILL.md specifies JSON as the output format ('Return findings as JSON'). Task 19's artifact, however, is a markdown report ('logs/qa/post-deploy-verification.md'). The skill's output contract (JSON) and the task's artifact contract (markdown) are inconsistent. The agent would need to reconcile these — either produce JSON and convert to markdown, or ignore the skill's output format guidance.",
+      "fix": "Add an explicit note in the task (or in the skill loading instruction) that for this task the output format is markdown (per AC and Details section), not the JSON format defined in the skill's generic output specification. The skill should be used for its methodology, but the output artifact is the markdown report as specified in 'Details'."
+    }
+  ],
+  "stats": {
+    "tasks_checked": 1,
+    "claims_verified": 32,
+    "issues_found": 8
+  }
+}

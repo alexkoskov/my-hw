@@ -1,0 +1,77 @@
+{
+  "validator": "reality-checker",
+  "batch": [1, 2, 3],
+  "status": "approved",
+  "findings": [
+    {
+      "severity": "minor",
+      "category": "feasibility",
+      "task": 1,
+      "issue": "Task 1 says 'Verify-smoke: python3 -m py_compile orangetrack_source.py succeeds' but also says to run pytest tests/test_orangetrack_source.py beforehand. The existing test at line 153-154 asserts `assert 'heading' not in types` for SAMPLE_WITH_H5_HTML. Verified safe: SAMPLE_WITH_H5_HTML (lines 49-55) contains ONLY <h5> tags, and Task 1 preserves h5 as paragraph — so the assertion stays true. No conflict. Documented here for awareness.",
+      "fix": "No action required. Existing test is safe after Task 1 changes because SAMPLE_WITH_H5_HTML has no h2/h3/h4 tags."
+    },
+    {
+      "severity": "minor",
+      "category": "hints",
+      "task": 1,
+      "issue": "Task 1 Details section says 'handled_tags' is defined 'inside _parse_content_encoded' rядом с _walk — verified correct (line 460). But task says 'Добавить \"li\" в handled_tags' as an option, and also says walker uses fallback `if name not in handled_tags: _walk(child)`. However ul/ol are NOT in handled_tags currently, so they already get recursed into via the fallback. Adding 'li' to handled_tags would cause the new explicit `name == 'li'` branch to be checked BEFORE the fallback — this is actually required for the new branch to work as intended. The task should make explicit that adding 'li' to handled_tags is mandatory (not optional 'для явности') because without adding 'li' to handled_tags, the `if name not in handled_tags: _walk(child)` fallback would still recurse INTO the <li> instead of letting the new `name == 'li'` branch trigger. Wait — actually the walk loop checks explicit branches before reaching the fallback `if name not in handled_tags`, so the branch order matters. Re-reading _walk: branches are checked sequentially: name=='p', name in ('h2','h3','h4'), name=='h5', name in ('h1','h6'), name=='figure', name=='img', name=='iframe', THEN the fallback. As long as `name == 'li'` branch is added BEFORE the fallback check, it will fire correctly regardless of handled_tags. The handled_tags update is truly optional/cosmetic. Task hint calling it optional is accurate but could be clarified.",
+      "fix": "Clarify in task that adding 'li' to handled_tags is cosmetic only — the new explicit branch must be placed before the fallback `if name not in handled_tags` check, which is the key requirement."
+    },
+    {
+      "severity": "minor",
+      "category": "hints",
+      "task": 3,
+      "issue": "Discrepancy in bullet-stripping lstrip pattern between tech-spec and Task 3. Tech-spec Decision 10 (line 138) specifies `block.text.lstrip(\" ••\\t\")` (two bullet chars '•' and '•', tab). Task 3 'What to do' step 3 (line 60) specifies `raw.lstrip(\" •\\t\\n\")` (one bullet char, plus newline '\\n'). Minor difference: Task 3 adds \\n to the strip set but uses only one bullet character. The tech-spec uses two bullet characters (U+2022 and U+2022 — or possibly different Unicode bullets). The implementation hint in Task 3 (line 151) notes 'the • in lstrip arg is a single Unicode bullet (U+2022)' which implies one character is correct. The double-bullet in the tech-spec appears to be a copy/display artifact. But the \\n difference is real: Task 3 strips newlines, tech-spec does not mention it.",
+      "fix": "Confirm which is authoritative: if the LLM can return \\n before the bullet, include \\n. Align tech-spec Decision 10 lstrip pattern with Task 3's implementation or vice versa. Low risk since both cover the primary case (leading '• ')."
+    },
+    {
+      "severity": "minor",
+      "category": "feasibility",
+      "task": 3,
+      "issue": "Task 3 Details (line 133) says `_build_content_from_blocks` at 'line 114-186: paragraph branch line 172-173'. Verified: _build_content_from_blocks is at line 114 (correct), paragraph branch is at line 172 (`if t == 'paragraph':`), heading branch at line 176 (correct), no list_item branch (correct — to be added). Line numbers match actual code.",
+      "fix": "No action required."
+    },
+    {
+      "severity": "minor",
+      "category": "feasibility",
+      "task": 3,
+      "issue": "Task 3 Details (line 132) states 'Lines 17-20 have stdlib imports; needs `from urllib.parse import urlparse` added.' Verified: current imports at lines 17-20 are json, logging, os, typing. `urlparse` is NOT currently imported. The task correctly identifies this needed import. Task 3 explicitly calls it out in Details. However the 'What to do' steps (1-5) do not include an explicit step to add the import — it is only mentioned in Details. Implementers focused on 'What to do' steps might miss it.",
+      "fix": "Minor: add 'add `from urllib.parse import urlparse` to imports' as step 0 or a sub-bullet in step 1 of 'What to do'."
+    },
+    {
+      "severity": "minor",
+      "category": "feasibility",
+      "task": 3,
+      "issue": "Task 3 smoke check (line 126) calls `_is_same_site('https://www.orangetrackdiecast.com/x', 'orangetrackdiecast.com')` — passing a bare netloc (no scheme) as the second argument `source_netloc`. But the `_render_paragraph_with_runs` helper is documented (step 2) to pass `source_netloc` computed via `urlparse(source_url).netloc`. When `source_url` is a well-formed URL, `urlparse(source_url).netloc` returns the host without scheme (e.g., 'orangetrackdiecast.com'). The smoke test is therefore internally consistent with the API contract. However the smoke test does not test the `removeprefix` www-normalization in the comparison step (second arg already lacks 'www.'). Non-blocking.",
+      "fix": "No action required; smoke test is valid. Consider adding a www-normalized variant to the smoke check for completeness."
+    }
+  ],
+  "stats": {
+    "tasks_checked": 3,
+    "claims_verified": 31,
+    "issues_found": 6
+  },
+  "line_ref_verification": {
+    "_walk": {"claimed": 484, "actual": 484, "match": true},
+    "_emit_heading": {"claimed": 415, "actual": 415, "match": true},
+    "_runs_from_tag": {"claimed": 246, "actual": 246, "match": true},
+    "paragraphs_flat": {"claimed": "575-577", "actual": "575-577", "match": true},
+    "_PATCHED_TEXT_BLOCK_TYPES": {"claimed": 106, "actual": 106, "match": true},
+    "_build_content_from_blocks": {"claimed": 114, "actual": 114, "match": true},
+    "preview_nodes": {"claimed": 253, "actual": 253, "match": true},
+    "heading_closure": {"claimed": "145-147", "actual": "145-147", "match": true}
+  },
+  "wave1_file_conflict_check": {
+    "task_1_file": "orangetrack_source.py",
+    "task_2_file": "_llm_common.py",
+    "task_3_file": "telegraph_publisher.py",
+    "conflicts": "none — all three tasks modify different source files"
+  },
+  "decision_refs_check": {
+    "task_1_cites": ["1", "2", "3", "8"],
+    "task_2_cites": ["1"],
+    "task_3_cites": ["1", "4", "5", "7", "9", "10"],
+    "all_decisions_exist_in_tech_spec": true,
+    "note": "Tech-spec has Decisions 1-10; all cited decisions exist and are correctly attributed"
+  }
+}

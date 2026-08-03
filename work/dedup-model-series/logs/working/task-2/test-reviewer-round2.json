@@ -1,0 +1,41 @@
+{
+  "status": "passed",
+  "summary": "All three round-1 findings are genuinely resolved, verified via mutation testing (not just assertion reading): (1) sort-determinism test now feeds pairs in reverse order and pins relative position via assertLess on msg.index(...) — reverting sorted() to insertion order makes it fail (179 not less than 156). (2) None/empty fallback: alert_cross_source_blocked/alert_cross_source_dupe now guard the match_block on `overlap_pct is not None`, and two new tests cover both the omitted-kwarg and pairs=[] forms with assertNotIn('None%'/'None'); reverting the guard reproduces the exact forbidden 'Совпадение: None%' output and fails the test. (3) A real (non-sentinel) token 'model_x|series*name' is now asserted to pass through unescaped ('model_x + series*name'), with assertNotIn('\\\\_')/assertNotIn('\\\\*'); introducing escaping in _render_pair breaks the test. No assertions were weakened or removed elsewhere (diff is purely additive in the test file — all + lines), the three original pinned tests (test_e014_cross_source_dupe, test_e015_cross_source_blocked, test_all_alerts_have_unique_codes) are untouched and still pass, and there is no mocking anywhere (pure string-builder unit tests, correct test type, healthy pyramid). Full suite: 39/39 passed.",
+  "findings": [],
+  "metrics": {
+    "filesReviewed": 2,
+    "litmusTest": {
+      "checked": 8,
+      "passed": 8,
+      "failed": 0
+    },
+    "coverageAssessment": "adequate",
+    "pyramidBalance": {
+      "unit": 5,
+      "integration": 0,
+      "e2e": 0,
+      "assessment": "healthy"
+    }
+  },
+  "round1FindingsResolution": [
+    {
+      "round1Finding": "Multi-pair sort-determinism test used already-sorted input order, so sorted() was a no-op and the test couldn't distinguish sorted from insertion order.",
+      "location": "tests/test_admin_alerts.py:342 (test_e015_blocked_renders_matched_pairs)",
+      "status": "resolved",
+      "verification": "Test now passes pairs in reverse (toyota before porsche) and asserts assertLess(msg.index('porsche...'), msg.index('toyota...')). Empirically reverted _render_pairs_block's sorted(pairs) to plain pairs (insertion order) and reran: test fails with 'AssertionError: 179 not less than 156' — confirms the sort is now genuinely pinned. Restored the code afterward and reconfirmed full suite green."
+    },
+    {
+      "round1Finding": "No test covered the None/empty optional-arg fallback; the implementation leaked literal 'Совпадение: None%' (E015) and 'Совпадение моделей: None% (None/None)' (E014) when both new pairs and legacy overlap params were absent.",
+      "location": "tests/test_admin_alerts.py:381 (E015) and :398 (E014); admin_alerts.py alert_cross_source_blocked/alert_cross_source_dupe",
+      "status": "resolved",
+      "verification": "Code now builds match_block only when pairs is truthy or overlap_pct is not None, else renders an empty string (comments explicitly call out the None%-avoidance intent). New tests loop over both {} and {pairs: []} kwargs and assert assertNotIn('None%', msg) / assertNotIn('None', msg) / assertNotIn('None/None', msg). Empirically reverted the overlap_pct-is-not-None guard for E015 back to the old unconditional f'Совпадение: {overlap_pct}%' and reran: test fails, reproducing the exact old forbidden output 'Совпадение: None%'. Confirms genuine regression coverage, not just a superficial passing test."
+    },
+    {
+      "round1Finding": "No test exercised '_' or '*' inside a real (non-sentinel) model/series token to prove no markdown escaping is introduced.",
+      "location": "tests/test_admin_alerts.py:415 (test_e015_pair_tokens_with_underscore_and_asterisk_not_escaped)",
+      "status": "resolved",
+      "verification": "Test uses pairs=['model_x|series*name|D'] (a real token, distinct from the theme-only '*' sentinel) and asserts the decoded substring 'model_x + series*name' appears verbatim plus assertNotIn('\\\\_')/assertNotIn('\\\\*'). Empirically added escaping (replace '_' -> '\\\\_', '*' -> '\\\\*') into _render_pair and reran: test fails ('model_x + series*name' not found; actual output was 'model\\\\_x + series\\\\*name'). Confirms the test would catch escaping regressions."
+    }
+  ],
+  "verdict": "approve"
+}

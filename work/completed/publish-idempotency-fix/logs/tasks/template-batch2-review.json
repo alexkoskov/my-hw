@@ -1,0 +1,91 @@
+{
+  "validator": "task-validator",
+  "batch": [6, 7, 8, 9, 10],
+  "status": "changes_required",
+  "findings": [
+    {
+      "severity": "critical",
+      "category": "decomposition",
+      "task": 10,
+      "section": "frontmatter",
+      "issue": "Task 10 has wave: 4 and depends_on: [9], but Task 9 also has wave: 4. A task with depends_on:[X] must have wave > wave of task X. Tech-spec puts both in 'Final Wave' but they have a sequential dependency (Pre-deploy QA must finish before Deploy). Same wave with sequential dependency creates a deadlock for parallel execution and violates dependency-correctness invariant.",
+      "fix": "Set Task 10 wave to 5 (and Task 11 wave to 6 if applicable). Update tech-spec Implementation Tasks section to split 'Final Wave' into separate waves: Wave 4 (Pre-deploy QA), Wave 5 (Deploy), Wave 6 (Post-deploy verification)."
+    },
+    {
+      "severity": "critical",
+      "category": "content",
+      "task": 7,
+      "section": "Context Files",
+      "issue": "Three project-knowledge paths are broken — files do not exist at the linked locations. Task 7 references `../../../.claude/skills/project-knowledge/project.md`, `.../architecture.md`, `.../patterns.md` but these files live under `references/` subdirectory: `../../../.claude/skills/project-knowledge/references/project.md` (etc.). Verified by listing the PK directory: top level only contains SKILL.md and references/. Same task correctly links deployment.md with `references/` segment, so the inconsistency is a typo/copy-paste error.",
+      "fix": "Replace the three broken links with correct paths that include `references/` segment: `../../../.claude/skills/project-knowledge/references/project.md`, `.../references/architecture.md`, `.../references/patterns.md`."
+    },
+    {
+      "severity": "critical",
+      "category": "content",
+      "task": 10,
+      "section": "Context Files",
+      "issue": "Three project-knowledge paths use only `../../` (2 levels up), which from `work/publish-idempotency-fix/tasks/10.md` resolves to `work/.claude/...` — that directory does not exist. Correct relative path from a task file to repo-root `.claude/` is `../../../` (3 levels up). Affected lines: `[project.md](../../.claude/skills/project-knowledge/references/project.md)`, `[architecture.md](../../.claude/skills/project-knowledge/references/architecture.md)`, `[deployment.md](../../.claude/skills/project-knowledge/references/deployment.md)`.",
+      "fix": "Replace `../../.claude/...` with `../../../.claude/...` for all three PK links in Task 10's Context Files."
+    },
+    {
+      "severity": "major",
+      "category": "consistency",
+      "task": 10,
+      "section": "frontmatter",
+      "issue": "Frontmatter `verify: []` does not match the body. Verification Steps section contains both `### Smoke` (gh run list checks) and `### User` (operator confirmations on test channel and SQL DELETE result). Per template, `verify` field should reflect the verification subsections present in the body.",
+      "fix": "Set `verify: [smoke, user]` in frontmatter to match the Smoke + User subsections actually present."
+    },
+    {
+      "severity": "minor",
+      "category": "consistency",
+      "task": 6,
+      "section": "frontmatter",
+      "issue": "Frontmatter `verify: []` but body contains `### Smoke` subsection with concrete checks (file exists, contains decision sections, verdict unambiguous). Inconsistency between frontmatter and body.",
+      "fix": "Either set `verify: [smoke]` in frontmatter to reflect the Smoke subsection, or relabel the smoke checks as part of Acceptance Criteria / Automated and remove the `### Smoke` heading. Smoke subsection content here describes deliverable presence (file exists), which is more an AC than a smoke check — choose one representation."
+    },
+    {
+      "severity": "minor",
+      "category": "content",
+      "task": 6,
+      "section": "Context Files",
+      "issue": "Code files at the bottom of Context Files are listed as plain text bullets (`- news_bot.py — guard block ...`) rather than markdown links. Template requires all Context Files entries to be markdown links `[name](path)`.",
+      "fix": "Convert plain-text code-file bullets to markdown links: `- [news_bot.py](../../../news_bot.py) — guard block ~lines 985–1003 (post-Task 1)` and similarly for `pending_articles_repo.py`."
+    },
+    {
+      "severity": "minor",
+      "category": "content",
+      "task": 7,
+      "section": "Context Files",
+      "issue": "Source files at the bottom are listed as nested plain-text bullets under `- Source files (read-only):` without markdown links. Template requires markdown link format for all paths.",
+      "fix": "Convert source-file bullets to markdown links pointing to repo-root files: `- [news_bot.py](../../../news_bot.py)` and `- [pending_articles_repo.py](../../../pending_articles_repo.py)`."
+    },
+    {
+      "severity": "minor",
+      "category": "content",
+      "task": 10,
+      "section": "Context Files",
+      "issue": "Workflow and script files (`.github/workflows/ci.yml`, `deploy_test.yml`, `deploy.yml`, `deploy.sh`) are listed as plain-text bullets (with backticks) rather than markdown links. Template requires markdown link format.",
+      "fix": "Convert to markdown links: `- [ci.yml](../../../.github/workflows/ci.yml)`, `- [deploy_test.yml](../../../.github/workflows/deploy_test.yml)`, `- [deploy.yml](../../../.github/workflows/deploy.yml)`, `- [deploy.sh](../../../deploy.sh)`."
+    },
+    {
+      "severity": "minor",
+      "category": "structure",
+      "task": 9,
+      "section": "Verification Steps",
+      "issue": "Section uses only `### Automated` subsection without Smoke/User. For a non-code QA task, this is acceptable per template note ('adapt sections to match task nature'), but the Automated commands here are the entire verification surface — consistent with `verify: []`. No fix required, listed for awareness; accepted.",
+      "fix": "No fix required — current shape matches a pre-deploy QA task that runs only automated checks. This finding is informational."
+    },
+    {
+      "severity": "minor",
+      "category": "structure",
+      "task": 6,
+      "section": "Reviewers",
+      "issue": "Reviewers section contains a prose paragraph instead of a bulleted list. Frontmatter `reviewers: []` permits empty list, and the prose explains why. Acceptable but inconsistent with template format which expects a bullet list (even if zero items, an explicit short note like `- (no reviewers — audit task is itself the review deliverable)` matches template style better).",
+      "fix": "Optional: replace the prose paragraph with a single explicit bullet: `- (none — audit task; report goes to logs/working/wave-3-code-audit.md)`. Same suggestion applies to Tasks 7, 8, 9, 10. Cosmetic only."
+    }
+  ],
+  "stats": {
+    "tasks_checked": 5,
+    "issues_found": 10
+  }
+}

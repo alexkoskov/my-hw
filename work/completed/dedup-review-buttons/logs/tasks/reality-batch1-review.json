@@ -1,0 +1,40 @@
+{
+  "validator": "reality-checker",
+  "batch": [1, 2, 3],
+  "status": "approved",
+  "findings": [
+    {
+      "severity": "major",
+      "category": "tdd",
+      "task": 1,
+      "issue": "Adding `conn.execute(\"PRAGMA busy_timeout = 5000;\")` inside `pending_articles_repo._connect()` silently shifts the execute()-call index used by the existing fault-injection test `tests/test_pending_articles_repo.py::...::test_move_to_published_rollback_on_error` (lines ~700-766). That test wraps `sqlite3.connect` in a `WrappingConn` that counts `execute()` calls and raises `sqlite3.OperationalError` on call #3, with a comment documenting the exact sequence (1=SELECT, 2=INSERT published_articles, 3=INSERT OR IGNORE processed_news, 4=DELETE). Once `_connect()` issues the PRAGMA as the first execute() on that same wrapped connection, the count shifts by one: call #3 becomes the `INSERT INTO published_articles` itself instead of the `processed_news` insert. The test's final assertions (pending present, published/processed_news empty) still happen to hold either way, so `pytest -q` will very likely stay green, but the test silently stops exercising its documented scenario (rollback of an already-succeeded in-transaction published_articles write) and its inline comment becomes inaccurate. Task 1's acceptance criteria (\"весь существующий набор pytest зелёный\") will be satisfied without anyone noticing the coverage drift.",
+      "fix": "Call out this test explicitly in Task 1's What-to-do/Edge-cases: after adding the PRAGMA, run `test_move_to_published_rollback_on_error` and either bump the WrappingConn's raise-count to 4 (to keep raising at the same logical step: after published_articles insert, before processed_news) and update its comment, or add an assertion note confirming the intended step is still the one under test."
+    },
+    {
+      "severity": "major",
+      "category": "hints",
+      "task": 1,
+      "issue": "The 'Implementation hints' / 'Details' sections give near-complete, copy-pasteable code rather than a pointer to a pattern: for busy_timeout, \"conn = sqlite3.connect(...); conn.execute(\\\"PRAGMA busy_timeout = 5000;\\\"); return conn\" (verbatim, matches `outage_state._connect` line-for-line); for the three bot_state helpers, the exact SQL bodies \"INSERT OR REPLACE INTO bot_state (key, value) VALUES (?, ?)\" and \"DELETE FROM bot_state WHERE key=?\" are spelled out. Per the review checklist, implementation hints containing code blocks with full logic should be pattern references, not the solution itself.",
+      "fix": "Trim the hints to \"mirror outage_state._connect / _get / _set\" plus the file:line pointers already given, and let the implementer write the three lines/SQL themselves. (Mitigating factor: tech-spec Decision 4 explicitly calls for byte-for-byte parity with the outage_state pattern, which is the likely reason for the literalness — a human reviewer may choose to accept this as-is.)"
+    },
+    {
+      "severity": "minor",
+      "category": "hints",
+      "task": 2,
+      "issue": "Details section spells out the exact one-line edit (\"добавь reply_markup=reply_markup в bot.send_message(...)\") and the exact f-string form for callback_data (\"f\\\"dd:c:{token}\\\" / f\\\"dd:k:{token}\\\"\") rather than describing the change at a higher level. Lower impact than Task 1's finding since this is single-line glue code, not a multi-line algorithm.",
+      "fix": "Optional: could be phrased as \"forward the new keyword param through to bot.send_message, matching the existing kwarg-forwarding style\" without giving the literal line. Low priority to fix."
+    },
+    {
+      "severity": "minor",
+      "category": "feasibility",
+      "task": 1,
+      "issue": "Task references the bot_state-helper section location as \"~строки 920-1008\" (also in Files: \"~L920-1008\"). Actual file is 1007 lines total and the relevant section (comment header \"Cross-source dedup rate-limit helpers...\" through the last helper `mark_dedup_degraded_pinged`) spans lines 898-1007. The referenced range slightly overshoots file length and starts ~20 lines later than the actual section header. Non-blocking (prefixed with \"~\", and Grep/an editor will find the right spot regardless).",
+      "fix": "Update the reference to ~L898-1007 for precision, though not required for successful implementation."
+    }
+  ],
+  "stats": {
+    "tasks_checked": 3,
+    "claims_verified": 34,
+    "issues_found": 4
+  }
+}

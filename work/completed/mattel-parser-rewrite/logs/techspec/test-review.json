@@ -1,0 +1,35 @@
+{
+  "status": "passed",
+  "summary": "Round-2 closes all three round-1 major findings. AC3 silent-zero contract is now locked by test_listing_with_no_hotwheels_returns_empty_without_notifier (TestFetchMattelNews) — the highest-priority gap (the very behavior that motivated this rewrite) is covered. AC7 url-fallback is locked by test_article_falls_back_to_url_field_when_handle_mismatch (TestFetchMattelArticle). AC6 dict-form excerpt is locked by test_dict_form_excerpt_extracts_text_field (TestFetchMattelArticle). New TestSsrfGuard class adds explicit ES10 coverage with the sanitised-message-no-link-echo assertion (closes a Decision-8 security AC that previously had no test). Test inventory now sums consistently across most locations: line 24 Architecture (15 keep + 11 update + 6 new = 32), line 273 AC (32), code-research §11.7 (29 — slightly stale but acceptable since it predates the +3 round-2 additions). Pyramid stays healthy at 32 unit + 3 integration + 0 E2E (E2E correctly absent — pure backend parser, no DB/API/UI surface, live network is flaky). All ES1–ES10 from the inline error matrix have a corresponding test, and AC1–AC13 from user-spec all have at least one mapped test. Two minor residual issues remain: (1) §Testing Strategy line 186 header text 'after the rewrite (15 keep + 11 update + 3 new)' was not updated and still says 29 — internal inconsistency with the corrected line 24 and AC line 273; this is the same anti-pattern flagged in round-1, just relocated. (2) AC7's two-stage fallback has only the success branch covered explicitly — the 'handle-fails-AND-url-fails' branch is exercised by test_article_entry_not_found_returns_none_with_readable_error which was already in the inventory pre-round-2, but the test description doesn't assert that BOTH lookups were attempted (it just asserts None+notifier on a missing entry). Not a blocker — the union of tests covers AC7 — but a defensive hardening opportunity.",
+  "findings": [
+    {
+      "severity": "minor",
+      "category": "anti_pattern",
+      "location": "tech-spec.md §Testing Strategy line 186 vs §Architecture line 24 vs §Acceptance Criteria line 273",
+      "issue": "Internal test-count inconsistency NOT fully resolved between rounds. Round-1 flagged that line 24 said '10 keep' instead of '15 keep'. Round-2 fixed line 24 (now '15 keep + 11 update + 6 new' = 32) and line 273 ('32 ... 15 keep + 11 update + 6 new'), but the Testing Strategy section header on line 186 still reads '29 tests after the rewrite (15 keep + 11 update + 3 new)' — it should now say '32 tests after the rewrite (15 keep + 11 update + 6 new)' to reflect the three round-2 additions (test_listing_with_no_hotwheels_returns_empty_without_notifier + test_article_falls_back_to_url_field_when_handle_mismatch + test_dict_form_excerpt_extracts_text_field) plus the TestSsrfGuard test. The implementer reading top-down through §Testing Strategy first will see '29' and may stop short of 32.",
+      "recommendation": "Edit tech-spec.md line 186 from '29 tests after the rewrite (15 keep + 11 update + 3 new)' to '32 tests after the rewrite (15 keep + 11 update + 6 new)'. Verify the figure is consistent: line 24 (32 / 6 new), line 186 (now to be updated to 32 / 6 new), line 273 (32 / 6 new). Optional: cross-reference code-research §11.7 which was written before round-2 and shows 29 — either update it to 32 or add a footnote 'Round-2 added 3 tests; see tech-spec for current count.' Note: the SSRF test on line 203 ('TestSsrfGuard (1 NEW for ES10)') is technically the 4th 'new' if counted by source — round-1 review treated it as part of the +3 because it was added as one of the 3 new tests in code-research §11.7. The +6 figure on line 24/273 is consistent if SSRF + multi-chunk + body-absent + truncated-body + AC3 + AC6-dict + AC7-fallback is decomposed as (3 from §11.7 + 3 new round-2 = 6); double-check the decomposition before merging."
+    },
+    {
+      "severity": "minor",
+      "category": "missing_coverage",
+      "location": "Section: Testing Strategy → TestFetchMattelArticle; AC7 (handle-AND-url both fail branch)",
+      "issue": "AC7 third case ('entry с заданным handle/url не найден') has two sub-branches in the implementation per Architecture line 42: (a) handle matches → succeed, (b) handle fails BUT url matches → succeed via fallback (now covered by round-2 NEW test_article_falls_back_to_url_field_when_handle_mismatch), (c) BOTH handle and url fail → raise + notifier + None. Round-1 explicitly suggested a second test test_article_falls_back_to_url_then_fails for branch (c). The current TestFetchMattelArticle inventory has 'missing payload / article-entry-not-found → None + notifier (renamed from null_content_article)' which DOES exercise branch (c) implicitly — but the test description doesn't make explicit that it asserts BOTH the handle lookup AND the url lookup were attempted before failing. The test could pass with an implementation that only checks handle and never tries url, leaving branch (b)'s 'fail when url also misses' silently broken in the regression direction.",
+      "recommendation": "Either (a) accept as adequate — branch (c) is covered by entry-not-found test, branch (b) is covered by NEW round-2 test, branches (a/b/c) are mutually exclusive so the union of tests is logically complete; OR (b) add one explicit defensive test test_article_neither_handle_nor_url_match_returns_none. Approach: build flight with one entry whose handle='other-handle' AND url='https://corporate.mattel.com/news/totally-different'; pass link='https://corporate.mattel.com/news/the-target' (matches neither); assert out is None, notifier called once with 'article entry not found'. Cost: +1 test, +1 line on test count (33 instead of 32). Prefer option (a) given S-feature scope and that the failure mode is loud (notifier fires)."
+    }
+  ],
+  "metrics": {
+    "filesReviewed": 4,
+    "litmusTest": {
+      "checked": 32,
+      "passed": 32,
+      "failed": 0
+    },
+    "coverageAssessment": "adequate",
+    "pyramidBalance": {
+      "unit": 32,
+      "integration": 3,
+      "e2e": 0,
+      "assessment": "healthy"
+    }
+  }
+}

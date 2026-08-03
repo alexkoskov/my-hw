@@ -1,0 +1,35 @@
+{
+  "reviewer": "security-auditor",
+  "task": 4,
+  "round": 1,
+  "commit": "b5e742a",
+  "verdict": "pass",
+  "summary": "resolve_dedup_callback (news_bot.py:558-637) enforces the admin gate strictly before any token/DB lookup, fails closed on a non-numeric TELEGRAM_ADMIN_ID (incl. the '@sunny413x' default) and on non-numeric/None from_user_id via int()'s own TypeError/ValueError, never echoes the link/token in returned text, and never deletes/mutates state on an unauthorized or ignored press. Token consume-on-terminal-outcome is idempotent (delete_review_token and skip_pending both no-op safely on a second/racing call). All 8 targeted tests pass. Two low-severity/informational findings noted below; neither blocks this task.",
+  "findings": [
+    {
+      "severity": "low",
+      "file": "news_bot.py",
+      "line": "623-625",
+      "issue": "Narrow TOCTOU inside the cancel branch: `get_pending(link)` and `skip_pending(link)` are two separate DB round-trips (not one transaction). If the publish loop's `move_to_published` commits in the gap between these two calls, `skip_pending` will silently no-op (its own internal SELECT finds the row already gone) and the function still returns \"✅ Отменено оператором\" to the operator, even though the article was actually published. State stays consistent (no corruption, no double-publish) — only the confirmation text is misleading in this edge case. Tech-spec's Risks table treats the slot-boundary race as resolved by `_fallback_publish`'s own idempotency guard, but that guard prevents double-publish, not this specific mis-reported status.",
+      "fix": "Optional hardening (not required to pass this task): after `skip_pending(link)` returns, re-check `pending_repo.get_published(link)`; if now present, override the status to the 'уже опубликовано' text instead of 'Отменено'. Given the window is a few-millisecond SQLite commit boundary and only ever affects the admin's own feedback text (not auth, not data integrity), this can be deferred to a follow-up task rather than blocking Task 4."
+    },
+    {
+      "severity": "low",
+      "file": "news_bot.py",
+      "line": "558-637",
+      "issue": "resolve_dedup_callback has no try/except around the pending_repo.* calls (get_review_token_link / get_pending / get_published / skip_pending / delete_review_token). A DB-layer exception (e.g. sqlite3.OperationalError if busy_timeout is exceeded under contention) would propagate uncaught out of this 'pure' function. By design (task description + tech-spec Risks: 'Listener thread crashes... wrapped in try/except') this is deliberately Task 5's responsibility to guard around the dispatch call, and since the listener is a daemon thread, an uncaught exception there would kill only that thread, not the main publish loop — so no crash of the bot process results even today. Flagging only so the Task 5 / security review confirms the outer try/except is actually added around the call to resolve_dedup_callback.",
+      "fix": "No change needed in this file for Task 4. Verify in Task 5's review that `_run_review_listener` wraps each `resolve_dedup_callback(...)` dispatch (and the edit_message_text/answer_callback_query calls) in try/except so a DB hiccup logs and continues the poll loop instead of silently ending the listener thread."
+    }
+  ],
+  "checks_performed": [
+    "Admin check runs before token lookup — confirmed by reading code: int(TELEGRAM_ADMIN_ID) and int(from_user_id) comparison happen at lines 604-611, before pending_repo.get_review_token_link at line 615.",
+    "int() edge cases: TELEGRAM_ADMIN_ID=None/''/non-numeric -> TypeError/ValueError caught, fail-closed (ignored). from_user_id=None/non-numeric -> TypeError/ValueError caught, fail-closed. Whitespace/leading-zero numeric strings parse successfully via int() (expected Python behavior, not attacker-controlled — TELEGRAM_ADMIN_ID is operator's own env var). Negative ids are not a special case here since Telegram user ids are always positive; no injection risk since int() rejects any non-numeric payload.",
+    "Default '@sunny413x' (non-numeric) explicitly triggers fail-closed path — covered by test_non_numeric_admin_id_fail_closed and matches production default at news_bot.py:103.",
+    "No state change / token deletion on unauthorized press — confirmed: admin-gate returns (None, \"\") before get_review_token_link is ever called; test_non_admin_press_ignored_no_state_change asserts skip_pending not called, pending row untouched, token survives.",
+    "No info leak — all returned status/answer strings are static constants; the link/token is never interpolated into status_text or answer_text; unauthorized press returns (None, \"\") so the listener (by contract) does not edit the message at all.",
+    "TOCTOU between get_review_token_link and skip_pending/delete — confirmed safe via idempotency: skip_pending() re-checks the pending row itself before acting (early-return no-op if already gone) and delete_review_token() is a plain DELETE (idempotent no-op on missing key); a double/racing press on the same token cannot corrupt state or throw, only produces a benign duplicate 'terminal outcome' reply. See test_cancel_pending_row_skips_and_returns_cancelled's second-press assertion (stale) and pending_articles_repo.py:1086-1096.",
+    "Exception safety — no crash under normal DB errors given pending_repo functions themselves catch/rollback+reraise only around their own writes; resolve_dedup_callback itself has no surrounding try/except, deferred by design to Task 5's listener wrapper (see finding 2, low, informational).",
+    "SQL injection — all pending_repo queries are parameterized (?), including token/link lookups; no string formatting into SQL anywhere touched by this diff.",
+    "Ran: pytest tests/test_integration.py -k ResolveDedupCallback -q -> 8 passed, 45 deselected."
+  ]
+}

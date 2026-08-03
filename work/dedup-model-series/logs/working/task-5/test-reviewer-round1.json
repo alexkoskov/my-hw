@@ -1,0 +1,42 @@
+{
+  "status": "needs_improvement",
+  "summary": "Task-5 test additions are solid: the widened re-select is exercised against a real old-shape row in a real temp sqlite DB (not mocked away), the guard/idempotency scenarios are pinned with specific assertions (including the full 4-key empty-marker dict, not a weakened subset), the 30-day window boundary is honored, and mocking is disciplined (only fetch_full_article is mocked; DB + extractor are real). All 16 tests pass. One real coverage gap: the corrupt/non-dict JSON blob path in the skip-guard's try/except (backfill_fingerprints.py:182-189) — explicitly called out in the task's own Edge Cases section — has zero test coverage, so that defensive branch could regress silently. Two minor items: a near-duplicate idempotency test and an untested compound edge case (old two-key EMPTY blob upgrade).",
+  "findings": [
+    {
+      "severity": "major",
+      "category": "missing_coverage",
+      "location": "tests/test_backfill_fingerprints.py (no test present) — covers backfill_fingerprints.py:182-189",
+      "issue": "The skip-guard's try/except around `json.loads(raw_fp)` (backfill_one, lines 182-189) exists specifically to prevent a crash on a corrupt/non-JSON or non-dict `model_fingerprint` blob — this exact scenario is called out in tasks/5.md's Edge Cases ('Битый/не-JSON blob в guard → json.loads кинет — обернуть в try/except... не падать'). No test feeds a malformed blob into this path. Litmus check: delete the try/except and call `json.loads(raw_fp)` directly (or drop the `isinstance(decoded_fp, dict)` check) — every existing test in the file still passes, because none of them seed an invalid-JSON or non-dict `model_fingerprint`. That means this defensive branch is currently unverified and could regress (crash the whole backfill run on one bad row) without any test failing.",
+      "recommendation": "Add a test, e.g. `test_corrupt_blob_reprocessed_without_crash`: seed a row via a raw `sqlite3` INSERT/UPDATE (not `_seed_published`, since it always `json.dumps` a valid object) setting `model_fingerprint = 'not-valid-json{'` (or, for the non-dict variant, a valid-but-wrong-shape JSON like `'[1, 2, 3]'`). Monkeypatch `fetch_full_article` to `_fake_article_with_brand` and assert: (1) `backfill_fingerprints.main(['--days', '14'])` returns 0 without raising, (2) fetch_full_article WAS called (proves the row fell through to reprocessing rather than being skipped-by-crash), (3) the persisted blob is now valid JSON with `pairs`/`series` keys via `_get_fp_raw` + `json.loads`. This pins both 'does not crash' and 'corrupt blob is treated as not-yet-processed' in one assertion set."
+    },
+    {
+      "severity": "minor",
+      "category": "redundant_testing",
+      "location": "tests/test_backfill_fingerprints.py:275-300 and tests/test_backfill_fingerprints.py:439-461",
+      "issue": "`test_second_run_noop_after_empty_fp` (new) and `test_fetch_empty_stores_computed_empty` (updated) run almost the identical scenario: seed a row, mock fetch to return None, assert the 4-key empty marker, run a second time, assert `Processed: 0` / `Empty fp: 0`. The only material difference is that the new test also asserts `'0 rows scanned'` and uses `--days 30` instead of `--days 14`. Per test-master's redundant-testing rule ('each test must justify its existence — catches a specific failure no other test catches'), the marginal value here is exactly one extra substring assertion.",
+      "recommendation": "Either (a) fold the `'0 rows scanned' in out2` assertion into the existing second-run block of `test_fetch_empty_stores_computed_empty` and drop the new test, or (b) keep both but note in the new test's docstring why `--days 30` specifically matters here (e.g. if it's meant to also double as an AC10 `--days 30` smoke case) so the duplication reads as intentional rather than copy-paste. Not blocking — low cost, but worth tightening before merge."
+    },
+    {
+      "severity": "minor",
+      "category": "missing_coverage",
+      "location": "tests/test_backfill_fingerprints.py (no direct test) — Edge case from tasks/5.md: 'Computed-empty старой формы {\"strict\": [], \"brands\": []}'",
+      "issue": "The task's Edge Cases section separately calls out an old TWO-KEY EMPTY blob (`{\"strict\": [], \"brands\": []}`, no `pairs`) as a case that must be re-selected and rewritten to the 4-key empty form (otherwise infinite reprocessing per the task note). This exact compound scenario (old-shape AND empty-result) isn't tested directly — it's only provable by composing `test_old_shape_row_reselected_and_upgraded` (proves old 2-key blobs of any content are re-selected) with `test_fetch_empty_stores_computed_empty`/`test_second_run_noop_after_empty_fp` (proves empty fetch results always get the 4-key marker). The composition is a valid proof but relies on the reader connecting two separate tests rather than one test directly demonstrating the scenario the task explicitly worried about.",
+      "recommendation": "Optional: add `test_old_empty_shape_row_reselected_and_upgraded_to_empty` — seed a row with `model_fingerprint={'strict': [], 'brands': []}` (old empty form), mock `fetch_full_article` to return `None`, run once and assert `Empty fp: 1` + the persisted blob is the full 4-key empty dict, then run again and assert `Processed: 0`/`Empty fp: 0`/`0 rows scanned`. Low priority since the composed proof from existing tests already covers the logic; only add if the team wants an explicit regression pin for this exact combination."
+    }
+  ],
+  "metrics": {
+    "filesReviewed": 3,
+    "litmusTest": {
+      "checked": 16,
+      "passed": 16,
+      "failed": 0
+    },
+    "coverageAssessment": "adequate",
+    "pyramidBalance": {
+      "unit": 0,
+      "integration": 16,
+      "e2e": 0,
+      "assessment": "healthy"
+    }
+  }
+}

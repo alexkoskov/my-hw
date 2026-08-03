@@ -1,0 +1,47 @@
+{
+  "reviewer": "test-reviewer",
+  "task": 5,
+  "round": 2,
+  "verdict": "approved",
+  "summary": "Commit afe4944 fully closes the round-1 major finding (409/error hot-loop not verified). Both loop tests now spy on news_bot._review_listener_sleep (wraps=real) and assert_called_once_with(stop_event, <matching backoff constant>), with only the relevant constant patched to 0 — re-verified by mutation: deleting the Conflict-branch sleep call, deleting the generic-Exception-branch sleep call, and swapping the two constants (Conflict branch using the ERROR constant) each independently fail the corresponding test. Also verified the accompanying SEC-T5-1 fix (_is_admin_press extracted; handler gates admin BEFORE any pending_repo.get_review_token_link DB read) via mutation: reordering the DB read before the admin check fails test_ignored_press_answers_empty_and_never_edits's new mock_link_read.assert_not_called() assertion. TestReviewListener: 10/10 pass. Full test_integration.py: 65/65. Full project suite: 1324/1324. All mutation experiments reverted; working tree diff-clean on news_bot.py and tests/test_integration.py.",
+  "findings": [],
+  "round1FindingResolution": {
+    "finding": "major — 409/error backoff not asserted, only log text checked",
+    "fix_commit": "afe4944",
+    "fix_description": "test_review_listener_error_does_not_propagate and test_review_listener_conflict_409_logged_with_backoff now patch('news_bot._review_listener_sleep', wraps=news_bot._review_listener_sleep) as sleep_spy and assert sleep_spy.assert_called_once_with(stop_event, 0), with the corresponding backoff constant (only) patched to 0 so the assertion is exact-constant-specific.",
+    "reverification": [
+      {
+        "mutation": "delete _review_listener_sleep(...) call in the Conflict except-branch",
+        "result": "test_review_listener_conflict_409_logged_with_backoff FAILS (0 calls, expected 1)"
+      },
+      {
+        "mutation": "delete _review_listener_sleep(...) call in the generic Exception except-branch",
+        "result": "test_review_listener_error_does_not_propagate FAILS (0 calls, expected 1)"
+      },
+      {
+        "mutation": "swap constants — Conflict branch calls _review_listener_sleep with REVIEW_LISTENER_ERROR_BACKOFF_SECONDS instead of the CONFLICT constant",
+        "result": "test_review_listener_conflict_409_logged_with_backoff FAILS (called with 5 instead of patched 0) — confirms the assertion is constant-specific, not just call-count"
+      }
+    ],
+    "status": "resolved"
+  },
+  "secT5_1Verification": {
+    "claim": "_is_admin_press extracted; _handle_review_update gates admin before any DB read (pending_repo.get_review_token_link)",
+    "test": "test_ignored_press_answers_empty_and_never_edits now also patches news_bot.pending_repo.get_review_token_link and asserts mock_link_read.assert_not_called()",
+    "reverification": {
+      "mutation": "reorder code so link = pending_repo.get_review_token_link(token) runs BEFORE the _is_admin_press(from_user_id) check (i.e. restore the pre-fix ordering)",
+      "result": "test_ignored_press_answers_empty_and_never_edits FAILS (get_review_token_link called 1 time, expected 0)"
+    },
+    "status": "resolved — pinned by test"
+  },
+  "testRunResults": {
+    "targeted": "pytest tests/test_integration.py -k ReviewListener -q -> 10 passed",
+    "fullFile": "pytest tests/test_integration.py -q -> 65 passed",
+    "fullSuite": "pytest -q -> 1324 passed"
+  },
+  "workingTreeState": "clean — all mutation experiments reverted; git diff --stat news_bot.py tests/test_integration.py produces no output",
+  "filesReviewed": [
+    "news_bot.py (diff region: _is_admin_press (new), resolve_dedup_callback admin-gate now delegating to _is_admin_press, _handle_review_update admin-gate-before-DB-read reordering, _run_review_listener backoff calls unchanged from round 1)",
+    "tests/test_integration.py (TestReviewListener class — sleep_spy additions to 2 tests, admin patch fix in test_callback_letter_maps_to_full_word, mock_link_read spy addition in test_ignored_press_answers_empty_and_never_edits)"
+  ]
+}

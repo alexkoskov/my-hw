@@ -1,0 +1,63 @@
+{
+  "status": "needs_improvement",
+  "summary": "Round 2 review. All 4 round-1 majors (AC7 within-source, AC2 carry-through, backfill --days + empty-fp-on-failure, calibration must-pass split) and 2 round-1 minors (threshold boundaries 0.50/0.30, AC8 brand-count guard boundary) are RESOLVED in the tech-spec. The fixture shape (8 pairs: 4 dupes + 4 non-dupes, with Pair 1 = real 2026-06-03 must-pass and AC8 + 1-token guard probes) is now well-specified at line 304. The decision to drop the <100ms system-level perf test is DEFENSIBLE given CI flakiness on shared runners — but only partially, because a structural replacement that catches scan-too-many-rows regressions (e.g. asserting list_recent_* returns ≤ window-bounded count for seeded data) was not added. 6 integration scenarios + carry-through + ~10+8 unit scenarios + calibration (with must-pass split) ARE adequate for an L-size feature with stdlib-only dependencies. Remaining gaps are all minor and were carried over from round 1 (the user fixed the 4 highest-priority majors and 2 minors, deferred the lower-impact 5). These do not block status=passed in isolation but together push status to needs_improvement: (a) hard-block scenario phrasing still says 'processed_news contains both links' which is semantically wrong, (b) <10ms wall-clock perf test in unit suite remains flaky-by-design with no structural replacement, (c) E016 rate-limit window-expiry boundary not exercised, (d) non-empty-fingerprint no-match pass-through not explicit, (e) pending->fingerprint JSON-dict roundtrip not asserted (schema-pin alone insufficient). Pyramid is healthy (~30 unit : 7 integration : 0 E2E).",
+  "findings": [
+    {
+      "severity": "minor",
+      "category": "anti_pattern",
+      "location": "Section: Testing Strategy / Integration tests / TestCrossSourceDedup — Hard-block path scenario",
+      "issue": "The hard-block scenario description (line 314) still says 'processed_news contains both links (pins Decision 8 mark_processed semantic)'. This is semantically wrong: only the NEW (blocked) link is added to processed_news by mark_processed; the EXISTING link was already in processed_news from its original publication. As written, an implementation that incorrectly re-inserts the existing link would still pass the test — a bug that would cause a UNIQUE constraint exception in real life and was specifically the pattern Decision 8 was meant to avoid documenting.",
+      "recommendation": "Refine the scenario wording AND its assertions: pre-seed processed_news with the existing article's link before the test starts; after running the new article through the dedup gate, assert (a) is_processed(new.link) returns True (newly added by hard-block path), (b) processed_news row count increased by exactly 1 (not 2), (c) the existing link's processed_news row is unchanged (still present with original pub_date). This locks Decision 8 semantics precisely. Update tech-spec line 314 to read: 'processed_news now contains the NEW link (the existing link was added at its original publish time and is untouched).'"
+    },
+    {
+      "severity": "minor",
+      "category": "anti_pattern",
+      "location": "Section: Testing Strategy / Unit tests / TestExtractFingerprint — 'Long body bounded performance (regex completes <10ms on 10KB body)'",
+      "issue": "Wall-clock perf assertion at line 292 remains, despite the rationale 'structural verification by code review' being adopted at the system level (<100ms). This is inconsistent: if CI runner jitter rules out the <100ms system check, the same jitter rules out the <10ms regex check (it is in fact more sensitive — a 10ms budget gets blown by a single GC pause on a shared GitHub Actions runner). The ReDoS protection is a structural property (bounded quantifiers per Decision 3), not a timing property.",
+      "recommendation": "Replace the timing assertion with a structural ReDoS check that does not depend on wall-clock. Add test_no_unbounded_quantifiers_in_compiled_regex — inspect _BRAND_RE.pattern as a string and assert it contains no occurrences of `.*`, `.+`, `\\w+`, `\\S+` outside bounded `{n,m}` quantifier groups. Optionally keep a SOFT perf check gated by `@pytest.mark.perf` (skipped in default CI, runnable locally) with a 10x safety margin (<100ms on 10KB body) — but the structural check is the load-bearing one. This is the same reasoning as the rejected system-level <100ms test; apply it consistently."
+    },
+    {
+      "severity": "minor",
+      "category": "missing_coverage",
+      "location": "Section: Acceptance Criteria line 374 — '<100ms per article' AND Testing Strategy",
+      "issue": "Decision to drop the system-level <100ms perf test is defensible on flakiness grounds, but no structural replacement was added. The AC at line 374 still asserts the budget, but no test (structural or timing) exercises it. The actual regression class that worried round 1 — list_recent_pending_fingerprints accidentally scanning the full table because a WHERE clause is missing, or similarity becoming O(n^2) over re-tokenized strings — has zero CI coverage. Structural check is cheap and not flaky.",
+      "recommendation": "Add ONE of (preferred order): (a) test_list_recent_fingerprints_respects_window — seed DB with 100 rows split 50/50 inside/outside the 7-day window, assert list_recent_pending_fingerprints(conn, days=7) returns exactly 50; (b) inspect the SQL string in the helper and assert it contains a WHERE clause referencing `published_at >=` or `created_at >=`; (c) add a row-count cap assertion: assert len(list_recent_*) <= reasonable_ceiling for seeded data. Any of these catches the regression class without timing flakiness. Update Testing Strategy to call this out explicitly so the AC at line 374 is not unverified."
+    },
+    {
+      "severity": "minor",
+      "category": "missing_coverage",
+      "location": "Section: Testing Strategy / Integration tests / TestCrossSourceDedup — Degraded mode scenario",
+      "issue": "The degraded-mode scenario (line 318) asserts E016 fires once but does not exercise the window-expiry boundary of the 1-hour rate-limit. The tech-spec AC at line 377 promises 'E016 rate-limit работает: при последовательных вызовах в течение часа ping отправляется ровно один раз' — but the test only verifies the first half (suppression within the window), not the second (re-firing after the window elapses). Off-by-one on timedelta or wrong unit (seconds vs hours) would not be caught.",
+      "recommendation": "Extend the degraded-mode scenario to 3 steps: (1) trigger extractor crash, assert E016 fired exactly once; (2) trigger second crash within the same hour using freezegun or an injected clock, assert no additional E016 ping AND article still publishes (degraded fallthrough still works); (3) advance clock past 1h, trigger third crash, assert E016 fires again. Mirror the same pattern for the per-pair E014 7-day rate-limit (the existing 'soft-flag rate-limit' scenario currently does step 1+2 but not step 3 — add the after-window re-fire assertion there too)."
+    },
+    {
+      "severity": "minor",
+      "category": "missing_coverage",
+      "location": "Section: Testing Strategy / Integration tests / TestCrossSourceDedup",
+      "issue": "There is no integration scenario for the most-common production case: 'non-empty fingerprint, no match found' (extract succeeds, returns a real fingerprint, similarity loop runs against several recent rows, none crosses the 30% threshold, article passes through unchanged). The 'Empty fingerprint' scenario covers the short-circuit at similarity start. The 'Hard-block' and 'Soft-flag' scenarios cover the threshold-crossing paths. But the dominant production case — most articles pass because they are simply unrelated to what was published in the last 7 days — has no explicit test. A regression that accidentally classifies all non-empty fingerprints as flags (e.g. flipped comparison operator) would pass every listed scenario.",
+      "recommendation": "Add scenario test_pass_through_when_no_match: seed DB with 2-3 recent published rows with unrelated fingerprints (Ford F-150, BMW M3, Porsche 911), run a new article with fingerprint {Toyota Supra}; assert article IS inserted into pending, fingerprint IS persisted (dict shape), NO E014 ping fired, NO E015 ping fired, NO E016 ping fired. This is the happy-path of the dedup gate and deserves an explicit assertion."
+    },
+    {
+      "severity": "minor",
+      "category": "missing_coverage",
+      "location": "Section: Testing Strategy / Unit tests / test_pending_articles_repo.py",
+      "issue": "Line 305 lists 'updated EXPECTED_PENDING (adds model_fingerprint)' but EXPECTED_PENDING is a schema-pin (catches column-name mismatch in PRAGMA table_info). It does NOT exercise the JSON-column roundtrip — i.e. that insert_pending serializes a dict, list_recent_pending_fingerprints / _row_to_dict deserializes it back to a dict. If model_fingerprint is omitted from _PENDING_JSON_COLS (the Decision 5 contract), schema-pin passes but the column returns a raw JSON string at runtime. This is exactly the failure mode the dedup gate would silently mishandle (string vs dict comparison gives 0.0 similarity always — no dedup, no error).",
+      "recommendation": "Add test_insert_then_list_recent_fingerprints_roundtrip_dict to test_pending_articles_repo.py: insert a pending row with entry = {..., 'model_fingerprint': {'strict':['toyota supra'],'brands':['toyota']}}; call list_recent_pending_fingerprints(conn, days=7); assert the returned row's model_fingerprint is `dict` (not `str`) AND equals {'strict':['toyota supra'],'brands':['toyota']} by value. Mirror for list_recent_published_fingerprints. This catches the _PENDING_JSON_COLS contract independently of schema-pin."
+    }
+  ],
+  "metrics": {
+    "filesReviewed": 2,
+    "litmusTest": {
+      "checked": 18,
+      "passed": 16,
+      "failed": 2
+    },
+    "coverageAssessment": "adequate",
+    "pyramidBalance": {
+      "unit": 30,
+      "integration": 7,
+      "e2e": 0,
+      "assessment": "healthy"
+    }
+  }
+}

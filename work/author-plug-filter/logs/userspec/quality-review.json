@@ -1,0 +1,93 @@
+{
+  "status": "approved",
+  "checks": {
+    "completeness": "pass",
+    "edge_cases": "pass",
+    "acceptance_criteria": "pass",
+    "contradictions": "pass",
+    "template_compliance": "pass",
+    "size_check": "pass"
+  },
+  "findings": [
+    {
+      "check": "template_compliance",
+      "severity": "minor",
+      "issue": "Секция 'Тестирование' по-прежнему гласит 'Интеграционные тесты: не делаем', а затем предписывает 'добавить туда smoke-проверку, что variant B вызывается на canonical-пути'. Дополнение в существующий test_fallback_publish_paths.py и есть интеграционный тест — формулировка 'не делаем' семантически противоречит тому, что делается. Это нарушение из round-0 finding #6 не исправлено.",
+      "location": "Тестирование — Интеграционные тесты",
+      "fix": "Переформулировать: 'Интеграционные тесты: добавляем smoke-проверку в существующий `tests/test_fallback_publish_paths.py`, что variant B вызывается на canonical-пути. Новый интеграционный файл не создаём.'"
+    },
+    {
+      "check": "completeness",
+      "severity": "minor",
+      "issue": "Критерий AC14 используется дважды: один раз для списка платформ variant A (строка 52) и второй раз как AC14a для негативного регресс-кейса (строка 68). Дублирующийся номер метки нарушает уникальность нумерации критериев.",
+      "location": "Критерии приёмки — Variant A (AC14) и Негативные регресс-проверки (AC14a)",
+      "fix": "Переименовать второй критерий: AC14a → AC17, обновить ссылку в разделе 'Риски' (Риск 2: '…AC14a покрывает регрессом' → '…AC17 покрывает регрессом')."
+    },
+    {
+      "check": "completeness",
+      "severity": "minor",
+      "issue": "'Зачем' по-прежнему не называет персону явно в начале предложения о пользе: 'подписчики видят только контент' — подлежащее-персона есть, но канал (@myhwchannel123) не упомянут в этом разделе. Было minor в round-0 и осталось незакрытым (отмечено как опциональное).",
+      "location": "Зачем",
+      "fix": "Опциональное уточнение: добавить '@myhwchannel123' к упоминанию подписчиков — 'Подписчики @myhwchannel123 видят только редакционный контент, а не сторонний промо-канал автора.'"
+    }
+  ],
+  "round0_resolution": {
+    "finding_1_ac6_en_example": {
+      "status": "fixed",
+      "note": "AC6 теперь использует RU-пример: 'Подписывайтесь на меня в Instagram @diecast215. А сегодня мы посмотрим на новый Chase…'"
+    },
+    "finding_2_multiple_plugs_ec7": {
+      "status": "fixed",
+      "note": "Добавлен явный AC7: 'Несколько плагов в одном параграфе удаляются за один проход; остаток параграфа корректен.'"
+    },
+    "finding_3_implicit_persona": {
+      "status": "not_fixed",
+      "note": "Персона 'подписчики' остаётся без упоминания канала в 'Зачем'. Minor/optional — вынесено в новый finding."
+    },
+    "finding_4_ac8_wording_asymmetry": {
+      "status": "fixed",
+      "note": "AC9 (ранее AC8) переформулирован как 'поля `text` и `caption` для соответствующих типов блоков' — более нейтральная и симметричная формулировка."
+    },
+    "finding_5_via_review_guard": {
+      "status": "fixed",
+      "note": "Вся `via_review=True` логика удалена. Ручной путь теперь описан архитектурно: 'hw_review publish идёт мимо `_fallback_publish` по архитектуре — variant B там не применяется.'"
+    },
+    "finding_6_integration_test_wording": {
+      "status": "not_fixed",
+      "note": "Формулировка 'Интеграционные тесты: не делаем' + 'добавить smoke-проверку' по-прежнему противоречива. Вынесено в новый finding."
+    },
+    "finding_7_ssh_in_agent_column": {
+      "status": "fixed",
+      "note": "Таблица 'Агент проверяет' содержит только pytest/CI шаги (1-5). SSH-команды перенесены в 'Пользователь проверяет'."
+    }
+  },
+  "interview_coverage": {
+    "covered": [
+      "EN pattern list: (follow|check)(me|us) on <platform>, (my|our)<platform>(is|@), ^instagram:, ^@handle$, subscribe to channel",
+      "Hook point: variant B in _fallback_publish after transcreate_via_claude, before update_staged",
+      "Feature size S",
+      "Scope boundary: author plugs only, corporate 'Follow Mattel on...' out of scope",
+      "Handle without @ ('Instagram: diecast215') — variant A pattern",
+      "Orphan @handle on its own line — ^@\\w+$ pattern",
+      "Plug as bullet-list item — variant A drops just that li",
+      "Plug at lead/start of paragraph — variant B removes first sentence",
+      "Multiple plugs in one paragraph — variant B removes all in one pass (AC7)",
+      "Separate module author_plug_filter.py for variant B (separation of concerns)",
+      "Over-strip risk: INFO log strategy for journalctl observability (AC8)",
+      "Mattel corporate plug stays out of scope (AC15)",
+      "Verification plan: Telegraph spot-check + journalctl grep",
+      "Deploy: new file must be in FILES arrays in both deploy.sh and deploy.yml",
+      "Sentence-boundary detection: regex-as-anchor, no general sentence tokenizer",
+      "Empty paragraph after strip: empty string for flat paragraphs, whole-block removal for blocks (Риск 3)",
+      "Photo credit attribution passes through",
+      "Platform list extended: patreon, discord, linktree added; Threads/OnlyFans excluded (AC14)",
+      "Manual hw_review path bypasses _fallback_publish by architecture — no via_review guard needed",
+      "Google-translated RU robustness: umbrella regex for parenthesized phrases with platform + @handle (AC11)",
+      "Interaction with _patch_text_with_ru_paragraphs: variant B treats ru_paragraphs and ru_blocks independently (AC9)",
+      "Aggregate admin-ping skipped — journalctl is sufficient",
+      "Feature flag DISABLE_AUTHOR_PLUG_FILTER skipped — git revert ~3 min is faster"
+    ],
+    "missing": []
+  },
+  "summary": "Спецификация после round-1 исправила 5 из 7 замечаний (AC6-RU пример, явный AC для множественных плагов, симметрия AC9, мертвый via_review guard, SSH из таблицы агента). Два minor нарушения остались незакрытыми: семантическое противоречие 'не делаем' / 'добавить smoke-проверку' в разделе тестирования и дублирующийся номер AC14/AC14a. Добавлено новое minor: дублирующийся номер метки. Документ одобрен — все критические и major нарушения отсутствуют."
+}

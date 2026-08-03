@@ -1,0 +1,82 @@
+{
+  "validator": "reality-checker",
+  "batch": [7, 8, 9],
+  "status": "changes_required",
+  "findings": [
+    {
+      "severity": "critical",
+      "category": "missing_function",
+      "task": 7,
+      "issue": "Task 7 audits `_render_paragraph_with_runs` and `_is_same_site` in `telegraph_publisher.py` and the `list_item` branch in `_build_content_from_blocks`, but NONE of these functions or branches exist in the actual file. `telegraph_publisher.py` has no `_render_paragraph_with_runs`, no `_is_same_site`, and no `list_item` case in its block loop (confirmed by grep: zero matches). The audit task would read code that does not exist and produce a meaningless or misleading verdict.",
+      "fix": "Wave 1 (Tasks 1, 2, 3) and Wave 2 (Tasks 4, 5) must be fully completed before Task 7 can execute. Task 7's `depends_on: [4, 5]` is correct in principle (audit after Wave 2), but the actual implementation work of Wave 1 has not been done. Do not execute Task 7 until `_render_paragraph_with_runs`, `_is_same_site`, and `list_item` handling are present in `telegraph_publisher.py`."
+    },
+    {
+      "severity": "critical",
+      "category": "missing_function",
+      "task": 7,
+      "issue": "Task 7 audits the `<li>` branch in `orangetrack_source._walk` and the `list_item` value in `_PATCHED_TEXT_BLOCK_TYPES` in `_llm_common.py`. Neither exists. `_walk` currently recurses into `ul`/`li` as generic wrapper tags (line 555-556: `if name not in handled_tags: _walk(child)`) — no dedicated `<li>` emit path. `_PATCHED_TEXT_BLOCK_TYPES` at `_llm_common.py:106` is `('lead', 'paragraph', 'heading')` — `'list_item'` is absent. `_emit_heading` at `orangetrack_source.py:415-434` emits `type: 'paragraph'` for ALL heading levels including h2/h3/h4 — the h2/h3/h4 → heading level=3 change is not implemented. The audit would find nothing to verify.",
+      "fix": "Task 1 (parser changes) and Task 2 (LLM-patch) must be completed before Task 7 can conduct a meaningful audit. No action needed on Task 7 itself — its content is correct; it simply depends on pre-existing implementation."
+    },
+    {
+      "severity": "critical",
+      "category": "missing_function",
+      "task": 8,
+      "issue": "Task 8 audits new tests in `tests/test_orangetrack_source.py` and `tests/test_telegraph_publisher.py`. None of the expected new tests exist in either file. Grep across both files for any of the ~35 test names listed in tech-spec (e.g., `test_li_parsed_as_list_item_block`, `test_overlapping_runs_first_wins_second_appears_plain`, `test_dos_bound_skips_helper_on_huge_text`, etc.) returns zero matches. `test_orangetrack_source.py` has 71 test functions — all pre-existing. `test_telegraph_publisher.py` has 39 test functions — all pre-existing. The test audit task would find no new tests to audit and could not render a meaningful verdict.",
+      "fix": "Task 4 (parser tests) and Task 5 (publisher tests) must be completed before Task 8 can execute. Task 8's `depends_on: [4, 5]` correctly names these tasks; the issue is that Wave 2 work has not been done yet."
+    },
+    {
+      "severity": "critical",
+      "category": "feasibility",
+      "task": 9,
+      "issue": "Task 9 expects `pytest tests/ -q` to yield 860+ tests (829 baseline + ~31 new). The actual current test count is exactly 829 — all Wave 1 (Tasks 1, 2, 3) and Wave 2 (Tasks 4, 5) implementation and test-writing is absent. Running pytest now would show 0 new tests and all feature-specific assertions would be untestable. The QA task cannot pass in this state.",
+      "fix": "Waves 1 and 2 must be completed first. The baseline count of 829 is confirmed correct, so the baseline claim is accurate. The issue is entirely the missing implementation — not a task description error."
+    },
+    {
+      "severity": "major",
+      "category": "feasibility",
+      "task": 9,
+      "issue": "Task 9 says '~31 new' tests and 'see tech-spec Testing Strategy: 10 in test_orangetrack_source.py including integration, and 21 in test_telegraph_publisher.py'. The tech-spec actually lists 10 unit tests + 1 integration test = 11 for test_orangetrack_source.py, and 24 unit tests for test_telegraph_publisher.py = 35 total. Task 9 undercounts by 4 (24 vs 21 for publisher, plus the integration test appears to be subtracted from the orangetrack count rather than added). The acceptance criterion 'total ≥ 860' would accept a run with only 31 new tests even though 4 test cases would be silently missing.",
+      "fix": "Update Task 9 description: '10 unit + 1 integration in test_orangetrack_source.py = 11, and 24 in test_telegraph_publisher.py = 35 total new'. Update acceptance criterion to 'total ≥ 864' (829 + 35) or at minimum '≥ 860' with an explicit note that fewer than 864 warrants investigation."
+    },
+    {
+      "severity": "major",
+      "category": "feasibility",
+      "task": 7,
+      "issue": "Task 7 step 6 instructs writing the report to `logs/working/wave-3-security-audit.md` (relative path in the body), while the Acceptance Criteria state the full path as `work/orangetrack-rendering-fixes/logs/working/wave-3-security-audit.md`. The feature_path is `/workspaces/debian-2/my-hw/work/orangetrack-rendering-fixes/`, so `logs/working/` relative to the feature folder resolves to the same absolute path. This is consistent. However, the task body never specifies that `logs/working/` should be relative to the feature path, which could confuse an agent running from the repo root (`/workspaces/debian-2/my-hw/`). From the repo root, `logs/working/` would resolve to `/workspaces/debian-2/my-hw/logs/working/` (wrong location).",
+      "fix": "In Task 7 step 6, change 'Написать отчёт в `logs/working/wave-3-security-audit.md`' to use the absolute or feature-relative path explicitly: 'Написать отчёт в `work/orangetrack-rendering-fixes/logs/working/wave-3-security-audit.md`' (from repo root) or 'Написать отчёт в `{feature_path}/logs/working/wave-3-security-audit.md`'. Same fix applies to the Post-completion section reference."
+    },
+    {
+      "severity": "major",
+      "category": "feasibility",
+      "task": 8,
+      "issue": "Task 8 step 7 writes the report to `work/orangetrack-rendering-fixes/logs/working/wave-3-test-audit.md` (full path from repo root) but also references `logs/working/wave-3-test-audit.md` (relative) in step 9 (Post-completion). The same path-ambiguity issue as Task 7. From the repo root `/workspaces/debian-2/my-hw/`, 'logs/working/' in Post-completion would resolve incorrectly.",
+      "fix": "Standardize all path references in Task 8 to the full path from repo root: `work/orangetrack-rendering-fixes/logs/working/wave-3-test-audit.md`. The step 7 already uses the full path correctly; fix the Post-completion reference."
+    },
+    {
+      "severity": "minor",
+      "category": "feasibility",
+      "task": 9,
+      "issue": "Task 9 step 3 and all verification steps reference `python3 -m py_compile orangetrack_source.py _llm_common.py telegraph_publisher.py` with relative file paths. Task 9 implementation hint says 'Запускать pytest из корня репозитория (/workspaces/debian-2/my-hw/)' but does not give the same explicit context for py_compile. An agent running py_compile from the wrong directory (e.g., from the feature folder) would get FileNotFoundError.",
+      "fix": "Add to step 3: 'Run from repo root: `cd /workspaces/debian-2/my-hw && python3 -m py_compile orangetrack_source.py _llm_common.py telegraph_publisher.py`'. Mirror the explicit path guidance already given for pytest."
+    },
+    {
+      "severity": "minor",
+      "category": "feasibility",
+      "task": 9,
+      "issue": "Task 9 step 5 says 'это файлы, перечисленные в user-spec Risk-5 как explicit regression coverage', but user-spec Risk 5 lists only `tests/test_orangetrack_source.py`, `tests/test_telegraph_publisher.py`, and `tests/test_distributed_schedule_integration.py`. Task 9 adds `tests/test_openrouter_transcreation.py` to this list. The tech-spec § Regression coverage (line ~233) does include test_openrouter_transcreation.py, so adding it is correct. However the attribution to 'user-spec Risk-5' is inaccurate — the source is tech-spec, not user-spec.",
+      "fix": "Change 'это файлы, перечисленные в user-spec Risk-5' to 'это файлы, перечисленные в tech-spec § Regression coverage'. The file list itself (including test_openrouter_transcreation.py) is correct."
+    },
+    {
+      "severity": "minor",
+      "category": "tdd",
+      "task": 8,
+      "issue": "Task 8 instructs counting new tests via `grep -c '^def test_' tests/test_orangetrack_source.py` to get total, then subtracting by diff against main. The task does not specify the exact baseline counts to subtract. The current pre-Wave-2 state has 71 test functions in test_orangetrack_source.py and 39 in test_telegraph_publisher.py. If the auditor does not know these baseline numbers, they cannot reliably compute the 'new tests' count from a grep total.",
+      "fix": "Add a note in Task 8 Details section: 'Pre-Wave-2 baseline: test_orangetrack_source.py has 71 tests, test_telegraph_publisher.py has 39 tests. Post-Wave-2 expected: 82 (71+11) and 63 (39+24) respectively.' This makes the pyramid-balance verification concrete without requiring a git diff."
+    }
+  ],
+  "stats": {
+    "tasks_checked": 3,
+    "claims_verified": 31,
+    "issues_found": 10
+  }
+}

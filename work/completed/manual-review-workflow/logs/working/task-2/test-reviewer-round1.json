@@ -1,0 +1,16 @@
+{
+  "reviewer": "test-reviewer",
+  "task": "manual-review-workflow/task-2",
+  "round": 1,
+  "status": "OK",
+  "summary": "63 pytest cases cover all TDD anchors from task-2.md plus additional coverage: 3 CSP assertions (exact string, substrings, in-head position), 10 allowed-tag rendering cases, 6 bad-attr-name variants (parametrised), URL-scheme filter across js/data/vbscript/file/relative/empty/leading-whitespace/uppercase/http/https, Cyrillic round-trip in both text and attributes, HTML parseability via stdlib html.parser as a belt-and-suspenders structural check. No skipped tests, no xfails, no bare `assert mock.called`.",
+  "findings": [
+    {
+      "severity": "nit",
+      "file": "tests/test_preview_renderer.py",
+      "line": 112,
+      "description": "test_other_unknown_tags_dropped[style] has a carve-out for </style> because the renderer emits a legitimate inline <style> for readability. The carve-out is documented inline.",
+      "recommendation": "Acceptable; the tested invariant (payload absence) holds unconditionally."
+    }
+  ]
+}

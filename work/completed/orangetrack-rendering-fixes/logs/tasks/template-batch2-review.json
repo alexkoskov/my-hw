@@ -1,0 +1,107 @@
+{
+  "validator": "task-validator",
+  "batch": [6, 7, 8, 9, 10],
+  "status": "changes_required",
+  "findings": [
+    {
+      "severity": "critical",
+      "category": "structure",
+      "task": 8,
+      "section": "Reviewers",
+      "issue": "Section `## Reviewers` is missing entirely. After `## Details` (Implementation hints) the file jumps directly to `## Post-completion`. Template requires a `## Reviewers` section in every task (even when reviewers list is empty — must contain explanatory note).",
+      "fix": "Add `## Reviewers` section between Details and Post-completion. For audit task with empty reviewers, mirror the convention used in Task 6/7: heading + 1-line note explaining that audit tasks have no reviewers (self-verifying — output is the audit report)."
+    },
+    {
+      "severity": "critical",
+      "category": "content",
+      "task": 7,
+      "section": "Context Files",
+      "issue": "Project-knowledge file paths are wrong: `../../../.claude/skills/project-knowledge/project.md`, `architecture.md`, `patterns.md`, `deployment.md` — missing the `references/` segment. Actual files live at `.claude/skills/project-knowledge/references/{name}.md`. All PK links currently broken (404 from feature folder).",
+      "fix": "Insert `references/` into all four PK paths: `../../../.claude/skills/project-knowledge/references/project.md`, `…/references/architecture.md`, `…/references/patterns.md`, `…/references/deployment.md`. Compare to Task 6 which gets the path right."
+    },
+    {
+      "severity": "critical",
+      "category": "content",
+      "task": 8,
+      "section": "Context Files",
+      "issue": "PK paths use `~/.claude/skills/project-knowledge/project.md` (also `architecture.md`, `patterns.md`). Two problems: (a) `~/` does not resolve to the project — `~/.claude/skills/` only contains shared/global skills, not `project-knowledge` (which is project-local at `<repo>/.claude/skills/project-knowledge/references/`); (b) missing `references/` segment.",
+      "fix": "Replace with project-relative paths anchored at the feature folder, mirroring Task 6: `../../../.claude/skills/project-knowledge/references/project.md`, `…/references/architecture.md`, `…/references/patterns.md`."
+    },
+    {
+      "severity": "critical",
+      "category": "content",
+      "task": 9,
+      "section": "Context Files",
+      "issue": "PK paths use `~/.claude/skills/project-knowledge/references/project.md` (and architecture.md, patterns.md). The `~/` prefix does not resolve to the project — project-knowledge is project-local. Files at `~/.claude/skills/project-knowledge/` do not exist for this project, so all three PK links are broken.",
+      "fix": "Replace `~/` with project-relative path: `../../../.claude/skills/project-knowledge/references/project.md`, `…/references/architecture.md`, `…/references/patterns.md`. Pattern matches Task 6."
+    },
+    {
+      "severity": "critical",
+      "category": "content",
+      "task": 10,
+      "section": "Context Files",
+      "issue": "PK paths use only two `..` levels: `../../.claude/skills/project-knowledge/references/project.md` (also architecture.md, deployment.md, patterns.md). From `work/orangetrack-rendering-fixes/tasks/10.md`, `../../` resolves to `work/.claude/...` which does not exist. Three levels are required to reach repo root.",
+      "fix": "Change `../../` to `../../../` for all four PK file links: `../../../.claude/skills/project-knowledge/references/project.md`, `…/references/architecture.md`, `…/references/deployment.md`, `…/references/patterns.md`."
+    },
+    {
+      "severity": "minor",
+      "category": "content",
+      "task": 6,
+      "section": "Context Files",
+      "issue": "Code files (`orangetrack_source.py`, `_llm_common.py`, `telegraph_publisher.py`) are listed as plain text with em-dash descriptions rather than markdown links. Template specifies markdown link format for all Context Files entries.",
+      "fix": "Convert each to a markdown link, e.g. `- [orangetrack_source.py](../../../orangetrack_source.py) — read целиком в состоянии после Task 1`."
+    },
+    {
+      "severity": "minor",
+      "category": "content",
+      "task": 7,
+      "section": "Context Files",
+      "issue": "Code files block (`orangetrack_source.py`, `_llm_common.py`, `telegraph_publisher.py`, `tests/test_orangetrack_source.py`, `tests/test_telegraph_publisher.py`) is listed as plain text with description, not markdown links.",
+      "fix": "Format each as a markdown link to the actual file path from the feature folder, e.g. `- [telegraph_publisher.py](../../../telegraph_publisher.py) — …`."
+    },
+    {
+      "severity": "minor",
+      "category": "content",
+      "task": 9,
+      "section": "Context Files",
+      "issue": "No code files referenced in Context Files. While Task 9 is a non-code QA task, the AC mapping references concrete tests in `tests/test_orangetrack_source.py` and `tests/test_telegraph_publisher.py` plus the three modified source files. Including them as Context Files links would help the QA agent locate them quickly.",
+      "fix": "Optional: add markdown links to `tests/test_orangetrack_source.py`, `tests/test_telegraph_publisher.py`, and the three modified source files for context completeness."
+    },
+    {
+      "severity": "minor",
+      "category": "structure",
+      "task": 7,
+      "section": "Verification Steps",
+      "issue": "All three subsections (Automated, Smoke, User) are present but each contains only an HTML comment saying 'no checks for audit task'. With `verify: []` in frontmatter, the convention (per template) is to omit empty subsections rather than include them with a stub comment. Compare to Task 6 which keeps only the Automated section with concrete checks.",
+      "fix": "Either remove the empty Smoke and User subsections (keep just `### Automated` with the report-existence checks), or add concrete report-file checks like Task 6 has."
+    },
+    {
+      "severity": "minor",
+      "category": "structure",
+      "task": 8,
+      "section": "Verification Steps",
+      "issue": "Has `### Automated` with file-existence and verdict-grep checks but no `### Smoke` or `### User` (acceptable since `verify: []`). The two automated checks are described as bullet text rather than concrete shell commands like Task 6 has — Task 6 uses `test -s …` and `head -n 1 … | grep …` which are directly runnable. Task 8 narrates the same checks but does not give the command.",
+      "fix": "Convert the two bullets in Automated to executable commands matching Task 6 style, e.g. `test -s work/orangetrack-rendering-fixes/logs/working/wave-3-test-audit.md` and `head -n 1 … | grep -E 'Verdict: (PASS|PASS-WITH-NOTES|FAIL)'`."
+    },
+    {
+      "severity": "minor",
+      "category": "content",
+      "task": 6,
+      "section": "Reviewers",
+      "issue": "Reviewers section is a single prose sentence rather than a list. Frontmatter says `reviewers: []` (consistent), so no list items needed, but the body convention used elsewhere is to keep an explicit `- (none)` style entry or HTML comment for parser robustness.",
+      "fix": "Cosmetic only — leave as is or add an HTML comment marker similar to Task 7's `<!-- No reviewers (Wave 3 audit task — output is the audit report itself). -->` for consistency across the three audit tasks."
+    },
+    {
+      "severity": "minor",
+      "category": "carry-forward",
+      "task": 9,
+      "section": "Acceptance Criteria",
+      "issue": "Tech-spec § Acceptance Criteria lists a `git diff` cleanliness check ('git diff shows changes ONLY in: orangetrack_source.py, _llm_common.py, telegraph_publisher.py, tests/test_orangetrack_source.py, tests/test_telegraph_publisher.py'). This AC is not carried forward into Task 9's AC list. Pre-deploy QA is the natural place to verify it.",
+      "fix": "Add an AC item: `- [ ] git diff (against dev baseline) shows changes only in the five expected files (3 source + 2 test files); no unintended files modified.`"
+    }
+  ],
+  "stats": {
+    "tasks_checked": 5,
+    "issues_found": 12
+  }
+}

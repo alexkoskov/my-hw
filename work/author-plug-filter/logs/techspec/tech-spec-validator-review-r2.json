@@ -1,0 +1,48 @@
+{
+  "status": "approved",
+  "round": 2,
+  "round1_fixes_verified": {
+    "medium_1_task4_line_numbers": "fixed — Task 4 description no longer references line 1006 / 1004–1005 / 1027, replaced with logical anchor 'post-translation convergence point' and reference to Decisions 2, 8, 9.",
+    "medium_2_task5_line_numbers": "fixed — Task 5 description no longer references deploy.sh:52 / deploy.yml:132; replaced with 'BOTH `deploy.sh` and `.github/workflows/deploy.yml`' phrasing.",
+    "low_3_task3_verbose": "fixed — Task 3 description compressed to 2 sentences referencing Decisions 3, 4, 10, 11.",
+    "low_4_task4_verbose": "fixed — Task 4 description compressed to 2 sentences referencing Decisions 2, 8, 9 and the three integration tests.",
+    "low_5_task11_duplicates_avp": "fixed — Task 11 collapsed to 2-sentence pointer to Agent Verification Plan; verification procedure now lives in AVP only (single source of truth).",
+    "low_6_architecture_line_numbers": "fixed — Architecture section opens with explicit disclaimer that file:line refs live in code-research.md; bullets use logical anchors only (no `:NNN` line refs in Architecture)."
+  },
+  "findings": [
+    {
+      "severity": "minor",
+      "category": "task_quality",
+      "issue": "Task 2 description still embeds a literal line reference: '`.claude/skills/project-knowledge/references/patterns.md:28` \"Length-bounded at 80 chars\"'. This is the same class of leak the round-1 review removed from Tasks 4/5 — a `:NN` line number inside a Task description.",
+      "fix": "Drop the `:28`: 'Update the \"Length-bounded at 80 chars\" line in patterns.md to \"Length-bounded at 120 chars\".' The string anchor is unambiguous; the precise line number belongs in code-research.md or the per-task file."
+    },
+    {
+      "severity": "minor",
+      "category": "tasks",
+      "issue": "Acceptance Criteria still includes a line-range expectation: '`news_bot.py` import block has `import author_plug_filter` near line 55–60.' AC items pinned to specific line ranges drift fast and conflate placement with intent.",
+      "fix": "Reword to: '`news_bot.py` imports `author_plug_filter` at module top (alongside existing project-internal imports).' Verify by AST/grep, not by line number."
+    },
+    {
+      "severity": "minor",
+      "category": "task_quality",
+      "issue": "Decisions section retains two line-number refs in rationale prose: Decision 2 ('line 1006 per code-research §12') and Decision 10 ('`_llm_common.py:226–230`'). These are not Task-scope leakage (round-1 finding #6 was scoped to Architecture, which is now clean), but they will go stale and ideally cite code-research.md by section anchor only.",
+      "fix": "Replace numeric refs with section refs: 'after the convergence point (per code-research §12)' and 'LLM count validator (per code-research §15) is soft warning only'. Optional polish — does not block approval."
+    }
+  ],
+  "checks_run": {
+    "frontmatter": "pass — created=2026-05-03 (YYYY-MM-DD), status=draft, branch=dev, size=S — all four fields valid.",
+    "structure": "pass — Solution / Architecture (with subsections) / Decisions / Data Models (explicit N/A) / Dependencies (with subsections) / Testing Strategy (Feature size: S declared) / Agent Verification Plan (with Verification approach + Tools required) / Risks (table format with mitigations) / Acceptance Criteria / Implementation Tasks — all present and non-empty.",
+    "standards_compliance": "pass — file paths match architecture.md (boilerplate_filter.py, news_bot.py, _llm_common.py at repo root; tests/ folder convention; .claude/skills/project-knowledge/references/ for KB updates). New module `author_plug_filter.py` follows the existing snake_case repo-root naming used by boilerplate_filter.py / outage_state.py / compute_publish_slots.py.",
+    "risks": "pass — 10 risks listed in table format; each has a concrete mitigation; none are generic placeholders. Includes ReDoS, log-injection, deploy-FILES drift, manual-path future architecture, corporate-plug intentional pass-through.",
+    "agent_verification_plan": "pass — Verification approach describes both during-implementation (pytest per wave) and post-deploy (Telegraph URL spot-check + journalctl grep). Tools required lists pytest / bash / curl / ssh + explicit MCP-not-needed note.",
+    "per_task_smoke_verification": "pass — Tasks 1, 3, 4, 5 (the code/deploy tasks) all have concrete Verify-smoke commands. Task 2 (prose-only ux-guidelines/patterns.md edit) omits Verify-smoke acceptably (pure documentation, prompt-master skill, prompt-reviewer covers it). Audit/Final wave tasks have skill-implicit verification.",
+    "implementation_tasks_fields": "pass — all 11 tasks have Description + Skill + Reviewers (or 'none' for Audit/Final-wave self-verifying skills). Files to modify / Files to read present on Wave 1–3 tasks. 11 tasks, under the 15-task split threshold.",
+    "sequencing": "pass — document uses wave ordering (Wave 1 / Wave 2 / Wave 3 / Audit Wave / Final Wave) and dependency notes ('depends on Wave 1', 'parallel — both depend on Wave 2'); zero time-based estimates.",
+    "task_quality_skills": "pass — Task 1 code-writing, Task 2 prompt-master (correct: ux-guidelines.md + patterns.md are prompt-style guidelines), Task 3 code-writing, Task 4 code-writing, Task 5 deploy-pipeline, Task 6 code-reviewing, Task 7 security-auditor, Task 8 test-master, Task 9 pre-deploy-qa, Task 10 deploy-pipeline, Task 11 post-deploy-qa. All skills match the catalog. Note: Task 2 correctly uses prompt-master because it modifies LLM system-prompt material (ux-guidelines.md is loaded as the LLM system prompt per architecture.md).",
+    "task_quality_reviewers": "pass — Task 1 / 3 / 4 use code-writing default trio (code-reviewer, security-auditor, test-reviewer). Task 2 uses prompt-master default (prompt-reviewer). Task 5 uses deploy-pipeline default (code-reviewer, security-auditor, deploy-reviewer). All reviewer agents exist in ~/.claude/agents/ (verified: code-reviewer.md, security-auditor.md, test-reviewer.md, prompt-reviewer.md, deploy-reviewer.md). Audit and Final wave tasks correctly have empty/none reviewers per the catalog mapping.",
+    "task_quality_brevity": "pass — Tasks 3, 4, 11 (the round-1 'too verbose' offenders) are now 2 sentences each. Task 1 description is 2 sentences. Task 5 is 1 sentence. Task 2 is 2 sentences. No task contains an embedded 'Acceptance Criteria' or 'TDD Anchor' subsection. No task description contains 'line N' / 'lines N-M' / 'строка N' patterns (Task 2 has `patterns.md:28` flagged separately as a minor).",
+    "task_quality_decisions_placement": "pass — task descriptions reference Decision numbers (Decisions 1/7, 3/4/10/11, 2/8/9, 6) instead of duplicating rationale. No 'because' / 'since' / 'rejected:' style decision content embedded in task descriptions. No duplication of specific configuration values (`120`, `_PATCHED_TEXT_BLOCK_TYPES`, regex bodies) between Decisions section and task descriptions.",
+    "wave_conflict_detection": "pass — Wave 1 files: {boilerplate_filter.py, test_boilerplate_filter.py} ∩ {ux-guidelines.md, patterns.md} = ∅. Wave 2: single task. Wave 3 files: {news_bot.py, test_fallback_publish_paths.py, test_no_token_leak_in_logs.py} ∩ {deploy.sh, .github/workflows/deploy.yml} = ∅. Wave dependencies are linear and acyclic (W1 → W2 → W3 → Audit → Final)."
+  },
+  "summary": "Round-2 verdict: approved. All six round-1 findings are addressed: line numbers removed from Task 4 / Task 5 / Architecture; Tasks 3 / 4 / 11 compressed to 2-sentence scope descriptions; Task 11 now references the Agent Verification Plan as single source of truth. Three new minor findings surfaced (one stray `:28` line ref in Task 2, one line-range AC, two leftover line refs in Decisions rationale) — all informational, none blocking. Zero critical findings. Frontmatter, structure, skill/reviewer catalog compliance, wave conflict detection, time-free sequencing — all pass. Tech-spec is ready for decomposition."
+}

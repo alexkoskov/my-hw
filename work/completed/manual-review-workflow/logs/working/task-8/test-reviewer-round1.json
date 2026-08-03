@@ -1,0 +1,81 @@
+{
+  "reviewer": "test-reviewer",
+  "task": 8,
+  "round": 1,
+  "status": "ok-with-nits",
+  "scope": [
+    "tests/test_hw_review_publish_flow.py (15 new tests across 8 TestCase classes)"
+  ],
+  "summary": "All 10 TDD anchors from task-8 are covered, plus 5 additional scenarios (retry via teaser exception, requests.RequestException leaves row intact, URL identity across retry, missing-preview tolerance, stored-URL reuse at start). Tests exercise the real pending_articles_repo (no raw SQL for inserting rows); external boundaries are mocked at the module-under-test seam (hw_review.publish_article / hw_review.send_telegraph_teaser) rather than at the HTTP layer, matching task-8 §Details hint. Smoke target `test_publish_retry_reuses_telegraph_url` asserts mock_publish.call_count == 1 across two runs — the gating invariant. Full suite 339/339 green.",
+  "findings": [
+    {
+      "id": "TR-1",
+      "dimension": "test isolation",
+      "severity": "info",
+      "where": "_PublishCase fixture",
+      "finding": "Uses tempfile mkstemp + patch('news_bot.DB_FILE', self.db_path) pattern identical to tests/test_integration.py and tests/test_hw_review_cli.py. Each test starts with a fresh DB, cleans up in tearDown. No cross-test state leakage.",
+      "recommendation": "no action"
+    },
+    {
+      "id": "TR-2",
+      "dimension": "mock discipline",
+      "severity": "info",
+      "where": "TestPublishRetryIdempotency",
+      "finding": "Reuses the SAME MagicMock instances across both cmd_publish invocations (patch'ed inside a single `with` in run 1, re-patched identically in run 2). call_count therefore accumulates across runs — correct pattern for the Decision 9 assertion. Two variants cover False-return AND exception (TelegramError) to prove parity.",
+      "recommendation": "no action — matches task §TDD anchor hint verbatim"
+    },
+    {
+      "id": "TR-3",
+      "dimension": "coverage",
+      "severity": "info",
+      "where": "TestPublishVanishedRow",
+      "finding": "All three branches covered (already_published / in_failed / not_found) plus the plain out-of-range branch — four scenarios total. Each asserts: exit code 1, correct stderr content, AND that mock_publish + mock_teaser were NEVER called (no Python traceback risk and no accidental API hit).",
+      "recommendation": "no action"
+    },
+    {
+      "id": "TR-4",
+      "dimension": "test design",
+      "severity": "low",
+      "where": "test_publish_vanished_row_* use patch('pending_articles_repo.list_pending')",
+      "finding": "The three vanished-row tests patch list_pending to return a dict with the link AFTER deleting the pending row, to simulate a race. An alternative would have been to keep a second pending row to seed the index. The patch approach is cleaner and more explicit about the race being simulated. Minor comment-only improvement possible (call out 'race simulation' in the fixture), but the current inline comments already do.",
+      "recommendation": "no action — documented in comments"
+    },
+    {
+      "id": "TR-5",
+      "dimension": "coverage (hashtag wiring)",
+      "severity": "info",
+      "where": "test_publish_passes_source_url_to_teaser_for_hashtag",
+      "finding": "Decision 14 guard: asserts the second positional arg to send_telegraph_teaser is the row's link (lamleygroup.com URL), NOT the source_name string 'lamley'. Spot-checks news_bot._source_hashtag on the passed URL yields '#lamleygroup'. Exactly the check the task's AC demanded.",
+      "recommendation": "no action"
+    },
+    {
+      "id": "TR-6",
+      "dimension": "coverage (preview cleanup)",
+      "severity": "info",
+      "where": "test_publish_deletes_local_preview_file + test_publish_missing_preview_file_is_tolerated",
+      "finding": "Happy path: real tempfile is created, set_preview_path'ed on the row, then asserted GONE after publish. Missing-file path: bogus path set, publish must succeed (FileNotFoundError tolerated in _cleanup_preview_html).",
+      "recommendation": "no action"
+    },
+    {
+      "id": "TR-7",
+      "dimension": "test naming / readability",
+      "severity": "info",
+      "where": "8 TestCase classes",
+      "finding": "One class per concern (Happy/Retry/Vanished/Precondition/Telegraph-fail/Hashtag/Preview/Stored-URL). Test names are descriptive and match the task's anchor names one-for-one where they overlap.",
+      "recommendation": "no action"
+    },
+    {
+      "id": "TR-8",
+      "dimension": "coverage gap",
+      "severity": "info",
+      "where": "No test for Decision 1 path-guard interaction with _cleanup_preview_html",
+      "finding": "The cleanup test uses a tempfile NOT inside CACHE_DIR (it uses tempfile.mkstemp directly). The path-guard that limits preview files to CACHE_DIR is enforced at WRITE time by the preview subcommand (Task 7), so _cleanup_preview_html does not need to re-validate. A test enforcing 'cleanup refuses paths outside CACHE_DIR' would be overreach — the helper is deliberately path-agnostic so Task 9's _fallback_publish can reuse it with its own path source.",
+      "recommendation": "no action — scope-appropriate"
+    }
+  ],
+  "critical_count": 0,
+  "major_count": 0,
+  "minor_count": 0,
+  "low_count": 1,
+  "info_count": 7
+}

@@ -1,0 +1,27 @@
+{
+  "validator": "reality-checker",
+  "batch": [13, 14, 15],
+  "iteration": 2,
+  "status": "approved",
+  "findings": [
+    {
+      "severity": "major",
+      "category": "feasibility",
+      "task": 14,
+      "issue": "Smoke script assertion `assert pending_articles_repo.count_pending() == 2` (smoke script line 63) is at indent=0, OUTSIDE the `with patch('news_bot.DB_FILE', db_path):` block (smoke script line 8). By the time that line runs, the context manager has already exited and `news_bot.DB_FILE` has been restored to `\"news.db\"`. Per Task 1 spec (line 43), `pending_articles_repo` reads `news_bot.DB_FILE` dynamically at call time via `sqlite3.connect(news_bot.DB_FILE)` — the same pattern confirmed at `tests/test_integration.py:23`. So the assertion at line 63 will open `\"news.db\"` (the real DB, not the tempfile), which on a fresh environment raises `OperationalError: no such table: pending_articles`, and on a populated environment returns stale data. The `assert not pathlib.Path(html_path).exists()` on line 64 is also outside the patch block but is DB-independent, so that one is safe.",
+      "fix": "Move lines 63–65 of the smoke script inside the outer `with patch('news_bot.DB_FILE', db_path):` block (add 4 spaces of indentation to each). All three lines — `count_pending()`, the `html_path` file-deletion check, and `print(\"SMOKE OK\")` — should be at the same indent level as the rest of the inner assertions. This keeps them within the active `news_bot.DB_FILE` patch scope."
+    },
+    {
+      "severity": "minor",
+      "category": "feasibility",
+      "task": 14,
+      "issue": "The `Важно` prose in the Smoke section says to patch BOTH `patch('news_bot.DB_FILE', db_path)` AND `patch('pending_articles_repo.DB_FILE_GETTER', ...)` for DB isolation, but the actual code block only patches `news_bot.DB_FILE`. This creates a contradiction: the prose implies `pending_articles_repo` has its own `DB_FILE_GETTER` attribute that needs separate patching, while the code comment says `All DB-reads in news_bot + pending_articles_repo follow news_bot.DB_FILE` (making a single patch sufficient). Task 1 spec line 43 confirms the single-patch approach is correct. The stray `DB_FILE_GETTER` reference in the prose is confusing but does not affect the code block.",
+      "fix": "Remove `patch('pending_articles_repo.DB_FILE_GETTER', ...)` from the `Важно` prose. Keep only the `patch('news_bot.DB_FILE', db_path)` pattern, consistent with the code block and Task 1 spec. If Task 1 implementer later decides to add a `DB_FILE_GETTER` indirection, the smoke script code block should be updated at that time."
+    }
+  ],
+  "stats": {
+    "tasks_checked": 3,
+    "claims_verified": 31,
+    "issues_found": 2
+  }
+}

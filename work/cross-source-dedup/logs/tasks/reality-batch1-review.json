@@ -1,0 +1,57 @@
+{
+  "validator": "reality-checker",
+  "batch": [1, 2, 3],
+  "status": "approved",
+  "findings": [
+    {
+      "severity": "major",
+      "category": "hints",
+      "task": 2,
+      "issue": "code-research §14.H implementation blueprint shows list_recent_pending_fingerprints and list_recent_published_fingerprints WITHOUT a conn parameter (using internal _connect()), which directly contradicts the tech-spec §Interfaces signatures, Task 2 description, and the backfill long-transaction requirement. Task 2 correctly resolves this conflict in favour of the tech-spec (conn explicit), but the hint at line 'Сохранить существующий стиль: short-lived _connect() для тех, что не принимают conn; для новых list/update/rate-limit — принимать conn явно' may not be enough to warn an implementer who opens code-research §14.H and copies the code block verbatim.",
+      "fix": "Add a visible warning comment to the §14.H code block in code-research.md, or remove the conflicting code from the hint entirely. In Task 2 Details block, explicitly state: 'Do NOT use the _connect()-based signatures from code-research §14.H — those are superseded by the tech-spec §Interfaces conn-explicit form.'"
+    },
+    {
+      "severity": "major",
+      "category": "hints",
+      "task": 3,
+      "issue": "Implementation hint for E016 says 'Готовый текст alert_dedup_extractor_crash в code-research.md §14.K.3 (lines 1393-1408) — можно переименовать функцию в alert_dedup_degraded и слегка адаптировать заголовок'. The code-research template has a DIFFERENT signature (link: str, error_type: str — two params), DIFFERENT emoji (🟡 vs ⚠️ in task/tech-spec), and DIFFERENT title ('Дедуп упал (degraded mode)' vs 'Дедуп в degraded mode'). The word 'слегка адаптировать' understates the required delta. An implementer following the hint closely risks shipping the wrong signature, emoji, and heading — all of which are substring-pinned by integration tests in Wave 2.",
+      "fix": "Replace the vague hint with explicit deltas: rename to alert_dedup_degraded(reason: str) (single param, NOT link), emoji is ⚠️ (NOT 🟡), heading substring must be 'Дедуп в degraded mode' (NOT 'Дедуп упал'). The TDD Anchor test checks assertIn('degraded', msg) and assertIn('⚠️', msg) which locks the emoji, but not the heading substring — add assertIn('Дедуп в degraded mode', msg) to the TDD Anchor test_e016 spec to nail the contract."
+    },
+    {
+      "severity": "minor",
+      "category": "tdd",
+      "task": 3,
+      "issue": "test_all_alerts_have_unique_codes in tests/test_admin_alerts.py (line 258) calls every existing alert builder and asserts all [EXXX] codes are unique. Task 3 does not mention updating this test to include the three new builders (alert_cross_source_dupe, alert_cross_source_blocked, alert_dedup_degraded). After Task 3 lands, the three new builders will not be covered by the uniqueness sanity check, creating a silent gap.",
+      "fix": "Add to Task 3 Acceptance Criteria: 'Update test_all_alerts_have_unique_codes to include the three new builder calls so the uniqueness guard covers E014/E015/E016.'"
+    },
+    {
+      "severity": "minor",
+      "category": "feasibility",
+      "task": 2,
+      "issue": "Task 2 TDD Anchor and Acceptance Criteria both mention 'EXPECTED_PUBLISHED_COLUMNS' in test_migration.py, and the Details block says 'если есть EXPECTED_PUBLISHED_COLUMNS — обновить и его'. Actual test_migration.py (grep-verified) has NO EXPECTED_PUBLISHED_COLUMNS constant — only EXPECTED_PENDING_COLUMNS. The task instruction to update a non-existent constant may confuse the implementer or cause them to skip the published_articles schema-pin in test_migration.py entirely.",
+      "fix": "Clarify Task 2 step 6: 'EXPECTED_PUBLISHED_COLUMNS does not currently exist in test_migration.py — create it (pattern identical to EXPECTED_PENDING_COLUMNS) and add a test_published_articles_has_expected_columns test. This is new work, not an update.'"
+    }
+  ],
+  "stats": {
+    "tasks_checked": 3,
+    "claims_verified": 47,
+    "issues_found": 4
+  },
+  "per_task": {
+    "task_1": {
+      "status": "approved",
+      "summary": "All new files (model_extractor.py, tests/fixtures/cross_source_dedup_pairs.py, tests/test_model_extractor.py) are genuinely new — no naming conflicts in the repo. boilerplate_filter.py, tests/test_boilerplate_filter.py, tests/test_autoevolution_source.py, tests/test_t_hunted_source.py — all exist at referenced paths. tests/fixtures/ directory exists (contains mattel_flight_builder.py), namespace-package import 'from tests.fixtures.cross_source_dedup_pairs import ...' works without __init__.py (verified). code-research §14.F is present and contains all 8 pair definitions. Regex patterns, Fingerprint shape, similarity formula, brand lexicon — all internally consistent with tech-spec Decisions 2-4. TDD Anchor is actionable. Smoke commands are syntactically valid.",
+      "findings": []
+    },
+    "task_2": {
+      "status": "approved",
+      "summary": "pending_articles_repo.py exists; _dumps (line 126), _PENDING_JSON_COLS (line 118), init_schema (line 165), insert_pending (line 202), _row_to_dict (line 141) — all verified present. Migration block lines 185-195 match the task reference exactly. conn.commit() is at line 195. list_pending_stale pattern (lines 433-450) confirms the datetime window parameter convention. outage_state.py pattern (_get, _set, _parse_dt, BEGIN IMMEDIATE) is real and at verified lines. test_pending_articles_repo.py EXPECTED_PENDING (line 30) and EXPECTED_PUBLISHED (line 53) both exist. test_migration.py EXPECTED_PENDING_COLUMNS (line 38) exists. TestSqlAudit::test_parameterized_queries_only (line 930/934) is real and will cover new helpers. Two findings: conn signature conflict with code-research §14.H (major), and missing EXPECTED_PUBLISHED_COLUMNS in test_migration.py (minor).",
+      "findings": ["conn-signature-conflict-with-code-research-14H", "expected_published_columns_does_not_exist"]
+    },
+    "task_3": {
+      "status": "approved",
+      "summary": "admin_alerts.py is 366 lines, last function ends at line 366 — task instruction to append after E033 is correct. E006 builder (alert_duplicate_publish_skipped) at lines 93-107 is the correct mirror pattern. E014/E015/E016 codes are genuinely unclaimed (admin_alerts.py has E001-E013, E020-E028, E030-E033 — E014-E016 gap confirmed). test_admin_alerts.py exists, class TestAdminAlerts at line 23, test_e006 at line 68 — correct mirror target. 'from __future__ import annotations' and 'from typing import List' imports confirmed at lines 21/23 — no new imports needed. Two findings: E016 template in code-research §14.K.3 has conflicting signature/emoji/title vs task spec (major), and test_all_alerts_have_unique_codes is not updated in task scope (minor).",
+      "findings": ["e016-template-signature-mismatch-in-code-research", "test_all_alerts_unique_codes_not_updated"]
+    }
+  }
+}

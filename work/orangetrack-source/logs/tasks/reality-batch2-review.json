@@ -1,0 +1,68 @@
+{
+  "validator": "reality-checker",
+  "batch": [4, 5, 6],
+  "status": "changes_required",
+  "findings": [
+    {
+      "severity": "critical",
+      "category": "feasibility",
+      "task": 5,
+      "issue": "Smoke command regex '^\\ s*orangetrack_source\\.py' does not match the actual file line '    \"orangetrack_source.py\"' because the entries in both FILES arrays are double-quoted. Tested: echo '    \"orangetrack_source.py\"' | grep -E '^\\s*orangetrack_source\\.py' exits 1. The diff will always produce empty output (exit 0) regardless of whether the entry is present or absent — the smoke verification is a false-negative oracle that cannot detect the missing entry.",
+      "fix": "Change the smoke regex to include the surrounding double-quotes: grep -E '^\\s*\"orangetrack_source\\.py\"' (with escaped quotes). Correct command: diff <(grep -E '^\\s*\"orangetrack_source\\.py\"' deploy.sh) <(grep -E '^\\s*\"orangetrack_source\\.py\"' .github/workflows/deploy.yml)"
+    },
+    {
+      "severity": "critical",
+      "category": "missing_file",
+      "task": 5,
+      "issue": "deploy_test.yml is listed only as '(опционально)' in Files to modify, but it is a mandatory third consumer of the same FILES invariant. The file exists at .github/workflows/deploy_test.yml and its FILES array (lines 88-108) is identical to deploy.sh and deploy.yml. Its own comment on line 85-86 states 'FILES list mirrors deploy.yml byte-for-byte. Keep them in sync if a new module is added.' Omitting deploy_test.yml would cause ImportError on the test instance (news_bot_test.service) on the next dev-branch deploy — the very scenario described as the motivation for the invariant. This is not optional.",
+      "fix": "Move deploy_test.yml from the optional note to Files to modify (required). The insertion point is adjacent to the other source parsers at line 92 of deploy_test.yml, same as in deploy.sh/deploy.yml. Include deploy_test.yml in all three smoke/sanity checks."
+    },
+    {
+      "severity": "major",
+      "category": "feasibility",
+      "task": 4,
+      "issue": "test_sources_accept_notifier_kwarg (line 333 in tests/test_sources_registry.py) iterates SOURCES and calls each fetcher(notifier=None). After Task 3 adds _fetch_orangetrack_entries to SOURCES, this test will attempt a real network call to orangetrackdiecast.com/feed/ because there is no monkeypatch for the orangetrack feed fetch. Task 4 acknowledges this in its Edge Cases section but scopes it out without flagging it as a blocker. In practice, if Task 3 produces a _fetch_orangetrack_entries that calls requests.get/_FEED_URL immediately without a monkeypatch guard, 'pytest tests/test_sources_registry.py -v' will not be all-green after Task 4's changes — contrary to the task's acceptance criteria 'pytest tests/ — зелёный весь suite.'",
+      "fix": "Task 4 should add a monkeypatch for the orangetrack feed fetch in test_sources_accept_notifier_kwarg, OR escalate this as a Task 3 deliverable (Task 3 must make _fetch_orangetrack_entries testable with a monkeypatch of 'news_bot.fetch_orangetrack_feed' or similar). Currently the task acceptance criteria ('pytest tests/ — зелёный') conflicts with the scoped-out edge case."
+    },
+    {
+      "severity": "major",
+      "category": "feasibility",
+      "task": 4,
+      "issue": "The Details section states the test_sources_registry_shape assertion currently is 'assert [f.__name__ for f in SOURCES] == [\\'_fetch_rss_entries\\', \\'_fetch_mattel_entries\\']' at 'строки ~322-327'. Verified correct: lines 322-327 of tests/test_sources_registry.py match exactly. However, the task also assumes that after Task 3 the SOURCES order will be [_fetch_rss_entries, _fetch_mattel_entries, _fetch_orangetrack_entries]. There is no enforcement mechanism — if Task 3 inserts _fetch_orangetrack_entries at position 0 or 1 instead of appending, Task 4's shape assertion will fail with a misleading error. The task says 'если Task 3 поставит фетчер в другой позиции — это сигнал'; but since Task 4 depends_on Task 3 in the same wave, the ordering constraint should be explicitly stated in Task 3's spec or cross-checked here.",
+      "fix": "Minor: Add an explicit cross-check step in Task 4's What to do: before writing any code, inspect SOURCES in news_bot.py to confirm _fetch_orangetrack_entries is third (index 2). If not, flag to feature lead rather than silently adjusting the assertion. This prevents Task 4 from masking a Task 3 ordering bug."
+    },
+    {
+      "severity": "minor",
+      "category": "feasibility",
+      "task": 5,
+      "issue": "Task 5 declares depends_on: [1], but editing the FILES array in deploy.sh and deploy.yml does not technically require orangetrack_source.py to exist — the pre-flight check only runs at deploy time (scp step), not at file-edit time. The dependency is real for deployment to succeed but is not a task-execution dependency. This is a misleading dependency declaration that may cause Task 5 to be unnecessarily serialized after Task 1 in a parallel execution model. The task description correctly notes this: 'Task 1 должна быть завершена до этой — иначе деплой упадёт на pre-flight check.' But the pre-flight check runs in CI/CD, not during the agent's file editing.",
+      "fix": "Clarify in Dependencies that the dependency is operational (deploy will fail at pre-flight if file is absent), not a task-execution dependency (the file edits themselves can happen anytime). Wave assignment Wave 2 is correct regardless."
+    },
+    {
+      "severity": "minor",
+      "category": "feasibility",
+      "task": 5,
+      "issue": "Task 5's Details section states 'Текущее состояние: 19 файлов в массиве, последний — .claude/skills/project-knowledge/references/ux-guidelines.md.' This is confirmed correct for deploy.sh (19 entries, lines 38-57). deploy_test.yml also has 19 entries (lines 89-108), identical list. deploy.yml also has 19 entries (lines 118-137). Count is accurate.",
+      "fix": "No fix needed — this is a confirmation."
+    },
+    {
+      "severity": "minor",
+      "category": "feasibility",
+      "task": 6,
+      "issue": "Tech-spec references 'lamley_source.py:212-225' for the SSRF allowlist pattern. The actual _is_allowed_lamley_url function starts at line 215 (verified by grep). The _ALLOWED_HOSTS constant that precedes it is at lines ~210-212. The line range 212-225 partially overlaps but starts 3 lines early. Task 6 instructs the auditor to read this as a reference pattern — a slightly wrong line number will cause the auditor to open at the wrong position but will not cause a code error.",
+      "fix": "Update the line reference in tech-spec from 'lamley_source.py:212-225' to 'lamley_source.py:210-230' (or similar inclusive range) to correctly capture both _ALLOWED_HOSTS and _is_allowed_lamley_url."
+    },
+    {
+      "severity": "minor",
+      "category": "tdd",
+      "task": 4,
+      "issue": "The TDD Anchor section correctly describes this task as an update to existing tests rather than adding new cases, and the red-then-green cycle is the appropriate TDD framing. However, the task acceptance criteria includes 'pytest tests/ целиком — зелёный' which depends on Task 3 being complete. Running pytest before Task 3's news_bot.py changes are applied would show different failures (import errors for orangetrack_source, not the three described set/list assertion failures). The red-stage description 'ожидаемо красные ровно три теста' assumes Task 3 is already applied.",
+      "fix": "Add an explicit precondition note: 'This TDD red-stage description assumes Task 3 changes are already in the working tree. The three failing tests (keys, values, shape) are the expected failures only after Task 3 is applied.' This is implied by depends_on:[3] but should be stated clearly in What to do step 1."
+    }
+  ],
+  "stats": {
+    "tasks_checked": 3,
+    "claims_verified": 31,
+    "issues_found": 8
+  }
+}

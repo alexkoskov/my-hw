@@ -1,0 +1,66 @@
+{
+  "reviewer": "security-auditor",
+  "task": 8,
+  "round": 1,
+  "status": "ok",
+  "scope": [
+    "hw_review.py cmd_publish — external network calls, stored URL reuse, error-log secret redaction",
+    "tests/test_hw_review_publish_flow.py"
+  ],
+  "summary": "No HIGH/CRITICAL findings. Secret-redaction path is intact: every exception from publish_article or send_telegraph_teaser flows through news_bot.sanitize_error_message before being logged or emitted to stderr. Stored-URL reuse (Decision 9) is safe because telegraph_url / telegraph_path are written exclusively by the repo module via parameterised SQL, never from external input — the retry path reads a value we ourselves wrote in a prior invocation. URL trust: publish_article's return value is treated as opaque; we derive telegraph_path via urlparse(...).path.lstrip('/') which is a safe client-side parse (no network, no shell). No attempt-count manipulation / race surface because Task 8 doesn't increment attempts — it's pure publish with pending-retained-on-failure, per Decision 13 contract ownership is in the repo module.",
+  "findings": [
+    {
+      "id": "SEC-1",
+      "owasp": "A09 Logging failures / A02 Cryptographic secret exposure",
+      "severity": "info",
+      "where": "hw_review.py lines 571-572 and 598-599",
+      "finding": "Both exception branches route through news_bot.sanitize_error_message BEFORE both logger.error and stderr emission. The sanitised string replaces TELEGRAM_BOT_TOKEN / TELEGRAM_CHANNEL_ID / TELEGRAM_ADMIN_ID / TELEGRAPH_ACCESS_TOKEN with [REDACTED]. requests exception strings frequently embed the URL including query-string tokens; Telegram errors may include the bot token as a path segment — both covered by the Decision 11 sanitiser.",
+      "recommendation": "no action — sanitiser applied at both sinks"
+    },
+    {
+      "id": "SEC-2",
+      "owasp": "A08 Data integrity failures",
+      "severity": "info",
+      "where": "hw_review.py step 4 telegraph reuse",
+      "finding": "On the retry path (telegraph_url already set on the row), the URL is read from the trusted sqlite row — we wrote it ourselves in a prior mark_telegraph_published. No external input is ever trusted as a URL here; the only way to poison this column is to already have write access to the local sqlite DB, which is out-of-scope for the CLI threat model (same boundary as any other operator-side credential).",
+      "recommendation": "no action"
+    },
+    {
+      "id": "SEC-3",
+      "owasp": "A01 Broken access control",
+      "severity": "info",
+      "where": "hw_review.py _cleanup_preview_html",
+      "finding": "os.unlink is called on the path recorded in row['preview_html_path']. That path was written by Task 7's preview subcommand which enforces a path-guard: the file MUST live inside CACHE_DIR (Path.resolve() comparison against CACHE_DIR.resolve()). So any path persisted on a pending row has already passed the path-guard. On top of that, _cleanup_preview_html only logs the failure — it never raises or branches on the unlink result, so a missing/untouchable file cannot affect publish flow. Separately, the FileNotFoundError branch is broader than OSError and caught first, so a vanished file is a debug log not a warning.",
+      "recommendation": "no action — path-guard already enforced at persistence time"
+    },
+    {
+      "id": "SEC-4",
+      "owasp": "A03 Injection",
+      "severity": "info",
+      "where": "hw_review.py cmd_publish — SQL and shell boundaries",
+      "finding": "All DB writes flow through pending_articles_repo which uses `?` placeholders exclusively (verified by existing tests/test_pending_articles_repo.py SQL audit). No shell invocations. No eval. urlparse is a stdlib parser with no side effects.",
+      "recommendation": "no action"
+    },
+    {
+      "id": "SEC-5",
+      "owasp": "A04 Insecure design",
+      "severity": "low",
+      "where": "hw_review.py step 5 broad `except Exception`",
+      "finding": "The teaser call is wrapped in `except Exception` (narrower than BaseException, so KeyboardInterrupt/SystemExit still propagate). Matches tech-spec §Details Edge Cases which prescribes 'treat all three identically' for False-return/TelegramError/unexpected-exception. The exception message is sanitised before both stderr and log, and the row retains telegraph_url so the retry path works regardless of the bubbled exception type.",
+      "recommendation": "no action — documented decision, matches spec, sanitiser applied"
+    },
+    {
+      "id": "SEC-6",
+      "owasp": "A01 / A05 misconfiguration",
+      "severity": "info",
+      "where": "vanished-row branches emit raw last_error without re-sanitising",
+      "finding": "Line 545 emits `{fail.get('last_error') or ''}` to stderr. The last_error column is written (by Task 6 / increment_attempt call sites) AFTER sanitisation at the write site (per Decision 11 and existing increment_attempt docstring: 'Caller is responsible for sanitising error before passing — repo stores the string verbatim'). So re-sanitising at the read site would be redundant, and could mask genuine diagnostic content. The 'already published at X' message emits a Telegraph URL from `published_articles` — the URL itself is never a secret; it's already public once the Telegraph page exists.",
+      "recommendation": "no action — sanitisation responsibility is at write time per Decision 11"
+    }
+  ],
+  "critical_count": 0,
+  "high_count": 0,
+  "medium_count": 0,
+  "low_count": 1,
+  "info_count": 5
+}

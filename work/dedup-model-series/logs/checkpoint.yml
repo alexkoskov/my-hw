@@ -1,0 +1,34 @@
+# Feature Execution Checkpoint
+# Written by feature-execution skill after each wave.
+# Read by SessionStart(compact) hook for context recovery.
+# Read by feature-execution Phase 1 to detect resume scenario.
+
+skill: feature-execution
+feature: dedup-model-series
+feature_dir: work/dedup-model-series
+execution_plan: work/dedup-model-series/logs/execution-plan.md
+team_name: dedup-model-series
+
+last_completed_wave: audit
+total_waves: 5   # Wave 1, 2, 3, audit, final
+
+# Format: task_number: status (planned | in_progress | done)
+# Example:
+#   1: done
+#   2: done
+#   3: in_progress
+#   4: planned
+tasks:
+  1: done
+  2: done
+  3: done
+  4: done
+  5: done
+  6: done
+  7: done
+  8: done
+  9: done
+  10: done
+  11: planned
+
+next_wave: final

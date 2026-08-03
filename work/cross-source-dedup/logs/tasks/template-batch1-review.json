@@ -1,0 +1,86 @@
+{
+  "validator": "task-validator",
+  "iteration": 2,
+  "batch": [2, 3, 4, 10, 11],
+  "status": "approved",
+  "findings": [],
+  "round1_fix_verification": {
+    "task_2": {
+      "fix_conn_first_signature_in_hints": "applied — Implementation Hints starts with 'CRITICAL — сигнатуры 3 query/write-хелперов:' (line 141) explicitly requiring conn as first param for list_recent_pending_fingerprints, list_recent_published_fingerprints, update_published_fingerprint; warns against verbatim copy of code-research §14.H drop-in block",
+      "fix_expected_published_columns_mandatory_create": "applied — 'What to do' step 6 line 44 says '**создать новый dict** (он отсутствует в файле, есть только EXPECTED_PENDING_COLUMNS на строке 38)'; Details/Files section line 127 reiterates 'создать новый EXPECTED_PUBLISHED_COLUMNS dict (его в файле сейчас нет ...)' — no longer 'обновить если есть' phrasing",
+      "fix_pk_paths_under_references": "applied — Context Files use /workspaces/debian-2/my-hw/.claude/skills/project-knowledge/references/project.md, architecture.md, patterns.md (lines 96-98) — references/ subdir present"
+    },
+    "task_3": {
+      "fix_alert_dedup_degraded_signature_pinned": "applied — Implementation Hints lines 113-118 explicitly pin (reason: str) -> str signature, emoji ⚠️, header 'Дедуп в degraded mode' as substring anchor",
+      "fix_stale_14K3_marked": "applied — Implementation Hints lines 113-118 mark §14.K.3 as 'устаревший draft и НЕ ИСТИНА'; Context Files line 73 also notes '§14.K.3 шаблон E016 устарел; имя/сигнатура/эмодзи/заголовок — строго по техспеку Decision 7'",
+      "fix_test_all_alerts_unique_codes_update": "applied — TDD Anchor line 49 includes test_all_alerts_have_unique_codes with explicit instructions to ensure new builders covered; Acceptance Criteria line 61 reiterates",
+      "fix_context_files_normalized": "applied — Context Files split into 'Feature docs (relative)', 'Project knowledge (absolute)', 'Code files (absolute)' subsections (lines 67-82) with explicit convention note at line 67"
+    },
+    "task_4": {
+      "fix_get_conn_to_connect": "applied — all active prose uses _connect(); the mention of _get_conn at line 126 is an explicit negative instruction ('Никакого _get_conn() в кодовой базе НЕТ') telling the implementer NOT to use it",
+      "fix_row_source_replaced": "applied — lines 36 and 127 use 'entry.get(\\'source_name\\') or _resolve_source_name(link)'; row_source mentions are explicit warnings that the variable does not exist at gate position",
+      "fix_reviewer_paths_absolute": "applied — Reviewers section uses /workspaces/debian-2/my-hw/work/cross-source-dedup/logs/working/task-4/... (lines 136-138)"
+    },
+    "task_10": {
+      "fix_wave_5": "applied — frontmatter line 5 wave: 5",
+      "fix_step1_mandatory_add": "applied — 'What to do' step 1 (line 32) says 'Убедиться что model_extractor.py И backfill_fingerprints.py присутствуют в FILES array внутри deploy.sh. Если их там нет — добавить'",
+      "fix_preflight_existence_guard": "applied — Pre-flight guard at top of 'What to do' (line 30) instructs STOP if files missing locally; also reiterated in Implementation hints line 133 with explicit bash command",
+      "fix_no_agent_ssh": "applied — line 36 'Агент сам SSH на VPS не делает (см. memory feedback_operator_prod_ops.md)'; line 76 reiterates",
+      "fix_env_var_reminder": "applied — Operator command sequence line 94 emphasizes 'ВАЖНО для оператора: перед запуском ./deploy.sh ОБЯЗАТЕЛЬНО выставить env vars SSH_HOST=hwbot@148.135.207.54 DEPLOY_PATH=/home/hwbot/bot' with explanation of placeholder fallback behavior",
+      "fix_functional_grep": "applied — Verification Steps lines 70-71 use grep -E '\"(model_extractor|backfill_fingerprints)\\.py\"' deploy.sh | wc -l → 2 (functional, not total file count)",
+      "fix_reviewers_section_explanation": "applied — Reviewers section line 140 explains 'Ревьюеров нет — это deploy-pipeline задача, которой управляет оператор; верификация — сам результат деплоя ...'"
+    },
+    "task_11": {
+      "fix_wave_6": "applied — frontmatter line 5 wave: 6",
+      "fix_channel_handle_telegram_channel_id": "applied — lines 23, 51, 140, 160 all use 'numeric ID из TELEGRAM_CHANNEL_ID env на VPS, см. deployment.md — оператор знает точный handle; НЕ использовать @myhwchannel123, это тестовый инстанс'",
+      "fix_json_extract_not_exact_string": "applied — Steps 3 Запрос 3 (line 46) uses json_extract preferred path with LIKE fallback; explicit 'НЕ использовать exact-string match model_fingerprint = ...' warning; Verification Steps Smoke block lines 110-121 includes JSON1 capability check and fallback comment",
+      "fix_2week_interim_pass_note": "applied — Acceptance Criteria line 71 'Примечание про сроки: жёсткий гейт требует 2 недели наблюдения. Промежуточный вердикт pass with pending monitoring ... допустим для архивации фичи через /done раньше. Финальный pass verdict фиксируется по истечении 2-недельного окна'; Post-completion line 179 reiterates with rollback note if false negative or E016 surfaces in week 2"
+    }
+  },
+  "per_task_summary": {
+    "2": {
+      "status": "pass",
+      "round1_findings_addressed": 3,
+      "round1_findings_pending": 0,
+      "new_findings": 0,
+      "notes": "All 3 round-1 fixes applied correctly. PK references now under /references/ subdir consistent with task-creator discovery. Mandatory-create wording for EXPECTED_PUBLISHED_COLUMNS removes earlier ambiguity. Conn-first signature pinning unambiguous in Implementation Hints."
+    },
+    "3": {
+      "status": "pass",
+      "round1_findings_addressed": 4,
+      "round1_findings_pending": 0,
+      "new_findings": 0,
+      "notes": "All 4 round-1 fixes applied. alert_dedup_degraded signature (reason: str) -> str pinned in 3 places (Decisions ref, Implementation Hints, Context Files note). §14.K.3 staleness called out repeatedly. test_all_alerts_have_unique_codes included in TDD + AC. Context Files path conventions explicit."
+    },
+    "4": {
+      "status": "pass",
+      "round1_findings_addressed": 3,
+      "round1_findings_pending": 0,
+      "new_findings": 0,
+      "notes": "All 3 round-1 fixes applied. _get_conn now appears only as a negative reference (telling implementer it does not exist). row_source replaced everywhere with correct entry.get('source_name') or _resolve_source_name(link) formula. Reviewer paths absolute."
+    },
+    "10": {
+      "status": "pass",
+      "round1_findings_addressed": 7,
+      "round1_findings_pending": 0,
+      "new_findings": 0,
+      "notes": "All 7 round-1 fixes applied. wave=5 frontmatter correct. Step 1 mandatory-add wording explicit. Pre-flight existence guard at top of 'What to do' + repeated in Implementation hints. SSH non-doing reiterated. Env vars (SSH_HOST, DEPLOY_PATH) requirement explicit with placeholder warning. Functional grep replaces file-count check. Reviewers section has explanation paragraph (no reviewers = deploy-pipeline operator-driven verification)."
+    },
+    "11": {
+      "status": "pass",
+      "round1_findings_addressed": 4,
+      "round1_findings_pending": 0,
+      "new_findings": 0,
+      "notes": "All 4 round-1 fixes applied. wave=6 frontmatter correct. Channel handle uses TELEGRAM_CHANNEL_ID env with explicit '@myhwchannel123 — тестовый инстанс' disambiguation in 4 places. JSON1 json_extract preferred, LIKE fallback documented, exact-string match explicitly warned against. 2-week interim pass note ('pass with pending monitoring') allows /done archival before full window with rollback path if regression surfaces in week 2."
+    }
+  },
+  "stats": {
+    "tasks_checked": 5,
+    "issues_found": 0,
+    "critical": 0,
+    "major": 0,
+    "minor": 0,
+    "round1_fixes_verified": 21,
+    "round1_fixes_pending": 0
+  }
+}

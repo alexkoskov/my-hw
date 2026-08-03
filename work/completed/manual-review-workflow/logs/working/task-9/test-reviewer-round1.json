@@ -1,0 +1,71 @@
+{
+  "reviewer": "test-reviewer",
+  "task": "task-9",
+  "round": 1,
+  "date": "2026-04-23",
+  "mode": "inline-fallback",
+  "mode_note": "Task tool was unavailable; review performed inline by the task teammate against test-master methodology dimensions (coverage, isolation, determinism, clarity, independence, layering).",
+  "scope": [
+    "tests/test_idle_fallback.py (12 tests, 4 test classes)",
+    "tests/test_hw_review_take.py (8 tests, 4 test classes)"
+  ],
+  "status": "ok-with-nits",
+  "summary": "All 7 TDD anchors from tasks/9.md test_idle_fallback.py are covered plus one bonus (teaser-False persists telegraph_url). All 5 TDD anchors for test_hw_review_take.py are covered plus two bonus (zero-index, empty-queue). Follows project conventions: tempfile DB via `news_bot.DB_FILE` patch, real repo for writes, SQL-UPDATE for time manipulation (not Python time-mock), `hw_review.main(argv)` entry point with captured stdout/stderr. Zero flakiness risk (no real network, no real time).",
+  "findings": [
+    {
+      "id": "TR-1",
+      "severity": "info",
+      "dimension": "coverage",
+      "location": "tests/test_idle_fallback.py::TestFallbackPublishHelper",
+      "finding": "Unit-level tests for _fallback_publish bypass the full job() wrapper and call the helper directly. Verifies transcreate wiring, preview cleanup, and teaser-False-raises contract. Complements the integration tests that go through job().",
+      "action": "no-action",
+      "rationale": "Intentional two-layer split: integration tests cover the job() wrapper + attempt-counter policy; unit tests cover the helper's internal contract. Matches test-pyramid guidance."
+    },
+    {
+      "id": "TR-2",
+      "severity": "low",
+      "dimension": "coverage",
+      "location": "tests/test_idle_fallback.py — no test for (1a) + (1b) running in the same tick",
+      "finding": "No test asserts that a row newly-notified at step (1a) does NOT immediately auto-publish at step (1b) in the same tick — the grace-window invariant.",
+      "action": "covered-indirectly",
+      "rationale": "list_notified_overdue filters `notified_at < datetime('now', '-GRACE_WINDOW_HOURS hours')`. A row with fresh notified_at (just stamped seconds ago) cannot satisfy this unless GRACE_WINDOW_HOURS ≤ 0. The repo contract is tested in Task 1's suite. Adding a job-level integration test would be a belt-and-suspenders assertion of SQL semantics."
+    },
+    {
+      "id": "TR-3",
+      "severity": "info",
+      "dimension": "determinism",
+      "location": "tests/test_idle_fallback.py time manipulation",
+      "finding": "Uses SQLite `datetime('now', '-N hours')` instead of patching datetime.now. Tech-spec Testing Strategy explicitly prefers this form.",
+      "action": "no-action",
+      "rationale": "Correct and deterministic; confirmed by the baseline full-suite run (359 passed, no flakes on repeated runs)."
+    },
+    {
+      "id": "TR-4",
+      "severity": "low",
+      "dimension": "independence",
+      "location": "tests/test_hw_review_take.py::TestTakeNotNotified",
+      "finding": "This test accepts BOTH exit 0 and exit 1 via `self.assertIn(rc, (0, 1))`. The task file allows the implementation to pick either; the test enforces that choice weakly.",
+      "action": "document-accept",
+      "rationale": "Task file explicitly allows either exit-code policy for the 'never-notified' branch. Weakening the assertion to match the spec flexibility is correct. The stronger guarantees (no traceback, no DB mutation) ARE asserted."
+    },
+    {
+      "id": "TR-5",
+      "severity": "info",
+      "dimension": "clarity",
+      "location": "tests/test_hw_review_take.py::test_take_after_autopublish_returns_exit_1_with_error",
+      "finding": "Uses `patch.object(hw_review.repo, 'get_pending', side_effect=fake_get_pending)` that mutates DB inside the side_effect to simulate a row-vanished race. Setup is elaborate but necessary.",
+      "action": "no-action",
+      "rationale": "The race condition it simulates is a real scenario (list_pending snapshot taken before get_pending re-read). The alternative — direct DB insert into published_articles bypassing the pending workflow — wouldn't exercise the actual CLI code path."
+    },
+    {
+      "id": "TR-6",
+      "severity": "info",
+      "dimension": "coverage",
+      "location": "tests/test_idle_fallback.py — no test for heads-up ping when Telegram itself raises",
+      "finding": "No test verifies the heads-up ping's try/except swallows notifier exceptions without aborting the job().",
+      "action": "no-action",
+      "rationale": "The job() wrapper for send_admin_notification is a try/except Exception with logger.error — standard pattern already tested elsewhere (test_job_prep_phase.py covers the analogous case for step 6). Adding a duplicate test adds no value."
+    }
+  ],
+  "recommendation": "Accept. Six findings total, all info/low. Full test count: 20 new tests, 359 total (up from 339), zero regressions."
+}

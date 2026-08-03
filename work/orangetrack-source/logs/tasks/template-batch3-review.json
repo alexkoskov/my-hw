@@ -1,0 +1,43 @@
+{
+  "validator": "task-validator",
+  "batch": [11],
+  "status": "approved",
+  "findings": [
+    {
+      "severity": "minor",
+      "category": "frontmatter",
+      "task": 11,
+      "section": "frontmatter",
+      "issue": "`wave: final` is a string, but the task template specifies wave as a number >= 1. Pure schema-strict reading would flag this as a type violation.",
+      "fix": "Either (a) keep the project convention of `wave: final` for the post-deploy/QA final wave (already used by Task 9 and Task 10 in this feature, so it is a documented project convention) and accept the deviation; or (b) replace with a numeric value (e.g. `wave: 5`) consistent with the wave numbering of preceding tasks. No action required if the orchestrator handles `final` as a magic value."
+    },
+    {
+      "severity": "minor",
+      "category": "decomposition",
+      "task": 11,
+      "section": "frontmatter",
+      "issue": "Task 11 declares `depends_on: [10]` but both Task 10 and Task 11 share `wave: final`. The validator rule `depends_on[X] => wave > wave_of(X)` cannot be satisfied with equal wave values; with string-typed wave it is also undecidable.",
+      "fix": "Acceptable as a convention (sequential ordering inside the Final Wave is implied by `depends_on`, and the orchestrator is expected to respect it). If the orchestrator does not honor depends_on within a wave, split Task 11 into a distinct trailing wave (e.g. `wave: post-deploy` or numeric)."
+    },
+    {
+      "severity": "minor",
+      "category": "structure",
+      "task": 11,
+      "section": "Reviewers",
+      "issue": "Reviewers section content `(none — verification-таска, ревьюеры не назначены)` is a free-form annotation, not the template's bullet-list format. Acceptable because frontmatter `reviewers: []` is empty and the task is self-verifying QA — checklist permits empty reviewers for QA/deploy tasks. Keeping consistency with Task 9/10 of this feature.",
+      "fix": "No fix needed if convention. Optionally: render as `- none (self-verifying QA task)` to match bullet-list style of the template."
+    },
+    {
+      "severity": "minor",
+      "category": "structure",
+      "task": 11,
+      "section": "Verification Steps",
+      "issue": "Section contains only `### User` subsection — no `### Automated` and no `### Smoke`. For a non-code post-deploy QA task this is appropriate (no test commands to run, no pre-deploy smoke applicable — verification IS the deploy gate). The verification logic itself lives in `What to do` Шаги 1-4.",
+      "fix": "No fix needed — appropriate for verification-only task. The `User` subsection correctly captures the operator-confirmation gate."
+    }
+  ],
+  "stats": {
+    "tasks_checked": 1,
+    "issues_found": 4
+  }
+}

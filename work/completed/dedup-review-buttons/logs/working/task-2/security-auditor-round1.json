@@ -1,0 +1,22 @@
+{
+  "reviewer": "security-auditor",
+  "task": 2,
+  "round": 1,
+  "verdict": "pass",
+  "findings": [
+    {
+      "severity": "low",
+      "file": "admin_alerts.py",
+      "line": 754,
+      "issue": "build_dedup_review_keyboard(token) does not validate or bound-check the `token` argument (no length cap, no charset restriction, no ':' rejection). It is currently only ever called with a server-generated `secrets.token_urlsafe(9)` value (per tech-spec Decision 3 / Task 3), so there is no exploitable path in this diff. If a future caller ever passes attacker-influenced data as `token` (e.g. derived from an article URL or external input) instead of the minted opaque id, it could (a) push callback_data over Telegram's 64-byte limit silently truncating/erroring, or (b) inject extra ':' characters that confuse the `dd:<action>:<token>` split-based parser to be added in Task 5.",
+      "fix": "No code change required now (documented as intentional in the task: 'Никакой валидации/экранирования токена в билдере не нужно'). Recommend Task 4/5's resolve_dedup_callback parse the callback_data defensively (e.g. `split(':', 2)` with exactly 3 parts, reject otherwise) so a malformed/oversized token can never be mis-parsed as a different action or token, and add a one-line assertion/comment at the Task 3 call site confirming the token always comes from secrets.token_urlsafe, never from user/article-derived text."
+    }
+  ],
+  "summary_notes": {
+    "token_is_opaque_no_secret": "Confirmed: build_dedup_review_keyboard only formats a pre-generated token string into callback_data ('dd:c:<token>' / 'dd:k:<token>'); it does not mint or embed the bot token, admin id, or any credential. Token generation (secrets.token_urlsafe(9)) is out of scope for this task (Task 3).",
+    "reply_markup_bypasses_redact_text_safely": "Confirmed by design and by code: send_admin_notification passes `message` through _redact_text but forwards `reply_markup` verbatim to bot.send_message (news_bot.py L510-513). This is safe because reply_markup only ever carries build_dedup_review_keyboard's output: two fixed, hardcoded label strings ('🚫 Не публиковать' / '👍 Оставить') plus callback_data built from the caller-supplied token — no user-controlled free text is ever embedded in button labels in this diff, so there is no path for a secret or attacker string to leak through the unredacted channel.",
+    "alert_text_anchor_intact": "Verified via diff: alert_cross_source_dupe (admin_alerts.py, E014 builder) is untouched by this commit; new function build_dedup_review_keyboard is appended after it. The 'Похож на дубль' anchor substring relied on by integration tests and rate-limit logic is unchanged.",
+    "no_new_logging_of_markup": "Verified: the only logging.info call in send_admin_notification logs `safe_message` (the redacted text), never `reply_markup` (news_bot.py L522-524, 'Admin notification sent: %s', safe_message). No new log statement was added that touches reply_markup or callback_data.",
+    "test_fixtures_no_real_secrets": "The fake bot token used in tests/test_admin_ping.py ('1234567890:fake_for_test_AAAA...') matches the existing convention already used in tests/test_no_token_leak_in_logs.py — confirmed not a real credential."
+  }
+}

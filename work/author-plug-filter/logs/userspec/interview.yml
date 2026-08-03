@@ -1,0 +1,573 @@
+# Interview Plan for Feature Planning
+#
+# Tracks progress of adaptive discovery interview for a new feature/bug/refactoring.
+# Updated after EACH user response with scoring, values, and remaining gaps.
+#
+# Scoring: 0-100% (how well we understand this aspect)
+# Status: pending → partial → complete
+# Required: true = must reach threshold, false = cover if relevant
+
+# ============================================================================
+# Interview Metadata (Session Recovery)
+# ============================================================================
+interview_metadata:
+  started: "2026-05-03 14:34:27"
+  last_updated: "2026-05-03 16:30:00"
+  status: "completed"
+  can_resume: false
+  current_question_num: 6
+  feature_size: "S"
+
+# ============================================================================
+# Conversation History (for session recovery)
+# ============================================================================
+# Preserves complete Q&A. Update after EVERY user response.
+#
+conversation_history:
+  - question_num: 1
+    timestamp: "2026-05-03 14:34:27"
+    topic: "feature_description + success_criteria + testing_strategy + constraints"
+    agent_question: |
+      Q1: What EN patterns to filter? Proposed list:
+        - (follow|check) (me|us) on (instagram|twitter|x|tiktok|youtube|facebook|reddit)
+        - (my|our) (instagram|twitter|youtube|reddit) (is|@)
+        - ^instagram:\s*@, ^facebook:\s*, ^youtube:\s*@, ^reddit:\s*u/
+        - subscribe to (my|our) channel
+        - @handle in parens at end of follow-verb sentence
+      Q2: Where to hook variant B postprocessor — proposed: in _fallback_publish in news_bot.py
+        after transcreate_via_claude returns, before update_staged.
+      Q3: Feature size S — TDD on each pattern, smoke test on leaked phrase, no integration.
+      Q4: Limit scope to author plugs (me/us); corporate "Follow Mattel on..." stays for separate
+        future feature on press-release boilerplate sections.
+    user_answer: "да"
+    summary: All 4 propositions accepted: pattern list, hook in _fallback_publish, size S,
+      author-only scope.
+
+  - question_num: 2
+    timestamp: "2026-05-03 14:42:00"
+    topic: "success_criteria edge cases"
+    agent_question: |
+      Q5: Handle without '@' (e.g. 'Instagram: diecast215')? Proposed: pattern '^Instagram:'
+        catches it regardless of @, length-bounded.
+      Q6: Multi-line plug — 'Follow me on Instagram for...' followed by orphan '@diecast215'
+        on next line. Add pattern '^@\\w+$' to catch standalone handles?
+      Q7: Plug as a bullet-list item — parser returns each li as a separate paragraph,
+        variant A drops just that paragraph. OK?
+      Q8: Plug at start of article / inside lead — variant B removes the first sentence,
+        rest of paragraph survives. OK?
+    user_answer: "да"
+    summary: All 4 edge cases accepted — handle-without-@ pattern, orphan-handle pattern,
+      bullet-list plug drop, lead-sentence stripping by variant B.
+
+  - question_num: 3
+    timestamp: "2026-05-03 14:55:00"
+    topic: "code-informed refinement (cycle 2)"
+    agent_question: |
+      Q9: Variant B location — new file author_plug_filter.py vs extending boilerplate_filter.py.
+        Proposed: new file (separation of concerns: drop-paragraph vs strip-sentence).
+      Q10: Over-strip risk handling — Strategy A: log INFO 'stripped sentence: X' on every
+        match so operator sees in journalctl and can react.
+      Q11: Mattel boundary — corporate 'Follow Mattel on...' stays out of scope, will pass
+        through this feature.
+      Q12: Verification — Telegraph spot-check + journalctl grep + regression sample of
+        real Instagram mentions in content.
+      Q13: Deploy — standard CI/CD; new author_plug_filter.py must be added to FILES in
+        deploy.sh AND .github/workflows/deploy.yml (per patterns.md INVARIANT).
+    user_answer: "подтверждаю"
+    summary: All 5 confirmed: new module file, INFO-log strategy, Mattel out of scope,
+      verification plan ok, deploy flow standard with FILES list update.
+
+  - question_num: 4
+    timestamp: "2026-05-03 15:05:00"
+    topic: "edge cases — sentence boundary, broken paragraphs, photo-credit"
+    agent_question: |
+      Q14: Sentence-boundary detection in variant B — Strategy C: regex captures the plug
+        sentence with optional surrounding brackets/quotes/terminal punctuation
+        ([\\(\\[«]?<plug-cue>[^.!?\\)\\]»]*[\\)\\]»]?[.!?…]?), substitute with empty,
+        trim spaces. No general sentence-tokenization.
+      Q15: Empty-paragraph handling after strip — Strategy B+C: empty string for flat
+        paragraphs (Telegraph skips them); whole-block removal for blocks with type
+        'paragraph' (no DOM hole; nearby image survives).
+      Q16: 'Photo credit: @diecast215' — content attribution, not promo. Pass through.
+    user_answer: "ok"
+    summary: All 3 confirmed: regex-as-anchor (no general tokenizer), empty-string flat
+      paragraphs / whole-block removal for blocks, Photo credit attribution passes through.
+
+  - question_num: 5
+    timestamp: "2026-05-03 15:15:00"
+    topic: "completeness gaps from interview-completeness-checker"
+    agent_question: |
+      Q17 (platforms): extend list with patreon + discord + linktree; skip threads/onlyfans.
+      Q18 (manual path): variant B SKIPPED when via_review=True — manual editor already
+        scrubs plugs at stage time per ux-guidelines, no double-pass needed.
+      Q19 (Google-translated RU robustness): add umbrella regex for parenthesized phrases
+        containing platform + @handle, regardless of verb cue: \\([^)]*<platform>\\s*@?\\w*[^)]*\\)
+        for instagram / twitter / x / facebook / youtube / tiktok / reddit / patreon / discord.
+      Q20 (interaction with _patch_text_with_ru_paragraphs): explicit AC that variant B
+        treats ru_paragraphs and ru_blocks independently; does not assume mutual exclusivity.
+      Q21 (aggregate admin-ping): skip — journalctl grep is enough, plan-of-day ping stays
+        focused on schedule + backlog.
+      Q22 (feature flag DISABLE_AUTHOR_PLUG_FILTER): skip — git revert + redeploy is ~3 min,
+        a kill-switch env var adds permanent code surface for a transient need.
+    user_answer: "да"
+    summary: All 6 closed — 3 substantive (platforms, manual-path skip, umbrella RU regex),
+      1 explicit-AC fix (independence), 2 conscious omissions (aggregate ping, kill-switch).
+
+# ============================================================================
+# Phase 1: High-Level Feature Understanding
+# ============================================================================
+# Interview Cycle 1 scope
+phase1_feature_overview:
+
+  feature_name:
+    score: 95
+    status: "complete"
+    value: "author-plug-filter"
+    gaps: ""
+    required: true
+
+  feature_description:
+    score: 90
+    status: "complete"
+    value: "Two-tier filter for author social-media plugs in source articles. Variant A: extend
+      boilerplate_filter.py with EN (primary) + RU (defence) patterns: (follow|check) (me|us) on
+      <platform>, (my|our) <platform> (is|@), ^instagram:\\s*@, ^facebook:\\s*, ^youtube:\\s*@,
+      ^reddit:\\s*u/, subscribe to (my|our) channel, plus @handle-in-parens at end. Runs on
+      source-side EN paragraphs before LLM translation. Variant B: post-translation regex
+      stripper invoked from _fallback_publish in news_bot.py after transcreate_via_claude
+      returns, before update_staged — for cases where the plug is embedded inline in a longer
+      paragraph; removes only the offending sentence, not the whole paragraph. Scope: author
+      plugs (me/us) only; corporate 'Follow Mattel on...' lives in a separate future feature."
+    gaps: ""
+    required: true
+
+  work_type:
+    score: 95
+    status: "complete"
+    value: "feature"
+    gaps: ""
+    required: true
+
+  user_problem:
+    score: 90
+    status: "complete"
+    value: "Authors of source articles (e.g. lamleygroup, autoevolution) embed inline plugs
+      to their personal social media. Observed 2026-05-02 14:40 publication leaked
+      '(подписывайтесь на меня в Instagram @diecast215 )' to @myhwchannel123. Pollutes channel
+      with third-party promo, feels off-brand. ux-guidelines.md already lists these plugs as
+      'разрешённый дроп' under category (a) 'Author social links' — boilerplate_filter.py just
+      doesn't enforce that rule yet (current allowlist covers UI bleed only)."
+    gaps: ""
+    required: true
+
+  target_users:
+    score: 40
+    status: "partial"
+    value: "Channel subscribers (@myhwchannel123) — beneficiaries; operator (alexkoskov) — owns the editorial standard."
+    gaps: "Could be sharpened but optional"
+    required: false
+
+  success_criteria:
+    score: 90
+    status: "complete"
+    value: |
+      1. Reference smoke: '(follow me on Instagram @diecast215)' as a standalone short paragraph
+         is dropped by variant A (EN-side, before LLM call).
+      2. Reference smoke: '(подписывайтесь на меня в Instagram @diecast215)' embedded inline
+         in a longer paragraph is removed by variant B (RU-side, after LLM), preserving the rest
+         of the paragraph.
+      3. Negative: a real-content sentence mentioning Instagram (e.g. 'The collector posted his
+         find to Instagram and gathered 50K likes') survives both filters.
+      4. Pattern table: every pattern in the agreed list has at least one positive and one
+         negative test case.
+      5. Edge cases handled:
+         - Handle without '@' ('Instagram: diecast215') — variant A drops via '^Instagram:' pattern.
+         - Multi-line plug — orphan '@diecast215' on its own line dropped via '^@\\w+$' pattern.
+         - Plug as bullet-list item — variant A drops just that li.
+         - Plug at lead/start — variant B removes the first sentence, rest of paragraph survives.
+      6. All 682 existing tests still pass.
+    gaps: ""
+    required: true
+
+  constraints:
+    score: 90
+    status: "complete"
+    value: |
+      - Project in observation mode → conservative additions to existing well-tested module.
+      - Hook point decided: variant A in boilerplate_filter.py (existing module), variant B
+        called from _fallback_publish in news_bot.py after transcreate_via_claude returns.
+      - Single call site for variant B (one entry to channel), no per-engine branching.
+      - Patterns compiled once at module import (re.compile in module body), like the existing
+        _BOILERPLATE_PATTERNS list.
+      - Length threshold: keep variant A's _MAX_BOILERPLATE_LEN philosophy (short = potential
+        boilerplate, long = real content). Threshold may need bumping from 80 to ~120 to fit
+        '(follow me on Instagram @diecast215)' (36 chars — fits 80) and longer variants.
+      - Variant B operates on RU paragraphs only; it does NOT remove whole paragraphs, only
+        the matched sentence; preserves surrounding text verbatim.
+      - Scope boundary: author-plug only. Corporate 'Follow Mattel on...' is a separate feature.
+    gaps: ""
+    required: true
+
+  testing_strategy:
+    score: 90
+    status: "complete"
+    value: |
+      Feature size: S.
+      - Unit tests in tests/test_boilerplate_filter.py for variant A (one positive + one
+        negative per pattern; reuse existing fixture structure).
+      - New tests/test_author_plug_filter.py for variant B post-translation stripper:
+        * Inline plug in middle of paragraph removed, rest preserved.
+        * Plug at paragraph start / end removed.
+        * Real content mentioning Instagram preserved.
+        * Empty paragraph passthrough.
+      - Smoke test on the actual leaked phrase from 2026-05-02 14:40 publication — that
+        specific string MUST be filtered by either variant A (if it arrives as standalone
+        paragraph) or variant B (if it arrives inline).
+      - No integration / E2E — feature is a pure-functional filter; existing
+        test_fallback_publish_paths.py covers the surrounding _fallback_publish flow and
+        a smoke-test there confirms the filter is wired in.
+    gaps: ""
+    required: true
+
+# ============================================================================
+# Phase 2: User Experience & Scenarios
+# ============================================================================
+# Interview Cycle 2 scope (together with Phase 3)
+phase2_user_experience:
+
+  user_stories:
+    score: 90
+    status: "complete"
+    value: |
+      Story 1 (channel subscriber): As a Hot Wheels enthusiast subscribed to @myhwchannel123,
+        I want translated articles to NOT contain plugs to author social media (e.g.
+        'подписывайтесь на меня в Instagram @diecast215'), so the channel stays clean.
+      Story 2 (operator): As the channel operator, I want author plug filtering to apply
+        uniformly across all auto-publish paths (Claude / Gemini / OpenAI / OpenRouter /
+        Google Translate fallback), so I don't have to retro-edit Telegraph pages.
+      Story 3 (operator, observability): As the channel operator, I want every variant-B
+        sentence-strip event logged at INFO level with the stripped text, so I can spot
+        false positives via journalctl and rollback if needed.
+    gaps: ""
+    required: true
+
+  acceptance_criteria:
+    score: 98
+    status: "complete"
+    value: |
+      AC1. Variant A — '(follow me on Instagram @diecast215)' as a standalone short paragraph
+        is dropped by filter_boilerplate before LLM call.
+      AC2. Variant A — orphan '@diecast215' on its own line is dropped (^@\\w+$ pattern).
+      AC3. Variant A — 'Instagram: diecast215' (no @) as standalone paragraph is dropped.
+      AC4. Variant A — bullet-list item 'Follow me on Instagram for the next reveal' is dropped.
+      AC5. Variant B — '(подписывайтесь на меня в Instagram @diecast215)' embedded inline in
+        a longer Russian paragraph is removed, the rest of the paragraph survives byte-identical
+        except for the deleted sentence.
+      AC6. Variant B — plug at start of paragraph ('Welcome back, follow me on Instagram
+        @diecast215. Today we look at...') has only the first sentence removed.
+      AC7. Variant B — every strip event logs INFO with the stripped substring (so operator
+        sees in journalctl).
+      AC8. Variant B — applies uniformly to ru_title / ru_subtitle / ru_paragraphs /
+        ru_blocks (text + caption fields) returned by transcreate_via_claude AND by
+        _google_translate fallback path. Single call site in _fallback_publish.
+      AC9. Negative — 'The collector posted his find to Instagram and gathered 50K likes'
+        survives both filters (real content mentioning platform).
+      AC10. Negative — 'коллекционер написал в Instagram, что нашёл редкий Chase' survives
+        variant B (Russian content mentioning platform without plug-cue verbs).
+      AC11. Out of scope — 'Follow Mattel on Instagram, X, and Facebook' (corporate plug)
+        passes through this feature unchanged. To be addressed in a separate future feature.
+      AC12. All 682 existing tests pass; new tests added for both variants.
+      AC13. Variant B SKIPS execution when via_review=True (manual hw_review path) — operator
+        already scrubs plugs at stage time per ux-guidelines, no double-pass needed.
+      AC14. Variant A platform list: instagram, twitter, x, tiktok, youtube, facebook, reddit,
+        patreon, discord, linktree. Threads + OnlyFans intentionally NOT in scope (rare in HW).
+      AC15. Variant B umbrella regex — paren-phrase containing any of the listed platforms +
+        optional @handle, regardless of verb cue (catches Google-translated variants like
+        '(посмотрите меня в Instagram @x)' that don't anchor on 'подписывайтесь').
+      AC16. Variant B treats ru_paragraphs and ru_blocks independently — when LLM returns
+        blocks=null and _patch_text_with_ru_paragraphs splices ru_paragraphs into EN-block
+        scaffold, both collections may carry the same plug; cleaning each independently
+        is correct (no de-duplication assumption).
+    gaps: ""
+    required: true
+
+  edge_cases:
+    score: 90
+    status: "complete"
+    value: |
+      EC1. Handle without '@': 'Instagram: diecast215' — variant A drops.
+      EC2. Multi-line plug: 'Follow me on Instagram for...' \\n '@diecast215' — A drops both.
+      EC3. Plug as li in bullet list — A drops just that li, surrounding bullets survive.
+      EC4. Plug at lead/start of paragraph — B removes first sentence only.
+      EC5. Plug in middle of long paragraph — B removes that sentence only.
+      EC6. Plug at end of paragraph — B removes just that sentence.
+      EC7. Multiple plugs in one paragraph — B removes all of them in one pass.
+      EC8. Mattel corporate 'Follow Mattel on...' — passes through unchanged (out of scope).
+      EC9. Long paragraph (>120 chars) starting with 'Follow me on Instagram...' as inline
+        prose — variant A length-bound preserves it; variant B catches the sentence cleanly.
+    gaps: ""
+    required: true
+
+  error_scenarios:
+    score: 90
+    status: "complete"
+    value: |
+      ES1. Variant B regex over-strips a real-content sentence (false positive) →
+        INFO log captures the stripped text → operator sees in journalctl → corrective
+        rollback via git revert + redeploy. Mitigation: regex anchored on plug-cue verbs
+        (подписывайтесь, follow me, мой Instagram) NOT on bare platform mentions.
+      ES2. Empty paragraph after strip — if variant B removes the only sentence in a
+        paragraph, returns empty string. Empty paragraphs already filtered downstream
+        (paragraph-count validators in _llm_common._parse_response treat empty paragraphs
+        as fine; Telegraph renderer skips empty-string paragraphs).
+      ES3. Filter raises exception (regex error, type mismatch) → defensive try/except
+        around variant B call site, log ERROR, return original paragraphs unchanged.
+        Channel publishes "as if filter wasn't there" rather than crash.
+    gaps: ""
+    required: true
+
+  verification_strategy:
+    score: 90
+    status: "complete"
+    value: |
+      Pre-deploy: pytest tests/ green (existing 682 + new tests for both variants).
+      Post-deploy:
+        1. Wait for next lamley/autoevolution publish (the leak source).
+        2. Open Telegraph URL — confirm no '(подписывайтесь...)' / '(follow me...)' fragments.
+        3. SSH to server, journalctl -u news_bot.service -S today | grep author_plug —
+           should show INFO 'stripped sentence: ...' lines when filter triggers.
+        4. Spot-check 2-3 published articles for false positives — real Instagram mentions
+           in content (e.g. 'фото из Instagram', 'постит в Instagram') must survive.
+      No live-channel rollback drill needed — feature is pure-functional, git revert HEAD
+      + push restores prior behaviour in ~3 minutes.
+    gaps: ""
+    required: true
+
+  ui_ux_requirements:
+    score: 0
+    status: "skipped"
+    value: "N/A — backend filter, no UI surface."
+    gaps: ""
+    required: false
+
+  risks:
+    score: 90
+    status: "complete"
+    value: |
+      R1. Over-strip false positive — regex might cut a legitimate sentence.
+        Mitigation: anchor on plug-cue verbs not platform keywords;
+        INFO log every strip; operator-observable via journalctl.
+      R2. Pattern collision — new variant-A pattern '(follow|check) (me|us) on …' overlaps
+        with existing '^follow us on \\w+' (line 49). Mitigation: collapse the two into
+        one broader pattern, drop the legacy form.
+      R3. _MAX_BOILERPLATE_LEN bump 80→120 — one test asserts on the literal 80
+        (test_boilerplate_filter.py:129) but the fixture string >120, ergo passes;
+        update assertion message text only.
+      R4. Forgotten FILES list update — new module author_plug_filter.py must land in
+        deploy.sh AND .github/workflows/deploy.yml or the server hits ImportError on next
+        cron tick. Mitigation: explicit task in tech-spec checklist.
+    gaps: ""
+    required: true
+
+  technical_decisions:
+    score: 95
+    status: "complete"
+    value: |
+      TD1. New module author_plug_filter.py (not extension of boilerplate_filter.py) —
+        separation: drop-whole-paragraph vs strip-substring are different concerns.
+      TD2. Variant B traverses ru_blocks too (not just ru_paragraphs) — telegraph_publisher
+        renders blocks when present (autoevolution); skipping them would leak plugs.
+      TD3. Single hook for variant B in _fallback_publish (news_bot.py:~1010) — both Claude
+        success and Google fallback paths converge there; one call covers all engines.
+      TD4. Defensive try/except around variant B — regex bug must NOT crash the publish loop;
+        log ERROR + return inputs unchanged.
+      TD5. Collapse '^follow us on \\w+' (existing) into the new broader '(follow|check)
+        (me|us|our team) on (instagram|...)' pattern; remove duplicate.
+      TD6. Sentence-boundary in variant B — regex captures plug-sentence WITH surrounding
+        brackets/quotes/terminal punctuation, substitutes with empty, trims spaces. No
+        general sentence-tokenization library; the regex IS the boundary detector.
+      TD7. After variant B strip:
+        - Flat paragraph reduced to empty/whitespace → keep as empty string (Telegraph
+          skips empty <p>).
+        - Block with type='paragraph' reduced to empty → remove the whole block from
+          ru_blocks list (avoids DOM hole; image/video blocks nearby unaffected).
+      TD8. 'Photo credit: @handle' attribution — pass through (no pattern). It's content,
+        not promo.
+    gaps: ""
+    required: false
+
+  deploy_approach:
+    score: 95
+    status: "complete"
+    value: |
+      Standard CI/CD: git push origin main → ci.yml runs pytest → on green, deploy.yml
+      SCPs FILES list to VPS, restarts news_bot.service. ~3 minutes total.
+      Required FILES list update in TWO places: deploy.sh and .github/workflows/deploy.yml
+      (the patterns.md INVARIANT). Both must add author_plug_filter.py.
+      No .env / secrets / DB schema changes. Existing 682 tests unaffected (new tests added
+      net-additively).
+    gaps: ""
+    required: false
+
+  manual_user_actions:
+    score: 90
+    status: "complete"
+    value: |
+      None at install time — pure code change.
+      Operator does need to:
+        - After first deploy, run journalctl -u news_bot.service -S today | grep author_plug
+          to confirm filter is logging strip events (or verify no false positives accumulating).
+        - Spot-check 2-3 Telegraph URLs over the first day.
+    gaps: ""
+    required: false
+
+# ============================================================================
+# Phase 3: Integration & Technical Context
+# ============================================================================
+# Interview Cycle 2 scope (together with Phase 2)
+phase3_integration:
+
+  integration_points:
+    score: 95
+    status: "complete"
+    value: |
+      Variant A integrates at boilerplate_filter.py:38-65 (_BOILERPLATE_PATTERNS list) —
+        called by every parser before return:
+        - autoevolution_source.py:293 (filter_blocks) and :356 (filter_boilerplate fallback)
+        - lamley_source.py:349 (before subtitle pick — lucky coverage)
+        - mattel_news_source.py:488
+      Variant B integrates at news_bot._fallback_publish (~line 1010) — single call site
+        AFTER ru_* unpacking from either Claude or Google paths, BEFORE
+        telegraph_publisher.publish_article (line 1027) and pending_repo.update_staged
+        (line 1055). Cleans ru_title, ru_subtitle, ru_paragraphs, ru_blocks.
+      ru_blocks traversal needs to handle text field on (lead, paragraph, heading) types
+        and caption field on (image, video) types, per telegraph_publisher._build_content_from_blocks
+        (lines 114-186).
+    gaps: ""
+    required: true
+
+  dependencies:
+    score: 90
+    status: "complete"
+    value: |
+      Stdlib only (re module). No new pip dependencies. No new env vars. No new DB columns.
+      Reuses existing infrastructure: filter_boilerplate dispatch from source parsers,
+      _fallback_publish single-entry pipeline.
+    gaps: ""
+    required: false
+
+  technical_constraints:
+    score: 85
+    status: "complete"
+    value: |
+      Performance: regex compiled once at module import (existing convention from
+      boilerplate_filter.py). Variant B runs O(n) over paragraphs * O(p) regex passes
+      where p = number of plug patterns (~10). Negligible vs LLM call latency.
+      Security: no user input crosses the boundary; patterns operate on already-sanitized
+      LLM output. No regex catastrophic backtracking risk — patterns avoid (.+)+ form.
+      Backward compat: collapsing '^follow us on \\w+' into the new broader pattern is a
+      strict superset, no behaviour regression.
+    gaps: ""
+    required: false
+
+  data_requirements:
+    score: 100
+    status: "complete"
+    value: "No new data. No DB schema change. No file/storage requirements."
+    gaps: ""
+    required: false
+
+  migration_needs:
+    score: 100
+    status: "complete"
+    value: "None. Existing pending_articles rows continue to flow; no retroactive cleanup
+      needed (already-published articles stay as-is; only NEW publishes after deploy will
+      be filtered)."
+    gaps: ""
+    required: false
+
+# ============================================================================
+# Phase 4: Completion
+# ============================================================================
+phase4_completion:
+  userspec_file: "work/author-plug-filter/user-spec.md"
+  status: "approved"
+
+# ============================================================================
+# Decision Rules
+# ============================================================================
+decision_rules:
+
+  required_threshold: 85
+  optional_threshold: 50
+
+  # Stop criteria (BOTH must be true to exit a cycle)
+  stop_criteria:
+    - "All required items in current cycle scope score >= 85%"
+    - "Structural: every required item has non-empty value, no TBD, gaps empty or conscious limitations"
+
+  priority_order:
+    - "Required items with score < 85% (lowest score first)"
+    - "Optional items mentioned by user in context"
+    - "Other optional items if user seems knowledgeable"
+
+  question_strategy:
+    - "3-4 questions per batch about different gaps"
+    - "Run as many batches as needed — batch size is NOT cycle limit"
+    - "Propose solutions based on PK, not just ask questions"
+    - "Challenge with substance: counterexamples, code references, unexplored scenarios"
+    - "After each response: update scores, values, gaps, conversation_history, save"
+
+# ============================================================================
+# Interview Progress
+# ============================================================================
+progress:
+  current_phase: "phase1_feature_overview"
+  questions_asked: 0
+  last_question: ""
+  total_required_score: 0
+  total_optional_score: 0
+  completion_estimate: "0%"
+  user_detail_level: "unknown"  # brief | moderate | detailed
+
+# ============================================================================
+# Notes
+# ============================================================================
+notes: |
+  Free-form notes:
+  - Important insights
+  - Areas of uncertainty
+  - Pivot points
+  - Scope changes
+
+# ============================================================================
+# USAGE INSTRUCTIONS
+# ============================================================================
+#
+# 1. INIT: Created by init-feature-folder.sh at work/{feature}/logs/userspec/interview.yml
+#    Set metadata.started, metadata.status: in_progress
+#
+# 2. INITIAL SCORING: After user's free-form description, score ALL items
+#    Detailed 80-95%, brief 50-70%, vague 20-40%, not mentioned 0%
+#
+# 3. INTERVIEW LOOP (save after EVERY response):
+#    a) Find required items with score < 85% in current cycle scope
+#    b) Ask 3-4 questions about different gaps
+#    c) Propose solutions based on PK
+#    d) User answers
+#    e) Update: conversation_history, scores, values, gaps, metadata
+#    f) Save immediately
+#    g) Check stop criteria (score >= 85% AND structural: value filled, no TBD, gaps resolved)
+#    h) Not done → repeat. Done → next cycle.
+#
+# 4. CYCLES:
+#    Cycle 1: phase1_feature_overview items
+#    Cycle 2: phase2_user_experience + phase3_integration items
+#    Cycle 3: ALL items still below threshold (cleanup pass)
+#
+# 5. RESUME: If metadata.status is "in_progress"
+#    Load, show conversation summary, resume from current state
+#
+# 6. COMPLETION: After user approves user-spec.md
+#    Set phase4_completion.status: approved
+#    Set metadata.status: completed

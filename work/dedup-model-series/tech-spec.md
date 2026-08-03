@@ -90,7 +90,9 @@ over-match); a stored tier avoids re-deriving it at compare time. Serves **AC1, 
 > is emitted only for **one-off franchises / events** — gated by
 > `_theme_only_eligible(canonical, tier)`: lexicon-`distinctive` (derived through
 > `_tier_suffix`, so the unknown-tier→broad fail-safe governs here too) AND not in
-> `_RECURRING_SERIES` (`super treasure hunt`, `red line club`). A **broad recurrent
+> `_RECURRING_SERIES` (в коде: `_RECURRING_PROGRAMS`, model_extractor.py:224 —
+> имя в спеке никогда не существовало в коде; аннотация добавлена 2026-08-03)
+> (`super treasure hunt`, `red line club`). A **broad recurrent
 > car-line** (pop culture, car culture, boulevard, zamac, monster trucks, team
 > transport) or a **recurring release program** now contributes NO key at all when
 > the article has no concrete model. Rationale: those series ship continuously, and

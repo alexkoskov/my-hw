@@ -10,18 +10,23 @@ DEPLOY_PATH="${DEPLOY_PATH:-/home/user/bot}"
 
 # Files to deploy
 # What lives where:
-#   - Server (this list): everything the daily 12:00 МСК cron path in
-#     news_bot.job() needs. That's news_bot.py + its first-party imports
-#     (sources, Telegraph publisher, pending-articles repo) + the three
-#     llm-transcreation runtime modules (claude_transcreation.py,
-#     compute_publish_slots.py, outage_state.py — all imported by news_bot.py
+#   - Server (this list): everything news_bot.job() needs. There is no cron:
+#     news_bot runs as a long-lived process and schedules itself in-process
+#     (news_bot.py:4641 — one daily tick at 10:00 МСК, which then computes the
+#     fixed publish slots 10:00/15:00/19:30). Corrected 2026-08-03; the old
+#     "daily 12:00 МСК cron" wording predates the Docker migration.
+#     The list is news_bot.py + its first-party imports (sources, Telegraph
+#     publisher, pending-articles repo) + the LLM stack (llm_transcreation.py
+#     dispatcher, _llm_common.py, and the four engine modules) +
+#     compute_publish_slots.py + outage_state.py — all imported by news_bot.py
 #     at startup; without any of them news_bot crashes with ImportError on the
-#     first cron tick) + feeds.json (still loaded by load_feed_urls() at top
-#     of job()) + requirements.txt + .env.example + ux-guidelines.md (Claude
-#     API system prompt, read by claude_transcreation._load_prompt).
+#     first tick — + feeds.json (still loaded by load_feed_urls() at top of
+#     job()) + requirements.txt + .env.example + ux-guidelines.md (the LLM
+#     system prompt; each engine loads it via its own _load_prompt, which uses
+#     the shared default path in _llm_common.py:64-70).
 #   - INVARIANT: any new first-party import added to news_bot.py MUST be
 #     mirrored into FILES here AND in .github/workflows/deploy.yml. Otherwise
-#     the server will hit ImportError on the next cron tick with no CI signal.
+#     the server will hit ImportError on the next tick with no CI signal.
 #   - Operator's Claude Code session only (NOT deployed): hw_review.py and
 #     preview_renderer.py — the manual-review-workflow CLI tools the operator
 #     runs locally to approve/publish queued articles. They don't run on the

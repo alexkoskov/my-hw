@@ -1,0 +1,136 @@
+{
+  "round": 2,
+  "status": "pass",
+  "sources": {
+    "user_spec": true,
+    "tech_spec": true,
+    "tasks": false
+  },
+  "requirements_total": 18,
+  "requirements_covered": 17,
+  "requirements_partial": 1,
+  "requirements_missing": 0,
+  "round1_critical_findings_resolved": [
+    {
+      "finding": "scope_creep / undocumented_deviation — Decision 7 anti-drift tests not in User-Spec Deviations",
+      "resolution": "Decision 7 now listed in User-Spec Deviations with reason and [PENDING USER APPROVAL]. Downgraded from critical scope_creep to documented_deviation (minor).",
+      "status": "closed"
+    },
+    {
+      "finding": "undocumented_deviation — User-Spec Deviations section incorrectly claimed 'None' while Decision 7 existed",
+      "resolution": "User-Spec Deviations section now correctly enumerates Decisions 3, 4, 7, and 8 — all with reasons and [PENDING USER APPROVAL].",
+      "status": "closed"
+    },
+    {
+      "finding": "undocumented_deviation — Decision 4 (shared builder module vs. inline-in-test-file) not in User-Spec Deviations",
+      "resolution": "Decision 4 now listed in User-Spec Deviations with reason and [PENDING USER APPROVAL].",
+      "status": "closed"
+    }
+  ],
+  "round1_major_findings_resolved": [
+    {
+      "finding": "shallow_solution — error matrix delegated to code-research.md, not self-contained in tech-spec",
+      "resolution": "12-row error matrix (ES1–ES10 incl. ES9b, ES9c) is now reproduced inline in Architecture → 'How it works' → 'Error handling'. Tech-spec is self-contained.",
+      "status": "closed"
+    },
+    {
+      "finding": "undocumented_deviation — Decision 3 internal-helper preservation not in User-Spec Deviations",
+      "resolution": "Decision 3 now listed in User-Spec Deviations with reason and [PENDING USER APPROVAL].",
+      "status": "closed"
+    }
+  ],
+  "round1_minor_findings_resolved": [
+    {
+      "finding": "partial US-17 — fail-soft error handling not self-contained in tech-spec",
+      "resolution": "Error matrix inline closes this. Covered.",
+      "status": "closed"
+    },
+    {
+      "finding": "partial US-18 — backward-rollback error path not stated",
+      "resolution": "Architecture now has explicit 'Backward-rollback handling' paragraph: old __NEXT_DATA__ HTML triggers ES3 ('flight payload not found') → notifier → []. Covered.",
+      "status": "closed"
+    },
+    {
+      "finding": "underengineering — dict-form excerpt test gap in article context (AC6)",
+      "resolution": "New test test_dict_form_excerpt_extracts_text_field added to TestFetchMattelArticle. Covered.",
+      "status": "closed"
+    },
+    {
+      "finding": "structural_gap — Task 1 description contained decision-level content duplicating Decisions section",
+      "resolution": "Task 1 description is now a brief scope statement ('See Decisions 1–8 for rationale and the inline error matrix for behavior') without duplicating architectural content.",
+      "status": "closed"
+    }
+  ],
+  "traceability_matrix": {
+    "US-1 (AC1: fetch_mattel_news returns N HW entries from fixture with N HW)": "covered — TestFetchMattelNews.test_success_filters_hotwheels_only; _make_flight_listing with N HW entries",
+    "US-2 (AC2: returned entry has exactly 5 keys with correct types)": "covered — TestBuildEntry (5 keep), Data Models section documents 5-key shape, _build_entry preserved 1:1",
+    "US-3 (AC3: no HW → [] without notifier call)": "covered — NEW test_listing_with_no_hotwheels_returns_empty_without_notifier: 3 non-HW entries, assert [] + notifier.assert_not_called()",
+    "US-4 (AC4: missing/unparseable streaming-payload → notifier once + [])": "covered — ES3/ES4/ES5 inline error matrix; TestExtractEntries 4 update tests; TestFetchMattelNews update tests assert new error messages",
+    "US-5 (AC5: response > 5 MB → [] + notifier once)": "covered — MAX_RESPONSE_SIZE guard preserved; TestFetchMattelNews.test_oversized_response_returns_empty_and_notifies (keep)",
+    "US-6 (AC6: fetch_mattel_article returns dict with 4 correct keys including dict-form excerpt → subtitle)": "covered — Data Models documents 4-key shape; test_parses_paragraphs_and_uses_thumbnail_only (update); NEW test_dict_form_excerpt_extracts_text_field asserts subtitle == actual text when excerpt is {text: ...}",
+    "US-7 (AC7: fetch_mattel_article → None + notifier in 3 error cases: HTTP 404, no payload, entry not found)": "covered — ES6/ES7 (HTTP errors), ES9 (no payload), ES9b (entry not found); test_http_error_returns_none_and_notifies (keep), test_article_entry_not_found_returns_none_with_readable_error (update); NEW test_article_falls_back_to_url_field_when_handle_mismatch (AC7 url-fallback)",
+    "US-8 (AC8: multi-chunk body → same paragraphs, no gaps/dupes)": "covered — NEW test_body_split_across_multiple_chunks via _make_flight_article(body_chunks=3); _concat_flight helper concatenates all pushes",
+    "US-9 (AC9: empty/truncated/unresolvable body → paragraphs=[] without notifier)": "covered — ES9c content-empty path (no notifier); NEW test_empty_body_returns_paragraphs_empty + test_truncated_body_returns_paragraphs_empty",
+    "US-10 (AC10: thumbnail-only; download_media absent from output)": "covered — thumbnail-only policy preserved; test_no_thumbnail_yields_empty_images_regardless_of_download_media (update); test_parses_paragraphs_and_uses_thumbnail_only (regression lock)",
+    "US-11 (AC11: public exports preserved 1:1)": "covered — Architecture enumerates all preserved names; Decision 3 extends to internal helpers; tech-spec AC: import one-liner smoke",
+    "US-12 (AC12: pytest tests/ all green)": "covered — Testing Strategy; Agent Verification Plan commands 1+2; 32 unit + 3 integration tests",
+    "US-13 (AC13: manual smoke → no notifier)": "covered — Agent Verification Plan command 4; Decision 7 anti-drift smoke; operator post-deploy verification documented",
+    "US-14 (Constraint: contract 1:1 — signatures + 5/4 keys + external symbols)": "covered — Architecture + Decision 1 + Decision 3 + Data Models; explicit tech-spec ACs",
+    "US-15 (Constraint: no new dependencies)": "covered — Dependencies section: zero new packages; stdlib + requests + beautifulsoup4 only",
+    "US-16 (Constraint: thumbnail-only image policy)": "covered — see US-10; patterns.md reference cited",
+    "US-17 (Constraint: fail-soft with admin notification; _notify swallows exceptions)": "covered — error matrix inline (ES1–ES10); Decision 6 + note '_notify swallows notifier exceptions… Preserved'; all 12 error rows traceable to user-spec ACs 4/5/7/9",
+    "US-18 (Constraint: no __NEXT_DATA__ backward-compat; rollback → separate mini-feature)": "partial — ES3 and 'Backward-rollback handling' paragraph now state that old __NEXT_DATA__ HTML triggers 'flight payload not found' → notifier → []. Tech-spec tech-AC 'delete _NEXT_DATA_RE constant' is present. Remaining gap: tech-spec does not explicitly restate the user-spec constraint sentence ('if they roll back — separate mini-feature') in the Decisions or Constraints section — the rollback recovery scope boundary is implicit rather than stated. Minor gap only."
+  },
+  "findings": [
+    {
+      "type": "documented_deviation",
+      "source": "tech-spec",
+      "requirement": "US — Decision 7: anti-drift snapshot smoke tests not in user-spec",
+      "detail": "Decision 7 adds two skip-guarded tests (/tmp/mattel_*.html) not derived from any user-spec AC. Now documented in User-Spec Deviations with reason ([PENDING USER APPROVAL]). Downgraded from critical scope_creep (round-1) to documented_deviation (minor) — operator awareness item only.",
+      "severity": "minor"
+    },
+    {
+      "type": "documented_deviation",
+      "source": "tech-spec",
+      "requirement": "US — Decision 3: preserve internal helper names beyond public exports",
+      "detail": "User-spec AC11 only requires public exports; tech-spec extends preservation to _is_hotwheels, _build_entry, _notify, _extract_entries. Now documented in User-Spec Deviations with reason. Operator awareness item only.",
+      "severity": "minor"
+    },
+    {
+      "type": "documented_deviation",
+      "source": "tech-spec",
+      "requirement": "US — Decision 4: shared builder module instead of inline helpers per user-spec wording",
+      "detail": "User-spec says 'helper-функции в тестовом файле'; tech-spec places them in tests/fixtures/mattel_flight_builder.py. Now documented in User-Spec Deviations with reason. Operator awareness item only.",
+      "severity": "minor"
+    },
+    {
+      "type": "documented_deviation",
+      "source": "tech-spec",
+      "requirement": "US — Decision 8: security hardening controls not mentioned in user-spec",
+      "detail": "Six security controls (SSRF, ReDoS, JSON depth, bracket-match, notifier sanitisation, redirect-off) not requested by user-spec. Documented in User-Spec Deviations with reason and [PENDING USER APPROVAL]. Operator awareness item only.",
+      "severity": "minor"
+    },
+    {
+      "type": "underengineering",
+      "source": "tech-spec",
+      "requirement": "US-7 (AC7): fetch_mattel_article → None when HTTP 404 specifically",
+      "detail": "AC7 cites 'HTTP 404' as an explicit trigger. The test test_http_error_returns_none_and_notifies is marked KEEP. In the old parser, 404 was detected via contentArticle-is-null logic; in the new parser, it is detected via raise_for_status() → HTTPError → ES6. The kept test likely mocks at the requests level (transparent to detection path), but the tech-spec does not call out that the detection mechanism changed and why the KEEP annotation is still valid. A future auditor seeing KEEP may not realise the 404 path now goes through raise_for_status. Low implementation risk; documentation gap only.",
+      "severity": "minor"
+    },
+    {
+      "type": "partial",
+      "source": "tech-spec",
+      "requirement": "US-18 (Constraint: no __NEXT_DATA__ backward-compat; rollback → separate mini-feature)",
+      "detail": "The backward-rollback handling is now documented (ES3 + paragraph in Architecture). The scope boundary 'if site reverts — separate mini-feature, not part of this rewrite' is stated in user-spec Constraint section but is not echoed as an explicit constraint in the tech-spec. The tech-spec Acceptance Criteria deletes _NEXT_DATA_RE but does not state 'no dual-format support in this module.' This is a minor omission — the behavior is correct, just the constraint boundary is not restated.",
+      "severity": "minor"
+    },
+    {
+      "type": "structural_gap",
+      "source": "tech-spec",
+      "requirement": "Testing Strategy — test count inconsistency between section header and Acceptance Criteria",
+      "detail": "Testing Strategy section header states '29 tests after the rewrite (15 keep + 11 update + 3 new)'. The Acceptance Criteria section states '32 in test_mattel_news_source.py (15 keep + 11 update + 6 new)'. Counting individual items listed in the Testing Strategy body: TestIsHotwheels(5) + TestBuildEntry(5) + TestExtractEntries(4) + TestFetchMattelNews(5+4+1=10) + TestFetchMattelArticle(1+5+3+2=11) + TestSsrfGuard(1) + Anti-drift(2) = 38 entries. The round-2 additions (3 new tests for AC3/AC6/AC7) were added to the body list but the header total was not updated from 29 to 32, and the 32 in Acceptance Criteria already accounts for them. The inconsistency between '29' (header) and '32' (AC) will confuse the implementer about the expected final count. The authoritative number appears to be 32 (AC section), but the Testing Strategy header should match.",
+      "severity": "major"
+    }
+  ],
+  "summary": "All 3 round-1 critical findings closed. All 2 round-1 major findings closed. 4 of 5 round-1 minor findings closed (HTTP-404-KEEP note remains minor). 17/18 requirements covered, 1 partial (US-18 scope-boundary not restated, minor). No new critical findings introduced by the round-2 fixes. One new major finding: Testing Strategy section header says '29 tests (15+11+3)' while Acceptance Criteria says '32 (15+11+6)' — the 3 round-2 test additions were inserted into the body list but the section header total was not updated; implementer should use 32 as the authoritative count. Four documented_deviation items (minor, operator awareness) for Decisions 3, 4, 7, 8 — all correctly marked [PENDING USER APPROVAL] in User-Spec Deviations. Action required: update Testing Strategy section header from '29 tests (15 keep + 11 update + 3 new)' to '32 tests (15 keep + 11 update + 6 new)' to match Acceptance Criteria."
+}

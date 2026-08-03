@@ -1,0 +1,36 @@
+{
+  "status": "passed",
+  "summary": "Test suite for preview_nodes is comprehensive and behavioural. All 12 tests pass the litmus test (remove core logic line → test fails). Coverage spans both dispatch branches, parity with publish_article payload for flat and blocks paths, the offline invariant (no _api_call, no requests.post, no env), title-exclusion contract, edge cases (empty paragraphs, empty blocks falling back to flat), and unicode/emoji/HTML-entity passthrough.",
+  "findings": [],
+  "metrics": {
+    "filesReviewed": 2,
+    "litmusTest": {
+      "checked": 12,
+      "passed": 12,
+      "failed": 0
+    },
+    "coverageAssessment": "excellent",
+    "pyramidBalance": {
+      "unit": 12,
+      "integration": 0,
+      "e2e": 0,
+      "assessment": "healthy"
+    }
+  },
+  "tdd_anchor_coverage": {
+    "test_returns_list_of_dicts": "covered",
+    "test_flat_path_matches_build_content": "covered",
+    "test_blocks_path_matches_build_content_from_blocks": "covered",
+    "test_no_network_call": "covered (monkeypatches both _api_call and requests.post)",
+    "test_no_token_required": "covered",
+    "test_hero_image_figure_first": "covered",
+    "test_empty_paragraphs_and_no_blocks": "covered",
+    "test_title_not_in_nodes": "covered (recursive walk asserts marker never appears)"
+  },
+  "extra_tests_added": [
+    "test_empty_blocks_falls_back_to_flat — catches regression where empty blocks list takes the blocks branch",
+    "test_parity_with_publish_article_payload — integration-flavor check that publish_article uploads exactly preview_nodes output (flat path)",
+    "test_parity_with_publish_article_blocks_path — same parity check for blocks path",
+    "test_unicode_and_html_entity_passthrough — Cyrillic + emoji + HTML-entity-like text survives the node tree intact"
+  ]
+}

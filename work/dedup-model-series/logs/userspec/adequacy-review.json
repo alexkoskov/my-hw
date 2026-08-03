@@ -1,0 +1,49 @@
+{
+  "status": "approved",
+  "findings": [
+    {
+      "category": "underengineering",
+      "severity": "major",
+      "issue": "The whole round-2 safety story now rests on the tiering criterion (distinctive = specific car + franchise/event/limited-series → hard-block; everything else → soft-flag), but the spec never pins the FAIL-SAFE POLARITY of the series-tier classification, and it explicitly defers 'точную классификацию лексикона' to the tech-spec (Технические решения bullet 4). Tiering is buildable by a static tier-tagged lexicon + the existing strict-model extractor — sound in principle — but its safety depends entirely on which default a recognised-but-untagged or ambiguous series gets. If the tech-spec implements the tier as a positive whitelist (only explicitly-tagged franchise/event/limited series hard-block; unknown → broad), the mitigation holds. If it implements it as 'default distinctive, blacklist recurring car-lines as broad', then any NEW/untagged series silently defaults to hard-block — which is exactly the irreversible over-block failure mode round 1 raised as CRITICAL, quietly reopened one abstraction layer down.",
+      "why_matters": "This is the seam where the round-1 critical can silently come back. The user-spec is the place to lock the invariant that hard-block is opt-in per series-tier; leaving the polarity to the tech-spec means a reasonable-looking implementation choice can invert the safety property on a live channel with silent-to-subscribers content loss.",
+      "fix": "State the fail-safe rule in the user-spec (AC7 or Технические решения): a recognised series that is NOT positively classified as a distinctive franchise/event/limited-series defaults to the BROAD tier (soft-flag), never hard-block. Add a calibration probe: a recognised-but-untagged/ambiguous series pair must resolve to soft-flag, not hard-block."
+    },
+    {
+      "category": "underengineering",
+      "severity": "major",
+      "issue": "Routing broad matches to soft-flag (publish + [E014]) is the correct safety choice, but the spec does not reconcile two second-order consequences. (1) The success SLA in «Как проверить» is «0 видимых дублей», yet for the BROAD category the mechanism now publishes the dupe and relies on the operator manually deleting it via the [E014] ping — so for broad themes/recurring car-lines the feature does NOT mechanically achieve zero duplicates; it downgrades to operator-assisted removal. (2) The broad tier deliberately routes far MORE cases to soft-flag than the shipped set-overlap feature ever did (every new Car Culture / Boulevard drop sharing one casting with a 30-day-old article, plus every theme-only franchise reappearance), and each is a DISTINCT pair, so the existing per-pair 7-day [E014] rate-limit does not bound the aggregate volume. E014 flood → review fatigue → operators stop reading → broad dupes ship unremoved, defeating the original complaint ('одна тема ~3 раза в месяц').",
+      "why_matters": "The tier the whole design leans on for safety is only as good as the operator's willingness to keep reading the pings. An un-estimated, un-bounded soft-flag stream on a live channel can silently erode the very review signal that is supposed to catch broad-tier duplicates, so the stated goal is met on paper (nothing silently lost) but not in practice (broad dupes stay published).",
+      "fix": "Reconcile the SLA: state that the mechanism guarantees zero SILENT losses, and that broad-tier duplicate REMOVAL is operator-assisted (not automatic). Add an expected/acceptable [E014] volume ceiling and a monitoring criterion to the 2-week check (e.g. if broad-tier flags exceed N/week, tighten the series lexicon or promote specific recurring pairs). Consider a coarser rate-limit key (per-series, not per-pair) for the broad tier."
+    },
+    {
+      "category": "sizing",
+      "severity": "minor",
+      "issue": "The round-1 stacking/sequencing concern is largely resolved (base cross-source-dedup now on prod since the 2026-07-06 Moscow move per Risk «Секвенирование»; AC10 warms both car-fingerprint and pairs; AC10 widens the backfill re-select to 'отсутствие ключа', not just IS NULL — matching code-research §3.4). One residual remains: the toggle DEFAULTS TO ON (AC6), so the irreversible distinctive-hard-block is active from the first post-deploy tick, on a base with only ~days of prod soak — which sits in tension with the spec's own claim that the optional layer «можно включить после короткого наблюдения». Scenario 8 (deploy) does not instruct deploying dark (toggle off) and enabling after an observation window.",
+      "why_matters": "For the first-ever activation of an irreversible rule on a live channel, default-on means the safe 'observe [E015]/[E014] dry, then enable' path is not the default path — it depends on the operator remembering to set the env off. The blast radius is now small (tiering limits hard-block to distinctive pairs, backstop + calibration + E015 tripwire), so this is a sequencing/consistency gap rather than a fundamental risk.",
+      "fix": "Make Scenario 8 explicit: either deploy with the toggle OFF and enable after N days of dry [E015]/[E014] observation on prod, or justify default-on given the thick safety net and record that decision. Align AC6's default with whichever is chosen."
+    },
+    {
+      "category": "underengineering",
+      "severity": "minor",
+      "issue": "The distinctive-tier hard-block still has no per-article recovery path. On block the link is written to processed_news (AC3, reusing Decision 8), which permanently suppresses re-fetch. The env toggle (AC6) prevents FUTURE blocks but does not restore an article already sent to processed_news — recovery of a single false distinctive-block requires the operator to manually re-inject the URL, and processed_news membership fights that.",
+      "why_matters": "Round 1 flagged 'no in-system recovery'; tiering shrinks the hard-blockable population to distinctive pairs (small residual), and the toggle covers the systemic case, but an individual false hard-block is still awkward to undo. Risk 1 acknowledges the residual but not the recovery mechanics.",
+      "fix": "Note the recovery procedure for a false distinctive-block in Risk 1 (operator removes the link from processed_news + re-queues, or a small hw_review helper), so the residual has a defined, non-silent remedy."
+    },
+    {
+      "category": "feasibility",
+      "severity": "minor",
+      "issue": "The seeded franchises (Stranger Things / K-Pop Demon Hunters / Top Gun / SDCC) are verbatim-in-body and fully catchable by regex/lexicon (same mechanism as the shipped ~36-brand lexicon) — the headline case is feasible and the JSON-blob storage is a genuine strength (zero migration, code-research §2.3). The feasibility caveat is maintenance: tiering now requires a SECOND curated attribute (tier per series) layered on an already open, fast-drifting franchise namespace (Constraints + Risk 4 rightly acknowledge the higher-than-brand update cadence). A wrong tier silently flips block↔flag, and the spec acknowledges the need for 'более частый апдейт' but does not commit a concrete refresh cadence.",
+      "why_matters": "The franchise namespace is structurally unlike the near-closed brand set, and the added tier dimension compounds the curation surface. Treating it like the quarterly brand lexicon underestimates both false-negative drift and mis-tier risk.",
+      "fix": "Commit a concrete lexicon+tier review cadence tied to the HW drop calendar (not the brand cadence), and state that both recognition AND tier of a new franchise lag by at least one dupe (first-miss-then-PR) — with the safe default (broad) covering the lag per finding 1."
+    },
+    {
+      "category": "overengineering",
+      "severity": "minor",
+      "issue": "AC1/AC2 and Технические решения still embed HOW that belongs in the tech-spec: AC1/AC2 prescribe the storage mechanism ('новый ключ в JSON, БЕЗ новой колонки и миграции', 'published_articles.model_fingerprint'); Технические решения prescribes 'второй проход regex' inside model_extractor.py; Тестирование names specific test classes/methods and '--days 30'. This was raised in round 1 and is unchanged.",
+      "why_matters": "User-spec should stay WHAT/WHY; pre-committing storage/module mechanics in ACs makes them brittle to implementation change and pre-empts the tech-spec's own review. Kept minor because the leak sits mostly in template-authorized sections (Технические решения / Тестирование) and mirrors the shipped sibling feature's house style.",
+      "fix": "Trim AC1/AC2 to observable outcomes ('series/theme pairs persist with the article and survive publish'), and move JSON-key/no-migration/second-regex-pass/test-class specifics into the tech-spec, leaving only a one-line summary in Технические решения if house style requires."
+    }
+  ],
+  "worst_category": "underengineering",
+  "summary": "The round-1 CRITICAL is resolved: the tiering (distinctive→hard-block / broad→soft-flag) adopts round-1's own recommended alternative and routes both named over-block vectors (car+broad-recurring-line, and theme-only franchise reappearance) to publish-and-flag; the env toggle adds the requested runtime kill-switch; the set-overlap backstop always runs; and AC11 now exercises the over-block and same-source near-miss probes. Verdict: APPROVED (no critical). Two majors remain, both under-engineering: the tier-classification fail-safe polarity is left unpinned (the exact seam where the over-block risk could silently reopen in the tech-spec), and the broad-tier soft-flag-publishes-anyway design is not reconciled with the '0 visible duplicates' SLA or bounded for [E014] volume. Feasibility is sound; the toggle default-on vs 'enable after soak' sequencing and lexicon tier-maintenance are minor tighten-ups for the tech-spec."
+}

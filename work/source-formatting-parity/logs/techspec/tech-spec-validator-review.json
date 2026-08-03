@@ -1,0 +1,78 @@
+{
+  "status": "changes_required",
+  "findings": [
+    {
+      "severity": "critical",
+      "category": "tasks",
+      "issue": "Wave 1 file conflict: Task 1 (\"Extract dom_blocks.py and migrate orangetrack onto it\") lists `dom_blocks.py` (new) and `tests/test_dom_blocks.py` (new) in Files to modify, and Task 3 (\"Kill switch, readable by the parsers\") lists `dom_blocks.py` and `tests/test_dom_blocks.py` in Files to modify. Same-wave tasks execute in PARALLEL, so two agents would create/edit the same two files concurrently — guaranteed merge conflict, and Task 3 would be writing into a module that does not exist yet on its branch.",
+      "fix": "Pick one: (a) merge Task 3's flag into Task 1, since the flag lives in the same module and is ~10 lines; or (b) move Task 3 to a wave between Task 1 and the parser wave; or (c) put the flag in its own new module (e.g. `feature_flags.py`, importable by all parsers) so no file is touched twice in Wave 1. Option (c) keeps the wave parallel and matches Decision 6's only real constraint (\"parser-importable, not news_bot\")."
+    },
+    {
+      "severity": "critical",
+      "category": "tasks",
+      "issue": "Dependency/wave-ordering violation: Task 3 modifies `dom_blocks.py`, a file Task 1 creates. A task cannot modify an artifact produced by a task in the same wave. Compounding this, Wave 2 (Tasks 5, 6, 7) implements the parsers whose block emission the flag must gate, so the flag has to be in place before Wave 2 starts — its current placement is both too early (same wave as its dependency) and structurally load-bearing for the next wave.",
+      "fix": "Re-sequence so the dependency edge points backwards: Task 1 → Task 3 → Wave 2, or fold Task 3 into Task 1. Then re-check that every Wave 2 task's Files to read reference only artifacts finished in an earlier wave."
+    },
+    {
+      "severity": "major",
+      "category": "structure",
+      "issue": "Decision 3 (\"Lift the subtitle from both lists in one operation\") cites the wrong user-spec requirement: **Rationale** says \"Serves user-spec AC10 and Ограничения\". AC10 is «orangetrack публикуется в точности как до фичи — вывод байт-в-байт прежний», which Decision 3 does not touch (orangetrack hardcodes subtitle=\"\" and is unaffected by the lift). The requirements Decision 3 actually serves are AC8 (рантайм-страховка от рассинхрона), the Ограничения bullet «Подъём лида — главная техническая ловушка», and Технические решения «сохранить декоративный лид у t-hunted и lamley». AC10 is already served by Decision 1.",
+      "fix": "Change Decision 3's rationale to \"Serves user-spec AC8 + Ограничения «Подъём лида — главная техническая ловушка» + Технические решения «сохранить декоративный лид»\". A wrong requirement ID breaks traceability for completeness-validator and for anyone auditing AC coverage later."
+    },
+    {
+      "severity": "major",
+      "category": "task_quality",
+      "issue": "Technical decision rationale is duplicated inside task descriptions instead of being referenced from the Decisions section. Four cases: Task 2 — \"the single choke point all sources pass through\" restates Decision 5's Alternatives verbatim in substance; Task 3 — \"default ON, same truthy/falsy word set as the two existing flags ... they cannot import `news_bot`\" restates Decision 6's Decision + Rationale, and repeats the config value \"default ON\"; Task 4 — \"while the shared tuple includes it, so translated Russian list items go to the caption pass and get re-translated\" restates Decision 7's Rationale; Task 5 — \"t-hunted has no real heading tags at all, so the bold-paragraph heuristic is its only heading path\" restates Decision 2's Rationale. Duplication means the two places drift, and it is unclear which one an executing agent should treat as authoritative.",
+      "fix": "Cut each description down to WHAT and WHY-in-one-clause and point at the decision: e.g. Task 2 → \"Apply the image cap inside `_build_content_from_blocks`, keeping the hero figure (Decision 5).\" Task 3 → \"Add the block-emission kill switch in a parser-importable location (Decision 6).\" Task 4 → \"Align the four engines' patchable-type tuples to include `list_item` (Decision 7).\" Task 5 → drop the heading-path sentence, it is Decision 2."
+    },
+    {
+      "severity": "major",
+      "category": "tasks",
+      "issue": "Reviewer sets are inverted with respect to security risk. The catalog's default reviewers for `code-writing` are `code-reviewer`, `security-auditor`, `test-reviewer`. `security-auditor` is present on exactly one task — Task 3, the env-flag task — and absent from every task that actually processes untrusted external HTML: Task 1 (the shared markup walker + regex), Task 2 (renderer emitting href/src into Telegraph nodes), Tasks 5/6/7 (three site parsers), Task 8 (news_bot staging path). Task 10 (Security Audit) itself names the concerns that belong to those files — \"ReDoS-safety contract ... bounded quantifiers only, href/img scheme allowlists surviving the extraction, DoS bounds in the runs renderer\" — which confirms these are security-relevant tasks whose per-task review is deferred entirely to the Audit Wave.",
+      "fix": "Add `security-auditor` to Tasks 1, 2, 5, 6, 7 and 8 (the catalog default for `code-writing`). Keeping it only on Task 3 is defensible to drop there — an env-flag read is the least security-sensitive change in the feature. Per-task review catches a ReDoS-prone regex before three parsers are built on top of it; the Audit Wave catches it after."
+    },
+    {
+      "severity": "major",
+      "category": "verification",
+      "issue": "The Agent Verification Plan's \"Verification approach\" describes two concrete pre-deploy checks — rendering a real fixture through `preview_renderer.render_html` and asserting `<h3>`/`<strong>`/list items, and re-running the code-research Part II measurement script against live t-hunted articles — but neither appears as a `Verify-smoke` field on any task, and no task's Files to modify or read mentions `preview_renderer.py`. Related: user-spec AC12 («Предпросмотр статьи показывает форматирование, а не съедает выделенные слова») has no owning task and no entry in the tech-spec's own Acceptance Criteria list.",
+      "fix": "Wire the preview check into a task: add `preview_renderer.py` / `tests/test_preview_renderer.py` to a Wave 2 or Wave 3 task and give it a `Verify-smoke:` with the actual command, or add an explicit AC12 line to the tech-spec Acceptance Criteria and let Task 12 (Pre-deploy QA) own it. As written the AVP promises a check nobody is assigned to run."
+    },
+    {
+      "severity": "major",
+      "category": "verification",
+      "issue": "Tasks 5 (t-hunted emits blocks) and 6 (lamley emits blocks) change what subscribers see in the channel — bold, subheadings, lists, and the decorated lead — yet carry neither `Verify-smoke` nor `Verify-user`. Task 7 (autoevolution), which is the structurally smallest of the three (swap one walker), does have a `Verify-smoke`. These are exactly the parser tasks whose failure mode (subtitle-lift desync → last paragraph in English) caused the 2026-05-06 incident cited in Decision 3, and the runtime guard that catches it does not land until Wave 3.",
+      "fix": "Give Tasks 5 and 6 a `Verify-smoke` that asserts the invariant locally on a fixture, e.g. `python3 -m pytest tests/test_t_hunted_source.py -q` plus a one-liner asserting `len(patchable_blocks) == len(paragraphs)` after the lift on a real fixture. A `Verify-user` on the rendered preview would also cover AC12 (see previous finding)."
+    },
+    {
+      "severity": "major",
+      "category": "task_quality",
+      "issue": "Task 8 bundles two unrelated deliverables: the runtime alignment guard in `news_bot.py` (Decision 4 / AC8) and the entire cross-cutting integration suite for the whole feature (bold survives the chain for all three sources, image cap on the 50-image lamley case, the 500-char checklist boundary). The second half is a verbatim restatement of the Testing Strategy \"Integration tests\" list, so the same scope now lives in two places, and one agent owns the last mile for three sources it did not build.",
+      "fix": "Split into Task 8a \"Runtime alignment guard\" (`news_bot.py`, Decision 4) and Task 8b \"End-to-end formatting integration tests\" (`tests/test_integration.py`), both in Wave 3 — they touch different files so they can run in parallel. Replace the enumerated test list in the description with a pointer to Testing Strategy → Integration tests."
+    },
+    {
+      "severity": "minor",
+      "category": "verification",
+      "issue": "Task 3 (kill switch) and Task 4 (`list_item` in the four engine tuples) have no `Verify-smoke`, though both are cheap to smoke-check and Task 3 implements an operationally load-bearing AC (AC11 — the flag exists precisely so a bad rollout can be reverted without a deploy inside the 10:00-20:00 МСК window).",
+      "fix": "Task 3: `Verify-smoke:` `<FLAG>=0 python3 -c \"...parse a fixture...\"` → no `blocks` key emitted. Task 4: `Verify-smoke:` `python3 -c \"...\"` asserting `list_item` is in all four engine tuples — a four-line assertion that catches the one-file-forgotten failure mode this task exists to fix."
+    },
+    {
+      "severity": "minor",
+      "category": "structure",
+      "issue": "The User-Spec Deviations entry for AC2 documents removing the ≤80-char limit (operator-approved) but does not note that the same approval supersedes two other user-spec statements built on that threshold: Тестирование («абзац длиннее 80 символов → НЕ заголовок») and Как проверить step 3 («80 символов — заголовок, 81 — нет»). The tech-spec's Testing Strategy correspondingly drops that boundary scenario without saying why, which will read as a coverage gap to the next reviewer.",
+      "fix": "Extend the AC2 deviation entry with \"also supersedes user-spec Тестирование and Как проверить step 3, which pin the 80/81 boundary\" so the missing test is visibly intentional rather than an omission."
+    },
+    {
+      "severity": "minor",
+      "category": "tasks",
+      "issue": "Wave 1 read/write overlap between Task 1 and Task 2: Task 1's acceptance gate is that orangetrack's published output stays byte-identical and its tests pass unedited, while Task 2 changes `telegraph_publisher._build_content_from_blocks` — the renderer orangetrack publishes through — in the same wave. Not a merge conflict (Task 1 only reads the file), but Task 2's cap can flip Task 1's gate mid-wave if the cap default differs from orangetrack's existing post-pass cap.",
+      "fix": "Either state in Task 2 that the cap default must preserve orangetrack's current effective limit, or move Task 2 to Wave 2 so the byte-identity gate is measured against a stable renderer. Task 1's description should not have to guess."
+    },
+    {
+      "severity": "minor",
+      "category": "task_quality",
+      "issue": "Task 1 is noticeably heavier than every other task in Wave 1: it creates the shared module, migrates orangetrack onto it, and updates `deploy.sh` plus `tests/test_deploy_files_invariant.py` — five files, two of them new, spanning implementation and deploy plumbing. It is also the task every other task depends on.",
+      "fix": "Optional but worth considering: split the deploy registration (`deploy.sh` + invariant test) into a small separate task in a later wave. If Task 3 is merged into Task 1 to resolve the critical conflict, splitting the deploy plumbing out keeps Task 1 from growing further."
+    }
+  ],
+  "summary": "changes_required — 2 critical, 6 major, 4 minor. Template compliance is strong: all 11 sections present in template order with no placeholder text, frontmatter valid (created 2026-07-30, status draft, branch dev, size L matching user-spec), Shared resources and User-Spec Deviations both filled with requirement IDs and operator approval dates, Audit Wave has exactly 3 tasks with reviewers: none, Final Wave has QA + Deploy + Post-deploy, 14 tasks (<=15), zero time-based estimates, all 8 skill values and all reviewer names valid per the catalog, no AC/TDD-anchor/line-number leakage into task descriptions, and `dom_blocks.py` fits the project's flat snake_case root layout with deploy.sh registration accounted for. Two critical blockers, both in Wave 1: Task 1 and Task 3 concurrently create/modify `dom_blocks.py` and `tests/test_dom_blocks.py`, and Task 3 modifies an artifact its own wave produces. Majors: Decision 3 cites AC10 where it means AC8, decision rationale is duplicated into four task descriptions, security-auditor is missing from every task that parses untrusted HTML while sitting on the env-flag task, the AVP's preview_renderer check is unassigned (as is user-spec AC12), Tasks 5/6 change published formatting with no smoke or user verification, and Task 8 bundles the runtime guard with the whole integration suite."
+}

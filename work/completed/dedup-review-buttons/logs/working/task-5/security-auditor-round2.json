@@ -1,0 +1,34 @@
+{
+  "reviewer": "security-auditor",
+  "task": 5,
+  "round": 2,
+  "commit": "afe4944",
+  "verdict": "pass",
+  "summary": "Round-2 re-verification of the fix commit afe4944 for task 5 (background review listener). SEC-T5-1 (low) is fully fixed: a single fail-closed _is_admin_press(from_user_id) helper is now the sole auth-comparison logic, used by both resolve_dedup_callback (unchanged behavior/order — admin gate still runs first, before any token lookup) and _handle_review_update, which now gates on _is_admin_press BEFORE the pending_repo.get_review_token_link(token) pre-fetch. A non-admin press now performs zero DB reads (answer-only, no edit, no log) — confirmed both by reading the code and by the new test assertion (mock_link_read.assert_not_called() in test_ignored_press_answers_empty_and_never_edits) and by an independent local run. No auth-ordering regression: resolve_dedup_callback's docstring-documented contract ('admin gate FIRST, before any token lookup') is preserved verbatim, just refactored to share the comparison logic — all 10 TestResolveDedupCallback tests plus all 10 TestReviewListener tests pass unchanged in behavior. SEC-T5-2 (low) was declined with a documented, adequate rationale in decisions.md: logger.exception with raw tracebacks is a pre-existing project-wide pattern (not unique to this feature), the exceptions actually reachable from the listener's per-update path were verified token-free, and fixing traceback redaction project-wide is out of this feature's scope. This is an acceptable disposition for a low-severity, already-mitigated, out-of-scope finding — no objection.",
+  "findings": [
+    {
+      "id": "SEC-T5-1",
+      "status": "resolved",
+      "severity": "low",
+      "verification": "news_bot.py: _handle_review_update now calls `if not _is_admin_press(from_user_id): asyncio.run(_review_answer_callback(callback_query.id, \"\")); return` immediately after extracting from_user_id, BEFORE `link = pending_repo.get_review_token_link(token)`. _is_admin_press is the exact same int(TELEGRAM_ADMIN_ID) / int(from_user_id) comparison previously inlined in resolve_dedup_callback, now shared — resolve_dedup_callback's gate is unchanged in order or logic (line 628: `if not _is_admin_press(from_user_id): return (None, \"\")`, still step 1, still before token resolve at step 2). test_ignored_press_answers_empty_and_never_edits now patches news_bot.pending_repo.get_review_token_link and asserts mock_link_read.assert_not_called() — a real regression test, not just an assertion of absence of side effects. Verified: pytest tests/test_integration.py -k \"ReviewListener or resolve_dedup\" -q -> 20 passed."
+    },
+    {
+      "id": "SEC-T5-2",
+      "status": "declined-acceptable",
+      "severity": "low",
+      "verification": "Recorded in decisions.md with rationale: logger.exception raw-traceback pattern is pre-existing/project-wide (not introduced by this feature), exceptions reachable from the listener's per-update path were verified token-free, and project-wide traceback-redaction hardening is out of this feature's scope. This is a reasonable, adequately-justified disposition for a low-severity finding — no further action required for this feature to merge; may be worth a separate project-wide logging-hardening ticket, but that is not a task-5 blocker."
+    }
+  ],
+  "checks_performed": [
+    "Diff-read of commit afe4944 (news_bot.py + tests/test_integration.py) against the round-1 SEC-T5-1 finding.",
+    "Confirmed _is_admin_press is a pure refactor of the exact prior comparison logic (int(TELEGRAM_ADMIN_ID) fail-closed on non-numeric; int(from_user_id) fail-closed on non-int; equality) with no behavior change — resolve_dedup_callback's admin-gate-first contract is textually preserved.",
+    "Confirmed the handler's new early-return path performs answer-only (empty text), no edit, no DB read, no log line for non-admin presses — matches user-spec 'чужие нажатия молча игнорируются'.",
+    "Confirmed decisions.md documents both the SEC-T5-1 fix and the SEC-T5-2 decline with rationale, per project convention.",
+    "Ran pytest tests/test_integration.py -k \"ReviewListener or resolve_dedup\" -q -> 20 passed.",
+    "Ran full suite pytest -q -> 1324 passed, no regressions."
+  ],
+  "test_results": {
+    "targeted": "pytest tests/test_integration.py -k \"ReviewListener or resolve_dedup\" -q -> 20 passed",
+    "full_suite": "pytest -q -> 1324 passed in 58.28s"
+  }
+}

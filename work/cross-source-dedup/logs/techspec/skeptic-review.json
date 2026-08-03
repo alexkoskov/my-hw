@@ -1,0 +1,67 @@
+{
+  "status": "approved",
+  "summary": "Checked 38 claims across line refs, function names, package patterns, and DDL assertions. Found 2 minor name-consistency issues with EXPECTED_PUBLISHED_COLUMNS reference and one cosmetic _PrepPhaseBase line range; one minor mislabel of line 1779-1782. No critical mirages — all referenced files, functions, line targets, DDL facts, and patterns confirmed against the live codebase.",
+  "findings": [
+    {
+      "severity": "minor",
+      "type": "name_mismatch",
+      "claim": "tech-spec Tasks 2 and Acceptance Criteria (line 349) say to UPDATE tests/test_migration.py::EXPECTED_PUBLISHED_COLUMNS to include model_fingerprint; tech-spec line 288 lists this in Testing Strategy",
+      "reality": "tests/test_migration.py defines ONLY EXPECTED_PENDING_COLUMNS (line 38). There is NO EXPECTED_PUBLISHED_COLUMNS constant in test_migration.py — only EXPECTED_PENDING. test_migration.py covers published_articles existence (line 112) but not its column schema. The published-schema pin DOES exist as EXPECTED_PUBLISHED in tests/test_pending_articles_repo.py:53 (verified).",
+      "source": "tech-spec.md Testing Strategy line 288, Acceptance Criteria line 349, Task 2 line 371",
+      "fix": "Either (a) reword to say 'add EXPECTED_PUBLISHED_COLUMNS to test_migration.py' and 'update EXPECTED_PUBLISHED in test_pending_articles_repo.py:53', or (b) drop the test_migration.py::EXPECTED_PUBLISHED_COLUMNS reference and update only test_pending_articles_repo.py::EXPECTED_PUBLISHED (which is the existing published-schema pin)."
+    },
+    {
+      "severity": "minor",
+      "type": "name_mismatch",
+      "claim": "tech-spec Task 5 says 'tests/test_integration.py (_PrepPhaseBase pattern at lines 88-136)'",
+      "reality": "_PrepPhaseBase class is defined at tests/test_integration.py:115-136 (verified). Lines 88-114 belong to _IntegrationBase (its parent class), not _PrepPhaseBase.",
+      "source": "tech-spec.md Task 5 line 400",
+      "fix": "Update line reference to '_PrepPhaseBase at lines 115-136' (or '_IntegrationBase + _PrepPhaseBase at lines 88-136' if both are intended)."
+    },
+    {
+      "severity": "minor",
+      "type": "missing_pattern",
+      "claim": "Decision 9 line 154: 'URL-equality at news_bot.py:1779-1782 already prevents same-link self-match'",
+      "reality": "Lines 1779-1782 contain a pending-articles existence filter ([e for e in new_entries if pending_repo.get_pending(e.get('link')) is None]), NOT a URL-equality check between candidates. The de facto effect (preventing the same link from re-entering processing) is achieved through this filter combined with filter_new_entries (processed_news check) at line 1777. The label 'URL-equality' is slightly misleading — it is URL-existence-in-pending-table.",
+      "source": "tech-spec.md Decision 9 line 154",
+      "fix": "Optional reword for clarity: 'URL-existence check against pending_articles at news_bot.py:1779-1782 (combined with filter_new_entries processed_news check at 1777) prevents same-link self-match.'"
+    }
+  ],
+  "stats": {
+    "total_claims_checked": 38,
+    "confirmed": 35,
+    "mirages_found": 3,
+    "verified_claims": [
+      "model_extractor.py NEW (no such file exists yet — correct)",
+      "backfill_fingerprints.py NEW (no such file exists yet — correct)",
+      "boilerplate_filter.py exists at repo root with pure-module shape",
+      "hw_review.py exists with argparse + def main(argv=None) -> int: at line 821",
+      "news_bot.py:584 is is_processed() definition",
+      "news_bot.py:593 is mark_processed() definition",
+      "news_bot.py:667 is _is_text_only_checklist() definition",
+      "news_bot.py:1440 is fetch_full_article() definition",
+      "news_bot.py:867 is _resolve_source_name() definition",
+      "news_bot.py:377 is send_admin_notification() definition",
+      "news_bot.py:1810 calls _is_text_only_checklist; line 1815 is the continue; line 1817 is row = {} — insertion target is accurate",
+      "news_bot.py:1795-1836 covers the job() insertion loop as claimed",
+      "admin_alerts.py:95-107 is alert_duplicate_publish_skipped (E006 builder) — matches claim",
+      "E001-E013 codes confirmed; E014/E015/E016 unclaimed (verified — gap between E013 and E020)",
+      "admin_alerts.py covers E001-E013 and E020-E033 — no E014/E015/E016 collision",
+      "pending_articles_repo.py:118 defines _PENDING_JSON_COLS",
+      "pending_articles_repo.py:126 defines _dumps() with ensure_ascii=False",
+      "pending_articles_repo.py:141 defines _row_to_dict()",
+      "pending_articles_repo.py:165 defines init_schema()",
+      "pending_articles_repo.py:185-194 is the existing telegraph_url/telegraph_path try/except migration block — exact line range claimed",
+      "pending_articles_repo.py:108-113 defines _BOT_STATE_DDL (bot_state table)",
+      "pending_articles_repo.py:70-81 defines _PUBLISHED_DDL — verified NO paragraphs column (Decision 10 confirmed)",
+      "INSERT INTO published_articles in code (tests + production) only writes link/title/ru_title/telegraph_url/source_name/via_review — no paragraphs",
+      "outage_state.py exists and uses bot_state k/v table (lines 127, 142, 145, etc.)",
+      "tests/test_pending_articles_repo.py:30 defines EXPECTED_PENDING",
+      "tests/test_pending_articles_repo.py:53 defines EXPECTED_PUBLISHED (column-schema pin for published_articles)",
+      "tests/test_migration.py:38 defines EXPECTED_PENDING_COLUMNS",
+      "tests/test_integration.py:115 defines _PrepPhaseBase",
+      "tests/test_admin_alerts.py:68 has test_e006_duplicate_publish_skipped pattern (mirror for new E014/E015/E016 tests)",
+      "tests/fixtures/ does not yet contain cross_source_dedup_pairs.py (correct — Task 1 creates it)"
+    ]
+  }
+}

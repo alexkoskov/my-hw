@@ -1,0 +1,68 @@
+{
+  "validator": "reality-checker",
+  "batch": [7, 8, 9],
+  "status": "changes_required",
+  "findings": [
+    {
+      "severity": "critical",
+      "category": "cross-task-integration",
+      "task": 7,
+      "issue": "OutageError propagation contract between Task 7 and Task 8 is contradictory. Tech-spec Architecture (line 31) says _fallback_publish 'raises OutageError for API-level', and tech-spec 'How it works' step 7 says the article 'was already routed through Google as a side effect' of OutageError (implying: Google runs first, then OutageError propagates). Task 7's description says _fallback_publish catches OutageError and goes to Google block ('в этой же функции выполнить Google-путь'), but the Acceptance Criteria NEVER mention re-raising OutageError after the Google path. Task 8 depends on OutageError propagating from _fallback_publish (line 55: 'приходит из _fallback_publish когда state machine сработал') and has an explicit AC '[ ] OutageError из _fallback_publish ловится'. If the implementer of Task 7 reads only the AC (which omits re-raise), Task 8's loop will silently swallow all OutageErrors as normal exceptions via the 3-strikes path instead of continuing to next slot. The task files need to explicitly state: _fallback_publish catches OutageError, routes to Google for this article, then re-raises OutageError as a signal to the job() loop.",
+      "fix": "In Task 7: add to Acceptance Criteria '[ ] OutageError is re-raised after Google degraded-mode publish, so job() loop receives the signal and continues to next slot.' Update the description to explicitly state: 'except OutageError: [Google fallback for this article]; raise' — not just 'except OutageError: [Google block]'. In Task 8: cross-reference Task 7's re-raise contract in the dependencies block."
+    },
+    {
+      "severity": "critical",
+      "category": "hallucination",
+      "task": 7,
+      "issue": "Implementation hints (line 124) recommend 'assert_called_before(...)' pattern and 'manager.attach_mock + проверка manager.mock_calls last index' to verify call ordering. 'assert_called_before' does not exist in Python's unittest.mock — confirmed by runtime check (AttributeError). The standard mock API only has: assert_called, assert_called_once, assert_called_with, assert_called_once_with, assert_has_calls, assert_any_call, assert_not_called, call_args_list, mock_calls. The 'assert_called_before' pattern is a hallucinated API.",
+      "fix": "Replace with the correct pattern: use 'mock_manager = MagicMock(); mock_manager.attach_mock(mark_mock, \"mark\"); mock_manager.attach_mock(teaser_mock, \"teaser\"); then check that mark_mock's index in mock_manager.mock_calls comes before teaser_mock's index.' Or simpler: capture call order via a list appended to in side_effect callbacks. Remove 'assert_called_before(...)' from hints entirely as it is a non-existent API."
+    },
+    {
+      "severity": "major",
+      "category": "feasibility",
+      "task": 9,
+      "issue": "TestFallbackPublishPassesAutoMarkerToPublishArticle (one of the two tests Task 9 explicitly preserves) inherits from _ThrottleCase and its test body calls news_bot.job() relying on the idle-overdue path (self._age_notified(5h)) to trigger _fallback_publish. After Task 8's job() rewrite, the overdue-auto-publish path is gone — job() no longer calls list_notified_overdue or _fallback_publish via that route. Calling news_bot.job() in the new distributed-publish flow with mocked SOURCES=[] will either: (a) not publish anything (pending queue empty), or (b) invoke the new distributed loop which has no slots (N=0). The test assertion 'mock_publish.call_count == 1' will fail. Task 9 says 'replace _ThrottleCase with unittest.TestCase and adjust setUp/tearDown' but does not address that the test's trigger logic (age_notified + job()) is fundamentally broken by the Wave 4 refactor. The test needs a completely different trigger (call _fallback_publish directly or set up a pending row and trigger the distributed loop).",
+      "fix": "Task 9 must explicitly describe how to rewrite TestFallbackPublishPassesAutoMarkerToPublishArticle's test body. Recommended approach: call _fallback_publish(row, via_review=False) directly (mocking claude_transcreation and outage_state) instead of going through job(). Patch targets will also shift from Google-only to Claude-primary path after Task 7's refactor. This is not a trivial tearDown fix — the test strategy changes. Add a step to Task 9's 'What to do' describing the rewrite of this test."
+    },
+    {
+      "severity": "major",
+      "category": "hints",
+      "task": 8,
+      "issue": "Implementation hints (lines 149-157) include detailed step-by-step pseudocode fragments that prescribe the implementation: 'SELECT MAX(published_at) FROM published_articles', 'get_max_published_at() -> Optional[datetime]', exact if-conditions, variable names (wait_seconds, msk_tz, now_msk), and algorithm for crash-loop guard. Similarly, the What-to-do section (steps 1-10) is a detailed algorithm rather than direction. Per validation checklist category 'hints', hints should point to patterns and approaches, not prescribe the solution with step-by-step logic. The existing pending_articles_repo has no get_max_published_at helper (confirmed by grep) — the task correctly notes it may need adding, but then prescribes the exact SQL, which is implementation, not a hint.",
+      "fix": "Condense step-by-step implementation details into directional hints: 'read MAX(published_at) from published_articles to detect recent publishes; add a helper to pending_articles_repo if needed'. Remove SQL queries and variable name prescriptions from hints. The TDD anchor tests already specify the expected behavior precisely — the implementation should be derived from those."
+    },
+    {
+      "severity": "major",
+      "category": "feasibility",
+      "task": 8,
+      "issue": "Task 8 step 3 says to call 'claude_transcreation._load_prompt()' in the startup health check. '_load_prompt' is a private function (underscore prefix) in a module that does not yet exist at the time Task 8 is written. The tech-spec does not define the public API of claude_transcreation — the only public function named is 'transcreate_via_claude'. Calling a private function from a different module is an anti-pattern and tightly couples main() to claude_transcreation internals. Additionally, Task 8's 'What to do' says 'If the module is not released yet, wrap with try/except ImportError' — but that means health check #1 silently passes if Task 3 isn't done yet, which is a misleading no-op rather than a real health check.",
+      "fix": "Either (a) define a public function 'claude_transcreation.check_prompt_loadable() -> bool' in Task 3's spec and call that from main(), or (b) expose '_load_prompt' as 'load_prompt' (public). Update Task 8 to reference the public API. Remove the 'try/except ImportError' fallback — Task 8 depends_on Task 3 via wave sequencing and claude_transcreation.py must exist by the time Task 8 runs."
+    },
+    {
+      "severity": "minor",
+      "category": "missing_file",
+      "task": 7,
+      "issue": "Implementation hints reference 'tests/test_fallback_paths.py' as an existing fixture pattern source ('использовать существующие fixture-паттерны из tests/test_fallback_paths.py'). This file does not exist in the test directory. The similar files that do exist are tests/test_fallback_throttle.py and tests/test_idle_fallback.py.",
+      "fix": "Update the hint to reference the actual existing files: tests/test_idle_fallback.py (has _IdleFallbackCase with row dict shape and mocks for telegraph_publisher, pending_repo, send_telegraph_teaser) and tests/test_fallback_throttle.py (has _ThrottleCase with same fixtures). Remove the reference to the non-existent test_fallback_paths.py."
+    },
+    {
+      "severity": "minor",
+      "category": "feasibility",
+      "task": 9,
+      "issue": "Task 9's final grep audit pattern includes '_idle_fallback' as a symbol to check for removal: 'grep -nE \"FALLBACK_THROTTLE_SECONDS|QUEUE_CAP|IDLE_TIMEOUT_HOURS|GRACE_WINDOW_HOURS|_overflow_fast_track|_idle_fallback\" news_bot.py tests/'. However, '_idle_fallback' does not appear as a named function or variable in news_bot.py or any test file — confirmed by grep. The idle fallback is implemented as inline code in job() (steps 1a/1b), not as a named function. The grep will always return no matches for '_idle_fallback' whether or not the inline code was deleted, creating a false sense of completeness.",
+      "fix": "Remove '_idle_fallback' from the grep audit pattern. Instead, grep for the specific function calls used by the inline idle-fallback: 'list_pending_stale|list_notified_overdue|mark_notified' within news_bot.py job() context to verify the inline block was removed."
+    },
+    {
+      "severity": "minor",
+      "category": "feasibility",
+      "task": 9,
+      "issue": "Task 9 states env var declarations are at 'lines ~57-63' in news_bot.py. The actual lines are 61-70 (IDLE_TIMEOUT_HOURS=61, GRACE_WINDOW_HOURS=62, QUEUE_CAP=63, comment block 64-69, FALLBACK_THROTTLE_SECONDS=70). While the '~' prefix signals approximation, the block described as '57-63' is actually 8 lines wide (61-70) and FALLBACK_THROTTLE_SECONDS is on line 70, outside the stated range. A developer might stop deletion too early. Similarly, _overflow_fast_track is at line 799 (not ~779 as stated), and the FALLBACK_THROTTLE_SECONDS at ~1194 is actually at line 1194 — correct.",
+      "fix": "Update line estimates in task 9 Details section to match actual file: env var block is lines 58-70 (comment starts at 58, FALLBACK_THROTTLE_SECONDS ends at 70); _overflow_fast_track starts at 799. These are cosmetic but reduce implementer error."
+    }
+  ],
+  "stats": {
+    "tasks_checked": 3,
+    "claims_verified": 38,
+    "issues_found": 8
+  }
+}

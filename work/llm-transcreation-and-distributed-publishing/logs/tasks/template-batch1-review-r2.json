@@ -1,0 +1,77 @@
+{
+  "validator": "task-validator",
+  "iteration": 2,
+  "batch": [1, 2, 3, 4, 5],
+  "status": "approved",
+  "previous_findings_resolution": {
+    "r1_total": 8,
+    "r1_resolved": 1,
+    "r1_outstanding": 7,
+    "notes": "R1 status was 'approved' (no critical findings). Most R1 minors were not addressed in iteration 2 — task files appear unchanged on the cited points. Re-flagged below at the same severity. Only the Task 2 test-count consistency (13 vs 12) appears reconciled to '13' across Description / What to do / AC."
+  },
+  "findings": [
+    {
+      "severity": "major",
+      "category": "carry-forward",
+      "task": 5,
+      "section": "TDD Anchor / Acceptance Criteria",
+      "issue": "R1 finding #1 NOT resolved. Tech-spec Acceptance Criteria 'Outage state machine' (line 446) still demands 'All 12 state transitions from code-research §14.4 covered by tests (5 states × triggers)'. Task 5 AC line 61 still reads 'Все 4 ключевых перехода ... покрыты тестами' and TDD Anchor still lists only 6 tests covering 4 explicit transitions. The 'no-op' branches (ping_1_sent + outage error AND now-t0 < 1h → stays at ping_1_sent, no pings; ping_2_sent + outage error AND now-t0 < 2h → stays at ping_2_sent, no pings) and recovery_pending state probes are not anchored as tests. The transition table embedded in the task (lines 115–122) lists only 6 rows, not the 12 the tech-spec calls for — the gap is structural, not just textual.",
+      "fix": "Either (a) bring task 5 in line with tech-spec AC: add TDD anchor entries (and matching AC line) for the no-op branches, recovery_pending probe rate-limit via last_health_check_at, recovery from google_fallback_active, recovery_event when outage_started_at IS NULL, and any other rows that make up the '12 transitions × 5 states' count from §14.4 — bring the test inventory to ~10–12 transition tests; OR (b) reconcile tech-spec to '6 transitions' if §14.4 indeed enumerates only 6, and update the AC line to match. Pick one source of truth — the discrepancy itself is the bug."
+    },
+    {
+      "severity": "minor",
+      "category": "carry-forward",
+      "task": 3,
+      "section": "TDD Anchor / Acceptance Criteria",
+      "issue": "R1 finding #2 NOT resolved. Decision 5 enumerates 7 API-level + 3 per-article anthropic SDK exception classes (10 total including APIStatusError as catch-all for unrecognized status codes). Task 3 'What to do' bullet 1 still describes APIStatusError as the unrecognized-codes branch, but TDD Anchor still has only 9 named-class tests and no anchor for `APIStatusError`. Acceptance Criteria line 102 still says 'Все 9 классов anthropic SDK исключений из Decision 5'. Either the count or the test inventory is off.",
+      "fix": "Add `tests/test_claude_transcreation.py::test_unrecognized_api_status_raises_per_article` to TDD Anchor — synthetic `APIStatusError(status_code=418)` → `ClaudeTranscreationError`; AND/OR explicitly document in AC that `APIStatusError` is the 10th catch-all class for non-listed status codes and update the count to '10 классов'. Bring task and Decision 5 enumeration into exact alignment."
+    },
+    {
+      "severity": "minor",
+      "category": "structure",
+      "task": 1,
+      "section": "Reviewers",
+      "issue": "R1 finding #3 NOT resolved. Reviewers section still uses absolute filesystem path `/workspaces/debian-2/my-hw/work/llm-transcreation-and-distributed-publishing/logs/working/task-1/...` (lines 92–93). Template specifies relative-feature form `work/{feature}/logs/working/task-{N}/{name}-{round}.json`. Task 5 already uses the relative form (lines 128–129); Tasks 1, 2, 3, 4 are out of step.",
+      "fix": "Change to `work/llm-transcreation-and-distributed-publishing/logs/working/task-1/code-reviewer-{round}.json` and same for test-reviewer."
+    },
+    {
+      "severity": "minor",
+      "category": "structure",
+      "task": 2,
+      "section": "Reviewers",
+      "issue": "R1 finding #4 NOT resolved. Same as Task 1 — absolute paths in Reviewers section (lines 158–159) diverge from template's relative-feature form.",
+      "fix": "Change to `work/llm-transcreation-and-distributed-publishing/logs/working/task-2/code-reviewer-{round}.json` and same for test-reviewer."
+    },
+    {
+      "severity": "minor",
+      "category": "structure",
+      "task": 3,
+      "section": "Reviewers",
+      "issue": "R1 finding #5 NOT resolved. Same as Task 1 — absolute paths in Reviewers section (lines 198–201) diverge from template's relative-feature form.",
+      "fix": "Change to `work/llm-transcreation-and-distributed-publishing/logs/working/task-3/{reviewer}-{round}.json` for all four reviewers."
+    },
+    {
+      "severity": "minor",
+      "category": "structure",
+      "task": 4,
+      "section": "Reviewers",
+      "issue": "R1 finding #6 NOT resolved. Same as Task 1 — absolute paths in Reviewers section (lines 158–159) diverge from template's relative-feature form.",
+      "fix": "Change to `work/llm-transcreation-and-distributed-publishing/logs/working/task-4/{reviewer}-{round}.json` for both reviewers."
+    },
+    {
+      "severity": "minor",
+      "category": "consistency",
+      "task": 4,
+      "section": "Acceptance Criteria",
+      "issue": "R1 finding #8 NOT resolved. AC line 79 'В коде/документации зафиксировано: для outage admin-пингов использовать type(exc).__name__, не str(exc)' is still satisfied by adding only a comment/docstring (per 'What to do' bullet 6 and Details/Implementation hints). Tech-spec AC under 'Token redaction & SDK loggers' (line 427) is stricter and the invariant is deferred to downstream tasks 7/8 with no in-task lint/test enforcement. If downstream tasks miss the invariant, the redaction test won't catch it.",
+      "fix": "Either (a) add a lint-style test that scans `news_bot.send_admin_notification`/related call sites for any plain `str(exc)` usage in outage-related templates and asserts none exist, or (b) explicitly note in Post-completion that this AC is an invariant verified in Tasks 7 and 8 by their test suites, with a cross-reference. Avoid leaving it as comment-only."
+    }
+  ],
+  "stats": {
+    "tasks_checked": 5,
+    "issues_found": 7,
+    "critical": 0,
+    "major": 1,
+    "minor": 6
+  }
+}

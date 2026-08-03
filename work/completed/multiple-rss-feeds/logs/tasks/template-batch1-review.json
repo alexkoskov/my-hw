@@ -1,0 +1,469 @@
+{
+  "timestamp": "2026-04-15T18:54:41.334678Z",
+  "batch": 1,
+  "iteration": 1,
+  "findings": [
+    {
+      "severity": "minor",
+      "issue": "Section What to do contains placeholder text",
+      "fix": "Replace placeholder with specific content",
+      "task": 1
+    },
+    {
+      "severity": "minor",
+      "issue": "Section TDD Anchor contains placeholder text",
+      "fix": "Replace placeholder with specific content",
+      "task": 1
+    },
+    {
+      "severity": "minor",
+      "issue": "Section Acceptance Criteria contains placeholder text",
+      "fix": "Replace placeholder with specific content",
+      "task": 1
+    },
+    {
+      "severity": "minor",
+      "issue": "Section Acceptance Criteria contains placeholder text",
+      "fix": "Replace placeholder with specific content",
+      "task": 1
+    },
+    {
+      "severity": "minor",
+      "issue": "Section Verification Steps contains placeholder text",
+      "fix": "Replace placeholder with specific content",
+      "task": 1
+    },
+    {
+      "severity": "minor",
+      "issue": "Section Details contains placeholder text",
+      "fix": "Replace placeholder with specific content",
+      "task": 1
+    },
+    {
+      "severity": "minor",
+      "issue": "TDD Anchor contains example placeholder",
+      "fix": "Replace with actual test descriptions",
+      "task": 1
+    },
+    {
+      "severity": "minor",
+      "issue": "Section What to do contains placeholder text",
+      "fix": "Replace placeholder with specific content",
+      "task": 2
+    },
+    {
+      "severity": "minor",
+      "issue": "Section TDD Anchor contains placeholder text",
+      "fix": "Replace placeholder with specific content",
+      "task": 2
+    },
+    {
+      "severity": "minor",
+      "issue": "Section Acceptance Criteria contains placeholder text",
+      "fix": "Replace placeholder with specific content",
+      "task": 2
+    },
+    {
+      "severity": "minor",
+      "issue": "Section Acceptance Criteria contains placeholder text",
+      "fix": "Replace placeholder with specific content",
+      "task": 2
+    },
+    {
+      "severity": "minor",
+      "issue": "Section Verification Steps contains placeholder text",
+      "fix": "Replace placeholder with specific content",
+      "task": 2
+    },
+    {
+      "severity": "minor",
+      "issue": "Section Details contains placeholder text",
+      "fix": "Replace placeholder with specific content",
+      "task": 2
+    },
+    {
+      "severity": "minor",
+      "issue": "TDD Anchor contains example placeholder",
+      "fix": "Replace with actual test descriptions",
+      "task": 2
+    },
+    {
+      "severity": "minor",
+      "issue": "Section What to do contains placeholder text",
+      "fix": "Replace placeholder with specific content",
+      "task": 3
+    },
+    {
+      "severity": "minor",
+      "issue": "Section TDD Anchor contains placeholder text",
+      "fix": "Replace placeholder with specific content",
+      "task": 3
+    },
+    {
+      "severity": "minor",
+      "issue": "Section Acceptance Criteria contains placeholder text",
+      "fix": "Replace placeholder with specific content",
+      "task": 3
+    },
+    {
+      "severity": "minor",
+      "issue": "Section Acceptance Criteria contains placeholder text",
+      "fix": "Replace placeholder with specific content",
+      "task": 3
+    },
+    {
+      "severity": "minor",
+      "issue": "Section Verification Steps contains placeholder text",
+      "fix": "Replace placeholder with specific content",
+      "task": 3
+    },
+    {
+      "severity": "minor",
+      "issue": "Section Details contains placeholder text",
+      "fix": "Replace placeholder with specific content",
+      "task": 3
+    },
+    {
+      "severity": "minor",
+      "issue": "TDD Anchor contains example placeholder",
+      "fix": "Replace with actual test descriptions",
+      "task": 3
+    },
+    {
+      "severity": "minor",
+      "issue": "Section What to do contains placeholder text",
+      "fix": "Replace placeholder with specific content",
+      "task": 4
+    },
+    {
+      "severity": "minor",
+      "issue": "Section TDD Anchor contains placeholder text",
+      "fix": "Replace placeholder with specific content",
+      "task": 4
+    },
+    {
+      "severity": "minor",
+      "issue": "Section Acceptance Criteria contains placeholder text",
+      "fix": "Replace placeholder with specific content",
+      "task": 4
+    },
+    {
+      "severity": "minor",
+      "issue": "Section Acceptance Criteria contains placeholder text",
+      "fix": "Replace placeholder with specific content",
+      "task": 4
+    },
+    {
+      "severity": "minor",
+      "issue": "Section Verification Steps contains placeholder text",
+      "fix": "Replace placeholder with specific content",
+      "task": 4
+    },
+    {
+      "severity": "minor",
+      "issue": "Section Details contains placeholder text",
+      "fix": "Replace placeholder with specific content",
+      "task": 4
+    },
+    {
+      "severity": "minor",
+      "issue": "TDD Anchor contains example placeholder",
+      "fix": "Replace with actual test descriptions",
+      "task": 4
+    },
+    {
+      "severity": "minor",
+      "issue": "Section What to do contains placeholder text",
+      "fix": "Replace placeholder with specific content",
+      "task": 5
+    },
+    {
+      "severity": "minor",
+      "issue": "Section TDD Anchor contains placeholder text",
+      "fix": "Replace placeholder with specific content",
+      "task": 5
+    },
+    {
+      "severity": "minor",
+      "issue": "Section Acceptance Criteria contains placeholder text",
+      "fix": "Replace placeholder with specific content",
+      "task": 5
+    },
+    {
+      "severity": "minor",
+      "issue": "Section Acceptance Criteria contains placeholder text",
+      "fix": "Replace placeholder with specific content",
+      "task": 5
+    },
+    {
+      "severity": "minor",
+      "issue": "Section Verification Steps contains placeholder text",
+      "fix": "Replace placeholder with specific content",
+      "task": 5
+    },
+    {
+      "severity": "minor",
+      "issue": "Section Details contains placeholder text",
+      "fix": "Replace placeholder with specific content",
+      "task": 5
+    },
+    {
+      "severity": "minor",
+      "issue": "TDD Anchor contains example placeholder",
+      "fix": "Replace with actual test descriptions",
+      "task": 5
+    },
+    {
+      "severity": "minor",
+      "issue": "Section What to do contains placeholder text",
+      "fix": "Replace placeholder with specific content",
+      "task": 6
+    },
+    {
+      "severity": "minor",
+      "issue": "Section What to do contains placeholder text",
+      "fix": "Replace placeholder with specific content",
+      "task": 6
+    },
+    {
+      "severity": "minor",
+      "issue": "Section What to do contains placeholder text",
+      "fix": "Replace placeholder with specific content",
+      "task": 6
+    },
+    {
+      "severity": "major",
+      "issue": "Missing section: TDD Anchor",
+      "fix": "Add ## TDD Anchor section with appropriate content",
+      "task": 6
+    },
+    {
+      "severity": "major",
+      "issue": "Missing section: Acceptance Criteria",
+      "fix": "Add ## Acceptance Criteria section with appropriate content",
+      "task": 6
+    },
+    {
+      "severity": "minor",
+      "issue": "Section Verification Steps contains placeholder text",
+      "fix": "Replace placeholder with specific content",
+      "task": 6
+    },
+    {
+      "severity": "minor",
+      "issue": "Section Details contains placeholder text",
+      "fix": "Replace placeholder with specific content",
+      "task": 6
+    },
+    {
+      "severity": "minor",
+      "issue": "Section What to do contains placeholder text",
+      "fix": "Replace placeholder with specific content",
+      "task": 7
+    },
+    {
+      "severity": "minor",
+      "issue": "Section What to do contains placeholder text",
+      "fix": "Replace placeholder with specific content",
+      "task": 7
+    },
+    {
+      "severity": "minor",
+      "issue": "Section What to do contains placeholder text",
+      "fix": "Replace placeholder with specific content",
+      "task": 7
+    },
+    {
+      "severity": "major",
+      "issue": "Missing section: TDD Anchor",
+      "fix": "Add ## TDD Anchor section with appropriate content",
+      "task": 7
+    },
+    {
+      "severity": "major",
+      "issue": "Missing section: Acceptance Criteria",
+      "fix": "Add ## Acceptance Criteria section with appropriate content",
+      "task": 7
+    },
+    {
+      "severity": "minor",
+      "issue": "Section Verification Steps contains placeholder text",
+      "fix": "Replace placeholder with specific content",
+      "task": 7
+    },
+    {
+      "severity": "minor",
+      "issue": "Section Details contains placeholder text",
+      "fix": "Replace placeholder with specific content",
+      "task": 7
+    },
+    {
+      "severity": "minor",
+      "issue": "Section What to do contains placeholder text",
+      "fix": "Replace placeholder with specific content",
+      "task": 8
+    },
+    {
+      "severity": "minor",
+      "issue": "Section What to do contains placeholder text",
+      "fix": "Replace placeholder with specific content",
+      "task": 8
+    },
+    {
+      "severity": "minor",
+      "issue": "Section What to do contains placeholder text",
+      "fix": "Replace placeholder with specific content",
+      "task": 8
+    },
+    {
+      "severity": "major",
+      "issue": "Missing section: TDD Anchor",
+      "fix": "Add ## TDD Anchor section with appropriate content",
+      "task": 8
+    },
+    {
+      "severity": "major",
+      "issue": "Missing section: Acceptance Criteria",
+      "fix": "Add ## Acceptance Criteria section with appropriate content",
+      "task": 8
+    },
+    {
+      "severity": "minor",
+      "issue": "Section Verification Steps contains placeholder text",
+      "fix": "Replace placeholder with specific content",
+      "task": 8
+    },
+    {
+      "severity": "minor",
+      "issue": "Section Details contains placeholder text",
+      "fix": "Replace placeholder with specific content",
+      "task": 8
+    },
+    {
+      "severity": "minor",
+      "issue": "Section What to do contains placeholder text",
+      "fix": "Replace placeholder with specific content",
+      "task": 9
+    },
+    {
+      "severity": "minor",
+      "issue": "Section What to do contains placeholder text",
+      "fix": "Replace placeholder with specific content",
+      "task": 9
+    },
+    {
+      "severity": "minor",
+      "issue": "Section What to do contains placeholder text",
+      "fix": "Replace placeholder with specific content",
+      "task": 9
+    },
+    {
+      "severity": "major",
+      "issue": "Missing section: TDD Anchor",
+      "fix": "Add ## TDD Anchor section with appropriate content",
+      "task": 9
+    },
+    {
+      "severity": "major",
+      "issue": "Missing section: Acceptance Criteria",
+      "fix": "Add ## Acceptance Criteria section with appropriate content",
+      "task": 9
+    },
+    {
+      "severity": "minor",
+      "issue": "Section Verification Steps contains placeholder text",
+      "fix": "Replace placeholder with specific content",
+      "task": 9
+    },
+    {
+      "severity": "minor",
+      "issue": "Section Details contains placeholder text",
+      "fix": "Replace placeholder with specific content",
+      "task": 9
+    },
+    {
+      "severity": "minor",
+      "issue": "Section What to do contains placeholder text",
+      "fix": "Replace placeholder with specific content",
+      "task": 10
+    },
+    {
+      "severity": "minor",
+      "issue": "Section What to do contains placeholder text",
+      "fix": "Replace placeholder with specific content",
+      "task": 10
+    },
+    {
+      "severity": "minor",
+      "issue": "Section What to do contains placeholder text",
+      "fix": "Replace placeholder with specific content",
+      "task": 10
+    },
+    {
+      "severity": "major",
+      "issue": "Missing section: TDD Anchor",
+      "fix": "Add ## TDD Anchor section with appropriate content",
+      "task": 10
+    },
+    {
+      "severity": "major",
+      "issue": "Missing section: Acceptance Criteria",
+      "fix": "Add ## Acceptance Criteria section with appropriate content",
+      "task": 10
+    },
+    {
+      "severity": "minor",
+      "issue": "Section Verification Steps contains placeholder text",
+      "fix": "Replace placeholder with specific content",
+      "task": 10
+    },
+    {
+      "severity": "minor",
+      "issue": "Section Details contains placeholder text",
+      "fix": "Replace placeholder with specific content",
+      "task": 10
+    },
+    {
+      "severity": "minor",
+      "issue": "Section What to do contains placeholder text",
+      "fix": "Replace placeholder with specific content",
+      "task": 11
+    },
+    {
+      "severity": "minor",
+      "issue": "Section What to do contains placeholder text",
+      "fix": "Replace placeholder with specific content",
+      "task": 11
+    },
+    {
+      "severity": "minor",
+      "issue": "Section What to do contains placeholder text",
+      "fix": "Replace placeholder with specific content",
+      "task": 11
+    },
+    {
+      "severity": "major",
+      "issue": "Missing section: TDD Anchor",
+      "fix": "Add ## TDD Anchor section with appropriate content",
+      "task": 11
+    },
+    {
+      "severity": "major",
+      "issue": "Missing section: Acceptance Criteria",
+      "fix": "Add ## Acceptance Criteria section with appropriate content",
+      "task": 11
+    },
+    {
+      "severity": "minor",
+      "issue": "Section Verification Steps contains placeholder text",
+      "fix": "Replace placeholder with specific content",
+      "task": 11
+    },
+    {
+      "severity": "minor",
+      "issue": "Section Details contains placeholder text",
+      "fix": "Replace placeholder with specific content",
+      "task": 11
+    }
+  ]
+}

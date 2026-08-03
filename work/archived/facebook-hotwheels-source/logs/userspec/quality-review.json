@@ -1,0 +1,32 @@
+{
+  "status": "approved",
+  "checks": {
+    "completeness": "pass",
+    "edge_cases": "pass",
+    "acceptance_criteria": "pass",
+    "contradictions": "pass",
+    "template_compliance": "pass",
+    "size_check": "pass"
+  },
+  "findings": [
+    {
+      "check": "acceptance_criteria",
+      "severity": "minor",
+      "issue": "Критерий 5 содержит неопределённое условие 'если длинный' (if long) без указания порога длины",
+      "location": "Критерии приёмки, пункт 5",
+      "fix": "Уточнить, какая длина считается 'длинной' (например, более 500 символов) или убрать условие, заменив на конкретное правило суммаризации"
+    }
+  ],
+  "interview_coverage": {
+    "covered": [
+      "feature_description",
+      "user_problem",
+      "success_criteria",
+      "constraints",
+      "filtering_event_posts",
+      "RSS/HTML/Graph API selection"
+    ],
+    "missing": []
+  },
+  "summary": "Пользовательская спецификация соответствует шаблону, полностью покрывает обсуждённые темы и содержит все обязательные разделы. Есть незначительная недоработка в формулировке критерия приёмки."
+}

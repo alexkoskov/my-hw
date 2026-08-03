@@ -1,0 +1,125 @@
+{
+  "auditor": "test-audit",
+  "summary": "Test suite is strong overall: 368 distinct `def test_` functions across 23 test files, behaviour-focused assertions, real SQLite + real argparse in integration paths, and disciplined mocking at the outermost network boundary. Decision 9 (Telegraph URL reuse) is pinned at 2 of 3 call-sites (hw_review publish + idle-fallback helper); the overflow call-site inherits reuse transitively via `_fallback_publish` and is not independently tested. The biggest real gap is Decision 13's mixed-path 3-strike invariant — user-spec L70 explicitly calls it out (\"3 провалов в любом сочетании idle-fallback и overflow\"), yet every third-strike test lives inside a single path. Two minor weak-assertion findings (one bare `assertTrue(mock_admin.called)`, one bare `assertRaises(Exception)` without `match=`). Status: needs_fixes — none are blockers for Pre-deploy QA by themselves, but the mixed-path gap is material and should be a P1 follow-up.",
+  "status": "needs_fixes",
+  "findings": [
+    {
+      "severity": "medium",
+      "file": "tests/test_overflow.py and tests/test_idle_fallback.py (absent test)",
+      "description": "No test exercises Decision 13's mixed-path 3-strike invariant: a single row accumulating one failure via idle-fallback + one failure via overflow + a third failure (in either path) → `move_to_failed`. Every 3-strike test currently lives inside one path. user-spec AC L70 explicitly says '3 failures in any combination of idle-fallback and overflow'. The shared-counter contract is pinned at the repo level (`test_pending_articles_repo.py::test_increment_attempt_returns_new_count`) but the cross-path invariant is untested end-to-end.",
+      "recommendation": "Add a single integration test (in `test_overflow.py` or a new `test_mixed_path_strikes.py`) that: (a) seeds a pending row, (b) runs one idle-fallback cycle that fails (attempt_count=1), (c) runs one overflow cycle that fails (attempt_count=2), (d) runs a third cycle (either path) that fails → asserts the row lands in `failed_articles` with `attempt_count=3`. The test should assert on the final DB state, not mock call counts."
+    },
+    {
+      "severity": "medium",
+      "file": "tests/test_overflow.py (absent assertion)",
+      "description": "Decision 9 (Telegraph URL reuse) is independently pinned in hw_review publish (`test_hw_review_publish_flow.py::test_publish_retry_reuses_telegraph_url`) and in idle-fallback (`test_idle_fallback.py::test_telegraph_url_reused_on_fallback_retry`). The overflow-fast-track call-site inherits reuse only transitively via the shared `_fallback_publish` helper. If overflow ever gains its own publish path, the invariant regresses silently.",
+      "recommendation": "Add `test_overflow_reuses_telegraph_url_on_retry` to `test_overflow.py`: pre-populate an eviction-eligible row with `telegraph_url` set, run `_overflow_fast_track` with a mock that would fail the first publish attempt, assert `publish_article.assert_not_called()` — the helper must reuse the stored URL path."
+    },
+    {
+      "severity": "low",
+      "file": "tests/test_job_prep_phase.py:341",
+      "description": "`self.assertTrue(mock_admin.called)` — weak assertion: checks that the admin notifier was called but does not verify the message carried anything about the failed RSS feed, which is the whole point of the error-isolation test. Identical failure modes (admin called with unrelated text) would slip through.",
+      "recommendation": "Replace with `mock_admin.assert_called()` followed by scanning `mock_admin.call_args_list` for a call whose text contains an RSS-failure hint (e.g. a feed URL fragment or the word 'RSS'). Alternatively: `self.assertIn('rss', ' '.join(c.args[0] for c in mock_admin.call_args_list).lower())`."
+    },
+    {
+      "severity": "low",
+      "file": "tests/test_idle_fallback.py:450",
+      "description": "`with self.assertRaises(Exception):` — broad exception matcher. When `send_telegraph_teaser` returns False the helper is contracted to raise a specific exception the caller catches to bump `attempt_count`. A `NameError` or `AttributeError` regression inside `_fallback_publish` would silently satisfy this assertion and mask the real bug.",
+      "recommendation": "Replace with the narrowest exception class the helper is documented to raise (e.g. `RuntimeError` or a dedicated `TelegramSendError`). If the helper contract leaves the class flexible, use `assertRaisesRegex(Exception, r'telegram|teaser')` so the match string pins intent."
+    },
+    {
+      "severity": "low",
+      "file": "tests/test_migration.py:124",
+      "description": "`test_pending_articles_has_expected_columns` PRAGMA-pins only the `pending_articles` table; `published_articles` and `failed_articles` have no migration-level PRAGMA assertion in this file. Full coverage lives in `test_pending_articles_repo.py::TestSchema::test_pragma_table_info_matches_spec`, so the invariant is covered overall — but if `init_db()` ever diverges from `pending_articles_repo.init_schema()` (e.g. via direct DDL in news_bot), the migration test would miss it.",
+      "recommendation": "Extend `test_migration.py` with two further tests mirroring the repo-level checks for `published_articles` and `failed_articles` so drift is caught at the migration boundary, not only at the repo level."
+    },
+    {
+      "severity": "low",
+      "file": "tests/test_hw_review_take.py:178-209 (test_take_when_in_failed)",
+      "description": "`assertTrue('already auto-published' in err or 'failed' in err)` — the OR disjunction hedges on the contract. Either the error message carries a specific 'failed' signal (in which case assert on it) or it doesn't (in which case assert only the generic phrase). Allowing both loosens the behaviour under test.",
+      "recommendation": "Lock the specific stderr phrasing that the current implementation emits, and mark the other branch as dead. If both phrases are legitimately emitted in different sub-paths, split the test."
+    },
+    {
+      "severity": "low",
+      "file": "tests/test_hw_review_retry.py:216-230 (test_retry_when_already_in_pending)",
+      "description": "`self.assertIn(rc, (0, 1))` — accepts both exit codes, which means the test does not pin the behaviour of the defensive `retry_from_failed` race path. Either the CLI exits 0 with a gentle message or 1 with a clean error; the behaviour should be chosen and pinned.",
+      "recommendation": "Decide whether the race path exits 0 or 1; update the test to pin exactly one. Keep the existing `assertNotIn('Traceback', …)` guard."
+    },
+    {
+      "severity": "nit",
+      "file": "tests/test_hw_review_cli.py:606-626 (test_preview_path_guard_escape_aborts)",
+      "description": "The test monkeypatches `Path.resolve` globally to redirect any .html path outside the cache dir to `/tmp/evil.html`. This works but is brittle: any incidental `.html`-suffixed Path operation inside CLI startup would be coerced, hiding real bugs. A `hw_review._resolve_cache_path` seam (if one existed) would be a cleaner patch point.",
+      "recommendation": "Consider refactoring the CLI to expose the resolve step as a named helper and patch that helper in the test. Non-blocking."
+    },
+    {
+      "severity": "nit",
+      "file": "tests/test_hw_review_publish_flow.py:273-299 (vanished-row simulation)",
+      "description": "`TestPublishVanishedRow` patches `pending_articles_repo.list_pending` to return a hand-crafted dict AND directly DELETEs the pending row via raw SQL. This works but mixes a repo-level mock with a raw-SQL race simulation in the same test. A single source of truth would reduce noise.",
+      "recommendation": "Either drive the race purely through the raw SQL DELETE (no list_pending mock — the CLI's list_pending returns empty, triggering the index-out-of-range branch) or purely through the mock (no raw SQL). The three-state vanished-row matrix is still covered."
+    }
+  ],
+  "coverage_gaps": [
+    {"ac_or_decision": "user-spec AC L70 / Decision 13 — mixed-path 3-strike (idle + overflow combination)", "file_expected": "tests/test_overflow.py or tests/test_idle_fallback.py", "status": "missing"},
+    {"ac_or_decision": "Decision 9 — Telegraph URL reuse at overflow fast-track call-site", "file_expected": "tests/test_overflow.py", "status": "partial"},
+    {"ac_or_decision": "Decision 1 — preview path guard (escape outside CACHE_DIR)", "file_expected": "tests/test_hw_review_cli.py::test_preview_path_guard_escape_aborts", "status": "OK"},
+    {"ac_or_decision": "Decision 1 — URL-scheme allowlist (javascript:/data:/file:/vbscript: dropped; https?:// preserved)", "file_expected": "tests/test_preview_renderer.py (14 URL-scheme tests)", "status": "OK"},
+    {"ac_or_decision": "Decision 1 — CSP meta (default-src 'none', img-src https:, frame-src https:)", "file_expected": "tests/test_preview_renderer.py::TestCsp", "status": "OK"},
+    {"ac_or_decision": "Decision 2 — four-table migration via PRAGMA dict-literal compare", "file_expected": "tests/test_pending_articles_repo.py::TestSchema::test_pragma_table_info_matches_spec + tests/test_migration.py", "status": "OK"},
+    {"ac_or_decision": "Decision 4 — SOURCE_EMOJI / SOURCE_LABEL exactly {'autoevolution','mattel','lamley'}", "file_expected": "tests/test_admin_ping.py::TestSourceVocabulary + tests/test_sources_registry.py", "status": "OK"},
+    {"ac_or_decision": "Decision 6 — stage validator 8-vector rejection matrix + block-parity", "file_expected": "tests/test_hw_review_cli.py::TestStageCommand (13 tests)", "status": "OK"},
+    {"ac_or_decision": "Decision 7 — overflow never evicts staged rows", "file_expected": "tests/test_pending_articles_repo.py::test_list_pending_for_eviction_excludes_staged + tests/test_overflow.py::test_overflow_evicts_only_unstaged_rows + test_overflow_staged_protected_count_in_admin_ping", "status": "OK"},
+    {"ac_or_decision": "Decision 8 — failed-footer always rendered; byte-exact format", "file_expected": "tests/test_hw_review_retry.py::TestListFooter + tests/test_hw_review_cli.py::TestListCommand", "status": "OK"},
+    {"ac_or_decision": "Decision 9 — Telegraph URL reuse at hw_review publish site", "file_expected": "tests/test_hw_review_publish_flow.py::test_publish_retry_reuses_telegraph_url + test_publish_retry_after_teaser_exception (both variants: returns-False and raises)", "status": "OK"},
+    {"ac_or_decision": "Decision 9 — Telegraph URL reuse at _fallback_publish (idle) site", "file_expected": "tests/test_idle_fallback.py::test_telegraph_url_reused_on_fallback_retry + test_fallback_telegram_failure_persists_telegraph_url", "status": "OK"},
+    {"ac_or_decision": "Decision 10 — prep phase does not publish; flipped integration tests", "file_expected": "tests/test_integration.py + tests/test_mattel_integration.py + tests/test_feed_iteration.py (mock_publish.assert_not_called + count_pending)", "status": "OK"},
+    {"ac_or_decision": "Decision 11 — sanitize_error_message: four secrets individually + empty-env guard + compound", "file_expected": "tests/test_admin_ping.py::TestSanitizeErrorMessage (12 tests)", "status": "OK"},
+    {"ac_or_decision": "Decision 12 — consolidated idle heads-up (single ping, all titles)", "file_expected": "tests/test_idle_fallback.py::test_heads_up_single_ping_batches_all_stale", "status": "OK"},
+    {"ac_or_decision": "Decision 13 — shared attempt counter, 3-strike move_to_failed (same-path)", "file_expected": "tests/test_idle_fallback.py::test_fallback_third_strike_moves_to_failed + tests/test_overflow.py::test_overflow_three_strikes_moves_to_failed", "status": "OK"},
+    {"ac_or_decision": "Decision 14 — channel-post hashtag wired via source_url (not source_name)", "file_expected": "tests/test_hw_review_publish_flow.py::test_publish_passes_source_url_to_teaser_for_hashtag (asserts _source_hashtag('https://lamleygroup.com/...')=='#lamleygroup')", "status": "OK"},
+    {"ac_or_decision": "user-spec AC — skip with staged ru: y/Y/n/N/empty/garbage/EOF branches", "file_expected": "tests/test_hw_review_cli.py::TestSkipCommand (6 branches covered + EOF)", "status": "OK"},
+    {"ac_or_decision": "user-spec AC — publish on vanished row: published/failed/not-found three-state matrix with exit 1 and no traceback", "file_expected": "tests/test_hw_review_publish_flow.py::TestPublishVanishedRow (all three + out-of-range)", "status": "OK"},
+    {"ac_or_decision": "tech-spec AC — transactional rollback via monkeypatched cursor on 2nd INSERT", "file_expected": "tests/test_pending_articles_repo.py::test_move_to_published_rollback_on_error", "status": "OK"},
+    {"ac_or_decision": "tech-spec AC — Telegraph retry, two failure variants (returns False + raises)", "file_expected": "tests/test_hw_review_publish_flow.py::test_publish_retry_reuses_telegraph_url + test_publish_retry_after_teaser_exception", "status": "OK"},
+    {"ac_or_decision": "tech-spec AC — idle-fallback fetched_at via SQL UPDATE, not Python time-mock", "file_expected": "tests/test_idle_fallback.py::_IdleFallbackCase._age_fetched + tests/test_pending_articles_repo.py::test_list_pending_stale_filters (both use datetime('now', ...) SQL)", "status": "OK"},
+    {"ac_or_decision": "tech-spec AC — parameterised-only SQL in repo (grep-style audit)", "file_expected": "tests/test_pending_articles_repo.py::TestSqlAudit::test_parameterized_queries_only", "status": "OK"},
+    {"ac_or_decision": "user-spec AC — hw_review take after terminal state returns exit 1", "file_expected": "tests/test_hw_review_take.py::TestTakeAfterTerminal (published + failed variants)", "status": "OK"},
+    {"ac_or_decision": "user-spec AC — hw_review retry moves row from failed back to pending with attempt_count=0 and fresh fetched_at", "file_expected": "tests/test_hw_review_retry.py::test_retry_moves_row_from_failed_to_pending + tests/test_pending_articles_repo.py::test_retry_from_failed_resets_attempt_count_and_fetched_at", "status": "OK"}
+  ],
+  "litmus_samples": [
+    {"test": "test_pending_articles_repo.py::test_insert_pending_preserves_cyrillic", "sut_removed": "drop ensure_ascii=False flag inside repo.insert_pending", "would_fail": true},
+    {"test": "test_pending_articles_repo.py::test_move_to_published_rollback_on_error", "sut_removed": "remove the try/rollback around multi-INSERT path", "would_fail": true},
+    {"test": "test_preview_renderer.py::test_img_src_javascript_dropped", "sut_removed": "remove the ^(https?://) allowlist check on img src", "would_fail": true},
+    {"test": "test_preview_renderer.py::test_csp_meta_tag_exact_string", "sut_removed": "delete the CSP <meta> tag from render_html head", "would_fail": true},
+    {"test": "test_admin_ping.py::test_sanitize_redacts_all_four_in_one_string", "sut_removed": "make sanitize_error_message a passthrough", "would_fail": true},
+    {"test": "test_admin_ping.py::test_sanitize_skips_empty_env", "sut_removed": "remove the empty-string guard in the env loop (trigger str.replace('',...) bug)", "would_fail": true},
+    {"test": "test_hw_review_publish_flow.py::test_publish_retry_reuses_telegraph_url", "sut_removed": "remove the `if row['telegraph_url'] is None` branch — always call publish_article", "would_fail": true},
+    {"test": "test_idle_fallback.py::test_telegraph_url_reused_on_fallback_retry", "sut_removed": "always call telegraph_publisher.publish_article in _fallback_publish, ignoring stored URL", "would_fail": true},
+    {"test": "test_idle_fallback.py::test_heads_up_single_ping_batches_all_stale", "sut_removed": "change heads-up pass from consolidated ping to per-row ping", "would_fail": true},
+    {"test": "test_overflow.py::test_overflow_evicts_only_unstaged_rows", "sut_removed": "make list_pending_for_eviction return all pending rows (drop the ru_paragraphs IS NULL clause)", "would_fail": true},
+    {"test": "test_overflow.py::test_overflow_staged_protected_count_in_admin_ping", "sut_removed": "stub out the staged_protected counter in the ping formatter", "would_fail": true},
+    {"test": "test_hw_review_cli.py::test_preview_path_guard_escape_aborts", "sut_removed": "remove the `path.parent == CACHE_DIR.resolve()` assertion in cmd_preview", "would_fail": true},
+    {"test": "test_hw_review_cli.py::test_stage_rejects_stdin_over_256kib", "sut_removed": "remove the 262145-byte stdin guard", "would_fail": true},
+    {"test": "test_hw_review_retry.py::test_list_footer_format_exact", "sut_removed": "change the footer from '⚠️ K неопубликованных в failed: [...]' to any other format", "would_fail": true},
+    {"test": "test_job_prep_phase.py::test_prep_phase_does_not_publish", "sut_removed": "restore process_new_articles auto-publish (Decision 10 regression)", "would_fail": true}
+  ],
+  "total_tests_visible": 368,
+  "files_reviewed": [
+    "tests/test_pending_articles_repo.py",
+    "tests/test_preview_renderer.py",
+    "tests/test_admin_ping.py",
+    "tests/test_telegraph_publisher.py",
+    "tests/test_sources_registry.py",
+    "tests/test_job_prep_phase.py",
+    "tests/test_migration.py",
+    "tests/test_integration.py",
+    "tests/test_mattel_integration.py",
+    "tests/test_feed_iteration.py",
+    "tests/test_database.py",
+    "tests/test_hw_review_cli.py",
+    "tests/test_hw_review_publish_flow.py",
+    "tests/test_idle_fallback.py",
+    "tests/test_hw_review_take.py",
+    "tests/test_overflow.py",
+    "tests/test_hw_review_retry.py"
+  ]
+}

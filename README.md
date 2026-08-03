@@ -1,148 +1,104 @@
 # Hot Wheels News Bot
 
-A Python script that automatically collects Hot Wheels news from multiple
-sources (autoevolution.com, corporate.mattel.com, lamleygroup.com),
-translates and adapts them to Russian, publishes the full body to
-Telegra.ph, and posts a hashtag-attributed channel card with an Instant
-View preview in Telegram.
+A Python bot that collects Hot Wheels news, transcreates each article into
+Russian with an LLM (full text — not a summary), publishes the body as a
+Telegra.ph long-read, and posts a one-line hashtag card with an Instant View
+preview to a Telegram channel.
 
-## Features
+This file is the cold-start orientation only. Everything operational —
+deployment, env vars, monitoring, cost — lives in
+`.claude/skills/project-knowledge/references/`.
 
-- **Multi-source aggregation**: RSS feeds from `feeds.json` (up to 5) plus
-  `corporate.mattel.com` (via `__NEXT_DATA__`). Default RSS is autoevolution
-  at `https://www.autoevolution.com/rss/tag-Hot+Wheels.xml`.
-- **Per-source parsers**: autoevolution (Cloudflare bypass via `curl_cffi`),
-  Mattel (`__NEXT_DATA__`), Lamley (HTML scrape on `.entry-content`).
-- **Duplicate detection**: SQLite tracks processed articles by URL.
-- **Transcreation**: Google Translate + rule-based post-processing
-  (bureaucratic → plain Russian, Hot Wheels glossary, deterministic
-  content-aware emoji on titles).
-- **Telegra.ph publishing**: Full translated article rendered as a
-  Telegra.ph page with hero image, decorated subtitle lead, body
-  paragraphs, interleaved images, and a source footer. Autoevolution
-  additionally preserves image/video/heading positions via ordered blocks.
-- **Channel post**: Single-line `#{source_label}` with
-  `LinkPreviewOptions(show_above_text=True)` so Telegram renders the
-  Telegra.ph page as an Instant View preview card with the ⚡ button.
-- **Admin notifications**: Source failures are delivered to a separate
-  admin chat.
-- **Scheduling**: Runs daily at 12:00 local time via the `schedule` library.
+## Sources
 
-## Project Structure
+Live (4 sites):
 
+| Site | How it is fetched |
+|------|-------------------|
+| autoevolution.com (2 tag feeds) | RSS + Cloudflare-bypass scrape (`curl_cffi`) — `autoevolution_source.py` |
+| lamleygroup.com | RSS + HTML scrape — `lamley_source.py` |
+| t-hunted.blogspot.com | Blogspot RSS + HTML — `t_hunted_source.py` |
+| orangetrackdiecast.com | own RSS feed, body from `content:encoded` — `orangetrack_source.py` |
+
+The first three come from `feeds.json`; orangetrack has its own feed constant.
+Both fetchers are registered in `news_bot.SOURCES` (news_bot.py:3607-3611);
+per-site body parsers are dispatched by hostname in `fetch_full_article`
+(news_bot.py:3380-3425).
+
+Disabled: **corporate.mattel.com** — commented out of `SOURCES` on 2026-05-24
+(the site moved to client-side rendering). Parser and tests are retained; the
+rationale is at news_bot.py:3599-3606.
+
+## Pipeline
+
+1. A single in-process daily tick at 10:00 МСК (`schedule`, news_bot.py:4641)
+   fetches all sources and stages articles into a SQLite queue.
+2. Publishing happens at three fixed slots — 10:00 / 15:00 / 19:30 МСК,
+   one post per slot, hard cap `MAX_DAILY_POSTS = 3` (news_bot.py:172,
+   compute_publish_slots.py:49). Surplus carries over to the next day.
+3. Each article is transcreated by an LLM. `llm_transcreation.py` is a
+   dispatcher over four engines (OpenAI / Anthropic / Gemini / OpenRouter);
+   **production runs OpenRouter** (`LLM_PROVIDER=openrouter`). The system
+   prompt is `.claude/skills/project-knowledge/references/ux-guidelines.md`.
+4. The translated body is published to Telegra.ph
+   (`telegraph_publisher.py`), then the channel card is posted to Telegram.
+   The Telegra.ph URL is persisted before the Telegram send, so a retry never
+   creates a second page.
+5. On an API-level LLM outage nothing is published — the article is HELD in
+   the queue and retried later (hold-and-wait, 2026-06-11). There is no
+   machine-translation fallback.
+
+## Safety layers
+
+Between fetch and publish an article passes several gates, each of which
+pings the operator's admin chat with a grepable `[E0XX]` code (all message
+texts live in `admin_alerts.py`):
+
+- **Promo filter** `[E035]` — advertising/press-release posts are dropped
+  before translation, so no tokens are spent on them.
+- **Genre filter** `[E037]` — non-article formats (e.g. pure video reviews).
+- **Cross-source dedup** `[E014]` / `[E015]` — the same car covered by two
+  sites. A soft match sends the operator inline review buttons
+  (`REVIEW_BUTTONS_ENABLED`); a hard match blocks the post.
+- **Boilerplate / author-plug stripping** — `boilerplate_filter.py` plus
+  `_strip_plugs*` in `news_bot.py`.
+
+A blocked link is pinned in `processed_news` so the same decision is not
+re-made — and not re-alerted — on every tick.
+
+## Running it locally
+
+```bash
+python3 -m venv venv && source venv/bin/activate
+pip install -r requirements.txt
+cp .env.example .env   # then fill in the values, see the comments there
+python news_bot.py     # runs one tick immediately, then schedules 10:00 МСК
+pytest                 # test suite lives in tests/
 ```
-my-hw/
-├── news_bot.py              # Entry point: scheduler, pipeline, Telegram posting
-├── telegraph_publisher.py   # Telegra.ph API client + page builder
-├── autoevolution_source.py  # RSS + Cloudflare-bypass scrape
-├── mattel_news_source.py    # corporate.mattel.com via __NEXT_DATA__
-├── lamley_source.py         # lamleygroup.com HTML scrape
-├── feeds.json               # List of up to 5 RSS URLs (optional)
-├── requirements.txt         # Python dependencies
-├── news.db                  # SQLite database (created automatically)
-├── .env.example             # Example environment variables
-├── tests/                   # pytest suite + fixtures
-├── work/                    # Feature development logs (decisions.md per feature)
-└── README.md                # This file
-```
 
-## Quick Start
+Careful: `news_bot.py` runs a tick immediately at startup (news_bot.py:4645).
+With production credentials in `.env` that publishes to the real channel.
 
-1. **Clone the repository** (if applicable) and navigate into the project folder.
+Production is a Docker container on the Moscow host and is deployed manually
+by the operator — see
+[deployment.md](.claude/skills/project-knowledge/references/deployment.md) for
+the redeploy command, the forbidden deploy window, logs and monitoring. Do not
+follow any systemd/cron instructions found in older notes.
 
-2. **Create a virtual environment** and install dependencies:
-   ```bash
-   python3 -m venv venv
-   source venv/bin/activate  # On Windows: venv\Scripts\activate
-   pip install -r requirements.txt
-   ```
+## Where things are documented
 
-3. **Set up environment variables**:
-   - Create a `.env` file (copy from `.env.example`) and fill in your credentials:
-     ```
-     TELEGRAM_BOT_TOKEN=your_bot_token_here
-     TELEGRAM_CHANNEL_ID=@your_channel_username
-     TELEGRAM_ADMIN_ID=@your_admin_username
-     ```
-   - Get a Telegram bot token from [@BotFather](https://t.me/BotFather).
-   - Ensure your bot is an administrator of the target channel.
-   - `TELEGRAPH_ACCESS_TOKEN` is auto-provisioned on first run via
-     `telegraph_publisher.ensure_access_token` and persisted back into
-     `.env`.
+| File | Contains |
+|------|----------|
+| `.claude/skills/project-knowledge/references/project.md` | What the project is, key features, roadmap |
+| `.claude/skills/project-knowledge/references/architecture.md` | Tech stack, module map, data model |
+| `.claude/skills/project-knowledge/references/patterns.md` | Project-specific code patterns, git workflow, business rules |
+| `.claude/skills/project-knowledge/references/deployment.md` | Server, env vars, deploy, monitoring, cost |
+| `.claude/skills/project-knowledge/references/ux-guidelines.md` | The transcreation prompt (style contract for Russian output) |
+| `.env.example` | The environment variables the code reads, with defaults |
+| `work/` | Per-feature folders (user-spec / tech-spec / decisions) and dated `SESSION-*.md` logs |
 
-4. **Test the script**:
-   ```bash
-   python news_bot.py
-   ```
-   The script will run once (and schedule itself for daily execution). Press `Ctrl+C` to stop.
-
-5. **Production deployment**:
-   - For a server, run the script as a systemd service or use a cron job:
-     ```cron
-     0 12 * * * cd /path/to/my-hw && /path/to/venv/bin/python news_bot.py
-     ```
-   - Alternatively, keep the script running with `schedule` (as implemented) inside a screen/tmux session.
-
-## Configuration
-
-Edit `feeds.json` to change the RSS feed list (up to 5 URLs). Other knobs
-are constants at the top of `news_bot.py`:
-
-- `RSS_URL` – default RSS feed (fallback when `feeds.json` is missing/invalid).
-- `DB_FILE` – SQLite database filename.
-- `TRANSLATOR_SERVICE` – translation backend (currently Google).
-- The pipeline's `limit` (default 3) lives in `process_new_articles`.
-
-## How It Works
-
-1. **Load config** – `load_feeds()` reads `feeds.json` or falls back to the default RSS.
-2. **Telegraph account** – `ensure_access_token()` loads or creates a Telegra.ph token.
-3. **Fetch sources** – RSS feeds + Mattel's corporate news page.
-4. **Filter duplicates** – Each entry's link is checked against SQLite.
-5. **Per-source article fetch** – Domain dispatcher picks the right parser and returns `{title, subtitle, paragraphs, images[, blocks]}`.
-6. **Transcreate** – Google Translate + glossary / plain-Russian rewrites.
-7. **Publish to Telegra.ph** – Full article with hero, subtitle lead, body, interleaved images, source footer.
-8. **Post to Telegram** – Single hashtag line with Instant View preview card above.
-9. **Mark as processed** – The entry is stored in the database.
-
-## Dependencies
-
-See `requirements.txt` for exact versions.
-
-- `feedparser` – RSS parsing
-- `requests` – HTTP (Telegra.ph API, Mattel, Lamley)
-- `curl_cffi` – Chrome-impersonating HTTP for autoevolution (Cloudflare bypass)
-- `beautifulsoup4` – HTML parsing
-- `deep-translator` – translation (Google Translate)
-- `python-telegram-bot` – Telegram Bot API wrapper
-- `schedule` – in‑process job scheduling
-
-## Troubleshooting
-
-- **No new articles found** – Check `feeds.json` and the RSS URLs; the site might have changed its structure.
-- **Autoevolution returns HTTP 403** – Cloudflare tightened its fingerprinting; `curl_cffi` may need an updated impersonation profile.
-- **Mattel returns no entries** – The `__NEXT_DATA__` path may have changed; inspect the page source.
-- **Translation errors** – Google Translate may block frequent requests; consider switching to a paid API or LibreTranslate.
-- **Telegram posting fails** – Verify the bot token and channel ID, and ensure the bot has permission to post in the channel.
-- **Telegra.ph publish fails** – Check `TELEGRAPH_ACCESS_TOKEN` in `.env`; delete the line to force re-provisioning on next run.
-
-## Future Improvements
-
-- Cross-article linking on Telegra.ph (Phase 2 of the block pipeline).
-- LLM-powered transcreation for higher-quality Russian.
-- Image caching/download to avoid hotlinking.
-- Web dashboard for monitoring and manual posting.
-- Dockerize the application for easier deployment.
+---
 
 ## License
 
 This project is provided as-is for educational and personal use.
-
-## Development Logs
-
-Active and completed features have per-folder logs in `work/`:
-
-- `work/telegraph-pipeline/` — locked post format and Telegraph decisions.
-- `work/mattel-news-source/` — Mattel source rollout.
-- `work/completed/` — shipped features (multiple-rss-feeds).
-- `work/archived/` — retired experiments (facebook-hotwheels-source).

@@ -1,0 +1,8 @@
+{
+  "reviewer": "code-reviewer",
+  "task": "manual-review-workflow/task-2",
+  "round": 2,
+  "status": "OK",
+  "summary": "Round-2 diff is surgical: one new module-level constant (_SAFE_ATTR_NAME_RE), one guard clause inside _render_attrs (before value coercion, after the None-skip), plus two new test functions and one HTMLParser round-trip test. No behavioural change to existing paths; the allowlist semantics match the module docstring's Layer 1/2/3 claims. Regex is anchored (^...$), restricts to ASCII identifier characters (`[A-Za-z][A-Za-z0-9_-]*`), rejects empty string and names starting with a digit — aligned with the 'plain ASCII identifiers only' comment. 63/63 tests green.",
+  "findings": []
+}

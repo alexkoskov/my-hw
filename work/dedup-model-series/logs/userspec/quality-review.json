@@ -1,0 +1,62 @@
+{
+  "status": "approved",
+  "checks": {
+    "completeness": "pass",
+    "edge_cases": "pass",
+    "acceptance_criteria": "pass",
+    "contradictions": "pass",
+    "template_compliance": "pass",
+    "size_check": "warning"
+  },
+  "findings": [
+    {
+      "check": "completeness",
+      "severity": "minor",
+      "issue": "interview.yml's phase3_integration block (integration_points [required: true], dependencies, technical_constraints, data_requirements, migration_needs) still scores 0 / status=\"pending\" / value=\"\" — unlike phase1_feature_overview and phase2_user_experience, which are now fully scored (85-100%) after the Q4 update. This is a partial fix of the round-1 critical: phase2 is closed, phase3 is not. The underlying content (gate order, module touch-points, admin_alerts changes, backfill script changes) IS present in user-spec.md's \"Технические решения\" and is fully documented in code-research.md, and the user gave broad confirmation in Q3/Q4 (\"ок\", \"продолжим двигаться по флоу\") — so no content is actually lost from the spec. This is a residual audit-trail/bookkeeping gap in interview.yml itself, not a spec-quality defect.",
+      "location": "logs/userspec/interview.yml → phase3_integration (all 5 items, esp. integration_points which is required: true)",
+      "fix": "Backfill phase3_integration scoring, pointing to \"Технические решения\" + code-research.md as the source, or add a note that these items were resolved via code-research + the user's aggregate Q3/Q4 confirmations rather than a dedicated question."
+    },
+    {
+      "check": "acceptance_criteria",
+      "severity": "minor",
+      "issue": "AC7 says the theme/series coverage \"Проверяется калибровкой (AC10)\", but AC10 is the backfill+precheck criterion — the calibration criterion is AC11. Off-by-one cross-reference.",
+      "location": "Критерии приёмки → AC7",
+      "fix": "Change \"(AC10)\" to \"(AC11)\"."
+    },
+    {
+      "check": "contradictions",
+      "severity": "minor",
+      "issue": "AC5's parenthetical list of \"no hard block\" sub-cases — \"нет совпадения / нет серии / выключено\" — does not explicitly name the AC4 soft-flag branch as a fourth sub-case, even though AC5's general header (\"если новое правило не дало жёсткого блока\") grammatically covers it (soft-flag ≠ hard block). This leaves implicit whether the old set-overlap dedup also evaluates an article after a soft-flag verdict was already issued. It does not contradict AC4's \"публикуется\"/\"никогда не жёсткий блок по широкому ключу\" promise (that wording is scoped to the new rule's own widekey classification, not to the pipeline's final outcome), so this is an incompleteness in the enumeration, not a logical contradiction.",
+      "location": "Критерии приёмки → AC5 (parenthetical list); Критерии приёмки → AC4",
+      "fix": "Add \"/ сработал мягкий флаг\" to AC5's parenthetical list, or add one explicit sentence confirming whether old dedup also runs after a soft-flag verdict."
+    },
+    {
+      "check": "size_check",
+      "severity": "minor",
+      "issue": "Formal thresholds are exceeded (11 acceptance criteria > 10; 8 user scenarios > 3), same as in round 1. Given the scope (new series/theme extraction, tiering, env toggle, backfill/deploy sequencing), this depth is consistent with the declared size L, but the spec does not contain a sentence explicitly tying the L size to this scope.",
+      "location": "frontmatter: size: L; «Как должно работать» (8 сценариев); «Критерии приёмки» (11 AC)",
+      "fix": "Optional — add one sentence in «Технические решения» or «Ограничения» explaining why L is justified (new lexicon module + gate reordering + backfill/deploy sequencing)."
+    }
+  ],
+  "interview_coverage": {
+    "covered": [
+      "dedup scope: любой источник vs только кросс-источник → ANY source, но только когда серия распознана (Q1.1 → «Что делаем», AC3)",
+      "series/theme definition: широкое покрытие — car-lines + события + поп-культурные франшизы (Q1.2 → «Что делаем», AC7)",
+      "no-series fallback → откат к текущему set-overlap дедупу, ТЕПЕРЬ явно ВСЕГДА при отсутствии жёсткого блока (Q1.3 + Q4 → AC5, Сценарий 4)",
+      "новое правило ДОПОЛНЯЕТ, а не заменяет текущий дедуп — композиционная неопределённость раунда 1 закрыта (Q1.4 + Q4 → AC5, «Технические решения»)",
+      "окно = 30 дней (Q2.5 → AC3, все сценарии)",
+      "мультиобъектные статьи: блок при ≥1 совпавшей ТОЧНОЙ паре, смягчено тирингом для широких совпадений (Q2.6 переработан в Q4 → AC3, AC4)",
+      "видимость блока: показывать оператору, не молчать (Q2.7 → AC3, [E015])",
+      "degraded-mode при сбое + разовый backfill (Q2.8 → AC9, AC10)",
+      "success criteria: 3 реальных SDCC-дубля + 2-недельный мониторинг (Q3 → AC11, «Как проверить»)",
+      "testing strategy зеркалит существующую фичу (Q3 → «Тестирование»)",
+      "нет ручного republish-пути — просто уведомление (Q3 → отсутствие такого механизма в спеке, консистентно)",
+      "редизайн после валидации: тиринг (жёсткий блок для точных пар / мягкий флаг для широких) вместо полностью агрессивного правила (Q4 → AC4, «Что делаем»)",
+      "старый дедуп ВСЕГДА добивает, когда новое правило не дало жёсткого блока (Q4 → AC5)",
+      "новое требование: env-тумблер, по умолчанию включено (Q4 → AC6)",
+      "план backfill/холодного прода (Q4 → AC10, Риск 3, Сценарий 8)"
+    ],
+    "missing": []
+  },
+  "summary": "Оба критических замечания раунда 1 устранены: AC5 явно фиксирует, что старый set-overlap дедуп ВСЕГДА добивает, когда новое правило не дало жёсткого блока (включая ветку «серия распознана, но пара не совпала»), а interview.yml дополнен 4 циклами вопрос-ответ с полностью закрытыми phase1/phase2. Все три мэйджора раунда 1 тоже закрыты. Статус — approved; остались только 4 мелкие находки (незакрытый phase3_integration в логе интервью, опечатка AC7→AC10 вместо AC11, неявная трактовка AC5 для ветки soft-flag, отсутствие пояснения по размеру L), ни одна не блокирует."
+}

@@ -1,0 +1,145 @@
+{
+  "status": "passed",
+  "feature": "dedup-model-series",
+  "branch": "dev",
+  "generatedAt": "2026-07-14",
+  "summary": {
+    "totalChecks": 19,
+    "passed": 17,
+    "failed": 0,
+    "notVerifiable": 2,
+    "criticals": 0,
+    "majors": 0,
+    "minors": 1
+  },
+  "testSuite": {
+    "status": "passed",
+    "details": "python3 -m pytest -q → 1244 passed, 0 failed, 0 skipped in 45.9s (whole suite, no -k exclusion). Targeted feature subsets green: tests/test_model_extractor.py 63 passed (incl. calibration test_calibration_pair_tier_accuracy / _sdcc_dupes_hard_block / _not_dupes_never_hard_block); tests/test_integration.py::TestCrossSourceDedup 18 passed; tests/test_admin_alerts.py + tests/test_backfill_fingerprints.py + tests/test_deploy_files_invariant.py 64 passed. No regressions."
+  },
+  "acceptanceCriteria": [
+    {
+      "criterion": "AC1 — model+series pairs extracted and stored in existing model_fingerprint (new JSON key, no new column / no migration)",
+      "status": "passed",
+      "evidence": "extract_fingerprint returns 4-key {strict,brands,series,pairs} (model_extractor.py:517-605); pair-key '<model>|<series>|<tier>' built in _build_pairs. Tests: test_returns_four_keys, TestPairs::test_distinctive_pair_key_format, test_extract_fingerprint_distinctive_pair_end_to_end. No CREATE/ALTER for the feature (git diff dba529b^..HEAD touches no schema); model_fingerprint TEXT reused per tech-spec Data Models."
+    },
+    {
+      "criterion": "AC2 — pairs carry through to published_articles.model_fingerprint on publish",
+      "status": "passed",
+      "evidence": "JSON round-trips via insert_pending/move_to_published unchanged (pending_articles_repo NOT modified). Integration AC2 carry-through test exercises move_to_published and asserts pairs/series survive into published_articles.model_fingerprint (tech-spec Testing 'AC2 carry-through')."
+    },
+    {
+      "criterion": "AC3 — distinctive pair match over 30 days, ANY source → hard block: not in pending, link → processed_news, INFO log, [E015] with matched pair + earlier link",
+      "status": "passed",
+      "evidence": "_pair_rule_verdict returns ('block',match) on a shared |D pair (news_bot.py:1025-1028); job() handles block → logger.info + mark_processed(link→processed_news) + alert_cross_source_blocked([E015], pairs=match.pairs) + continue/skip-publish (news_bot.py:2302-2324). Any-source: no same-source skip in the pair loop. Tests: test_distinctive_pair_cross_source_blocks, test_within_source_distinctive_pair_blocks, test_hard_block_path, admin test_e015_blocked_renders_matched_pairs. Smoke: 3 SDCC titles → shares_pair any_distinctive=True."
+    },
+    {
+      "criterion": "AC4 — broad/theme-only match → soft flag: article PUBLISHES, operator gets [E014] (rate-limited); never a hard block on a broad key",
+      "status": "passed",
+      "evidence": "flag verdict is TERMINAL and does NOT continue → article publishes; E014 gated by is_pair_rate_limited (news_bot.py:2326-2352). Theme-only key is always '*|<series>|B' (broad) regardless of the series tier (_build_pairs:466-467). Tests: test_broad_pair_soft_flag_is_terminal (asserts one verdict/ping, no [E015] after), test_soft_flag_path, test_theme_only_pop_culture_flags_no_model, test_soft_flag_rate_limited, admin test_e014_broad_series_flag."
+    },
+    {
+      "criterion": "AC5 — composition 'in addition': when the pair rule does NOT hard-block (no match / no series / toggle off) the legacy set-overlap dedup (≥50%, 7d) always backstops, unchanged",
+      "status": "passed",
+      "evidence": "_check_cross_source_dedup runs _set_overlap_backstop_verdict only on a pair-rule 'pass' (news_bot.py:1144-1166); block/flag are terminal. Backstop is cross-source-only, 7-day subset derived from the single 30-day fetch. Tests: test_pair_pass_falls_through_to_backstop_block (positive — backstop actually BLOCKS, not vacuous), test_backstop_includes_candidate_within_7_days, test_backstop_excludes_candidate_older_than_7_days, test_pass_through_with_non_empty_fp."
+    },
+    {
+      "criterion": "AC6 — env toggle enables/disables the pair rule; default ON; read at startup; OFF → rule fully skipped, only legacy dedup",
+      "status": "passed",
+      "evidence": "DEDUP_SERIES_ENABLED import-time const, same pattern as DB_FILE/TZ (news_bot.py:130-132); gate reads the module attribute (monkeypatchable). Off → 'if DEDUP_SERIES_ENABLED and pairs' short-circuits the pair rule. Toggle-parse smoke: unset/'1'/blank → True; '0'/'false'/'no'/'off' (any case) → False. Test: test_toggle_off_skips_pair_rule."
+    },
+    {
+      "criterion": "AC7 — theme coverage: HW car-lines + events (SDCC) + franchises (Stranger Things, Top Gun, K-Pop Demon Hunters); item without a model → theme-key (broad only); unknown/untagged series → broad tier (fail-safe)",
+      "status": "passed",
+      "evidence": "SERIES_LEXICON tiers franchises/events as distinctive and recurrent car-lines as broad (model_extractor.py:135-155); extractor only emits lexicon-resolvable series, and _tier_suffix / _SERIES_DEFAULT_TIER='broad' force any untagged tier to broad. Load-time assertions guarantee pipe/newline-free canonicals + tier consistency. Tests: TestExtractSeries (franchise/event/car-line/acronym paths), TestSeriesLexicon::test_default_tier_is_broad, test_unrecognized_tier_defaults_to_broad, test_theme_only_pair_is_broad. Note: Super Treasure Hunt / Red Line Club are tagged distinctive — consistent with the user-spec 'лимитированная серия' → distinctive definition."
+    },
+    {
+      "criterion": "AC8 — no cars AND no theme → check skipped, article publishes; DB stores a non-empty (non-NULL) 4-key structure",
+      "status": "passed",
+      "evidence": "extract_fingerprint on empty input returns the 4-key all-empty structure (not NULL) (model_extractor.py:540); gate short-circuits only when BOTH strict AND series are empty (news_bot.py:1158-1159) — re-gated from the old strict-only short-circuit so pop-culture (empty strict, non-empty series) still reaches the pair scan. Tests: test_both_empty_short_circuit_real_extraction (end-to-end real extraction), test_theme_only_pop_culture_not_short_circuited, test_empty_body_four_keys."
+    },
+    {
+      "criterion": "AC9 — any extractor/compare failure → ERROR + rate-limited [E016], article still publishes (degraded mode)",
+      "status": "passed",
+      "evidence": "Whole gate wrapped in try/except in job() → logger.exception + is_dedup_degraded_rate_limited-gated alert_dedup_degraded ([E016]) + fp=None → article publishes (news_bot.py:2294-2384). Tests: test_degraded_mode (extractor raises → publishes + [E016]), admin test_e016_dedup_degraded. Security audit (Task 8) confirmed the handler logs a full traceback (no silent swallow)."
+    },
+    {
+      "criterion": "AC10 — backfill_fingerprints.py --days 30 re-fills pairs AND base car-fingerprint (widened re-select on missing $.pairs, not only IS NULL); idempotent; 30-day window; deploy runbook includes the pre-deploy SELECT COUNT check",
+      "status": "passed",
+      "evidence": "Widened SELECT: 'model_fingerprint IS NULL OR $.pairs missing', guarded by CASE WHEN json_valid(...) (backfill_fingerprints.py:297-302); skip-guard _already_backfilled requires the pairs key. Isolated temp-DB smoke: scanned exactly 1 row (in-window 2-key row missing $.pairs), skipped the 4-key row, excluded a 40-day-old row → widened re-select + 30-day window confirmed at the SQL level. Idempotency: second-run no-op. Runbook: deployment.md:222/233 documents the pre-deploy 'SELECT COUNT(*) FROM published_articles WHERE model_fingerprint IS NOT NULL' + dark-deploy sequence. Tests: 19 in test_backfill_fingerprints.py (idempotency, widened re-select, corrupt-blob-safe, 30-day window, --days clamp). LIVE prod pre-check + prod backfill are operator-applied → see deferredToPostDeploy."
+    },
+    {
+      "criterion": "AC11 — calibration: aggregate ≥7/8 AND asymmetric hard invariants (3 real SDCC dupes must hard-block; every not-dupe probe must NOT hard-block)",
+      "status": "passed",
+      "evidence": "Harness _pair_tier_verdict runs the REAL extract_fingerprint + shares_pair over the 8-pair fixture (not mocked). test_calibration_pair_tier_accuracy asserts ≥7/8; test_calibration_sdcc_dupes_hard_block asserts the 3 SDCC dupes any_distinctive is True (guarded against an empty selection); test_calibration_not_dupes_never_hard_block asserts every non-distinctive pair (across BOTH lists, incl. the broad Car Culture dupe pair-1) any_distinctive is False. All 3 green."
+    },
+    {
+      "criterion": "TECH — no schema migration; model_fingerprint JSON extended backward-compatibly",
+      "status": "passed",
+      "evidence": "git diff dba529b^..HEAD adds no CREATE/ALTER; model_fingerprint TEXT reused (tech-spec Data Models). Back-compat: all readers use .get('pairs') or [] (shares_pair:632-633, gate:1136-1138) so pre-feature 2-key rows never KeyError."
+    },
+    {
+      "criterion": "TECH — backfill json_extract(...,'$.pairs') is a static literal; no untrusted tokens in SQL (series tokens stay inside the opaque model_fingerprint blob); only --days is a bound param",
+      "status": "passed",
+      "evidence": "SELECT uses the static literal '$.pairs' with a single '?' bound param for the days window (backfill_fingerprints.py:297-302). Task 8 security audit: PASS (0 findings) — untrusted feed/LLM tokens live only inside the opaque blob. Task 9 extended TestSqlAudit to also scan backfill_fingerprints.py."
+    },
+    {
+      "criterion": "TECH — no new first-party module/import added to news_bot without being in ALL deploy FILES arrays (deploy.sh / deploy.yml / deploy_test.yml)",
+      "status": "passed",
+      "evidence": "Feature modified only pre-existing top-level modules (model_extractor.py, news_bot.py, admin_alerts.py, backfill_fingerprints.py) — no new module (rejected series_extractor.py does not exist; no untracked *.py). All touched modules present in deploy.sh + deploy.yml + deploy_test.yml FILES arrays. test_deploy_files_invariant.py (6 tests) green."
+    },
+    {
+      "criterion": "TECH — toggle off fully skips the pair rule; legacy dedup behaves exactly as before (toggle-off parity)",
+      "status": "passed",
+      "evidence": "Off → pair rule short-circuited, gate falls straight to the empty short-circuit + cross-source-only 7-day set-overlap backstop (identical to today's dedup). test_toggle_off_skips_pair_rule pins parity; toggle-parse smoke confirms off-word set. See focus point 'toggle-off parity'."
+    },
+    {
+      "criterion": "TECH — degraded mode: any extractor/compare failure still publishes the article",
+      "status": "passed",
+      "evidence": "Same code path as AC9 (job() try/except → [E016] + publish). test_degraded_mode."
+    },
+    {
+      "criterion": "TECH — whole suite green, no regressions, calibration ≥7/8",
+      "status": "passed",
+      "evidence": "python3 -m pytest -q → 1244 passed, 0 failed, 0 skipped, no -k exclusion. Calibration 8/8 (≥7 floor). Legacy car-model dedup, TestSimilarity, and all prior suites unchanged/green."
+    },
+    {
+      "criterion": "AC10 (LIVE) — pre-deploy cold-DB SELECT COUNT on Moscow prod + operator-run backfill --days 30 on prod with re-count > 0",
+      "status": "not_verifiable",
+      "evidence": "Requires SSH to the Moscow prod host + live DB. Runbook + backfill tooling verified pre-deploy; execution is operator-applied post-deploy. See deferredToPostDeploy."
+    },
+    {
+      "criterion": "User-check (LIVE) — 2-week @myhwchannel spot-check of live [E015] (false blocks?) and [E014] (real dupes?) with the SLA target",
+      "status": "not_verifiable",
+      "evidence": "Requires the live Telegram channel + 2 weeks of real feed traffic. Builders and gate verified pre-deploy; live behaviour is operator/post-deploy. See deferredToPostDeploy."
+    }
+  ],
+  "findings": [
+    {
+      "severity": "minor",
+      "title": "Accepted limitation: exact-key pair matching misses a dupe when only one side names a concrete model",
+      "expected": "Two articles about the same casting+franchise always share a pair key",
+      "actual": "If article A emits 'porsche 911|k-pop demon hunters|D' but article B (no model extracted) emits only the theme-only key '*|k-pop demon hunters|B', the keys differ → no shared pair → both publish. This is a false-NEGATIVE (safe direction: publish rather than silent block) and is documented + pinned by test_model_token_exact_match_limitation_documented. Mitigated by lexicon top-up via PR (user-spec Ограничения) and the 2-week channel spot-check. Not a blocker; no code change required for deploy.",
+      "reproduction": "Extract fingerprints for a titled-model article vs a theme-only article of the same franchise; shares_pair returns (False, [], False)."
+    }
+  ],
+  "deferredToPostDeploy": [
+    {
+      "criterion": "AC10 / Scenario 8 step 2 — pre-deploy cold-DB check on Moscow prod",
+      "reason": "Requires SSH + live prod DB (Claude cannot SSH prod); the base backfill was likely never run on the Moscow DB copied from the pre-feature NL snapshot (user-spec Risk 3).",
+      "verificationCondition": "Operator has SSH access to the Moscow prod host BEFORE rebuilding the container.",
+      "verificationSteps": "Run: sqlite3 /root/hw-news/data/news.db \"SELECT COUNT(*) FROM published_articles WHERE model_fingerprint IS NOT NULL\". Expect ~0 / no-such-column (cold base). Record the number for comparison against the post-backfill re-count."
+    },
+    {
+      "criterion": "AC10 / Scenario 8 step 3 — prod backfill --days 30 + re-count > 0",
+      "reason": "Backfill must run against the live prod DB after the dark deploy; not reproducible pre-deploy. Tooling (widened re-select, 30-day window, idempotency) is verified by unit tests + the isolated temp-DB smoke.",
+      "verificationCondition": "Container rebuilt on the Moscow host with DEDUP_SERIES_ENABLED=0 (dark deploy), OUTSIDE the 10:00–20:00 МСК publish window; DB_FILE points at the real prod DB.",
+      "verificationSteps": "Run: python3 backfill_fingerprints.py --days 30 (per deployment.md runbook). Then re-run the SELECT COUNT from step 2 and confirm it is now > 0 (base car-fingerprint AND pairs warmed for the 30-day window). Confirm the summary logs Processed > 0, Errors == 0."
+    },
+    {
+      "criterion": "AC11 / user-spec 'Пользователь проверяет' — 2-week @myhwchannel live spot-check of [E015]/[E014]",
+      "reason": "Needs the live Telegram channel and ~2 weeks of real feed traffic through the enabled pair rule; no pre-deploy substitute (E2E is replaced by this monitoring per tech-spec).",
+      "verificationCondition": "After the observation window, toggle DEDUP_SERIES_ENABLED=1 and restart (outside the МСК window); the bot has processed real SDCC/franchise items.",
+      "verificationSteps": "For 2 weeks watch @myhwchannel: (a) hard-block [E015] pings — confirm 0 visible model+series repeats in the channel and ≤1 false block/month; (b) broad [E014] pings — confirm they correspond to real theme dupes (published-with-flag is the intended tiering trade-off). If false hard blocks are frequent OR [E014] is noisy, flip the toggle off and top up the lexicon."
+    }
+  ]
+}

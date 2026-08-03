@@ -1,0 +1,14 @@
+{
+  "status": "approved",
+  "findings": [
+    {
+      "category": "underengineering",
+      "severity": "minor",
+      "issue": "AC9 enumerates overlapping substrings as a no-crash edge case but does not define wrapping policy when two different links' run texts overlap (e.g., run A 'Modern Classics' and run B 'Classics' both have orangetrackdiecast.com hrefs and both substring-match the same RU paragraph — wrap order matters for not producing nested/invalid <a> nodes). AC6 only locks 'first match wins per link', not 'first link wins per overlap'.",
+      "why_matters": "Telegraph nodes do not allow nested <a>. If both wraps fire on overlapping spans the publisher could emit malformed HTML or one wrap could shadow the other unpredictably. In practice this is rare on orangetrack (brand names are usually distinct), but tech-spec needs a policy rather than implementation luck.",
+      "fix": "Either accept this as a tech-spec decision and add one sentence to AC9 ('overlapping wraps между разными ссылками — wrap первой по позиции, остальные skip'), or note it explicitly in Risk 2 / Технические решения as a deferred design point for tech-spec to resolve. Not a blocker for adequacy approval."
+    }
+  ],
+  "worst_category": "underengineering",
+  "summary": "Round 1 findings are all addressed: AC2 locks bullet injection in publisher post-LLM (Critical 1), size is reclassified to M (Critical 2), HOW-detail removed from ACs (Major 1), h5 paragraph behavior preserved per SESSION-2026-05-06.md (Major 2 + feasibility), AC9 enumerates Bug 3 edge cases (Major 3), <ol>/nested tags covered in AC1 (Minor), sentinel-token alternative documented and deferred (Minor), AC11 softened (Minor). One minor residual: overlapping-run wrapping policy across different links is not explicit in AC9 — recommend tech-spec resolve, but not a blocker. Approving for tech-spec planning."
+}

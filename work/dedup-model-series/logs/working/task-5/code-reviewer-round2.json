@@ -1,0 +1,40 @@
+{
+  "status": "approved_with_suggestions",
+  "summary": "Both round-1 majors and the round-1 minor are genuinely fixed, not just superficially patched. The SQL crash was independently reproduced-and-fixed via a temp-DB probe (naive predicate crashes on malformed JSON, the CASE WHEN json_valid guard does not, across a wider edge-case set than the test suite covers), and reverting the guard in the actual file makes the new regression test fail exactly as documented. backfill_one shrank from ~74 to 63 lines via a clean, side-effect-free _already_backfilled(raw_fp) helper — a real improvement, though the function is still above the 50-line guideline, so it remains an open (optional) suggestion. The --help text is now accurate. All 19 tests in the target file plus the full test_pending_articles_repo.py suite pass (75/75), no regressions.",
+  "criticalIssues": [],
+  "suggestions": [
+    {
+      "file": "backfill_fingerprints.py",
+      "line": 180,
+      "severity": "major",
+      "category": "maintainability",
+      "suggestion": "backfill_one is now 63 lines (180-242), down from ~74 in round 1 thanks to the extracted _already_backfilled helper, but still exceeds the 50-line guideline. The remaining bulk is the fetch-try/except + empty-body branch + extract-and-write branch, which read as one cohesive per-row state machine rather than an accidental grab-bag — further splitting (e.g. extracting the fetch-or-error step) would trade one readable function for two callers that only make sense together. Flagging per the automatic >50-line=major rule, but this is a genuine improvement over round 1 and reasonable to leave as-is for a one-shot ops script.",
+      "benefit": "Marginal readability/testability gain if split further; low urgency given the function is already cohesive and well-commented.",
+      "optional": true
+    }
+  ],
+  "metrics": {
+    "filesReviewed": 2,
+    "criticalIssuesCount": 0,
+    "majorIssuesCount": 1,
+    "minorIssuesCount": 0,
+    "testCoverageAssessment": "adequate"
+  },
+  "round1FindingsStatus": [
+    {
+      "finding": "SQL crash on malformed JSON via eager fetchall (major #1)",
+      "status": "resolved",
+      "evidence": "SELECT now wraps the extract in CASE WHEN json_valid(model_fingerprint) THEN json_extract(model_fingerprint,'$.pairs') ELSE NULL END IS NULL. json_extract's '$.pairs' path remains a static SQL literal; args.days via f\"-{int(args.days)}\" is the only bound '?' parameter (int() coercion still prevents injection). Verified with an isolated in-memory-DB probe against NULL, old 2-key, new 4-key, invalid-JSON ('not-valid-json{'), and several extra edge cases not in the test suite (JSON string/number/null scalars, empty string, nested-object-without-pairs) — the fixed predicate never crashes and correctly re-selects everything except the terminal 4-key blob. Additionally reverted the CASE guard directly in backfill_fingerprints.py and re-ran pytest: test_corrupt_blob_reprocessed_without_crash[not-valid-json{] failed with sqlite3.OperationalError: malformed JSON exactly as the test's docstring predicts, confirming it is a genuine regression pin, not a vacuous assertion. File was restored afterward (git diff --stat matches pre-edit state, full suite re-run green at 19/19)."
+    },
+    {
+      "finding": "backfill_one > 50 lines (major #2)",
+      "status": "partially resolved / improved",
+      "evidence": "Extracted _already_backfilled(raw_fp) -> bool (157-177, 21 lines): takes the raw column value, returns False for None, catches (ValueError, TypeError) around json.loads to treat corrupt/non-JSON as 'not backfilled', and checks isinstance(..., dict) and 'pairs' in decoded_fp. It is a pure predicate with no I/O or mutation, matching its docstring exactly, and is behaviorally equivalent to what round 1's inline guard did (per round-1 report's description of the pre-extraction lines 172-189). backfill_one now calls it as a single guard clause (line 202) and dropped to 63 lines (180-242) from ~74. Still above the 50-line threshold, so the automatic-severity rule still applies; carried forward as an optional major suggestion."
+    },
+    {
+      "finding": "Stale --help description (minor)",
+      "status": "resolved",
+      "evidence": "argparse description now reads '...Idempotent — reprocesses rows missing the \"pairs\" key (NULL, corrupt, or a pre-dedup two-key fingerprint); skips rows already carrying \"pairs\".' Verified live via `python3 backfill_fingerprints.py --help`, output matches and is now consistent with the module docstring's idempotency contract."
+    }
+  ]
+}

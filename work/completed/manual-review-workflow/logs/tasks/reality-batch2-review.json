@@ -1,0 +1,76 @@
+{
+  "validator": "reality-checker",
+  "batch": [4, 5, 6],
+  "iteration": 2,
+  "status": "changes_required",
+  "findings": [
+    {
+      "severity": "critical",
+      "category": "feasibility",
+      "task": 6,
+      "issue": "test_database.py:test_init_db_creates_table (lines 19-39) will break after Task 6 modifies init_db(). The test patches news_bot.sqlite3.connect and asserts mock_cursor.execute.call_args (the LAST execute call) equals the processed_news CREATE SQL. After Task 6 adds pending_repo.init_schema(conn) inside init_db(), the mock conn is passed into init_schema which calls conn.cursor() and fires additional execute() calls for the three new tables. The last execute call will be the last DDL inside pending_articles_repo.init_schema, not the processed_news CREATE — so the assertion normalized == expected will fail. Task 6 explicitly states 'пин-тест в test_database.py:19-39 продолжает проходить' and 'test_database.py:19-39 — оставить как есть', both of which are incorrect given this mutation. The smoke 'pytest ... tests/test_database.py -q' will be red.",
+      "fix": "Task 6 must update test_database.py:test_init_db_creates_table. Replace 'mock_cursor.execute.call_args' with 'mock_cursor.execute.call_args_list[0]' (the FIRST execute call, which remains the processed_news CREATE). Alternatively, use 'mock_cursor.execute.assert_any_call(expected_sql)'. Add this file to the step 9 flip list."
+    },
+    {
+      "severity": "major",
+      "category": "hints",
+      "task": 6,
+      "issue": "code-research §9.10 (the primary implementation reference) still calls filter_new_entries_extended(all_entries) at step (3) of the job() pseudocode. Task 6 explicitly forbids introducing filter_new_entries_extended as a separate function ('инлайн-фильтр в job() достаточен'). The Implementation Hints direct the agent to §9.10 as a reference. An agent reading §9.10 literally will introduce the forbidden function or try to import it from pending_articles_repo (where it does not exist). The task's step 3 'What to do' is correct but competes with the louder §9.10 pseudocode.",
+      "fix": "Add an explicit warning in the Implementation Hints section of Task 6: 'NOTE: §9.10 uses filter_new_entries_extended — do NOT introduce this as a named function. Use the two-step inline filter in step 3: filter_new_entries(all_entries) followed by a list comprehension against pending_repo.get_pending.'"
+    },
+    {
+      "severity": "major",
+      "category": "hints",
+      "task": 5,
+      "issue": "Task 5 edge-cases section warns 'FeedParserDict gotcha: dict(entry) includes feedparser internals... Build the output dict explicitly from string fields'. But the Implementation Hints section says 'Reference implementation in code-research §9.5 (lines 469-516) — mirror the structure'. The §9.5 reference implementation at line 494 uses 'item = dict(entry) if not isinstance(entry, dict) else entry' — exactly the dict(entry) approach the edge case warns against. The TDD Anchor requires type(item) is dict with a known bounded key set, which dict(entry) violates. An agent following §9.5 literally will produce code that fails test_fetch_rss_entries_normalises_feedparser_dict.",
+      "fix": "Amend the Implementation Hints to add: 'Do NOT use dict(entry) from the §9.5 snippet — it leaks feedparser internals. Instead build the dict explicitly as described in Edge Cases: {\"link\": entry.get(\"link\"), \"title\": entry.get(\"title\"), \"published\": entry.get(\"published\", \"\"), \"summary\": entry.get(\"summary\", \"\"), \"feed_url\": url, \"source_name\": _resolve_source_name(...)}. The §9.5 reference is correct in all other respects.'"
+    },
+    {
+      "severity": "major",
+      "category": "feasibility",
+      "task": 6,
+      "issue": "The flip instructions for test_integration.py and test_mattel_integration.py say to assert pending_repo.count_pending() == N after job() runs. But existing test setUp() fixtures only patch news_bot.DB_FILE — they do not import or configure pending_articles_repo. For count_pending() to read from the tempfile DB, pending_articles_repo must also use news_bot.DB_FILE (or its own module constant). If pending_articles_repo has its own DB_FILE import from news_bot, the existing patch covers it. If it reads news_bot.DB_FILE at call time through an explicit import, the patch also covers it. But if it has its own module-level constant copied from news_bot, the patch will NOT cover it and count_pending() will read from the production news.db. The task does not address this dependency at all, leaving the test-flip underspecified.",
+      "fix": "Add a note in the flip instructions: 'pending_articles_repo must read DB_FILE from news_bot (or via parameter injection) so that patch(news_bot.DB_FILE, tempfile_path) covers the repo too. If pending_articles_repo has its own DB_FILE constant, also patch that in setUp().'"
+    },
+    {
+      "severity": "major",
+      "category": "feasibility",
+      "task": 6,
+      "issue": "Task 6 step 9 for test_feed_iteration.py says 'убрать ассерты про limit=3' but does not explicitly flag that @patch('news_bot.process_new_articles') decorators at lines 34, 77, 107, 127 must ALSO be removed. After process_new_articles is deleted, unittest.mock.patch will raise AttributeError when it tries to resolve 'news_bot.process_new_articles'. Leaving only the assertion removed while keeping the @patch decorator will cause AttributeError at test collection time, failing the entire test file. The round-2 fix note says 'delete @patch decorators at :34/77/107/127' — this is correct and present, but it is buried in the Description section rather than in the explicit step 9 flip instructions, creating a risk it gets missed.",
+      "fix": "Move the decorator removal instruction into the step 9 bullet for test_feed_iteration.py: 'Remove @patch(news_bot.process_new_articles) decorator from lines 34, 77, 107, 127 in addition to the assertion changes.' This is already noted in the Description but step 9 is the operative checklist."
+    },
+    {
+      "severity": "major",
+      "category": "feasibility",
+      "task": 5,
+      "issue": "Task 5 TDD Anchor test_fetch_rss_entries_normalises_feedparser_dict instructs to use 'a FeedParserDict-like object (or a real feedparser.parse on a tiny RSS string)'. Constructing feedparser.util.FeedParserDict directly requires knowledge of the internal class path, which is a semi-private API. The test could instead use feedparser.parse on a minimal RSS 2.0 string to get a real FeedParserDict and then verify the normalisation. The hint 'feedparser.util.FeedParserDict({...})' is a valid approach but the class path feedparser.util.FeedParserDict is not documented in feedparser's public API and could change in future releases.",
+      "fix": "Prefer the feedparser.parse approach in the hint: 'Use feedparser.parse(minimal_rss_xml) to get real FeedParserDict instances; this is more stable than feedparser.util.FeedParserDict({...}).' Minor concern; either approach works at current feedparser versions."
+    },
+    {
+      "severity": "minor",
+      "category": "tdd",
+      "task": 6,
+      "issue": "test_migration.py test test_pending_articles_has_expected_columns requires 'all 19 колонок' to be compared. Counting the tech-spec Data Models table for pending_articles gives 20 columns: link, source_name, feed_url, title, subtitle, paragraphs, images, blocks, ru_title, ru_subtitle, ru_paragraphs, ru_blocks, telegraph_url, telegraph_path, fetched_at, notified_at, attempt_count, last_error, pub_date, preview_html_path. The task says '19' which is off by one.",
+      "fix": "Update the task to read '20 колонок' to match the tech-spec Data Models table. The implementer will write the dict-literal from the tech-spec table, so the test itself will likely be correct — but the mismatch causes confusion during code review."
+    },
+    {
+      "severity": "minor",
+      "category": "feasibility",
+      "task": 6,
+      "issue": "Step 6 says 'Убрать строку job() которая запускает тик немедленно «для тестирования»'. The Edge Cases section in the same task says the opposite: 'Сохранить её — иначе dev-запуск бота не покажет работу без часового ожидания'. These two instructions directly contradict each other within the same task file.",
+      "fix": "Remove the ambiguous wording in step 6. Change it to: 'Bump cron to schedule.every().hour.do(job). Keep the immediate job() call in main() — see Edge Cases.' The Edge Cases section is the authoritative instruction here."
+    },
+    {
+      "severity": "minor",
+      "category": "hints",
+      "task": 6,
+      "issue": "Implementation hint says 'Удаление process_new_articles: убедиться что после удаления не осталось import'ов / вызовов нигде в репо (grep перед коммитом)'. The hint implies grepping source files but test_feed_iteration.py contains 4 occurrences of @patch('news_bot.process_new_articles') (lines 34, 77, 107, 127) that would not be caught if grep is scoped only to non-test files.",
+      "fix": "Change hint to explicitly include test files: 'grep -rn process_new_articles . --include=\"*.py\" — must return zero results in both src and tests before commit.'"
+    }
+  ],
+  "stats": {
+    "tasks_checked": 3,
+    "claims_verified": 43,
+    "issues_found": 9
+  }
+}

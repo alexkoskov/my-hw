@@ -1,0 +1,96 @@
+{
+  "validator": "reality-checker",
+  "batch": [7, 8, 9],
+  "status": "changes_required",
+  "findings": [
+    {
+      "severity": "critical",
+      "category": "missing_file",
+      "task": 7,
+      "issue": "Task 7 depends on Tasks 1-5 being complete (orangetrack_source.py, test_orangetrack_source.py, news_bot.py wiring, boilerplate_filter.py affiliate patterns, deploy FILES lists). None of these artifacts exist: `orangetrack_source.py` is missing, `tests/test_orangetrack_source.py` is missing, `news_bot.NETLOC_TO_SOURCE` has no orangetrack entry, boilerplate_filter.py has no affiliate patterns, deploy.sh and .github/workflows/deploy.yml have no orangetrack_source.py entry. Task 7's edge-case guard ('if Tasks 1-5 not done — return BLOCKED') is procedurally correct, but the task description does not encode this as a machine-checkable `depends_on` gate — it is a prose instruction only.",
+      "fix": "No change needed to task 7 structure — `depends_on: [1, 2, 3, 4, 5]` is declared in the frontmatter. Validate that the execution harness (feature-execution skill) actually blocks task 7 from running until all five upstream tasks have status `done`. If the harness does not enforce this, add a shell guard at the top of the What-to-do section: `for i in 1 2 3 4 5; do [ -f tasks/0$i.md ] || exit 1; done` or equivalent."
+    },
+    {
+      "severity": "critical",
+      "category": "missing_file",
+      "task": 8,
+      "issue": "Task 8 depends on `tests/test_orangetrack_source.py` (created by Task 1), affiliate-pattern additions to `tests/test_boilerplate_filter.py` (Task 2), and updated `tests/test_sources_registry.py` (Task 4). None of these changes are present in the codebase. `tests/test_orangetrack_source.py` does not exist. `tests/test_boilerplate_filter.py` has no QUICK LINK / affiliate cases. `tests/test_sources_registry.py` still asserts only 3 sources (`autoevolution`, `lamley`, `mattel`). Task 8 has the same upstream-dependency risk as Task 7.",
+      "fix": "Same as Task 7 — ensure the execution harness enforces `depends_on: [1, 2, 3, 4, 5]` before task 8 starts. Additionally, Task 8 step 3 references checking 'QUICK LINK!* Buy from <store> now.' and boundary cases — these will be impossible to verify until Task 2 is done."
+    },
+    {
+      "severity": "critical",
+      "category": "missing_file",
+      "task": 9,
+      "issue": "Task 9 depends on audit reports from Tasks 6, 7, 8 (`work/orangetrack-source/logs/audit/code-audit.md`, `security-audit.md`, `test-audit.md`). The `logs/audit/` directory is empty — none of these files exist. Task 9 step 5 says 'read audit reports' and the acceptance criteria require 'all findings from Tasks 6/7/8 either resolved or accepted'. With empty audit logs, this gate cannot be satisfied and Task 9 would write a QA report based on missing input.",
+      "fix": "Enforce `depends_on: [6, 7, 8]` at the harness level. The frontmatter already declares this. Confirm that the QA agent's step 5 will gracefully FAIL (not silently skip) when audit files are absent."
+    },
+    {
+      "severity": "major",
+      "category": "feasibility",
+      "task": 9,
+      "issue": "Task 9 step 6 smoke check `python3 -c \"import news_bot; assert news_bot.NETLOC_TO_SOURCE.get('orangetrackdiecast.com') == 'orangetrack'; ...\"` will fail at import time because `news_bot.py` currently imports nothing from `orangetrack_source` and the wiring (Task 3) has not been applied. Additionally `news_bot.py` line 1363 shows `SOURCES = [_fetch_rss_entries, _fetch_mattel_entries]` with no `_fetch_orangetrack_entries`. The smoke commands in the task are correct as *target-state* checks, but they will fail if run against the current pre-task-3 codebase.",
+      "fix": "No change needed to the task description — the smoke checks are correct as written for post-Task-3 state. However, add an explicit note in implementation hints: 'Smoke checks will fail if Task 3 is not complete — that is expected behavior and confirms the dependency gate.'  This avoids a false negative in QA."
+    },
+    {
+      "severity": "major",
+      "category": "feasibility",
+      "task": 9,
+      "issue": "Task 9 step 6 smoke command for aggregator format check expects output `[test] orangetrack: 1 issues this tick`. The word 'issues' is used with a singular count (1). If the aggregator uses grammatically correct singular/plural ('1 issue this tick' vs '2 issues this tick'), this hardcoded assertion would fail for the value of 1. The tech-spec Decision 5 format spec does not clarify singular vs plural for N=1. This is a minor ambiguity that could cause a false-positive FAIL in QA.",
+      "fix": "Clarify in tech-spec Decision 5 format spec whether N=1 renders as '1 issue' or '1 issues'. Update the smoke-check string in Task 9 to match. Recommend: use '1 issue this tick' for N=1 (standard English grammar). The smoke check should use a regex or check for the prefix only: `assert '[test] orangetrack:' in out and 'this tick' in out`."
+    },
+    {
+      "severity": "major",
+      "category": "feasibility",
+      "task": 9,
+      "issue": "Task 9 `feeds.json` invariant smoke command uses `data.get('feeds', data)` which assumes the JSON is either a dict with key 'feeds' or a list. The actual `feeds.json` is a bare JSON array (`[\"https://...\", ...]`). Calling `.get('feeds', data)` on a list raises `AttributeError: 'list' object has no attribute 'get'`. The command would fail at runtime with an exception rather than a clean assertion pass.",
+      "fix": "Replace the smoke command with: `python3 -c \"import json; data = json.load(open('feeds.json')); assert isinstance(data, list) and len(data) == 3; print('feeds.json unchanged: 3 URLs')\"`."
+    },
+    {
+      "severity": "major",
+      "category": "feasibility",
+      "task": 7,
+      "issue": "Task 7 instructs the security auditor to verify 'bounded streaming `iter_content` 5 MB' at the code level and confirm that 'the check happens incrementally per chunk, not after full body read'. This is a legitimate security check. However, the check description at step 2 says 'Подтвердить unit-test существует с body 6 MB и проверяет что cut-off происходит ДО того как 6 MB прочитаны'. A standard mock of `iter_content` cannot actually verify that less-than-6-MB was read — the mock yields chunks and the test checks the outcome (notifier called, returns None), not the byte count consumed. The instruction sets an infeasible verification criterion for the unit test. The code check itself is feasible; the test-level verification is not.",
+      "fix": "Rephrase the unit-test verification criterion: the test should verify (a) notifier is called with 'ART_FALLBACK_TOO_LARGE', (b) returns None, and (c) the mock `iter_content` yields only enough chunks to exceed MAX_RESPONSE_SIZE — meaning the response object's `close()` is called (or the loop breaks). A spy on `response.close()` would be the correct verification instrument."
+    },
+    {
+      "severity": "major",
+      "category": "hints",
+      "task": 7,
+      "issue": "Task 7 implementation hints section (step 2 checklist) contains detailed pseudo-algorithm steps that cross into implementation-prescribing territory: e.g. 'strip ASCII control chars (\\r, \\n, \\t, \\x00-\\x1f) (2) replace any remaining non-printable bytes with ? (3) truncate to 200 chars'. These are full algorithm specs, not audit guidance. An auditor should verify the implementation's result, not be given the implementation blueprint. This blurs the line between auditor and implementer.",
+      "fix": "Rephrase hints as outcome-verification criteria: 'Verify that _safe_for_ping strips control chars before truncation. A string of length 199 containing \\n at position 150 should have the \\n removed with no fake-line injection.' Remove the ordered algorithm from the task. The algorithm belongs in tech-spec Decision 5 (where it already exists)."
+    },
+    {
+      "severity": "minor",
+      "category": "feasibility",
+      "task": 8,
+      "issue": "Task 8 step 3 says 'Прочитать новые кейсы в tests/test_boilerplate_filter.py' and verify 'Positive: *QUICK LINK!* Buy from <store> now., Buy now from 1 Stop Diecast'. The task also mentions checking 'TestAffiliateLengthBound' class. However, Task 2's description says new cases are 'placed in existing TestIsBoilerplatePositive / TestIsBoilerplateNegative parametrize lists ... + новый класс TestAffiliateLengthBound'. Task 8 correctly anticipates this structure. The only concern is that the exact class name 'TestAffiliateLengthBound' is used in Task 8 audit criteria, but Task 2 spec says 'новый класс TestAffiliateLengthBound для boundary-кейсов' — these match, so no mismatch. No action needed; annotated for completeness.",
+      "fix": "No fix required — cross-task naming is consistent between Task 2 and Task 8."
+    },
+    {
+      "severity": "minor",
+      "category": "feasibility",
+      "task": 9,
+      "issue": "Task 9 acceptance criteria say '`pre-commit run --all-files` exit code 0; все hooks зелёные (gitleaks, trailing-whitespace, end-of-file-fixer, check-merge-conflict)'. The actual .pre-commit-config.yaml also includes `check-added-large-files` and `detect-private-key` and `check-yaml` hooks which are not listed in Task 9's AC. This is an incomplete enumeration — not wrong, but could cause the QA agent to miss a hook failure on the unlisted hooks.",
+      "fix": "Update the AC hook list to match .pre-commit-config.yaml: add `check-added-large-files`, `detect-private-key`, `check-yaml` to the enumeration, or replace with 'all hooks in .pre-commit-config.yaml'."
+    },
+    {
+      "severity": "minor",
+      "category": "tdd",
+      "task": 8,
+      "issue": "Task 8 step 5 checks for 'brittle-связей: реальное время (time.time() без freezegun), реальная сеть (нет моков на requests.get)'. The test file `tests/test_orangetrack_source.py` does not exist yet, so the audit cannot be performed. When Task 1 is implemented, ensure that the fallback HTTP path tests mock `requests.get` using `unittest.mock.patch` or `pytest-mock`, and that streaming `iter_content` is mocked to return controlled chunk sequences. If the implementer uses real network calls in any test, this would be a critical brittleness finding.",
+      "fix": "Add an explicit reminder in Task 1 implementation hints: 'All tests must mock requests.get at the module level. No real network calls in unit tests. For iter_content streaming tests, mock the response object with a side_effect that yields chunk bytes.'"
+    },
+    {
+      "severity": "minor",
+      "category": "cross-task-integration",
+      "task": 9,
+      "issue": "Task 9 reads audit reports from `work/orangetrack-source/logs/audit/` but Tasks 6, 7, 8 each write to that path independently. If any audit task was blocked and did not write its report (e.g., because upstream tasks weren't done), Task 9 step 5 would silently read zero findings from a missing file rather than detecting the gap. The edge-case note says 'if decisions.md does not yet contain accepted findings — mark as open and FAIL', which partially covers this. But there is no explicit check for file existence of all three audit reports before proceeding.",
+      "fix": "Add to Task 9 step 5 a pre-condition file-existence check: `test -f work/orangetrack-source/logs/audit/code-audit.md && test -f work/orangetrack-source/logs/audit/security-audit.md && test -f work/orangetrack-source/logs/audit/test-audit.md || echo BLOCKED` before reading findings. If any is missing, Task 9 should FAIL with 'BLOCKED: audit report from Task N missing'."
+    }
+  ],
+  "stats": {
+    "tasks_checked": 3,
+    "claims_verified": 41,
+    "issues_found": 12
+  }
+}

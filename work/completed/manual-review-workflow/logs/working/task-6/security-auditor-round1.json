@@ -1,0 +1,56 @@
+{
+  "task": "Task 6 — Refactor job() into prep-only + cron bump + delete process_new_articles",
+  "reviewer": "security-auditor (inline, security-auditor skill / OWASP Top 10)",
+  "round": 1,
+  "commit_under_review": "0140a98",
+  "status": "ok",
+  "summary": "The prep-phase refactor doesn't introduce any new authentication, authorisation, or network surface — it moves code that was already trusted into a staging shape. Every exception surface that could carry a secret is fed through sanitize_error_message (Decision 11). SQL writes go through the pending_articles_repo parameterised-query layer from Task 1 — no new inline SQL in job(). No unvalidated user input reaches the DB; the fetcher-supplied entries are trusted the same way they were under the old process_new_articles path.",
+  "owasp_mapped_checks": {
+    "A01_broken_access_control": "N/A — no auth surface changed.",
+    "A02_cryptographic_failures": "N/A — no new crypto.",
+    "A03_injection": "Pass. All DB writes go through pending_articles_repo.insert_pending / list_pending / get_pending / list_pending_stale / list_notified_overdue — all `?`-parameterised (audited in Task 1). The only new SQL in news_bot is the existing processed_news DDL (constant) + delegated init_schema. No f-string interpolation into SQL.",
+    "A04_insecure_design": "Pass. Cron bump to hourly is a deliberate follow-up on the 2h grace window (Decision 5); failure-in-source isolation + admin-ping on failure matches existing pattern.",
+    "A05_security_misconfiguration": "Pass. IDLE_TIMEOUT_HOURS / GRACE_WINDOW_HOURS / QUEUE_CAP env-parsed with explicit `int()` coercion (defined in Task 3) — no boolean-mode drift.",
+    "A06_vulnerable_components": "N/A — no new deps.",
+    "A07_identification_and_auth_failures": "N/A",
+    "A08_software_and_data_integrity_failures": "Pass. insert_pending UNIQUE-conflict path is defensive; upstream source modules (mattel_news_source et al) own HTML-parsing hardening and weren't touched.",
+    "A09_security_logging_monitoring": "Pass. Every error path logs through the module logger at ERROR (fetcher failures, insert failures, notify failures, list_pending failures). sanitize_error_message scrubs the four env-secrets before any string reaches the log or admin chat.",
+    "A10_ssrf": "N/A — no new network calls."
+  },
+  "secret_handling": {
+    "db_writes": "insert_pending receives only fetcher-sourced fields (title/paragraphs/images/blocks/subtitle/pub_date) plus the derived source_name. No error strings or tokens hit `pending_articles` via this path.",
+    "admin_chat_writes": "Two call sites: (a) per-source failure ping — passes `sanitize_error_message(exc)`; (b) queue-status ping via `build_admin_ping(rows)` — builds from sanitised source_name / title only, no error text. Both wrapped in try/except so a Telegram failure can't propagate a token.",
+    "logger_writes": "All ERROR paths on exceptions use `sanitize_error_message` before f-string interpolation."
+  },
+  "findings": [
+    {
+      "id": "SEC-1",
+      "severity": "info",
+      "location": "news_bot.py step (2)",
+      "description": "The `f\"⚠️ Source {fetcher_name} failed: {safe}\"` admin ping is Markdown-parsed by `send_admin_notification` (`parse_mode='Markdown'`). A malicious exception message that includes Markdown control chars (backticks, asterisks, square brackets) could lightly disrupt formatting — but cannot execute code and cannot leak secrets (`sanitize_error_message` is already applied).",
+      "recommendation": "No action. Telegram Markdown is non-executable and the pre-existing load_feeds admin-ping is the same shape. Hardening Markdown escaping is orthogonal and larger than this task."
+    },
+    {
+      "id": "SEC-2",
+      "severity": "info",
+      "location": "news_bot.py step (5)",
+      "description": "`fetch_full_article` returns user-controllable strings (title/paragraphs/images/blocks) that land in `pending_articles` TEXT columns. Because everything is SQLite-parameterised, there's no SQLi vector. Downstream Task 2's `preview_renderer` enforces tag+URL-scheme allowlists; downstream Task 8's publisher passes through telegraph_publisher's existing allowlists. No new surface in Task 6.",
+      "recommendation": "No action. The validation is at the rendering/publishing layer, which is unchanged."
+    },
+    {
+      "id": "SEC-3",
+      "severity": "info",
+      "location": "news_bot.py init_db",
+      "description": "init_db opens a connection and delegates to pending_articles_repo.init_schema, which also commits and the outer init_db commits again. SQLite transactions aren't nested — the second commit is a no-op. No security impact; logged here for completeness in case a future reviewer sees two commits and wonders.",
+      "recommendation": "No action."
+    },
+    {
+      "id": "SEC-4",
+      "severity": "info",
+      "location": "news_bot.py step (3)",
+      "description": "pending-filter issues one `get_pending(link)` per candidate — N+1 query pattern. For QUEUE_CAP=10 this is at most ~15 queries per tick, well within budget. If QUEUE_CAP is raised to 1000 via env override the cost stays linear in the number of fresh candidates per tick, still negligible for the hourly cadence.",
+      "recommendation": "No action. Performance characterisation is acceptable for expected scales; Task 10's overflow path will itself loop the queue and is the right place to consider batch pre-fetch."
+    }
+  ],
+  "critical_or_high_findings": 0
+}

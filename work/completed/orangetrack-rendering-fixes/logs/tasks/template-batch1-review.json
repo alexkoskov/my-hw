@@ -1,0 +1,51 @@
+{
+  "validator": "task-validator",
+  "batch": [1, 2, 3, 4, 5],
+  "status": "approved",
+  "findings": [
+    {
+      "severity": "major",
+      "category": "structure",
+      "task": 1,
+      "section": "TDD Anchor",
+      "issue": "TDD Anchor section does not follow template format. Template expects entries like `tests/path::test_name` — description. Instead it contains explanatory prose deferring tests to Task 4 with no test entries listed. For a code-writing task this drops the TDD discipline at the task level — the anchor should at minimum reference the canonical tests that will validate the changes (e.g. test names from tech-spec Testing Strategy that target this file).",
+      "fix": "Replace the prose with a concrete test list pointing at Task 4's canonical tests, e.g. `tests/test_orangetrack_source.py::test_li_parsed_as_list_item_block` — `<ul><li>Ferrari</li></ul>` → block `{type: list_item, text: Ferrari, runs: [...]}`. Keep a one-line note that tests are authored in Task 4 (Wave 2), but the anchor entries themselves must use the template format."
+    },
+    {
+      "severity": "major",
+      "category": "structure",
+      "task": 2,
+      "section": "TDD Anchor",
+      "issue": "TDD Anchor contains only explanatory prose (no test entries). For a code-writing task this is a format deviation. Although the change is one line and naturally exercised by existing transcreation tests, a litmus entry is still expected (e.g. a quick assertion-style test or pinning the existing transcreation test that proves list_item flows through the patch).",
+      "fix": "Add at least one concrete TDD anchor entry. Examples: `tests/test_openrouter_transcreation.py::<existing test name>` — verifies list_item block.text gets ru-text after patch fallback; or write a tiny assertion test in the same file: `tests/test_llm_common_constants.py::test_patched_text_block_types_includes_list_item` — `_PATCHED_TEXT_BLOCK_TYPES` contains `list_item`. Either is fine; the format must be `path::name — description`."
+    },
+    {
+      "severity": "minor",
+      "category": "content",
+      "task": 5,
+      "section": "Context Files",
+      "issue": "Three project-knowledge links point to wrong paths. Task uses `../../../.claude/skills/project-knowledge/project.md`, `architecture.md`, `patterns.md` — these files do NOT exist at that location. Actual files are at `.claude/skills/project-knowledge/references/{project,architecture,patterns}.md`. Tasks 1-4 use the correct `references/` subpath; Task 5 is the outlier.",
+      "fix": "Update the three links in Task 5 Context Files to include `/references/`: `[project.md](../../../.claude/skills/project-knowledge/references/project.md)`, `[architecture.md](../../../.claude/skills/project-knowledge/references/architecture.md)`, `[patterns.md](../../../.claude/skills/project-knowledge/references/patterns.md)`."
+    },
+    {
+      "severity": "minor",
+      "category": "carry-forward",
+      "task": 5,
+      "section": "Description",
+      "issue": "Description claims `~23` tests will be added; tech-spec Testing Strategy actually lists exactly 24 tests for `tests/test_telegraph_publisher.py`, and Task 5 TDD Anchor enumerates all 24 by name. The `~23` count is imprecise and could lead a reviewer to accept fewer than the canonical set.",
+      "fix": "Replace `~23 юнит-тестов` (and the matching `~23` in Acceptance Criteria + What to do step 2) with `24 unit tests` (или `~24`) so it matches the TDD Anchor count and the tech-spec Testing Strategy enumeration."
+    },
+    {
+      "severity": "minor",
+      "category": "consistency",
+      "task": 5,
+      "section": "depends_on",
+      "issue": "Task 5 declares `depends_on: [3]` only. Reasonable in isolation (tests target telegraph_publisher.py — Task 3's file). However Task 5's `test_list_item_renders_with_bullet_prefix` and `test_list_item_with_same_site_link_combines` indirectly assume the `list_item` block type exists in the system (introduced in Task 1). For test isolation Task 5 constructs synthetic blocks, so the runtime dependency is only on Task 3 — but a reader checking wave-execution may be surprised compared to Task 4 which depends on `[1, 2, 3]`. Not blocking; consider documenting the rationale.",
+      "fix": "Either (a) keep depends_on=[3] and add a one-line note in Description explaining that Task 5 constructs synthetic list_item blocks and therefore does not require Task 1's parser changes, or (b) widen to `depends_on: [1, 2, 3]` for symmetry with Task 4. Both are acceptable."
+    }
+  ],
+  "stats": {
+    "tasks_checked": 5,
+    "issues_found": 5
+  }
+}

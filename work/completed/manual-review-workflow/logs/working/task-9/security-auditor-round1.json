@@ -1,0 +1,66 @@
+{
+  "reviewer": "security-auditor",
+  "task": "task-9",
+  "round": 1,
+  "date": "2026-04-23",
+  "mode": "inline-fallback",
+  "mode_note": "Task tool was unavailable; review performed inline by the task teammate against OWASP-Top-10 categories relevant to this diff (A01 access control, A02 crypto failures, A03 injection, A05 misconfig, A07 id & auth failures, A09 logging failures).",
+  "scope": [
+    "Secret leakage in transcreate_text / publish_article / send_telegraph_teaser error paths",
+    "attempt_count race conditions (concurrent ticks)",
+    "admin-ping message length & truncation",
+    "SQL injection via titles in heads-up ping",
+    "Input validation on cmd_take N argument",
+    "Log injection via row['link'] / row['title']"
+  ],
+  "status": "ok",
+  "summary": "No secret leakage paths missed. All exception strings that transit pending_articles.last_error or admin chat first pass through sanitize_error_message (Decision 11). The idle-fallback pass uses the same SQL-parameterised queries (list_pending_stale / list_notified_overdue / mark_notified / increment_attempt / move_to_failed) that were audited in Task 1 — no new SQL surface. cmd_take's N argument is argparse int (argparse raises UsageError on non-int), bounded via _resolve_pending. No user-controlled input reaches a shell / subprocess / file I/O path.",
+  "findings": [
+    {
+      "id": "SEC-1",
+      "severity": "info",
+      "category": "A09-logging",
+      "location": "news_bot.py job() (1a) heads-up ping",
+      "finding": "Heads-up ping interpolates row titles verbatim via `', '.join(r.get('title') for r in _stale)`. Titles originate from feed fetchers (autoevolution RSS, Mattel HTML, Lamley). A crafted title containing a secret pattern could appear in the admin Telegram chat.",
+      "action": "no-action",
+      "rationale": "Titles are public data from trusted sources (news outlet pages). They don't contain secrets under any plausible threat model. The ping text is sent only to TELEGRAM_ADMIN_ID (ops channel); not public. Telegram itself imposes a 4096-char message limit — if titles concatenated exceed this, Telegram will reject the call and send_admin_notification returns False; no crash. Decision 12 explicitly specifies the format and rejects per-row rate-limiting."
+    },
+    {
+      "id": "SEC-2",
+      "severity": "low",
+      "category": "A05-misconfig",
+      "location": "news_bot.py _fallback_publish transcreate_text calls",
+      "finding": "transcreate_text wraps GoogleTranslator().translate() in its own try/except and silently falls back to the original EN text on any exception. This means a network error during translation will produce an English article in a Russian Telegram channel rather than raising — no attempt_count increment.",
+      "action": "accept-as-is",
+      "rationale": "transcreate_text was authored in Task 3 with this graceful-degradation semantics (falls back to original on translation failure). Changing it would regress translate_text's existing contract. A future iteration could distinguish 'network fail → raise' from 'null-translation → fallback', but that's out of Task 9 scope. Any Telegraph/Telegram failure downstream still increments attempt_count."
+    },
+    {
+      "id": "SEC-3",
+      "severity": "info",
+      "category": "A03-injection",
+      "location": "news_bot.py job() + hw_review.py cmd_take",
+      "finding": "All DB writes go through pending_articles_repo which uses parameterised SQL (? placeholders). No new SQL surface introduced in Task 9.",
+      "action": "no-action",
+      "rationale": "Verified with `grep -n \"conn.execute.*?\\\"\" pending_articles_repo.py` — every UPDATE/INSERT uses placeholders."
+    },
+    {
+      "id": "SEC-4",
+      "severity": "info",
+      "category": "A01-race",
+      "location": "news_bot.py job() step 1b increment_attempt",
+      "finding": "Two concurrent cron ticks (shouldn't happen, but theoretically) could both observe attempt_count=2, both fail, both run increment_attempt (→ 3 and 4), and BOTH call move_to_failed. First wins via DELETE, second sees src=None and is a noop.",
+      "action": "no-action",
+      "rationale": "job() is run by a single schedule.every().hour.do() thread; no concurrent ticks per design. move_to_failed gracefully handles the missing-row case (explicit `if src is None: return` branch). increment_attempt uses UPDATE attempt_count = attempt_count + 1 which is atomic under SQLite's default isolation."
+    },
+    {
+      "id": "SEC-5",
+      "severity": "info",
+      "category": "A09-logging",
+      "location": "hw_review.py cmd_take error branches",
+      "finding": "Error branches print row link / title / telegraph_url to stderr. These are public URL strings, not secrets.",
+      "action": "no-action",
+      "rationale": "Same reasoning as Task 8's cmd_publish — stderr is the operator's local terminal; URLs and titles are fetched from public news sites. No secret surface."
+    }
+  ],
+  "recommendation": "Accept. Zero HIGH / zero MEDIUM findings. All five info/low items have documented accept rationale."
+}

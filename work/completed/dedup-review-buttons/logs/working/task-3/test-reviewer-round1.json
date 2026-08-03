@@ -1,0 +1,53 @@
+{
+  "reviewer": "test-reviewer",
+  "task": 3,
+  "round": 1,
+  "commit": "8ba09b7",
+  "verdict": "changes_required",
+  "summary": "3/3 TDD anchors from tasks/3.md are present, named as specified, and pass; full tests/test_integration.py suite (53/53) is green with no regressions. The E014-only scoping and the class-reuse trick are both clean. One real test-rigor gap found and confirmed by mutation testing: the flag-on test's own docstring claims to verify 'token persisted BEFORE the send', but because send_admin_notification is a synchronous MagicMock and the assertion runs only after job() returns, the test cannot actually detect a reordering where the token is persisted after the send call. I verified this empirically (see notes) — swapping the order still passes all 3 tests untouched. Requesting a stronger assertion (mock side_effect) to close this gap before approval, since the ordering is an explicit, commented-on design invariant (prevents a button-press race against an unwritten token), not incidental.",
+  "findings": [
+    {
+      "id": 1,
+      "severity": "medium",
+      "file": "tests/test_integration.py",
+      "line": "2981-3022 (test_flag_on_e014_send_includes_review_keyboard)",
+      "issue": "Litmus failure, empirically confirmed: I temporarily reordered news_bot.py's E014 send-site to call send_admin_notification(...) BEFORE pending_repo.put_review_token(token, link) (i.e. persist-after-send instead of persist-before-send) and reran `pytest tests/test_integration.py -k DedupReviewButtons -q` — all 3 tests still passed. Root cause: send_admin_notification is replaced by a plain MagicMock (no side_effect), so it returns instantly regardless of code order, and the test's get_review_token_link(token) assertion runs only after job() has already returned — by which point both statements have executed either way. The test's own comment ('Token persisted BEFORE the send \u2192 resolvable to the new link') asserts a claim the test cannot actually enforce. Production code IS correct as reviewed (news_bot.py L2495-2500: mint \u2192 put_review_token \u2192 build kb \u2192 send, all confirmed by reading + code-reviewer round1), so this is a test-quality gap, not a functional defect \u2014 but it means a future refactor that silently swaps the order would ship undetected, defeating the exact race this ordering exists to prevent (a Telegram user could tap the button before the DB write lands).",
+      "fix": "Give mock_admin a side_effect that asserts the invariant AT CALL TIME, e.g.: `captured = {}` before the call; `mock_admin.side_effect = lambda *a, **kw: captured.__setitem__('token_visible_at_send', pending_articles_repo.get_review_token_link(<token-extracted-from-kw['reply_markup']>) is not None)`. Since the token is embedded in kb.inline_keyboard at call time, extract it inside the side_effect (parse callback_data off kw['reply_markup']), then after job() returns assert `captured['token_visible_at_send'] is True`. This makes the test fail under the reordering above, closing the gap. Not blocking the code (which is already correct) but should land before round approval since the reviewer directive explicitly called out this litmus case."
+    },
+    {
+      "id": 2,
+      "severity": "low",
+      "file": "tests/test_integration.py",
+      "line": "3024-3025, 3037 (test_flag_off_e014_send_has_no_keyboard)",
+      "issue": "Both flag-on and flag-off tests hard-monkeypatch the boolean (`@patch('news_bot.REVIEW_BUTTONS_ENABLED', True/False)`) rather than driving it through the actual `os.getenv(...)` parsing in news_bot.py L146-148. The `self.assertNotIn('REVIEW_BUTTONS_ENABLED', os.environ)` line only guards that the *process* env doesn't currently define the var; it does not exercise the parsing expression itself. A mutant that flips the default (e.g. mirrors DEDUP_SERIES_ENABLED's 'not in off-words' \u2192 default ON) would not be caught by any test in this diff. This matches this project's own existing precedent \u2014 DEDUP_SERIES_ENABLED's own tests (test_integration.py L1645, L2298) do exactly the same thing (patch the module attribute directly, never test the raw getenv/strip/lower expression) \u2014 and the task 3 spec itself explicitly instructs monkeypatching the flag this way. Not a regression introduced by this diff and not blocking, but noting for completeness per the requested litmus checklist.",
+      "fix": "Optional, out of scope for this task: a dedicated small unit test (subprocess- or importlib.reload-based) asserting the literal env-var-off-by-default contract for both DEDUP_SERIES_ENABLED and REVIEW_BUTTONS_ENABLED could close this gap project-wide; not a task-3-specific ask given existing convention."
+    },
+    {
+      "id": 3,
+      "severity": "info",
+      "file": "tests/test_integration.py",
+      "line": "2925-2926 (TestDedupReviewButtons class definition + _seed_published/_make_entry assignment)",
+      "issue": "Verified the class-reuse trick is clean. TestDedupReviewButtons(_PrepPhaseBase) inherits ONLY from _PrepPhaseBase, not from TestCrossSourceDedup \u2014 `pytest tests/test_integration.py -k DedupReviewButtons --collect-only` shows exactly 3 collected tests, confirming TestCrossSourceDedup's 20 methods are not re-registered/re-run. The two borrowed helpers (_seed_published, _make_entry) read no TestCrossSourceDedup-specific instance state (no self.* references beyond args), so binding them onto the new class via plain-function assignment is safe and doesn't silently change their behavior or hide assertions.",
+      "fix": "None \u2014 confirms correctness."
+    },
+    {
+      "id": 4,
+      "severity": "info",
+      "file": "tests/test_integration.py",
+      "line": "3059-3113 (test_only_e014_carries_keyboard)",
+      "issue": "Verified this test would catch a 'keyboard attached to E015 by mistake' regression: it asserts an E015 call is actually present in the same run (`self.assertTrue(any('[E015]' in ... for c in others), ...)`) before asserting that all non-E014 calls carry no reply_markup \u2014 so the negative assertion is not vacuous. The E015/E016 call sites in news_bot.py (L2455, L2543) also take no reply_markup keyword at all, so a mistaken keyboard attach there would require an actual code change, which this test would catch.",
+      "fix": "None \u2014 confirms correctness."
+    }
+  ],
+  "tdd_anchor_coverage": {
+    "test_flag_on_e014_send_includes_review_keyboard": "present, passes, matches anchor spec (reply_markup with dd:c:/dd:k: callback_data, token persisted via get_review_token_link) \u2014 but see finding 1 (ordering not actually enforced)",
+    "test_flag_off_e014_send_has_no_keyboard": "present, passes, matches anchor spec (no reply_markup, no token in bot_state)",
+    "test_only_e014_carries_keyboard": "present, passes, matches anchor spec (only E014 call carries reply_markup; verified non-vacuous)"
+  },
+  "commands_run": [
+    "pytest tests/test_integration.py -k DedupReviewButtons -q => 3 passed",
+    "pytest tests/test_integration.py -q => 53 passed (full file, no regressions)",
+    "pytest tests/test_integration.py -k DedupReviewButtons --collect-only -q => confirms exactly 3 tests collected under TestDedupReviewButtons",
+    "Manual mutation test: reordered news_bot.py E014 send-site to call put_review_token AFTER send_admin_notification, reran -k DedupReviewButtons => still 3 passed (confirms finding 1); reverted via backup copy, re-ran => 3 passed, git diff news_bot.py clean"
+  ]
+}

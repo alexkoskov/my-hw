@@ -1,0 +1,55 @@
+{
+  "validator": "reality-checker",
+  "batch": [10, 11, 12],
+  "iteration": 1,
+  "status": "approved",
+  "findings": [
+    {
+      "severity": "major",
+      "category": "feasibility",
+      "task": 10,
+      "issue": "code-research §9.8 overflow pseudocode (the reference cited in Task 10's Context Files) calls `_fallback_publish(row)` without `via_review` parameter, while Task 10 What-to-do step 1, §9.10, and the tech-spec all require `_fallback_publish(row, via_review=False)`. The §9.8 pseudocode also uses raw `str(exc)` in `increment_attempt` and `move_to_failed` calls instead of `sanitize_error_message(exc)`. A developer following §9.8 literally will produce a different signature and a security violation.",
+      "fix": "Add a note in Task 10 (or annotate §9.8 in code-research) that §9.8 is an older pseudocode sketch; the canonical implementation is §9.10. Specifically: (1) `_fallback_publish(row, via_review=False)` — via_review is required; (2) `increment_attempt(link, sanitize_error_message(exc))` and `move_to_failed(link, sanitize_error_message(exc))` — raw `str(exc)` must not reach the DB."
+    },
+    {
+      "severity": "major",
+      "category": "feasibility",
+      "task": 10,
+      "issue": "Admin-ping trigger condition is inconsistent between user-spec and task AC. User-spec Как-проверить row 7 expects a ping `'Queue pressure: auto-published K'` even when ALL new entries fit after successful eviction (no deferred, no staged_protected, no errors — the happy path). Task 10 AC explicitly states: 'send_admin_notification вызывается ТОЛЬКО когда есть deferred, staged_protected > 0, или fast-track errors — на happy-path ping не уходит.' Tech-spec solution section step 4 says the ping is sent when 'new entries still don't fit' (deferred > 0). Task 10 and tech-spec agree; user-spec Как-проверить row 7 contradicts them. The `test_overflow_deferred_admin_ping_format` TDD anchor does not cover the happy-path case, so the inconsistency will go undetected during implementation.",
+      "fix": "Reconcile the specs: either (a) always send a 'Queue pressure: auto-published K' ping whenever eviction occurs regardless of deferred count (aligns with user-spec row 7, operator awareness); or (b) confirm that happy-path eviction is silent (aligns with tech-spec and Task 10 AC). Update whichever spec is incorrect and add/remove a TDD anchor test accordingly."
+    },
+    {
+      "severity": "minor",
+      "category": "hints",
+      "task": 10,
+      "issue": "code-research §9.13 edge case 5 (FeedParserDict handling) ends with `'source_name': 'rss'` as the example value in the explicit dict construction snippet. This contradicts Decision 4 (no 'rss' key; use NETLOC_TO_SOURCE lookup) which is already stated in the UPDATED note in §9.5. The stale snippet is in a read-referenced section (§9.13 is in code-research.md, cited as a context file in Task 10), and a developer reading edge case 5 could hard-code 'rss' as a fallback.",
+      "fix": "Update code-research.md §9.13 edge case 5 to set `'source_name': _resolve_source_name(entry.get('link') or url)` instead of `'source_name': 'rss'`, consistent with the §9.5 UPDATED note."
+    },
+    {
+      "severity": "minor",
+      "category": "feasibility",
+      "task": 10,
+      "issue": "Task 10 What-to-do step 3 instructs to log via `news_bot.logger` (referencing AC L75). This requires `hw_review.py` to `import news_bot` solely for its logger. The `news_bot` module is heavyweight (imports `schedule`, `feedparser`, `requests`, `deep_translator`, `telegram`, `telegraph_publisher`, etc.) and executes module-level code including env-var reads and logger configuration at import time. Importing it just for the logger is an architectural smell that Task 10 inherits from Task 7 (which created the hw_review.py skeleton). The hint is not wrong — it matches code-research §9.3 — but the implementer should be aware of this side-effect.",
+      "fix": "No code change required for Task 10 (pattern is established by Task 7). Add a note in Task 10 or Task 7 that `import news_bot` at the top of hw_review.py is intentional and that the module-level env-var reads in news_bot.py are safe to trigger at hw_review import time. Alternatively, extract the logger into a shared `logger_config.py` module as a follow-up."
+    },
+    {
+      "severity": "minor",
+      "category": "tdd",
+      "task": 10,
+      "issue": "The TDD Anchor for `test_overflow_deferred_admin_ping_format` says 'byte-for-byte comparison of the ping string' but does not specify the expected byte-for-byte value in the task. The format from tech-spec is: `'Queue pressure: auto-published {E}, {D} new deferred, {S} staged rows protected'` with optional suffix `', fast-track failed for {F}'`. Without the literal expected string in the task, an implementer might produce a slightly different format (e.g., `'auto-published: K'` vs `'auto-published K'`) that passes a fuzzy assertion but fails a real acceptance check.",
+      "fix": "Add the literal expected string to the TDD Anchor description for `test_overflow_deferred_admin_ping_format`, e.g.: `'Queue pressure: auto-published 2, 1 new deferred, 0 staged rows protected'` for a specific seeded scenario. This makes the test anchor unambiguous."
+    }
+  ],
+  "stats": {
+    "tasks_checked": 3,
+    "claims_verified": 47,
+    "issues_found": 5
+  },
+  "notes": {
+    "task_10_summary": "Task 10 is feasible and well-structured. All dependency functions (list_pending_for_eviction, increment_attempt, move_to_failed, retry_from_failed, list_failed, count_pending) are declared in Task 1's repo spec. _fallback_publish is declared in Task 9 (depends_on correctly set). QUEUE_CAP and sanitize_error_message are established in Tasks 6 and 3 respectively. The cmd_list failed-footer logic is clear and the retry subcommand is correctly specified. The two major findings are spec ambiguities that need resolution before implementation, not blocking issues in the task itself.",
+    "task_11_summary": "Task 11 (Code Audit) is an audit-only task with no TDD expectation. All referenced source files exist (news_bot.py, mattel_news_source.py, autoevolution_source.py, lamley_source.py, telegraph_publisher.py) or will exist after Tasks 1-10 complete (pending_articles_repo.py, preview_renderer.py, hw_review.py and all new test files). The grep smoke checks are correctly formulated. The audit output path logs/working/audit/code-audit.md requires directory creation — Task 11 details section correctly notes 'Путь должен существовать — создать logs/working/audit/ при необходимости'. No issues found.",
+    "task_12_summary": "Task 12 (Security Audit) is an audit-only task with no TDD expectation. All five security invariants are well-specified with concrete evidence checks. The OWASP categories and feature-specific attack surfaces (JSON depth, symlink/TOCTOU, confirmation-prompt bypass, sanitize_error_message empty-env pathology, eviction race) match the tech-spec Risks and Decision sections. Output path is the same logs/working/audit/ directory. No issues found.",
+    "pre_implementation_status": "Tasks 11 and 12 depend on Tasks 1-10 being complete. None of the new feature files (pending_articles_repo.py, hw_review.py, preview_renderer.py) exist in the codebase yet — this is expected since those are Wave 1-7 tasks not yet executed. Task 10's dependency chain (Tasks 1, 3, 6, 7, 9) is correctly declared. The depends_on header for Task 10 lists only [9], which is correct (Task 9 is the immediate predecessor; Tasks 1, 3, 6, 7 are transitive via Task 9).",
+    "filter_new_entries_extended": "code-research §9.10 references filter_new_entries_extended which does not exist in the current codebase. Task 6 explicitly provides for creating this function ('ввести filter_new_entries_extended'). Task 10 refers to 'фильтрация' generically without naming the function. This is not a hallucination — Task 6 owns the creation of this function and Task 10 correctly treats it as a black box already provided by Task 6."
+  }
+}

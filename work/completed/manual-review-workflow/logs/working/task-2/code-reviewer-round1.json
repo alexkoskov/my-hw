@@ -1,0 +1,23 @@
+{
+  "reviewer": "code-reviewer",
+  "task": "manual-review-workflow/task-2",
+  "round": 1,
+  "status": "OK",
+  "summary": "preview_renderer is a clean pure-function module with clear docstrings, frozenset constants, recursive node walker, and all three hardening layers per tech-spec Decision 1. Stdlib-only (html, re), no side effects, no requirements.txt change. Attribute rendering was strengthened during self-review by dropping malformed attribute names.",
+  "findings": [
+    {
+      "severity": "nit",
+      "file": "preview_renderer.py",
+      "line": 49,
+      "description": "_ALLOWED_TAGS is a frozenset; task spec suggested a plain set. Functionally equivalent; frozenset is arguably safer.",
+      "recommendation": "Leave as frozenset. No action."
+    },
+    {
+      "severity": "nit",
+      "file": "preview_renderer.py",
+      "line": 162,
+      "description": "render_html escapes title with quote=True even though <title> and <h1> are text contexts where attribute-quote escaping is not strictly required.",
+      "recommendation": "Harmless; quote=True is correct when the same safe_title is later reused in attributes or when defensive uniformity is preferred."
+    }
+  ]
+}

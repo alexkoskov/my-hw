@@ -1,0 +1,64 @@
+{
+  "status": "approved",
+  "checks": {
+    "completeness": "pass",
+    "edge_cases": "pass",
+    "acceptance_criteria": "pass",
+    "contradictions": "pass",
+    "template_compliance": "pass",
+    "size_check": "warning"
+  },
+  "findings": [
+    {
+      "check": "acceptance_criteria",
+      "severity": "major",
+      "issue": "AC8 uses 'корректно реконструирует HTML тела' without specifying the observable expected output. 'Корректно' is on the blacklist (equivalent to 'correctly handles'). A developer writing a test for AC8 must infer what correctness means — presumably that the resulting paragraphs list is identical to what would be extracted if the body content were contained in a single chunk. This inference is not stated. The criterion is not outright untestable (context constrains interpretation) but is weaker than it should be for a failure mode explicitly identified in Риск 3.",
+      "location": "Критерии приёмки — AC8",
+      "fix": "Rewrite as: 'fetch_mattel_article(link) для статьи, чей body-контент разбит на несколько чанков в streaming-payload, возвращает тот же paragraphs-список, что и при эквивалентном одночанковом payload (i.e., реконструкция не теряет и не дублирует контент).' Либо добавить уточнение: 'paragraphs содержит все текстовые параграфы body без пропусков и дублирований, независимо от числа чанков.'"
+    },
+    {
+      "check": "completeness",
+      "severity": "minor",
+      "issue": "Section 'Тестирование' still references internal helper function names '_is_hotwheels' и '_build_entry' as objects whose tests must be preserved ('Сохраняем тесты на _is_hotwheels и _build_entry (helper-сигнатуры не меняются)'). These are implementation-level identifiers, not contract-surface symbols. The adequacy round-1 fix removed such references from 'Технические решения' and 'Как должно работать', but this one remains. Minor because the Тестирование section is inherently more implementation-adjacent, and it does not affect acceptance criteria.",
+      "location": "Тестирование — Unit-тесты paragraph",
+      "fix": "Replace internal names with behavioral description: 'Сохраняем тесты на HW-filtering и entry-building (логика, не меняющаяся при рефакторинге механизма извлечения).' Либо просто убрать упоминание внутренних имён — достаточно 'сохраняем существующие тесты для неизменных функций.'"
+    },
+    {
+      "check": "size_check",
+      "severity": "minor",
+      "issue": "13 Acceptance Criteria for size S. The warning threshold is >10 ACs. Round-1 fix merged AC10⊆AC11 (−1) but simultaneously added AC5 (5 MB guard), AC8 (body across chunks), AC9 (empty body) (+3), resulting in net +2. The scope remains genuinely narrow (1 module, contract preserved), but 13 ACs is more typical of size M.",
+      "location": "Frontmatter: size: S; Критерии приёмки (AC1–AC13)",
+      "fix": "Either (a) accept 13 ACs for S as justified by the precise scope (1 file, all criteria are focused on one module), or (b) re-declare size: M. Option (a) is acceptable — the added criteria cover edge cases required by the adequacy review, and consolidation would lose coverage. Add a comment in retrospective if desired."
+    }
+  ],
+  "interview_coverage": {
+    "covered": [
+      "RSC flight payload as extraction mechanism (self.__next_f.push)",
+      "No new dependencies (re, json, BeautifulSoup reuse)",
+      "Priority P1 confirmed by operator",
+      "Fixture format — Python helper builders",
+      "No backward-compat for __NEXT_DATA__",
+      "Module replacement in-place (mattel_news_source.py rewrite, not new module)",
+      "Body HTML extraction via RSC text-row reconstruction",
+      "summary fallback: excerpt or title (no upgrade to seo_description)",
+      "Image-only HW article: keep downstream skip behavior (paragraphs=[] → news_bot skips)",
+      "seo_description field name correction (not seo_desc)",
+      "Testing strategy: unit + integration, no E2E live-hit in CI",
+      "Manual smoke command before/after deploy",
+      "Admin noise reduction: no-HW is not a parsing error",
+      "Deploy via existing deploy.sh, no new files/env-vars/migrations",
+      "Cloudflare risk and YAGNI decision",
+      "Wayback not viable for flight-format fixtures",
+      "0 Hot Wheels entries on live listing today (current state)",
+      "EC3: empty body → paragraphs=[], article returned, news_bot skips — covered by AC9",
+      "EC4: excerpt as dict → .text fallback — covered in AC6 subtitle spec",
+      "EC5: non-standard date → published_parsed=None — covered in AC2",
+      "EC6: body=$N but row N not in pushes → paragraphs=[], no notifier — covered by AC9",
+      "EC7: fetch_mattel_article when handle absent → fallback to url field, then MattelNewsError — covered in 'Как должно работать' step 3 and AC7",
+      "EC8: download_media non-empty → ignored (thumbnail-only policy) — covered by AC10",
+      "EC9: inline <img> in body → excluded from paragraphs — covered in AC6 paragraphs spec"
+    ],
+    "missing": []
+  },
+  "summary": "Все критические находки раунда 1 устранены: EC7 (логика handle→url fallback) присутствует в 'Как должно работать' и AC7; AC5 покрывает 5 MB guard; AC10⊆AC11 смержены. Спек готов к утверждению. Единственный major — AC8 использует 'корректно реконструирует' без указания наблюдаемого ожидаемого результата; minor — внутренние имена helper-функций в секции Тестирование и 13 AC для размера S. Ни одной критической находки — статус approved."
+}

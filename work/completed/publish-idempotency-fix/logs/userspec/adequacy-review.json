@@ -1,0 +1,14 @@
+{
+  "status": "approved",
+  "findings": [
+    {
+      "category": "underengineering",
+      "severity": "minor",
+      "issue": "AC8 covers 'прочие ошибки БД при фиксации публикации' but uses the word 'фиксация публикации', which is ambiguous about the cleanup-after-guard path. The specific scenario 'admin-ping succeeded, then cleanup (skip_pending) raises a DB error' is not pinned down in BEHAVIOURAL terms — does the slot loop strike the row, or does the guard swallow the failure and return success? Round 1 finding 3(c) is addressed only implicitly via AC5 (admin-ping failure does not block cleanup) and AC8 (other DB errors propagate). The mirror case (cleanup fails after admin-ping success) is not explicitly enumerated.",
+      "why_matters": "Symptom-only fix relies on the guard working under partial failure. Without an explicit AC for 'cleanup raises after admin-ping success', the implementer must guess the contract — and a regression that silently leaves the stale row in pending while logging the admin-ping as if cleanup happened is exactly the kind of slow-burn inconsistency this fix is meant to prevent. The current AC8 wording could be read either way (publish-failure semantics vs guard-failure semantics).",
+      "fix": "Tighten AC8 or add a new AC: e.g. 'AC8a. Если cleanup строки (удаление из очереди + пометка обработанной) падает с ошибкой БД ПОСЛЕ успешного admin-пинга, ошибка пропагируется в slot loop как обычная publish failure (счётчик попыток инкрементируется, на 3-й страйк строка уходит в failed_articles). Дубль в канал не уйдёт, потому что guard уже отсёк побочные эффекты до cleanup.' This pins the behaviour without leaking implementation."
+    }
+  ],
+  "worst_category": "underengineering",
+  "summary": "Round 2 substantially resolves all 3 round-1 findings: HOW-details (line numbers, helper names, INSERT OR IGNORE specifics, exact log strings, enumerated test functions) are out of user-spec; INSERT OR IGNORE justification is no longer the weak 'defense-in-depth' wording (AC7 is behavioural now); recurring stale row (Scenario D) and failed_articles collision (Scenario E) are explicitly covered. One minor underengineering finding remains: AC8 does not pin down the cleanup-after-admin-ping failure path. Approved — that gap is small enough to clarify in tech-spec or address in a 1-line AC tightening, not a blocker."
+}

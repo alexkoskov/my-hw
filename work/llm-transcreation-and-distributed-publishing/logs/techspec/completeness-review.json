@@ -1,0 +1,185 @@
+{
+  "status": "pass",
+  "meta": {
+    "feature": "llm-transcreation-and-distributed-publishing",
+    "reviewed_at": "2026-04-24",
+    "round": 2,
+    "r1_verdict": "pass (0 critical, 7 major, 8 minor)",
+    "r2_verdict": "pass (0 critical, 1 major, 6 minor)",
+    "user_spec_status": "approved",
+    "tech_spec_status": "draft",
+    "feature_size": "L",
+    "task_count_info": "19 total tasks (13 impl + 3 audit + 3 final); exceeds >15 threshold — operator approved combined scope"
+  },
+  "sources": {
+    "user_spec": true,
+    "tech_spec": true,
+    "tasks": false
+  },
+  "requirements_total": 38,
+  "requirements_covered": 37,
+  "requirements_partial": 1,
+  "requirements_missing": 0,
+  "r1_majors_closure": {
+    "F-02_AC19_token_logging": {
+      "status": "closed",
+      "fix": "AC section 'Distributed-schedule observability' added: 'every Claude API call logs (at INFO level) input_tokens, output_tokens, latency_ms, model_version.' Traceable to user-spec AC19."
+    },
+    "F-03_AC20_backlog_warning": {
+      "status": "closed",
+      "fix": "AC section line added: 'if count_pending() > 50 after fetch, additional admin ping fires before regular schedule ping.' Traceable to user-spec AC20."
+    },
+    "F-04_token_logging_test": {
+      "status": "closed",
+      "fix": "Same AC bullet adds: 'Test asserts log line shape on a successful call.' Test coverage now specified."
+    },
+    "F-05_window_end_guard": {
+      "status": "closed",
+      "fix": "Decision 15 added: publish loop checks 'if slot > window_end: break' before each time.sleep; excess become carry-over. Rationale and alternatives documented. AC section line binds it."
+    },
+    "F-06_missing_prompt_check": {
+      "status": "closed",
+      "fix": "Decision 14 check #1: _load_prompt() on startup; on failure → admin-ping + set fallback_active(True). AC section line binds it. Traceable to user-spec Risk 6."
+    },
+    "F-07_tz_check": {
+      "status": "closed",
+      "fix": "Decision 14 check #2: os.getenv('TZ') == 'Europe/Moscow'; on mismatch → log warning + admin-ping. AC section line binds it. Traceable to user-spec Constraints + Risk 4."
+    },
+    "F-11_attempt_count_contract": {
+      "status": "closed",
+      "fix": "AC section adds: 'attempt_count increments only when both Claude and Google fail for the same article. Test covers this case.' Behavioral contract is now explicit and test-backed."
+    }
+  },
+  "traceability_matrix": {
+    "AC1": { "text": "Cron once daily at 12:00 МСК", "status": "covered", "coverage": "Decision 2 (schedule.every().day.at('12:00', tz='Europe/Moscow')); Architecture step 1; Task 8" },
+    "AC2": { "text": "Admin ping after fetch with N new, M queue, timestamps", "status": "covered", "coverage": "Architecture step 6; Task 8; AC section" },
+    "AC3": { "text": "Publications strictly in 13:00–20:00 МСК window", "status": "covered", "coverage": "Decision 2; compute_publish_slots signature; Decision 15 (window-end guard); AC section" },
+    "AC4": { "text": "Min 40-min interval; capped at 40 if calculated value is less", "status": "covered", "coverage": "Decision 2 (min_interval_min=40); compute_publish_slots.py; Decision 15" },
+    "AC5": { "text": "Max 11 publications/day; excess carry over to pending", "status": "covered", "coverage": "Decision 2 (posts_today = min(N, 11) with carry-over)" },
+    "AC6": { "text": "Distribution algorithm: equally spaced with floor=40; edge cases N=7, N=15", "status": "covered", "coverage": "compute_publish_slots.py; Testing Strategy unit tests cover N=7, N=15, N=20" },
+    "AC7": { "text": "Container restart mid-window: recompute schedule, no duplicate publishes", "status": "covered", "coverage": "Architecture §Container restart mid-window; Decision 3; Decision 9 idempotency; Task 8" },
+    "AC8": { "text": "Crash-loop guard: no publish within 40 min of last published_at", "status": "covered", "coverage": "Decision 9; Architecture step 2; Task 8; AC section" },
+    "AC9": { "text": "Auto-publications via Claude API with ux-guidelines.md prompt", "status": "covered", "coverage": "Decision 1; Decision 6 (system prompt = ux-guidelines.md); claude_transcreation.py; Task 3" },
+    "AC10": { "text": "Claude output: RU title+emoji, 2-3 alts, RU subtitle, RU paragraphs/blocks", "status": "covered", "coverage": "Decision 6 (JSON output schema); claude_transcreation.py; Testing Strategy (success path)" },
+    "AC11": { "text": "Title always has emoji prefix; safety net adds it if Claude didn't", "status": "covered", "coverage": "Architecture (emoji-prefix safety net in claude_transcreation); Testing Strategy (title-without-emoji test)" },
+    "AC12": { "text": "HW glossary as post-pass safety net; bureaucratic regex removed", "status": "covered", "coverage": "Architecture (news_bot.py: bureaucratic regex deleted, HW-glossary preserved); Task 10" },
+    "AC13": { "text": "Body on Telegraph without 4000-char truncation", "status": "covered", "coverage": "Solution section; Architecture (transcreate_text); Task 10" },
+    "AC14": { "text": "API-level outage: 2-ping protocol + Google fallback after 2 hours", "status": "covered", "coverage": "Decision 5; outage_state.py state machine; Architecture §Outage state machine; Tasks 5, 7" },
+    "AC15": {
+      "text": "Per-article problem: 1 retry via Claude before Google fallback; no outage protocol; attempt_count only on full failure",
+      "status": "partial",
+      "gap": "attempt_count contract is now explicitly specified in AC section (F-11 closed). However, 'ровно 1 retry через Claude перед фоллбэком' (exactly 1 retry before per-article fallback to Google) remains unspecified in claude_transcreation.py module description, Task 3, and Task 7. Neither the testing plan nor any test case names a 'retry once then fallback' scenario. The retry count affects both call behavior and token cost and should be explicit in the module spec.",
+      "severity": "minor"
+    },
+    "AC16": { "text": "Auto-recovery: probe Claude on next publish attempt after outage; switch-back ping", "status": "covered", "coverage": "Architecture §Outage state machine (recovery_pending, probe on next publish); Task 7" },
+    "AC17": { "text": "Edge case: outage clears + empty queue → stay in Google fallback until next cron tick", "status": "covered", "coverage": "Solution section; outage_state.py last_health_check_at; Testing Strategy (edge-case test in test_outage_state.py)" },
+    "AC18": { "text": "Uniform '↳ автоперевод' marker on all auto-published pages regardless of engine", "status": "covered", "coverage": "Architecture (via_review=False → auto_marker=True regardless of engine); Solution section" },
+    "AC19": { "text": "Logs contain per-Claude-call observability: input/output tokens, latency ms, model version", "status": "covered", "coverage": "AC section: 'every Claude API call logs (at INFO level) input_tokens, output_tokens, latency_ms, model_version. Test asserts log line shape.' [R1 F-02 closed]" },
+    "AC20": { "text": "Backlog warning when pending > 50", "status": "covered", "coverage": "AC section: 'if count_pending() > 50 after fetch, additional admin ping fires before regular schedule ping. Test covers boundary at 50/51.' [R1 F-03 closed]" },
+    "AC21": { "text": "Manual-review path (hw_review CLI) unchanged; bot skips operator-published articles", "status": "covered", "coverage": "Solution section; Architecture §Manual-review path; Task 7" },
+    "AC22": { "text": "Channel teaser format #<source> #news byte-identical for both paths", "status": "covered", "coverage": "Architecture §Manual-review path (Decision 14 from manual-review-workflow preserved)" },
+    "AC23": { "text": "Boilerplate filter, image policy, hashtag derivation, telegraph node tree builder — unchanged", "status": "covered", "coverage": "Solution section; Architecture step 3" },
+    "AC24": { "text": "SQLite migration: new outage state table idempotent; existing tables untouched", "status": "covered", "coverage": "Decision 3; Data Models section; Task 1" },
+    "AC25": { "text": "ANTHROPIC_API_KEY redacted in logs", "status": "covered", "coverage": "Decision 12; Task 4; test_no_token_leak_in_logs.py; AC section" },
+    "AC26": { "text": "Legacy code deleted: overflow fast-track, idle-fallback, throttle, deprecated env vars", "status": "covered", "coverage": "Solution section; Architecture §Deleted; Task 9; AC section (grep verification)" },
+    "AC27": { "text": "ux-guidelines.md in deploy bundle (deploy.sh and GitHub Actions)", "status": "covered", "coverage": "Decision 7; Architecture (deploy.sh + deploy.yml); Task 13" },
+    "AC28": { "text": "Architectural shift (ux-guidelines.md as runtime cron-side dependency) documented in architecture.md", "status": "covered", "coverage": "Decision 7 rationale; Task 13" },
+    "AC29": { "text": "pytest tests/ -q green; legacy tests removed, new tests added", "status": "covered", "coverage": "Testing Strategy (full section with test count, test files, deletion list); AC section" },
+    "AC30": { "text": "Manual smoke pre-deploy: Claude transcreation returns valid RU dict in <30s", "status": "covered", "coverage": "Agent Verification Plan step 3; Task 17" },
+    "AC31": { "text": "Manual smoke post-deploy: first cron tick → admin ping → 13:00 publish → Telegraph matches AC10/AC11/AC18", "status": "covered", "coverage": "Agent Verification Plan step 4; Task 19" },
+    "CONSTRAINT_TZ": { "text": "Cron in 12:00 МСК; TZ=Europe/Moscow; startup warns on mismatch", "status": "covered", "coverage": "Decision 4; Decision 14 check #2; Architecture step 1; AC section" },
+    "CONSTRAINT_OUTAGE_STATE_PERSIST": { "text": "Outage state persists across restarts", "status": "covered", "coverage": "Decision 3; Data Models; outage_state.py" },
+    "CONSTRAINT_NO_HEAVY_DEPS": { "text": "Only anthropic Python SDK as new heavy dependency", "status": "covered", "coverage": "Dependencies section (anthropic + pytz only)" },
+    "CONSTRAINT_BACKLOG_NO_HARD_CAP": { "text": "No hard cap on backlog; algorithm limits 11/day", "status": "covered", "coverage": "Decision 2 (carry-over); Solution section (QUEUE_CAP deleted)" },
+    "CONSTRAINT_COST": { "text": "Cost ~$3/month at Haiku 4.5; Sonnet 4.6 override via env var", "status": "covered", "coverage": "Decision 1 rationale; Decision 6 (ANTHROPIC_MODEL default); .env.example" },
+    "CONSTRAINT_ARCH_SHIFT_DOCS": { "text": "Architectural shift documented in architecture.md", "status": "covered", "coverage": "Decision 7; Task 13" },
+    "CONSTRAINT_NO_DATA_MIGRATION": { "text": "No migration of existing pending_articles data", "status": "covered", "coverage": "Data Models; Decision 3; Solution section" }
+  },
+  "findings": [
+    {
+      "id": "F-01",
+      "type": "partial",
+      "source": "tech-spec",
+      "requirement": "AC15: Per-article retry — exactly 1 retry via Claude before Google fallback",
+      "detail": "User-spec AC15 states 'ровно 1 retry через Claude перед фоллбэком' (exactly 1 retry before per-article Google fallback). Neither claude_transcreation.py module description, Task 3 (_fallback_publish refactor), Task 7 verify-smoke, nor the Testing Strategy include a test or spec for this retry behavior. The AC section does not have a bullet for it either. The attempt_count contract (F-11) was closed, but the single-retry-before-per-article-fallback contract is still absent. Retry count affects both call frequency and token cost.",
+      "severity": "minor",
+      "r1_status": "unchanged"
+    },
+    {
+      "id": "F-08",
+      "type": "underengineering",
+      "source": "tech-spec",
+      "requirement": "AC26: Legacy env vars — operator behavior if old .env still has them after deploy",
+      "detail": "Tech-spec covers code-side deletion (grep verification AC) and .env.example cleanup (Task 6). It does not specify whether the bot should log a warning or silently ignore QUEUE_CAP, IDLE_TIMEOUT_HOURS etc. if they remain in an operator's production .env post-deploy. This is an operability concern that flows from the explicit legacy-cleanup requirement and would be trivially handled by a startup deprecation warning. No blocking issue — operator can deploy without this — but the gap exists.",
+      "severity": "minor",
+      "r1_status": "unchanged"
+    },
+    {
+      "id": "F-09",
+      "type": "scope_creep",
+      "source": "tech-spec",
+      "requirement": "Not in user-spec: 'recovery_pending' 5th outage state + last_health_check_at key",
+      "detail": "User-spec describes 4 logical outage states (no_outage → ping_1 → ping_2 → google_fallback_active → recovered). Tech-spec Architecture defines a 5th transient state 'recovery_pending' and adds 'last_health_check_at' bot_state key described as 'rate-limits probes.' The probe-rate-limiting mechanism is not derived from user-spec — user-spec specifies 'passive recovery: probe on next scheduled publish' with no rate-limit. User-Spec Deviations section does not document this addition. Internal implementation state — no user-visible impact — treated as minor, not critical.",
+      "severity": "minor",
+      "r1_status": "unchanged"
+    },
+    {
+      "id": "F-10",
+      "type": "undocumented_deviation",
+      "source": "tech-spec",
+      "requirement": "User-Spec Deviations: recovery_pending state and last_health_check_at not documented",
+      "detail": "F-09 element (recovery_pending + last_health_check_at) is not in User-Spec Deviations and not marked [TECHNICAL]. All three documented [TECHNICAL] decisions (Decision 4, 8, 10) are correct. The omission is minor documentation hygiene — the element is internal state with no functional deviation from user requirements.",
+      "severity": "minor",
+      "r1_status": "unchanged"
+    },
+    {
+      "id": "F-12",
+      "type": "partial",
+      "source": "tech-spec",
+      "requirement": "AC2: Admin ping when N_new=0 but carry-over pending exists",
+      "detail": "Architecture step 6 says 'Suppress on N=0' without clarifying whether N means new-today or total-pending. User-spec AC2 example shows 'Зафетчил N новых статей, в очереди M' — the queue size M is always shown. If no new articles fetched today but carry-over exists, suppressing the ping entirely means the operator gets no schedule notification that day. The ambiguity is present in user-spec too but tech-spec does not resolve it. This is a minor UX gap — operator could miss the day's schedule on a no-new-articles day.",
+      "severity": "minor",
+      "r1_status": "unchanged"
+    },
+    {
+      "id": "F-13",
+      "type": "overengineering",
+      "source": "tech-spec",
+      "requirement": "Decision 10: task decomposition detail in Decisions section — informational",
+      "detail": "Decision 10 is marked [TECHNICAL] and documented in User-Spec Deviations — correct placement. The wave/task decomposition content belongs in a Decisions section for process traceability. Severity minor (informational only — not a blocking structural or coverage issue).",
+      "severity": "minor",
+      "r1_status": "unchanged",
+      "note": "Not a blocking issue. Decision 10 content is correctly placed and marked."
+    },
+    {
+      "id": "F-14",
+      "type": "underengineering",
+      "source": "tech-spec",
+      "requirement": "Startup: init_schema() exception → admin ping instead of silent crash (user-spec Risk 5)",
+      "detail": "User-spec Risk 5 mitigation: 'На первом запуске ловим exception → admin-ping вместо silent crash.' Tech-spec Acceptance Criteria has a bullet for idempotent migration test and 'bot_state value reads tolerate corrupted/unexpected text.' However, no architecture step, task description, or AC bullet specifies exception handling around init_schema() call itself — catching a migration failure and sending an admin ping rather than letting the bot crash silently. This was not in the R1 fix list (7 majors) and remains open. The user-spec explicitly names this as a risk mitigation, making its absence a major gap.",
+      "severity": "major",
+      "r1_status": "was not in R1 fix list — open"
+    }
+  ],
+  "reverse_traceability": {
+    "tech_spec_elements_without_user_spec_basis": [
+      { "element": "Decision 4: pytz dependency", "status": "documented_technical", "note": "Marked [TECHNICAL], listed in User-Spec Deviations. Forced by schedule==1.2.1 dep." },
+      { "element": "Decision 8: flat-path fallback for ux-guidelines.md on server", "status": "documented_technical", "note": "Marked [TECHNICAL], listed in User-Spec Deviations. scp deploy quirk." },
+      { "element": "Decision 10: 13 tasks / 6 waves decomposition", "status": "documented_technical", "note": "Marked [TECHNICAL], listed in User-Spec Deviations. Process concern only." },
+      { "element": "Decision 15: window-end guard in publish loop", "status": "documented_technical", "note": "Marked [TECHNICAL]. Derives directly from AC3/AC4 requirement. No user-visible new functionality — pure implementation guard." },
+      { "element": "outage_state.py: 'recovery_pending' 5th state + last_health_check_at key", "status": "undocumented_technical", "note": "See F-09/F-10. Internal state, no user-visible behavior change. Minor." },
+      { "element": "BEGIN IMMEDIATE atomic transactions, busy_timeout=5000", "status": "infrastructure", "note": "Concurrency protection — standard engineering practice. Acceptable." },
+      { "element": "Audit Wave (Tasks 14-16) and Final Wave (Tasks 17-19)", "status": "infrastructure", "note": "Process/QA tasks. Traceable to user-spec Verification section. Operator approved." },
+      { "element": "SDK anthropic max_retries=2 default", "status": "infrastructure", "note": "SDK default — not a new abstraction." }
+    ]
+  },
+  "solution_depth_assessment": {
+    "verdict": "adequate",
+    "detail": "Solution section is substantive: two-layer design, named modules with LoC estimates, 5-state outage machine, daily flow step-by-step, legacy code enumerated. 16 Decisions with rationale and alternatives. AC section now expanded with 6 new bullets covering the R1 gaps. Not a paraphrase of user-spec."
+  },
+  "overengineering_assessment": {
+    "verdict": "clean",
+    "detail": "Three new modules have clear user-spec requirements. No YAGNI abstractions, no unnecessary layers. Decision 15 (window-end guard) is [TECHNICAL] and justified. recovery_pending 5th state (F-09) is the only questionable addition — flagged as minor."
+  },
+  "summary": "Round 2 re-validation: all 7 R1 major findings confirmed closed. F-02 (AC19 token logging), F-03 (AC20 backlog ping), F-04 (token logging test), F-05 (window-end guard / Decision 15), F-06 (ux-guidelines.md startup check / Decision 14), F-07 (TZ check / Decision 14), F-11 (attempt_count contract) — each addressed by a new AC bullet, Decision 14, or Decision 15. One major remains open: F-14 (init_schema exception → admin ping, user-spec Risk 5 mitigation, was not in R1 fix scope). Six minor findings unchanged from R1 (F-01, F-08, F-09, F-10, F-12, F-13). Requirements coverage: 37/38 covered, 1 partial (AC15 — 1-retry spec absent from module/task descriptions). Status: pass (0 critical, 1 major, 6 minor)."
+}

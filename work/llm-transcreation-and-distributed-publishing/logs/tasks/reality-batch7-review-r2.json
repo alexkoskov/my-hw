@@ -1,0 +1,45 @@
+{
+  "validator": "reality-checker",
+  "batch": [19],
+  "iteration": 2,
+  "status": "approved",
+  "r1_fixes_verified": {
+    "wave_12": "FIXED — Task 19 front-matter now reads 'wave: 12'; Task 18 is wave: 11. Sequencing is correct.",
+    "pre_deploy_qa_filename": "FIXED — Step 2 and Context Files section now reference 'logs/qa/pre-deploy-qa.md', which matches Task 17's declared artifact path. No more 'pre-deploy-qa-report.md' mismatch.",
+    "deploy_path_placeholder": "FIXED — All smoke commands now use '\\$DEPLOY_PATH' placeholder (e.g. 'sqlite3 \\$DEPLOY_PATH/news.db'). No hardcoded '/opt/hw-news/' paths remain.",
+    "no_data_subdir": "FIXED — DB path is now '\\$DEPLOY_PATH/news.db' throughout. The spurious '/data/' subdirectory has been removed.",
+    "service_name_placeholder": "FIXED — All journalctl/systemctl commands now use '<bot-service-name>' placeholder; operator is told to confirm the actual unit name from deployment.md.",
+    "no_docker_hallucination": "FIXED — Step 6 and Smoke section no longer contain 'docker ps' or 'docker logs'. Only 'journalctl -u <bot-service-name>' remains, matching deployment.md's 'systemd-managed long-running process'.",
+    "context_file_paths": "FIXED — All four reference files now include the '/references/' subdirectory segment (e.g. '~/.claude/skills/project-knowledge/references/deployment.md').",
+    "env_masking_command": "FIXED — Smoke step now uses 'sed 's/=.*/=***/' \\$DEPLOY_PATH/.env | grep -E ...' to mask values before printing, consistent with Task 18 pattern."
+  },
+  "findings": [
+    {
+      "severity": "minor",
+      "category": "hints",
+      "task": 19,
+      "issue": "Task 19 loads the 'post-deploy-qa' skill (SKILL.md at molyanov-ai-dev-main/skills/post-deploy-qa/SKILL.md). That skill's Output Format section mandates JSON output ('Return findings as JSON. Reason: orchestrator parses this...') and its Input Requirements reference a pre-deploy QA report at 'logs/working/qa-report.json'. Task 19, however, specifies the output artifact as markdown ('logs/qa/post-deploy-verification.md') and Task 17 writes 'logs/qa/pre-deploy-qa.md'. The skill's expected input path ('logs/working/qa-report.json') does not match the actual pre-deploy QA output path ('logs/qa/pre-deploy-qa.md'). An agent executing Task 19 will see a conflict between the skill's output contract (JSON) and the task's artifact contract (markdown), and the skill's pre-deploy QA file lookup will fail to find the right report.",
+      "fix": "Add an explicit override note in Task 19's Required Skills section: 'Output format for this task is markdown (per Details and Acceptance Criteria sections), not JSON. Use the skill for its verification methodology only. Pre-deploy QA report is at logs/qa/pre-deploy-qa.md, not logs/working/qa-report.json as the skill assumes by default.' This is a minor issue because the task's own Details and AC sections clearly govern the artifact format, so a careful agent will follow the task over the skill default."
+    },
+    {
+      "severity": "minor",
+      "category": "feasibility",
+      "task": 19,
+      "issue": "deployment.md Scheduling section currently documents the cron as 'Every 12 hours via schedule.every(12).hours.do(job)' — the pre-feature state. Task 19 will be executed post-deploy of this feature, when deployment.md should already have been updated by Task 13 to reflect the new daily 12:00 MSK schedule. If Task 13's deployment.md update is incomplete or delayed, an agent reading deployment.md during Task 19 might encounter contradictory scheduling information and become confused about what cron pattern to expect in journalctl logs. This is contingent on Task 13 execution quality and is not a Task 19 authoring defect per se, but is worth flagging.",
+      "fix": "No change required to Task 19 itself. Task 13 (deploy bundle update) already lists 'deployment.md' in its Files to modify and must update the scheduling description. Confirm Task 13 is complete and deployment.md reflects 'schedule.every().day.at(\"12:00\", tz=\"Europe/Moscow\")' before Task 19 is executed."
+    }
+  ],
+  "stats": {
+    "tasks_checked": 1,
+    "claims_verified": 38,
+    "r1_critical_issues_resolved": 4,
+    "r1_major_issues_resolved": 3,
+    "r1_minor_issues_resolved": 1,
+    "issues_found": 2,
+    "issues_by_severity": {
+      "critical": 0,
+      "major": 0,
+      "minor": 2
+    }
+  }
+}

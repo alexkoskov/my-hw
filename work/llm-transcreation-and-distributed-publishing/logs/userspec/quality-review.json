@@ -1,0 +1,48 @@
+{
+  "status": "changes_required",
+  "checks": {
+    "completeness": "pass",
+    "edge_cases": "pass",
+    "acceptance_criteria": "pass",
+    "contradictions": "fail",
+    "template_compliance": "pass",
+    "size_check": "pass"
+  },
+  "findings": [
+    {
+      "check": "contradictions",
+      "severity": "critical",
+      "issue": "Step 2 of 'Как должно работать' states the scheduler returns 'список из max(N, 11) datetime-слотов'. The operator max(N,11) means: for N=5 return 11 slots (more slots than pending articles), and for N=15 return 15 slots (exceeding the daily cap). The correct operator is min(N,11). This directly contradicts AC5 ('Максимум 11 публикаций в день') and the Ограничения section ('Алгоритм distribute сам ограничивает 11 публикаций/день'). All other mentions of the cap in the spec use min-semantics correctly.",
+      "location": "Как должно работать — Suite of daily events, step 2 ('Возвращает список из max(N, 11) datetime-слотов')",
+      "fix": "Change 'max(N, 11)' to 'min(N, 11)' in step 2. Correct text: 'Возвращает список из min(N, 11) datetime-слотов.'"
+    },
+    {
+      "check": "template_compliance",
+      "severity": "minor",
+      "issue": "'Тестирование' section says 'Размер фичи M, тестов планируется ~30' — a stale reference from before the size was upgraded to L in frontmatter. The frontmatter now correctly declares size: L. The phrase 'Размер фичи M' is a factual inconsistency within the document.",
+      "location": "Тестирование — first paragraph ('Unit-тесты: делаются всегда, не обсуждаются. Размер фичи M...')",
+      "fix": "Replace 'Размер фичи M' with 'Размер фичи L'. Optionally also revisit whether '~30' test count estimate still reads correctly for an L-sized feature (it does — the count stays the same, only the size label changed)."
+    }
+  ],
+  "interview_coverage": {
+    "covered": [
+      "operator_quality_concern (Q1): Claude vs Google Translate quality gap — in Что делаем, Зачем",
+      "claude_api_integration (Q2): Claude API as primary translator — in Технические решения, AC9",
+      "hourly_drain_idea overridden (Q3): fixed 12:00 cron + 13-20 window — in Как должно работать, AC1, AC3",
+      "details_A_B_C_D (Q4): fixed 12:00 MSK cron, carry-over for N>cap, Claude API immediately, window start — in AC1, AC3, AC5, AC9",
+      "claude_api_outage_protocol (Q5): 2 pings with 1h gap, 2h grace, then Google fallback — in Как должно работать (outage section), AC14, AC16",
+      "minimum_interval_constraint (Q6): 40-min minimum, cap 11/day — in AC4, AC5",
+      "marker_uniformity (Q7): single uniform marker — in AC18, Ограничения",
+      "feature_decomposition_start (Q8): scope approval — implicit in full spec",
+      "cycle2_seven_decisions (Q9): glossary kept, emoji belt-and-suspenders, no hard-cap, switch-back ping, TZ env, ux-guidelines in deploy, outage state in SQLite, 4000-char truncation removed — in AC11, AC12, AC13, AC18, AC24-AC28, Технические решения",
+      "completeness_gap_resolution (Q10): passive recovery on empty queue, crash-loop guard — in AC8, AC17, Как должно работать"
+    ],
+    "missing": []
+  },
+  "r1_findings_status": {
+    "critical_container_restart_contradiction": "FIXED — prose now correctly shows interval=48min, 5 slots, carry_over=0, consistent with formula and 'Как проверить' Step 4",
+    "minor_gemini_terminology": "FIXED — Технические решения bullet 7 now reads 'auto-Google-Translate'",
+    "size_warning": "RESOLVED — size upgraded to L in frontmatter, consistent with 31 ACs and L-scope depth"
+  },
+  "summary": "Два из трёх R1-находок закрыты полностью (contradiction в container restart и Gemini→Google Translate). Одно новое критическое противоречие: в шаге 2 раздела 'Как должно работать' написано max(N, 11) вместо min(N, 11) — опечатка инвертирует логику ограничения в 11 постов/день. Дополнительно: stale-ссылка 'Размер фичи M' в разделе Тестирование (frontmatter уже L) — minor."
+}

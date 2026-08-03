@@ -1,0 +1,30 @@
+{
+  "reviewer": "security-auditor",
+  "task": "manual-review-workflow/task-2",
+  "round": 1,
+  "status": "OK",
+  "summary": "All three hardening layers from Decision 1 are in place: tag allowlist, URL-scheme allowlist with IGNORECASE + ^ anchor (blocks javascript:/data:/file:/vbscript:/relative), CSP meta byte-exact. Attribute-name guard was added during review to close a real injection surface (crafted keys like 'x\" onerror=\"alert(1)' would have broken out of the tag). Unknown tags drop children too (script/style payloads not inlined). No logging of dropped content. Module is side-effect free.",
+  "findings": [
+    {
+      "severity": "high",
+      "file": "preview_renderer.py",
+      "line": 90,
+      "description": "ORIGINALLY: attribute names were emitted verbatim without validation. A crafted attrs key like 'x\" onerror=\"alert(1)' would produce `<p x\" onerror=\"alert(1)\"=\"y\">`, breaking out of the tag regardless of value escaping.",
+      "recommendation": "FIXED IN-REVIEW: added _SAFE_ATTR_NAME_RE = ^[A-Za-z][A-Za-z0-9_-]*$ check in _render_attrs. Malformed keys drop the attribute entirely. Test test_malicious_attribute_name_dropped + parametrised test_non_identifier_attribute_name_dropped cover 6 bad-key variants."
+    },
+    {
+      "severity": "info",
+      "file": "preview_renderer.py",
+      "line": 78,
+      "description": "Inline <style> block is emitted under CSP style-src 'unsafe-inline'. No external URLs, no @font-face, no @import.",
+      "recommendation": "No action. CSP 'unsafe-inline' is intentional for readability styling; default-src 'none' still blocks everything else."
+    },
+    {
+      "severity": "info",
+      "file": "preview_renderer.py",
+      "line": 134,
+      "description": "Unknown tags drop both the tag AND its children — correct defensive behaviour; a script payload inside <script>alert</script> is not re-inlined as escaped text.",
+      "recommendation": "No action. This matches the task spec explicit guidance."
+    }
+  ]
+}

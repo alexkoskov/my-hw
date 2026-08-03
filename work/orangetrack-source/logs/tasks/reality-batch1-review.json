@@ -1,0 +1,82 @@
+{
+  "validator": "reality-checker",
+  "batch": [1, 2, 3],
+  "status": "approved",
+  "findings": [
+    {
+      "severity": "major",
+      "category": "hallucination",
+      "task": 1,
+      "issue": "Tech-spec references lamley_source.py:212-225 as the allowlist pattern. The actual function is `_is_allowed_lamley_url` at line 215, and `_ALLOWED_HOSTS` is defined at line 212. However, the lamley notifier signature used throughout lamley is `notifier(message)` (single string argument, line 201-205), while task 1 spec defines the orangetrack notifier signature as `Callable[[str, str], None]` accepting `(code, link)`. This is a deliberate design difference, but the task says 'Логика мирорится с lamley_source._is_allowed_lamley_url' — the notifier callback shape is NOT mirrored from lamley. The implementer must not assume parity.",
+      "fix": "Add explicit note in task that the notifier callback is (code, link) — two args — unlike lamley's single-string notifier. The OrangetrackPingAggregator.add(code, link) is the consumer; ensure _notify helper wraps correctly."
+    },
+    {
+      "severity": "major",
+      "category": "feasibility",
+      "task": 1,
+      "issue": "Task 1 step 3 specifies `_parse_content_encoded` should apply `boilerplate_filter.filter_boilerplate` and `filter_blocks` to results. However `filter_blocks` uses `block.get('src')` and `block.get('image_url')` to detect media blocks (boilerplate_filter.py line 166). The orangetrack block schema for images uses `{type: 'image', src: ...}` — so `src` is present and media blocks will always be kept regardless of caption. This is correct behavior, but the task implementation hint does not call this out. The interaction is subtle and an implementer who checks `filter_blocks` logic might be surprised. Not a blocker but warrants clarity.",
+      "fix": "Minor clarification in implementation hints: confirm that image blocks with `src` set are always preserved by filter_blocks (boilerplate_filter.py:168-173 guard). No code change needed."
+    },
+    {
+      "severity": "major",
+      "category": "hints",
+      "task": 1,
+      "issue": "Implementation hint for `_parse_content_encoded` says 'применяет boilerplate_filter.filter_boilerplate к paragraphs и filter_blocks к blocks'. But `is_boilerplate()` in boilerplate_filter.py uses `pat.search(s)` (line 128), NOT `pat.match()`. All existing patterns are anchored at `^` which makes search() and match() equivalent for them. However, the task describes new affiliate patterns (from Task 2) as anchored at `^`. If Task 2 patterns accidentally lack the `^` anchor, search() would cause false positives on long inline paragraphs. This is a cross-task dependency risk: Task 1 relies on Task 2 patterns being correctly anchored. The test `test_affiliate_quicklink_standalone_stripped` is marked as depending on Task 2, but the risk of an incorrectly anchored Task 2 pattern breaking Task 1 negative cases is not documented.",
+      "fix": "Add note that affiliate pattern correctness in Task 2 is a dependency for Task 1 negative-case tests. The ReDoS safety test in Task 2 implicitly covers this, but cross-task dependency should be explicit."
+    },
+    {
+      "severity": "major",
+      "category": "feasibility",
+      "task": 2,
+      "issue": "The task says to add the new `TestAffiliateLengthBound` class 'рядом с TestLengthThreshold (строки 127-138)'. Actual `TestLengthThreshold` is at lines 127-137 in the current file. However, the task also says 'не в конец файла, чтобы не разбивать integration-блоки'. The integration-block classes come AFTER line 140 (`TestAuthorPlugPositive`, `TestAuthorPlugNegative`, etc). Placing `TestAffiliateLengthBound` between line 138 and 140 would mean inserting between `TestLengthThreshold` and `TestAuthorPlugPositive` — which is correct. This is feasible but the line numbers should be verified against the actual file before editing.",
+      "fix": "Implementer should read test_boilerplate_filter.py to find the actual insertion point. The file has integration tests from approximately line 147 onward. Insertion at line ~139 (after TestLengthThreshold) is correct."
+    },
+    {
+      "severity": "major",
+      "category": "hallucination",
+      "task": 2,
+      "issue": "The tech-spec (and task 2) references a set-assertion update in tests/test_sources_registry.py. However the actual assertion at line 55 of test_sources_registry.py checks `set(NETLOC_TO_SOURCE.values())` (the VALUES set: {'autoevolution', 'lamley', 'mattel'}), and line 46 checks `set(NETLOC_TO_SOURCE)` (the KEYS set). The tech-spec says the update is to `{'autoevolution', 'lamley', 'mattel', 'orangetrack'}` — but this assertion is on VALUES (source name strings). Adding 'orangetrackdiecast.com' and 'www.orangetrackdiecast.com' to NETLOC_TO_SOURCE would break the line 46 keys assertion in TestNetlocToSource.test_has_exactly_the_five_keys (currently hardcoded to exactly 5 keys). Task 4 handles this update, not Task 2. Task 2 does NOT modify test_sources_registry.py — this is correct per the task file. No action needed for Task 2, but noted for Task 4.",
+      "fix": "No change needed in Task 2. Flag for Task 4: test_sources_registry.py has TWO hardcoded assertions that will break — line 46 (keys set, currently 5 entries) and line 55 (values set, currently 3 entries). Both must be updated, plus line 324 (SOURCES shape by function name list)."
+    },
+    {
+      "severity": "major",
+      "category": "feasibility",
+      "task": 3,
+      "issue": "Task 3 step 4 says to use `feedparser.parse(orangetrack_source._FEED_URL)` directly, but also mentions `fetch_rss` as an alternative ('если он годится'). `fetch_rss` in news_bot.py (line 583) accepts a URL and calls feedparser.parse internally, returning `feed.entries` or `[]` on exception — it swallows all exceptions silently via logger.error. If Task 3 uses `fetch_rss` instead of `feedparser.parse` directly, FEED_TIMEOUT and FEED_HTTP_<status> codes can never be detected because `fetch_rss` collapses all errors to `[]`. The task correctly notes 'НЕ через load_feeds()/`_fetch_rss_entries`' but the ambiguity around `fetch_rss` (acceptable helper or not) could lead to incorrect error-handling. The aggregator codes FEED_HTTP_<status>, FEED_TIMEOUT, FEED_XML_PARSE are only achievable if the implementer uses `feedparser.parse` directly or writes custom error detection.",
+      "fix": "Clarify in Task 3 that `fetch_rss` is NOT suitable because it swallows all errors. `feedparser.parse` must be called directly with explicit try/except for network errors and bozo detection. The hint says 'скорее всего проще использовать feedparser.parse(_FEED_URL) напрямую' — this is correct and should be elevated to a requirement."
+    },
+    {
+      "severity": "minor",
+      "category": "hallucination",
+      "task": 3,
+      "issue": "Task 3 step 4 says 'получает RSS через feedparser.parse(orangetrack_source._FEED_URL)'. However, feedparser.parse() does not raise exceptions for HTTP errors or timeouts by itself — it returns a FeedParserDict with `bozo=True` and sets `bozo_exception` to the underlying exception (e.g., URLError for network failures). The task's error-handling pseudocode treats HTTP 503 as a detectable status code, but feedparser does not expose HTTP status from parse() — it returns a dict with `feed.status` for server responses. The implementer must check `parsed.status` for HTTP error codes (not via exception), and check `parsed.bozo` + `type(parsed.bozo_exception)` for network-level errors like timeout/connection refused. This is a subtle feedparser behavior that contradicts the implied exception-handling model in the task.",
+      "fix": "Add clarification to the FEED error handling: feedparser.parse() returns parsed.status for HTTP errors (check `parsed.get('status', 200) >= 400`), and parsed.bozo=True + type(bozo_exception) for network errors (e.g., urllib.error.URLError wraps timeouts and connection refused). Direct exception catching from feedparser.parse() will NOT catch HTTP 503/429 — those come back as parsed entries with status code."
+    },
+    {
+      "severity": "minor",
+      "category": "feasibility",
+      "task": 3,
+      "issue": "Task 3 TDD anchor names a new test file `tests/test_news_bot_orangetrack_wiring.py`. This file does not yet exist, which is expected for a planned task. However, the task also says 'или внутри существующего tests/test_news_bot.py, если там уже есть подобные dispatcher-тесты — проверить и решить на месте'. Checking the test directory: there is no `test_news_bot.py` file. The existing `test_sources_registry.py` covers SOURCES/NETLOC/fetch_rss. Creating a new `test_news_bot_orangetrack_wiring.py` is the correct approach, as stated in the task.",
+      "fix": "No change needed. Implementer should create the new test file. The 'или внутри test_news_bot.py' alternative is moot since that file does not exist."
+    },
+    {
+      "severity": "minor",
+      "category": "tdd",
+      "task": 3,
+      "issue": "Task 3's TDD anchor test `test_fetch_full_article_subdomain_attack_not_routed_to_orangetrack` expects the dispatcher to return None (falls through to `logger.warning('No source handler...')`). However, the current fetch_full_article routing uses substring `in domain` for all three existing sources. The orangetrack branch must use exact-host match to prevent the subdomain attack. If the implementer accidentally uses substring `in domain` for the new orangetrack branch, then `orangetrackdiecast.com.attacker.example` would be routed to the pass-through and the test would fail. The task correctly calls this out in the Edge Cases section and the TDD test enforces it. This is well-covered.",
+      "fix": "No change needed. The TDD test covers this correctly. The implementation hint is clear: use exact match via urlparse netloc."
+    },
+    {
+      "severity": "minor",
+      "category": "cross-task-integration",
+      "task": 1,
+      "issue": "Task 1 TDD test `test_affiliate_quicklink_standalone_stripped` is marked to be skipped pending Task 2 (the boilerplate patterns don't exist yet when Task 1 is written). This is correct practice. However, the task should make clear that after Task 2 completes, this test must be un-skipped — it cannot remain as a permanent skip. The task says 'либо оставить assertion на текущем фильтре и зеленить после Task 2' but does not explicitly state who is responsible for un-skipping.",
+      "fix": "Add a note that the `pytest.mark.skip` on `test_affiliate_quicklink_standalone_stripped` must be removed after Task 2 completes. The Task 1 agent should leave a TODO comment in the test for the Task 2 agent to handle, or Task 2 should explicitly un-skip it."
+    }
+  ],
+  "stats": {
+    "tasks_checked": 3,
+    "claims_verified": 47,
+    "issues_found": 10
+  }
+}

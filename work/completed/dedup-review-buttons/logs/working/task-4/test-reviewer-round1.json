@@ -1,0 +1,59 @@
+{
+  "reviewer": "test-reviewer",
+  "task": 4,
+  "round": 1,
+  "commit": "b5e742a24e520c76b65d23a380ce413ca3a3e540",
+  "verdict": "pass",
+  "summary": "All 8 TDD anchors from tasks/4.md are present in TestResolveDedupCallback (tests/test_integration.py) against a real tempfile SQLite DB, all pass, and assertions check actual DB state (pending_articles / processed_news / published_articles / bot_state token rows) rather than only return strings. `pytest tests/test_integration.py -k ResolveDedupCallback -q` -> 8 passed. Full suite (excluding the known-flaky TestSlotLoopTransientRetry, per instructions) -> 53 passed, no regressions.",
+  "command_run": "pytest tests/test_integration.py -k ResolveDedupCallback -q",
+  "command_result": "8 passed, 45 deselected",
+  "full_suite_check": "pytest tests/test_integration.py -q (TestSlotLoopTransientRetry included) -> 53 passed, no failures observed in this run",
+  "tdd_anchor_coverage": [
+    {"anchor": "test_non_admin_press_ignored_no_state_change", "present": true, "quality": "good — asserts status is None / answer '', skip_pending mock not called, pending row untouched, token NOT deleted (still resolves)"},
+    {"anchor": "test_cancel_pending_row_skips_and_returns_cancelled", "present": true, "quality": "good — asserts row gone from pending_articles, present in processed_news, absent from published_articles (distinguishes skip from publish), token deleted, AND chains a second press proving idempotent stale resolution"},
+    {"anchor": "test_cancel_then_slot_publish_does_not_publish", "present": true, "quality": "good — see detailed note below"},
+    {"anchor": "test_cancel_published_returns_already_published", "present": true, "quality": "good — skip_pending mock asserted not called, published row still present, token deleted"},
+    {"anchor": "test_cancel_missing_returns_unavailable", "present": true, "quality": "adequate — token deleted, correct status; minimal by nature since no row exists to assert on"},
+    {"anchor": "test_keep_returns_kept_no_state_change", "present": true, "quality": "good — pending row untouched, not in processed_news, token deleted"},
+    {"anchor": "test_stale_token_returns_expired", "present": true, "quality": "good — pending row untouched, not in processed_news, no exception"},
+    {"anchor": "test_non_numeric_admin_id_fail_closed", "present": true, "quality": "good — patches TELEGRAM_ADMIN_ID to '@sunny413x', asserts ignored result, pending row untouched, token still valid"}
+  ],
+  "cancel_then_slot_publish_verification": {
+    "verified_genuine": true,
+    "notes": "Confirmed against real production code (news_bot.py L2703-2716, the actual per-slot loop inside job()): 'rows = pending_repo.list_pending(); if not rows: break; row = rows[0]; ... _fallback_publish(row, ...)'. The test's inline while-loop ('rows = list_pending(); if not rows: break; news_bot._fallback_publish(rows[0])') is a faithful structural mirror of that exact selection algorithm, and it patches the REAL `news_bot._fallback_publish` symbol (not a private test double), then asserts on call_args_list that the cancelled link is never passed to it while the survivor is. This is materially stronger than only checking absence from list_pending(): it exercises the real publish-hook call boundary. Caveat (informational, not a defect): the loop itself is re-authored inline in the test rather than invoking the production loop/function directly (e.g. job() or a slot-selection helper), because task 4 explicitly scoped it this way to avoid dragging in the full job()/scheduler/Claude/Telegraph mocking surface. Consequence: a hypothetical future regression that changes the production selection algorithm itself (e.g. away from rows[0]) would not be caught by this test, since the test's replica would silently diverge from reality. This is an accepted, spec-directed scope boundary, not a review-blocking gap."
+  },
+  "litmus_checks": [
+    {"mutation": "admin check removed/inverted", "caught_by": "test_non_admin_press_ignored_no_state_change, test_non_numeric_admin_id_fail_closed", "result": "caught — both assert status is None and DB state is untouched; removing the gate would make the cancel actually execute against a pending row"},
+    {"mutation": "token not deleted on terminal outcome", "caught_by": "test_cancel_pending_row_skips_and_returns_cancelled (+ its chained second press), test_cancel_published_returns_already_published, test_cancel_missing_returns_unavailable, test_keep_returns_kept_no_state_change", "result": "caught — each asserts get_review_token_link(token) is None post-call"},
+    {"mutation": "wrong status string (e.g. typo or swapped constant)", "caught_by": "all branch tests use assertEqual on exact Cyrillic status strings for both status_text and answer_text", "result": "caught"},
+    {"mutation": "cancel writes to published_articles instead of / in addition to processed_news", "caught_by": "test_cancel_pending_row_skips_and_returns_cancelled asserts get_published(link) is None after cancel", "result": "caught"},
+    {"mutation": "cancel-on-published branch accidentally calls skip_pending", "caught_by": "test_cancel_published_returns_already_published patches and asserts skip_pending not called", "result": "caught"}
+  ],
+  "findings": [
+    {
+      "severity": "info",
+      "area": "test_cancel_then_slot_publish_does_not_publish",
+      "description": "The slot-loop replay is hand-written in the test rather than calling the real production loop/function; it mirrors the real algorithm correctly (verified) but would not catch a regression introduced in the production selection logic itself. Not blocking — this scope was set by tasks/4.md itself ('берём «следующую к публикации» через pending_repo.list_pending(); ... _fallback_publish застабить'), and pulling in the full job() path would require substantial unrelated mocking (Claude/Telegraph/slot timing) out of scope for this pure-decision-logic task.",
+      "action": "none required for this task; worth a mention if a later E2E/broader integration task wants to also assert against the real job() slot loop directly."
+    },
+    {
+      "severity": "info",
+      "area": "resolve_dedup_callback else-branch (unknown action)",
+      "description": "Implementation added a defensive branch for any action other than 'cancel'/'keep' (returns stale status, no token deletion), but no TDD anchor/test exercises it directly. Not required by tasks/4.md's anchor list or acceptance criteria, and the branch is documented as unreachable given Task 5's grammar filtering.",
+      "action": "optional — could add one extra unit test for defense-in-depth, not required for this round's pass verdict."
+    }
+  ],
+  "acceptance_criteria_check": {
+    "pure_no_telegram_io": "confirmed by reading news_bot.py diff — only config read + pending_repo calls + string returns",
+    "admin_auth_fail_closed": "covered (both non-admin and non-numeric-admin-id cases)",
+    "unknown_token_stale": "covered",
+    "keep_no_state_change_token_deleted": "covered",
+    "cancel_pending_skips_and_records": "covered",
+    "post_cancel_never_published": "covered via list_pending()/published_articles checks + the stubbed-publish-call-args check",
+    "cancel_published_untouched": "covered",
+    "cancel_missing_no_error": "covered",
+    "token_deleted_on_all_terminal_outcomes": "covered",
+    "idempotent_no_exceptions_on_repeat": "covered (chained second press in test_cancel_pending_row_skips_and_returns_cancelled)",
+    "existing_suite_green": "confirmed — 53/53 passed on full tests/test_integration.py run in this session (including TestSlotLoopTransientRetry, which the task described as a known flake to ignore but which passed here)"
+  }
+}

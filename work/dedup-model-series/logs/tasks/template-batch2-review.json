@@ -1,0 +1,67 @@
+{
+  "validator": "task-validator",
+  "batch": [6, 7, 8, 9, 10],
+  "status": "approved",
+  "findings": [
+    {
+      "severity": "major",
+      "category": "consistency",
+      "task": 8,
+      "section": "frontmatter",
+      "issue": "wave is `Audit` (capital A) while tasks 7 and 9 use `audit` (lowercase). If feature-execution groups the Audit Wave by exact string match, task 8 would land in a separate wave group and not run in parallel with tasks 7/9 as intended.",
+      "fix": "Normalize task 8 frontmatter to `wave: audit` to match tasks 7 and 9."
+    },
+    {
+      "severity": "minor",
+      "category": "frontmatter",
+      "task": 7,
+      "section": "frontmatter",
+      "issue": "wave is a string (`audit` in tasks 7/8/9, `final` in task 10) rather than a numeric value >= 1 as the template/checklist specify (`wave: 1`). This mirrors the tech-spec's named 'Audit Wave' / 'Final Wave' and appears intentional and consistent, but deviates from the numeric schema. Applies to tasks 7, 8, 9, 10.",
+      "fix": "Confirm the feature-execution orchestrator supports named string waves. If it sorts/groups waves numerically, this becomes critical — convert to numbers (e.g. audit -> 4, final -> 5). Otherwise document named waves as an accepted convention."
+    },
+    {
+      "severity": "minor",
+      "category": "consistency",
+      "task": 6,
+      "section": "Reviewers",
+      "issue": "skills is [code-writing] but reviewers is [test-reviewer] only. The skills<->reviewers mapping expects code-writing to include code-reviewer as well. This matches tech-spec (Task 6 assigns test-reviewer only; the task authors calibration tests + deployment.md docs, no production code), so likely intentional.",
+      "fix": "Confirm code-reviewer is intentionally omitted because the task touches only test files + docs. If any production code is edited, add code-reviewer."
+    },
+    {
+      "severity": "minor",
+      "category": "content",
+      "task": 10,
+      "section": "Context Files",
+      "issue": "The 'Тестовые файлы фичи' subsection lists files as bare code spans (`tests/test_model_extractor.py`, etc.) instead of markdown links [name](path). The checklist requires all context files as markdown links. Tasks 7/8/9 correctly use links for their code files.",
+      "fix": "Convert the test-file entries to markdown links, e.g. [tests/test_model_extractor.py](../../../tests/test_model_extractor.py)."
+    },
+    {
+      "severity": "minor",
+      "category": "consistency",
+      "task": 10,
+      "section": "Verification Steps",
+      "issue": "verify frontmatter is [] but Verification Steps includes a 'Smoke' subsection (backfill --dry-run, toggle-off gate run). With verify: [] the do-task smoke gate is not engaged, so those smoke checks read as informational only. tech-spec Task 10 has no Verify-smoke field, so verify: [] is consistent with derivation, creating a mild body/frontmatter tension.",
+      "fix": "Either add `smoke` to the verify array if these checks should gate, or fold them under the Automated subsection to avoid implying a smoke verification type that the frontmatter does not declare."
+    },
+    {
+      "severity": "minor",
+      "category": "atomicity",
+      "task": 6,
+      "section": "task-wide",
+      "issue": "Task bundles two loosely-related deliverables serving different acceptance criteria: a calibration accuracy test in tests/test_model_extractor.py (AC11) and a deploy runbook in deployment.md (AC10). No shared logic; removing the docs portion still leaves a complete calibration test. Cohesion is weak, though it mirrors the tech-spec's Task 6 grouping and stays within 1-3 files.",
+      "fix": "Acceptable as-is since it traces to tech-spec Task 6. Optionally split the deployment.md runbook into its own small task if strict single-responsibility is desired."
+    },
+    {
+      "severity": "minor",
+      "category": "structure",
+      "task": 8,
+      "section": "Details",
+      "issue": "Details section lacks the standard `Files` and `Implementation hints` subsections from the template. Content is present but reorganized under Scope / Trust boundary / Известные защитные инварианты / Report path. Dependencies and Edge cases are present. Reasonable adaptation for an analysis-only audit task, but diverges from the template subsection layout that tasks 6/7/9 follow more closely.",
+      "fix": "Optionally add explicit `Files` (what to inspect) and `Implementation hints` labels, or accept the audit-adapted layout as intentional."
+    }
+  ],
+  "stats": {
+    "tasks_checked": 5,
+    "issues_found": 7
+  }
+}

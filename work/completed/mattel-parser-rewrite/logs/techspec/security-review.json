@@ -1,0 +1,93 @@
+{
+  "status": "approved",
+  "summary": {
+    "totalFindings": 2,
+    "critical": 0,
+    "major": 0,
+    "minor": 2
+  },
+  "round": 2,
+  "previousRound": {
+    "status": "changes_required",
+    "totalFindings": 8,
+    "critical": 1,
+    "major": 3,
+    "minor": 4
+  },
+  "round1Closure": [
+    {
+      "finding": "Round-1 #1 critical SSRF (fetch_mattel_article lacks ARTICLE_URL_PREFIX guard)",
+      "status": "closed",
+      "evidence": "Decision 8 §1 mandates link.startswith(ARTICLE_URL_PREFIX) before any HTTP call; Architecture Article path step 1 puts the guard before the GET; error matrix ES10 raises MattelNewsError with sanitised message that explicitly does NOT echo link; AC 'fetch_mattel_article(link) rejects link that does not start with ARTICLE_URL_PREFIX' enforces; TestSsrfGuard test class added to verify rejection of evil.example.com link.",
+      "cwe": "CWE-918"
+    },
+    {
+      "finding": "Round-1 #2 major ReDoS / regex correctness on _FLIGHT_PUSH_RE",
+      "status": "closed",
+      "evidence": "Decision 8 §2 replaces lazy (.+?) with linear-time JS-string-literal-correct character class (?:[^\"\\\\\\\\]|\\\\\\\\.)*; AC '_FLIGHT_PUSH_RE uses character-class form (?:[^\"\\\\\\\\]|\\\\\\\\.)* (no (.+?) lazy quantifier); regex is JS-string-literal-correct against escaped \\\"' enforces; MAX_RESPONSE_SIZE bound is enforced before regex per Architecture step 2.",
+      "cwe": "CWE-1333"
+    },
+    {
+      "finding": "Round-1 #3 major json.loads RecursionError / depth not handled",
+      "status": "closed",
+      "evidence": "Decision 8 §3 wraps both json.loads calls in except (json.JSONDecodeError, RecursionError, ValueError); error matrix ES5 explicitly enumerates 'incl. RecursionError on deep nesting'; AC 'All json.loads calls in the module are wrapped to catch (json.JSONDecodeError, RecursionError, ValueError) → ES5' enforces.",
+      "cwe": "CWE-674"
+    },
+    {
+      "finding": "Round-1 #4 major bracket-match no termination / unbounded slice",
+      "status": "closed",
+      "evidence": "Decision 8 §4 mandates depth-aware AND string-literal-aware bracket scanner (skips inside \"...\" runs and \\\\ escapes), max-iteration cap = len(unescaped); _resolve_body_html rejects hex length > MAX_RESPONSE_SIZE before slicing (ES9c content-empty path); AC '_extract_listing_entries bracket-match is depth-aware AND string-literal-aware; on EOF without depth-zero → ES4' and AC '_resolve_body_html rejects advertised hex lengths above MAX_RESPONSE_SIZE' enforce.",
+      "cwe": "CWE-835"
+    },
+    {
+      "finding": "Round-1 #5 minor notifier info disclosure via raw str(exc)",
+      "status": "closed",
+      "evidence": "Decision 8 §5 mandates 'exception type + safe scalars only; raw str(exc) is NOT included'; error matrix rows ES1/ES6 carry '(sanitised — see Decision 8)' annotation; AC 'Notifier messages format only exception type and safe scalars (sizes, slugs, anchor names) — raw str(exc) is NOT included' enforces.",
+      "cwe": "CWE-209"
+    },
+    {
+      "finding": "Round-1 #6 minor httpx/urllib3 INFO log suppression unstated",
+      "status": "closed",
+      "evidence": "Decision 8 §6 explicitly preserves news_bot._configure_third_party_logging; AC 'httpx/urllib3/httpcore log-suppression (set in news_bot._configure_third_party_logging) is NOT touched by this module' enforces.",
+      "cwe": "CWE-532"
+    },
+    {
+      "finding": "Round-1 #7 minor allow_redirects=False missing",
+      "status": "closed",
+      "evidence": "Decision 8 §6 mandates allow_redirects=False for both fetches; Architecture Listing step 1 and Article step 2 both restate it; AC 'Both requests.get calls pass allow_redirects=False' enforces.",
+      "cwe": "CWE-601"
+    },
+    {
+      "finding": "Round-1 #8 minor fixture-builder supply chain (placeholder defaults / accidental real-data leak)",
+      "status": "not_addressed",
+      "evidence": "Decision 4 still describes builder purpose without mandating obviously-synthetic defaults (e.g. FAKE_HANDLE / FAKE_TITLE) or a pre-commit check against real Mattel handle patterns. The anti-drift smoke (Decision 7) partially mitigates by validating builder output against /tmp snapshots, but does not prevent real captured strings from being copy-pasted into builder defaults and committed. Re-raised below at minor severity."
+    }
+  ],
+  "findings": [
+    {
+      "severity": "minor",
+      "category": "A06:2021 Vulnerable Components — supply chain integrity for fixture builder",
+      "title": "Decision 4 still does not mandate placeholder-only defaults in mattel_flight_builder.py",
+      "description": "Round-1 finding #8 (recommendation-grade) was not picked up in the round-2 fix set. Decision 4 documents the builder's purpose and signatures but does not prescribe a placeholder convention (e.g. handle=\"fake-handle-001\", title=\"FAKE TITLE\") nor a pre-commit guard that flags strings matching real Mattel slug patterns (e.g. /^hot-wheels-[a-z0-9-]+/). A future maintainer pasting a real captured /tmp/mattel_news.html slug into the builder defaults would commit operational telemetry into git history with no automatic catch.",
+      "location": "Section: Decisions / Decision 4; Acceptance Criteria (no placeholder-convention AC)",
+      "impact": "Low. Worst case is a real Mattel article handle / thumbnail URL ending up in the public repo via a builder-defaults edit. Not exploitable, but constitutes minor information leakage and breaks the test/production boundary.",
+      "recommendation": "Add to Acceptance Criteria: 'Builder default arguments use clearly-synthetic strings (prefix `fake-` or `FAKE_`); no value pasted from /tmp/mattel_news.html or /tmp/mattel_article.html survives in committed defaults.' Optionally add a one-line grep guard in the verify-smoke for Task 1: `! grep -E 'hot-wheels-[a-z0-9]{3,}' tests/fixtures/mattel_flight_builder.py`.",
+      "cwe": "CWE-1357"
+    },
+    {
+      "severity": "minor",
+      "category": "A09:2021 Security Logging — link echoed in ES6/ES7 article-fetch errors",
+      "title": "ES6/ES7 notifier format `Mattel article fetch error (<link>): <type>` echoes the link parameter to admin chat",
+      "description": "The error matrix shows ES6 (HTTP 4xx/5xx) and ES7 (timeout/connection error) format the notifier message as `Mattel article fetch error (<link>): <type>`. Because Decision 8 §1 (SSRF guard / ES10) runs BEFORE the HTTP call, by the time ES6/ES7 fire, `link` has been validated against ARTICLE_URL_PREFIX, so it is structurally safe and won't expose internal hosts. However, the link still includes the full path and query string, which under a future Mattel-side change could carry a tracking token, an A/B-test parameter, or a session id appended by a CDN-edge redirect. Combined with Decision 8 §6 `allow_redirects=False`, the immediate risk is small (no untrusted host can substitute the link), but the message format is inconsistent with ES10 (which deliberately omits the link).",
+      "location": "Section: Architecture / Error matrix rows ES6, ES7, ES9, ES9b",
+      "impact": "Low. Path/query of trusted Mattel URLs is logged to admin chat. Becomes a real concern only if Mattel's URLs ever start carrying user-identifying or token-like query parameters, or if the bot is later cloned to a multi-admin / shared deployment.",
+      "recommendation": "Either (a) trim `<link>` to the path component only (drop scheme+host+query) before formatting, or (b) format with `<slug>` (the handle extracted by `_find_entry_by_handle_or_url`) instead of the raw URL. Add a small AC under Security ACs: 'Notifier messages for ES6/ES7/ES9/ES9b log the article slug or path-only form, not the raw query string.' Trivial code change.",
+      "cwe": "CWE-532"
+    }
+  ],
+  "notes": [
+    "Round-2 fixes are well-scoped and targeted: Decision 8 enumerates exactly the controls needed, the inline error matrix surfaces ES10 + sanitisation annotations as the single source of truth, and the security-specific ACs are testable individually. The User-Spec Deviations section correctly classifies Decision 8 as [TECHNICAL] and surfaces it for user review.",
+    "Residual considerations not raised as findings (intentional): (a) MemoryError from doubled-string allocation during JS-unescape on a 5 MB body — Python 3 catches MemoryError at import-time-set limit; not a realistic crash vector. (b) max-DEPTH cap on bracket scanner — covered de-facto because the recursion path is in json.loads (now caught) and bracket scanner itself is iterative. (c) hex-length string size guard before int(hex, 16) — Decision 8 §4 caps the parsed value, not the input length; int('f'*1_000_000, 16) is technically pure-CPU on attacker input, but the surrounding regex pattern in step 5 already bounds the hex run, and the pre-regex MAX_RESPONSE_SIZE cap bounds the total input.",
+    "No new attack surface introduced in round-2 changes. The added SSRF guard, sanitisation, and redirect controls are pure defense-in-depth additions; they do not add new code paths that themselves require auditing beyond what AC enforces."
+  ]
+}

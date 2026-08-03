@@ -1,0 +1,64 @@
+{
+  "status": "pass",
+  "sources": {
+    "user_spec": true,
+    "tech_spec": true,
+    "tasks": false
+  },
+  "requirements_total": 11,
+  "requirements_covered": 11,
+  "requirements_partial": 0,
+  "requirements_missing": 0,
+  "findings": [
+    {
+      "type": "gap",
+      "source": "tech-spec",
+      "requirement": "AC10: Backfill + предпроверка (traceability citation)",
+      "detail": "Task 5 ('Backfill widened re-select', backfill_fingerprints.py, line 322) still ends 'Serves AC9, AC10.' This is the same citation-slip pattern round 1 flagged in Decision 7 (AC9 = user-spec's degraded-mode requirement, unrelated to backfill re-select logic). Decision 7 itself was correctly fixed to 'Serves AC10' (line 147), but the parallel instance in Task 5's description was not caught by the same fix pass. Not a functional gap — AC9/degraded-mode is separately and correctly covered via the try/except wrap in news_bot.py (Task 4) — but it's a leftover traceability nit that could mislead a future reader auditing which task covers which AC.",
+      "recommendation": "Change Task 5's citation from 'Serves AC9, AC10' to 'Serves AC10'."
+    },
+    {
+      "type": "gap",
+      "source": "tech-spec",
+      "requirement": "Structural integrity (ReDoS mitigation detail)",
+      "detail": "Task 1's description specifies a concrete regex-safety approach ('ReDoS-safe: bounded quantifiers only (\\s{1,3}, never \\s+/\\s*), mirroring _MODEL_AFTER_BRAND_RE; a load-time assertion that lexicon canonicals contain no |/newline') that does not appear anywhere in the Architecture or Decisions sections. This is a real (if narrow) technical choice, not just scope description. Judged minor rather than a blocking structural_gap: it's a one-line defensive-coding note that mirrors an existing established pattern in the codebase rather than a novel architectural choice requiring alternatives/rationale, and Task 8 (Security Audit) is positioned to verify it holistically. Still, a reader of only the Decisions section would not learn how ReDoS is mitigated.",
+      "recommendation": "Optional polish: add one line to Decision 1 or the model_extractor.py Architecture bullet noting the bounded-quantifier ReDoS mitigation, so it's visible without reading Task 1."
+    }
+  ],
+  "round2_verification": {
+    "item_1_ac5_backstop_terminal": {
+      "status": "resolved",
+      "evidence": "Decision 3 now states explicitly: 'block and flag are TERMINAL. The existing 7-day set-overlap dedup runs ONLY on pass (no shared pair, OR no series, OR toggle off).' Architecture 'How it works' step 2 restates: 'Both verdicts are TERMINAL — the old set-overlap dedup does NOT also run (avoids a double verdict / double ping).' Step 3 restates the pass-only trigger with identical OR-conditions. Testing Strategy adds a dedicated assertion ('assert exactly one verdict/ping, no [E015]') and a positive backstop-fires test ('old 7-day set-overlap runs and, in a positive case, actually BLOCKS'). All three sections (Decision, Architecture, Testing) are now mutually consistent — the round-1 two-reading ambiguity is closed. The chosen interpretation is also the only one consistent with AC4's explicit 'Никогда не жёсткий блок по широкому ключу' / 'статья публикуется' guarantee, which Decision 3's Alternatives section explicitly cites when rejecting the 'run old dedup after a broad flag too' alternative — this is a well-grounded interpretive resolution, not an arbitrary deviation, so no User-Spec Deviations entry is needed."
+    },
+    "item_2_e014_adapted": {
+      "status": "resolved",
+      "evidence": "Architecture bullet for admin_alerts.py now reads: 'adapt the [E014] builder for the broad-pair case (matched series/theme + link) — the old alert_cross_source_dupe model-overlap params (overlap_pct/n_matches/models) don't fit a theme-only match. [E016] reused unchanged.' Task 2 mirrors this: 'Adapt the [E014] broad-flag ping to the theme/series match ... the old model-overlap params don't fit a theme-only match.' Both now consistently commit to a fit-for-purpose broad-tier builder rather than reusing the old one verbatim, closing the round-1 MAJOR risk of an empty/misleading or crashing ping for the theme-only case."
+    },
+    "item_3_decision7_ac10": {
+      "status": "resolved_with_residual",
+      "evidence": "Decision 7's rationale now correctly ends 'Serves AC10' (line 147) — the AC9 mis-citation is gone. However the same mis-citation pattern persists in Task 5's description ('Serves AC9, AC10', line 322) — see findings above. Minor, non-blocking."
+    },
+    "item_4_failsafe_explicit": {
+      "status": "resolved",
+      "evidence": "Decision 2: 'Untagged/unknown series → broad (_SERIES_DEFAULT_TIER = \"broad\").' Architecture step 1: 'tier ∈ {D, B}: D iff the series is lexicon-tagged distinctive AND a concrete model exists; otherwise B (fail-safe default).' Task 1 repeats '_SERIES_DEFAULT_TIER=\\'broad\\''. Risks table has a dedicated row: 'Fail-safe polarity inverted (untagged → distinctive) | _SERIES_DEFAULT_TIER=\\'broad\\' + explicit test.' Testing Strategy names 'tier tagging incl. fail-safe untagged→broad' as a unit test. Explicit and consistent across Decision, Architecture, Task, Risks, and Testing."
+    }
+  },
+  "traceability": {
+    "note": "Full bidirectional pass across AC1-AC11 against Decisions 1-7 + Tasks 1-11 (no separate tasks/ folder exists yet — tasks live embedded in tech-spec's Implementation Tasks section, same as round 1).",
+    "AC1": "covered — Decision 1 + Task 1",
+    "AC2": "covered — Decision 1 + pending_articles_repo.py 'reused as-is, rides along' + dedicated carry-through test",
+    "AC3": "covered — Decisions 2, 3, 5 + Tasks 2, 4",
+    "AC4": "covered — Decisions 2, 3 + Tasks 2, 4",
+    "AC5": "covered — Decision 3 (now unambiguous) + Task 4 + dedicated positive-backstop test",
+    "AC6": "covered — Decision 4 + Task 4 + toggle-off parity test",
+    "AC7": "covered — Decision 2 + Task 1; calibration cross-reference to AC11 intact",
+    "AC8": "covered — Task 4 ('re-gate the empty-fp short-circuit') + dedicated AC8 test replacing the stale 2-key mock",
+    "AC9": "covered — existing try/except degraded-mode wrap (Architecture step 4) + dedicated test",
+    "AC10": "covered — Decision 7 + Task 5 + Task 6 (pre-deploy runbook doc)",
+    "AC11": "covered — Task 3 (fixture) + Task 6 (wiring + ≥7/8 threshold) + hard asymmetric invariants beyond the aggregate score",
+    "reverse_check": "No scope creep found. Every Architecture bullet and Decision maps to a cited AC or an explicit user-spec Ограничения constraint. Decisions 5 and 6 are marked [TECHNICAL] but are directly derived from explicit user-spec requirements (any-source matching; no-new-file/no-migration constraints) rather than being deviations — the 'None' User-Spec Deviations entry with its clarifying parenthetical is defensible and unchanged from round 1.",
+    "solution_depth": "Solution and Architecture sections retain real technical substance (tier-tagged lexicon, gate ordering, JSON-in-place storage, toggle, backfill widening) with justified rationale per decision — no shallow_solution finding.",
+    "over_under_engineering": "No YAGNI abstractions, no unjustified layers, no premature optimization. Error handling, input validation (ReDoS bounds, static SQL literals), boundary conditions (AC8 empty case), and Shared Resources (explicitly 'None' with justification) are all adequately addressed for an L-size feature."
+  },
+  "summary": "PASS. All 4 round-1 fixes verified resolved: (1) AC5 composition is now unambiguous and internally consistent across Decision 3, Architecture step 2-3, and Testing Strategy — broad/soft-flag verdicts are explicitly TERMINAL, closing the prior CRITICAL ambiguity, with the interpretation textually grounded in AC4's 'always publishes' guarantee. (2) [E014] is now explicitly 'adapted' (not reused unchanged) for the theme-only broad case, in both Architecture and Task 2, closing the prior MAJOR risk. (3) Decision 7's citation is fixed to 'Serves AC10' — but the identical AC9/AC10 mis-citation still lingers in Task 5 (line 322), a residual minor finding. (4) The untagged-series fail-safe default is explicit and consistently reinforced across Decision 2, Architecture, Task 1, the Risks table, and Testing Strategy. 11/11 user-spec ACs covered with full Decision+Task traceability, no scope creep, no shallow solution, no over/under-engineering findings. Two non-blocking MINOR findings remain: a leftover AC9/AC10 citation slip in Task 5, and an optional polish item (ReDoS mitigation detail lives only in Task 1's description, not surfaced in Decisions/Architecture). Zero critical findings — tech-spec is ready to proceed."
+}

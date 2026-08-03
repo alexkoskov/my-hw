@@ -1,0 +1,28 @@
+{
+  "status": "passed",
+  "summary": "Round 3 review after commit dd6afab. The Testing Strategy section in tech-spec.md now fully satisfies every round-2 major and minor finding. preview_renderer (line 289) has explicit URL-scheme filter assertions — `javascript:` / `data:` schemes in `img src`/`iframe src`/`a href` are dropped; `https?://` preserved — plus an explicit CSP meta-tag assertion covering `default-src 'none'`, `img-src https:`, `frame-src https:`. sanitize_error_message (line 290) now enumerates each of the four env secrets individually replaced with `[REDACTED]`, plus a compound exception carrying all four, plus the empty/None/whitespace skip case that defends against the `str.replace('', ...)` explosion pathology. The stage JSON validator (line 291) now explicitly calls out 'eight rejection vectors, each a separate test case' and lists each (stdin >256 KiB, depth >3, unknown top-level key, non-list ru_paragraphs, non-dict block entry, unknown block type, unknown block field key, string field >10 KiB), plus the block-parity cross-check in both directions. The hw_review preview CACHE_DIR path guard (line 292) now has a dedicated unit test: patches the resolve step to return an external path, asserts stderr 'preview path escaped cache dir' + exit 1 + no webbrowser.open call. Both minor round-2 findings are also addressed: skip-prompt parametrisation (line 309) now calls out `y`/`Y` → proceed, `n`/`N`/empty/other → abort exit 0 with 'skip cancelled' stderr and no DB changes; publish-on-vanished (line 310) is split into three explicit states — published (Telegraph URL stderr), failed (last_error stderr), not found ('not found' stderr) — each exit 1 with no traceback. The test pyramid remains healthy for this feature shape (unit-heavy DAO + validator + renderer + CLI bullets; integration covers prep-phase, publish-phase, retry, idle-fallback, overflow, migration, rollback, CLI edge cases; no E2E — appropriate per Testing Strategy decision, manual verification in Pre-deploy QA). One minor coverage gap remains around AC L378's requirement that redaction be verified not only in the sanitiser output but also in admin-ping text and `hw_review show N` stdout; flagged below for completeness, not blocking.",
+  "findings": [
+    {
+      "severity": "minor",
+      "category": "missing_coverage",
+      "location": "Section: Testing Strategy — Unit tests & Integration tests (sanitize_error_message call-site coverage)",
+      "issue": "AC line 378 requires asserting `[REDACTED]` replacement 'in the resulting last_error column, in any admin-ping, and in hw_review show N stdout'. The Testing Strategy's sanitize_error_message unit tests (line 290) cover the helper in isolation — return-value assertions for each secret, compound exception, and empty-env skip. But no bullet explicitly exercises (a) the admin-ping path composing a message from a sanitised value or (b) the `hw_review show N` CLI stdout path reading a pre-sanitised last_error column. A regression that fails to route the error through the helper before the admin-ping text is built, or a `hw_review show` codepath that accidentally prints a pre-sanitisation source, would pass every listed test.",
+      "recommendation": "Add two bullets. (1) Under Unit tests: 'admin-ping sanitiser pass-through: monkeypatch.setenv TELEGRAPH_ACCESS_TOKEN=tg-xyz; construct a failure row whose last_error was stored via sanitize_error_message; call the admin-ping formatter that surfaces error rows; assert composed text contains [REDACTED] and does not contain tg-xyz.' (2) Under Integration tests: '`hw_review show N` redaction: pre-seed pending row with last_error already containing [REDACTED] (simulating sanitised storage); monkeypatch.setenv TELEGRAPH_ACCESS_TOKEN to a known value; invoke CLI via subprocess; capture stdout; assert [REDACTED] present and raw token absent.' Both tests should use monkeypatch.setenv so the raw-vs-redacted contrast is explicit and deterministic."
+    }
+  ],
+  "metrics": {
+    "filesReviewed": 1,
+    "litmusTest": {
+      "checked": 14,
+      "passed": 14,
+      "failed": 0
+    },
+    "coverageAssessment": "adequate",
+    "pyramidBalance": {
+      "unit": 9,
+      "integration": 13,
+      "e2e": 0,
+      "assessment": "healthy"
+    }
+  }
+}

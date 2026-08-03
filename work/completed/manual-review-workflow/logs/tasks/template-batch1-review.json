@@ -1,0 +1,51 @@
+{
+  "validator": "task-validator",
+  "batch": [1, 2, 3, 4, 5],
+  "status": "approved",
+  "findings": [
+    {
+      "severity": "minor",
+      "category": "atomicity",
+      "task": 3,
+      "section": "Description / What to do",
+      "issue": "Task 3 bundles three loosely-related helpers in one task: (a) SOURCE_EMOJI/SOURCE_LABEL dicts + build_admin_ping (tightly coupled — ping consumes the dicts), and (b) sanitize_error_message (unrelated security-hardening helper from Decision 11). Ping logic and sanitiser share nothing except the target file news_bot.py. Logical cohesion is weaker than Tasks 1, 2, 4, 5.",
+      "fix": "Optionally split into Task 3a (source vocabulary + build_admin_ping) and Task 3b (sanitize_error_message). The bundling does match tech-spec Implementation Tasks §Task 3 verbatim, so this is not a hard violation — dismiss if tech-spec bundling was intentional. If left bundled, ensure downstream tasks (6, 7, 9) don't need fine-grained dependency on just one of the three helpers."
+    },
+    {
+      "severity": "minor",
+      "category": "content",
+      "task": 1,
+      "section": "Acceptance Criteria",
+      "issue": "AC item `3 ревью ок (code-reviewer / security-auditor / test-reviewer)` is not a testable outcome — it restates the review process, not a property of the deliverable. Every task is reviewed; this AC adds no information and risks being checked off prematurely.",
+      "fix": "Remove the meta-AC about reviews passing (reviews are a separate quality gate tracked via reviewers section), or reword to a specific outcome such as `No outstanding critical findings from any reviewer at end of review cycle`."
+    },
+    {
+      "severity": "minor",
+      "category": "content",
+      "task": 1,
+      "section": "TDD Anchor",
+      "issue": "`test_parameterized_queries_only` is a grep-based structural assertion (checks that source file does not contain f-string / %-formatting with SQL keywords). This tests string presence in the source, not behaviour — the anchor validator flag notes `anchors like 'assert keyword in text' are insufficient — they test structure, not logic`. While the AC it enforces (parameterised SQL only) is valuable, the test itself is a lint-style check.",
+      "fix": "Keep the grep-style test as a supplementary guard but add a behavioural test that injects a hostile input (e.g. a link like `x'; DROP TABLE pending_articles;--`) via insert_pending and asserts the table is unchanged afterwards. Behavioural coverage demonstrates the parameterisation actually works end-to-end, not just that f-strings are absent."
+    },
+    {
+      "severity": "minor",
+      "category": "structure",
+      "task": 4,
+      "section": "Context Files",
+      "issue": "The link `[code-research.md §9.6](../code-research.md)` embeds a section anchor in the link name but the path has no fragment. Other tasks (1, 2, 3, 5) follow this same convention, so the severity is minor stylistic — only Task 4 also omits `decisions.md` context-file annotations and does not link `patterns.md`-referenced testing doc. Not a correctness issue.",
+      "fix": "No action required. All mandatory context files (user-spec, tech-spec, decisions, project, architecture) are present. Dismiss unless project convention requires fragment anchors in URL."
+    },
+    {
+      "severity": "minor",
+      "category": "consistency",
+      "task": 4,
+      "section": "Reviewers",
+      "issue": "Task 4 uses reviewers `[code-reviewer, test-reviewer]` — missing security-auditor which is the default reviewer set for code-writing skill per skills-and-reviewers.md. Tech-spec Implementation Tasks §Task 4 explicitly specifies `Reviewers: code-reviewer, test-reviewer` (no security-auditor), so the task file faithfully matches tech-spec. Rationale: preview_nodes is a pure offline wrapper over existing private functions — no new attack surface. Noting for transparency; no fix required.",
+      "fix": "No action required — task file matches tech-spec's explicit reviewer list. If security-auditor coverage is desired, update tech-spec Task 4 first, then task 4.md."
+    }
+  ],
+  "stats": {
+    "tasks_checked": 5,
+    "issues_found": 5
+  }
+}

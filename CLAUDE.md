@@ -1,6 +1,6 @@
 # Project: Hot Wheels News Bot
 
-> A Python script that automatically collects Hot Wheels news from autoevolution.com, translates them to Russian, summarizes, and posts to a Telegram channel.
+> A Python bot that collects Hot Wheels news from four sources, transcreates each article into Russian with an LLM (not a summary — full text, style-pinned to `ux-guidelines.md`), publishes the body to Telegra.ph and posts a hashtag card with an Instant View preview to a Telegram channel.
 
 ---
 

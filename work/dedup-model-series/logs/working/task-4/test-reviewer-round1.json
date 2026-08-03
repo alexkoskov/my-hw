@@ -1,0 +1,42 @@
+{
+  "status": "needs_improvement",
+  "summary": "All 6 TDD-Anchor scenarios plus the 3 required test updates are present, run against the real news_bot.job() with a real temp DB, and assert actual DB state + exact alert codes/substrings (not mock-call-only checks). The terminality guard and the backstop-actually-blocks tests are genuinely non-vacuous — empirically confirmed by seeding real cross-source pressure that WOULD trip the alternate path if the guard were missing, and by literal bug-injection showing each of those tests fails without the guarding logic. One significant gap: the re-gated empty short-circuit (`not strict and not series`) — explicitly documented in the task as 'the bug the feature fixes' for pop-culture articles with no recognizable car model — has zero integration coverage; reverting that exact line to the old `not strict` check leaves all 13 tests in TestCrossSourceDedup green. Two minor gaps (single-fetch call-count assertion, and an out-of-scope AC2 carry-through fixture not updated to the 4-key shape) round out the findings.",
+  "findings": [
+    {
+      "severity": "major",
+      "category": "missing_coverage",
+      "location": "tests/test_integration.py::TestCrossSourceDedup (no test) / news_bot.py:207 (`if not strict and not series:`)",
+      "issue": "The re-gated empty short-circuit is the specific bug-fix this task calls out by name (task 4.md Edge cases: \"поп-культурная статья имеет пустой strict, но непустые series/pairs — она ОБЯЗАНА пройти парный скан... это и есть баг, который фича чинит\"), and it maps to AC7/AC8 ('Предмет без узнаваемой модели → тема-ключ'). No test in TestCrossSourceDedup exercises an article with EMPTY `strict` (no recognized car model) but NON-EMPTY `series`/`pairs` (a real theme-only `\"*|<series>|B\"` key) reaching the pair scan and matching. I verified this is a genuine gap, not a theoretical one: (1) `model_extractor.extract_fingerprint` on a real pop-culture-only title (e.g. a Stranger Things SDCC piece with no car model) does produce `{'strict': [], 'series': ['stranger things'], 'pairs': ['*|stranger things|B']}` — the scenario is reachable through real extraction, not just synthetic fixtures; (2) I reverted `news_bot.py`'s re-gate line from `if not strict and not series:` back to the old buggy `if not strict:` and reran `pytest tests/test_integration.py::TestCrossSourceDedup -q` — all 13 tests still passed. The single most important line this task adds (the fix for the pop-culture-no-model short-circuit bug) currently has no regression protection: a future refactor could silently reintroduce the exact bug this feature exists to close and the full suite would stay green. The only empty-`strict` case tested (`test_empty_fingerprint`) uses a fully-mocked ALL-empty fingerprint (`strict` AND `series` both `[]`), which can't distinguish an `and` vs `or` bug in the guard condition since both are false either way. `test_broad_pair_soft_flag_is_terminal` deliberately uses a full-model broad pair (correctly, to make the terminality proof non-vacuous per the anchor's 'даже если car-fingerprint дал бы блок' requirement) — but that means it doesn't cover the theme-only-key path either.",
+      "recommendation": "Add `test_theme_only_pop_culture_flags_no_model` (or similar) to TestCrossSourceDedup: seed a published row via `_seed_published` with `{'strict': [], 'brands': [], 'series': ['stranger things'], 'pairs': ['*|stranger things|B']}`; feed a new article whose REAL title/paragraphs contain no recognizable car brand but do mention 'Stranger Things' (verified via extract_fingerprint to actually produce `strict=[]`, `pairs=['*|stranger things|B']` — don't mock the extractor here, this is exactly the case that must go through real extraction). Assert: (a) article publishes (`count_pending() == 1`), (b) exactly one `[E014]` call whose body references the matched theme, (c) no `[E015]`/`[E016]`. This directly pins the re-gate line — delete/revert it and this new test must fail while the rest of the suite stays green, which is the point. If the lexicon has a distinctive-tier theme-only case too (event/franchise with no model, tier D), add a companion block-path test for AC3/AC7 symmetry."
+    },
+    {
+      "severity": "minor",
+      "category": "missing_coverage",
+      "location": "tests/test_integration.py::TestCrossSourceDedup (no test) / news_bot.py:171-176, 214-215 (`_fetch_dedup_candidates` reuse)",
+      "issue": "Tech-spec and task 4.md both call out 'один 30-дневный fetch кандидатов ... без второго SQL round-trip' as an explicit requirement (Decision: single fetch shared by both rules). No test asserts this — none of the new/updated tests spy on or count calls to `pending_repo.list_recent_pending_fingerprints` / `list_recent_published_fingerprints` to confirm exactly one invocation of each per gate call when both rules run in the same tick (e.g. the pair-pass-falls-through-to-backstop scenario, which is the one case that actually exercises both code paths in one call and therefore the only place a regression to two round-trips would show up).",
+      "recommendation": "In `test_pair_pass_falls_through_to_backstop_block` (the only scenario that reaches both Rule 1 and Rule 2 in the same call), wrap the repo functions with `@patch('news_bot.pending_repo.list_recent_pending_fingerprints', wraps=pending_articles_repo.list_recent_pending_fingerprints)` and the published equivalent, then add `mock_pending_fp.assert_called_once()` / `mock_published_fp.assert_called_once()` after `news_bot.job()`. This pins the 'single 30-day fetch, 7-day subset derived in Python' AC as an actual regression guard instead of an unverified code comment."
+    },
+    {
+      "severity": "minor",
+      "category": "missing_coverage",
+      "location": "tests/test_integration.py:1731 (TestFingerprintCarryThrough::test_pending_to_published_roundtrip) — outside Task 4's file scope but same AC",
+      "issue": "Not part of TestCrossSourceDedup and not named in Task 4's TDD Anchor, so this may belong to another task, but flagging since no task in the tech-spec's Wave list appears to explicitly own it either. This test still round-trips the legacy 2-key `{'strict': [...], 'brands': [...]}` fixture through `move_to_published`, even though the tech-spec's Testing Strategy explicitly lists 'AC2 carry-through: pairs/series survive move_to_published' as a required integration assertion. Since the JSON carry-through path itself wasn't touched by this diff and the storage is opaque-blob generic, risk is low, but AC2 is not verified for the new `series`/`pairs` keys specifically anywhere in the suite.",
+      "recommendation": "Update the fixture in `test_pending_to_published_roundtrip` to the 4-key shape (`'series': ['k-pop demon hunters'], 'pairs': ['porsche 911|k-pop demon hunters|D']`) and confirm the final `assertEqual` still round-trips those keys byte-for-byte. Small change, closes an explicit tech-spec AC that's currently unverified for the new keys. If this is judged out of Task 4's scope, route it to whichever task/round is closing out AC2 for this feature."
+    }
+  ],
+  "metrics": {
+    "filesReviewed": 3,
+    "litmusTest": {
+      "checked": 13,
+      "passed": 13,
+      "failed": 0
+    },
+    "coverageAssessment": "adequate",
+    "pyramidBalance": {
+      "unit": 0,
+      "integration": 13,
+      "e2e": 0,
+      "assessment": "healthy"
+    }
+  }
+}

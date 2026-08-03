@@ -1,0 +1,50 @@
+{
+  "status": "needs_improvement",
+  "summary": "All three round-1 findings are genuinely resolved, confirmed via mutation testing (not just eyeballing). (1) The empty short-circuit re-gate (`if not strict and not series`) is now pinned: reverting it to the old `if not strict` causes exactly `test_theme_only_pop_culture_not_short_circuited` to fail (0 calls instead of 1 on the fetch spies) while the other 14 TestCrossSourceDedup tests stay green — confirming the fixer's own stated rationale that the flag-path test (`test_theme_only_pop_culture_flags_no_model`) alone does NOT pin the re-gate (it still passes under the same mutation, because the pair-rule scan runs first and masks the difference whenever the toggle is on) and that the fetch-spy control-flow test is the real pin. (2) The single-30-day-fetch requirement is genuinely pinned by `assert_called_once()` on wrapped spies in `test_pair_pass_falls_through_to_backstop_block` — verified `_fetch_dedup_candidates` is the only call site of both repo functions in news_bot.py, so the assertion is watching the real production code path, not a mock artifact; a regression that removed the `if candidates is None` reuse guard in Rule 2 would double the call count and fail this test. (3) `test_pending_to_published_roundtrip_with_pairs` asserts full 4-key dict equality against the raw published_articles JSON column (not a subset check) — genuinely pins AC2 carry-through for the new `series`/`pairs` keys. The refactor (helper extraction into `_pair_match`/`_pair_rule_verdict`/`_set_overlap_backstop_verdict`) did not weaken or remove any existing assertion, and mocking levels are unchanged from round 1 (external-IO boundary mocks only, consistent with the established pattern). However, the refactor introduced NEW previously-untested logic to satisfy the round-1 single-fetch fix: `_set_overlap_backstop_verdict` now derives its 7-day subset from the 30-day fetch via a manual Python lexical string-date cutoff comparison, replacing the old trusted SQL-level `days=7` windowing. I mutation-tested this (neutralized the cutoff check to a no-op) and all 28 tests in the file still passed — nothing currently exercises the 7-day/30-day boundary, because every test seeds candidates via `_seed_published`, which always inserts at DB-default `CURRENT_TIMESTAMP` (i.e. 'now'), so every seeded candidate is always inside both windows. This is a new, unpinned gap in core dedup logic, not one of the three round-1 items, and it is what keeps this round at needs_improvement rather than passed.",
+  "findings": [
+    {
+      "severity": "major",
+      "category": "missing_coverage",
+      "location": "news_bot.py:1046-1057 (`_set_overlap_backstop_verdict` cutoff-date filter) / tests/test_integration.py::TestCrossSourceDedup (no test)",
+      "issue": "New logic introduced by this round's refactor to satisfy round-1's 'single fetch' finding: the backstop now derives its 7-day candidate subset from the shared 30-day fetch via a manual Python lexical comparison (`cutoff = (datetime.now(timezone.utc) - timedelta(days=7)).strftime(...)`; `if not ts or str(ts) < cutoff: continue`). Before this round, the 7-day window was enforced entirely inside SQL (`WHERE fetched_at >= datetime('now', ? || ' days')`), a simple, already-proven pattern. This new date-math is a fresh source of potential bugs (wrong format string, off-by-one, timezone mismatch between the `fetched_at`/`published_at` column format and the constructed cutoff string) and it has zero test coverage. I confirmed this by mutation: replacing the cutoff check with `if False: continue` (i.e. removing the 7-day filter entirely, so the backstop compares against ALL 30-day candidates instead of the intended 7-day subset) — all 28 tests in tests/test_integration.py, including all 15 in TestCrossSourceDedup, still passed. Root cause: every candidate-seeding helper (`_seed_published`) inserts rows at the DB's default `CURRENT_TIMESTAMP`, so every seeded row is always 'now' — no test ever plants a candidate old enough to sit inside the 30-day pair-rule window but outside the 7-day backstop window. A future bug here would silently widen the backstop's window (comparing against candidates that should have aged out, causing false-positive blocks) or collapse it to near-zero (silently disabling backstop dedup), and the entire suite would stay green.",
+      "recommendation": "Add a boundary test to TestCrossSourceDedup, e.g. `test_backstop_ignores_candidates_older_than_7_days`: call `self._seed_published(...)` with a candidate fingerprint that has NO shared pair with the new article but 100% strict/brand overlap (same shape as `test_hard_block_path`'s seed), then directly `UPDATE published_articles SET published_at = datetime('now', '-10 days') WHERE link=?` via a raw sqlite3 connection to push it outside the 7-day window but keep it inside 30 days. Feed a new article with the same cars but no recognised series (so the pair rule passes-through). Assert the article PUBLISHES with no E014/E015 (backstop correctly excluded the 10-day-old candidate). Add a companion case with a candidate at e.g. `-3 days` (inside 7-day window) using the same seed shape, asserting it STILL blocks — this proves the boundary isn't accidentally excluding everything, only genuinely stale rows. Together these two pin the new date-cutoff derivation that replaced the old SQL-level windowing."
+    }
+  ],
+  "roundOneFindingsVerified": [
+    {
+      "originalSeverity": "major",
+      "originalIssue": "Empty short-circuit re-gate (`if not strict and not series`) had zero regression coverage; reverting to the old buggy `if not strict` left the whole TestCrossSourceDedup suite green.",
+      "verificationResult": "resolved",
+      "verificationMethod": "Live mutation test: reverted news_bot.py's re-gate line from `if not strict and not series:` to `if not strict:`, reran `pytest tests/test_integration.py::TestCrossSourceDedup -v`. Result: exactly 1 failure — `test_theme_only_pop_culture_not_short_circuited` (AssertionError: 'list_recent_pending_fingerprints' expected called once, called 0 times). The other 14 tests, including `test_theme_only_pop_culture_flags_no_model`, stayed green under the same mutation — confirming the fixer's documented rationale that only the fetch-spy control-flow test pins the re-gate line (the flag-path test's outcome is fully determined by the pair-rule scan, which runs before the re-gate and is unaffected by this mutation). Restored the original file afterward; full suite (28 tests) reconfirmed green."
+    },
+    {
+      "originalSeverity": "minor",
+      "originalIssue": "No test asserted the single 30-day fetch (no second SQL round-trip) required by tech-spec Decision 5.",
+      "verificationResult": "resolved",
+      "verificationMethod": "Confirmed via grep that `pending_repo.list_recent_pending_fingerprints`/`list_recent_published_fingerprints` are called from exactly one place in news_bot.py (`_fetch_dedup_candidates`), so `test_pair_pass_falls_through_to_backstop_block`'s `wraps=`-spied `assert_called_once()` on both functions is watching the real production call site, not a mock-only artifact. The scenario is the one case (pair-rule pass -> backstop) that actually exercises both rules per gate call, so it is the correct — and only — place this regression would surface. Test passes; reasoning about Rule 2's `if candidates is None:` reuse guard confirms a regression that dropped that guard would double the call count and fail this assertion."
+    },
+    {
+      "originalSeverity": "minor",
+      "originalIssue": "AC2 carry-through (series/pairs surviving pending->published) not verified for the new 4-key fingerprint shape.",
+      "verificationResult": "resolved",
+      "verificationMethod": "Read `test_pending_to_published_roundtrip_with_pairs`: inserts a real 4-key fingerprint via `insert_pending`, round-trips through `update_staged` -> `move_to_published`, then reads the raw `published_articles.model_fingerprint` JSON column directly via sqlite3 and asserts full dict equality (`assertEqual(_json.loads(stored_raw[0]), fp)`) against the original 4-key dict. This is a whole-shape assertion — any dropped, renamed, or reordered-and-corrupted key would fail it, not a subset check."
+    }
+  ],
+  "metrics": {
+    "filesReviewed": 2,
+    "litmusTest": {
+      "checked": 16,
+      "passed": 16,
+      "failed": 0
+    },
+    "coverageAssessment": "adequate",
+    "pyramidBalance": {
+      "unit": 0,
+      "integration": 16,
+      "e2e": 0,
+      "assessment": "healthy"
+    },
+    "mutationChecksRun": 2,
+    "mutationChecksConfirmedGap": 1
+  }
+}

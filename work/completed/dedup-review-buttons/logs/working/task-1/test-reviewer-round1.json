@@ -1,0 +1,29 @@
+{
+  "reviewer": "test-reviewer",
+  "task": 1,
+  "round": 1,
+  "verdict": "changes_required",
+  "findings": [
+    {
+      "severity": "high",
+      "file": "tests/test_pending_articles_repo.py",
+      "line": "1340-1359 (TestConnectBusyTimeout::test_connect_sets_busy_timeout), 1362-1420 (TestConcurrentWriters::test_two_writers_no_database_locked)",
+      "issue": "Litmus test fails: both tests pass identically with the diff reverted. Python's stdlib `sqlite3.connect()` already defaults `timeout=5.0` (busy_timeout=5000ms) even when no `timeout` kwarg is passed at all. Verified empirically: temporarily reverted pending_articles_repo._connect() to the pre-diff `sqlite3.connect(news_bot.DB_FILE)` (no timeout arg) and re-ran only these two tests — both still PASSED (`PRAGMA busy_timeout` still reads 5000; the two-writer scenario still completes without `database is locked`). So the code change under review (`timeout=5.0` added to `_connect()`) is behaviorally a no-op on this Python/sqlite3 version, and these two tests — the ones specifically meant to lock in the task's central deliverable (busy-timeout fix for the new concurrent writer) — provide zero regression protection for it: if someone deletes the `timeout=5.0` parameter tomorrow, both tests stay green. This also means the task's own premise (tech-spec Decision 4 / task 1 description: 'голый sqlite3.connect(...) без busy_timeout ... падает мгновенно') is factually incorrect for Python's sqlite3 module — worth a separate note back to tech-spec, outside test-reviewer scope.",
+      "fix": "Add a call-contract test that actually depends on the code line, independent of Python's default: patch/spy on `repo.sqlite3.connect` (e.g. `with patch.object(repo.sqlite3, 'connect', wraps=repo.sqlite3.connect) as spy: conn = repo._connect(); conn.close()`) and assert `spy.call_args.kwargs.get('timeout') == 5.0`. This fails if the parameter is ever removed, closing the regression gap that the PRAGMA-read and two-writer tests cannot close on their own. Keep the existing two tests (they're still valid behavioral checks, just not diff-specific) and add this one alongside them in TestConnectBusyTimeout."
+    },
+    {
+      "severity": "medium",
+      "file": "tests/test_pending_articles_repo.py",
+      "line": "1407",
+      "issue": "TestConcurrentWriters::test_two_writers_no_database_locked uses `time.sleep(0.3)` to try to ensure the cancel-writer thread has reached its blocking write (INSERT inside skip_pending) before `locker.commit()` releases the lock. `writer_started.set()` only confirms the thread has started, not that it has reached the contended statement. If the sleep window were ever insufficient (slow/loaded CI), the writer could pass through with no actual lock contention at all, and the test would still report success (errors==[], correct final state) without ever exercising the busy_timeout wait path it claims to cover — a silent loss of coverage rather than a flaky failure, but it does mean the test isn't structurally guaranteed to test what it says it tests. The task's own review focus explicitly asks for a deterministic (sleep-free) concurrency test.",
+      "fix": "Replace the sleep with a deterministic hook: wrap/patch the cancel-writer's connection so the write statement signals a `threading.Event` (e.g. via a subclassed execute() or sqlite3 trace callback) right before executing the INSERT, then have the main thread `event.wait()` on that signal instead of sleeping before calling `locker.commit()`. This removes the wall-clock assumption and guarantees the intended interleaving (writer parked on the lock) happens on every run."
+    },
+    {
+      "severity": "low",
+      "file": "tests/test_pending_articles_repo.py",
+      "line": "1370",
+      "issue": "Docstring for TestConcurrentWriters says the negative control (timeout=0 raising 'database is locked') is 'not run, to keep the test deterministic' — but per this review's finding above, that control run would actually be a genuinely useful regression check today (since the positive test doesn't distinguish fixed/unfixed states). As currently structured, no test in the suite ever demonstrates the failure mode the fix is meant to prevent.",
+      "fix": "Consider adding the negative-control scenario as an explicit (skipped-by-default or clearly-marked) test using an explicit `timeout=0` connection reproducing `sqlite3.OperationalError: database is locked`, so there is at least one test in the repo that proves the failure mode exists and that some code path avoids it — even though, per the high finding above, that code path turns out to be sqlite3's own default rather than this diff's change."
+    }
+  ]
+}

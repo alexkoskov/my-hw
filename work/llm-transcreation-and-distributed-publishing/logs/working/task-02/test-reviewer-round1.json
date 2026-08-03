@@ -1,0 +1,69 @@
+{
+  "task": "02",
+  "round": 1,
+  "reviewer": "test-reviewer",
+  "skill": "test-master",
+  "verdict": "approved",
+  "changes_required": false,
+  "summary": "tests/test_compute_publish_slots.py contains all 13 TDD-anchor tests plus one helper test for module-level constants. Tests are pure unit tests, fast (0.02s for 14 tests), assert real behaviour (datetime values, list lengths, exception types) not mock interactions, isolated, and named clearly. No mocking required — module is pure stdlib. Each test catches a distinct failure mode. No bad-test smells (no assertEqual(True,True), no zero-assertion paths, no excessive mocking). One minor observation about coverage gap.",
+  "findings": [
+    {
+      "id": "TR-1",
+      "severity": "minor",
+      "category": "Coverage",
+      "location": "tests/test_compute_publish_slots.py — boundary at exactly window_end",
+      "issue": "The strict `now >= window_end_dt` early-return is tested at now=21:00 (well past) but not at the exact boundary now=20:00. Per AC3 (`ни одна публикация не происходит после 20:00`) the boundary itself is exclusive. A regression that flipped `>=` to `>` would slip past current tests.",
+      "recommendation": "Add `test_now_exactly_at_window_end` asserting compute_publish_slots(5, msk(...,20,0)) returns ([], 5). Optional — the existing test_now_after_window_end already covers the spirit, and test_n_eleven_at_floor covers the upper edge inside the window (last slot at 19:40, not 20:00).",
+      "action": "optional"
+    }
+  ],
+  "test_quality_checklist": {
+    "tests_real_behavior_not_mocks": true,
+    "no_excessive_mocking": true,
+    "tests_independent_no_shared_state": true,
+    "fast_unit_test_speed": true,
+    "clear_test_names": true,
+    "one_concern_per_test": true,
+    "no_redundant_tests": true,
+    "edge_cases_covered": true,
+    "every_test_earns_its_place": true
+  },
+  "tdd_anchor_coverage": {
+    "test_n_zero_returns_empty": "present",
+    "test_n_one_at_window_start": "present",
+    "test_n_four_evenly_spaced": "present",
+    "test_n_seven_hourly": "present",
+    "test_n_ten_interval_42min": "present",
+    "test_n_eleven_at_floor": "present",
+    "test_n_fifteen_capped_at_eleven": "present",
+    "test_n_twenty_capped_at_eleven": "present",
+    "test_restart_at_16_n5": "present",
+    "test_restart_at_19_50_n5": "present",
+    "test_now_after_window_end": "present",
+    "test_naive_datetime_raises": "present",
+    "test_returned_slots_preserve_tzinfo": "present"
+  },
+  "test_pyramid_alignment": "correct — pure unit tests for a pure stdlib function; no need for integration/E2E at this layer (integration coverage is task 12)",
+  "execution_results": {
+    "command": "pytest tests/test_compute_publish_slots.py -v",
+    "passed": 14,
+    "failed": 0,
+    "duration_seconds": 0.02
+  },
+  "good_practices_observed": [
+    "tz-aware datetime built without pytz dep — keeps unit tests self-contained",
+    "Helper `msk(...)` wrapper reduces fixture boilerplate without hiding intent",
+    "Each test docstring states inputs and expected outputs — reads like a spec table",
+    "Loop-based equality check on intervals (test_n_ten_interval_42min, test_n_eleven_at_floor) catches off-by-one drift",
+    "test_returned_slots_preserve_tzinfo asserts utcoffset equality, not just tzinfo identity — robust against equivalent-but-not-identical tzinfo objects",
+    "Module-constants test guards against rename/value drift"
+  ],
+  "ac_traceability": {
+    "user-spec AC3 (window)": "covered: test_n_seven_hourly (last slot 19:00), test_n_eleven_at_floor (last slot 19:40)",
+    "user-spec AC4 (min 40min)": "covered: test_n_eleven_at_floor (interval=40)",
+    "user-spec AC5 (max 11/day)": "covered: test_n_fifteen_capped_at_eleven, test_n_twenty_capped_at_eleven",
+    "user-spec AC6 (adaptive)": "covered: test_restart_at_16_n5 (interval=48)",
+    "user-spec AC7 (restart recompute)": "covered: test_restart_at_16_n5, test_restart_at_19_50_n5",
+    "user-spec AC8 (TZ invariant)": "covered: test_naive_datetime_raises, test_returned_slots_preserve_tzinfo"
+  }
+}

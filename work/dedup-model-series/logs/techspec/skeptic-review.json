@@ -1,0 +1,32 @@
+{
+  "status": "approved",
+  "summary": "Checked 50 factual claims across tech-spec.md against the codebase; 0 mirages. Every referenced symbol, file, line-anchor, JSON-column, dependency pattern, deploy FILES entry and test exists exactly as described. The single hard file:line in the tech-spec (news_bot.py:990-994 same-source skip) is correct. All proposed-new symbols (DEDUP_SERIES_ENABLED, json_extract in backfill, SERIES_LEXICON, series/pairs keys) are correctly framed as additions, not existing-code claims.",
+  "findings": [],
+  "stats": {
+    "total_claims_checked": 50,
+    "confirmed": 50,
+    "mirages_found": 0,
+    "verified_claims": [
+      "model_extractor.extract_fingerprint() returns {'strict','brands'} (model_extractor.py:223-287, empty-return :242)",
+      "extract_fingerprint Pass 1 _MODEL_AFTER_BRAND_RE.finditer :248, Pass 2 _UPPERCASE_BRANDS_RE.finditer :279",
+      "model_extractor.similarity() :290-325; Fingerprint=Dict[str,List[str]] :45; _LEXICON frozenset :69-76",
+      "news_bot._check_cross_source_dedup :933-1025",
+      "empty-fp short-circuit 'if not strict: return (pass,None)' news_bot.py:975-980",
+      "same-source skip 'if new_source and row['source_name']==new_source: continue' news_bot.py:990-994",
+      "candidate set = list_recent_pending/published_fingerprints(conn,7) news_bot.py:982-985",
+      "_DEDUP_BLOCK_THRESHOLD=0.50 :925, _DEDUP_FLAG_THRESHOLD=0.30 :930",
+      "dedup gate wiring in job() news_bot.py:2130-2247; block/flag/except branches + insert_pending(row) :2262",
+      "block branch calls admin_alerts.alert_cross_source_blocked(link, match['link'], overlap_pct) :2174-2176",
+      "DB_FILE env-read at import (news_bot.py:116) — pattern DEDUP_SERIES_ENABLED will mirror",
+      "mark_processed :684, _resolve_source_name :1203",
+      "_PENDING_JSON_COLS incl 'model_fingerprint' :133-134; _PUBLISHED_JSON_COLS=('model_fingerprint',) :138",
+      "list_recent_pending_fingerprints(conn,days=7) :835 + list_recent_published_fingerprints(conn,days=7) :861 (window param exists)",
+      "insert_pending _dumps(model_fingerprint) :262; move_to_published carries model_fingerprint :617/:631-635; ALTER ...model_fingerprint TEXT :211-212",
+      "admin_alerts.alert_cross_source_blocked [E015] :461-472 with 'Заблокирован дубль' anchor :468; E014 :427-455; E016 :478-494",
+      "backfill_fingerprints.py SELECT '...model_fingerprint IS NULL' :243-249; backfill_one skip-guard 'if row.get(model_fingerprint) is not None: return skipped' :164",
+      "backfill _days_in_range clamp [1,90] :100-112 (permits 30); default=14 :125; extract_fingerprint :197",
+      "deploy FILES arrays contain model_extractor/admin_alerts/backfill: deploy.sh:54,56,57 + deploy.yml:140,142,143 + deploy_test.yml:111,113,114",
+      "tests exist: test_within_source_not_deduped (test_integration.py:1171), test_empty_fingerprint :1240, TestCrossSourceDedup :860, TestSqlAudit.test_parameterized_queries_only (test_pending_articles_repo.py:1290/1294)"
+    ]
+  }
+}

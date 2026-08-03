@@ -1,0 +1,67 @@
+{
+  "validator": "task-validator",
+  "batch": [1, 2, 3, 4, 5],
+  "status": "changes_required",
+  "findings": [
+    {
+      "severity": "critical",
+      "category": "structure",
+      "task": 2,
+      "section": "end of file / Post-completion",
+      "issue": "The task file ends with stray tool-call artifact markup: literal `</content>` (line 148) and `</invoke>` (line 149) tags after the Post-completion checklist. This is leftover generation debris, not valid task content, and indicates the file was corrupted during creation. Every other task in the batch ends cleanly at the last Post-completion bullet.",
+      "fix": "Delete lines 148-149 (`</content>` and `</invoke>`). The file must end after the final Post-completion checklist item `- [ ] Обновить user-spec/tech-spec если что-то изменилось`."
+    },
+    {
+      "severity": "major",
+      "category": "carry-forward",
+      "task": 1,
+      "section": "TDD Anchor / Acceptance Criteria",
+      "issue": "tech-spec feature AC 'concurrent writer test shows no database is locked' and the tech-spec Testing Strategy integration test 'Concurrency: a publish-loop writer and a cancel writer against the same DB with busy_timeout -> no database is locked' are not carried into any Wave 1-3 task. Task 1 (busy_timeout owner) only asserts the PRAGMA value (test_connect_sets_busy_timeout); no task actually exercises two concurrent writers to prove the lock is not raised. Since pre-deploy QA (Task 10) only runs existing tests, this named acceptance criterion is effectively unassigned.",
+      "fix": "Add a concurrency integration test to Task 1 (or Task 5, once both writers exist) TDD Anchor + AC: two connections/threads writing to the same news.db under busy_timeout, asserting no `sqlite3.OperationalError: database is locked` is raised."
+    },
+    {
+      "severity": "minor",
+      "category": "carry-forward",
+      "task": 4,
+      "section": "TDD Anchor",
+      "issue": "user-spec AC 'в свой слот она не выходит в канал' and tech-spec integration test 1 ('stage pending -> resolve cancel -> ... then drive the slot publish path -> the article is NOT published') are only partially covered. Task 4's cancel test asserts the row leaves pending_articles and lands in processed_news, but no task drives the slot publish path to assert the article is not actually published.",
+      "fix": "Extend a Task 4 (or Task 3) integration test to run the slot publish path after cancel and assert the cancelled article is not published, or explicitly note this end-to-end assertion is owned by pre-deploy QA (Task 10)."
+    },
+    {
+      "severity": "minor",
+      "category": "content",
+      "task": 4,
+      "section": "Context Files",
+      "issue": "The 'Код' subsection lists code files as plain inline text (`news_bot.py` (modify), `tests/test_integration.py` (modify), `pending_articles_repo.py` (read)) instead of markdown links. Tasks 1-3 correctly use `[news_bot.py](../../../news_bot.py)` form. task-creator rule: all Context Files as markdown links.",
+      "fix": "Convert the code file entries to markdown links, e.g. `[news_bot.py](../../../news_bot.py) — modify: add resolve_dedup_callback`."
+    },
+    {
+      "severity": "minor",
+      "category": "content",
+      "task": 5,
+      "section": "Context Files",
+      "issue": "The 'Code' subsection lists `news_bot.py` and `tests/test_integration.py` as plain inline text (with **modify** annotations) instead of markdown links. Inconsistent with the 'all files as markdown links' rule and with Tasks 1-3.",
+      "fix": "Convert the code file entries to markdown links, e.g. `[news_bot.py](../../../news_bot.py) — modify (add _run_review_listener, import threading, main() wiring)`."
+    },
+    {
+      "severity": "minor",
+      "category": "content",
+      "task": 2,
+      "section": "Required Skills / Context Files",
+      "issue": "Project-knowledge and skill links use bare `.claude/...` paths without the `../../../` prefix (e.g. `[project.md](.claude/skills/project-knowledge/references/project.md)`, `[.claude/skills/code-writing/SKILL.md](.claude/skills/code-writing/SKILL.md)`). From the task file directory `work/dedup-review-buttons/tasks/` these relative links do not resolve. Task 1 and Task 3 use the correct `../../../.claude/...` form.",
+      "fix": "Prefix these links with `../../../` so they resolve from the task file location, matching Tasks 1 and 3."
+    },
+    {
+      "severity": "minor",
+      "category": "content",
+      "task": 4,
+      "section": "Context Files",
+      "issue": "Project-knowledge links use bare `.claude/...` paths without the `../../../` prefix (project.md, architecture.md, patterns.md, deployment.md). These do not resolve from the task file directory. Task 3 and Task 5 use the correct `../../../.claude/...` form.",
+      "fix": "Prefix the project-knowledge links with `../../../` so they resolve correctly."
+    }
+  ],
+  "stats": {
+    "tasks_checked": 5,
+    "issues_found": 7
+  }
+}

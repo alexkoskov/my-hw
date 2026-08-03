@@ -1,0 +1,35 @@
+{
+  "status": "needs_improvement",
+  "summary": "Round-2 revision resolves both Round-1 majors in substance and 5 of 6 minors. Major #2 (asymmetric over-block invariant) is fully closed: the calibration now asserts hard asymmetric invariants (3 SDCC dupes MUST hard-block via any_distinctive is True; every not-dupe MUST NOT hard-block via any_distinctive is False). Major #1 (stale/ambiguous calibration bar) is half-closed: the classifier ambiguity is fixed (harness now runs the NEW shares_pair + |D/|B verdict, with a correct rationale for dropping the old similarity _classify), but the numeric bar is now internally CONTRADICTORY across the tech-spec and user-spec. Minors resolved: AC2 carry-through, AC8 both-empty (with explicit stale-mock update), positive backstop-actually-blocks, |D-wins-over-|B (order-independent), split-retain-negative, and the new broad-flag-terminal / no-double-ping assertion. One new major (threshold reconciliation) and one residual minor (backfill --days 30 window not asserted) keep this at needs_improvement — a documentation/acceptance-bar fix, not a strategy redesign.",
+  "findings": [
+    {
+      "severity": "major",
+      "category": "anti_pattern",
+      "location": "Section: Testing Strategy -> Calibration (tech-spec.md:208-219); conflicts with tech-spec.md:261 (tech AC), tech-spec.md:331 (Task 6), tech-spec.md:296-302 (Task 3 fixture), user-spec.md:143 (AC11)",
+      "issue": "The calibration numeric bar is now internally contradictory, so Round-1 Major #1 (stale/ambiguous bar) is only partially resolved. The revised Testing Strategy sets N=6 and aggregate >=5/6, which correctly matches the actual fixture (Task 3 defines 3 SDCC dupes + 3 not-dupes = 6 items). But the tech-spec AC (line 261: 'калибровка >=7/8'), Task 6 (line 331: '>=7/8'), and the approved user-spec AC11 (line 143: 'Классификатор >=7/8') all still demand >=7/8 — unsatisfiable against a 6-item fixture (you cannot score 7 of 6). This also silently lowers an approved user-spec acceptance criterion, yet 'User-Spec Deviations' (tech-spec.md:248-251) still says 'None'. An implementer wiring Task 6 or a pre-deploy QA (Task 10) will hit an impossible/ambiguous gate.",
+      "recommendation": "Reconcile to a single bar in all four places, keeping the hard asymmetric invariants as the non-negotiable gate regardless of the aggregate number. Option A (preserve the approved >=7/8): grow the fixture to 8 probes — add 2 more not-dupe probes (e.g. a broad recurrent car-line cross-source near-miss, and a second same-car-different-series probe) — and set Testing Strategy to N=8 / >=7/8. Option B (adopt >=5/6): update tech-spec AC line 261 and Task 6 line 331 to >=5/6, get user-spec AC11 amended, and add a line under 'User-Spec Deviations' recording the threshold change. Do not leave >=5/6 and >=7/8 both in the document."
+    },
+    {
+      "severity": "minor",
+      "category": "missing_coverage",
+      "location": "Section: Testing Strategy -> Unit tests, backfill bullet (tech-spec.md:186-187)",
+      "issue": "Round-1 minor 'backfill --days 30' is not clearly closed. The backfill unit-test bullet asserts the widened select/skip (rows with a car-fingerprint but no 'pairs' key are re-processed) and idempotency on a second run, but drops the explicit '--days 30 window honoured' assertion that code-research §6 lists. The backfill default is 14 days (code-research §4.3); without a window test a regression that hardcodes/narrows the window would pass unnoticed, and AC10 specifically calls out the 30-day warm.",
+      "recommendation": "Add a unit assertion pinning the window: seed one published row dated ~29 days ago (in-window) and one ~31 days ago (out-of-window), run backfill_fingerprints with --days 30, and assert only the in-window row gains 'pairs'/'series' while the out-of-window row is untouched."
+    }
+  ],
+  "metrics": {
+    "filesReviewed": 3,
+    "litmusTest": {
+      "checked": 14,
+      "passed": 14,
+      "failed": 0
+    },
+    "coverageAssessment": "adequate",
+    "pyramidBalance": {
+      "unit": 4,
+      "integration": 10,
+      "e2e": 0,
+      "assessment": "healthy"
+    }
+  }
+}

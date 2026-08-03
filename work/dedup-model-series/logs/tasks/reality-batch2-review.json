@@ -1,0 +1,33 @@
+{
+  "validator": "reality-checker",
+  "batch": [4, 5, 6],
+  "status": "approved",
+  "findings": [
+    {
+      "severity": "major",
+      "category": "cross-task-integration",
+      "task": 4,
+      "issue": "Task 4's job() block/flag wiring calls admin_alerts.alert_cross_source_blocked(link, match['link'], match['overlap_pct']) (current 3-arg signature, verified at admin_alerts.py:461-472) and alert_cross_source_dupe(...) (current 8-arg signature, verified at admin_alerts.py:427-436). Task 2 (Wave 1) extends alert_cross_source_blocked to render matched pairs, and Task 4's own text says the block branch must 'pass matched pairs to the E015 builder' (match['models']) -- which only compiles/behaves as intended once Task 2's extended signature lands. Task 4 declares depends_on: [1] only, not [2], and hedges with 'if Task 2's signature isn't ready, call with the current signature and reconcile.' Runtime risk is mitigated by wave ordering (Task 2 is Wave 1, fully committed before Wave 2 starts), but the coupling is real and undeclared.",
+      "fix": "Add 2 to Task 4's depends_on (or explicitly note in tech-spec that cross-wave Task 2->Task 4 sequencing is guaranteed by wave order so no depends_on edit is needed) so the E015/E014 call-site contract (which fields 'models' carries for a pair-match vs a set-overlap match) is pinned before Task 4 writes the call site, instead of being resolved ad hoc during Task 4 implementation."
+    },
+    {
+      "severity": "major",
+      "category": "hallucination",
+      "task": 6,
+      "issue": "Task 6 Details/Files section specifies the exact import line to use in tests/test_model_extractor.py: \"from model_extractor import extract_fingerprint, shares_pair\" (+ fixture import). Verified the current file (tests/test_model_extractor.py:24) imports \"from model_extractor import extract_fingerprint, similarity\", and similarity() is called directly (bare name, e.g. tests/test_model_extractor.py:297,315) inside TestSimilarity, which Task 6 explicitly says NOT to touch ('TestSimilarity и тесты извлечения — не трогать'). Following the given import line literally drops `similarity` from the module namespace and breaks TestSimilarity with NameError, contradicting the task's own 'don't touch TestSimilarity' instruction and its own Verification Step (pytest tests/test_model_extractor.py -q must be green).",
+      "fix": "Correct the prescribed import to keep `similarity`: \"from model_extractor import extract_fingerprint, similarity, shares_pair\"."
+    },
+    {
+      "severity": "minor",
+      "category": "hints",
+      "task": 6,
+      "issue": "tests/test_model_extractor.py has a module-level docstring (lines 1-18) that documents test_calibration_accuracy and test_calibration_real_pair_must_pass by name as part of the file's contents list. Task 6 replaces those two functions with test_calibration_pair_tier_accuracy / test_calibration_sdcc_dupes_hard_block / test_calibration_not_dupes_never_hard_block but 'What to do' / 'Details' never mention updating this module docstring, so it will describe removed functions after the task lands.",
+      "fix": "Add a step to Task 6 to update the module docstring's bullet list to reference the new calibration test names instead of the removed test_calibration_accuracy / test_calibration_real_pair_must_pass."
+    }
+  ],
+  "stats": {
+    "tasks_checked": 3,
+    "claims_verified": 36,
+    "issues_found": 3
+  }
+}

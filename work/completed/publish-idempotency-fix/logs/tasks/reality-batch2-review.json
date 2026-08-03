@@ -1,0 +1,47 @@
+{
+  "validator": "reality-checker",
+  "batch": [4, 5, 6],
+  "status": "changes_required",
+  "findings": [
+    {
+      "severity": "critical",
+      "category": "hallucination",
+      "task": 5,
+      "issue": "Task 5 instructs to assert `self.mock_teaser.call_args.kwargs.get('link') == link_fresh`, but `send_telegraph_teaser` is defined as `def send_telegraph_teaser(telegraph_url, source_url)` (news_bot.py:793) and is called as `send_telegraph_teaser(telegraph_url, link)` (news_bot.py:1237) — both arguments are passed positionally, not as keyword args. There is no keyword argument named `link` in this function. The assert as written will always return None (kwargs dict is empty for positional calls), silently passing even on wrong link. The correct litmus is `self.mock_teaser.call_args.args[1] == link_fresh` (checking the second positional arg, which is `source_url` carrying the article link).",
+      "fix": "Replace `self.mock_teaser.call_args.kwargs.get('link')` with `self.mock_teaser.call_args.args[1]` in the Task 5 assert. The second positional arg to `send_telegraph_teaser` is `source_url`, which receives the article link. Verify with: `self.assertEqual(self.mock_teaser.call_args.args[1], link_fresh)`."
+    },
+    {
+      "severity": "major",
+      "category": "feasibility",
+      "task": 4,
+      "issue": "Task 4 implementation hints state the minimum re-stage column set is `link, source_name, title, ru_title, paragraphs`, with `ru_title` listed as required to satisfy a `NOT NULL` constraint. However, `pending_articles.ru_title` is nullable (TEXT with no NOT NULL, schema line 55). The actual mandatory columns without defaults are: `link` (PK), `source_name` (NOT NULL), `title` (NOT NULL), `paragraphs` (NOT NULL). Including `ru_title` in the INSERT is correct for the test to work (because `move_to_published` step 0 reads `ru_title` from pending for the published row, and `published_articles.ru_title` IS NOT NULL), but the reasoning in the hints is misleading — `ru_title` is required in the re-stage row not because pending has a NOT NULL constraint on it but because `published_articles.ru_title NOT NULL` will be violated if the pending row has `ru_title=NULL`. The edge-case note in the task is actually correct, but the implementation hints attribute the constraint to the wrong table.",
+      "fix": "Clarify in implementation hints: `ru_title` must be non-NULL in the re-staged pending row because `published_articles.ru_title` is `NOT NULL`, and `move_to_published` copies `ru_title` from pending. With `INSERT OR IGNORE` active, if `ru_title` in the pending row is NULL, the INSERT is silently ignored (no IntegrityError), but the test behaviour may be confusing. Include `ru_title` in the re-stage SQL with a non-empty value."
+    },
+    {
+      "severity": "major",
+      "category": "hints",
+      "task": 5,
+      "issue": "Task 5 implementation hints include the full structural template for the new test: `_set_rss_entries([])` → pre-stage → `with freeze_time(...): with patch('news_bot.transcreate_via_claude') as mock_claude: ...` → `news_bot.job()` → asserts. This is a step-by-step algorithm with prescribed code structure. Per validation checklist category G, hints should point to patterns and approaches, not prescribe the solution. The `side_effect = [_make_claude_result(['First paragraph.', 'Second paragraph.'], title_prefix='Fresh')]` prescription in step 5 is similarly over-specified.",
+      "fix": "Replace step-by-step prescriptions with pattern references: point to `test_full_happy_path_three_articles_three_slots_three_publishes` (line 282) as the structural template without copying its exact code structure into the hints."
+    },
+    {
+      "severity": "minor",
+      "category": "tdd",
+      "task": 5,
+      "issue": "The existing test `test_full_happy_path_three_articles_three_slots_three_publishes` (line 346) already demonstrates that `mock_teaser.call_count` is used as the assertion pattern for the teaser mock in this class — it does not use `call_args`. Task 5's litmus assertion for `link_fresh` requires checking `call_args.args[1]` (see critical finding above). The task is correct in flagging `call_args` as necessary for litmus-grade assertion, but the described API is wrong. When corrected to `.args[1]`, the approach is sound.",
+      "fix": "After fixing the critical finding (use .args[1] instead of .kwargs.get('link')), also add `self.mock_teaser.assert_called_once()` before the call_args check for clean failure messaging."
+    },
+    {
+      "severity": "minor",
+      "category": "feasibility",
+      "task": 6,
+      "issue": "Task 6 output path is specified as `logs/working/wave-3-code-audit.md` (relative to feature folder), which resolves to `/workspaces/debian-2/my-hw/work/publish-idempotency-fix/logs/working/wave-3-code-audit.md`. The `logs/working/` directory exists but is currently empty. This is consistent within the feature folder structure. However, the `Details` section says 'Создать директорию если не существует' — the directory already exists, so this instruction is vacuously correct. No blocker.",
+      "fix": "No change needed. The path is correct. Remove the instruction to create the directory since it already exists."
+    }
+  ],
+  "stats": {
+    "tasks_checked": 3,
+    "claims_verified": 31,
+    "issues_found": 5
+  }
+}

@@ -1,0 +1,61 @@
+{
+  "reviewer": "test-reviewer",
+  "task": 5,
+  "round": 1,
+  "verdict": "approved_with_comments",
+  "summary": "All 5 TDD-anchor scenarios plus 5 bonus scenarios (10 tests total in TestReviewListener) pass, and the full suite (65/65 in test_integration.py, 1324/1324 project-wide) is green. Tests are genuinely synchronous/deterministic: Bot is mocked in every case, the outer loop is driven in-thread via a threading.Event stop-seam (no real threading.Thread spawned except in the gate test, where threading.Thread itself is mocked), backoff constants are patched to 0, and the whole class runs in ~1-2s with zero real sleeps/sockets. Mutation testing confirms 3 of the 4 requested litmus scenarios are caught (admin gate bypass, offset never advancing, edit-on-ignored-press); the 4th (409/error hot-loop) is NOT caught — removing the backoff/sleep call entirely from either the Conflict branch or the generic-Exception branch leaves every test green, because both 'backoff' tests assert only on log-message text, never on the backoff call itself. This is a real, non-blocking gap against an explicit task requirement ('не busy-loop-ить на повторяющейся ошибке').",
+  "findings": [
+    {
+      "severity": "major",
+      "category": "missing_coverage",
+      "location": "tests/test_integration.py::TestReviewListener.test_review_listener_conflict_409_logged_with_backoff and test_review_listener_error_does_not_propagate",
+      "issue": "Neither test asserts that a backoff/sleep actually happens on a repeating getUpdates failure — they only assertLogs(...ERROR...) and check substrings in the log line ('409'+'one' / 'review listener'). Verified by mutation: deleting the '_review_listener_sleep(stop_event, REVIEW_LISTENER_CONFLICT_BACKOFF_SECONDS)' call in the Conflict except-branch, and separately deleting '_review_listener_sleep(stop_event, REVIEW_LISTENER_ERROR_BACKOFF_SECONDS)' in the generic Exception except-branch, each leaves the corresponding test (and the full ReviewListener class) 100% green. A regression that turns a repeating-error path into a hot busy-loop would ship undetected. The production code today DOES call the backoff correctly (confirmed by reading news_bot.py:849-875) — this is a test-assertion gap, not a current behavior bug.",
+      "recommendation": "In both tests, patch 'news_bot._review_listener_sleep' (or 'news_bot.time.sleep' / assert on stop_event.wait call count) as a spy and assert it was invoked with the expected backoff constant (REVIEW_LISTENER_CONFLICT_BACKOFF_SECONDS / REVIEW_LISTENER_ERROR_BACKOFF_SECONDS) once per triggered failure, in addition to the existing log assertions. Re-run the same two mutations after the fix to confirm they now fail."
+    }
+  ],
+  "litmusResults": {
+    "admin_gate_bypass_in_handler": {
+      "caught": true,
+      "method": "Mutated _handle_review_update to hardcode from_user_id=424242 instead of reading callback_query.from_user.id. test_ignored_press_answers_empty_and_never_edits and test_callback_letter_maps_to_full_word both failed (edit_message_text awaited when it should not have been)."
+    },
+    "offset_never_advancing": {
+      "caught": true,
+      "method": "Mutated _run_review_listener to drop 'offset = update.update_id + 1'. test_review_listener_handler_error_advances_offset_and_survives failed: seen_offsets == [None, None] instead of [None, 8]."
+    },
+    "edit_called_on_ignored_press": {
+      "caught": true,
+      "method": "Mutated _handle_review_update to skip the 'status_text is None' early-return (ignored-press guard). test_ignored_press_answers_empty_and_never_edits failed (raised TypeError concatenating None, then would have failed assert_not_awaited regardless)."
+    },
+    "409_hot_loop": {
+      "caught": false,
+      "method": "Mutated both the Conflict-branch and generic-Exception-branch backoff calls away (replaced with a bare 'continue'). test_review_listener_conflict_409_logged_with_backoff and test_review_listener_error_does_not_propagate both still passed — neither asserts the sleep/backoff call happened, only that an ERROR was logged."
+    }
+  },
+  "tddAnchorCoverage": {
+    "test_review_listener_starts_when_enabled_and_numeric_admin": "present, passes",
+    "test_review_listener_not_started_when_flag_off": "present, passes",
+    "test_review_listener_not_started_when_admin_non_numeric": "present, passes",
+    "test_review_listener_error_does_not_propagate": "present, passes (see 409_hot_loop litmus gap above)",
+    "test_review_listener_dispatches_admin_cancel": "present, passes; verifies edit_message_text called with reply_markup=None and appended status text, answer_callback_query with correct text, INFO log with action+link+status, and real DB state (pending row gone, not published) via a spy-wrapped real resolve_dedup_callback"
+  },
+  "bonusTests": [
+    "test_review_listener_conflict_409_logged_with_backoff",
+    "test_review_listener_handler_error_advances_offset_and_survives",
+    "test_callback_grammar_rejects_malformed_data (10 malformed-data cases + no-callback_query update)",
+    "test_callback_letter_maps_to_full_word",
+    "test_ignored_press_answers_empty_and_never_edits"
+  ],
+  "determinism": {
+    "assessment": "pass",
+    "notes": "No real threading.Thread is started in any test except test_review_listener_starts_when_enabled_and_numeric_admin, where threading.Thread itself is patched to a MagicMock. _run_review_listener is invoked directly (synchronously, in the test's own thread) with a threading.Event stop-seam that fake_get_updates closures set after 1-2 iterations. Bot is always patched to a MagicMock/AsyncMock — zero real network I/O. Backoff constants (REVIEW_LISTENER_ERROR_BACKOFF_SECONDS / REVIEW_LISTENER_CONFLICT_BACKOFF_SECONDS) are patched to 0, and _review_listener_sleep delegates to stop_event.wait(seconds) which returns immediately for seconds=0 and a set/settable event. Full TestReviewListener class runs in ~1-2s wall clock (measured), confirming no real sleeps."
+  },
+  "testRunResults": {
+    "targeted": "pytest tests/test_integration.py -k ReviewListener -q -> 10 passed",
+    "fullFile": "pytest tests/test_integration.py -q -> 65 passed",
+    "fullSuite": "pytest -q -> 1324 passed"
+  },
+  "filesReviewed": [
+    "news_bot.py (diff region: _run_review_listener, _handle_review_update, _parse_review_callback_data, _review_listener_enabled, _maybe_start_review_listener, _review_get_updates/_review_edit_message/_review_answer_callback, main() wiring)",
+    "tests/test_integration.py (TestReviewListener class, 10 tests)"
+  ]
+}

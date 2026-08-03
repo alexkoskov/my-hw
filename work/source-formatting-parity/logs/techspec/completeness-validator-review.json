@@ -1,0 +1,71 @@
+{
+  "status": "fail",
+  "sources": {
+    "user_spec": true,
+    "tech_spec": true,
+    "tasks": false
+  },
+  "requirements_total": 12,
+  "requirements_covered": 7,
+  "requirements_partial": 3,
+  "requirements_missing": 2,
+  "findings": [
+    {
+      "type": "gap",
+      "source": "tech-spec",
+      "requirement": "AC10 (orangetrack byte-identical) x AC2 (heading heuristic)",
+      "detail": "Decision 2 makes the bold-paragraph-to-heading heuristic a default behaviour of the shared dom_blocks module, and Decision 1 / Architecture state 'everything else defaults to orangetrack's current, test-pinned policy' — but the heuristic is NOT part of orangetrack's current policy; code-research II-2.4 states explicitly: 'No bold-paragraph->heading heuristic exists anywhere in the repo' (including orangetrack) and 'the rule has to be gated per source... Whether orangetrack has such paragraphs today is unmeasured (its feed was not fetched) — the tests are the binding constraint regardless.' Neither Decision 1 nor Decision 2 nor Task 1 specifies a 4th per-site gate/flag (parallel to the three injected callables) to keep the heuristic OFF for orangetrack, nor an argument for why applying it unconditionally is safe. This directly threatens Task 1's own gate ('orangetrack_source tests pass without any test file being edited') and the hard requirement AC10. The other three per-site behaviours (chrome predicate, image-src picker, video-embed wrapper) were each explicitly identified and injected; this fourth one was found by research but dropped from the Decisions.",
+      "severity": "critical"
+    },
+    {
+      "type": "partial",
+      "source": "tech-spec",
+      "requirement": "AC3 (списки оригинала выходят списками)",
+      "detail": "AC3 has two clauses. The 'not re-translated' clause is explicitly traced (Decision 7, Task 4, line-numbered). The 'lists render as Telegraph lists' clause is never named by any task: Task 5/6/7 descriptions mention only 'bold survives into blocks' / 'blocks with runs' / 'formatting survives', never list_item. Testing Strategy's only related line is a dom_blocks-level policy check ('bullet-less <li> preserved as shared defaults'), not a per-parser assertion that t-hunted/lamley/autoevolution actually emit list blocks end-to-end. The capability is real (it rides along with the shared _walk migration) but it is covered only by implication, not by an explicit task or test line — exactly the risk flagged by the orchestrator.",
+      "severity": "major"
+    },
+    {
+      "type": "partial",
+      "source": "tech-spec",
+      "requirement": "AC4 (жирный, добавленный переводчиком, не вырезается)",
+      "detail": "AC4 is functionally already satisfied by already-shipped work: code-research II-0 confirms telegraph_publisher._decode_bold_markers decodes ** markers at every render call site regardless of whether the run originated in the source or was added by the translator (eaba4f6, verified live). But unlike AC12 — where the Agent Verification Plan explicitly states 'the preview allowlist was fixed on 2026-07-28 specifically so this check is honest' — AC4 gets zero mention anywhere in tech-spec: no Decision, no User-Spec Deviations entry, no Testing Strategy line, no AVP line, no task. The orchestrator's question ('does the tech-spec make that explicit, or silently assume it') resolves differently for the two ACs: AC12 is explicit, AC4 is silent. Risk: Task 12 (pre-deploy QA) has no pointer telling it AC4 is pre-satisfied by prior work rather than by this feature's code, so nothing in this spec would catch a future regression of the decode path against AC4 specifically.",
+      "severity": "major"
+    },
+    {
+      "type": "gap",
+      "source": "tech-spec",
+      "requirement": "AC5 (сбой разбора разметки -> публикация обычным текстом, тик не падает)",
+      "detail": "AC5 appears only as a one-line test expectation in Testing Strategy ('malformed markup degrades to flat text'). Unlike AC8/AC9/AC11 — each of which got a dedicated Decision describing the actual mechanism — no Decision describes HOW fail-open is achieved for a walker-level failure (e.g., an explicit try/except boundary around the new block-building call in each parser so a raised exception still returns the existing flat paragraphs with blocks=None). Given user-spec calls fail-open 'обязателен' and this is a hard project-wide pattern, the absence of a Decision (versus a bare test-strategy bullet) leaves the actual implementation site and exception scope undecided going into Wave 2.",
+      "severity": "major"
+    },
+    {
+      "type": "gap",
+      "source": "tech-spec",
+      "requirement": "AC6 (потеря разметки LLM на абзаце -> тихая деградация, без пинга оператору)",
+      "detail": "AC6 has zero mention anywhere in tech-spec: not in Decisions, not in Testing Strategy (unit or integration), not in any task's description or file list, not in the Technical Acceptance Criteria list. user-spec's own 'Как проверить' table names the exact required test ('pytest -k markers_lost', asserting the paragraph publishes and send_admin_notification is never called) — tech-spec drops it entirely. The underlying behaviour is very likely already correct by construction (decode simply finds no markers and returns plain text; no notification call exists on that path), but nothing in this spec assigns a task or test to lock that in, so it is orphaned from traceability even though the mechanism is essentially free.",
+      "severity": "major"
+    },
+    {
+      "type": "gap",
+      "source": "tech-spec",
+      "requirement": "AC7 (нет порога «слишком много жирного»)",
+      "detail": "AC7 has zero mention anywhere in tech-spec — no Decision, no Testing Strategy line, no task, no Technical Acceptance Criteria line. Decision 2 removes only the HEADING length threshold, which is a distinct mechanism from 'no bold-volume suppression' (AC7 is about ordinary paragraphs staying intact even when almost entirely bold). user-spec explicitly names the required test ('pytest -k bold_heavy', >=90% bold text, all runs must reach the Telegraph nodes); tech-spec never restates or assigns it. Nothing in the design introduces a bold-volume cap, so the requirement is likely satisfied by omission, but that is not documented or pinned by a test anywhere in this spec.",
+      "severity": "major"
+    },
+    {
+      "type": "gap",
+      "source": "tech-spec",
+      "requirement": "AC8 (rantime alignment guard) / underlying desync causes",
+      "detail": "The Dependencies section states filter_blocks/filter_boilerplate are 'separate passes over separate lists, a second desynchronisation source besides the lift' — this is the Part I framing that code-research's own Part II explicitly refutes (II-3.2): 'in fact filter_blocks and filter_boilerplate call the same is_boilerplate on the same string for pure-text blocks... they agree... The real second source is the title-dedup filter, and it is parser-local' (t_hunted_source.py:198, lamley_source.py:390 — skips a tag whose text equals the article title). No Decision or task names the title-dedup filter divergence or assigns anyone to reconcile it between the flat-list and blocks-list construction paths. Functionally this is caught reactively by Decision 4's runtime guard (blocks dropped, WARNING logged) so no article is lost, but it means AC1 (bold visible for the three sources) will silently degrade to flat text more often than the tech-spec's own citation implies it expects, for a cause the spec itself misattributes.",
+      "severity": "major"
+    },
+    {
+      "type": "underengineering",
+      "source": "tech-spec",
+      "requirement": "Task 5 / Task 6 / Task 7 (per-parser blocks integration)",
+      "detail": "Task 1's 'Files to read' explicitly includes work/source-formatting-parity/code-research.md; Tasks 5, 6 and 7 — the tasks that most need the measured, parser-specific nuances (Blogger image-src/size-suffix regex divergence between t-hunted and lamley, chrome-marker necessity for lamley's JetPack chrome, the title-dedup filter as the real second desync source, t-hunted's 'filter-before-lead-lift' ordering constraint, the single-paragraph gallery guard) — do not list code-research.md as required reading. Each of these one-paragraph task descriptions packs several independently-risky, previously-incident-causing behaviours (subtitle-lift alignment, filter ordering, image-src selection) without surfacing them in the task text itself or pointing at the document where they were measured, which risks a decomposition/implementation pass missing a nuance that was already found and quantified.",
+      "severity": "major"
+    }
+  ],
+  "summary": "7/12 ACs cleanly covered (AC1, AC2, AC8, AC9, AC10, AC11, AC12), 3 partial (AC3's list-rendering half, AC4's undocumented already-shipped status, AC5's undecided fail-open mechanism), 2 orphaned (AC6, AC7 — zero mention anywhere despite user-spec naming exact required tests for both). One critical gap: the new bold-paragraph heading heuristic is applied as a dom_blocks default without a decision on whether/how it is gated for orangetrack, directly risking AC10's byte-identical gate that Task 1 itself treats as non-negotiable. BlockBuilder's three injected callables are not overengineering — they match the research-measured seam exactly (3 of 6 free names are genuinely site-specific), and sharing only the two leaf helpers (as the orchestrator's question posits) would in fact under-share relative to user-spec's own Risk 1, since the historical defects lived in the walker/emitters, not the leaf helpers. AC2's length-threshold removal is well-defended by data (286 real paragraphs, zero false positives) and properly routed through an approved User-Spec Deviation, but the defense doesn't extend to orangetrack (unmeasured, and the one source where a false positive is unacceptable) — that gap is captured as the critical finding above. Solution section has real technical depth (specific functions, line numbers, measured deltas); no shallow-solution finding. 14 tasks are reasonably sized except Tasks 5-7, which are dense and under-point their required reading given the nuances they must reproduce."
+}

@@ -1,0 +1,21 @@
+{
+  "status": "approved",
+  "findings": [
+    {
+      "category": "overengineering",
+      "severity": "minor",
+      "issue": "Residual implementation-level details in Testing section (line 174) and 'Как проверить' table (lines 188, 191): exact test counts (~13, ~9, ~6 of 11, 5), specific test file names (`tests/test_overflow.py`, `tests/test_idle_fallback.py`, `tests/test_fallback_throttle.py`), and named code identifiers (`_fallback_publish`, `_TokenRedactingFilter`, `transcreate_text` Google, `bot_state.claude_api_outage_started_at`). The major scope-leak fix scrubbed line numbers, regex patterns, exact AC formulas, and most function names from the ACs/body — this is the remaining tail.",
+      "why_matters": "Counts (~13, ~9, ~6) couple the user-spec to today's test inventory; future test additions or rebases between user-spec freeze and tech-spec authoring will cause stale numbers in the spec. Identifier names like `_TokenRedactingFilter` lock the implementer to a specific class even if the tech-spec proposes a cleaner refactor (e.g. consolidating into a `secrets_filter.py` module). The leak is in non-AC sections so it doesn't directly over-constrain acceptance, but it's still HOW where WHAT/WHY belongs.",
+      "fix": "In Testing section, drop counts and specific filenames — say 'legacy overflow + idle-fallback + throttle test files removed; new test files added for slot computation, Claude wrapper, outage state machine, and end-to-end distributed schedule.' In 'Как проверить' table, replace `_fallback_publish` / `_TokenRedactingFilter` / `transcreate_text` references with behavioral phrasing ('auto-publish helper', 'log redaction filter', 'Google Translate fallback function'). Optional — could also be deferred to tech-spec entirely."
+    },
+    {
+      "category": "underengineering",
+      "severity": "minor",
+      "issue": "AC15 (per-article Claude failure → Google fallback for THAT article) does not specify retry policy before fallback triggers. Should the bot retry the Claude call N times on a per-article problem (e.g. 2 SDK retries already do exponential backoff) before declaring this article unsalvageable and switching to Google? Or fall back on the first error? Also unclear whether per-article fallback increments `pending_articles.attempt_count` (existing 3-strike pattern) or just publishes via Google and moves on cleanly.",
+      "why_matters": "Without explicit policy, two failure modes possible: (a) implementer chooses 'retry forever on transient errors' → article stalls scheduled slot indefinitely if Claude's safety filter is consistent; (b) implementer chooses 'fall back on first error' → transient Claude blip costs an article quality even though one retry would have succeeded. Both produce subtle channel-quality regressions hard to debug post-deploy. Also: if Google fallback succeeds for that article, does `attempt_count` stay 0 (article published cleanly) or get incremented (signaling 'this article needed help')? Operator behavior differs.",
+      "fix": "Add to AC15 (or a new AC): 'Per-article fallback triggers after N SDK retries (rely on anthropic SDK default 2 retries, no extra outer-layer retry). On Google-fallback success, article publishes normally and is NOT counted as a strike against `attempt_count` (the article succeeded, just via different engine).' Or punt to tech-spec, but flag explicitly in spec that policy is deferred."
+    }
+  ],
+  "worst_category": "overengineering",
+  "summary": "Round 2 fixes successfully close all R1 findings: sizing acknowledged at L with operator approval, TZ wiring deferred to tech-spec at constraint level, API-level vs per-article outage classification explicit (AC14/AC15), major scope leaks (line numbers, regex, formulas) scrubbed from ACs, all 5 minor R1 findings addressed (emoji safety-net framing, AC20 backlog warning, AC19 observability, decision rationale, AC28 ux-guidelines architectural shift). Two new minor findings remain: residual function/test-name leaks in Testing + AVP sections, and AC15 retry-policy ambiguity. Both are minor — neither blocks tech-spec authoring. Spec is approved for handoff."
+}

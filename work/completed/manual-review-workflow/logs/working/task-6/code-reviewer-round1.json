@@ -1,0 +1,59 @@
+{
+  "task": "Task 6 — Refactor job() into prep-only + cron bump + delete process_new_articles",
+  "reviewer": "code-reviewer (inline, code-reviewing skill methodology)",
+  "round": 1,
+  "commit_under_review": "0140a98",
+  "status": "ok-with-nits",
+  "summary": "Prep-phase refactor is clean, well-commented, and faithful to the task file step-for-step. Step numbering in comments matches tech-spec §Architecture. Task 9/10 placeholders are explicit (real list_pending_stale/list_notified_overdue calls return [] on a fresh queue so the scaffolding stays exercised; no dead no-op branches). process_new_articles is fully deleted — no lingering references in executable code, only docstring/comment mentions for historical grounding. Cron bump is one-line per Decision 5. init_db delegation is minimal and idempotent. No HIGH/CRITICAL findings.",
+  "dimensions": {
+    "1_correctness": "Pass. job() behaviour mirrors the 6-step contract. fetch_full_article None/empty-paragraphs guard is preserved. link-less entry is defended with an explicit warning.",
+    "2_separation_of_concerns": "Pass. Prep-phase no longer holds publish-side logic. All JSON serialisation owned by pending_articles_repo (verified: we pass Python lists, not dumps).",
+    "3_error_handling": "Pass-with-nit (see CR-1). Every externally-visible call (fetcher, list_*_stale, insert_pending, list_pending, send_admin_notification) is wrapped in try/except with sanitize_error_message or logger.error.",
+    "4_logging": "Pass. INFO for milestones, DEBUG for Task 9/10 placeholders, WARNING for skipped entries, ERROR for sanitised exceptions. Messages are structured and debuggable.",
+    "5_naming": "Pass. Step comments carry the tech-spec step IDs (1a/1b/2/3/4/5/6). `accepted` and `new_entries` names convey the filter-stage vocabulary.",
+    "6_readability": "Pass. The job body reads top-to-bottom like the tech-spec checklist.",
+    "7_reuse": "Pass. filter_new_entries is reused as-is; pending-filter is inline (task file explicitly says NOT to introduce filter_new_entries_extended).",
+    "8_deadcode": "Pass. process_new_articles removed; no references survive except in comments. TelegraphError and requests imports remain but are widely expected to be consumed by Task 8+.",
+    "9_configuration": "Pass. IDLE_TIMEOUT_HOURS / GRACE_WINDOW_HOURS / QUEUE_CAP already module-level from Task 3; job() consumes them directly.",
+    "10_test_coverage": "Pass. 16 new tests cover the 6-step contract + placeholders + env overrides + process_new_articles removal + cron-bump assertion.",
+    "11_documentation": "Pass. Every step has a block comment citing the tech-spec section and the Task-9/10 TODO marker."
+  },
+  "findings": [
+    {
+      "id": "CR-1",
+      "severity": "low",
+      "location": "news_bot.py step (2) loop",
+      "description": "When a SOURCES fetcher raises, the catch-all `except Exception` + sanitize + admin-ping is correct, but `send_admin_notification` itself is wrapped in a try/except that only logs — if the admin chat is broken in the same tick, the user will see an ERROR log but no other indicator. This is the pre-existing pattern (load_feeds does the same), so documented as-designed.",
+      "recommendation": "No action. Matches load_feeds / Task 5 error-isolation pattern."
+    },
+    {
+      "id": "CR-2",
+      "severity": "low",
+      "location": "news_bot.py imports (`import requests`, `from telegraph_publisher import TelegraphError`)",
+      "description": "Both symbols are now unused in news_bot.py after process_new_articles deletion. Task 8 (`hw_review publish`) will likely re-use them — a future teammate will import them in hw_review.py, not news_bot.py.",
+      "recommendation": "No action. Leaving them in has zero runtime cost and keeps the diff small. Task 11 (Code Audit) is the proper place for a dead-import sweep."
+    },
+    {
+      "id": "CR-3",
+      "severity": "low",
+      "location": "news_bot.py step (1a)/(1b) placeholders",
+      "description": "The placeholder blocks call the real repo helpers (list_pending_stale / list_notified_overdue) even though they do nothing with the results. This is intentional per task-file Edge-cases ('not silent no-op') — it exercises the DB path so Task 9 only needs to fill in the body — but a reader might wonder why the variables are `_stale` / `_overdue` with no use.",
+      "recommendation": "No action. Inline comments already flag these as Task 9 TODOs; the debug-log line makes the placeholder observable."
+    },
+    {
+      "id": "CR-4",
+      "severity": "info",
+      "location": "news_bot.py init_db",
+      "description": "Two commit calls occur (pending_articles_repo.init_schema commits internally, then init_db commits again). Each is a no-op on unchanged state so correctness is fine.",
+      "recommendation": "No action. Idempotent DDL + idempotent commits; task file explicitly asks for a single final commit and delegation to the repo, matching the current layout."
+    }
+  ],
+  "acceptance_criteria_pass": [
+    "process_new_articles fully removed (hasattr check passes)",
+    "prep-phase: 0 publish/teaser calls (assertion in test_prep_phase_does_not_publish)",
+    "init_db creates all 4 tables + idempotent (test_migration green)",
+    "cron bumped to hourly (inspect-source assertion)",
+    "env overrides for 3 constants (reload-based tests)",
+    "admin ping suppressed on empty queue (None guard + tests)"
+  ]
+}

@@ -1,0 +1,78 @@
+{
+  "status": "passed",
+  "summary": "Round-2 re-validation confirms all nine round-1 findings (high #1-#2, medium #3-#6, low #7-#9) are addressed in tech-spec.md (commit 6e6be05). Testing Strategy now anchors integration coverage with a behavioural test that defeats the mock-return litmus, lists the full 7-fixture negative battery verbatim, exhaustively enumerates 10-platform positives and all four B1 anchor variants, traverses every block type (paragraph/lead/heading/image/video/unknown) plus empty-block disposal, plumbs caplog correctly with set_level on the news_bot logger, and tightens Decision 4 with a post-match _PLATFORM_OR_TARGET_RU gate that documents the soft-edge negative. One residual minor issue: the '~38' test count headline (lines 255 and 340) under-counts the enumerated cases (closer to ~50 once each parametrised variant is summed) — cosmetic, not a quality gap.",
+  "findings": [
+    {
+      "severity": "minor",
+      "category": "anti_pattern",
+      "location": "tech-spec.md:255 and AC line 340 (test count headline)",
+      "issue": "Headline 'pyramid is mostly unit (~38 cases)' and the AC bullet 'Test count grows by ~38' undercount the enumerated cases. Variant-A: 10 platform positives + 5 negatives + 1 assertion fix = 16 (the line 259 header still says '~15 new cases'). Variant-B unit: B1 positives (~5) + 4 anchor variants + 10 B2 platform positives + 2 GT variants + B3 + 6 cross-cutting + 2 pass-through + 3 empty-disposal + 3 None-safety + 7 negatives ≈ 43 cases (labelled '~17'). Integration: 3 + 1 redaction + 1 ReDoS = 5. Realistic total ≈ 60+, not 38. The mismatch is cosmetic but makes the AC unverifiable as written — pre-deploy QA cannot tell whether '~38' was met or overshot.",
+      "recommendation": "Either (a) bump the headline to '~50 cases' and adjust AC at line 340 to match the inventory, or (b) collapse the breakdown line at 340 to ranges that match the per-section counts shown in the strategy: 'Test count grows by 50-65 (variant-A: 16; variant-B unit: 40-45; integration: 5)'. Option (b) is preferable because it keeps the per-section tally honest and gives pre-deploy QA a falsifiable target."
+    },
+    {
+      "severity": "minor",
+      "category": "missing_coverage",
+      "location": "tech-spec.md:267 (B1 positives section)",
+      "issue": "AC7 is described as 'cue verb in middle / start / end of paragraph' but the test list does not explicitly assert the post-strip remainder. AC7 specifically requires that when a plug appears at the start of a paragraph, the remainder of the paragraph is preserved verbatim ('Подписывайтесь… @diecast215. А сегодня мы посмотрим на новый Chase…' → 'А сегодня мы посмотрим на новый Chase…'). The current bullet enumerates positions but not the remainder-preservation assertion.",
+      "recommendation": "Add explicit AC7 remainder-preservation assertion to the B1 positives bullet: 'AC7 remainder preservation: after stripping a plug at the start, assert the cleaned text equals the rest of the paragraph verbatim (modulo whitespace collapse). Use a fixture where the rest contains domain-specific tokens (e.g. \"Chase\", \"Treasure Hunt\") so the assertion fails if the regex over-greedily consumes beyond the sentence terminator.'"
+    }
+  ],
+  "metrics": {
+    "filesReviewed": 4,
+    "litmusTest": {
+      "checked": 18,
+      "passed": 17,
+      "failed": 1
+    },
+    "coverageAssessment": "adequate",
+    "pyramidBalance": {
+      "unit": 50,
+      "integration": 5,
+      "e2e": 0,
+      "assessment": "healthy"
+    }
+  },
+  "round1FixVerification": {
+    "high_1_caplog_misplacement": {
+      "status": "addressed",
+      "evidence": "tech-spec.md:285 — caplog assertion is the third integration test in tests/test_fallback_publish_paths.py with explicit `caplog.set_level(logging.INFO, logger='news_bot')`. Line 277 explicitly states the try/except defence test lives in test_fallback_publish_paths.py, not test_author_plug_filter.py."
+    },
+    "high_2_missing_negatives": {
+      "status": "addressed",
+      "evidence": "tech-spec.md:276 — full 7-fixture battery enumerated verbatim: collector EN posted, Коллекционер написал, см. фото, трансляция YouTube, Follow Mattel corporate, bare-brand 'Instagram' on its own line, soft-edge 'Подписывайтесь на новости индустрии через RSS-агрегаторы'. Matches code-research §10 NEGATIVES list exactly."
+    },
+    "medium_3_platform_coverage": {
+      "status": "addressed",
+      "evidence": "tech-spec.md:261 (variant A) — 10 platform positives explicitly enumerated. tech-spec.md:269 (variant B) — B2 positives include 'each of the ten platforms + @handle'. AC4 list-item plug also implicitly covered by A1 umbrella positives."
+    },
+    "medium_4_block_traversal": {
+      "status": "addressed",
+      "evidence": "tech-spec.md:271-272 — cross-cutting positives now name lead, heading, paragraph, image-caption explicitly; line 272 covers video pass-through and unknown-block pass-through."
+    },
+    "medium_5_empty_block_disposal": {
+      "status": "addressed",
+      "evidence": "tech-spec.md:273 — explicit 'Empty-block disposal (AC10)' bullet covering paragraph-block dropped vs image-block KEPT. Line 274 covers flat-paragraph empty disposal. Decision 10 (line 218-225) provides the spec."
+    },
+    "medium_6_integration_smoke_behavioural": {
+      "status": "addressed",
+      "evidence": "tech-spec.md:284 — integration test #2 is explicitly behavioural ('real call (no mock of strip_*)'), feeds canonical leak phrase, asserts on telegraph_publisher.publish_article argument, and includes an explicit anti-litmus statement: 'a stub strip_* returning input unchanged would FAIL this test'. Decisively defeats the mock-return anti-pattern."
+    },
+    "low_7_test_count": {
+      "status": "addressed_with_residual_drift",
+      "evidence": "tech-spec.md:255 and 340 — both bumped from '~25' to '~38'. However the inventory now exceeds 38 (see findings[0]) — addressed in spirit but the new number is also undercount. Cosmetic only."
+    },
+    "low_8_caplog_plumbing": {
+      "status": "addressed",
+      "evidence": "tech-spec.md:285 — `caplog.set_level(logging.INFO, logger='news_bot')` is now explicit, ensuring caplog captures news_bot.logger.info calls (default propagation in caplog can miss named-logger emissions if the logger has handlers). Plumbing note is correct per pytest caplog semantics."
+    },
+    "low_9_bare_cue_constraint": {
+      "status": "addressed",
+      "evidence": "tech-spec.md:123, 127-152 — Decision 4 now defines _PLATFORM_OR_TARGET_RU as a separate alternation (на меня|нас / за нами|мной / мой|наш ... / Instagram|Twitter|...) and applies it as a post-match gate via re.search on m.group(0). Generic 'Подписывайтесь на новости индустрии через RSS-агрегаторы' fails the gate. The negative is also exercised by the 7-fixture battery at line 276."
+    }
+  },
+  "tddAnchorQuality": {
+    "assessment": "good",
+    "rationale": "Every test description in the Testing Strategy is behavioural — 'plug removed and remainder preserved', 'block dropped from list', 'INFO line emitted with redacted token', 'argument passed to publish_article no longer contains the plug'. None of the descriptions devolve to substring-presence checks on prompts or fixture strings. The integration test #2 explicitly states the anti-litmus condition ('a stub strip_* returning input unchanged would FAIL'), which is best-practice for prescribing tests that defeat the mock-return anti-pattern."
+  },
+  "decision": "passed — Testing Strategy is implementation-ready. Two minor recommendations are quality polish, not blockers; either can be folded into the Wave 2/3 task author's discretion. No critical or major findings remain."
+}

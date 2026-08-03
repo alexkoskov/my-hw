@@ -1,0 +1,61 @@
+{
+  "status": "approved",
+  "round": 2,
+  "findings": [],
+  "resolved_from_round_1": [
+    {
+      "severity": "critical",
+      "category": "tasks",
+      "issue": "Wave 1 had test tasks (Tasks 3-5) reading post-Task-1/2 sources, creating an intra-wave dependency.",
+      "resolution": "Tests are now in Wave 2 (`Wave 2 (parallel — tests; depends on Wave 1)`). Tasks 3-5 explicitly read `news_bot.py (post-Task-1)` and `pending_articles_repo.py (post-Task-2)`, and the wave header documents the dependency on Wave 1. No same-file conflict in Wave 1 (Task 1 -> news_bot.py, Task 2 -> pending_articles_repo.py) or Wave 2 (three distinct test files)."
+    },
+    {
+      "severity": "major",
+      "category": "structure",
+      "issue": "Decision 7 was missing the Alternatives considered subsection.",
+      "resolution": "Decision 7 now lists two rejected alternatives: slot-loop-level guard and repository-level guard inside pending_articles_repo.list_pending(), each with rationale for rejection."
+    },
+    {
+      "severity": "major",
+      "category": "tasks",
+      "issue": "Tasks 3-5 (test tasks) were missing security-auditor in Reviewers.",
+      "resolution": "All five code-writing tasks (Tasks 1-5) now list the full default reviewer triple: code-reviewer, security-auditor, test-reviewer."
+    },
+    {
+      "severity": "minor",
+      "category": "task_quality",
+      "issue": "Task 1 description previously contained line numbers (`line 985`) and embedded rationale.",
+      "resolution": "Task 1 description is now scope-only: states what to insert (idempotency guard at function entry), references Decisions 1, 2, 3, 4, 8 instead of restating rationale, and contains no line numbers. Line numbers remain in Architecture and Decisions sections, which is appropriate context for the spec."
+    },
+    {
+      "severity": "minor",
+      "category": "verification",
+      "issue": "Verify-smoke fields were missing on implementation tasks.",
+      "resolution": "Tasks 1-5 each carry an executable Verify-smoke command (py_compile, grep for the keyword change, targeted pytest -k filters). Audit/QA/deploy tasks (6-11) appropriately skip the field — their skill is the verification."
+    },
+    {
+      "severity": "minor",
+      "category": "structure",
+      "issue": "Sizing language was duplicated.",
+      "resolution": "Frontmatter `size: S` and Testing Strategy `Feature size: S` are the only sizing references. Both placements are required by the template; no third occurrence remains. Task descriptions no longer carry magnitude qualifiers like `~17-line` or `Single keyword change` framed as sizing."
+    }
+  ],
+  "checks": {
+    "frontmatter": "PASS — created 2026-05-07, status draft, branch dev, size S",
+    "structure": "PASS — all required sections present and non-empty; both Architecture subsections, both Dependencies subsections, AVP with Verification approach + Tools required, Risks as table, Acceptance Criteria + Implementation Tasks present",
+    "decisions_completeness": "PASS — Decisions 1-8 all carry Decision + Rationale + Alternatives considered (Decision 7 was the round 1 gap; now fixed)",
+    "standards_compliance": "PASS — file paths (news_bot.py, pending_articles_repo.py, tests/) match architecture.md project structure; new tests extend existing class patterns documented in patterns.md",
+    "risks": "PASS — 6 concrete risks with concrete mitigations; not generic placeholders",
+    "verification_plan": "PASS — Verification approach describes per-task smoke + pre-deploy + post-deploy checks; Tools required lists pytest, bash, ssh, sqlite3, journalctl",
+    "per_task_smoke_verification": "PASS — Tasks 1-5 (code-writing) all carry Verify-smoke with concrete commands; Tasks 6-8 (audits) and Tasks 9-11 (QA/deploy/post-deploy) are themselves the verification skill so the field is appropriately omitted",
+    "task_count": "PASS — 11 tasks, well under the 15-task split threshold",
+    "sequencing": "PASS — waves only, no time estimates for task duration. Operational windows in Tasks 10/11 (~30 min observation, next morning cron tick, 1-2 day visual check) are procedural deploy/verify steps, not effort estimates",
+    "skill_correctness": "PASS — code-writing (Tasks 1-5), code-reviewing (Task 6), security-auditor (Task 7), test-master (Task 8), pre-deploy-qa (Task 9), deploy-pipeline (Task 10), post-deploy-qa (Task 11) are all in the canonical catalog. No prompt work in this feature, so absence of prompt-master is correct.",
+    "reviewer_correctness": "PASS — code-reviewer, security-auditor, test-reviewer all exist as agents under ~/.claude/agents/. Audit/QA/deploy tasks correctly use `none` per the Skill -> Reviewers mapping table.",
+    "task_brevity": "PASS — Task 1 description is 3 sentences (under the 5-sentence cap). Other task descriptions are similarly scope-focused. No Acceptance Criteria or TDD Anchor sections embedded in tasks. No line-number references in task descriptions.",
+    "decisions_placement": "PASS — task descriptions reference Decisions by number rather than embedding rationale. No rationale markers (because/since/rejected/instead of) in task descriptions. Configuration values (e.g. INSERT OR IGNORE) appear in Decision 5 and Task 2 description, but Task 2 references only the SQL keyword change as scope, while Decision 5 carries the rationale — this is correct separation, not duplication.",
+    "wave_conflict_detection": "PASS — Wave 1: Task 1 (news_bot.py) vs Task 2 (pending_articles_repo.py) — distinct files. Wave 2: Task 3 (tests/test_fallback_publish_paths.py), Task 4 (tests/test_pending_articles_repo.py), Task 5 (tests/test_distributed_schedule_integration.py) — distinct files. No same-file collision in any wave.",
+    "wave_dependency_ordering": "PASS — Wave 2 tests explicitly depend on Wave 1 source edits, and they are correctly placed in the later wave. Wave 2 test tasks document this in Files to read (`news_bot.py (post-Task-1)`, `pending_articles_repo.py (post-Task-2)`)."
+  },
+  "summary": "Approved. All round 1 findings addressed: critical wave-conflict resolved (tests now in Wave 2 with explicit dependency on Wave 1), Decision 7 alternatives added, security-auditor added to Tasks 3-5, Task 1 description trimmed of line numbers and rationale, Verify-smoke commands added to Tasks 1-5, sizing language not duplicated. Zero new findings. Tech-spec ready for downstream validators (completeness, security, skeptic) and decomposition."
+}

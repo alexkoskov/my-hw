@@ -1,0 +1,40 @@
+{
+  "validator": "reality-checker",
+  "batch": [7, 8, 9],
+  "status": "approved",
+  "findings": [
+    {
+      "severity": "major",
+      "category": "cross-task-integration",
+      "task": 9,
+      "issue": "Audit Wave severity taxonomies are mutually inconsistent and don't match each task's own loaded skill: Task 7 (code-reviewing) uses 'critical/major/minor/nit' vs the skill's actual 3-tier scale 'critical/major/minor' (SKILL.md lines 213-215); Task 8 (security-auditor) uses 'critical/high/medium/low/info' vs the skill's actual 4-tier scale 'Critical/High/Medium/Low' (SKILL.md lines 37-41, no 'info' tier defined); Task 9 (test-master) uses 'blocker/major/minor/nit' vs the skill's actual scale 'Critical/High/Medium/Low' (references/test-quality-review.md lines 134-155). This project's own immediately-preceding feature (work/dedup-model-series/tasks/9.md line 106) used 'critical/high/medium/low' for its Test Audit task -- matching the skill -- so dedup-review-buttons' Task 9 has regressed to borrowing dedup-model-series Task 7's code-audit vocabulary ('blocker/major/minor/nit') instead. feature-execution.md's Audit Wave step ('Issues found -> spawn a fixer teammate... assign the auditors who found issues as reviewers') implies the lead reads/aggregates severities across all three audit reports; three incompatible vocabularies for the same concept (blocking finding) make that aggregation error-prone.",
+      "fix": "Standardize all three Audit Wave tasks on one severity vocabulary before execution -- either each task's actual skill-defined scale (code-reviewing: critical/major/minor; security-auditor: critical/high/medium/low; test-master: critical/high/medium/low) or one shared scale used uniformly across the wave, matching how dedup-model-series Task 9 aligned with its skill."
+    },
+    {
+      "severity": "major",
+      "category": "cross-task-integration",
+      "task": 8,
+      "issue": "Task 8 (Security Audit) is the only Audit Wave task with no explicit persisted report-file path. Task 7 has 'Куда писать отчёт: work/dedup-review-buttons/logs/working/task-7/code-audit.md' and Task 9 has 'Выход задачи (аудит-отчёт): work/dedup-review-buttons/logs/working/task-9/test-audit.md', both under 'Reviewers'/Details. Task 8's step 8 instead says 'Отчёт вернуть текстом (не как отдельный .md файл-артефакт, если инструкции скилла не требуют иного) и/или в decisions.md' -- i.e. explicitly opts OUT of writing a dedicated file. This breaks with this feature's own sibling tasks and with the immediate precedent: work/dedup-model-series/tasks/8.md (also Security Audit) has an explicit 'Report path: work/dedup-model-series/logs/working/task-8/security-audit.md (сначала mkdir -p ..., как в Task 7/9)'. Without a durable path, the full security findings (beyond the 1-3 sentence decisions.md summary mandated in Post-completion) have no fixed location for a fix-round teammate, Task 10 (pre-deploy QA), or a later auditor to consult.",
+      "fix": "Add an explicit 'Report path: work/dedup-review-buttons/logs/working/task-8/security-audit.md (mkdir -p work/dedup-review-buttons/logs/working/task-8 first, as in Task 7/9)' to Task 8, matching the sibling tasks and the dedup-model-series precedent, instead of the 'return as text only' instruction."
+    },
+    {
+      "severity": "minor",
+      "category": "hallucination",
+      "task": 7,
+      "issue": "Task 7's Context Files entry for architecture.md reads '[architecture.md] -- Data Flow, Data Model, External Integrations, Shared resources'. architecture.md (.claude/skills/project-knowledge/references/architecture.md) has no 'Shared resources' section and the phrase 'shared resource' does not appear anywhere in the file (grep confirms zero hits). The Shared Resources table actually lives in tech-spec.md (section 'Shared resources', correctly attributed there in the task's own 'What to do' step 4: 'Сверить фактический код с таблицей Shared resources ... в tech-spec'). The Context Files line conflates the two documents and could send the auditor looking in architecture.md for content that isn't there.",
+      "fix": "Drop 'Shared resources' from the architecture.md Context Files annotation (it only actually documents Data Flow / Data Model / External Integrations / Sensitive Data / Planned Enhancements), and keep the Shared-resources cross-check pointed solely at tech-spec.md as step 4 already does."
+    },
+    {
+      "severity": "minor",
+      "category": "hints",
+      "task": 7,
+      "issue": "Task 7 directs the auditor to verify listener error-isolation 'что соответствует patterns.md -> Error Isolation' (Acceptance Criteria + focus-dimension 4). patterns.md's actual 'Error Isolation' section (lines 254-259) documents only single-threaded per-feed try/catch isolation ('Each feed is processed independently inside a try-catch block...'); grepping patterns.md and architecture.md for 'thread' returns zero hits anywhere in the project knowledge base. There is no existing precedent in this codebase for daemon-thread-vs-main-thread crash isolation, so the literal 'соответствует' (matches) framing overstates what the auditor will actually find -- it's a values/philosophy analogy, not a structural precedent to pattern-match against.",
+      "fix": "Reword to something like 'this is a new isolation concern (background daemon thread vs. main publish loop) with no direct precedent in patterns.md -- evaluate it against the project's general error-isolation philosophy (per-feed try/catch in patterns.md), not as a literal existing pattern to match.'"
+    }
+  ],
+  "stats": {
+    "tasks_checked": 3,
+    "claims_verified": 58,
+    "issues_found": 4
+  }
+}

@@ -1,0 +1,71 @@
+{
+  "validator": "reality-checker",
+  "batch": [1, 2, 3],
+  "iteration": 2,
+  "based_on": "reality-batch1-review.json (R1)",
+  "status": "approved",
+  "r1_fixes_verified": [
+    {
+      "r1_finding": "Task 2 critical — adaptive interval formula mismatch with test_restart_at_16_n5",
+      "resolution": "RESOLVED. Task 02.md now uses unified adaptive formula: effective_start = max(window_start, now), remaining_minutes = window_end − effective_start, raw_interval = remaining_minutes / N. Verified by simulation: now=16:00 MSK, N=5 → remaining=240, raw=48, interval=48, 5 slots [16:00, 16:48, 17:36, 18:24, 19:12], carry_over=0. Test passes. MAX_POSTS_PER_DAY constant explicitly removed from algorithm per task text. Test count unified to 13 everywhere (Description, What to do, AC, Verification Steps)."
+    },
+    {
+      "r1_finding": "Task 3 major — anthropic.UnprocessableEntityError hallucination",
+      "resolution": "RESOLVED. Verified directly: `import anthropic; anthropic.UnprocessableEntityError` exists in anthropic==0.45.2, inherits from APIStatusError, has status_code attribute. Task 03.md now includes 'SDK exception hierarchy (verified против anthropic v0.45.2 source)' note confirming the class exists."
+    },
+    {
+      "r1_finding": "Task 3 major — missing depends_on:[6]",
+      "resolution": "RESOLVED. Task 03.md frontmatter now reads: depends_on: [6], wave: 2. Dependency on Task 6 (requirements.txt with anthropic package) is declared."
+    },
+    {
+      "r1_finding": "Task 3 major — prescriptive implementation hints with code blocks",
+      "resolution": "RESOLVED. Implementation hints section is now titled 'patterns + invariants, не код' with an explicit header 'Конкретные сигнатуры/реализации — на усмотрение разработчика'. Specific code snippets (_DEFAULT_CLIENT = None, def _get_default_client(), re.match/re.search patterns, logger.info('claude_call model=%s ...')) are removed. Hints now describe invariants and point to existing patterns without prescribing implementation."
+    },
+    {
+      "r1_finding": "Task 2 major — inconsistent test count (~12 vs 13)",
+      "resolution": "RESOLVED. Count is now consistently 13 in all locations: Description paragraph, What to do step 4, AC, Verification Steps."
+    },
+    {
+      "r1_finding": "Task 2 major — MAX_POSTS_PER_DAY explicit cap in algorithm",
+      "resolution": "RESOLVED. Task 02.md explicitly states 'Никакой MAX_POSTS_PER_DAY константы' twice (step 2 and AC). The cap of 11 is derived naturally from floor(420/40)+1 via the floor-interval formula."
+    },
+    {
+      "r1_finding": "Task 3 minor — emoji startswith tuple footgun",
+      "resolution": "RESOLVED. Implementation hints now include dedicated bullet 'Emoji-prefix detection — footgun avoidance' explaining use of any(title.startswith(e) for e in EMOJIS) vs title.startswith(EMOJIS) tuple form, with explanation of multi-codepoint emoji issue."
+    },
+    {
+      "r1_finding": "Task 3 minor — TDD test count inconsistency (15 vs 14)",
+      "resolution": "RESOLVED. Task 03.md Description now says '15 тестов', AC says '~15 тестов', TDD Anchor lists 15 entries consistently."
+    }
+  ],
+  "findings": [
+    {
+      "severity": "major",
+      "category": "feasibility",
+      "task": 3,
+      "issue": "Task 3 'What to do' step 3 and 'Implementation hints' both reference `client.messages.create.side_effect = anthropic.RateLimitError(...)` for test mocking. However, all APIStatusError subclasses (RateLimitError, AuthenticationError, InternalServerError, PermissionDeniedError, NotFoundError, BadRequestError, UnprocessableEntityError) require `httpx.Response` as a mandatory constructor argument (signature: `(self, message: str, *, response: httpx.Response, body: object | None)`). Calling `anthropic.RateLimitError('message')` raises `TypeError: APIStatusError.__init__() missing 2 required keyword-only arguments: 'response' and 'body'`. To construct these exceptions in tests, the implementer must build an `httpx.Request` + `httpx.Response` fixture first. `httpx` is a transitive dependency of `anthropic` (installed automatically) but is neither mentioned in the task's Dependencies section nor in requirements.txt. An implementer following the task literally will hit a TypeError on their first exception test and may not know how to fix it.",
+      "fix": "Add a note in 'What to do' step 3 or 'Implementation hints / Tests' that APIStatusError subclasses require httpx.Request + httpx.Response to construct. Suggest a shared pytest fixture: `@pytest.fixture def make_api_response(): def _make(status): req = httpx.Request('POST', 'https://api.anthropic.com'); return httpx.Response(status, request=req); return _make`. Alternatively, note that `side_effect` can be set to a pre-constructed exception instance (not the class), and show the httpx pattern for that construction. No requirements.txt change needed since httpx is a transitive dep of anthropic."
+    },
+    {
+      "severity": "minor",
+      "category": "feasibility",
+      "task": 1,
+      "issue": "Task 1 'Details' section says 'test_init_db_idempotent: финальная проверка row-counts добавить bot_state к списку проверяемых таблиц с ожидаемым count == 1'. The existing test_init_db_idempotent seeds 4 tables in a loop and checks them. Adding bot_state to the seed block and to the verification loop is correct per the pattern. No functional issue — this note is purely informational and the task instructions match the existing test pattern. Confirmed no fix needed.",
+      "fix": "No action required. Task 1 instructions match the actual test_migration.py structure (confirmed by reading the file)."
+    },
+    {
+      "severity": "minor",
+      "category": "hints",
+      "task": 3,
+      "issue": "Task 3 'What to do' step 1 specifies `_truncate_paragraphs` with exact log message string: `logger.warning('paragraph truncated at 4000 chars')`. This is in the API contract section (What to do), not the hints section, and is borderline acceptable. However, prescribing the exact warning message string as part of the function contract means the AC test (which uses caplog + substring match on 'truncated') is coupled to this string. The AC explicitly says 'caplog содержит \"truncated\" warning' — substring only — so the exact string 'paragraph truncated at 4000 chars' is not required for the test to pass. Low severity since the test is appropriately flexible.",
+      "fix": "No change required. The test uses substring 'truncated' not the exact string. Informational note only."
+    }
+  ],
+  "stats": {
+    "tasks_checked": 3,
+    "claims_verified": 47,
+    "issues_found": 3,
+    "r1_issues_resolved": 8,
+    "new_issues": 1
+  }
+}

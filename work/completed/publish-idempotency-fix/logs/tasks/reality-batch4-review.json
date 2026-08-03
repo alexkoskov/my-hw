@@ -1,0 +1,116 @@
+{
+  "validator": "reality-checker",
+  "batch": [10, 11],
+  "iteration": 1,
+  "status": "approved",
+  "findings": [
+    {
+      "severity": "minor",
+      "category": "feasibility",
+      "task": 10,
+      "issue": "Stage 1 operator instruction says 'вставь синтетическую zombie-строку в `bot_test/news.db`' without the full server path. The correct path on VPS is `/home/hwbot/bot_test/news.db`. An operator who SSHes in at the wrong working directory could interpret `bot_test/news.db` as relative to `$HOME` or current dir, causing confusion.",
+      "fix": "Change to the full absolute path: 'вставь синтетическую zombie-строку в `/home/hwbot/bot_test/news.db`' to match deployment.md convention."
+    }
+  ],
+  "verified": {
+    "task_10": {
+      "workflow_deploy_yml": {
+        "path": ".github/workflows/deploy.yml",
+        "exists": true,
+        "note": "Confirmed at /workspaces/debian-2/my-hw/.github/workflows/deploy.yml; triggers on CI 'success' + push to main via workflow_run; restarts news_bot.service."
+      },
+      "workflow_deploy_test_yml": {
+        "path": ".github/workflows/deploy_test.yml",
+        "exists": true,
+        "note": "Confirmed at /workspaces/debian-2/my-hw/.github/workflows/deploy_test.yml; triggers on CI 'success' + push to dev; restarts news_bot_test.service."
+      },
+      "files_list_news_bot_py": {
+        "present_in_deploy_yml": true,
+        "present_in_deploy_test_yml": true,
+        "note": "Both workflows list 'news_bot.py' in their FILES array at the same position."
+      },
+      "files_list_pending_articles_repo_py": {
+        "present_in_deploy_yml": true,
+        "present_in_deploy_test_yml": true,
+        "note": "Both workflows list 'pending_articles_repo.py' in their FILES array."
+      },
+      "ssh_host_148_135_207_54": {
+        "matches_deployment_md": true,
+        "note": "deployment.md line 53: 'Both bot instances run on 148.135.207.54 as separate systemd units'. SSH_HOST secret is used in workflows; hardcoded IP only appears in deployment documentation for illustration."
+      },
+      "db_path_home_hwbot_bot_news_db": {
+        "matches_deployment_md": true,
+        "note": "deployment.md confirms DEPLOY_PATH = /home/hwbot/bot/; news.db is in that directory. Task uses correct full path /home/hwbot/bot/news.db in the DELETE command."
+      },
+      "operator_applied_principle": {
+        "compliant": true,
+        "note": "Task description explicitly states 'Claude НЕ запускает SSH-команды и НЕ трогает прод-БД напрямую'. SSH commands in What-to-do are framed as 'Передать оператору' (hand to operator) / 'Попросить оператора подтвердить'. Implementation hints confirm 'Claude не пытается ходить по SSH сам'."
+      },
+      "ci_workflow_name": {
+        "deploy_yml_references": "CI",
+        "actual_ci_workflow_name": "CI",
+        "match": true,
+        "note": "deploy.yml workflow_run: workflows: [\"CI\"] matches the actual name: CI in ci.yml."
+      },
+      "git_push_by_claude_only": {
+        "compliant": true,
+        "note": "Task correctly scopes Claude actions to git push; GitHub Actions handles SCP and service restart autonomously. No direct SSH in What-to-do steps attributed to Claude."
+      }
+    },
+    "task_11": {
+      "journalctl_since_timestamp_syntax": {
+        "valid": true,
+        "note": "journalctl --since '<deploy timestamp>' with ISO datetime string is standard journalctl syntax. Step 1 and Step 3 use valid forms."
+      },
+      "journalctl_since_today_syntax": {
+        "valid": true,
+        "note": "journalctl --since today is a valid shorthand accepted by systemd's journalctl."
+      },
+      "journalctl_no_pager_flag": {
+        "valid": true,
+        "note": "--no-pager is a valid journalctl flag that prevents interactive pagination, required for SSH piping."
+      },
+      "sqlite3_select_count_syntax": {
+        "valid": true,
+        "note": "sqlite3 /path/to/db.sqlite \"SELECT COUNT(*) FROM table WHERE col LIKE '%pattern%';\" is correct sqlite3 CLI syntax. Quoting uses backslash-escaped inner double-quotes inside the outer SSH double-quoted string, which is correct bash shell escaping."
+      },
+      "db_path_home_hwbot_bot_news_db": {
+        "matches_architecture_md": true,
+        "matches_deployment_md": true,
+        "note": "Both reference documents confirm /home/hwbot/bot/ as prod DEPLOY_PATH. The task uses /home/hwbot/bot/news.db consistently in Steps 1 and 2."
+      },
+      "failed_articles_table_exists": {
+        "exists": true,
+        "note": "pending_articles_repo.py line 84: 'CREATE TABLE IF NOT EXISTS failed_articles'. Table is real, not hallucinated."
+      },
+      "incident_link_consistency": {
+        "link": "https://orangetrackdiecast.com/2026/05/02/hot-wheels-2026-car-culture-team-transport-k-case-report/",
+        "consistent_across_files": true,
+        "note": "Exact URL appears identically in code-research.md, tech-spec.md, and task 10. Task 11 uses the '%team-transport-k%' LIKE pattern (correct substring match). The link domain orangetrackdiecast.com is a real configured source (orangetrack_source.py, news_bot.py line 752)."
+      },
+      "grep_regex_pattern": {
+        "pattern": "UNIQUE constraint failed|IntegrityError",
+        "valid": true,
+        "note": "grep -E pattern with pipe alternation is valid ERE syntax. Both terms match real Python sqlite3 exception messages."
+      },
+      "grep_idempotency_guard_pattern": {
+        "pattern": "idempotency-guard|UNIQUE",
+        "valid": true,
+        "note": "Pattern matches the tech-spec-mandated log marker '[idempotency-guard]' (Decision 1 / AC10) and UNIQUE constraint errors. Correct grep -E usage."
+      },
+      "no_claude_ssh": {
+        "compliant": true,
+        "note": "Task 11 implementation hints line 112: 'Все команды выполняет оператор; Claude не пытается ходить по SSH сам'. All SSH/sqlite3 commands are described as requests to operator, not Claude-side execution."
+      },
+      "depends_on_task_10": {
+        "declared": true,
+        "note": "Task 11 front-matter: depends_on: [10]. Correct — task 11 needs the deploy timestamp from task 10."
+      }
+    }
+  },
+  "stats": {
+    "tasks_checked": 2,
+    "claims_verified": 18,
+    "issues_found": 1
+  }
+}

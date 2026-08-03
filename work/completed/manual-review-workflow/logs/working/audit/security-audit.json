@@ -1,0 +1,110 @@
+{
+  "auditor": "security-audit",
+  "summary": "Final-state security audit of the manual-review-workflow feature (Tasks 1-10). Zero CRITICAL / zero HIGH / zero MEDIUM findings. Seven LOW / INFO findings, all defense-in-depth or hygiene. Overall posture: clean. Safe to proceed to Pre-deploy QA (Task 14).",
+  "status": "clean",
+  "verdict": "PASS-WITH-FINDINGS (no blocker — LOW/INFO only, all defense-in-depth / hygiene)",
+  "findings": [
+    {
+      "severity": "low",
+      "owasp": "A04",
+      "file": "hw_review.py:455-460",
+      "description": "`cmd_preview` unlinks `old_path = row.get('preview_html_path')` without re-validating that `Path(old_path).resolve().parent == CACHE_DIR`. If the DB were ever tampered with locally (out-of-threat-model, but defense-in-depth), a forged `preview_html_path` pointing at `/etc/something` would be deleted with operator-process privileges. The canonical write path (lines 487-497) does guard; the cleanup path does not.",
+      "recommendation": "Mirror the write-side path-guard in the cleanup: `p = Path(old_path).resolve(); if p.parent == CACHE_DIR: p.unlink(missing_ok=True)` — otherwise skip silently. Apply the same guard inside `_cleanup_preview_html` (hw_review.py:518-534 and news_bot.py:506-518).",
+      "status": "accept_or_fix (follow-up P3 — strictly local operator DB, threat model excludes DB tampering)"
+    },
+    {
+      "severity": "low",
+      "owasp": "A03",
+      "file": "hw_review.py:744-747",
+      "description": "`--ru-title` / `--ru-subtitle` argparse values are not run through `_validate_string_field`. A 50 KiB Russian title would be accepted and stored. The 256 KiB stdin cap + `_MAX_STRING_BYTES = 10*1024` bound the `ru_paragraphs` / `ru_blocks` payloads but not the two CLI-argv values. Since the operator is trusted this is hygiene, not an exploit.",
+      "recommendation": "Add `_validate_string_field(args.ru_title, '--ru-title'); _validate_string_field(args.ru_subtitle, '--ru-subtitle')` near the top of `cmd_stage` before persisting.",
+      "status": "accept_or_fix (follow-up P3 — operator-trusted input, no injection surface)"
+    },
+    {
+      "severity": "low",
+      "owasp": "A05",
+      "file": "hw_review.py:428-436",
+      "description": "`_ensure_cache_dir` uses `Path.mkdir(exist_ok=True, mode=0o700)` then `CACHE_DIR.chmod(0o700)`. `exist_ok=True` accepts a pre-existing entry regardless of whether it is a real directory, a symlink, or owned by another user. On a multi-user box (not our deployment target) this could allow a pre-planted symlink to redirect writes. The resolved `path.parent == CACHE_DIR` guard at write time (hw_review.py:491) still catches such escapes and aborts before `webbrowser.open`, so the net risk is denial-of-write plus log warning, not an XSS escape.",
+      "recommendation": "Optional: call `CACHE_DIR.is_dir() and not CACHE_DIR.is_symlink()` before `mkdir`, and bail if a symlink is detected. Or rely on the existing write-time path-guard (which is already correct) and add a unit test asserting the symlink case lands in the `escape cache dir` branch.",
+      "status": "accept (single-user operator machine — not a shared host; write-time guard defends anyway)"
+    },
+    {
+      "severity": "low",
+      "owasp": "A09",
+      "file": "news_bot.py:98-112",
+      "description": "`send_admin_notification` uses `parse_mode='Markdown'`. Sanitised error messages and fetched article titles may contain Markdown metacharacters (`*`, `_`, `[`, `]`, `` ` ``) that break parsing — Telegram rejects the message and the admin ping is silently lost (caught by `except TelegramError`). Observability loss, not a security hole. Pre-existing, not introduced by this feature.",
+      "recommendation": "Either switch to `parse_mode='MarkdownV2'` with proper escaping (requires passing every interpolated value through an escape helper), or drop `parse_mode=` entirely. Lowest-friction: drop it — admin pings don't actually need formatting.",
+      "status": "accept (pre-existing, not feature-introduced; admin-facing only, failure is observable via logs)"
+    },
+    {
+      "severity": "info",
+      "owasp": "A02",
+      "file": "news_bot.py:57-62",
+      "description": "`_SECRET_ENV_NAMES` does NOT list `GEMINI_API_KEY`. This is correct — the Gemini-LLM-transcreation feature was archived (see memory/MEMORY.md) and no code path in this feature reads `GEMINI_API_KEY`. Worth documenting for future contributors who might re-introduce an LLM-backed translator: the sanitiser tuple must be updated in lock-step.",
+      "recommendation": "No action. Consider adding a comment under `_SECRET_ENV_NAMES` referencing memory/MEMORY.md: 'if you add a new secret (e.g. GEMINI_API_KEY), append it here; every new secret value must be redacted before write/log.'",
+      "status": "info (documentation nit)"
+    },
+    {
+      "severity": "info",
+      "owasp": "A09",
+      "file": "news_bot.py:1142,1151",
+      "description": "`logger.error(f\"list_pending failed: {exc}\")` and `logger.error(f\"Failed to send admin ping: {notify_err}\")` in `job()` step (6) do NOT run through `sanitize_error_message`. Every other error path in `job()` / `_fallback_publish` / `_overflow_fast_track` DOES. If `list_pending` raised a sqlite error embedding a token (implausible — `TELEGRAM_BOT_TOKEN` is never in a SQL string), the value would leak to logs. Risk is theoretical; worth tightening for uniformity.",
+      "recommendation": "Wrap both: `logger.error(f\"list_pending failed: {sanitize_error_message(exc)}\")` and `logger.error(f\"Failed to send admin ping: {sanitize_error_message(notify_err)}\")` to match the pattern used everywhere else in the same function.",
+      "status": "info (cosmetic uniformity; no realistic secret-leak vector)"
+    },
+    {
+      "severity": "info",
+      "owasp": "A08",
+      "file": "pending_articles_repo.py:111-123",
+      "description": "`_loads_or_none` uses `json.loads(raw)` without a max-depth / max-size guard. A manually-tampered DB row containing e.g. 5 MiB of `[[[[[...]]]]` could cause stack-overflow or memory spike on deserialisation. Threat model: DB is local-only, operator-trusted, so this is not a production risk. Noting for completeness.",
+      "recommendation": "No action for this milestone. If the DB ever becomes shared or writeable by an untrusted process, add a `len(raw) < N MiB` precheck or switch to `json.loads(..., parse_constant=...)` with a depth cap wrapper.",
+      "status": "info (out of current threat model)"
+    }
+  ],
+  "invariants_check": [
+    {"invariant": "(a) all SQL uses ? placeholders", "result": "PASS", "evidence": "`grep -nE \"execute\\(\\s*f|execute\\(\\s*[\\\"'][^\\\"']*%|\\.format\\s*\\(\" pending_articles_repo.py` → empty. Each execute() call across pending_articles_repo.py:156-657 passes a tuple as the 2nd arg."},
+    {"invariant": "(b) last_error always sanitised", "result": "PASS", "evidence": "news_bot.py:762 `pending_repo.increment_attempt(link, safe)` with `safe = sanitize_error_message(exc)`; news_bot.py:771,1025 `move_to_failed(_link, safe)`; news_bot.py:1016 idle-fallback mirror. Only `increment_attempt` / `move_to_failed` write `last_error`, both receive pre-sanitised `safe`."},
+    {"invariant": "(c) preview_renderer URL-scheme allowlist + CSP", "result": "PASS", "evidence": "preview_renderer.py:65 `_SAFE_URL_RE = re.compile(r'^https?://', re.IGNORECASE)`; preview_renderer.py:77-81 `_CSP_META` contains exact `default-src 'none'; img-src https:; frame-src https:; style-src 'unsafe-inline'`; preview_renderer.py:73 `_SAFE_ATTR_NAME_RE` closes the round-2 attribute-name-injection hole."},
+    {"invariant": "(d) webbrowser.open guarded by CACHE_DIR", "result": "PASS", "evidence": "hw_review.py:487 `path = Path(tmp.name).resolve()`; hw_review.py:491 `if path.parent != CACHE_DIR: ... return 1`. webbrowser.open at hw_review.py:506 only reached when the guard passes. CACHE_DIR itself is `Path('~/.cache/hw-review/').expanduser().resolve()` at module load (line 92), so the comparison is between two canonical resolved paths."},
+    {"invariant": "(e) stage validator — 8 rejection vectors", "result": "PASS", "evidence": "(1) 256 KiB stdin cap: hw_review.py:336-343 `sys.stdin.buffer.read(_STDIN_READ_LIMIT)` then `if len(raw) >= _STDIN_READ_LIMIT: reject`. (2) depth > 3: _validate_depth at hw_review.py:254-264. (3) unknown top keys: hw_review.py:302-312. (4) non-list ru_paragraphs: hw_review.py:317-318. (5) non-dict block entries: hw_review.py:275-276. (6) unknown block type: hw_review.py:278-279. (7) unknown block keys: hw_review.py:281-283. (8) string field > 10 KiB: hw_review.py:267-271 _validate_string_field."}
+  ],
+  "owasp_coverage": ["A01", "A02", "A03", "A04", "A05", "A06", "A07", "A08", "A09", "A10"],
+  "owasp_walkthrough": {
+    "A01_access_control": "PASS. Operator-only CLI; no remote-trust surface. `hw_review publish N` resolves `N` via `_resolve_pending` (1-based list of pending rows) — cannot address a row outside pending_articles. `retry N` is a 1-based list_failed index; cannot address pending or published. No UID spoofing path.",
+    "A02_crypto_failures": "PASS. `_SECRET_ENV_NAMES` covers TELEGRAM_BOT_TOKEN / TELEGRAM_CHANNEL_ID / TELEGRAM_ADMIN_ID / TELEGRAPH_ACCESS_TOKEN. Empty-env-var pathology closed at news_bot.py:88 (`if not value or not value.strip(): continue`). `sanitize_error_message` called on every exception before write/admin-ping in `_fallback_publish`, `_overflow_fast_track`, `cmd_publish`, and job() error paths (news_bot.py:762,771,1016,1025 / hw_review.py:580,607). `TelegraphError` messages reference field names not values (telegraph_publisher.py:43,289). `requests` exceptions do not embed the token (token is in POST body, not URL).",
+    "A03_injection": "PASS. (SQL) All pending_articles_repo.py queries use `?` placeholders — grep-verified. The `list_pending_stale(hours)` / `list_notified_overdue(grace_hours)` construct a string fragment `f'-{int(hours)}'` for SQLite's `datetime(..., ?)` modifier — but `int()` coercion makes injection impossible even if a caller passed a hostile string. (Command) `webbrowser.open(f\"file://{path}\")` where `path` is a resolved `Path` inside CACHE_DIR with `uuid4`-like prefix from `tempfile.NamedTemporaryFile` — no shell interpolation. (JSON) `stage N` validator rejects malformed / oversized / deep / unknown-key payloads before touching the DB.",
+    "A04_insecure_design": "PASS. Prep-phase / publish-phase split is the core design invariant — enforced. Staged-row protection is pushed down to `ru_paragraphs IS NULL` in the SQL WHERE clauses of `list_notified_overdue` (pending_articles_repo.py:407) and `list_pending_for_eviction` (pending_articles_repo.py:426), eliminating a SELECT+Python-filter+DELETE race window. Decision-9 idempotency (persist `telegraph_url` BEFORE teaser step) closes the double-publish race. Per-row try/except around `_fallback_publish` prevents one row's failure from aborting the pass.",
+    "A05_security_misconfiguration": "PASS. CSP meta is exact and byte-compared in tests. Tag allowlist, URL-scheme allowlist (`^https?://` IGNORECASE), attribute-name allowlist (`^[A-Za-z][A-Za-z0-9_-]*$`) all in place. CACHE_DIR is `0o700` via both `mkdir(mode=0o700)` AND defensive `chmod(0o700)`. Script runs as the operator user, not root.",
+    "A06_vulnerable_components": "PASS (at time of audit). requirements.txt: `feedparser==6.0.10` / `requests==2.32.3` / `beautifulsoup4==4.12.3` / `deep-translator==1.11.4` / `schedule==1.2.1` / `python-telegram-bot==21.10` / `curl_cffi==0.15.0`. All pinned. `requests==2.32.3` is the CVE-2024-35195-patched release. No stdlib-breaking pins. Recommend scheduling a quarterly `pip-audit` as standard hygiene — out-of-scope for this feature.",
+    "A07_auth_failures": "N/A. Operator-only local CLI; no login flow, no session management, no password storage. Telegram bot token and Telegraph access token authenticate the outbound API calls; token handling is covered under A02.",
+    "A08_data_integrity": "PASS. JSON (de)serialisation uses `ensure_ascii=False` (pending_articles_repo.py:111-117) — Cyrillic round-trips without `\\uXXXX`. Transactional moves use explicit try/commit/rollback/close (pending_articles_repo.py:480-525, 533-566, 574-599, 612-657). Decision 9 trusts the stored `telegraph_url` on retry — legitimate because the process itself wrote it; DB tamper is out of threat model.",
+    "A09_logging_monitoring": "PASS with INFO-level non-uniformities (see findings). Every write-path to pending_articles.last_error / failed_articles.last_error passes through `sanitize_error_message`. Admin-ping composition is size-bounded (integer counts in overflow ping; titles-only in idle heads-up — admin's own Telegram will truncate oversized messages). `send_admin_notification`'s TelegramError catch (news_bot.py:109-111) swallows failure — correct behaviour for a notifier, but noted for observability.",
+    "A10_ssrf": "PASS. No user-controlled URL reaches a server-side HTTP call. `webbrowser.open` opens a local `file://` URL. RSS fetch URLs come from `feeds.json` (operator-edited) with `urlparse(item).scheme in ('http', 'https')` guard at news_bot.py:146. `send_telegraph_teaser` sends to the hard-coded `TELEGRAM_CHANNEL_ID`. `telegraph_publisher._api_call` posts to the hard-coded `API_BASE = 'https://api.telegra.ph'`."
+  },
+  "feature_specific_checks": {
+    "secret_exposure_hw_review_show": "PASS. `cmd_show` prints `row.get('last_error')` which was already sanitised at write time (Decision 11). `telegraph_url` is printed raw but never contains a token (Telegra.ph URLs are public). No re-desanitisation loop.",
+    "cyrillic_encoding": "PASS. `json.dumps(..., ensure_ascii=False)` preserves Cyrillic in DB TEXT columns. `html.escape(..., quote=True)` on every string leaf preserves Cyrillic bytes while neutralising HTML-special chars. Attribute values pass through the same escape. Sanitiser's `str.replace(value, '[REDACTED]')` works unicode-correctly since it compares raw bytes of a unicode str — a Cyrillic error string containing a token substring redacts correctly.",
+    "symlink_toctou_preview_cache": "PASS with one LOW finding (see finding #1). Write-time path-guard (hw_review.py:491) compares `Path(tmp.name).resolve().parent` to CACHE_DIR (also resolved at import). A mid-flight symlink planted under CACHE_DIR would cause the resolved tmp-file path to land outside CACHE_DIR, triggering the escape branch — `_err('preview path escaped cache dir')` + return 1 — which aborts BEFORE `set_preview_path` and BEFORE `webbrowser.open`.",
+    "telegraph_token_in_network_errors": "PASS. `publish_article` → `_api_call` → `requests.post(url, data={'access_token': token, ...})`. `requests.exceptions.HTTPError` / `Timeout` / `ConnectionError` strings contain the URL and status, not the POST body. `TelegraphError` raises `f\"{method} failed: {body.get('error')}\"` — Telegraph's API error field references parameter names, never the token value. Sanitiser is belt-and-braces correct regardless.",
+    "empty_env_var_pathology": "PASS. news_bot.py:88 `if not value or not value.strip(): continue` guards against the `str.replace('', '[REDACTED]')` interleaving pathology. Covered by tests/test_admin_ping.py.",
+    "overflow_eviction_race": "PASS. `list_pending_for_eviction` applies `WHERE ru_paragraphs IS NULL` in SQL (pending_articles_repo.py:426) — staged rows can never appear in the eviction candidate list, even under concurrent `hw_review stage N`. No SELECT+DELETE race window."
+  },
+  "files_reviewed": [
+    "pending_articles_repo.py",
+    "preview_renderer.py",
+    "news_bot.py",
+    "telegraph_publisher.py (preview_nodes + publish_article only — the scoped surface)",
+    "hw_review.py",
+    "autoevolution_source.py (source_name stamp path only)",
+    "mattel_news_source.py (source_name stamp path only)",
+    "lamley_source.py (source_name stamp path only)",
+    "requirements.txt"
+  ],
+  "grep_audit_results": {
+    "sql_interpolation_hits": "0 (grep -nE \"execute\\(\\s*f|execute\\(\\s*[\\\"'][^\\\"']*%|\\.format\\s*\\(\" pending_articles_repo.py → empty)",
+    "last_error_write_sites": "1 (only pending_articles_repo.py:267 — inside UPDATE ... SET last_error = ? WHERE link = ? — parameter-bound)",
+    "webbrowser_open_sites": "1 (hw_review.py:506, guarded at line 491)",
+    "csp_meta_present": "1 (preview_renderer.py:23 docstring + the rendered _CSP_META literal at lines 77-81)",
+    "ensure_ascii_false_sites": "pending_articles_repo.py:116 (_dumps) — covers every list/dict column on insert/update"
+  }
+}

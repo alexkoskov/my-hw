@@ -1,0 +1,95 @@
+{
+  "validator": "reality-checker",
+  "batch": [16, 17, 18],
+  "iteration": 2,
+  "status": "approved",
+  "r1_fixes_verified": {
+    "task_17_audit_report_paths": "FIXED — task 17 now correctly reads logs/audit/code-audit.md, logs/audit/security-audit.md, logs/audit/test-audit.md throughout all sections (What to do line 26, Context Files line 66, Details line 90, Dependencies line 93).",
+    "task_17_prescriptive_one_liners": "FIXED — prescriptive python -c one-liners removed. Smoke section now says 'конкретный способ инвокации — на усмотрение исполнителя' for both Claude API and token redaction smokes.",
+    "task_17_redact_text_brittleness": "FIXED — smoke #2 now explicitly allows either _redact_text helper OR _TokenRedactingFilter.filter() as alternatives (line 82), with no hard import requirement.",
+    "task_18_wave_11": "CONFIRMED — task 18 frontmatter correctly shows wave: 11.",
+    "task_18_missing_modules_in_deploy_bundle": "FIXED — task 18 now explicitly requires all four files (ux-guidelines.md, claude_transcreation.py, compute_publish_slots.py, outage_state.py) in all acceptance criteria, verification steps, and edge cases sections. Deploy-failed protocol for missing modules is clearly spelled out.",
+    "task_18_description_false_confidence": "PARTIALLY FIXED — description line 20 still only mentions ux-guidelines.md in the parenthetical summary ('добавлен ux-guidelines.md в FILES'), while the body correctly names all four files. This is a minor doc inconsistency, not a blocking issue."
+  },
+  "findings": [
+    {
+      "severity": "minor",
+      "category": "hallucination",
+      "task": 18,
+      "issue": "Task 18 Description (line 20) summary parenthetical says 'Task 13 расширил deploy-bundle (добавлен ux-guidelines.md в FILES, проброс ANTHROPIC_API_KEY / ANTHROPIC_MODEL / TZ в .env на сервере)' — listing only ux-guidelines.md when Task 13 in fact adds FOUR files: claude_transcreation.py, compute_publish_slots.py, outage_state.py, and ux-guidelines.md. The body of task 18 (What to do steps, Acceptance Criteria, Verification Steps, Edge Cases) correctly names all four files. The description parenthetical is a stale summary that creates a small false impression for anyone who reads only the description.",
+      "fix": "Update the description parenthetical to: 'Task 13 расширил deploy-bundle (добавлены claude_transcreation.py, compute_publish_slots.py, outage_state.py, ux-guidelines.md в FILES; проброс ANTHROPIC_API_KEY / ANTHROPIC_MODEL / TZ в .env на сервере)'. This aligns the description with the task body, which already correctly identifies all four files."
+    },
+    {
+      "severity": "minor",
+      "category": "hallucination",
+      "task": 18,
+      "issue": "Task 18 line 28 attributes compute_publish_slots.py to 'Task 4': 'compute_publish_slots.py (распределение слотов 13:00–20:00, Task 4)'. Task 4 is 'Extend _TokenRedactingFilter for ANTHROPIC_API_KEY (3-layer)'. compute_publish_slots.py is created by Task 2 ('Create compute_publish_slots.py + tests'). The file description and function description are correct; only the task number is wrong. Verified against tasks/02.md (title: 'Task 2: Create compute_publish_slots.py + tests') and tasks/04.md (title: 'Task 4: Extend _TokenRedactingFilter').",
+      "fix": "In task 18 line 28, change 'compute_publish_slots.py (распределение слотов 13:00–20:00, Task 4)' to 'compute_publish_slots.py (распределение слотов 13:00–20:00, Task 2)'."
+    },
+    {
+      "severity": "minor",
+      "category": "feasibility",
+      "task": 16,
+      "issue": "Task 16 implementation hint (line 114) still says 'git diff dev -- tests/' for computing the test count delta. This command correctly returns results only if the current HEAD is on the feature branch and dev is the base. If the agent is on a detached HEAD or has already merged into dev, the diff will be empty (0 added, 0 deleted), producing a false delta. This hint was flagged as major in R1 but the text was not updated.",
+      "fix": "Update hint to: 'git diff $(git merge-base HEAD dev) HEAD -- tests/' to compute the delta from the branch-point rather than assuming the current branch is not dev. Also add: 'Confirm you are on the feature branch before running this command.'"
+    }
+  ],
+  "r1_findings_closed": [
+    {
+      "r1_severity": "critical",
+      "r1_task": 17,
+      "r1_issue": "Task 17 read audit reports from logs/working/task-{14,15,16}/ (hallucinated paths)",
+      "r2_status": "CLOSED — all references now correctly point to logs/audit/code-audit.md, logs/audit/security-audit.md, logs/audit/test-audit.md"
+    },
+    {
+      "r1_severity": "critical",
+      "r1_task": 17,
+      "r1_issue": "Task 17 smoke command referenced 'from news_bot import _redact_text' hard import without fallback",
+      "r2_status": "CLOSED — smoke now explicitly offers _TokenRedactingFilter.filter() as alternative; 'конкретный способ инвокации — на усмотрение исполнителя'"
+    },
+    {
+      "r1_severity": "critical",
+      "r1_task": 18,
+      "r1_issue": "deploy.sh and deploy.yml FILES did not include claude_transcreation.py, compute_publish_slots.py, outage_state.py",
+      "r2_status": "CLOSED at task level — task 18 now explicitly checks for all four files and has deploy-failed protocol; task 13 description also correctly identifies all four modules to add. Note: the actual deploy.sh/deploy.yml in the codebase still show the pre-feature state (9 FILES), which is expected since tasks 1-13 have not been executed yet."
+    },
+    {
+      "r1_severity": "major",
+      "r1_task": 17,
+      "r1_issue": "Task 17 smoke contained full prescriptive Python one-liner for Claude API live call",
+      "r2_status": "CLOSED — one-liner removed; smoke description is now approach-level with discretion given to the agent"
+    },
+    {
+      "r1_severity": "major",
+      "r1_task": 17,
+      "r1_issue": "Task 17 smoke contained full prescriptive Python one-liner for _redact_text test",
+      "r2_status": "CLOSED — replaced with approach description; invocation left to agent discretion"
+    },
+    {
+      "r1_severity": "major",
+      "r1_task": 18,
+      "r1_issue": "Task 18 verification steps did not check for claude_transcreation.py, compute_publish_slots.py, outage_state.py",
+      "r2_status": "CLOSED — all four files explicitly listed in every verification step and acceptance criterion"
+    },
+    {
+      "r1_severity": "major",
+      "r1_task": 18,
+      "r1_issue": "Task 18 description created false confidence that deploy bundle was complete (only ux-guidelines.md mentioned)",
+      "r2_status": "PARTIALLY CLOSED — body of task 18 is correct throughout; description line 20 parenthetical still incomplete (tracked as minor finding above)"
+    },
+    {
+      "r1_severity": "minor",
+      "r1_task": 18,
+      "r1_issue": "Hardcoded /home/user/bot/.env path in grep command",
+      "r2_status": "CLOSED — task 18 now phrases env check as 'оператор сам выполнит ssh ... grep ... | sed ...' with no hardcoded path; operator supplies their own DEPLOY_PATH"
+    }
+  ],
+  "stats": {
+    "tasks_checked": 3,
+    "claims_verified": 38,
+    "issues_found": 3,
+    "r1_criticals_closed": 3,
+    "r1_majors_closed": 4,
+    "r1_minors_closed": 1
+  }
+}

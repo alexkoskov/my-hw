@@ -1,0 +1,52 @@
+{
+  "summary": "Task 3 implementation in news_bot.py is clean, well-documented, and faithfully implements Decisions 4/11/12 of the tech-spec. Three helpers (SOURCE_EMOJI/SOURCE_LABEL dicts, build_admin_ping, sanitize_error_message) + three env-overridable constants (IDLE_TIMEOUT_HOURS, GRACE_WINDOW_HOURS, QUEUE_CAP). No regressions outside task scope. Few nits only.",
+  "status": "ok-with-nits",
+  "findings": [
+    {
+      "id": "CR-1",
+      "severity": "minor",
+      "dimension": "error-handling",
+      "file": "news_bot.py",
+      "line_range": "60-64",
+      "finding": "Inner try/except around `message.replace(value, '[REDACTED]')` is belt-and-suspenders. `str.replace(str, str)` on well-formed strings cannot raise; the outer try around `str(exc)` already covers the realistic failure mode. Defensive but not wrong.",
+      "recommendation": "Leave as-is for v1 — task-3 explicitly calls for graceful degradation ('Исключение внутри функции не поднимает'). Extra defense is free and matches spec intent. No action."
+    },
+    {
+      "id": "CR-2",
+      "severity": "minor",
+      "dimension": "readability",
+      "file": "news_bot.py",
+      "line_range": "39-41",
+      "finding": "Env-overridable knobs `IDLE_TIMEOUT_HOURS`/`GRACE_WINDOW_HOURS`/`QUEUE_CAP` use `int(os.getenv(name, default))` which will raise `ValueError` on malformed env values. Task 3 scope is foundational; Task 6 owns the job loop that actually reads these knobs.",
+      "recommendation": "Out of scope for task 3. Task 6 can harden if needed. No action."
+    },
+    {
+      "id": "CR-3",
+      "severity": "minor",
+      "dimension": "readability",
+      "file": "news_bot.py",
+      "line_range": "370-372",
+      "finding": "`_ADMIN_PING_ORDER` hardcoded as a tuple — explicit per task-3 hints ('Явный порядок = стабильность формата на случай будущих рефакторов'). Good.",
+      "recommendation": "No action — matches spec guidance."
+    },
+    {
+      "id": "CR-4",
+      "severity": "minor",
+      "dimension": "cross-file",
+      "file": "news_bot.py",
+      "line_range": "111 (Counter call)",
+      "finding": "`Counter(r['source_name'] for r in rows)` uses strict subscript — raises KeyError if any row lacks 'source_name'. Task-3 Edge Cases section explicitly chose strict behavior ('пусть баг проявится рано'). Aligned with spec.",
+      "recommendation": "No action — matches spec."
+    }
+  ],
+  "acceptance_criteria_check": {
+    "SOURCE_EMOJI_SOURCE_LABEL_keys_exact": true,
+    "build_admin_ping_empty_returns_None": true,
+    "build_admin_ping_byte_exact_format": true,
+    "stable_order_independent_of_input": true,
+    "sanitize_redacts_all_four_secrets": true,
+    "sanitize_skips_empty_whitespace_None": true,
+    "smoke_checks_all_pass": true,
+    "no_regressions_in_existing_suite": true
+  }
+}

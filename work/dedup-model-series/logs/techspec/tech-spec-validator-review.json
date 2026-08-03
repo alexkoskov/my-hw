@@ -1,0 +1,36 @@
+{
+  "status": "approved",
+  "findings": [
+    {
+      "severity": "major",
+      "category": "tasks",
+      "issue": "`pending_articles_repo.py` is contradictory and unassigned. Architecture > 'What we're building/modifying' (line 38-39) lists it as MODIFIED ('the 30-day fingerprint window query'), while Dependencies > 'Using existing' (line 149-150) lists the same `list_recent_*_fingerprints` (window param 30) as used AS-IS. No Implementation Task has `pending_articles_repo.py` in 'Files to modify' — Task 4 lists it only under 'Files to read'. So either the 30-day window query is real code work that no task owns, or the file is mislabeled as 'modifying'.",
+      "fix": "Resolve the contradiction: if the window query needs a code change, add `pending_articles_repo.py` (+ its test) to Task 4's 'Files to modify'; if `list_recent_*_fingerprints` already accepts the window arg and is called with 30 unchanged, remove it from Architecture 'What we're building/modifying' and keep it only under 'Using existing'."
+    },
+    {
+      "severity": "minor",
+      "category": "structure",
+      "issue": "Decision 6 ('Extraction in model_extractor.py, storage in existing JSON [TECHNICAL]', line 114-118) has only **Decision** + **Rationale**; it is missing the **Alternatives considered** part that every other decision (1-5, 7) includes and the template requires.",
+      "fix": "Add an Alternatives line to Decision 6, e.g. 'Alternatives: new top-level module / new DB column (both rejected — forbidden by the user-spec Ограничения; ImportError-crashloop risk).'"
+    },
+    {
+      "severity": "minor",
+      "category": "verification",
+      "issue": "Task 4 (toggle + tiered gate refactor of `news_bot.py`) is the integration-critical task — it wires the 30-day any-source fingerprint DB window fetch, the tiered block/flag verdict, and the `[E015]`/`[E014]` pings — yet has no `Verify-smoke`. The lighter Task 1 (pure extraction) and Task 5 (backfill) both carry smoke checks, so the asymmetry is notable.",
+      "fix": "Add a `Verify-smoke` to Task 4: e.g. run the gate on a temp SQLite DB seeded with a prior SDCC pair — confirm distinctive pair blocks (`[E015]`), broad/theme-only flags (`[E014]`, still publishes), no-match falls through to the 7-day backstop, and toggle-off skips the pair-rule."
+    },
+    {
+      "severity": "minor",
+      "category": "task_quality",
+      "issue": "Task 6 lists `documentation-reviewer` as a reviewer. That agent file exists in ~/.claude/agents/, but it is NOT in the standard Reviewer Agents catalog table of skills-and-reviewers.md (which enumerates code-reviewer, security-auditor, test-reviewer, skill-checker, prompt-reviewer, infrastructure-reviewer, deploy-reviewer). Task 6 is also a mixed test+docs task under the `code-writing` skill.",
+      "fix": "Confirmed the agent exists — this is acceptable for the docs portion of Task 6. Optionally note it as a non-catalog reviewer, or use the documentation-writing default reviewer `code-reviewer`. Consider splitting the calibration test (test_model_extractor.py) from the deployment.md docs if you want cleaner skill/reviewer alignment."
+    },
+    {
+      "severity": "minor",
+      "category": "task_quality",
+      "issue": "Decision 5 (line 104-112) embeds a hard line-number reference `news_bot.py:990-994` for the same-source-skip block to be reversed. Line numbers drift and are likely stale by the time decomposition runs. (The 8b line-number rule is scoped to task descriptions and no task body has line numbers; this is in the Decisions section, so it is informational.)",
+      "fix": "Reference the code by symbol instead of line range, e.g. 'the same-source skip inside `_check_cross_source_dedup`', so the pointer survives edits before decomposition."
+    }
+  ],
+  "summary": "Template-compliant and structurally sound: all required sections present (incl. User-Spec Deviations), frontmatter valid (created/status=draft/branch=dev/size=L), every decision cites an AC or is marked [TECHNICAL], 11 tasks (<=15) organized into Wave 1-3 + Audit Wave (3 auditors, reviewers:none) + Final Wave (pre-deploy QA + post-deploy). Wave-conflict scan is CLEAN — no two same-wave tasks touch the same file, dependencies flow W1->W2->W3 with no cycles. All skills are valid catalog entries; no prompt work miswired to code-writing. No effort-based time estimates (the 2-week post-deploy window is a legitimate monitoring SLA, not a sequencing estimate). Status approved (zero critical). One MAJOR to resolve before decomposition: `pending_articles_repo.py` is both labeled 'modifying' and 'using existing' yet owned by no task — clarify or assign. Four minors: Decision 6 missing Alternatives; Task 4 lacks a Verify-smoke; Task 6 uses non-catalog reviewer documentation-reviewer (exists); Decision 5 hard-codes a fragile line range."
+}

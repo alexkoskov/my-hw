@@ -1,0 +1,798 @@
+# Interview Plan for Feature Planning — llm-transcreation-and-distributed-publishing
+#
+# Cycle 1 was effectively conducted in pre-feature operator dialogue (see conversation_history).
+# Operator iteratively defined the scope through ~12 message exchanges between admin demos
+# of mattel-parser-rewrite (yesterday) and today's manual transcreation. All required items
+# below are populated with operator-confirmed positions.
+
+# ============================================================================
+# Interview Metadata
+# ============================================================================
+interview_metadata:
+  started: "2026-04-26 10:47:51"
+  last_updated: "2026-04-26 (post-approval)"
+  status: "completed"
+  can_resume: false
+  current_question_num: 10
+  feature_size: "L"  # upgraded from M after adequacy validator R1 flagged sizing — 24+ AC, 290 LoC removal, ~58 test churn
+
+# ============================================================================
+# Conversation History (compact summary of the operator dialogue that led here)
+# ============================================================================
+conversation_history:
+  - question_num: 1
+    timestamp: "2026-04-26 (post-mattel-parser-rewrite demo)"
+    topic: "operator_quality_concern"
+    agent_question: |
+      Demonstrated 2 paths in test channel: Google Translate (auto-fallback overflow)
+      vs Claude transcreation (manual hw_review). Operator compared.
+    user_answer: |
+      "Если ты можешь обходиться без меня и переводить текст сам, а не через гемини,
+      то я за, делай все сам. Ты ведь переводил сам по моей инструкции, без гемини?"
+    summary: "Operator wants Claude-quality autonomous translation. Confirmed manual path uses Claude+ux-guidelines, not Gemini. Identified gap: no Claude API on prod server."
+
+  - question_num: 2
+    timestamp: "2026-04-26"
+    topic: "claude_api_integration"
+    agent_question: |
+      Explained that on server today only Google Translate runs. To get Claude-quality
+      autonomously needs Claude API integration (deferred feature `llm-transcreation`).
+      Cost estimate: $0.10–$0.50/day depending on model.
+    user_answer: |
+      "1. Подразумевается подключение claude api?"
+    summary: "Operator confirmed: yes, Claude API integration is the path."
+
+  - question_num: 3
+    timestamp: "2026-04-26"
+    topic: "hourly_drain_idea"
+    agent_question: |
+      Proposed: cron every 1h, drain 1 article from pending per tick.
+    user_answer: |
+      "cron раз в 12 часов. Фетчатся статьи... через час, ты начинаешь их переводить
+      и постить в тг с периодичностью в час. Если в очереди 0, ты сфетчил несколько
+      статей, то равномерно распредели их с 13 часов дня до 20 часов вечера"
+    summary: "Operator overrode my hourly-drain idea with stricter scheme: cron stays 12h, fetch+ping, then distributed publishing in daytime window 13-20 MSK."
+
+  - question_num: 4
+    timestamp: "2026-04-26"
+    topic: "details_A_B_C_D"
+    agent_question: |
+      Asked 4 clarifying questions:
+      A) Cron timing (every 12h or fixed at 12:00 MSK?)
+      B) What if N > window-fits? Squeeze or carry over?
+      C) Claude API immediately or staged?
+      D) What "1 hour after fetch" means?
+    user_answer: |
+      A) "привязать cron к 12:00 МСК фиксированно"
+      B) "Если фетч приносит 20 статей — впихиваем в 13-20"
+      C) "Перевод на Claude API сразу. На проде сразу будет подключен клод апи,
+          переводить через гемини нужды не будет, кроме вариантов, когда токены кончились"
+      D) "Можно сразу после фетча, так как клод апи будет подключен на проде"
+    summary: "Cron fixed at 12:00 MSK daily. Claude API as primary translator from day 1. Google Translate kept only as failure fallback. No artificial 1h delay; first post at 13:00 (window opens)."
+
+  - question_num: 5
+    timestamp: "2026-04-26"
+    topic: "claude_api_outage_protocol"
+    agent_question: |
+      Asked for E (cron failure) / F (container restart) / G (Claude API outage) policies.
+    user_answer: |
+      G: "если claude api недоступен по любой причине, то ты пингуешь меня два раза с
+       разницей в час о том, что апи недоступен. В пинге пишешь проблему и предлагаешь
+       мне ее решить. Если дело в кончившихся токенах, то пишешь, что надо пополнить
+       токены, оплатив их и тд. Если за 2 часа я не оплатил, то запускаешь автоперевод
+       через гемини"
+      F: "да" (recalc on container restart confirmed)
+      E: clarified — operator's case was about 'не сфетчилось' (fetch failure); orchestrator
+         meant general 'pending leftover from previous day'. Both handled by single algorithm
+         (recalc N from full pending each cron tick).
+    summary: "API outage: 2 admin pings with 1h gap, then 2h grace, then auto-fallback to Google Translate. Container restart: recalc remaining schedule for remaining time. Fetch failure: standard error path, doesn't block existing pending publish."
+
+  - question_num: 6
+    timestamp: "2026-04-26"
+    topic: "minimum_interval_constraint"
+    agent_question: |
+      Confirmed window distribution algorithm with examples (N=4,7,10,14,20).
+    user_answer: |
+      "Если остались неопубликованные статьи, и фетч принес еще новых на следующий день.
+       То распредели все с 13 до 20 часов. Но, не чаще, чем 1 статья в 40 минут"
+    summary: "Min interval = 40 minutes between posts. Cap of 11 posts/day at floor=40min. N>11 carries over to next day."
+
+  - question_num: 7
+    timestamp: "2026-04-26"
+    topic: "marker_uniformity"
+    agent_question: |
+      Proposed differentiated marker '↳ автоперевод (Google Translate fallback)' for
+      Gemini-fallback path vs simple '↳ автоперевод' for Claude path.
+    user_answer: |
+      "auto-marker ↳ автоперевод"
+    summary: "Single uniform marker for ALL auto-translated posts regardless of engine. Operator gets engine-specific signal via admin pings, not in-channel."
+
+  - question_num: 8
+    timestamp: "2026-04-26 10:47:51"
+    topic: "feature_decomposition_start"
+    agent_question: |
+      Agreed full scope. Operator approved /new-user-spec start.
+    user_answer: |
+      (implicit "go" via auto mode + /new-user-spec invocation)
+    summary: "Pre-cycle dialogue complete. Begin standard user-spec planning flow with code-research."
+
+  - question_num: 9
+    timestamp: "2026-04-26 11:20:40"
+    topic: "cycle2_seven_decisions"
+    agent_question: |
+      After code-research surfaced 7 implementation choices (glossary, emoji prefix,
+      hard-cap, switch-back ping, TZ, ux-guidelines deploy, outage state storage):
+      proposed positions for each. Plus operator independently raised the 8th item
+      (4000-char body truncation as Telegram-era vestige).
+    user_answer: |
+      "все утверждаю. 4000-char body limit можно отменить, наверно?
+       Сейчас мы не делаем пост в телеграм, а делаем все в телеграф.
+       Там таких ограничений нет"
+    summary: |
+      All 7 proposals confirmed: HW glossary kept as safety net (bureaucratic dropped),
+      emoji belt-and-suspenders (Claude prompt + regex), no hard-cap (algorithm's floor=40
+      already caps 11/day), switch-back ping yes, TZ=Europe/Moscow env + schedule at "12:00",
+      ux-guidelines.md added to deploy bundle, outage state in new SQLite bot_state table.
+      Item 8: 4000-char body truncation REMOVED everywhere (Claude prompt + transcreate_text
+      Google fallback) — vestige of pre-Telegraph era when bot posted body directly to channel.
+      Now body lives on Telegraph (no practical limit); channel post is teaser only (~30 chars).
+
+  - question_num: 10
+    timestamp: "2026-04-26 11:35:00"
+    topic: "completeness_gap_resolution"
+    agent_question: |
+      Completeness checker flagged 2 gaps:
+      (1) Recovery probe when queue empty during outage — no publish events to trigger
+          switch-back to Claude. Variants: (a) wait for next cron tick (max 24h delay,
+          simpler), (b) periodic hourly health-check ping ($0.7/мес).
+      (2) Crash-loop guard — without MAX(published_at) check on startup, crash-looping
+          bot could burst posts.
+    user_answer: |
+      "оба да"
+    summary: |
+      (1a) Confirmed: passive recovery via next cron tick. No separate health-check code.
+      Edge case (outage + empty queue) accepted as bounded delay (≤24h until 12:00 МСК).
+      (2) Confirmed: explicit crash-loop guard. On startup, read MAX(published_at) from
+      published_articles. If < 40 min ago, skip current scheduled publish, wait until
+      last_published_at + 40min before next attempt.
+
+# ============================================================================
+# Phase 1: High-Level Feature Understanding (Cycle 1 — pre-populated)
+# ============================================================================
+phase1_feature_overview:
+
+  feature_name:
+    score: 100
+    status: "complete"
+    value: "llm-transcreation-and-distributed-publishing"
+    gaps: ""
+    required: true
+
+  feature_description:
+    score: 95
+    status: "complete"
+    value: |
+      Two-part feature replacing the current auto-fallback path:
+
+      Part A — LLM transcreation:
+      Replace Google Translate (`transcreate_text` via deep-translator) with Claude API
+      using the same `ux-guidelines.md` prompt that the manual-review path uses. Auto-published
+      articles will read like the manual-curated ones — живой русский, активные глаголы,
+      редакторский тон. Google Translate stays as a 2h-grace fallback for Claude API outages.
+
+      Part B — Distributed publishing schedule:
+      Replace 12h-batch + overflow + idle-fallback with a daily fixed-time schedule. Cron at
+      12:00 MSK fetches sources; in the daytime window 13:00–20:00 MSK, articles from pending
+      are evenly distributed with a 40-min minimum interval. Max 11 posts/day; excess carries
+      over to next day's window.
+
+      Manual-review path (`hw_review`) is unchanged — operator can still take any article
+      locally and publish via Claude Code session.
+    gaps: ""
+    required: true
+
+  work_type:
+    score: 100
+    status: "complete"
+    value: "feature"
+    gaps: ""
+    required: true
+
+  user_problem:
+    score: 95
+    status: "complete"
+    value: |
+      Currently the bot publishes auto-fallback articles via Google Translate. Quality is
+      machine-stilted Russian — passive voice, calques, awkward semantics. Subscribers see
+      a mix: high-quality manual-review posts (curated by operator-side Claude) vs lower-
+      quality auto posts. The gap is jarring; channel feels inconsistent.
+
+      Additionally, the current overflow + idle-fallback model bursts 5-20 posts in a few
+      minutes when the queue overflows or operator was absent — looks like spam in the feed.
+
+      Operator wants: (1) auto path produces same quality as manual path, (2) posts arrive
+      smoothly throughout the day during prime-audience window 13-20 MSK, (3) operator's
+      role becomes purely supervisory (just monitor admin pings, intervene only on errors).
+    gaps: ""
+    required: true
+
+  target_users:
+    score: 80
+    status: "complete"
+    value: |
+      (1) Channel subscribers — get consistent editorial-quality Russian Hot Wheels news
+      delivered at predictable daytime intervals.
+      (2) Operator (you) — minimal intervention required; bot self-translates, self-schedules,
+      pings only on real failures (Claude API outage, no fetch from sources, etc).
+    gaps: ""
+    required: false
+
+  success_criteria:
+    score: 90
+    status: "complete"
+    value: |
+      (1) Auto-published articles via Claude API are written in editorial Russian style
+          per `ux-guidelines.md` (active voice, transcreation, 2-3 alt titles available).
+      (2) Cron at 12:00 MSK daily — fetches sources, sends admin ping, schedules publishing.
+      (3) Articles publish in 13:00–20:00 MSK window, evenly distributed: interval =
+          max(420/N, 40) minutes. Max 11 posts/day; excess carry over to next day.
+      (4) Claude API outage: 2 admin pings with 1h gap, 2h grace, then auto-switch to
+          Google Translate fallback. Auto-switch back when Claude API recovers.
+      (5) Container restart mid-window: recalculate remaining schedule for remaining time.
+      (6) Manual-review path (`hw_review`) unaffected — operator can publish any article
+          locally; bot skips on next tick.
+      (7) Auto-marker `↳ автоперевод` appears on all auto-published Telegraph pages
+          regardless of which engine translated (Claude or Google fallback).
+      (8) `pending_articles.QUEUE_CAP` no longer needed — distributed schedule prevents
+          unbounded growth.
+    gaps: ""
+    required: true
+
+  constraints:
+    score: 90
+    status: "complete"
+    value: |
+      - Claude API integration: `anthropic` SDK in requirements.txt; `ANTHROPIC_API_KEY`
+        env var (and optional `ANTHROPIC_MODEL`, default `claude-haiku-4-5` for cost).
+      - Token redaction in logs: extend existing `_TokenRedactingFilter` to redact
+        `ANTHROPIC_API_KEY` patterns.
+      - Google Translate (`transcreate_text`) stays in code as fallback only.
+      - Manual-review path untouched (no breaking changes to `hw_review` CLI).
+      - Boilerplate filter, auto-marker, channel teaser format (single-line `#<source> #news`)
+        all preserved.
+      - Cron switches from interval-based (`schedule.every(12).hours.do(job)`) to absolute-
+        time (`schedule.every().day.at("12:00")`).
+      - Server timezone matters: cron must fire at 12:00 MSK regardless of container TZ.
+        If container is UTC, schedule at "09:00" UTC; or set TZ env explicitly.
+      - News.db schema: lean towards in-memory schedule (no migration); recalc on each
+        cron tick + on container restart.
+    gaps: ""
+    required: true
+
+  testing_strategy:
+    score: 85
+    status: "complete"
+    value: |
+      Feature size: M.
+
+      Unit tests:
+      - Claude API client wrapper (mocked anthropic SDK responses).
+      - Distribution algorithm: N=1,4,7,10,11,15,20,30 → interval + posts_today + carry_over.
+      - Container restart recalc: starting at T=14:00 with 5 unpublished — schedule for
+        14:00+ should redistribute over 6h remaining.
+      - Claude API outage: ping#1 fires, ping#2 after 1h, fallback after 2h.
+      - Boundary: midnight rollover, single-article day (N=1), zero-article day (N=0).
+      - Idempotency: container restart while a post is mid-flight (Decision 9 carryover).
+
+      Integration tests:
+      - Full cron tick → fetch (mocked) → schedule → publish via mocked Claude → DB delta.
+      - Outage scenario end-to-end (mock Claude raises, verify ping count + fallback).
+
+      No E2E (live API) tests — would burn tokens. Manual smoke against live test channel
+      after deploy.
+
+      Existing tests that must stay green: ~500 tests including Mattel parser, hw_review,
+      throttle, marker, boilerplate filter.
+    gaps: ""
+    required: true
+
+# ============================================================================
+# Phase 2: User Experience & Scenarios (Cycle 2 — TBD)
+# ============================================================================
+phase2_user_experience:
+
+  user_stories:
+    score: 90
+    status: "complete"
+    value: |
+      Story 1 (subscriber experience):
+        Подписчик канала видит 1-11 постов в день в окне 13:00-20:00 МСК с интервалом
+        не меньше 40 минут. Все посты — высококачественная транскреация по ux-guidelines:
+        живой русский, активные глаголы, цепкие заголовки. Никаких burst'ов из 20 постов
+        за 8 минут. Никакого машинного перевода с пассивами и канцеляритом.
+
+      Story 2 (operator daily routine):
+        Оператор раз в день в 12:00 МСК получает админ-пинг с количеством зафетченных
+        статей и расписанием публикаций. Проверяет канал к 20:00, видит 5-11 свежих
+        постов. Если есть желание — может в любой момент локально через `hw_review`
+        перевести конкретную статью своим тоном (бот её скипнет). Дополнительных пингов
+        нет.
+
+      Story 3 (failure recovery — Claude API outage):
+        Claude API падает посреди окна публикации (например, в 14:30). Бот пытается
+        опубликовать следующую статью в 14:30 — fail. Шлёт операторe ping #1: «Claude
+        API недоступен: <error>. Если кончились токены — пополни на console.anthropic.com.
+        Через 1ч повтор пинга.» Текущая публикация откладывается. В 15:30 — ping #2 с
+        тем же содержимым + предупреждением «через час переключусь на Google Translate».
+        В 16:30 (2ч grace), если оператор не починил — переключение на Google Translate
+        для ВСЕХ оставшихся публикаций сегодняшнего расписания + накопившейся отложенной.
+        Когда Claude API восстановится (на следующий cron tick или при попытке очередной
+        публикации) — short admin-ping «✓ Claude API recovered, switching back from Google
+        Translate fallback».
+
+      Story 4 (container restart mid-window):
+        В 16:00 контейнер перезапустили (deploy / VPS reboot). Бот стартует, читает
+        pending → запускает recalc для оставшегося окна (16:00 → 20:00 = 240 мин).
+        Если 5 ещё не опубликованы → новый interval = 240/5 = 48 мин (>= floor=40).
+        Расписание: 16:00, 16:48, 17:36, 18:24, 19:12. Уже опубликованные сегодня в
+        published_articles — не трогаются.
+    gaps: ""
+    required: true
+
+  acceptance_criteria:
+    score: 95
+    status: "complete"
+    value: |
+      AC1. Cron `news_bot.main()` стартует с расписанием `schedule.every().day.at("12:00")`,
+           TZ=Europe/Moscow задана через env (`TZ=Europe/Moscow` в `.env`).
+      AC2. После фетча на 12:00 МСК отправляется admin-ping с числом новых статей,
+           размером очереди, и расписанием публикаций (timestamps).
+      AC3. Алгоритм distribute_publish_slots(N, now, window_start, window_end, min_interval=40):
+           - interval = max((window_end - max(now, window_start)) / N, min_interval)
+           - posts_today = min(N, floor((window_end - max(now, window_start)) / interval) + 1)
+           - carry_over = N - posts_today
+           - returns list of N datetime publishing slots
+      AC4. Публикации происходят строго в окне 13:00-20:00 МСК. Никаких публикаций до
+           13:00 или после 20:00.
+      AC5. Минимальный интервал между постами = 40 минут. Расчётный интервал capped at
+           floor=40.
+      AC6. Max 11 публикаций в день (floor=40, 7 часов окна = 420 мин, 1+10 = 11 слотов).
+           Excess carry over в pending до следующего cron tick'а.
+      AC7. Translation primary path: Claude API через ux-guidelines.md prompt. Возвращает
+           dict {ru_title, ru_alts:[2-3], ru_subtitle, ru_paragraphs:[N], ru_blocks?}.
+      AC8. Title emoji prefix: эмитится через Claude prompt (мёд) + regex wrapper как
+           safety net (если Claude не вставил, regex добавляет).
+      AC9. HW-глоссарий (14 терминов) применяется как post-pass safety net на ru-выходе
+           Claude. Bureaucratic regex (19 правил) удалён.
+      AC10. 4000-char body truncation удалена везде (Claude path и Google Translate
+            fallback path). Body на Telegraph без ограничений.
+      AC11. Claude API outage detection: при exception от anthropic SDK call (auth,
+            rate-limit, network, server) бот переходит в outage-state.
+      AC12. Outage protocol:
+            - Запись `claude_api_outage_started_at` в `bot_state` SQLite.
+            - Ping #1 admin: "Claude API недоступен: <error>. Решить: <hint>. Через 1ч повтор."
+            - Через 1h: ping #2: "Всё ещё down. Через 1ч → Google Translate."
+            - Через 2h grace: switch to Google Translate fallback (`transcreate_text`).
+            - Все откладываемые + текущие публикации с этого момента — через Google.
+      AC13. Auto-recovery: на каждой следующей публикации после outage бот делает первый
+            проб через Claude. Если успех — переключается обратно. Шлёт admin-ping "✓
+            Claude API recovered, switching back". Очищает outage state.
+      AC14. Все auto-published Telegraph-страницы получают одинаковый маркер
+            `↳ автоперевод` независимо от engine (Claude или Google fallback).
+      AC15. Manual-review path (`hw_review`) untouched. Если оператор публикует статью
+            локально — бот пропускает её на следующем тике (filter ru_paragraphs IS NOT NULL).
+      AC16. Container restart mid-window: на startup бот recompute_schedule с current_time
+            и оставшимся pending. Никаких дублей публикации.
+      AC16b. Crash-loop guard: на startup бот читает MAX(published_at) из published_articles.
+             Если последняя публикация была < 40 минут назад — пропускает текущую scheduled
+             публикацию и ждёт до `last_published_at + 40min` перед следующей попыткой.
+             Защищает канал от burst при многократных рестартах.
+      AC16c. Outage recovery passive: при пустой очереди в момент восстановления Claude API
+             бот остаётся в Google fallback режиме до следующего cron tick'а (12:00 МСК).
+             На первой попытке публикации после cron tick'а бот пробует Claude, успех →
+             switch-back ping. Max delay = 24ч в edge case "outage clears + empty queue".
+      AC17. SQLite migration: новая таблица `bot_state(key TEXT PRIMARY KEY, value TEXT)`
+            создаётся в `init_db()` при первом запуске. Idempotent (CREATE TABLE IF NOT EXISTS).
+      AC18. Token redaction: ANTHROPIC_API_KEY (pattern `sk-ant-...`) добавлен в
+            `_TokenRedactingFilter`.
+      AC19. Legacy removed:
+            - `QUEUE_CAP` env var и его use sites
+            - `IDLE_TIMEOUT_HOURS` / `GRACE_WINDOW_HOURS` и их logic
+            - `FALLBACK_THROTTLE_SECONDS` и skip-first patterns
+            - `_overflow_fast_track` функция
+            - inline idle-fallback в `job()` step 1a/1b
+            - `.env.example` обновлён.
+      AC20. Tests: ~28 удалены (overflow + idle + throttle), ~470 untouched, ~30 новых
+            добавлены (compute_publish_slots, claude_transcreation, outage_state,
+            distributed_schedule integration).
+      AC21. Manual smoke pre-deploy:
+            python3 -c "from claude_transcreation import transcreate_via_claude;
+                       print(transcreate_via_claude({...sample article...}))"
+            должна вернуть валидный dict с RU полями за <30 секунд.
+      AC22. Manual smoke post-deploy:
+            12:00 МСК — фетч + admin-ping + расписание.
+            13:00 МСК — первый пост, проверить что title с emoji, тело без boilerplate,
+            маркер `↳ автоперевод` в конце Telegraph-страницы.
+    gaps: ""
+    required: true
+
+  edge_cases:
+    score: 90
+    status: "complete"
+    value: |
+      EC1. N=0 в pending после фетча → ничего не публикуется в окне; admin-ping «0 новых,
+            очередь пуста».
+      EC2. N=1 в pending → один пост в 13:00. Расписание [13:00].
+      EC3. N=12 → cap floor=40 → 11 постов сегодня (13:00, 13:40, ..., 19:40), 1 carry over.
+      EC4. N=30 → cap floor=40 → 11 сегодня, 19 carry over. На завтрашний cron tick: новый
+            фетч + 19 carry over → recompute, опять max 11 today.
+      EC5. Container restart в 19:50 → 4ч окна, но осталось 10 минут до 20:00. Один пост
+            может выпасть на 19:50, остальные carry over (расчётный interval = 10/N, но
+            cap=40 → max 1 today).
+      EC6. Container restart в 12:30 (до окна) → wait until 13:00, then full schedule.
+      EC7. Cron не сработал (server down at 12:00) → следующий вечером? Нет, cron 1 раз
+            в сутки в 12:00. Если 12:00 пропустили, фетч не произошёл, окно 13-20 пройдёт
+            без публикаций (если нет carry over). Завтра в 12:00 фетч+схедулинг как обычно.
+      EC8. Claude API возвращает refusal (отказ переводить контент с harmful patterns) →
+            обрабатывается как outage для этой статьи (этот article fails to current path,
+            пробуем на следующей публикации). Не считаем за общую outage если другие
+            статьи переводятся успешно.
+      EC9. Network timeout в Claude API call → обрабатывается как outage trigger.
+      EC10. Manual operator publish посреди окна (через hw_review) → бот при следующей
+            scheduled publication видит ru_paragraphs IS NOT NULL → skip → переходит к
+            следующей. Расписание не recompute'ится.
+      EC11. Claude API output слишком длинный (> 100k tokens) или malformed JSON →
+            retry один раз, если опять fail → outage protocol для этой статьи.
+      EC12. ANTHROPIC_API_KEY отсутствует в .env → бот при первой попытке translate
+            ловит auth error → outage protocol сразу. Через 2h → Google Translate.
+            Admin получает ping с инструкцией добавить ключ.
+      EC13. TZ env var не задана → schedule fires в UTC time → постит в неправильное
+            окно. Mitigation: в startup проверять `os.getenv("TZ")` и предупреждать в
+            log если не Europe/Moscow.
+    gaps: ""
+    required: true
+
+  error_scenarios:
+    score: 90
+    status: "complete"
+    value: |
+      ES1. anthropic.RateLimitError → outage protocol (ping#1, 1h grace, ping#2, 2h fallback).
+      ES2. anthropic.AuthenticationError → outage protocol с hint «проверь ANTHROPIC_API_KEY».
+      ES3. anthropic.APIConnectionError / network timeout → outage protocol с hint
+           «возможна проблема с сетью или claude недоступен».
+      ES4. anthropic.BadRequestError (malformed prompt / token limit) → log error,
+           skip article, proceed to next scheduled publication. Не обращаемся в outage.
+      ES5. Claude returns malformed JSON (не валидный для нашего схемы) → retry once with
+           tightened prompt; если снова fail → fallback to Google Translate FOR THIS ARTICLE
+           ONLY (не общая outage).
+      ES6. Claude refuses to translate (safety filter): same as ES5 — fallback to Google
+           для этой статьи.
+      ES7. Telegraph publish_article fails (network/auth) → preserved fail-soft контракт,
+           admin notify, _fallback_publish returns None.
+      ES8. Telegram send_telegraph_teaser fails → preserved Decision 9 idempotency
+           (telegraph_url stored before Telegram send; retry на следующем тике reuses
+           the same Telegraph page).
+      ES9. SQLite bot_state corruption → log error, treat as no-outage state (start fresh).
+      ES10. Schedule lib раз в day скипает фетч (если bot не активен) → standard cron miss,
+            ловится через operator-side observability (admin-ping не пришёл сегодня).
+    gaps: ""
+    required: true
+
+  verification_strategy:
+    score: 90
+    status: "complete"
+    value: |
+      Pre-deploy (local + CI):
+      - Unit tests: distribute algorithm, compute_publish_slots, outage state transitions,
+        Claude API client (mocked), bot_state SQLite migrations, retry semantics.
+      - Integration tests: full cron tick → schedule → publish through mocked Claude API.
+      - Mock outage scenarios end-to-end (anthropic.RateLimitError, etc).
+      - 470+ existing tests stay green.
+      - Manual smoke: `python3 -c "from claude_transcreation import transcreate_via_claude;
+        print(transcreate_via_claude(<test article>))"` — verify Claude responds with valid
+        RU dict in <30 sec.
+
+      Post-deploy on prod:
+      - 12:00 МСК cron tick: admin-ping arrives in operator's chat with new-articles count
+        and schedule.
+      - 13:00 МСК first publication: open Telegraph page, verify quality (transcreation
+        style, RU title with emoji, marker `↳ автоперевод` before footer).
+      - 13:40+ subsequent posts: verify spacing, all in 13-20 window.
+      - 20:00 end of window: no more posts that day. carry-over (если есть) ждёт завтра.
+      - Через 7 дней: убедиться что качество сохраняется, никаких outage не было,
+        Claude API стабильный, токенов хватает.
+
+      Outage drill (опционально):
+      - Временно убрать ANTHROPIC_API_KEY из .env и наблюдать ping#1 → ping#2 → fallback.
+      - Восстановить ключ → next cron должен переключиться обратно на Claude.
+    gaps: ""
+    required: true
+
+  ui_ux_requirements:
+    score: 100
+    status: "complete"
+    value: "N/A — backend service. Channel teaser format and Telegraph page format already locked."
+    gaps: ""
+    required: false
+
+  risks:
+    score: 90
+    status: "complete"
+    value: |
+      R1. Operator inattention to outage pings → bot тихо переходит на Google Translate
+          через 2ч. Subscribers видят свежие посты в Google-качестве, не сразу ловят разницу.
+          Mitigation: switch-back ping на восстановлении даёт оператору visible signal,
+          что что-то было сломано. Acceptable.
+
+      R2. Cost spike — если источник зацикливается и фетчит сотни статей в день →
+          распределение всё равно cap'ится 11/день, но pending будет расти. После N дней
+          backlog огромный.
+          Mitigation: дополнительный admin-ping когда `len(pending) > 50` (или другой
+          разумный threshold) — сигнал «pending стало большим, проверь источники».
+          Закладываем как minor enhancement в этой фиче.
+
+      R3. Claude model output drift — Anthropic меняет defaults, Claude становится
+          aggressive в редакторстве (иное настроение). Mitigation: explicit version-pin
+          в `ANTHROPIC_MODEL` env var (e.g. `claude-haiku-4-5-20251001`), не использовать
+          alias. При обновлении моделей оператор сам решает когда мигрировать.
+
+      R4. TZ drift / misconfiguration → cron fires в UTC время, посты в неправильное окно.
+          Mitigation: startup проверяет `os.environ.get('TZ') == 'Europe/Moscow'`, иначе
+          warning в log + admin-ping. Если schedule lib не поддерживает tz arg — расчёт
+          UTC-equivalent в коде.
+
+      R5. SQLite bot_state schema migration — добавление новой таблицы в существующую
+          news.db. Risk: migration fails на сервере → бот crash на startup.
+          Mitigation: `CREATE TABLE IF NOT EXISTS bot_state(...)` идемпотентен; покрываем
+          tests/test_migration.py.
+
+      R6. ux-guidelines.md не доехал до сервера → Claude получает пустой/дефолтный
+          system prompt, перевод не по стилю.
+          Mitigation: добавить файл в `deploy.sh` FILES + GitHub Actions; startup
+          проверяет существование файла перед первым cron tick'ом, fail fast если нет.
+    gaps: ""
+    required: true
+
+  technical_decisions:
+    score: 90
+    status: "complete"
+    value: |
+      D1. Storage для outage state — SQLite таблица `bot_state(key, value)` с
+          auto-migrate. Survives container restart.
+      D2. Schedule storage — in-memory only, recomputed на каждом cron tick + container
+          startup. Avoids schema migration overhead для расписания.
+      D3. Cron timezone — `TZ=Europe/Moscow` в env + `schedule.every().day.at("12:00")`.
+          Если schedule lib не поддерживает tz arg — конвертируем на UTC в коде.
+      D4. Claude model — `claude-haiku-4-5` (cost ~$3/мес). `ANTHROPIC_MODEL` env var
+          для override (e.g. на Sonnet при необходимости).
+      D5. ux-guidelines.md ships в deploy bundle — добавляется в `deploy.sh` FILES +
+          `.github/workflows/deploy.yml` files copy.
+      D6. HW glossary — keep как post-pass safety net (14 терминов). Bureaucratic regex
+          (19) удаляется (Claude сам не пишет канцелярит).
+      D7. Title emoji — Claude prompt ask + regex wrapper fallback (belt-and-suspenders).
+      D8. 4000-char truncation — удалена везде. Telegraph принимает любой объём.
+      D9. Single uniform marker `↳ автоперевод` независимо от engine.
+      D10. Switch-back ping — да, один short admin-ping при восстановлении Claude API.
+      D11. Hard cap on articles/day — не нужен (algorithm's floor=40 estably ограничивает 11).
+      D12. Token redaction — `_TokenRedactingFilter` extends с pattern `sk-ant-...`.
+    gaps: ""
+    required: false
+
+  deploy_approach:
+    score: 90
+    status: "complete"
+    value: |
+      Deploy через существующий GitHub Actions workflow (commit `22953a5` + дальнейшие).
+      Дополнения для этой фичи:
+
+      1. Operator setup (one-time, ~2 мин):
+         - Зарегистрироваться на console.anthropic.com.
+         - Получить API key (`sk-ant-...`).
+         - На VPS: добавить в `/home/<user>/bot/.env`:
+           ```
+           ANTHROPIC_API_KEY=sk-ant-...
+           ANTHROPIC_MODEL=claude-haiku-4-5  # optional, default
+           TZ=Europe/Moscow
+           ```
+         - Если deploy через GitHub Actions: secret `ANTHROPIC_API_KEY` в Settings →
+           Secrets and variables → Actions. Deploy workflow проксирует в .env на сервере
+           (если нужно — обновляем deploy.yml для inject'а).
+
+      2. Files deployed (FILES list update):
+         - Добавить `.claude/skills/project-knowledge/references/ux-guidelines.md` в
+           `deploy.sh` FILES list AND в `.github/workflows/deploy.yml` files block.
+
+      3. Migration: `init_db()` создаёт `bot_state` table при первом запуске после deploy.
+
+      4. Verify: первый cron tick после deploy в 12:00 МСК → admin-ping должен прийти.
+         13:00 МСК первая публикация. Проверить качество.
+    gaps: ""
+    required: false
+
+  manual_user_actions:
+    score: 95
+    status: "complete"
+    value: |
+      Operator-side actions:
+
+      1. **Получить ANTHROPIC_API_KEY** (~2 мин):
+         - Зарегистрироваться/войти на console.anthropic.com
+         - Settings → API Keys → Create Key (default name "hwbot-prod")
+         - Скопировать ключ (показывается один раз, начинается с `sk-ant-`)
+         - Сохранить в безопасное место (1Password / KeePass / etc)
+
+      2. **Top-up токенов**:
+         - В консоли Anthropic → Billing → Add credits
+         - Минимум $5 хватит на ~3-6 месяцев работы бота при 10 articles/day
+
+      3. **Add API key**:
+         - Если deploy ручной: SSH на VPS, добавить `ANTHROPIC_API_KEY=sk-ant-...` в
+           `.env` на сервере
+         - Если через GitHub Actions: добавить как secret `ANTHROPIC_API_KEY` в repo settings
+
+      4. **Set TZ**:
+         - На VPS добавить `TZ=Europe/Moscow` в `.env` (или в systemd unit/cron wrapper)
+
+      5. **Monitor admin chat**:
+         - Получать админ-пинги при cron-тиках, outage'ах, restore'ах
+         - Если получишь outage ping — пополнить токены или проверить статус Anthropic
+           через console.anthropic.com / status.anthropic.com
+
+      6. **Никаких изменений в `hw_review`** — manual путь работает как раньше.
+    gaps: ""
+    required: false
+
+# ============================================================================
+# Phase 3: Integration & Technical Context (Cycle 2 — TBD)
+# ============================================================================
+phase3_integration:
+
+  integration_points:
+    score: 95
+    status: "complete"
+    value: |
+      Verified via code-research:
+      - `news_bot.main()` (line 1352) — replace `every(12).hours` with `every().day.at("12:00")`
+        + TZ=Europe/Moscow in env.
+      - `news_bot.job()` — remove inline idle-fallback logic (step 1a/1b); add new
+        distributed-publish step that loops through computed schedule.
+      - `news_bot._fallback_publish` (lines 639-772) — refactor: replace `transcreate_text`
+        call with `claude_transcreate(article)` from new module + Google fallback chain.
+      - `news_bot._overflow_fast_track` (lines 799-1009, 210 lines) — DELETE entirely.
+      - `news_bot.transcreate_text` (lines 327-439) — KEEP as Google Translate fallback,
+        remove 4000-char truncation. Bureaucratic regex (19 patterns) deleted; HW glossary
+        (14 patterns) kept as post-Claude safety net.
+      - `news_bot._TokenRedactingFilter` (lines 212-235) — extend with `sk-ant-...` pattern.
+      - `pending_articles_repo` — auto-migrate `bot_state` table in `init_schema()`.
+      - `telegraph_publisher.publish_article(..., auto_marker=...)` — already supports.
+      - `boilerplate_filter` — already wired, untouched.
+      - `hw_review` — manual path untouched.
+
+      New modules (from code-research §11):
+      - `claude_transcreation.py` — anthropic SDK wrapper with ux-guidelines prompt loading,
+        retry semantics, outage detection.
+      - `compute_publish_slots.py` — pure scheduling algorithm `(N, now, window) -> slots`.
+      - `outage_state.py` — SQLite-backed key-value access for `claude_api_outage_started_at`,
+        `last_ping_sent_at`. Reads/writes `bot_state` table.
+    gaps: ""
+    required: true
+
+  dependencies:
+    score: 95
+    status: "complete"
+    value: |
+      Add: `anthropic` (Python SDK, pin specific version, e.g. `anthropic==0.45.0` или latest stable).
+      Keep: `deep-translator` (Google Translate fallback), all existing deps.
+
+      Code-research confirmed: anthropic SDK supports built-in retries, no need for
+      separate retry library.
+
+      `pyzoneinfo` / built-in `zoneinfo` для TZ-aware datetime — Python 3.9+ stdlib,
+      no new dep.
+    gaps: ""
+    required: false
+
+  technical_constraints:
+    score: 90
+    status: "complete"
+    value: |
+      - Cron container TZ: set `TZ=Europe/Moscow` в env (Decision D3). Alternative
+        (calculate UTC offset in code) — backup option if schedule lib doesn't honour
+        env TZ.
+      - Token redaction: extend `_TokenRedactingFilter` с regex `sk-ant-[A-Za-z0-9_-]{20,}`.
+      - Memory: ~5k tokens per article × ~10 articles/day → negligible (~50k tokens/day).
+        Anthropic batch-API not needed.
+      - Network: outbound HTTPS to api.anthropic.com (port 443). VPS firewall typically
+        allows. Stripe-style outbound-only, no inbound webhook.
+      - Cost: Haiku ~$3/мес at 10 articles/day. Sonnet ~$15/мес. Operator decides via
+        `ANTHROPIC_MODEL` env var.
+      - Claude SDK retry: 2 retries by default with exponential backoff. Sufficient.
+      - SQLite migration: add `bot_state(key TEXT PRIMARY KEY, value TEXT)` via
+        `CREATE TABLE IF NOT EXISTS` in `init_schema()`. Idempotent.
+    gaps: ""
+    required: false
+
+  data_requirements:
+    score: 90
+    status: "complete"
+    value: |
+      Schedule storage: in-memory only, recomputed at cron tick + container startup
+      (Decision D2). Zero schema migration for the schedule itself.
+
+      Outage state: SQLite `bot_state` table:
+        - key="claude_api_outage_started_at", value=ISO timestamp
+        - key="last_ping_sent_at", value=ISO timestamp
+        - key="last_outage_error", value=brief error message
+        - Empty/missing → no active outage.
+
+      Migration: idempotent `CREATE TABLE IF NOT EXISTS bot_state(...)` в `init_schema()`.
+      Production news.db получит таблицу при первом cron-тике после deploy.
+
+      No PII; no sensitive data in bot_state.
+    gaps: ""
+    required: false
+
+  migration_needs:
+    score: 95
+    status: "complete"
+    value: |
+      DB migrations: 1 idempotent CREATE TABLE для `bot_state`.
+
+      Code migrations (one-time):
+      - Remove `QUEUE_CAP`, `IDLE_TIMEOUT_HOURS`, `GRACE_WINDOW_HOURS`, `FALLBACK_THROTTLE_SECONDS`
+        env vars + их use sites in news_bot.py.
+      - Remove `_overflow_fast_track`, inline idle-fallback step 1a/1b in `job()`.
+      - Remove 4000-char truncation в `transcreate_text`.
+      - Remove bureaucratic regex (19 patterns) в `transcreate_text`. Keep HW glossary (14).
+      - Remove tests: `test_overflow.py` (~13), `test_idle_fallback.py` (~9 — кроме общих
+        invariants), `test_fallback_throttle.py` (~6 of 11; some throttle-related).
+      - Update `.env.example`: remove old vars, add `ANTHROPIC_API_KEY`,
+        `ANTHROPIC_MODEL` (optional), `TZ=Europe/Moscow`.
+      - Update `deploy.sh` FILES list: add `.claude/skills/project-knowledge/references/ux-guidelines.md`.
+      - Update `.github/workflows/deploy.yml` files block: same addition.
+      - Update PK files: `architecture.md`, `patterns.md`, `deployment.md`.
+
+      Backwards-compat: existing `pending_articles` from old QUEUE_CAP=10 model становятся
+      input для нового distributed schedule. Никаких data-loss проблем.
+    gaps: ""
+    required: false
+
+# ============================================================================
+# Phase 4: Completion
+# ============================================================================
+phase4_completion:
+  userspec_file: "work/llm-transcreation-and-distributed-publishing/user-spec.md"
+  status: "approved"
+
+# ============================================================================
+# Decision Rules
+# ============================================================================
+decision_rules:
+  required_threshold: 85
+  optional_threshold: 50
+  stop_criteria:
+    - "All required items in current cycle scope score >= 85%"
+    - "Structural: every required item has non-empty value, no TBD, gaps empty or conscious limitations"
+
+# ============================================================================
+# Progress
+# ============================================================================
+progress:
+  current_phase: "phase4_completion"
+  questions_asked: 9
+  last_question: "Cycle 2 batch of 7 design decisions + operator's 8th item (4000-char truncation removal)"
+  total_required_score: 1295  # phase1 (655) + phase2 (640: 90+95+90+90+90+90+95+90 incl optional)
+  total_optional_score: 750
+  completion_estimate: "95%"
+  user_detail_level: "moderate"
+
+# ============================================================================
+# Notes
+# ============================================================================
+notes: |
+  - Operator pre-conditioned scope through extensive demo dialogue. All major architectural
+    calls confirmed before /new-user-spec start.
+  - Cycle 1 scoring high because operator gave concrete answers to every clarifying question.
+    Only phase2/phase3 items left for code-research-driven cycle 2.
+  - Existing archived work: `work/archived/llm-transcreation-deferred/` — predecessor scope
+    only covered LLM transcreation, not distributed publishing.

@@ -1,0 +1,44 @@
+{
+  "reviewer": "security-auditor",
+  "task": 3,
+  "round": 1,
+  "commit": "8ba09b7",
+  "verdict": "approve",
+  "summary": "Flag-gated E014 keyboard attachment is safe: strict default-off truthy parsing, token persisted before send (no race), token mint/build/send failures are contained by the existing E014 try/except and never skip mark_pair_pinged, no new logging of tokens/URLs, and bot_state growth is bounded by the existing per-pair 7-day rate limit. Full admin-auth enforcement for button presses is out of scope for this task (lands in Task 4/5) and is correctly not attempted here.",
+  "tests_run": {
+    "command": "pytest tests/test_integration.py -k DedupReviewButtons -q",
+    "result": "3 passed",
+    "regression_command": "pytest tests/test_integration.py -q --deselect tests/test_integration.py::TestSlotLoopTransientRetry",
+    "regression_result": "53 passed (known evening-flake class excluded per instructions)"
+  },
+  "findings": [
+    {
+      "id": "SEC-3-01",
+      "severity": "low",
+      "area": "token entropy / trust model",
+      "description": "secrets.token_urlsafe(9) yields ~72 bits of entropy — far more than needed for an opaque, non-secret identifier. This is fine because the token itself is not the security boundary: the (not-yet-wired) resolve_dedup_callback checks callback_query.from_user.id against numeric TELEGRAM_ADMIN_ID before ever consulting the token, so a guessed/leaked token cannot be exercised by a non-admin. No action required for Task 3; flagged only so Task 4/5 review confirms auth is checked before token lookup (per tech-spec Decision 5/10), not after.",
+      "recommendation": "No change needed in this diff. When reviewing Task 4/5, confirm resolve_dedup_callback rejects non-admin callers before it ever calls get_review_token_link, so token secrecy is never load-bearing.",
+      "file": "news_bot.py",
+      "lines": "2480-2497 (mint/put site); admin-check itself lives outside this diff"
+    },
+    {
+      "id": "SEC-3-02",
+      "severity": "low",
+      "area": "bot_state hygiene / partial-failure orphan row",
+      "description": "put_review_token(token, link) commits before build_dedup_review_keyboard() and send_admin_notification() run. If keyboard construction or the send itself raises after the token was persisted, the except Exception at the E014 try/except swallows it (logs 'Failed to send E014 notification') and mark_pair_pinged still runs afterward (pre-existing pattern, unchanged by this diff) — so a review_token:<token> row can be left in bot_state with no message ever delivered that references it. Purely inert (stale token resolves to a safe 'stale/unavailable' status per Decision 10 once Task 4 lands), not attacker-reachable, and bounded by the same 7-day per-pair rate limit that bounds all E014 alerts — so growth stays proportional to normal soft-flag volume, not exploitable as a storage-exhaustion vector.",
+      "recommendation": "No fix required for this task (tech-spec explicitly defers a janitor as unnecessary). Optional future hardening: only call put_review_token after building the keyboard, or accept the current order since the E014 try/except already contains the failure mode.",
+      "file": "news_bot.py",
+      "lines": "2480-2492"
+    }
+  ],
+  "verified_controls": [
+    "Flag default-off, strict on-word allowlist (1/true/yes/on, case-insensitive) confirmed by reading the os.getenv(...).strip().lower() in (...) expression; unset/blank/'0'/'off' all fall through to False — matches AC and differs deliberately (inverted) from DEDUP_SERIES_ENABLED's default-on off-word list.",
+    "put_review_token(token, link) executes before send_admin_notification(...) in source order — token is resolvable pre-send, no press-before-persist race.",
+    "Token mint + put + keyboard build are inside the existing 'try: send_admin_notification(...) except Exception as notify_err: logger.error(...)' block; pending_repo.mark_pair_pinged(...) + dedup_conn.commit() sit unconditionally after the try/except (unchanged from pre-feature code), so any exception in the new path is swallowed and never skips the pinged-marking / never propagates to break job()'s outer dedup handling.",
+    "No new logger.* call references token or link beyond what already existed pre-diff (notify_err message only); no secrets/URLs added to log output.",
+    "Diff touches only the 'if decision == 'flag': if alerted:' E014 branch; grep of the diff confirms E015 (alert_cross_source_blocked) and other alert sends are untouched and never receive reply_markup — confirmed additionally by the passing test_only_e014_carries_keyboard.",
+    "Mint/put/build guarded by 'if alerted:' so rate-limited soft-flags (alerted=False) mint nothing, per AC.",
+    "Token round-trip and persistence-before-send verified directly by test_flag_on_e014_send_includes_review_keyboard asserting get_review_token_link(token) == new_link.",
+    "bot_state has zero review_token:* rows when flag is off, per test_flag_off_e014_send_has_no_keyboard."
+  ]
+}

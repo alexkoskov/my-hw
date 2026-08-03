@@ -1,0 +1,41 @@
+{
+  "reviewer": "code-reviewer",
+  "round": 1,
+  "mode": "inline-fallback",
+  "summary": "Task 10 implementation reviewed inline. Code follows existing project patterns (per-row try/except, sanitize_error_message on all error strings, module-level helpers next to _fallback_publish). No HIGH or CRITICAL findings.",
+  "findings": [
+    {
+      "id": "cr-1",
+      "severity": "low",
+      "area": "news_bot._overflow_fast_track",
+      "finding": "When _fallback_publish succeeds we call send_telegraph_teaser (side-effect inside the helper) — confirmed intentional per Decision 13 (overflow reuses same helper). No action needed.",
+      "action": "none"
+    },
+    {
+      "id": "cr-2",
+      "severity": "low",
+      "area": "news_bot.job() overflow wrapper",
+      "finding": "On overflow-pass exception we set accepted=[] — this is defensive but could starve the queue for a tick if the overflow helper crashes mid-flight. Acceptable trade-off: cap protection > lost tick. Log trail gives admin visibility.",
+      "action": "none"
+    },
+    {
+      "id": "cr-3",
+      "severity": "low",
+      "area": "news_bot._overflow_fast_track evicted_count",
+      "finding": "On move_to_failed (3-strike) path we increment evicted_count — this is semantically 'slot freed' not 'auto-published'. Admin-ping wording says 'auto-published {E}' which conflates the two. Deliberate per task-file: a 3-strike failure IS a slot free.",
+      "action": "none"
+    },
+    {
+      "id": "cr-4",
+      "severity": "low",
+      "area": "hw_review.cmd_retry",
+      "finding": "retry_from_failed returning False is surfaced with exit 1 and stderr — task file says 'exit 0 on success, 1 if N out of range' (does not explicitly cover the defensive-False path). Current behaviour is safer for the operator (clear signal that nothing happened).",
+      "action": "none"
+    }
+  ],
+  "dimensions_reviewed": [
+    "correctness", "consistency", "error-handling", "naming",
+    "structure", "comments", "performance", "complexity", "reuse", "deadcode"
+  ],
+  "overall": "approved"
+}

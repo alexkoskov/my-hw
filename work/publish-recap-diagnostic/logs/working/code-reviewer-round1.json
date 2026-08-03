@@ -1,0 +1,32 @@
+{
+  "status": "approved_with_suggestions",
+  "summary": "Counter placement in job() step (e) is correct (failed_count increments before the increment_attempt/continue path, moved_to_failed_count only after a successful move_to_failed, recap_failures de-duped by link and capped), the publish loop's control flow and _publish_with_retries/increment_attempt/move_to_failed calls are untouched, and the recap is fully fail-safe (isolated try/except at both the builder and call-site level, quiet ticks correctly skipped). [E034] is free and pinned by the uniqueness test. One minor duplication (the failure cap constant is defined independently in both files) is the only nit worth noting.",
+  "criticalIssues": [],
+  "suggestions": [
+    {
+      "file": "news_bot.py",
+      "line": 115,
+      "severity": "minor",
+      "category": "maintainability",
+      "suggestion": "PUBLISH_RECAP_MAX_FAILURES (news_bot.py:115, value 5) and _RECAP_MAX_FAILURES (admin_alerts.py:26, value 5) are two independently-defined constants for the same cap. The docstring at news_bot.py:113-114 explains this is intentional defense-in-depth (admin_alerts re-caps defensively when rendering), and a drift between the two can't cause a crash or bug (worst case is fewer failure lines rendered than collected) — but if someone changes one without the other, the effective cap silently becomes the smaller value. Consider having news_bot.py import admin_alerts._RECAP_MAX_FAILURES (or vice versa) as the single source of truth, or add a comment cross-referencing the other constant so a future editor updates both.",
+      "benefit": "Removes a latent drift risk between the two caps and makes the 'defense in depth' relationship explicit in code, not just in a comment.",
+      "optional": true
+    },
+    {
+      "file": "admin_alerts.py",
+      "line": 94,
+      "severity": "minor",
+      "category": "readability",
+      "suggestion": "In alert_publish_recap, the isinstance(recap, dict) guard returns a fixed 🟢 fallback string ('отчёт недоступен') while the inner except Exception fallback returns a 🟡 string ('отчёт частично недоступен'). Both are non-dict/malformed-input degradations but use different colors/wording for what is conceptually the same failure mode (recap unusable).",
+      "benefit": "Slightly more consistent operator-facing signal — a malformed recap is arguably always worth a 🟡 (attention) rather than a 🟢 (all-clear), regardless of which guard caught it.",
+      "optional": true
+    }
+  ],
+  "metrics": {
+    "filesReviewed": 4,
+    "criticalIssuesCount": 0,
+    "majorIssuesCount": 0,
+    "minorIssuesCount": 2,
+    "testCoverageAssessment": "excellent"
+  }
+}

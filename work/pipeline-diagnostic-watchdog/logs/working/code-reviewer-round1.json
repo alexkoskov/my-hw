@@ -1,0 +1,68 @@
+{
+  "status": "approved_with_suggestions",
+  "summary": "The intake-funnel diagnostic is correctly wired: counters are incremented at the right points with no double-counting or off-by-one, the tick's control flow and dedup verdicts are unchanged (pure additive counters), and the fail-safe chain (_funnel_int/_format_funnel/_format_funnel_line/_funnel_collapse_note) never raises even on non-dict/malformed/negative input, verified both by the test suite (82/82 passing) and manual branch probing. Back-compat for alert_quiet_day()/alert_plan_of_day() legacy signatures is preserved and tested. Remaining points are clarity/completeness nits, not correctness bugs.",
+  "criticalIssues": [],
+  "suggestions": [
+    {
+      "file": "admin_alerts.py",
+      "line": 184,
+      "severity": "minor",
+      "category": "readability",
+      "suggestion": "The bullet `f\"• источники: получено {sources}, не ответили {failed}\"` (and the mirrored compact line in `_format_funnel_line`, ~line 258) mixes two different units on one line: `sources` is actually `len(all_entries)` (total items fetched across all sources, per news_bot.py comment), while `failed` is a count of distinct source fetchers that raised. Read literally, 'источники: получено 5' suggests '5 sources responded', not '5 items came in'. Consider wording it explicitly, e.g. 'материалов получено {sources}; источников не ответило {failed} из {len(SOURCES)}', so the operator doesn't conflate item-count with source-count.",
+      "benefit": "Removes a plausible misreading of the funnel's first line, which is the line operators will scan first to judge whether sources are healthy.",
+      "optional": true
+    },
+    {
+      "file": "news_bot.py",
+      "line": 2270,
+      "severity": "minor",
+      "category": "readability",
+      "suggestion": "`dropped_no_article` counts both the 'no link' case (line ~2270, malformed RSS entry) and the 'no article/paragraphs' case (line ~2276, fetch_full_article failure) under one bucket. These are semantically different failure modes (malformed feed data vs. a live fetch failure of the article page, which is closer in nature to a source-level failure). In practice 'no link' should be extremely rare so the lumping is low-risk, but if the diagnostic is ever used to debug 'fetch keeps failing' vs 'feed is malformed', splitting into `dropped_no_link` and `dropped_fetch_failed` would give a cleaner signal.",
+      "benefit": "Finer-grained diagnosis for future debugging without changing current behavior.",
+      "optional": true
+    },
+    {
+      "file": "tests/test_admin_alerts.py",
+      "line": 486,
+      "severity": "minor",
+      "category": "testing",
+      "suggestion": "`_funnel_collapse_note` has 6 distinct branches (staged>0 no-op, sources==0+failed>0, sources==0+failed==0, new==0, dominant-drop-stage-picked, and the untraceable fallback). Only the 'dominant drop = dedup-block' branch is exercised by tests (unit + one integration test). Manually probing the other 5 branches confirms they behave correctly, but none are covered by the test suite added in this diff — e.g. no test for a source-fetch-exception funnel, an all-already-known (`new==0`) funnel, or a no_article/checklist-dominant funnel.",
+      "benefit": "Locks in the collapse-note's core branching logic against regressions; this function is the main new value-add of the feature.",
+      "optional": true
+    },
+    {
+      "file": "news_bot.py",
+      "line": 2472,
+      "severity": "minor",
+      "category": "error-handling",
+      "suggestion": "`plan_msg = admin_alerts.alert_quiet_day(funnel=funnel)` / `alert_plan_of_day(..., funnel=funnel)` is called OUTSIDE the `try/except` that follows it (which only wraps `send_admin_notification(plan_msg)`). The funnel-review brief assumed formatting is 'already try/except-wrapped from step (d)', but that wrapping only covers the send, not the message construction. In practice this is low-risk because every function in the funnel-rendering chain has its own internal broad `except Exception: return \"\"` fallback (verified by the malformed-input tests), so nothing should escape — but it's a latent gap relative to this file's own established pattern of wrapping every external-facing operation, and would matter if a future edit to `_format_funnel`/`_funnel_collapse_note` accidentally introduced code outside its try block.",
+      "benefit": "True defense-in-depth consistent with the rest of the file's paranoid error handling; protects against a future regression in the funnel formatters, not just the current ones.",
+      "optional": true
+    },
+    {
+      "file": "admin_alerts.py",
+      "line": 158,
+      "severity": "minor",
+      "category": "maintainability",
+      "suggestion": "`_funnel_int`'s docstring says 'Best-effort non-negative int read', but the implementation does `int(funnel.get(key, 0) or 0)` with no clamping — `_funnel_int({'x': -7}, 'x')` returns `-7`, not raising but also not honoring the 'non-negative' claim. Not currently reachable (job()'s funnel counters only ever increment), but the docstring overpromises versus the code.",
+      "benefit": "Either clamp with `max(0, ...)` or fix the docstring so the contract matches the implementation.",
+      "optional": true
+    },
+    {
+      "file": "news_bot.py",
+      "line": 2437,
+      "severity": "minor",
+      "category": "maintainability",
+      "suggestion": "An entry that reaches `insert_pending` (either a normal pass/flag or a `dedup_degraded` entry) but then hits a UNIQUE-conflict skip or an insert exception is not attributed to any funnel bucket — it's absent from `staged` and from all `dropped_*` counters. This is a rare race/error edge case and `_funnel_collapse_note`'s fallback ('обработка статей, детали в логах') already degrades gracefully when it happens, so it's not misleading, just silently unaccounted for in the arithmetic (`new_count` won't always equal the sum of all displayed buckets). Also, the inline comment '`dedup_degraded`: dedup crashed → degraded (E016), still staged' slightly overclaims — those entries still ATTEMPT to stage, but can still fail at insert_pending like any other row.",
+      "benefit": "Optional `dropped_insert_failed` counter (or just softening the comment wording) would make the funnel's accounting exhaustive and the comment accurate.",
+      "optional": true
+    }
+  ],
+  "metrics": {
+    "filesReviewed": 4,
+    "criticalIssuesCount": 0,
+    "majorIssuesCount": 0,
+    "minorIssuesCount": 6,
+    "testCoverageAssessment": "adequate"
+  }
+}

@@ -1,0 +1,253 @@
+# Interview Plan for orangetrack-rendering-fixes
+
+interview_metadata:
+  started: "2026-05-07 14:30:00"
+  last_updated: "2026-05-07 14:30:00"
+  status: "in_progress"
+  can_resume: true
+  current_question_num: 0
+  feature_size: "S"
+
+conversation_history: []
+
+phase1_feature_overview:
+
+  feature_name:
+    score: 100
+    status: "complete"
+    value: "orangetrack-rendering-fixes"
+    gaps: ""
+    required: true
+
+  feature_description:
+    score: 90
+    status: "complete"
+    value: |
+      Три бага в визуализации статей источника orangetrackdiecast.com:
+      1. <li>-пункты в bullet-списках теряются в парсинге.
+      2. h2/h3/h4 подзаголовки рендерятся обычным параграфом.
+      3. Внутритекстовые same-site ссылки стираются.
+    gaps: ""
+    required: true
+
+  work_type:
+    score: 100
+    status: "complete"
+    value: "bug"
+    gaps: ""
+    required: true
+
+  user_problem:
+    score: 90
+    status: "complete"
+    value: |
+      Подписчики @myhwchannel123 видят неполные/визуально обеднённые orangetrack-статьи:
+      списки моделей выпадают, подзаголовки сливаются, ссылки теряются.
+      Severity: MEDIUM. Каждая orangetrack-статья страдает.
+    gaps: ""
+    required: true
+
+  target_users:
+    score: 80
+    status: "complete"
+    value: "Подписчики @myhwchannel123 + оператор."
+    gaps: ""
+    required: false
+
+  success_criteria:
+    score: 95
+    status: "complete"
+    value: |
+      После фикса при публикации orangetrack-статьи:
+      1. <li>-пункты эмитятся в блок как paragraph с префиксом «• ».
+      2. h2/h3/h4 подзаголовки → type=heading, level=3 (единый размер).
+      3. Same-site (только orangetrackdiecast.com) ссылки кликабельны:
+         для каждого run с href к orangetrack → искать exact EN-substring
+         в RU block.text → если найден, обернуть ПЕРВОЕ вхождение в <a>;
+         если не найден — silently drop. External ссылки → strip (current).
+      4. Никаких регрессий для autoevolution/lamley/mattel/hw_review.
+      5. End-to-end integration test покрывает композицию всех 3 фиксов.
+    gaps: ""
+    required: true
+
+  constraints:
+    score: 90
+    status: "complete"
+    value: |
+      - Без изменений схемы БД, без новых deps.
+      - Только orangetrack_source.py + telegraph_publisher.py.
+      - Парсеры autoevolution/lamley/mattel и архивный hw_review не трогаем.
+      - Деплой вместе с publish-idempotency-fix через стандартный pipeline.
+    gaps: ""
+    required: true
+
+  testing_strategy:
+    score: 90
+    status: "complete"
+    value: |
+      Unit:
+      - test_orangetrack_source.py: <li> парсинг (с/без вложенных <a>, пустой,
+        одиночный); heading type=heading level=3 для h2/h3/h4.
+      - test_telegraph_publisher.py: helper для рендера paragraph с runs
+        (same-site link → <a>, external → drop, EN-substring not in RU → drop,
+        повторы → first only).
+
+      Integration:
+      - test_orangetrack_source.py или test_telegraph_publisher.py:
+        синтетический HTML с <ul>/<li>, <h3>, <a href> → парсер → симуляция
+        LLM-перевода (через _patch_text_with_ru_paragraphs) → preview_nodes →
+        проверка финальных Telegraph-нодов.
+
+      Existing tests должны остаться зелёными.
+    gaps: ""
+    required: true
+
+phase2_user_experience:
+
+  user_stories:
+    score: 0
+    status: "pending"
+    value: ""
+    gaps: ""
+    required: true
+
+  acceptance_criteria:
+    score: 0
+    status: "pending"
+    value: ""
+    gaps: ""
+    required: true
+
+  edge_cases:
+    score: 30
+    status: "partial"
+    value: |
+      - <li> с вложенными <a>/<strong>; пустой <li>; одиночный <li>.
+      - h2 → cap на h4, h5 → ?
+      - run.text не найден; повторяется N раз; href=NULL/malformed.
+    gaps: "Полный список edge cases для Bug 3"
+    required: true
+
+  error_scenarios:
+    score: 30
+    status: "partial"
+    value: "urlparse на malformed → drop link, log warning. block.text=None → skip."
+    gaps: "Все error paths"
+    required: true
+
+  verification_strategy:
+    score: 0
+    status: "pending"
+    value: ""
+    gaps: ""
+    required: true
+
+  ui_ux_requirements:
+    score: 100
+    status: "complete"
+    value: "N/A — backend-фикс, визуальная проверка через Telegram Instant View."
+    gaps: ""
+    required: false
+
+  risks:
+    score: 50
+    status: "partial"
+    value: |
+      R1: heading рендеринг для h5 (если найдутся) → cap level=4.
+      R2: Bug 3 fuzzy match → false positives. Mitigation: точное вхождение, case-sensitive.
+      R3: регрессия существующих тестов orangetrack/telegraph_publisher.
+    gaps: ""
+    required: true
+
+  technical_decisions:
+    score: 50
+    status: "partial"
+    value: |
+      TD1: <li> → paragraph (TBD: с буллитом или нет).
+      TD2: heading level cap=4.
+      TD3: Same-site через urlparse(href).netloc.
+      TD4: Helper в telegraph_publisher для рендера paragraph с runs.
+    gaps: ""
+    required: false
+
+  deploy_approach:
+    score: 80
+    status: "complete"
+    value: |
+      Деплой комбинированный с publish-idempotency-fix:
+      dev (оба фикса) → CI → deploy_test → проверка → merge dev→main → prod.
+    gaps: ""
+    required: false
+
+  manual_user_actions:
+    score: 100
+    status: "complete"
+    value: "Никаких. Стандартный CI/CD."
+    gaps: ""
+    required: false
+
+phase3_integration:
+
+  integration_points:
+    score: 70
+    status: "partial"
+    value: |
+      orangetrack_source.py: _walk + _emit_heading.
+      telegraph_publisher.py: helper для paragraph+runs + использование в preview_nodes.
+    gaps: ""
+    required: true
+
+  dependencies:
+    score: 80
+    status: "complete"
+    value: "urlparse (stdlib), block.runs format (existing), preview_nodes (existing)."
+    gaps: ""
+    required: false
+
+  technical_constraints:
+    score: 80
+    status: "complete"
+    value: |
+      Telegraph поддерживает только h3/h4. <a href> внутри <p>/<h3>/<h4> работает.
+      LLM-перевод сохраняет block.runs через _patch_text_with_ru_paragraphs.
+    gaps: ""
+    required: false
+
+  data_requirements:
+    score: 80
+    status: "complete"
+    value: "Существующие поля: block.text (RU), block.runs (EN), source_url."
+    gaps: ""
+    required: false
+
+  migration_needs:
+    score: 100
+    status: "complete"
+    value: "Нет. Старые статьи как есть, фикс на новых публикациях."
+    gaps: ""
+    required: false
+
+phase4_completion:
+  userspec_file: "work/orangetrack-rendering-fixes/user-spec.md"
+  status: "pending"
+
+decision_rules:
+  required_threshold: 85
+  optional_threshold: 50
+
+progress:
+  current_phase: "phase1_feature_overview"
+  questions_asked: 0
+  last_question: ""
+  total_required_score: 0
+  total_optional_score: 0
+  completion_estimate: "55%"
+  user_detail_level: "detailed"
+
+notes: |
+  Открытые вопросы (1 batch):
+  - <li> как буллит «• ...» или plain paragraph?
+  - Heading level cap на h4 или единый h3?
+  - Same-site domain — только orangetrack или все источники?
+  - run.text встречается несколько раз — обернуть первое вхождение или skip?
+  - Integration test — обязательный или nice-to-have?

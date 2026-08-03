@@ -1,0 +1,137 @@
+{
+  "validator": "reality-checker",
+  "batch": [10, 11, 12],
+  "iteration": 2,
+  "status": "approved",
+  "findings": [
+    {
+      "severity": "major",
+      "category": "feasibility",
+      "task": 11,
+      "issue": "Task 11 setUp for outage-scenario tests needs to patch BOTH `news_bot.DB_FILE` AND `outage_state.DB_FILE` (or whatever reference `outage_state._connect()` uses). Per task 05.md, `outage_state._connect()` opens `sqlite3.connect(news_bot.DB_FILE)` — i.e. it reads `news_bot.DB_FILE` at call time (same pattern as `pending_articles_repo._connect`). This means patching `news_bot.DB_FILE` to a tempfile path (as the existing TestIntegration setUp does) will propagate correctly into outage_state._connect() IF outage_state reads `news_bot.DB_FILE` at call-time rather than caching it at import-time. Task 11 does not explicitly mention this concern or verify it. If Task 5 caches `DB_FILE` at import time (e.g. `_DB = news_bot.DB_FILE` at module top), the patch will be ineffective and TestOutageStateIntegration will write to the real production DB. The task gives no verification step for this.",
+      "fix": "After Task 5 is complete, read outage_state.py and confirm that _connect() calls `sqlite3.connect(news_bot.DB_FILE)` at call-time (not cached). If cached, add `patch('outage_state.DB_FILE', self.db_path)` or `patch('outage_state._DB_FILE', ...)` to setUp. Add this as an explicit verification step in Task 11."
+    },
+    {
+      "severity": "major",
+      "category": "feasibility",
+      "task": 12,
+      "issue": "Task 12 setUp patches `news_bot.DB_FILE` (via db_patcher) and also needs outage_state to connect to the same tempfile DB. The same concern as Task 11: if outage_state._connect() reads news_bot.DB_FILE at call-time, one patch suffices; if it caches at import-time, the test will silently write to production DB. Additionally, the task says setUp calls `pending_articles_repo.init_schema()` but task 12's DB initialization needs to cover `bot_state` table creation — this happens only AFTER task 1 adds `_BOT_STATE_DDL` to init_schema(). If `init_schema()` is called before task 1 merges, bot_state table won't exist and outage_state getters will fail. The task correctly notes `init_schema() + ensure bot_state table` but does not spell out that `news_bot.init_db()` (which calls `pending_repo.init_schema()`) is the correct call, not a raw `init_schema()` on a fresh connection. The existing test_integration.py pattern calls `news_bot.init_db()` not `pending_articles_repo.init_schema()` directly.",
+      "fix": "Use `news_bot.init_db()` in setUp (not bare `init_schema()`) to ensure all tables including bot_state are created. Verify outage_state connection target. Mirror the existing TestIntegration setUp pattern exactly."
+    },
+    {
+      "severity": "major",
+      "category": "feasibility",
+      "task": 12,
+      "issue": "Task 12 specifies `freezegun>=1.5.0` to add to `requirements-dev.txt`, but no `requirements-dev.txt` file exists in the project — only `requirements.txt` is present. The project has no separation between production and dev dependencies. Adding `freezegun` requires either: (a) creating a new `requirements-dev.txt` file and ensuring the CI/CD test pipeline installs from it, or (b) adding it to the existing `requirements.txt` (shipping a test-only dep to production). The task says 'даже если не было — это разовая правка одной строки' but does not address the non-existence of the file or the CI implications.",
+      "fix": "Either: (a) create `requirements-dev.txt` and update CI pipeline (`.github/workflows/deploy.yml`) to install it for test runs, or (b) add freezegun to `requirements.txt` (acceptable given the project's simple dep structure). The task should specify which approach and update the deploy/CI task (Task 13) if option (a)."
+    },
+    {
+      "severity": "major",
+      "category": "hints",
+      "task": 12,
+      "issue": "The Implementation hints section (lines 128-135 of the task) contains prescriptive code-level algorithms: 'Outage scenario uses `side_effect = [valid_dict_1, RateLimitError(...), valid_dict_3]` on mock `transcreate_via_claude`' and 'Manual-review scenario uses `side_effect`-function on `time.sleep`, which on first call executes `pending_articles_repo.move_to_published(row_2_link, fake_telegraph_url, ...)` directly in the test DB'. These are specific code prescriptions, not pattern pointers. This was flagged in R1 and remains in R2 (the task was not changed for this finding per user instructions, but per validation checklist severity major for full algorithm/code in hints).",
+      "fix": "Replace with pattern pointers: 'Use side_effect list on the Claude mock to simulate success/failure/success sequence — see test_claude_transcreation.py for the mock pattern. For manual-review preemption, use a side_effect callback on time.sleep that mutates the DB between calls — see test_integration.py for the DB mutation pattern with pending_articles_repo.'"
+    },
+    {
+      "severity": "major",
+      "category": "hints",
+      "task": 12,
+      "issue": "The Implementation hints section (line 131) contains a full worked slot-calculation: 'Расписание для теста 1 (now=12:00, N=3, window 13:00–20:00, min_interval=40): по формуле floor((20:00-13:00)/N+1) = 7h/3 ≈ 140 min, capped at min_interval — interval 140 мин, слоты 13:00, 15:20, 17:40.' This is a full arithmetic derivation with concrete timestamps — a prescribed algorithm, not a hint. Flagged in R1, still present in R2.",
+      "fix": "Replace with: 'Verify expected slots by calling compute_publish_slots(3, now_12_msk, ...) in setUp and using the returned slot values in assertions rather than hardcoding specific timestamps.'"
+    },
+    {
+      "severity": "minor",
+      "category": "feasibility",
+      "task": 10,
+      "issue": "Task 10 instructs to add `from news_bot import translate_text, transcreate_text` in test_translation.py (currently only `translate_text` is imported). This is correct and feasible. However, the task says 'если в репо где-то есть тесты, ассертившие удалённое поведение — найти и удалить' and references a grep over `tests/`. Verified: test_mattel_integration.py uses `@patch('news_bot.transcreate_text', side_effect=lambda t, **k: t)` as an identity stub at lines 103 and 174. These tests do NOT assert bureaucratic output — they use `transcreate_text` as a passthrough mock. The identity stub `lambda t, **k: t` will continue to work correctly after bureaucratic regex removal (the function still exists, just does less). These patches do NOT need to change. However, task 10 verification grep only looks at `news_bot.py` for removed patterns; it correctly does NOT need to change test_mattel_integration.py. The task is correct but the 'check grep across tests/' step may create confusion if implementer sees these patches and worries unnecessarily.",
+      "fix": "Minor clarification in step 2: note that test_mattel_integration.py patches transcreate_text as an identity stub (passthrough mock) — these are unaffected by bureaucratic regex removal and require no changes."
+    },
+    {
+      "severity": "minor",
+      "category": "feasibility",
+      "task": 11,
+      "issue": "Task 11 step 6 (crash-loop guard test) requires `time.sleep` to be patched via `unittest.mock.patch`. However, it is ambiguous whether to patch `news_bot.time.sleep` or `time.sleep`. In news_bot.py, `time` is imported as a module (line 13: `import time`), so the correct patch target is `news_bot.time.sleep` (patching the reference in news_bot's namespace). This is consistent with the Edge cases note in the task ('Использовать `@patch(\"news_bot.time.sleep\")` либо `@patch(\"time.sleep\", autospec=True)` в зависимости от того, как Wave 4 импортирует sleep'). After task 8, the exact import style should be verified. Given current code imports `import time` and calls `time.sleep(...)`, the correct target is `news_bot.time.sleep`. The task acknowledges this ambiguity but defers it to a post-Wave-4 check.",
+      "fix": "After task 8 is complete, verify the import style for time.sleep in job() and document the exact patch target. Most likely `news_bot.time.sleep` given current `import time` at line 13."
+    },
+    {
+      "severity": "minor",
+      "category": "feasibility",
+      "task": 12,
+      "issue": "Task 12 says to mock `news_bot.fetch_mattel_news` in setUp. Verified: `fetch_mattel_news` is imported from `mattel_news_source` into news_bot.py (line 34: `from mattel_news_source import fetch_mattel_news, fetch_mattel_article`) so the correct patch target is `news_bot.fetch_mattel_news`. This is consistent with test_integration.py line 38 (`patch('news_bot.fetch_mattel_news', return_value=[])`). Correct. However, task 12 also patches `news_bot.fetch_full_article` as a unified dispatch hook for all three sources. This is the right approach since `fetch_full_article` in news_bot.py (line 1013) dispatches to lamley_source.fetch_lamley_article for lamleygroup.com URLs. The patch list is complete. Minor concern: `news_bot.load_feeds` is also in the patch list — this returns a list of RSS feed URLs from a config file. In test_integration.py setUp this is NOT globally patched; it is patched per-test. Task 12 includes it in setUp which is correct for consistency across all 4 tests.",
+      "fix": "No action required. Confirm that `mock_load_feeds.return_value` in setUp returns at least one URL to trigger RSS fetch path, otherwise `_fetch_rss_entries` falls back to `[RSS_URL]` (the default) which may cause a real network attempt."
+    }
+  ],
+  "r1_findings_resolved": [
+    {
+      "r1_finding": "Task 10 critical/missing_file: task 9 not yet completed",
+      "resolution": "Waived per iteration-2 instructions: skip findings about modules/state from earlier tasks 1-9 being absent"
+    },
+    {
+      "r1_finding": "Task 11 critical/missing_file: outage_state.py, compute_publish_slots.py, claude_transcreation.py absent",
+      "resolution": "Waived per iteration-2 instructions"
+    },
+    {
+      "r1_finding": "Task 12 critical/missing_file: same three modules absent",
+      "resolution": "Waived per iteration-2 instructions"
+    },
+    {
+      "r1_finding": "Task 11 critical/missing_function: patch target news_bot.transcreate_via_claude unknown",
+      "resolution": "RESOLVED: Task 11 R2 pins the patch target explicitly: Task 7 uses `from claude_transcreation import transcreate_via_claude` therefore patch target is `news_bot.transcreate_via_claude`. Convention documented with grep verification step."
+    },
+    {
+      "r1_finding": "Task 11 critical/missing_function: transcreate_via_claude not yet in news_bot.py",
+      "resolution": "Waived per iteration-2 instructions (module created by task 7)"
+    },
+    {
+      "r1_finding": "Task 11 critical/missing_function: no get_last_published_at helper in pending_articles_repo.py",
+      "resolution": "RESOLVED: Task 11 R2 uses outage_state canonical API (record_outage_event, getters) not a pending_articles_repo getter. Crash-loop guard test patches time.sleep to observe sleep duration, not a repo function."
+    },
+    {
+      "r1_finding": "Task 11 major/feasibility: outage_state API getter names unknown",
+      "resolution": "RESOLVED: Task 11 R2 pins API names per tasks/05.md section 3-4 contract. Canonical list documented in task."
+    },
+    {
+      "r1_finding": "Task 11 major/tdd: compute_publish_slots patch target for test_restart_mid_window_recomputes_schedule unknown",
+      "resolution": "RESOLVED: Task 11 R2 says to verify patch target post-task-8. Edge cases note added: 'Если task 8 использует from compute_publish_slots import compute_publish_slots, патч — news_bot.compute_publish_slots.'"
+    },
+    {
+      "r1_finding": "Task 11 minor/feasibility: move_to_published signature wrong (row_2_id, missing telegraph_path)",
+      "resolution": "RESOLVED: Task 11 R2 pins the exact call signature with a code block: `move_to_published(link=row_2['link'], telegraph_url='...', telegraph_path='...', via_review=True)`. Verified against pending_articles_repo.py line 464."
+    },
+    {
+      "r1_finding": "Task 12 major/feasibility: datetime.now patch fragile (C-extension)",
+      "resolution": "RESOLVED: Task 12 R2 documents the Time-mocking decision explicitly: use freezegun>=1.5.0 in requirements-dev.txt. Rationale for why mock.patch('news_bot.datetime.now') doesn't work explained. Fallback to _now() indirection coordinated with task 8 described."
+    },
+    {
+      "r1_finding": "Task 12 major/feasibility: outage_state getter names unconfirmed",
+      "resolution": "RESOLVED: Task 12 R2 references the canonical API from tasks/05.md and task 11's pinned list."
+    },
+    {
+      "r1_finding": "Task 12 major/feasibility: outage vs per-article behavior conflated in scenario 2",
+      "resolution": "RESOLVED: Task 12 R2 explicitly separates: OutageError (RateLimitError) = API-level → state machine advances + article rerouted to Google in same slot. ClaudeTranscreationError = per-article → no state advance + only that article to Google. Both described as distinct sub-scenarios."
+    },
+    {
+      "r1_finding": "Task 12 minor/feasibility: _create_mock_entry shape vs full-article shape confusion",
+      "resolution": "RESOLVED: Task 12 R2 explicitly documents two distinct shapes with a 'Two distinct mock shapes' section. `_create_mock_rss_entry` for RSS-shape input, `_create_mock_full_article` for full-article shape that _fallback_publish consumes."
+    },
+    {
+      "r1_finding": "Task 12 minor/feasibility: lamley not explicitly mentioned in mock list",
+      "resolution": "RESOLVED: Task 12 R2 notes that patching `news_bot.fetch_full_article` intercepts all three source dispatches including lamley_source.fetch_lamley_article, so separate lamley mock not needed."
+    },
+    {
+      "r1_finding": "Task 10 major/feasibility: grep scope for transcreate_text patches across tests/",
+      "resolution": "PARTIAL: Task 10 R2 unchanged. The finding about test_mattel_integration.py patches remains a minor concern (identity stubs, no action needed). Downgraded to minor in this report."
+    }
+  ],
+  "stats": {
+    "tasks_checked": 3,
+    "claims_verified": 52,
+    "issues_found": 8,
+    "critical_findings": 0,
+    "major_findings": 5,
+    "minor_findings": 3,
+    "r1_critical_resolved": 6,
+    "r1_major_resolved": 7,
+    "r1_minor_resolved": 3
+  }
+}

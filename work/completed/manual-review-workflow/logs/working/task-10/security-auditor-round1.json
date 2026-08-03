@@ -1,0 +1,51 @@
+{
+  "reviewer": "security-auditor",
+  "round": 1,
+  "mode": "inline-fallback",
+  "summary": "Task 10 security-reviewed inline against the task-file threat model (admin-ping truncation, retry_from_failed transactionality, staged-row eviction fairness). No HIGH or CRITICAL findings; Decision 11 sanitisation applied on every error path.",
+  "findings": [
+    {
+      "id": "sa-1",
+      "severity": "low",
+      "area": "news_bot._overflow_fast_track admin-ping",
+      "finding": "Ping message uses only integer counts — never user-controlled title strings. Telegram 4096-char limit cannot be breached. No secret-leak surface.",
+      "action": "none"
+    },
+    {
+      "id": "sa-2",
+      "severity": "low",
+      "area": "news_bot._overflow_fast_track last_error writes",
+      "finding": "All last_error writes go through sanitize_error_message(exc) before reaching increment_attempt or move_to_failed (Decision 11). Confirmed by grep: zero str(exc) writes to DB.",
+      "action": "none"
+    },
+    {
+      "id": "sa-3",
+      "severity": "low",
+      "area": "news_bot._overflow_fast_track eviction fairness",
+      "finding": "Eviction filter delegated entirely to pending_articles_repo.list_pending_for_eviction which enforces ru_paragraphs IS NULL at the SQL level (Decision 7). No CLI-cron race can evict staged rows.",
+      "action": "none"
+    },
+    {
+      "id": "sa-4",
+      "severity": "low",
+      "area": "hw_review.cmd_retry",
+      "finding": "N is argparse type=int (no injection). link is read from list_failed() results (DB-originated, not user-controlled). retry_from_failed wraps INSERT + DELETE in a single transaction with try/except rollback (verified in pending_articles_repo.py:652–657).",
+      "action": "none"
+    },
+    {
+      "id": "sa-5",
+      "severity": "low",
+      "area": "hw_review.cmd_retry stderr on None link",
+      "finding": "Defensive False path prints the link to stderr. Link is a source URL, not a secret. Safe.",
+      "action": "none"
+    }
+  ],
+  "owasp_dimensions_reviewed": [
+    "A03-injection",
+    "A04-insecure-design",
+    "A05-security-misconfiguration",
+    "A09-logging-monitoring-failures",
+    "secret-exposure"
+  ],
+  "overall": "approved"
+}

@@ -1,0 +1,39 @@
+{
+  "validator": "reality-checker",
+  "batch": [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11],
+  "iteration": 2,
+  "focus_tasks": [2, 4, 7],
+  "status": "approved",
+  "findings": [
+    {
+      "severity": "minor",
+      "category": "hallucination",
+      "task": null,
+      "issue": "work/dedup-model-series/code-research.md:317-320 still shows the pre-fix env-var guess: `os.getenv(\"DEDUP_SERIES_PAIRS\", \"1\")...` and 'Env var name: **DEDUP_SERIES_PAIRS** (or DEDUP_MODEL_SERIES; pick one...)'. This is not a task file and not the tech-spec (both are clean — see claims_verified below), and it is superseded in-place by Task 4's own explicit, repeated instruction to use DEDUP_SERIES_ENABLED (with rationale: const==env convention, matches DB_FILE/TZ, matches Task 6/10/11). Task 4 is listed as a Context File consumer of code-research.md, so a literal-minded implementer skimming code-research.md before task body could momentarily see the old name, though the task body overrides it unambiguously and even calls out the deviation in Post-completion. Non-blocking.",
+      "fix": "Optional hygiene: update code-research.md:317-320 to reflect the settled DEDUP_SERIES_ENABLED decision, or add a one-line note pointing to tech-spec Decision 4 / Task 4 as the final source of truth. Not required before execution since every task file and the tech-spec are already consistent."
+    }
+  ],
+  "stats": {
+    "tasks_checked": 11,
+    "claims_verified": 21,
+    "issues_found": 1
+  },
+  "round2_fix_verification": {
+    "fix_1_env_var_name_critical": {
+      "verified": true,
+      "detail": "Grepped work/dedup-model-series/tasks/*.md and tech-spec.md for DEDUP_SERIES_PAIRS: zero hits. Grepped for DEDUP_SERIES_ENABLED: present and consistent in tasks/4.md (const declaration, os.getenv pattern, .env.example line, Post-completion caveat), tasks/6.md (deploy runbook, .env commands), tasks/7.md (audit invariant: 'no duplicate os.getenv, single source of truth'), tasks/10.md (toggle-off smoke, technical AC), tasks/11.md (operator SSH one-liners toggling DEDUP_SERIES_ENABLED=0/1), and tech-spec.md Decision 4. Confirmed against actual codebase convention: news_bot.py has DB_FILE, TELEGRAM_BOT_TOKEN, TELEGRAM_CHANNEL_ID, INSTANCE_LABEL, OPENROUTER_MIN_BALANCE_USD, HEARTBEAT_FILE, TZ — every existing os.getenv() call uses the identical string as its Python constant name, matching Task 4's stated rationale. The only remaining DEDUP_SERIES_PAIRS occurrence in the whole feature folder is in code-research.md (a research doc, not a task/spec) and in the old iteration-1 review JSON logs (historical artifacts) — see the minor finding above."
+    },
+    "fix_2_calibration_carveout_major": {
+      "verified": true,
+      "detail": "(a) Wording consistency: tasks/1.md AC + Verification use `pytest tests/test_model_extractor.py -v -k 'not calibration'`; tasks/2.md AC + Verification use `python3 -m pytest -q -k 'not calibration'`; tasks/4.md Verification uses `python3 -m pytest -q -k 'not calibration'`. All three carry the same one-line caveat: calibration tests are red by design in Wave 1/2 because Task 3 rewrote the fixture and Task 6 (Wave 3) hasn't rewired the harness yet. (b) Confirmed via grep -rn 'def test.*[Cc]alib' across tests/ that, at the point Tasks 1/2/4 run (before Task 6 lands), only two test functions match the substring 'calibration': test_calibration_accuracy and test_calibration_real_pair_must_pass (both in tests/test_model_extractor.py, lines 332 and 363). No other test name, class name, or module name in tests/ contains 'calibration' (case-insensitive sweep also clean apart from docstrings/comments, which -k does not match against). So `-k 'not calibration'` excludes exactly the two intentionally-red tests and nothing else. (c) Confirmed tasks/6.md Verification Steps → Automated require plain `pytest tests/test_model_extractor.py -v` and `pytest -q` with NO '-k not calibration' carve-out — Task 6 explicitly rewires the harness to test_calibration_pair_tier_accuracy / test_calibration_sdcc_dupes_hard_block / test_calibration_not_dupes_never_hard_block and requires them green, consistent with tasks/10.md (Final Wave) which runs the full unscoped `pytest -q` plus a targeted `pytest tests/test_model_extractor.py -k calibration -v` referencing the new (Task-6-renamed) test names. The feature therefore ends fully green with no permanent carve-out."
+    },
+    "fix_3_task7_report_filename_minor": {
+      "verified": true,
+      "detail": "tasks/7.md now pins the exact path in both the Acceptance Criteria ('Написан audit-отчёт `logs/working/task-7/code-audit.md`...') and Post-completion ('Сохранить audit-отчёт в `work/dedup-model-series/logs/working/task-7/`' with filename code-audit.md referenced), matching the sibling audit tasks: tasks/8.md pins `logs/working/task-8/security-audit.md`, tasks/9.md pins `work/dedup-model-series/logs/working/task-9/test-audit.md`. All three Audit Wave tasks now use an identical `logs/working/task-N/<name>-audit.md` convention."
+    }
+  },
+  "cross_task_sweep": {
+    "scope": "All 11 tasks read in full; dependency graph, wave assignment, pair-key format, verdict polarity, window values, env-var name, calibration test naming, and report paths cross-checked against tech-spec.md and each other; env-var name additionally checked against actual codebase os.getenv() convention in news_bot.py.",
+    "findings": "No new cross-task inconsistency introduced by the round-2 edits. depends_on graph is acyclic and complete: Wave 1 (1,2,3: depends_on []) -> Wave 2 (4: [1,2]; 5: [1]) -> Wave 3 (6: [1,3,4]) -> Audit Wave (7,8,9: [1,2,3,4,5,6], parallel) -> Final Wave (10: [7,8,9]; 11: [10]). decisions.md and logs/checkpoint.yml are empty templates (execution not yet started), no stale content. No other DEDUP_SERIES_PAIRS/DEDUP_MODEL_SERIES references found anywhere in tasks/ or tech-spec.md."
+  }
+}

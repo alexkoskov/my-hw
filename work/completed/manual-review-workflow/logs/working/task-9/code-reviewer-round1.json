@@ -1,0 +1,64 @@
+{
+  "reviewer": "code-reviewer",
+  "task": "task-9",
+  "round": 1,
+  "date": "2026-04-23",
+  "mode": "inline-fallback",
+  "mode_note": "Task tool for spawning code-reviewer subagent was not available in this session. Review performed inline by the task teammate, loading code-writing + code-reviewing methodology and scoring the diff across all 11 standard review dimensions (correctness, reuse, readability, error handling, concurrency, performance, security, testability, docs, consistency, simplicity).",
+  "scope": [
+    "news_bot.py additions (+239 lines): _cleanup_preview_html, _fallback_publish, job() idle-fallback block (1a/1b)",
+    "hw_review.py additions (+68 lines): cmd_take subparser wiring + handler",
+    "tests/test_idle_fallback.py (new, 12 tests)",
+    "tests/test_hw_review_take.py (new, 8 tests)"
+  ],
+  "status": "ok-with-nits",
+  "summary": "Implementation faithfully follows tech-spec §9.10 and Decisions 9/11/12/13. _fallback_publish reuses Task 8's idempotency pattern for Telegraph URL and the preview-cleanup contract. Idle-fallback block in job() is wrapped in per-row try/except so one failure doesn't abort the pass. cmd_take follows the existing cmd_publish pattern for row-state matrix (pending / published / failed / vanished). Twenty new tests, zero regressions in the 339-test baseline.",
+  "findings": [
+    {
+      "id": "CR-1",
+      "severity": "low",
+      "dimension": "correctness",
+      "location": "news_bot.py _fallback_publish step 3",
+      "finding": "update_staged runs AFTER mark_telegraph_published but BEFORE send_telegraph_teaser. A Telegram teaser failure leaves ru_paragraphs non-NULL on the row, which excludes it from list_notified_overdue on the next tick (filter requires ru_paragraphs IS NULL). Auto-retry via idle-fallback is therefore no longer possible for Telegram-only failures — retry requires operator-initiated `hw_review publish N`.",
+      "action": "document-accept",
+      "rationale": "This is intentional per Decision 9 semantics: once Telegraph succeeded the row carries a persisted telegraph_url, and the operator-driven retry path (hw_review publish) is the defined next step. Pure Telegraph failures DO retry automatically because ru_paragraphs stays NULL in that case. The update_staged ordering (after mark_telegraph_published, before teaser) was chosen specifically to preserve this distinction. Inline comments in _fallback_publish now document this tradeoff."
+    },
+    {
+      "id": "CR-2",
+      "severity": "low",
+      "dimension": "reuse",
+      "location": "news_bot._cleanup_preview_html vs hw_review._cleanup_preview_html",
+      "finding": "Two near-identical implementations. Task 8's Decisions entry named hw_review._cleanup_preview_html as the reusable helper.",
+      "action": "accept-duplicate",
+      "rationale": "Importing hw_review from news_bot creates a reverse dependency (CLI → library normally, we'd flip it). Keeping a 10-line parallel implementation in news_bot avoids that cycle. Both helpers share the same contract (noop on None, swallow FileNotFoundError, log+swallow other OSError). Docstring on the news_bot version explicitly calls out the parity."
+    },
+    {
+      "id": "CR-3",
+      "severity": "info",
+      "dimension": "readability",
+      "location": "news_bot.py job() idle-fallback block",
+      "finding": "Local names _stale / _overdue / _row use leading underscores inside a function body — uncommon Python convention (leading underscore usually marks module-level private names).",
+      "action": "no-action",
+      "rationale": "The underscore signals 'iterator loop variable not used outside block' to readers scanning the function — matches the pre-existing style in the same job() around the earlier iteration variables. Removing it provides no measurable benefit."
+    },
+    {
+      "id": "CR-4",
+      "severity": "info",
+      "dimension": "error-handling",
+      "location": "news_bot.py job() step 1a mark_notified loop",
+      "finding": "One mark_notified failure logs and continues; the next ticks will re-observe the same row as stale (still notified_at NULL) and send another ping. Could be perceived as ping amplification on persistent DB issues.",
+      "action": "no-action",
+      "rationale": "If the DB is broken, the larger pipeline is broken — one extra heads-up ping per hourly cron is an acceptable signal. Alternative (batch mark_notified) would require a new repo function outside Task 9 scope."
+    },
+    {
+      "id": "CR-5",
+      "severity": "low",
+      "dimension": "testability",
+      "location": "tests/test_hw_review_take.py TestTakeAfterTerminal",
+      "finding": "Tests simulate the row-vanished race by patching hw_review.repo.get_pending with a side_effect that mutates state. The setup is intricate but faithful to the actual CLI control flow (list_pending → get_pending race).",
+      "action": "accept-as-is",
+      "rationale": "Alternative (insert directly into published_articles bypassing the pending row) wouldn't exercise the same CLI code path. The patch-with-side_effect pattern is also used in test_hw_review_publish_flow.py for the same reason."
+    }
+  ],
+  "recommendation": "Accept. Five findings total, all low/info, none block task completion. CR-1 has been mitigated by the step-ordering change + docstring. CR-2 is a deliberate architectural choice documented in code."
+}

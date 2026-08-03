@@ -1,0 +1,20 @@
+{
+  "status": "passed",
+  "summary": "Round 2 re-validation: all 8 Round 1 findings addressed with concrete, behavioral, litmus-grade tests. AC2 negative assertion pinned via test_li_block_text_does_not_contain_bullet (line 178). Integration test now demands exact node-tree dict structure equality (line 219-223), not substring match. AC9 overlapping-runs test explicitly asserts second run's text appears as plain text in same children list (line 190); test_two_runs_same_href_independent_wrapping and test_run_text_with_regex_meta_chars added (lines 191-192). www-prefix coverage now symmetric in test_www_prefix_normalized_for_same_site plus negative test_lookalike_domain_not_matched_negative pinning removeprefix vs lstrip (lines 201-202). Case-sensitivity pinned via test_case_sensitive_match_negative (line 203). H5 duplicate handled via explicit NOTE explaining the post-change angle (line 180). Helper no-op path covers parameterized runs=[] AND runs=None (line 196), with empty-text-run covered separately by test_run_with_empty_text_skipped (line 193). LLM-patch coverage scope justified by reference to existing test_openrouter_transcreation.py / test_claude_transcreation.py exercising _PATCHED_TEXT_BLOCK_TYPES naturally (lines 29, 233). Six new security-driven tests added (mailto/javascript scheme dropped, empty-netloc-both-sides degenerate guard, bullet-doubling guard, two DoS bounds) — all with concrete behavioral assertions, no substring or mock-only patterns. Pyramid remains healthy (unit-heavy with one tightly-asserted integration; no E2E correct for pytest-only project). All tests traceable to user-spec ACs and tech-spec Decisions 1-10. No new gaps introduced. Strategy is ready for Wave-2 test-writing tasks.",
+  "findings": [],
+  "metrics": {
+    "filesReviewed": 1,
+    "litmusTest": {
+      "checked": 30,
+      "passed": 30,
+      "failed": 0
+    },
+    "coverageAssessment": "excellent",
+    "pyramidBalance": {
+      "unit": 30,
+      "integration": 1,
+      "e2e": 0,
+      "assessment": "healthy"
+    }
+  }
+}

@@ -1,0 +1,77 @@
+{
+  "status": "failed",
+  "summary": "82/82 tests pass and back-compat / fail-safe / shape coverage is solid, but the feature's core value proposition — pinpointing WHERE the intake funnel collapsed — is not actually verified by any test. Proven by mutation: replacing _funnel_collapse_note's entire stage-selection logic with a constant fallback string ('обработка статей (детали в логах)') leaves all 9 unit tests and both integration tests green, because every assertion that looks like it checks the collapse note (e.g. assertIn('дубль-блок', msg)) is already satisfied by the fixed funnel-breakdown line printed above the note, independent of what the note itself says. On top of that, three explicitly-requested funnel branches (sources_failed / new_count==0 / dropped_no_article-or-checklist-as-max-stage) have zero test coverage.",
+  "findings": [
+    {
+      "severity": "critical",
+      "category": "anti_pattern",
+      "location": "tests/test_admin_alerts.py:338-351 (test_format_funnel_shape), tests/test_admin_alerts.py:368-384 (test_e009_quiet_day_with_funnel_renders_breakdown)",
+      "issue": "Both tests assert assertIn('Где схлопнулось', block) and assertIn('дубль-блок', block) to claim the collapse note correctly pinpoints the dedup stage. But 'дубль-блок' already appears in the fixed breakdown line above the note (f'... дубль-блок {block}'), so the assertion passes regardless of what _funnel_collapse_note actually returns. Verified by mutation: replacing the entire stage-selection body of _funnel_collapse_note with `return \"Где схлопнулось: обработка статей (детали в логах)\"` (i.e. always the generic fallback, never picking a real stage) leaves both tests — and the whole TestIntakeFunnel class — green. The one behavior the task brief called out by name ('pinpoints the collapse stage ... not just that it ran') is unguarded.",
+      "recommendation": "Assert the exact collapse-note line, not fragments that are already guaranteed by the breakdown lines above it. For DEDUP_COLLAPSE (block=3, others 0): replace the two assertIn('дубль-блок', ...) calls with `self.assertIn(\"Где схлопнулось: дубль-блок (3)\", block)` (and same string in the E009 message test). This exact 'label + parenthesised count' format can only come from _funnel_collapse_note choosing 'дубль-блок' as the max-count stage — it cannot be produced by the fixed breakdown line, which uses a different format ('дубль-блок 3', no parentheses, no 'Где схлопнулось:' prefix). Re-run the same mutation (generic fallback) after the fix to confirm it now fails."
+    },
+    {
+      "severity": "critical",
+      "category": "anti_pattern",
+      "location": "tests/test_integration.py:500-547 (test_quiet_day_ping_shows_dedup_collapse)",
+      "issue": "The end-to-end test asserts self.assertIn('дубль-блок 1', ping) to claim the real dedup path's collapse gets pinpointed in the E009 ping. 'дубль-блок 1' is exactly the text produced by the fixed breakdown line (f'... дубль-блок {block}' → 'дубль-блок 1'), NOT the collapse-note format (f'Где схлопнулось: {stage} ({count})' → 'дубль-блок (1)', with parentheses). Confirmed via the same mutation as above: with _funnel_collapse_note gutted to always return the generic fallback string, this test still passes. The test genuinely proves the real dedup path increments dropped_dedup_block correctly (a real strength — no forced/mocked count), but it does NOT prove the ping pinpoints dedup as the cause.",
+      "recommendation": "Change the assertion to the collapse-note's actual format: `self.assertIn('Где схлопнулось: дубль-блок (1)', ping)`. Keep the existing 'Где схлопнулось' presence check as a secondary anchor, but the parenthesised-count string is the one that closes the mutation gap."
+    },
+    {
+      "severity": "major",
+      "category": "missing_coverage",
+      "location": "tests/test_admin_alerts.py (TestIntakeFunnel — no fixture), news_bot.py job() b1 loop (funnel['sources_failed'] += 1)",
+      "issue": "The task brief explicitly asks whether the sources_failed path is tested — it is not, at either level. No TestIntakeFunnel fixture has sources_fetched==0 with sources_failed>0, so the 'Где схлопнулось: источники не ответили (N)' branch in _funnel_collapse_note (admin_alerts.py:186-187) is never exercised or asserted. At the integration level, no test makes a source fetcher raise an exception, so there is no proof that news_bot.job()'s `except Exception as exc: funnel['sources_failed'] += 1` line (news_bot.py) actually increments the counter that reaches the E009 ping.",
+      "recommendation": "Unit: add a fixture e.g. SOURCES_DOWN = {'sources_fetched': 0, 'sources_failed': 2, 'new_count': 0, 'dropped_no_article': 0, 'dropped_checklist': 0, 'dropped_dedup_block': 0, 'dedup_degraded': 0, 'staged': 0} and assert `self.assertIn('Где схлопнулось: источники не ответили (2)', admin_alerts._format_funnel(SOURCES_DOWN))`. Integration: in TestIntegration (or a new test), set `mock_fetch_rss.side_effect = Exception('boom')` (or make one of two SOURCES-equivalent fetchers raise while another returns []), run job(), capture the E009 ping via self.mock_notify, and assert it contains the 'источники не ответили (1)' collapse note — proving the real except-path increments the funnel and the ping surfaces it."
+    },
+    {
+      "severity": "major",
+      "category": "missing_coverage",
+      "location": "tests/test_admin_alerts.py (TestIntakeFunnel — no fixture), admin_alerts.py:189-190 (_funnel_collapse_note 'new == 0' branch)",
+      "issue": "No fixture has new_count==0 with sources_fetched>0 (i.e. sources returned entries but the pending-filter step dropped every one before the b3 loop). The 'Где схлопнулось: все записи уже известны (фильтры отсеяли всё)' branch is never exercised or asserted by any test.",
+      "recommendation": "Add a fixture ALL_KNOWN = {'sources_fetched': 4, 'sources_failed': 0, 'new_count': 0, 'dropped_no_article': 0, 'dropped_checklist': 0, 'dropped_dedup_block': 0, 'dedup_degraded': 0, 'staged': 0} and assert `self.assertIn('Где схлопнулось: все записи уже известны (фильтры отсеяли всё)', admin_alerts._format_funnel(ALL_KNOWN))`."
+    },
+    {
+      "severity": "major",
+      "category": "missing_coverage",
+      "location": "tests/test_admin_alerts.py (TestIntakeFunnel — no fixture), admin_alerts.py:192-199 (_funnel_collapse_note drop-stage max())",
+      "issue": "DEDUP_COLLAPSE is the only fixture that reaches the new>0-but-nothing-staged branch, and in it dropped_dedup_block is the max drop count. dropped_no_article and dropped_checklist winning as the max stage are never exercised — a bug in the `max(drops, key=lambda kv: kv[1])` tie-break or ordering (e.g. block always picked regardless of actual max) would not be caught.",
+      "recommendation": "Add two fixtures: one with dropped_no_article as the max (e.g. no_article=5, checklist=1, block=0, new=6, staged=0) asserting `assertIn('Где схлопнулось: нет статьи/текста (5)', ...)`, and one with dropped_checklist as the max (checklist=4, no_article=1, block=0, new=5, staged=0) asserting `assertIn('Где схлопнулось: чеклист без текста (4)', ...)`."
+    },
+    {
+      "severity": "minor",
+      "category": "missing_coverage",
+      "location": "tests/test_admin_alerts.py:420-428 (test_e008_plan_of_day_with_funnel_adds_compact_line)",
+      "issue": "The BUSY fixture sets sources_failed=1 and has dropped_no_article=1 + dropped_dedup_block=1 (dropped=2), which look deliberately chosen to exercise _format_funnel_line's `failed_part` branch (', источники-сбои {failed}') and the `dropped` sum — but the test only asserts 'Приём:' and 'в очередь 2'. A bug that drops the failed_part entirely, or miscomputes `dropped`, would not be caught.",
+      "recommendation": "Add `self.assertIn('источники-сбои 1', msg)` and `self.assertIn('отсеяно 2', msg)` to lock in the parts of the compact line the BUSY fixture was clearly built to exercise."
+    },
+    {
+      "severity": "minor",
+      "category": "anti_pattern",
+      "location": "tests/test_admin_alerts.py:343-344 (test_format_funnel_shape)",
+      "issue": "`self.assertIn(\"5\", block)` and `self.assertIn(\"3\", block)` are bare-digit substring checks tied only by code comment to 'sources fetched' / 'new / dedup-block'. They pass as long as the digit appears anywhere in the multi-line block, so they don't actually pin which field is 5 vs which is 3 (both values legitimately appear multiple times across breakdown lines and, after fixing findings 1-2, the collapse note too).",
+      "recommendation": "Replace with label-anchored substrings: `self.assertIn(\"получено 5\", block)` and `self.assertIn(\"новых после фильтров: 3\", block)`."
+    },
+    {
+      "severity": "minor",
+      "category": "anti_pattern",
+      "location": "tests/test_admin_alerts.py:400-406 (test_e009_quiet_day_broken_funnel_does_not_raise)",
+      "issue": "Comment claims a malformed funnel 'falls back to the legacy single-line ping,' but that's only true for non-dict inputs. For a dict with a bad-valued field (the test's own `{\"sources_fetched\": \"NaN\"}` case), the implementation does NOT fall back — verified directly: `alert_quiet_day(funnel={\"sources_fetched\": \"NaN\"})` still renders a full zeroed 'Воронка' breakdown block (all _funnel_int calls silently coerce the bad value to 0). The test's own assertions don't claim otherwise (it only checks '[E009]' and 'Бот сработал' are present, which is true either way), so this is a comment/contract-clarity issue rather than a false assertion, but it misleads a future reader about the actual fallback contract.",
+      "recommendation": "Either (a) fix the comment to say 'malformed non-dict funnel falls back to the legacy line; a dict with bad-valued fields instead renders a zeroed breakdown', or (b) if the zeroed-breakdown-on-bad-value behavior is unintended, tighten `_format_funnel`/`_funnel_int` to detect bad-valued dicts and fall back to \"\" too, then add `self.assertNotIn('Воронка', msg)` to lock in the corrected contract."
+    }
+  ],
+  "metrics": {
+    "filesReviewed": 4,
+    "litmusTest": {
+      "checked": 11,
+      "passed": 8,
+      "failed": 3
+    },
+    "coverageAssessment": "insufficient",
+    "pyramidBalance": {
+      "unit": 9,
+      "integration": 2,
+      "e2e": 0,
+      "assessment": "healthy"
+    }
+  }
+}

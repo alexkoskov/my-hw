@@ -1,0 +1,40 @@
+{
+  "validator": "reality-checker",
+  "batch": [7, 8, 9],
+  "status": "approved",
+  "findings": [
+    {
+      "severity": "minor",
+      "category": "feasibility",
+      "task": 7,
+      "issue": "Task 7's Post-completion/Description instruct saving the audit report under the directory `work/dedup-model-series/logs/working/task-7/` and 'returning the path to the report file', but no exact filename is specified anywhere in the task (unlike Task 8, which pins `security-audit.md`, and Task 9, which pins `test-audit.md`). This leaves the report filename to the executing agent's discretion.",
+      "fix": "Pin an explicit filename, e.g. `work/dedup-model-series/logs/working/task-7/code-audit.md` (mirrors the naming precedent at `work/cross-source-dedup/logs/audits/code-audit.md`, confirmed to exist)."
+    },
+    {
+      "severity": "minor",
+      "category": "hints",
+      "task": 8,
+      "issue": "Output-location convention is inconsistent across the Audit Wave batch: Task 7 and Task 9 both write into `work/dedup-model-series/logs/working/task-N/`, but Task 8 instead writes into a separate top-level `work/dedup-model-series/logs/audit/security-audit.md` (no task-number nesting, different parent directory). Both `logs/working/` and `logs/audit/` already exist on disk (both currently empty), confirming this dual convention is deliberate rather than a typo, but it means the three audit-wave reports won't live in one predictable location.",
+      "fix": "Align all three audit-wave reports to a single directory convention (either all under `logs/audit/task-{7,8,9}-*.md` or all under `logs/working/task-N/`) so a downstream reader (feature-execution lead) can find them without cross-referencing decisions.md links case by case."
+    },
+    {
+      "severity": "minor",
+      "category": "feasibility",
+      "task": 7,
+      "issue": "Every specific line-number/line-count anchor across Tasks 7-9 (model_extractor.py ~325 lines, `_MODEL_AFTER_BRAND_RE` at lines 115-131, news_bot.py ~2612 lines incl. `send_admin_notification`'s `_redact_text` call at line 463 and `parse_mode=None` comment at line 471, admin_alerts.py ~494 lines, backfill_fingerprints.py ~306 lines with the SELECT at lines 243-249, pending_articles_repo.py ~1007 lines, and the test line numbers `test_calibration_accuracy` @332, `test_calibration_real_pair_must_pass` @363, `TestCrossSourceDedup` @860, `test_within_source_not_deduped` @1171, `test_empty_fingerprint` @1240, `test_degraded_mode` @1288, `TestFingerprintCarryThrough` @1339, `TestSqlAudit` @1290) was verified against the CURRENT repo state and matches exactly. However, Tasks 1-6 (all still `status: planned`, `decisions.md` empty — none executed yet) will modify exactly these files: Task 1 adds `SERIES_LEXICON`/`_SERIES_DEFAULT_TIER`/pair extraction to model_extractor.py, Task 2 rewrites the E014/E015 builders in admin_alerts.py, Task 4 adds `DEDUP_SERIES_ENABLED` and refactors the gate in news_bot.py, Task 5 widens the SELECT in backfill_fingerprints.py, and Tasks 3/6 rewrite the calibration fixture and harness in test_model_extractor.py. All of these line anchors will very likely drift once Tasks 1-6 land, most severely for the calibration test lines and the fixture (Task 9 itself documents that the fixture is currently in the OLD `expected_verdict: duplicate/non-duplicate` + similarity-threshold shape, confirmed against tests/fixtures/cross_source_dedup_pairs.py, and must be restructured by Task 3/6).",
+      "fix": "No code change needed — this is not a hallucination, since the tasks already caveat 'read the actual file state at run time, not the tech-spec's should-be state' (Task 7 Details) and Task 9 explicitly treats the current fixture/calibration shape as the pre-fix baseline to check against. Recommend adding one explicit line to each audit task noting that all embedded line numbers are a pre-Task-1-6 baseline snapshot and are expected to shift, so the auditor doesn't waste time trying to reconcile stale anchors."
+    },
+    {
+      "severity": "minor",
+      "category": "feasibility",
+      "task": 7,
+      "issue": "Acceptance Criteria bullet 1 tallies the audit perimeter as '4 модуля + 4 теста + фикстура + 3 deploy-конфига' (12 files), but the task's own Context Files 'Code files' section lists 5 source files to read (model_extractor.py, news_bot.py, admin_alerts.py, backfill_fingerprints.py, AND pending_articles_repo.py) plus the same 4 tests, fixture, and 3 deploy configs (13 files total). pending_articles_repo.py is explicitly required reading ('НЕ изменялся; читать для проверки carry-through') but is not counted in the AC parenthetical tally.",
+      "fix": "Update the AC1 parenthetical to '4 modified modules + 1 read-only module (pending_articles_repo.py) + 4 tests + fixture + 3 deploy configs' for an accurate/unambiguous completeness gate, or otherwise clarify that the count intentionally excludes unmodified reference files."
+    }
+  ],
+  "stats": {
+    "tasks_checked": 3,
+    "claims_verified": 46,
+    "issues_found": 4
+  }
+}

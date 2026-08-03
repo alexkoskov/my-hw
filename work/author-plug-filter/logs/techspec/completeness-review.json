@@ -1,0 +1,174 @@
+{
+  "verdict": "needs_changes",
+  "meta": {
+    "reviewed_at": "2026-04-30",
+    "user_spec_status": "approved",
+    "tech_spec_status": "draft",
+    "sources": {
+      "user_spec": true,
+      "tech_spec": true,
+      "tasks": false,
+      "code_research": true
+    },
+    "requirements_total": 17,
+    "requirements_covered": 15,
+    "requirements_partial": 1,
+    "requirements_missing": 1
+  },
+
+  "forward_traceability": {
+    "summary": "15/17 ACs fully covered, 1 partial (AC4), 1 missing (AC16).",
+    "coverage": [
+      { "ac": "AC1", "status": "covered", "path": "Variant A pattern A2 (parenthesised umbrella with @handle). Decision 7 bumps _MAX_BOILERPLATE_LEN 80→120 to accommodate. Task 1." },
+      { "ac": "AC2", "status": "covered", "path": "Variant A pattern A4 (orphan @handle). Task 1." },
+      { "ac": "AC3", "status": "covered", "path": "Variant A pattern A3 (Platform: handle with or without @). Task 1." },
+      { "ac": "AC4", "status": "partial", "path": "Pattern A1 covers 'Follow me on Instagram for the next reveal'. However, the tech-spec does not define a list-item (bullet) detection mechanism — the user-spec says a plug as a bullet-point should be dropped while neighbouring real-content bullets survive. boilerplate_filter.filter_blocks handles structured blocks from autoevolution, but the lamley/mattel parsers produce flat paragraph lists from <li> tags. The tech-spec does not specify how is_boilerplate is applied when the plug is one of several <li> items in a single parsed paragraph string." },
+      { "ac": "AC5", "status": "covered", "path": "Patterns A1–A4 explicitly enumerate instagram, twitter, x, tiktok, youtube, facebook, reddit, patreon, discord, linktree. Threads and OnlyFans explicitly excluded." },
+      { "ac": "AC6", "status": "covered", "path": "Variant B pattern B2 (parenthetical umbrella with mandatory @handle) directly catches the trigger phrase. strip_author_plugs() in author_plug_filter.py. Task 3." },
+      { "ac": "AC7", "status": "covered", "path": "B1 cue-verb sentence regex with sentence-boundary detection handles plug at paragraph start. strip() + whitespace collapse covers remainder. Task 3." },
+      { "ac": "AC8", "status": "covered", "path": "re.sub() (not re.search()) removes ALL matches in one pass by design. Multi-plug paragraph case. Task 3." },
+      { "ac": "AC9", "status": "covered", "path": "logger.info('[author_plug] stripped from {link}: {frag!r}') per removed fragment in _fallback_publish. Decision 9. Task 4." },
+      { "ac": "AC10", "status": "covered", "path": "strip_author_plugs(ru_title), strip_author_plugs(ru_subtitle), strip_in_paragraphs(ru_paragraphs), strip_in_blocks(ru_blocks) — all four RU fields at single call site. Decision 5. Task 4." },
+      { "ac": "AC11", "status": "covered", "path": "Single insertion after line 1005 convergence point covers both Claude and Google fallback paths. Decision 2. Task 4." },
+      { "ac": "AC12", "status": "covered", "path": "Pattern B2 parenthetical umbrella with mandatory @handle, any verb. Decision 4. Task 3." },
+      { "ac": "AC13", "status": "covered", "path": "Negative test fixture in test_author_plug_filter.py. No cue verb, no parenthetical @handle — passes both B1 and B2. Task 8." },
+      { "ac": "AC14", "status": "covered", "path": "Negative test fixture. RU mention without cue verb anchor or parenthetical @handle. Passes variant B. Task 8." },
+      { "ac": "AC15", "status": "covered", "path": "Negative test fixtures for journalistic parentheticals without @handle. B2 mandatory @handle requirement explicitly addresses this. Decision 4. Task 8." },
+      { "ac": "AC16", "status": "missing", "path": "Corporate plug 'Follow Mattel on Instagram, X, and Facebook' is explicitly out of scope per user-spec. Tech-spec correctly notes it but does NOT specify any mechanism to ensure the filter does NOT fire on this — no test case is listed that verifies the corporate-plug passthrough for variant A. Pattern A1 ('^(follow|check|subscribe to)\\s+(me|us)\\s+on\\s+...') uses 'me|us' so 'Follow Mattel on' should NOT match A1. But this is not verified by any named test in the tech-spec's Testing Strategy. A negative test case for AC16 is required." },
+      { "ac": "AC17", "status": "covered", "path": "682 existing tests verified by Task 9 (pre-deploy QA). New tests add ~25 cases across test_boilerplate_filter.py, test_author_plug_filter.py, test_fallback_publish_paths.py." }
+    ]
+  },
+
+  "backward_traceability": {
+    "summary": "All 11 Decisions trace to user-spec or are marked [TECHNICAL]. Decision 11 is correctly tagged [TECHNICAL]. No unlabelled technical decisions found.",
+    "decisions": [
+      { "decision": "Decision 1", "traces_to": "AC1–AC17 collectively", "status": "ok" },
+      { "decision": "Decision 2", "traces_to": "AC11", "status": "ok" },
+      { "decision": "Decision 3", "traces_to": "user-spec Технические решения § 'отдельный модуль'", "status": "ok" },
+      { "decision": "Decision 4", "traces_to": "AC11, AC12, AC15", "status": "ok" },
+      { "decision": "Decision 5", "traces_to": "AC10", "status": "ok" },
+      { "decision": "Decision 6", "traces_to": "user-spec Альтернативы (combined approach)", "status": "ok" },
+      { "decision": "Decision 7", "traces_to": "AC1", "status": "ok" },
+      { "decision": "Decision 8", "traces_to": "user-spec Risk 1 mitigation / Ограничения", "status": "ok" },
+      { "decision": "Decision 9", "traces_to": "AC9 + user-spec 'Как проверить'", "status": "ok" },
+      { "decision": "Decision 10", "traces_to": "user-spec Risk 3 mitigation", "status": "ok" },
+      { "decision": "Decision 11", "traces_to": "[TECHNICAL] — single-source-of-truth for block type constant", "status": "ok" }
+    ]
+  },
+
+  "gaps": [
+    {
+      "id": "GAP-1",
+      "ac": "AC16",
+      "severity": "high",
+      "detail": "AC16 states 'Follow Mattel on Instagram, X, and Facebook' must pass both filters unchanged. While pattern A1 uses 'me|us' as the agent anchor (making a Mattel-named match structurally impossible), no test case in the tech-spec explicitly verifies this passthrough for variant A. The Testing Strategy section lists positives/negatives per AC1–AC5 but does not name a negative case for AC16 in test_boilerplate_filter.py. Task 8 (test-audit) mentions 'corporate plug' in the negatives list for test_author_plug_filter.py (variant B only) — this is correct but insufficient. A variant A negative test for the corporate form is missing from Task 1 and Task 8 scope.",
+      "location": "tech-spec.md § Testing Strategy / Task 1 / Task 8",
+      "recommendation": "Add 'Follow Mattel on Instagram, X, and Facebook' as an explicit negative test case in test_boilerplate_filter.py (variant A scope). Reference AC16 in the test docstring."
+    },
+    {
+      "id": "GAP-2",
+      "ac": "AC4",
+      "severity": "medium",
+      "detail": "AC4 requires that a plug as a bullet-point list item is dropped while neighbouring real-content bullets survive. The tech-spec's variant A patterns work on whole-paragraph predicates via is_boilerplate(). For autoevolution block-based sources, filter_blocks() handles this correctly (each block is a separate dict, so a plug-block is dropped independently). However, for lamley/mattel parsers that walk <li> tags and concatenate them into flat paragraph strings, a plug embedded as one list item among several content items would NOT be caught — the joined paragraph string would exceed _MAX_BOILERPLATE_LEN and contain real content. The tech-spec does not address this parser-level difference or document a mechanism for bullet-level filtering on flat-list parsers. The user-spec specifically calls out the bullet-item scenario ('плаг как пункт списка… соседние bullet-пункты с реальным контентом сохраняются').",
+      "location": "tech-spec.md § Architecture, Task 1",
+      "recommendation": "Clarify whether lamley/mattel parsers split <li> items into separate paragraph entries (in which case variant A covers them individually) or join them. If joined, document explicitly that the bullet-item plug scenario is NOT covered by variant A and indicate whether variant B's sentence-strip covers it post-translation. If not covered, add a finding to User-Spec Deviations or extend the scope."
+    },
+    {
+      "id": "GAP-3",
+      "ac": "AC8",
+      "severity": "low",
+      "detail": "AC8 requires multiple plugs in one paragraph to be removed in a single pass with the remainder correct. The tech-spec describes this correctly (re.sub removes all matches). However, the B1 regex uses a sentence-boundary pattern that assumes sentences are separated by '.', '!', or '?'. If two cue-verb plug sentences appear back-to-back without terminal punctuation (e.g., 'Подписывайтесь на меня в Instagram @x Следите за нами в TikTok @y'), the sentence boundary lookahead may fail to isolate the second sentence. The tech-spec does not include a test case for adjacent plugs without terminal punctuation. This is an edge-case but should be documented.",
+      "location": "tech-spec.md § Decision 4, test_author_plug_filter.py spec",
+      "recommendation": "Add a test case in test_author_plug_filter.py for two back-to-back cue-verb sentences without intervening punctuation. Document expected behaviour (both stripped or only one)."
+    }
+  ],
+
+  "scope_creep": [
+    {
+      "id": "SC-1",
+      "severity": "low",
+      "detail": "Task 7 (Security Audit) explicitly checks 'log-injection through stripped fragments ({frag!r} in journalctl)'. Log injection is a valid engineering concern but is not derived from any user-spec AC or risk. It is correctly classified as an infrastructure concern (security engineering), not new user-facing functionality. No entry in User-Spec Deviations is needed per methodology (infrastructure/engineering additions are acceptable without user-spec tracing). Flagged here for awareness only.",
+      "location": "tech-spec.md § Task 7",
+      "status": "acceptable_infrastructure"
+    },
+    {
+      "id": "SC-2",
+      "severity": "low",
+      "detail": "Decision 10 specifies that image/video blocks whose caption becomes empty after strip are KEPT (not dropped). The user-spec Risk 3 says 'для блоков типа paragraph удаляем блок целиком'. The tech-spec extends this decision to cover image/video captions differently from paragraph blocks. This is a technically sound elaboration, documented in Decision 10 with rationale ('the image still renders'). No user-spec AC addresses this specifically. It is a necessary engineering decision, not scope creep. Flagged for awareness.",
+      "location": "tech-spec.md § Decision 10",
+      "status": "acceptable_infrastructure"
+    }
+  ],
+
+  "overengineering": [
+    {
+      "id": "OE-1",
+      "severity": "medium",
+      "detail": "The tech-spec defines THREE separate public helper functions in author_plug_filter.py: strip_author_plugs(text), strip_in_paragraphs(paragraphs), and strip_in_blocks(blocks). For a size-S feature, this is a clean design but verges on over-structuring. strip_in_paragraphs is a trivial list-comprehension over strip_author_plugs(), and strip_in_blocks is a block-traversal loop over strip_author_plugs(). The caller (_fallback_publish) calls all three. None of these functions appear to be called from more than one call site. A single function accepting a unified RU payload dict and returning cleaned payload would reduce the API surface without losing testability. That said, separate functions DO aid unit testing (each AC maps to a distinct helper) and matches the project's existing style (separate filter_boilerplate / filter_blocks in boilerplate_filter.py). This is a minor concern, not a blocking issue.",
+      "location": "tech-spec.md § Architecture / Task 3"
+    },
+    {
+      "id": "OE-2",
+      "severity": "low",
+      "detail": "The Audit Wave (Tasks 6, 7, 8) adds three separate audit tasks (code, security, test) for a size-S feature with ~250 lines of change. Each writes a separate report file. This is a deliberate methodology choice (the project uses audit waves consistently), but for a pure-regex feature with no authentication, no DB mutations, and no new network calls, three parallel audit tasks may be disproportionate to risk. The security audit focus (log injection, regex DoS, block dict traversal) is legitimate but narrow. No finding — consistent with observed project methodology.",
+      "location": "tech-spec.md § Tasks 6–8",
+      "status": "consistent_with_project_methodology"
+    }
+  ],
+
+  "shallow": [
+    {
+      "id": "SH-1",
+      "severity": "medium",
+      "detail": "Decision 4 specifies the B1 regex involves a compound construction that combines _CUE_RU.pattern (compiled separately) with a surrounding sentence-boundary regex via string concatenation. This is an unusual pattern — concatenating .pattern strings from a compiled regex into a new compile() call. The tech-spec cites a code sketch from code-research.md §10 but does not itself specify the final regex string. The implementation team must decide: (a) whether the concatenated pattern correctly escapes all sub-expressions when inserted into the parent, (b) whether re.compile(_CUE_RU.pattern + ...) is the intended construction vs. a named-group reference or inline (?:...) group. If the construction is wrong, B1 silently fails to match. The tech-spec should either reproduce the final regex string or explicitly state 'use the construction from code-research.md §10 verbatim'.",
+      "location": "tech-spec.md § Decision 4 / Task 3",
+      "recommendation": "Add the final B1 regex string to Decision 4 (either verbatim from code-research.md §10 or a revised version). Mark code-research.md §10 as the authoritative source if deferring. The implementation team should not have to decide the regex construction from prose description alone."
+    },
+    {
+      "id": "SH-2",
+      "severity": "medium",
+      "detail": "The tech-spec does not specify the strip_in_paragraphs return type's empty-paragraph handling contract precisely. Decision 10 says 'drop empty paragraphs ([p for p in cleaned if p.strip()])' but the tech-spec's Architecture section for author_plug_filter.py says the function returns 'tuple[list[str], list[str]]' without stating whether empty strings are already excluded. The Testing Strategy says 'paragraph with only a plug becomes empty → dropped' — but this contradicts code-research.md §14 which offers TWO options (drop empty paragraphs OR keep them). Decision 10 resolves this in favour of dropping, but the Architecture section of the module does not reflect the drop contract explicitly in the function signature description. An implementation team reading only the Architecture section would have to cross-reference Decision 10 to know the return contract.",
+      "location": "tech-spec.md § Architecture (author_plug_filter.py description) / Decision 10",
+      "recommendation": "Add one sentence to the author_plug_filter.py module description in Architecture: 'strip_in_paragraphs drops empty entries from the returned list (see Decision 10).' Similarly for strip_in_blocks."
+    },
+    {
+      "id": "SH-3",
+      "severity": "low",
+      "detail": "The tech-spec does not specify the exact behaviour of strip_author_plugs() when the input is a non-str type or None (e.g., ru_subtitle may be None for articles without a subtitle). The code-research sketch shows 'if not isinstance(text, str) or not text: return text, []' — returning the input as-is. The Architecture section does not document this guard. The caller in _fallback_publish calls strip_author_plugs(ru_subtitle) without null-check — if ru_subtitle is None and the guard is not implemented, a TypeError would propagate to the try/except wrapper (which would then log ERROR and return original RU). This is safe but the try/except path would fire on a legitimate None subtitle, filling the log with spurious ERROR lines.",
+      "location": "tech-spec.md § Architecture (strip_author_plugs signature) / Task 3",
+      "recommendation": "Specify in the module API description that all three public functions accept None/non-str safely and return the input unchanged with an empty removed list."
+    }
+  ],
+
+  "user_spec_deviations": {
+    "section_present": true,
+    "content": "None.",
+    "findings": [
+      {
+        "id": "DEV-1",
+        "severity": "medium",
+        "detail": "Decision 10 makes an authoritative call on empty-block disposal that goes beyond user-spec Risk 3. User-spec Risk 3 says 'для плоских параграфов оставляем пустую строку (Telegraph пропускает пустой <p>); для блоков типа paragraph удаляем блок целиком'. Tech-spec Decision 10 adopts the 'drop paragraph blocks' approach (consistent with user-spec) but additionally decides that image/video blocks with empty caption are KEPT. The user-spec Risk 3 does not address this case — it is a gap in the user-spec that the tech-spec fills. Since this is a technical implementation detail rather than a deviation from stated user intent, it is borderline. However, it diverges from the user-spec's explicit statement about empty paragraphs. Marking as informational — no User-Spec Deviations entry is strictly required since user-spec does not address this case, but a comment in the section would improve transparency.",
+        "location": "tech-spec.md § User-Spec Deviations (empty), Decision 10"
+      },
+      {
+        "id": "DEV-2",
+        "severity": "low",
+        "detail": "The tech-spec Task 3 description says 'Module is pure stdlib; no API/IO; no log calls inside (caller logs)'. This means logging happens only in _fallback_publish (the caller), not inside author_plug_filter.py itself. The user-spec AC9 says 'Каждое срабатывание variant B пишет в journalctl INFO с вырезанным фрагментом' without specifying WHERE the log call lives. Placing logging in the caller rather than the module is a valid design (cleaner separation — module is a pure transform, caller manages side-effects). This is a minor technical decision not requiring a User-Spec Deviations entry. Flagged for awareness that the choice is intentional.",
+        "location": "tech-spec.md § Task 3",
+        "status": "informational"
+      }
+    ]
+  },
+
+  "structural_integrity": {
+    "finding": "pass",
+    "detail": "All 11 decisions are consolidated in the Decisions section. No architectural choices, technology picks, or approach rationale appear exclusively in task descriptions. Task descriptions correctly contain scope descriptions (what to modify, which files, which smoke commands) without embedding decision-level reasoning. Decision 11 [TECHNICAL] is the only purely infrastructure decision and is correctly placed. The Architecture section's How-it-works diagram is a flow description, not a decision — appropriately placed."
+  },
+
+  "solution_depth": {
+    "finding": "pass",
+    "detail": "The Solution section goes well beyond paraphrasing the user-spec. It specifies: (1) five named pattern families (A1–A5, B1–B3), (2) the convergence-point insertion rationale with line numbers, (3) module API signatures, (4) try/except strategy with return-type contract, (5) explicit extension of ux-guidelines.md as soft-defence. Architecture provides the data-flow diagram with named variables (ru_title, ru_paragraphs, ru_blocks), exact insertion line (news_bot.py:1006), shared-resource table, and block-traversal contract table. This is substantive technical content, not a restatement."
+  },
+
+  "summary": "15/17 ACs covered. 1 gap (AC16 — missing variant A negative test for corporate plug passthrough, high severity), 1 partial (AC4 — bullet-list plug handling for flat-list parsers unspecified, medium severity). 1 additional edge-case gap (AC8, adjacent plugs without terminal punctuation, low severity). 2 shallow-solution findings (B1 regex construction not finalised in tech-spec — medium; empty-paragraph contract not reflected in module API description — medium). 1 null-safety gap in strip_author_plugs signature (low). No undocumented scope creep. No overengineering blockers. User-Spec Deviations section shows 'None' — acceptable given the decisions are either infrastructure or within user-spec scope. Verdict: needs_changes. Blocking items: GAP-1 (missing AC16 negative test for variant A), SH-1 (B1 regex construction must be finalised or explicitly deferred to code-research.md). Non-blocking: GAP-2, GAP-3, SH-2, SH-3, DEV-1."
+}

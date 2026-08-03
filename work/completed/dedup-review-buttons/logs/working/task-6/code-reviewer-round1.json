@@ -1,0 +1,41 @@
+{
+  "reviewer": "code-reviewer",
+  "task": 6,
+  "round": 1,
+  "verdict": "changes_requested",
+  "summary": "Documentation-only diff (aa5c4c4) is well-written, operational, and matches the tech-spec design. Cross-checked every concrete claim (log line, callback_data grammar, flag truthy-list, fail-closed gate, 409 handling, cancel/keep/stale outcomes, accessor names) against the actually-landed implementation (commit 9a208b3 + Task 4's pending_articles_repo.py) and all verified true except one: architecture.md's bot_state section claims `pending_articles_repo._connect()` sets `PRAGMA busy_timeout=5000`, but the code deliberately uses `sqlite3.connect(..., timeout=5.0)` instead of an executed PRAGMA (its own docstring explains why: to avoid shifting the execute() count in a fault-injection test). One-line fix needed; everything else is solid and ready.",
+  "findings": [
+    {
+      "id": 1,
+      "severity": "major",
+      "file": ".claude/skills/project-knowledge/references/architecture.md",
+      "location": "Data Model → bot_state section, DDL bullet (line ~295 in current file)",
+      "issue": "Text reads: \"`PRAGMA busy_timeout=5000` (set both by `outage_state` and, since dedup-review-buttons, in `pending_articles_repo._connect()`)\". This is factually wrong for the second half. `outage_state._connect()` does execute a literal `conn.execute(\"PRAGMA busy_timeout = 5000;\")` (outage_state.py L114) — that part is accurate. But `pending_articles_repo._connect()` (pending_articles_repo.py L182-197) does NOT execute a PRAGMA at all; it passes `sqlite3.connect(news_bot.DB_FILE, timeout=5.0)`, i.e. the busy-timeout is set via the connect-time `timeout` parameter. The function's own docstring explicitly flags this as a deliberate choice: \"Set via the sqlite3.connect parameter — equivalent to PRAGMA busy_timeout = 5000 but WITHOUT an extra execute() inside _connect(), which would shift the execute() counter in the fault-injection test test_move_to_published_rollback_on_error.\" The doc sentence collapses this into implying both connect paths execute the same PRAGMA statement, which contradicts the code's own stated rationale for NOT doing that in pending_articles_repo.",
+      "evidence": {
+        "doc_claim": "`PRAGMA busy_timeout=5000` (set both by `outage_state` and, since dedup-review-buttons, in `pending_articles_repo._connect()`) absorbs typical contention — it now also serialises the second in-process writer, the review-listener thread, against the publish loop.",
+        "actual_code": "pending_articles_repo.py L197: `return sqlite3.connect(news_bot.DB_FILE, timeout=5.0)` — no PRAGMA execute(); docstring L186-195 explains this is intentional (functionally equivalent 5000ms busy-timeout, chosen specifically to avoid an extra execute() call)."
+      },
+      "recommendation": "Reword to something like: \"An effective 5000 ms busy-timeout (`outage_state` via an executed `PRAGMA busy_timeout=5000`; `pending_articles_repo._connect()` via the equivalent `sqlite3.connect(..., timeout=5.0)` parameter, chosen to avoid an extra execute() call) absorbs typical contention — it now also serialises the second in-process writer, the review-listener thread, against the publish loop.\" Functional claim (contention is absorbed, listener writer is serialized) is correct and should stay; only the \"PRAGMA ... in pending_articles_repo._connect()\" mechanism claim needs correcting."
+    }
+  ],
+  "verified_consistent": [
+    "Startup log line 'review listener active' — architecture.md/deployment.md quote it; news_bot.py logs `\"[startup] review listener active (daemon thread started)\"` (exact substring match) after `_maybe_start_review_listener()` succeeds.",
+    "callback_data grammar `dd:<c|k>:<token>` — matches `_parse_review_callback_data` (news_bot.py) exactly: 3 colon-separated fields, prefix `dd`, letter in {c,k} mapped to cancel/keep, non-empty token, ≤64 bytes.",
+    "REVIEW_BUTTONS_ENABLED truthy-list — .env.example states 'truthy 1/true/yes/on → on (0/false/no/off → off)'; code (news_bot.py L147-149) is `os.getenv(\"REVIEW_BUTTONS_ENABLED\", \"\").strip().lower() in (\"1\",\"true\",\"yes\",\"on\")` — default off, exact same 4-word grammar as claimed. Docs correctly state 'Default OFF' up front, avoiding confusion with DEDUP_SERIES_ENABLED's inverted (default-ON, off-word) grammar.",
+    "Fail-closed gate — docs: 'thread starts only when REVIEW_BUTTONS_ENABLED is truthy AND TELEGRAM_ADMIN_ID is numeric; non-numeric admin id disables the feature with a startup warning'. Matches `_review_listener_enabled()` / `_maybe_start_review_listener()` exactly, including the distinct WARNING + admin ping path for flag-on/non-numeric-id.",
+    "Same flag also gates keyboard rendering (not admin-id) — docs correctly scope this: only REVIEW_BUTTONS_ENABLED (not the numeric admin-id check) gates keyboard attachment at the E014 send site (news_bot.py L2823 `if REVIEW_BUTTONS_ENABLED:`), matching the doc's precise wording.",
+    "409/backoff handling — code catches `Conflict` specifically with a 60s backoff (`REVIEW_LISTENER_CONFLICT_BACKOFF_SECONDS = 60`) vs. 5s for generic errors; docs don't overclaim specific timings but correctly describe the risk ('a second poller gets HTTP 409') and the operational mitigation (enable on prod only), consistent with actual behavior.",
+    "Outcome resolution table (keep/cancel-pending/cancel-published/cancel-gone/stale-token) — matches `resolve_dedup_callback` line-by-line, including the race-honest re-check of `get_published` after `skip_pending` for the mid-publish race.",
+    "Token deletion timing ('Terminal outcomes delete the token, then edit + answer') — matches: `resolve_dedup_callback` deletes the token as its last step before returning, and `_handle_review_update` calls edit/answer only after receiving the resolved status.",
+    "Send-site wiring — only one call site in news_bot.py passes a non-None `reply_markup` (job()'s E014 soft-flag branch, L2822-2841); docs' 'ONLY there — no other alert carries buttons' claim verified by grep.",
+    "Accessor names `put_review_token` / `get_review_token_link` / `delete_review_token` — exist verbatim in pending_articles_repo.py.",
+    "Runbook operational safety — prod-only scoping, exact rebuild command (`cd /root/hw-news && git pull && docker compose up -d --build`), outside-window callout (10:00-20:00 МСК, host on UTC), and container name `hw-news-bot` all match the existing Deployment Platform / Two-instance topology sections; style (numbered steps, `> ⚠️` callouts, 'Operator applies all server commands; Claude only prepares them') mirrors the existing dedup-model-series rollout section precedent.",
+    "grep-based Doc checks from task 6 Verification Steps all pass (REVIEW_BUTTONS_ENABLED present in all 3 files; review_token/get_updates/_run_review_listener present in architecture.md; REVIEW_BUTTONS_ENABLED/review listener present in deployment.md).",
+    "No code blocks/pseudocode introduced; all three files use prose + inline code refs only, consistent with documentation-writing skill principles.",
+    "No contradictions found with pre-existing invariants: shared bot token / one poller (Two-instance topology), hand-managed prod .env, manual deploy outside publish window."
+  ],
+  "notes": [
+    "The shared-token/409/one-poller safety fact is restated (appropriately scoped) in .env.example, architecture.md, and deployment.md. This reads as intentional redundancy for a safety-critical fact (same pattern used by the pre-existing dedup-model-series section for the deploy-window warning) rather than problematic duplication — not flagged as a finding, just noted for awareness.",
+    "Docs were written (aa5c4c4) ~11 minutes before the listener implementation landed (9a208b3), per the task's wave-3-parallel-to-wave-2/Task-5 design; this is expected per task 6's own description and decisions.md, not an issue — the point of this review was precisely to confirm the docs, once implementation landed, still hold true, which they do apart from finding #1."
+  ]
+}

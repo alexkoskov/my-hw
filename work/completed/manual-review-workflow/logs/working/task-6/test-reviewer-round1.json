@@ -1,0 +1,98 @@
+{
+  "task": "Task 6 — Refactor job() into prep-only + cron bump + delete process_new_articles",
+  "reviewer": "test-reviewer (inline, test-master skill)",
+  "round": 1,
+  "commit_under_review": "0140a98",
+  "status": "ok-with-nits",
+  "summary": "16 new tests (3 migration + 13 prep-phase including cron assertion and env-override) plus 17 flipped integration tests all pass. Full suite: 276 passed (260 baseline + 16 new, zero regression). Tests follow the tempfile-DB pattern from Task 1; network is offline-mocked; assertion style is behavioural (count_pending / list_pending content) rather than call-count drift. All eight acceptance criteria are covered by at least one assertion.",
+  "pyramid_balance": {
+    "unit": "Env-overridable constants (reload-based), process_new_articles absent, cron source inspection.",
+    "integration": "Prep-phase does-not-publish, admin-ping format, admin-ping suppression, processed_news/pending_articles filtering, fetch-article None / empty-paragraphs skip, source-exception isolation, mattel fixture-HTML end-to-end, feed-iteration over multiple feeds + error isolation + empty-list fallback, migration schema + idempotency."
+  },
+  "ac_coverage": [
+    {
+      "ac": "process_new_articles fully removed",
+      "test": "tests/test_job_prep_phase.py::TestProcessNewArticlesRemoved::test_no_attribute",
+      "status": "covered"
+    },
+    {
+      "ac": "job() prep-phase: 0 send_telegraph_teaser / publish_article",
+      "test": "tests/test_job_prep_phase.py::TestPrepDoesNotPublish::test_prep_phase_does_not_publish + flipped integration tests",
+      "status": "covered"
+    },
+    {
+      "ac": "job() inserts new entries via pending_repo.insert_pending",
+      "test": "TestPrepDoesNotPublish / TestFiltering / TestFetchArticleFailures — all assert count_pending()",
+      "status": "covered"
+    },
+    {
+      "ac": "init_db idempotent on non-empty DB",
+      "test": "tests/test_migration.py::TestMigration::test_init_db_idempotent",
+      "status": "covered"
+    },
+    {
+      "ac": "init_db creates all 4 tables via delegation",
+      "test": "tests/test_migration.py::TestMigration::test_all_tables_created + tests/test_database.py::test_init_db_also_creates_pending_tables",
+      "status": "covered"
+    },
+    {
+      "ac": "cron bumped to every().hour",
+      "test": "tests/test_job_prep_phase.py::TestCronScheduleHourly::test_main_uses_hourly_schedule",
+      "status": "covered"
+    },
+    {
+      "ac": "IDLE_TIMEOUT_HOURS / GRACE_WINDOW_HOURS / QUEUE_CAP env-overridable with int defaults",
+      "test": "tests/test_job_prep_phase.py::TestEnvOverridableConstants",
+      "status": "covered"
+    },
+    {
+      "ac": "admin-ping sent only when build_admin_ping(rows) is not None",
+      "test": "TestAdminPing::test_admin_ping_format_matches_spec + test_admin_ping_suppressed_on_empty_queue",
+      "status": "covered"
+    }
+  ],
+  "findings": [
+    {
+      "id": "TR-1",
+      "severity": "low",
+      "location": "tests/test_job_prep_phase.py::_patch_sources helper",
+      "description": "The `_patch_sources` helper monkey-patches `news_bot.SOURCES` to a 2-element list of locally-built callables. It doesn't verify that the real module actually has exactly two fetchers — if Task 10 or later adds a third source, some tests may silently miss coverage of it. Mitigated by: the test suite's `test_sources_registry.py` has a 'exactly two entries' assertion, which is the proper home for that invariant.",
+      "recommendation": "No action. Test scope is correctly bounded."
+    },
+    {
+      "id": "TR-2",
+      "severity": "low",
+      "location": "tests/test_job_prep_phase.py::TestEnvOverridableConstants",
+      "description": "Uses `importlib.reload(news_bot)` to re-evaluate the module-level constants. `pending_articles_repo` holds a reference to the (old) `news_bot` module — after the first reload, the repo still points at the old module object. For this test the impact is nil (we don't exercise the repo under reload), but a future reader may be surprised. Cleanup in `finally` reloads once more to restore, so the rest of the suite sees a fresh `news_bot` — confirmed by running the full suite after this file (276 green).",
+      "recommendation": "No action. Documented here so a future teammate reading reloads knows the boundary."
+    },
+    {
+      "id": "TR-3",
+      "severity": "low",
+      "location": "tests/test_integration.py",
+      "description": "The old `test_telegraph_failure_skips_teaser_and_db` case was removed rather than flipped — in prep-phase there's no telegraph call to fail, so the behaviour it asserted has moved into Task 8's `hw_review publish`. This is noted in the decisions.md deviation block.",
+      "recommendation": "No action. The behaviour is now Task 8's and will be covered by test_hw_review_publish_flow.py."
+    },
+    {
+      "id": "TR-4",
+      "severity": "info",
+      "location": "tests/test_job_prep_phase.py::TestFiltering::test_entries_in_processed_news_are_skipped",
+      "description": "Good behavioural assertion: both `count_pending() == 1` AND `fetch_full_article.call_count == 1` are checked — this catches both over-staging AND over-fetching regressions.",
+      "recommendation": "No action."
+    },
+    {
+      "id": "TR-5",
+      "severity": "info",
+      "location": "tests/test_database.py",
+      "description": "The old `test_init_db_creates_table` assertion-shape was updated correctly (execute-in-list rather than execute-last). The new `test_init_db_also_creates_pending_tables` checks each of the three new tables is DDL'd; together they pin both the processed_news DDL (against accidental deletion) and the delegation.",
+      "recommendation": "No action."
+    }
+  ],
+  "critical_or_high_findings": 0,
+  "litmus_tests_run": [
+    "Remove the `build_admin_ping(rows)` call in job() → test_admin_ping_format_matches_spec should FAIL (verified mentally: expected != found).",
+    "Re-introduce `process_new_articles = lambda *a, **k: None` at the top of news_bot.py → test_process_new_articles_removed should FAIL.",
+    "Change cron to `every().day.at('12:00').do(job)` → test_main_uses_hourly_schedule should FAIL.",
+    "Strip the `get_pending` filter in step (3) → test_entries_already_pending_are_skipped should FAIL (count would be 3 instead of 2)."
+  ]
+}

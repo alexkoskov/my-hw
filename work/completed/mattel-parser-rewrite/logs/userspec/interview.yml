@@ -1,0 +1,573 @@
+# Interview Plan for Feature Planning
+#
+# Tracks progress of adaptive discovery interview for a new feature/bug/refactoring.
+
+# ============================================================================
+# Interview Metadata (Session Recovery)
+# ============================================================================
+interview_metadata:
+  started: "2026-04-24 18:20:49"
+  last_updated: "2026-04-25 09:30:00"
+  status: "completed"
+  can_resume: false
+  current_question_num: 2
+  feature_size: "S"  # 1 file (mattel_news_source.py) + its tests; contract preserved
+
+# ============================================================================
+# Conversation History
+# ============================================================================
+conversation_history:
+  - question_num: 0
+    timestamp: "2026-04-24 18:20:49"
+    topic: "initial_context"
+    agent_question: |
+      (pre-interview context from prior session memory + live-site verification)
+    user_answer: |
+      «Начинаем mattel-parser-rewrite фичу» → «тогда давай чинить» → «подтверждаю» (для work_type=refactoring, имени mattel-parser-rewrite, флоу Молянова).
+    summary: "User approved starting refactoring feature mattel-parser-rewrite; Mattel parser verified broken on live site (no __NEXT_DATA__, RSC flight payload instead)."
+
+  - question_num: 1
+    timestamp: "2026-04-24 18:30:00"
+    topic: "mechanism_deps_tests_priority"
+    agent_question: |
+      Batch of 4 proposals:
+      (1) Extraction mechanism — RSC-flight regex (A) as primary, no fallback to undocumented API (B) or headless browser (C). Verified live listing HTML contains entries in the biggest __next_f push.
+      (2) Dependencies — no new deps; reuse re + json + BeautifulSoup.
+      (3) Success criteria + testing — testable criteria against HTML fixtures for listing (N HW entries returns N), article (title/subtitle/paragraphs/images=[thumb]), live-HTML-without-HW-entries (returns [] w/o notifier). Snapshot unit tests; old __NEXT_DATA__ fixture replaced; optional manual live smoke (not in CI).
+      (4) Priority — P1 or P2. Proposed P1.
+    user_answer: |
+      "P1"
+    summary: "Explicit P1 confirmed. Silence on proposals (1)-(3) interpreted as acceptance; re-verified during code-research and Cycle 2."
+
+  - question_num: 2
+    timestamp: "2026-04-25 09:00:00"
+    topic: "cycle2_six_decisions"
+    agent_question: |
+      After code-researcher returned 6 unknowns, proposed positions:
+      (1) Fixture format — Python fixture-builder helpers (_make_flight_listing, _make_flight_article); reproducible, deterministic CI, edge-cases easy.
+      (2) Backward-compat for __NEXT_DATA__ — none.
+      (3) Module placement — rewrite mattel_news_source.py in place; preserve external symbols.
+      (4) Body HTML extraction — RSC text-row reconstruction (find body:"$N", then row "N:T<hex-len>,<content>", read exactly hex-len chars across pushes). Brute-force <p>-scan rejected (sidebar pollution).
+      (5) summary fallback — keep excerpt or title (no upgrade to seo_description; downstream doesn't consume summary).
+      (6) Image-only article — keep current downstream skip behavior (paragraphs=[] → news_bot.py:1231 skips).
+      Also: clarified field name is seo_description (not seo_desc).
+    user_answer: |
+      "го"
+    summary: "All 6 positions accepted as proposed. Proceeding to populate phase2+phase3 items."
+
+# ============================================================================
+# Phase 1: High-Level Feature Understanding
+# ============================================================================
+phase1_feature_overview:
+
+  feature_name:
+    score: 100
+    status: "complete"
+    value: "mattel-parser-rewrite"
+    gaps: ""
+    required: true
+
+  feature_description:
+    score: 90
+    status: "complete"
+    value: |
+      Переписать извлечение данных в mattel_news_source.py. Текущая реализация ищет
+      <script id="__NEXT_DATA__"> на https://corporate.mattel.com/news и на страницах
+      отдельных статей. Mattel переехал на Next.js App Router + RSC-стриминг —
+      этого тега больше нет, парсер тихо возвращает [] / None.
+
+      Механизм замены — regex-парсинг RSC flight payload (self.__next_f.push([1,"..."])).
+      Проверено live 2026-04-24: entries с ключами handle/title/date/excerpt/seo_desc
+      присутствуют в крупнейшем push'е listing-страницы, просто с двойной JSON-экранировкой.
+      Fallback-опций (undocumented Builder.io/Contentstack API, headless браузер) в скоуп
+      не включаем — будущие итерации если потребуются.
+
+      Внешний контракт сохраняется без изменений, чтобы news_bot.job() работал как есть:
+      - fetch_mattel_news() → List[feedparser-compatible dict] (link, title, summary, published_parsed, feed_url)
+      - fetch_mattel_article(link) → {title, subtitle, paragraphs, images} или None на ошибке
+      - notifier-контракт (admin-ping при структурной ошибке) сохраняется
+      - image-policy «thumbnail only» (patterns.md) сохраняется
+    gaps: ""
+    required: true
+
+  work_type:
+    score: 100
+    status: "complete"
+    value: "refactoring"
+    gaps: ""
+    required: true
+
+  user_problem:
+    score: 95
+    status: "complete"
+    value: |
+      В проде тихий регресс существующей фичи: fetch_mattel_news возвращает [],
+      подписчики канала не видят пресс-релизы Mattel о Hot Wheels. Админский
+      notifier шлёт "Mattel news parsing error: __NEXT_DATA__ not found" каждые
+      12 часов при cron-тике. Impact на автопоток низкий (autoevolution + lamley
+      работают, Mattel даёт очень мало HW-постов), но шумное админ-уведомление
+      и отсутствие канала восстановления делают это P1.
+
+      Priority: P1 (подтверждено оператором 2026-04-24). Чиним сейчас, не в очереди.
+    gaps: ""
+    required: true
+
+  target_users:
+    score: 70
+    status: "partial"
+    value: |
+      (1) Подписчики Telegram-канала Hot Wheels News — получают посты. (2) Оператор
+      бота (ты) — получает админ-уведомления об ошибках парсинга и следит за
+      деградацией фида.
+    gaps: "Ок, достаточно."
+    required: false
+
+  success_criteria:
+    score: 90
+    status: "complete"
+    value: |
+      (1) Против HTML-фикстура listing-страницы, содержащего N HW-записей,
+          fetch_mattel_news() возвращает ровно N feedparser-совместимых entries.
+      (2) Против HTML-фикстура страницы HW-статьи fetch_mattel_article(link)
+          возвращает {title, subtitle, paragraphs, images} где images = [thumbnail_url]
+          (thumbnail-only policy по patterns.md).
+      (3) Против текущего живого HTML (0 HW-записей на странице сейчас)
+          fetch_mattel_news() возвращает [] БЕЗ вызова notifier — отсутствие
+          HW-постов ≠ ошибка парсинга.
+      (4) Структурное повреждение (шаблон RSC-push поменялся или поле отсутствует)
+          → MattelNewsError → notifier получает admin-ping; fetch_mattel_news() → [].
+      (5) Существующие интеграционные тесты (test_mattel_integration.py) остаются зелёными.
+      (6) news_bot.job() без изменений принимает Mattel-entries и пропускает их
+          через pipeline как раньше.
+    gaps: ""
+    required: true
+
+  constraints:
+    score: 90
+    status: "complete"
+    value: |
+      - Новых зависимостей в requirements.txt не добавляем. re + json + BeautifulSoup
+        (уже есть) закрывают задачу. curl_cffi уже в стеке (autoevolution) — можно
+        переиспользовать для обхода Cloudflare если Mattel заблокирует plain requests;
+        по факту сейчас 200 OK через requests, так что не надо.
+      - Playwright / selenium — не используем (вес ~100+ МБ на VPS, больше движущихся
+        частей; оператор предпочитает лёгкие решения по patterns.md).
+      - Undocumented API — не разведываем в этой итерации (скоуп отдельной фичи).
+      - Wayback — только для dev/демо, не прод-путь.
+      - HTTP-таймаут REQUEST_TIMEOUT=15s и MAX_RESPONSE_SIZE=5MB сохраняем.
+      - User-Agent (Chrome-like) сохраняем.
+      - Image policy "thumbnail only" на странице статьи — сохраняем.
+      - Частичная деградация (например, entry без handle): пропускаем этот entry,
+        продолжаем остальные. Как в текущем _build_entry. Полная деградация
+        (push не найден / ни одного handle не распарсено) → MattelNewsError.
+    gaps: ""
+    required: true
+
+  testing_strategy:
+    score: 90
+    status: "complete"
+    value: |
+      Feature size = S (1 модуль, контракт сохранён).
+
+      Unit tests (pytest, расширяют test_mattel_news_source.py):
+      - Новые фикстуры: tests/fixtures/mattel/listing.html (snapshot живой страницы
+        https://corporate.mattel.com/news с HW-подменой через локальную правку —
+        подменяем 1-2 title'а чтобы содержали "Hot Wheels"; detail sufficient для
+        репрезентативного теста) и tests/fixtures/mattel/article.html (snapshot
+        страницы конкретной HW-статьи через Wayback, поскольку live page сейчас
+        рассказывает не про HW).
+      - Покрытие: парсинг entries (N HW → N), пустой список HW (0 HW → []),
+        структурная ошибка (без push / без handle → MattelNewsError + notifier),
+        парсинг article (title/subtitle/paragraphs/thumbnail-only),
+        404 article page (contentArticle null → None + notifier).
+      - Старый fixture tests/fixtures/mattel_news.html (__NEXT_DATA__) удаляем.
+
+      Integration test (test_mattel_integration.py):
+      - Оставляем зелёным с обновлёнными фикстурами, без изменений в контракте
+        того, как news_bot.job() потребляет Mattel-entries.
+
+      E2E / live-hit в CI — НЕ делаем (flaky, Mattel может блокировать, HW-gaps
+      нормальны). Вместо этого опциональный manual smoke в README фичи:
+      python3 -c "from mattel_news_source import fetch_mattel_news; print(fetch_mattel_news())"
+      — оператор запускает перед deploy и после.
+    gaps: ""
+    required: true
+
+# ============================================================================
+# Phase 2: User Experience & Scenarios
+# ============================================================================
+phase2_user_experience:
+
+  user_stories:
+    score: 90
+    status: "complete"
+    value: |
+      Story 1 (cron operator-invisible path) — As the news bot running on VPS,
+      когда наступает 12-часовой cron-tick, я должен фетчить
+      https://corporate.mattel.com/news, извлечь HW-entries (если есть), и
+      сложить их в pending_articles_repo через тот же путь, что и до миграции
+      Mattel на Next.js App Router. Никакого нового UX — это invisible-fix.
+
+      Story 2 (admin-noise reduction) — Как оператор бота, я перестаю получать
+      "Mattel news parsing error: __NEXT_DATA__ script tag not found in HTML"
+      каждые 12 часов. Вместо этого: когда HW нет — тишина (не ошибка), когда
+      HW есть — обычная queue-pressure нотификация по ходу job().
+
+      Story 3 (operator-invoked smoke) — Перед deploy и сразу после deploy
+      оператор может локально запустить
+      `python3 -c "from mattel_news_source import fetch_mattel_news; print(fetch_mattel_news())"`
+      и увидеть либо [] (нет HW сегодня), либо список dict'ов с link/title/...
+    gaps: ""
+    required: true
+
+  acceptance_criteria:
+    score: 95
+    status: "complete"
+    value: |
+      AC1. fetch_mattel_news() против HTML-фикстура с >=1 HW entry в article2.entries
+           возвращает список длины N (N = число HW-записей в фикстуре).
+      AC2. Каждый возвращённый entry имеет ровно 5 ключей:
+           link (str, ARTICLE_URL_PREFIX + handle),
+           title (str из flight payload),
+           summary (str, excerpt or title),
+           published_parsed (time.struct_time из date в формате YYYY-MM-DD, или None),
+           feed_url (NEWS_URL).
+      AC3. fetch_mattel_news() против HTML-фикстура без HW-записей возвращает []
+           И NOT вызывает notifier (отсутствие HW != ошибка парсинга).
+      AC4. fetch_mattel_news() против HTML без self.__next_f.push или без anchor
+           "article2":{"entries":[ вызывает notifier один раз с осмысленным
+           сообщением (например "Mattel news parsing error: article2.entries
+           not found in flight payload") и возвращает [].
+      AC5. fetch_mattel_article(link) против HTML-фикстура HW-статьи возвращает
+           dict с 4 ключами:
+           title (str из соответствующего entry в article2.entries),
+           subtitle (str, excerpt or "" — text-form если dict),
+           paragraphs (List[str] из BeautifulSoup-обхода body HTML по тегам p/li/h1-h4),
+           images (List[str] длины 0 или 1 — только thumbnail.url; download_media игнорим).
+      AC6. fetch_mattel_article(link) против HTML с HTTP 404 (raise_for_status)
+           или без article2 в flight (200 без данных) возвращает None
+           и вызывает notifier один раз.
+      AC7. RSC body reconstruction: при body="$N" для row N с маркером
+           "N:T<hex-len>,<content>" парсер читает ровно hex-len символов
+           контента, конкатенируя pushes если контент перекрывает границы.
+      AC8. Image policy "thumbnail only" сохранена: download_media в выходе
+           отсутствует даже если непустой.
+      AC9. Импорты в news_bot.py:24 (fetch_mattel_news, fetch_mattel_article)
+           продолжают работать без изменений.
+      AC10. test_mattel_integration.py — 3 теста зелёные с обновлённым фикстуром.
+      AC11. Запуск pytest tests/ зелёный целиком.
+      AC12. Manual smoke против live https://corporate.mattel.com/news не
+            вызывает notifier и возвращает либо [] (когда HW=0 на странице),
+            либо валидный список dict'ов.
+    gaps: ""
+    required: true
+
+  edge_cases:
+    score: 85
+    status: "complete"
+    value: |
+      EC1. 0 HW entries на live-listing-странице (текущее состояние сегодня) —
+           возврат [] без notifier-уведомления.
+      EC2. >5 MB ответ — guard MAX_RESPONSE_SIZE срабатывает, возврат [],
+           notifier один раз.
+      EC3. Body HTML пустой ("") — paragraphs=[], article возвращается;
+           news_bot.job():1231 потом скипает entry.
+      EC4. excerpt — dict вместо str (исторически Contentstack так делал) —
+           подхватываем .text как в текущем коде.
+      EC5. date в нестандартном формате (не YYYY-MM-DD) — published_parsed=None
+           без падения, как в текущем коде.
+      EC6. body="$N" но row N не появляется в pushes (RSC stream incomplete) —
+           paragraphs=[], notifier не вызываем (это контентная пустота, не парс-ошибка).
+      EC7. На article-странице article2.entries есть, но handle нужной статьи
+           отсутствует — fallback: ищем entry по url field, иначе MattelNewsError
+           ("article entry not found").
+      EC8. На article-странице download_media непуст (HALO example) —
+           игнорим, в images только thumbnail.
+      EC9. body содержит inline <img> теги — игнорим (только текстовые теги
+           p/li/h1-h4 идут в paragraphs).
+    gaps: ""
+    required: true
+
+  error_scenarios:
+    score: 90
+    status: "complete"
+    value: |
+      ES1. Network failure (requests.RequestException) — caught, notifier
+           "Mattel news HTTP error: {exc}", возврат [] / None.
+      ES2. HTTP 4xx/5xx — raise_for_status поднимает HTTPError,
+           обрабатывается как ES1.
+      ES3. Response > 5 MB — MattelNewsError "Response too large: ...",
+           notifier, возврат [] / None.
+      ES4. self.__next_f.push не найден — MattelNewsError "flight payload
+           not found", notifier, возврат [].
+      ES5. flight есть, но "article2":{"entries":[ нет — MattelNewsError
+           "article2.entries not found", notifier, возврат [].
+      ES6. JSON unescape падает (json.loads('"' + body + '"')) — MattelNewsError
+           "flight payload unescape failed: {exc}", notifier, возврат [].
+      ES7. Bracket-match выходит за границы — MattelNewsError "entries array
+           parse failed", notifier, возврат [].
+      ES8. fetch_mattel_article: body="$N", row N не найден — paragraphs=[],
+           возврат article с пустым body (NOT ошибка — handled at news_bot
+           skip level).
+      ES9. notifier сам падает — _notify ловит и логирует (line 138-141 текущего
+           кода), вызов остаётся поглощённым (caller never raises).
+    gaps: ""
+    required: true
+
+  verification_strategy:
+    score: 90
+    status: "complete"
+    value: |
+      Agent verification:
+      - pytest tests/ — все 407+ тестов зелёные.
+      - pytest tests/test_mattel_news_source.py tests/test_mattel_integration.py -v
+        для прицельной проверки.
+      - Manual: python3 -c "from mattel_news_source import fetch_mattel_news; print(fetch_mattel_news())"
+        — должен вернуть [] (нет HW сегодня) без notifier-сообщений в STDERR.
+
+      User verification (operator):
+      - После deploy на прод запустить тот же smoke на сервере:
+        ssh ... "cd /home/.../bot && python3 -c '...'"
+      - Дождаться следующего cron-tick и проверить, что в админ-чате нет
+        "Mattel news parsing error" сообщения.
+      - Если в течение 7 дней Mattel выпустит HW-релиз — убедиться, что он
+        прошёл в pending_articles и оператор получил queue-pressure ping.
+
+      No live-MCP verification needed — это backend-парсер без UI.
+    gaps: ""
+    required: true
+
+  ui_ux_requirements:
+    score: 100
+    status: "complete"
+    value: "Not applicable — backend parser, no UI/UX surface."
+    gaps: ""
+    required: false
+
+  risks:
+    score: 90
+    status: "complete"
+    value: |
+      R1. Будущая смена layout RSC: Mattel/Next.js может перетасовать row IDs,
+          chunk-разбиение, или ключи (article2 → articles_v3 etc).
+          Mitigation: anchor на семантические маркеры
+          ("article2":{"entries":[, "handle":, "title":, "date":), а не позицию push'а.
+          Если сломается — admin-ping сработает, оператор зафиксирует регресс.
+      R2. Hand-crafted fixture рискует разойтись с реальным форматом, и тесты
+          станут зелёными при сломе на проде.
+          Mitigation: фикстуру для smoke-tests строим из живой страницы
+          (snapshot верифицирован в research) + минимальная подмена для
+          инжекции HW-entry; integration-тест на одно живое полное reading
+          (без сетевого вызова, через mock с фикстуром, но фикстура имеет
+          реальное listing-обрамление).
+      R3. RSC body reconstruction может пропустить случай "row spans more than
+          2 pushes" если алгоритм наивный.
+          Mitigation: алгоритм работает с конкатенацией ВСЕХ pushes до начала
+          поиска row-marker — границы pushes не имеют значения.
+      R4. Mattel CDN/edge может отдать flight payload с другим row-id для body
+          (не $54, а $77 etc).
+          Mitigation: $N парсится из метаданных entry, а не хардкодится.
+      R5. requests.get может получить Cloudflare interstitial (как
+          autoevolution).
+          Mitigation: сейчас живой fetch отдаёт 200 OK через plain requests +
+          Chrome UA. Если в будущем Mattel включит Cloudflare — переключимся
+          на curl_cffi (уже в стеке для autoevolution). Не делаем upfront —
+          YAGNI.
+      R6. Wayback не сохраняет RSC-формат (research §7) — если live сайт
+          сломается надолго, мы не сможем дебажить через snapshot.
+          Mitigation: периодически сохранять live snapshot в /tmp перед
+          deploy фичи. Принимаем — приемлемый риск для P1-фичи.
+    gaps: ""
+    required: true
+
+  technical_decisions:
+    score: 90
+    status: "complete"
+    value: |
+      D1. Механизм: RSC flight regex + JSON unescape + bracket-match anchor.
+          Альтернативы (undocumented Builder.io API, headless playwright)
+          отвергнуты как избыточные и/или фрагильные.
+      D2. Фикстуры: Python helpers _make_flight_listing(entries) и
+          _make_flight_article(entry, body_html) в test-файлах. Не редактируем
+          реальный HTML вручную (двойной escape мучителен).
+      D3. Backward-compat для __NEXT_DATA__: НЕ держим. Если откатят — отдельная
+          фича.
+      D4. Модуль: переписываем mattel_news_source.py in-place. Внешние
+          символы сохранены.
+      D5. Body extraction: RSC text-row reconstruction (body="$N" → row "N:T<hex>,..."),
+          не brute-force <p>-scan (sidebar pollution).
+      D6. summary: оставляем "excerpt or title" (downstream не использует).
+      D7. Image-only HW: оставляем downstream-skip (news_bot.py:1231 if not paragraphs).
+      D8. Field name correction: seo_description (не seo_desc — последнее
+          было ошибкой записей).
+    gaps: ""
+    required: false
+
+  deploy_approach:
+    score: 85
+    status: "complete"
+    value: |
+      Existing deploy.sh path. mattel_news_source.py уже в FILES list
+      (deployment.md §"Files deployed"). Никаких новых файлов. Никаких
+      env-vars (MAX_RESPONSE_SIZE, REQUEST_TIMEOUT остаются константами модуля).
+      Никаких миграций БД.
+
+      Steps:
+      1. Локально pytest tests/ зелёный.
+      2. Локально smoke: python3 -c "from mattel_news_source import fetch_mattel_news; print(fetch_mattel_news())".
+      3. Merge в dev → push.
+      4. Operator: bash deploy.sh (он же выбирает A vs B по project_post_mrw_pending memory).
+      5. Post-deploy smoke на сервере.
+      6. Через 12 часов — проверка админ-чата на отсутствие parsing error.
+    gaps: ""
+    required: false
+
+  manual_user_actions:
+    score: 90
+    status: "complete"
+    value: |
+      Никаких новых ручных действий: ни ботов создавать, ни ключей получать,
+      ни сервисы регистрировать. Только запустить smoke-команду перед/после
+      deploy. Все credentials и URL уже настроены.
+    gaps: ""
+    required: false
+
+# ============================================================================
+# Phase 3: Integration & Technical Context
+# ============================================================================
+phase3_integration:
+
+  integration_points:
+    score: 95
+    status: "complete"
+    value: |
+      Все integration points сохраняются 1:1. Карта (verified via code-research):
+      - news_bot.py:24 imports fetch_mattel_news, fetch_mattel_article — ОК.
+      - news_bot.py:1037-1047 _fetch_mattel_entries (wrapper) — ОК.
+      - news_bot.py:1053-1056 SOURCES registry — ОК.
+      - news_bot.py:955-976 fetch_full_article dispatches by 'corporate.mattel.com'
+        in domain → fetch_mattel_article — ОК.
+      - news_bot.py:448-454 NETLOC_TO_SOURCE['corporate.mattel.com'] = 'mattel' — ОК.
+      - news_bot.py:457-472 _resolve_source_name(link) — ОК (depends on link form).
+      - news_bot.py:424-433 _source_hashtag — '#mattel' — ОК.
+      - news_bot.py:482, 487, 494 SOURCE_EMOJI/SOURCE_LABEL/_ADMIN_PING_ORDER — ОК.
+      - pending_articles_repo.py:166-199 insert_pending — ОК (потребляет только
+        link/source_name/feed_url/title/subtitle/paragraphs/images/blocks/pub_date).
+      - tests/test_sources_registry.py — ассерты на NETLOC_TO_SOURCE — ОК.
+    gaps: ""
+    required: true
+
+  dependencies:
+    score: 90
+    status: "complete"
+    value: |
+      Использует только то, что уже в requirements.txt:
+      - requests (2.32.3) — HTTP
+      - beautifulsoup4 (4.12.3) — HTML parse body
+      - stdlib: re, json, time, logging, typing
+      Не зависит от: deep-translator, python-telegram-bot, schedule, curl_cffi,
+      feedparser. Никаких новых deps.
+    gaps: ""
+    required: false
+
+  technical_constraints:
+    score: 85
+    status: "complete"
+    value: |
+      - Performance: один HTTP GET (listing) при cron-tick + до N HTTP GET'ов
+        (по одному на каждую HW-статью) внутри news_bot.fetch_full_article.
+        В среднем 0-1 запросов в день к article-страницам Mattel. Никаких
+        нагрузочных требований.
+      - Memory: HTML листинга ~1.27 MB, разворачиваем в Python string ×2
+        (raw + unescaped) — ~3-4 MB peak. MAX_RESPONSE_SIZE=5 MB guard.
+      - Security: нет user input. UA hardcoded. Никаких secrets через flight
+        парсинг. Ничего не пишем в файловую систему/БД из этого модуля
+        (только возвращаем dict, news_bot пишет).
+      - Code quality: следовать существующим паттернам модуля
+        (logger, _notify pattern, MattelNewsError class, fail-soft behaviour).
+    gaps: ""
+    required: false
+
+  data_requirements:
+    score: 90
+    status: "complete"
+    value: |
+      Source: HTTP GET с Mattel.com (RSC flight HTML). Нет аутентификации.
+      Storage: дальше идёт через news_bot.job() → pending_articles_repo
+      (как раньше). Сам модуль ничего не хранит.
+      Schema: feedparser-shaped dict (5 keys) для news, article-shaped dict
+      (4 keys) для article — определены в acceptance_criteria.
+    gaps: ""
+    required: false
+
+  migration_needs:
+    score: 100
+    status: "complete"
+    value: |
+      Никаких миграций БД (news.db schema не меняется). Никакой миграции
+      существующих pending_articles (формат row не меняется). Старые
+      published_articles остаются как есть. Test fixtures — заменяются
+      одномоментно вместе с кодом (тесты упадут до новой fixture, поэтому
+      смена атомарна в одной коммите).
+    gaps: ""
+    required: false
+
+# ============================================================================
+# Phase 4: Completion
+# ============================================================================
+phase4_completion:
+  userspec_file: "work/mattel-parser-rewrite/user-spec.md"
+  status: "approved"
+
+# ============================================================================
+# Decision Rules
+# ============================================================================
+decision_rules:
+
+  required_threshold: 85
+  optional_threshold: 50
+
+  stop_criteria:
+    - "All required items in current cycle scope score >= 85%"
+    - "Structural: every required item has non-empty value, no TBD, gaps empty or conscious limitations"
+
+  priority_order:
+    - "Required items with score < 85% (lowest score first)"
+    - "Optional items mentioned by user in context"
+    - "Other optional items if user seems knowledgeable"
+
+  question_strategy:
+    - "3-4 questions per batch about different gaps"
+    - "Propose solutions based on PK"
+    - "Challenge with substance"
+    - "Save after each response"
+
+# ============================================================================
+# Interview Progress
+# ============================================================================
+progress:
+  current_phase: "phase4_completion"  # Cycle 2 complete; ready for completeness check
+  questions_asked: 2
+  last_question: "Batch: 6 design decisions from code-research unknowns"
+  total_required_score: 1255
+  # required items: feature_name 100, feature_description 90, work_type 100, user_problem 95,
+  #                 success_criteria 90, constraints 90, testing_strategy 90 (cycle1 = 655)
+  #                 user_stories 90, acceptance_criteria 95, edge_cases 85, error_scenarios 90,
+  #                 verification_strategy 90, risks 90, integration_points 95 (cycle2 = 635)
+  total_optional_score: 715
+  # optional items: target_users 70, ui_ux 100, technical_decisions 90, deploy 85,
+  #                 manual_actions 90, dependencies 90, technical_constraints 85,
+  #                 data_requirements 90, migration_needs 100 (sum = 800)
+  completion_estimate: "85%"
+  user_detail_level: "moderate"
+
+# ============================================================================
+# Notes
+# ============================================================================
+notes: |
+  - Верифицировал слом на живом сайте 2026-04-24: HTTP 200, 1.28 MB, 0 вхождений __NEXT_DATA__,
+    вместо этого self.__next_f.push(...) — RSC flight payload (App Router).
+  - Контекст из памяти (project_post_mrw_pending.md): кандидаты фикса — RSC flight parse /
+    скрытый API / headless-браузер; impact низкий; в tests фикстуры со старым __NEXT_DATA__.
+  - Предыдущий spec источника лежит в work/mattel-news-source/ (первоначальное создание),
+    не трогаем.

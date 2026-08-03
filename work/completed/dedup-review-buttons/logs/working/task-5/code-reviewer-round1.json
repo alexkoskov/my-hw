@@ -1,0 +1,30 @@
+{
+  "reviewer": "code-reviewer",
+  "task": 5,
+  "round": 1,
+  "verdict": "approve",
+  "summary": "_run_review_listener implements a properly isolated daemon-thread long-poll loop (three exception layers: per-update, per-cycle incl. dedicated 409 Conflict handling, and a belt-and-braces outer catch), all catching Exception (never BaseException), so KeyboardInterrupt/SystemExit are not swallowed and the publish loop is never at risk. Offset is advanced BEFORE dispatching the handler (documented in-code as a deliberate lost-update-over-poison-loop tradeoff, consistent with resolve_dedup_callback's idempotent stale-token handling). The 'fresh Bot per asyncio.run' deviation is thoroughly justified in _review_get_updates' docstring (httpx AsyncClient bound to its opening event loop) and mirrors send_admin_notification's existing per-call Bot()+asyncio.run(coro) style. main() wiring is placed exactly where the task/tech-spec specify (after all health checks, before schedule.every()/job()), gated by a pure, testable predicate (_review_listener_enabled). All 10 TestReviewListener tests pass, and the full suite (1324 tests) is green with no regressions.",
+  "findings": [
+    {
+      "severity": "minor",
+      "file": "news_bot.py",
+      "line": 309,
+      "issue": "_maybe_start_review_listener() checks `if not REVIEW_BUTTONS_ENABLED: return None` and then calls `_review_listener_enabled()`, which re-checks the same REVIEW_BUTTONS_ENABLED flag internally. Purely a redundant condition (not a double function call, no behavioral bug), but it means the flag-off vs non-numeric-admin distinction relies on re-deriving the same fact twice in two places.",
+      "fix": "Optional cleanup: have _review_listener_enabled() (or a sibling helper) return a tri-state / reason instead of re-testing REVIEW_BUTTONS_ENABLED in both call sites, or simply add a one-line comment noting the intentional overlap so a future edit to one check doesn't drift from the other."
+    },
+    {
+      "severity": "minor",
+      "file": "news_bot.py",
+      "line": 89,
+      "issue": "Every getUpdates long-poll cycle (up to every ~30s+backoff) and every edit/answer call constructs a brand-new `Bot(token=...)` (and therefore a new httpx.AsyncClient / TCP connection), rather than reusing one across the thread's lifetime. This is a deliberate, well-documented deviation matching the project's existing send_admin_notification style, not a bug, but it is a recurring connection-setup cost that will fire dozens of times per hour indefinitely for the life of the process.",
+      "fix": "No action required given the documented rationale (event-loop-bound httpx client) and low request volume (single admin bot). If connection churn ever becomes a measurable concern, consider a single persistent asyncio event loop for the whole listener thread (e.g. loop.run_forever with call_soon) instead of asyncio.run() per call, but this is out of scope for this task and would be a bigger design change."
+    },
+    {
+      "severity": "minor",
+      "file": "news_bot.py",
+      "line": 187,
+      "issue": "The operator-decision INFO log line always includes `link=%s` even when the token was already stale (`get_review_token_link` returned None before resolve_dedup_callback ran) — in that case the log reads `link=None`, which is technically correct but less useful for the diagnostic trail the user-spec asks for ('records the operator decision incl. link').",
+      "fix": "Optional: when link is None, could log an explicit marker (e.g. 'link=<stale-token>') instead of the literal None repr — cosmetic only, does not block acceptance."
+    }
+  ]
+}

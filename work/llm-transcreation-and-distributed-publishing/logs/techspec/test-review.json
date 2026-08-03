@@ -1,0 +1,65 @@
+{
+  "status": "passed",
+  "summary": "Round 2 re-validation: all 5 R1 major findings are closed via explicit Acceptance Criteria entries (lines 408-458 of tech-spec.md). The new thematic groups in the AC section make every previously-implicit test obligation contractual: crash-loop guard test with MAX(published_at)=now-5min asserting ~35min sleep (line 436), all 9 anthropic SDK exception classes covered by classifier tests (line 426), all 12 outage state machine transitions covered (line 439), AC15 attempt_count (line 441), AC17 empty-queue-at-recovery (line 442), AC19 token logging shape (line 445), AC20 backlog warning at boundary 50/51 (line 446). Integration-breadth concerns from R1 #5 are partially absorbed by the new ACs (AC18 marker-both-engines fits the existing happy-path + outage tests; AC19 token logging fits happy-path; AC20 backlog warning is a new boundary test). Two minor residual gaps remain (carry-over across days, N=0 admin-ping suppression, 3-strikes-to-failed flow not explicitly required by AC), but none rise to major severity given Task 16 (Test Audit) explicitly verifies AC traceability and test pyramid balance is healthy. Pyramid composition unchanged (~26 unit + 4 integration + 0 E2E with manual smoke substitute, all litmus-passing). Strategy is now ready for implementation.",
+  "findings": [
+    {
+      "severity": "minor",
+      "category": "missing_coverage",
+      "location": "Section: Acceptance Criteria / Distributed-schedule observability",
+      "issue": "AC2 (admin ping content format with N/M/timestamps) and N=0 admin-ping suppression are referenced in Architecture 'How it works' step 6 ('Suppress on N=0') but not enumerated as test ACs. The R1 fix description listed AC2 as part of closed traceability gaps, but the actual added ACs cover only AC15/AC17/AC19/AC20. A regression that emits the schedule-ping with malformed text or fires it on N=0 fetch would not be caught by any test obligation.",
+      "recommendation": "Add to Distributed-schedule observability AC group: '[ ] AC2 admin ping format: schedule ping text matches regex `Зафетчил \\\\d+ новых, в очереди \\\\d+, расписание: \\\\d{2}:\\\\d{2}(, \\\\d{2}:\\\\d{2})*`. Test asserts both the regex match and that no ping is sent when N=0 (empty fetch).' Either bake into the test_distributed_schedule_integration.py happy-path test (assert telegram.send_message call args contains schedule string + assert no second call when sources return empty) or add a dedicated test_admin_ping_format unit test."
+    },
+    {
+      "severity": "minor",
+      "category": "missing_coverage",
+      "location": "Section: Acceptance Criteria / Outage state machine + Distributed-schedule integration",
+      "issue": "Three R1 #5 integration-breadth items are not explicitly required by any AC: (a) full 2-ping/2-grace outage timeline crossing the 2h fallback switch in a single integration test (current outage test only covers ping_1 + recovery — the ping_2 and fallback_active transitions are unit-tested in isolation but never exercised end-to-end across consecutive cron slots); (b) 3-strikes-then-failed flow (article failing Claude + Google + 2 retries → move_to_failed); (c) recovery from google_fallback_active state via Claude probe success on next slot. All three are valid behaviors per Decisions 5, 9, and §14.4, but no test owner is contractually assigned. AC §439 ('All 12 state transitions covered') technically covers (a) and (c) at the unit level, but integration coverage of these transitions is left to interpretation.",
+      "recommendation": "Either: (1) Strengthen line 439 AC to read 'All 12 state transitions covered by unit tests, plus end-to-end timeline test crossing ping_1 → ping_2 → google_fallback_active → recovery' as one integration scenario; or (2) Add to the Manual-review compatibility AC group a new 'Failure handling' AC group with: '[ ] AC25 3-strikes-to-failed: article failing Claude + Google + 2 retries → moves to failed_articles. Test asserts pending_repo.move_to_failed call with sanitized error message.' '[ ] Recovery from fallback_active: bot in google_fallback_active state + Claude probe success on next slot → switch-back ping sent + state cleared. Test in test_outage_state.py covers this branch.' Both fit the existing integration test count (4 → 5 tests) without bloating the strategy."
+    },
+    {
+      "severity": "minor",
+      "category": "missing_coverage",
+      "location": "Section: Testing Strategy / Unit tests / tests/test_compute_publish_slots.py + Section: Acceptance Criteria",
+      "issue": "Boundary case N=12 (smallest carry-over trigger above the 11-cap) is referenced in Task 16 audit criterion line 587 ('compute_publish_slots tests cover N=0, 1, 11, 12, 30 boundary conditions') but not enumerated in the Testing Strategy section's test list (lines 308-320 list N=0, 1, 4, 7, 10, 11, 15, 20 — N=12 missing). The interval-formula assertion `interval = max(420/N, 40)` is also still implicit (only outcomes tested). Same minor finding from R1 — not a blocker but worth resolving for test-audit consistency.",
+      "recommendation": "Add two bullets to test_compute_publish_slots.py list (line 308 area): 'N=12 → 11 slots (capped) + carry_over=1 (smallest carry-over case)' and 'Direct interval formula assertion at N=5 → interval = 84 min (proves max() branch fires correctly, would catch min() typo)'. Alternatively, drop N=12 from the Task 16 audit criterion if it's not actually planned."
+    }
+  ],
+  "metrics": {
+    "filesReviewed": 2,
+    "litmusTest": {
+      "checked": 30,
+      "passed": 30,
+      "failed": 0
+    },
+    "coverageAssessment": "adequate",
+    "pyramidBalance": {
+      "unit": 26,
+      "integration": 4,
+      "e2e": 0,
+      "assessment": "healthy"
+    },
+    "r1MajorFindingsClosure": {
+      "r1_finding_1_crash_loop_guard": "closed — line 436 AC + line 526 verify-smoke + line 587 audit criterion",
+      "r1_finding_2_nine_sdk_exceptions": "closed — line 426 AC + line 587 audit criterion",
+      "r1_finding_3_twelve_outage_transitions": "closed — line 439 AC",
+      "r1_finding_4_ac_traceability": "mostly closed — AC15 (line 441), AC17 (line 442), AC19 (line 445), AC20 (line 446) explicit; AC18 marker-both-engines absorbed by Task 12 integration tests; AC2 ping format and AC13 no-truncation partially covered (AC13 via line 453 cleanup AC). Minor residual: AC2 ping format not contractual.",
+      "r1_finding_5_integration_breadth": "partially closed — Task 12 still 4 tests but new ACs add scenario depth (token logging, marker, backlog warning). Residual gaps: 3-strikes-to-failed flow, full 2-ping/2h timeline crossing fallback switch in single integration test, recovery-from-google_fallback_active not contractually required."
+    },
+    "acTraceability": {
+      "userSpecAcsCovered": 28,
+      "userSpecAcsNotCovered": 3,
+      "userSpecAcsTotal": 31,
+      "uncoveredAcs": ["AC2 (ping format)", "AC25-equivalent (3-strikes-to-failed)", "post-fallback recovery probe"],
+      "techSpecAcsCovered": 28,
+      "techSpecAcsTotal": 28,
+      "techSpecAcCount": "expanded from 10 in R1 to ~28 in R2 across 9 thematic groups"
+    },
+    "decisionCoverage": {
+      "decision5_exception_classification": "fully covered — 9-of-9 classes required by AC line 426",
+      "decision9_crash_loop_guard": "fully covered — explicit test required by AC line 436 with concrete assertion (sleep ~35min)",
+      "outage_state_machine_transitions": "fully covered — all 12 transitions required by AC line 439"
+    },
+    "e2eOmissionJustified": true,
+    "e2eOmissionNote": "Live Anthropic API calls in CI would burn tokens for marginal benefit (~$0.10/run); manual pre/post-deploy smoke per AC30/AC31 substitutes appropriately. Recommendation from R1 to add opt-in live smoke gated by env var was not picked up but is a low-priority enhancement, not a blocker."
+  }
+}

@@ -1,0 +1,36 @@
+{
+  "reviewer": "security-auditor",
+  "round": 1,
+  "task": "01",
+  "commit": "8b42b67",
+  "status": "approved",
+  "findings": [
+    {
+      "severity": "minor",
+      "category": "best-practice",
+      "issue": "_resolve_body_html compiles a fresh re.Pattern on every call (re.compile inside the function body at lines 316-318). The row_id portion is sanitised via re.escape and constrained to digits, so this is not a security issue, but it is wasteful — re-compilation happens once per article fetch.",
+      "fix": "Optionally hoist a parameterised pattern (e.g., compile a generic '(?:^|[^0-9])(\\d+):T([0-9a-fA-F]+),' once at module scope and post-filter group(1) == row_id), or use functools.lru_cache. Pure micro-optimisation, no security impact.",
+      "location": "mattel_news_source.py:316-319"
+    },
+    {
+      "severity": "minor",
+      "category": "OWASP-A09",
+      "issue": "ES6/ES7 (line 469) and ES9/ES9b (line 477) notifier messages echo the validated `link` argument back to the admin chat. This complies with the tech-spec error matrix (which explicitly defines '<link>' in the message format) and the link has already passed the SSRF prefix guard, so the URL is constrained to the corporate.mattel.com domain. However, depending on how the admin chat renders Telegram messages, an attacker who controls the path-and-query portion of a /news/<...> URL could embed unicode tricks or extremely long paths to noise the operator's view. The current behaviour is intentional per spec — flagging only so the operator knows the surface exists.",
+      "fix": "If desired, truncate `link` to ~120 chars and/or strip the query string before interpolation (e.g., `link.split('?', 1)[0][:120]`). Acceptance is preserved either way.",
+      "location": "mattel_news_source.py:469, mattel_news_source.py:477"
+    }
+  ],
+  "ac_coverage": {
+    "ssrf_guard": "pass",
+    "linear_regex": "pass",
+    "json_depth": "pass",
+    "bracket_match": "pass",
+    "hex_cap": "pass",
+    "notifier_sanitisation": "pass",
+    "redirect_off": "pass",
+    "log_suppression_intact": "pass",
+    "fixture_placeholders": "pass"
+  },
+  "summary": "All 9 Decision-8 security ACs pass. SSRF guard at mattel_news_source.py:448 runs before any HTTP call and the mismatch-path notifier message at line 449 does NOT echo the malicious link (verified by TestSsrfGuard.test_rejects_link_outside_article_url_prefix at tests/test_mattel_news_source.py:570-589). _FLIGHT_PUSH_RE uses the linear-time character-class form `(?:[^\"\\\\]|\\\\.)*` with no lazy quantifier (line 55). All three json.loads call sites (lines 129, 198) catch (JSONDecodeError, RecursionError, ValueError). _find_entries_slice tracks string-literal state with backslash-escape handling, runs in O(n) capped at len(unescaped), and raises ES4 on EOF before depth zero (lines 164-190). _resolve_body_html caps advertised hex length at MAX_RESPONSE_SIZE (line 331) and rejects negative values; truncated streams return '' (ES9c content-empty path, no notifier). Both requests.get calls pass allow_redirects=False (lines 392, 458) with regression guards in tests (TestFetchMattelNews.test_uses_allow_redirects_false at line 319, TestFetchMattelArticle equivalent at line 550). Notifier sanitisation: requests.RequestException paths echo only type(exc).__name__ — no str(exc) — at lines 403 and 469; MattelNewsError paths echo str(exc) only when our own code constructs the message from safe scalars (anchor names, type names, validated digit row IDs, slug substrings). No raw third-party exception strings reach the notifier. The mattel module imports nothing from news_bot.py and contains no logging.getLogger().setLevel() calls — the httpx/urllib3/httpcore log-suppression at news_bot.py:185/228 is untouched. tests/fixtures/mattel_flight_builder.py defines zero default URLs; all URL values flow in from caller-supplied entry dicts, and the docstring (line 17-18) mentions 'example.com'/'placeholder.invalid' as the convention. OWASP A03/A05/A09/A10 sweep clean. Two minor non-blocking observations recorded for future polish (regex re-compilation per call; optional link truncation in error messages — both compliant with current spec).",
+  "notes": "OWASP cross-reference: A03 injection — _FLIGHT_PUSH_RE and _resolve_body_html's per-call regex are both linear-time and use re.escape/digit-only inputs (no ReDoS vector); JSON depth/recursion is caught at every json.loads boundary. A05 misconfiguration — allow_redirects=False on both fetches, MAX_RESPONSE_SIZE enforced before parsing, hex-length capped before slicing. A09 logging — notifier paths sanitise external exception types and avoid str(exc) for requests errors; the SSRF mismatch path does not echo the attacker-supplied URL; the news_bot.py token-redacting filter remains intact. A10 SSRF — string-prefix guard against ARTICLE_URL_PREFIX runs BEFORE any HTTP call, the SSRF tested explicitly at TestSsrfGuard, and userinfo/path-traversal escape vectors are blocked by the `https://corporate.mattel.com/news/` literal prefix. No hardcoded secrets; no real corporate.mattel.com or Contentstack URLs in fixture defaults; no insecure deserialisation (json.loads only, no pickle/yaml.load). Approved with zero critical findings."
+}
