@@ -1,0 +1,47 @@
+{
+  "status": "passed",
+  "summary": "All four round-1 findings are genuinely resolved. (1) Critical: test_unrecognized_tier_defaults_to_broad now calls the real _tier_suffix/_build_pairs code path with an out-of-vocabulary tier; I mutation-tested it myself by stripping the fail-safe fallback in _tier_suffix (`_TIER_SUFFIX.get(tier, ...)` -> `_TIER_SUFFIX[tier]`) and reran the suite — exactly this test failed with KeyError while the other 57 stayed green, then I restored the file and reran to confirm 58/58 green again. The previously-surviving mutant is now killed. (2) Major: Top Gun, Stranger Things, monster trucks, team transport, pop culture, bare 'comic-con', and the zamac dual-case are all now exercised through the real extract_series()/_SERIES_RE regex path (parametrized test_remaining_lexicon_entries_resolve + test_zamac_acronym_dual_case), not hand-built _build_pairs tuples. (3) Minors: test_theme_only_pair_is_broad and test_distinctive_requires_concrete_model now hit genuinely distinct branches (broad-tagged vs distinctive-tagged series through the no-models path), and test_series_alias_across_paragraph_boundary pins the documented cross-paragraph-join behavior end-to-end via extract_fingerprint. (4) The round-1 code-fix's own new behavior (connector-phrase primary-token degrading to the theme-only key) is pinned by test_connector_primary_model_degrades_to_theme_only — I mutation-verified this too, by removing the _MODEL_CONNECTOR_STOPWORDS guard around pair_strict_tokens.add(token); only this test failed (bogus 'porsche de k-pop|k-pop demon hunters|D' key instead of the fail-safe '*|k-pop demon hunters|B'). No existing assertions were weakened or removed — the diff is purely additive except test_empty_body -> test_empty_body_four_keys and test_empty_dict_input, both of which strengthened (2-key dict equality -> 4-key dict equality), not weakened. Zero mocks anywhere in the file (pure-function module tested directly throughout), so no over-mocking concern. Full suite: 58 passed, 2 deselected (calibration) in ~0.05-0.09s.",
+  "findings": [],
+  "metrics": {
+    "filesReviewed": 2,
+    "litmusTest": {
+      "checked": 25,
+      "passed": 25,
+      "failed": 0
+    },
+    "coverageAssessment": "excellent",
+    "pyramidBalance": {
+      "unit": 58,
+      "integration": 0,
+      "e2e": 0,
+      "assessment": "healthy"
+    }
+  },
+  "round1FindingsStatus": [
+    {
+      "id": "critical-1-failsafe-default",
+      "status": "resolved",
+      "verification": "Mutation test performed: replaced `_tier_suffix`'s `.get(tier, default)` fallback with an unguarded `_TIER_SUFFIX[tier]` lookup. Reran `pytest tests/test_model_extractor.py -v -k 'not calibration'` — test_unrecognized_tier_defaults_to_broad failed with KeyError('not-a-real-tier'); all 57 other tests stayed green. Restored model_extractor.py, reran, confirmed 58/58 green. The mutant is now killed."
+    },
+    {
+      "id": "major-1-ac7-franchise-coverage",
+      "status": "resolved",
+      "verification": "Confirmed test_remaining_lexicon_entries_resolve (parametrized: Top Gun, Stranger Things, Monster Trucks, Team Transport, Pop Culture, bare Comic-Con) and test_zamac_acronym_dual_case all call extract_series(text) directly — the real _SERIES_RE/_SERIES_ACRONYM_RE regex path, not a hand-built _build_pairs tuple. test_zamac_acronym_dual_case also pins both ZAMAC/Zamac casings resolving and lowercase 'zamac' in prose NOT matching."
+    },
+    {
+      "id": "minor-1-redundant-pairs-tests",
+      "status": "resolved",
+      "verification": "test_theme_only_pair_is_broad now uses a broad-tagged series ('car culture', 'broad') while test_distinctive_requires_concrete_model uses a distinctive-tagged series ('k-pop demon hunters', 'distinctive') — both through the no-models branch, proving the branch is unconditionally |B regardless of the series' own tier. Distinct assertions, no longer redundant."
+    },
+    {
+      "id": "minor-2-cross-paragraph-boundary",
+      "status": "resolved",
+      "verification": "test_series_alias_across_paragraph_boundary added: title ending '... San Diego' + paragraph starting 'Comic-Con exclusives...' via extract_fingerprint, asserts 'san diego comic-con' in fp['series'], locking in the documented \\s{1,3} cross-newline-join tolerance."
+    },
+    {
+      "id": "new-behavior-connector-degrade",
+      "status": "resolved",
+      "verification": "test_connector_primary_model_degrades_to_theme_only calls real extract_fingerprint on the actual t-hunted PT title ('Mais fotos do Porsche de K-Pop Demon Hunters'), asserts strict is unchanged ('porsche de k-pop') but pairs degrades to the theme-only fail-safe key. Mutation-verified: removing the _MODEL_CONNECTOR_STOPWORDS guard causes exactly this test to fail (bogus distinctive key emitted instead)."
+    }
+  ]
+}

@@ -1,0 +1,53 @@
+{
+  "status": "approved",
+  "summary": {
+    "totalFindings": 0,
+    "critical": 0,
+    "major": 0,
+    "minor": 0
+  },
+  "findings": [],
+  "notes": [
+    {
+      "concern": "Failure reasons sanitized before rendering",
+      "result": "confirmed_safe",
+      "detail": "news_bot.py:2590 computes `safe = sanitize_error_message(err)` exactly once per 'failed' outcome; that same `safe` value is used both for `pending_repo.increment_attempt(link, safe)`/`move_to_failed(link, safe)` (news_bot.py:2604,2613) and for `recap_failures.append((link, safe))` (news_bot.py:2599). The raw exception object `err` / its str() never reaches `recap_failures`, `alert_publish_recap`, or the outbound ping. Only one production caller of `alert_publish_recap` exists (news_bot.py:2647), confirmed via repo-wide grep."
+    },
+    {
+      "concern": "Reason length cap and failure-list cap",
+      "result": "confirmed_safe",
+      "detail": "Double-capped by design: news_bot.py caps collection at `PUBLISH_RECAP_MAX_FAILURES = 5` (news_bot.py:115, applied at news_bot.py:2596) with de-dup by link; admin_alerts.py independently re-caps at render time via `_RECAP_MAX_FAILURES = 5` (admin_alerts.py:26, enforced in `_recap_failure_lines` admin_alerts.py:41-42) and clamps each reason to `_RECAP_REASON_MAXLEN = 200` chars with an ellipsis (admin_alerts.py:29,49-50). Verified against test_failure_list_capped_at_five (tests/test_admin_alerts.py) and passing test run."
+    },
+    {
+      "concern": "No secret leakage in the send path",
+      "result": "confirmed_safe",
+      "detail": "send_admin_notification is unchanged by this diff: it still applies `_redact_text` unconditionally to the full message (news_bot.py:484) before building the Telegram payload, and still passes `parse_mode=None` (comment at news_bot.py:492-498, unchanged). This gives two independent redaction layers ahead of the wire: (1) `sanitize_error_message` replaces exact env-secret values (TELEGRAM_BOT_TOKEN/CHANNEL_ID/ADMIN_ID/TELEGRAPH_ACCESS_TOKEN) inside the reason before it ever enters `recap_failures`; (2) `_redact_text` pattern-scrubs bot-token/OpenRouter/Anthropic/OpenAI/Gemini key shapes over the assembled message as defense-in-depth. Verified with test_builder_never_renders_raw_secret_text and integration test asserting 'token=[REDACTED]' surfaces correctly with no raw secret shape. The rendered `link` is `row['link']`, a feed-derived article URL from pending_articles (no internal path/credential is interpolated anywhere in `alert_publish_recap` or `_recap_failure_lines`)."
+    },
+    {
+      "concern": "Plain-text only, no markup/injection surface",
+      "result": "confirmed_safe",
+      "detail": "`alert_publish_recap` and `_recap_failure_lines` build a plain '\\n'-joined string with f-strings only; no markdown/HTML syntax is introduced, and `send_admin_notification` still hardcodes `parse_mode=None` (unchanged). Tests explicitly assert absence of '**', '```', '__', '](' . Since parse_mode is None regardless of content, even a crafted link/reason string cannot become a clickable/markup payload."
+    },
+    {
+      "concern": "Held reason is generic, no internal detail leaked",
+      "result": "confirmed_safe",
+      "detail": "admin_alerts.py: `lines.append(f\"придержано {held} (Claude недоступна)\")` — the string 'Claude недоступна' is a hardcoded literal, not interpolated from any exception, outage-detail, or internal state. Only the integer `held` count varies."
+    },
+    {
+      "concern": "No new attack surface / DoS",
+      "result": "confirmed_safe",
+      "detail": "All new counters (`published_count`, `held_count`, `failed_count`, `moved_to_failed_count`) are plain-int increments (O(1) per slot, loop already bounded by `slots`). `recap_failures` growth is capped and de-duped at append time (news_bot.py:2594-2599). No new imports were added (`List` was already imported in admin_alerts.py via `from typing import List, Optional`); no new network calls, DB calls, deserialization, or dynamic import introduced by this diff."
+    },
+    {
+      "concern": "Fail-safe try/except does not hide security-relevant failures",
+      "result": "confirmed_safe",
+      "detail": "The try/except at news_bot.py:2646-2659 wraps only `admin_alerts.alert_publish_recap(...)` + `send_admin_notification(recap_msg)`, and runs strictly after the entire publish loop has completed (loop ends news_bot.py:2624; recap block starts news_bot.py:2645) — a recap fault cannot suppress or alter a publish/strike/move-to-failed outcome, which already happened. Sanitization (`sanitize_error_message`) and redaction (`_redact_text`) both occur outside this try/except, upstream of it, so they cannot be silently bypassed by the recap's own error handling. `alert_publish_recap`'s internal try/except (admin_alerts.py) covers only its own field-read/string-formatting logic and degrades to a generic '[E034] отчёт частично недоступен' line, never re-raising raw exception content. Verified by test_broken_recap_builder_does_not_break_tick (tests/test_integration.py), which asserts the tick completes and the article stays published even when `alert_publish_recap` is forced to raise."
+    }
+  ],
+  "verificationEvidence": [
+    "python3 -m pytest tests/test_admin_alerts.py -k PublishRecap -q -> 7 passed",
+    "python3 -m pytest tests/test_integration.py -k PublishRecap -q -> 5 passed",
+    "grep -rn alert_publish_recap across repo -> single production call site (news_bot.py:2647)",
+    "git diff admin_alerts.py news_bot.py -> no new import statements"
+  ]
+}

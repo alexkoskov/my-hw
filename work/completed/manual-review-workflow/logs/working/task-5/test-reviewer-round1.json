@@ -1,0 +1,62 @@
+{
+  "reviewer": "test-reviewer",
+  "round": 1,
+  "task": "task-5 — SOURCES registry + source_name tagging",
+  "commit": "93b800419028b6bada0aee57c67be63f372c052f",
+  "mode": "inline-fallback (Task tool unavailable)",
+  "summary": "23 unit tests covering all 11 TDD anchors from tasks/5.md plus 12 additional edge cases. Tests assert real behaviour (not mock-call counts), isolate via monkeypatch (never >3 mocks per test), and include a real feedparser.parse() round-trip for the FeedParserDict normalisation check. No critical/major findings.",
+  "status": "pass",
+  "tdd_anchor_coverage": {
+    "required": 11,
+    "present": 11,
+    "missing": [],
+    "mapping": {
+      "test_resolve_source_name_known_netlocs": "TestResolveSourceName.test_resolve_source_name_known_netlocs",
+      "test_resolve_source_name_unknown_returns_other": "TestResolveSourceName.test_resolve_source_name_unknown_returns_other",
+      "test_resolve_source_name_case_insensitive": "TestResolveSourceName.test_resolve_source_name_case_insensitive",
+      "test_fetch_rss_entries_tags_by_netloc": "TestFetchRssEntries.test_fetch_rss_entries_tags_by_netloc",
+      "test_fetch_rss_entries_unknown_netloc_warns": "TestFetchRssEntries.test_fetch_rss_entries_unknown_netloc_warns",
+      "test_fetch_rss_entries_normalises_feedparser_dict": "TestFetchRssEntries.test_fetch_rss_entries_normalises_feedparser_dict",
+      "test_fetch_rss_entries_isolates_per_feed_errors": "TestFetchRssEntries.test_fetch_rss_entries_isolates_per_feed_errors",
+      "test_fetch_rss_entries_empty_feeds_falls_back": "TestFetchRssEntries.test_fetch_rss_entries_empty_feeds_falls_back",
+      "test_fetch_mattel_entries_tags_mattel": "TestFetchMattelEntries.test_fetch_mattel_entries_tags_mattel",
+      "test_fetch_mattel_entries_empty_on_none": "TestFetchMattelEntries.test_fetch_mattel_entries_empty_on_none",
+      "test_sources_registry_shape": "TestSourcesRegistry.test_sources_registry_shape"
+    }
+  },
+  "test_pyramid": "correct (all unit tests — pure functions + thin wrappers)",
+  "mocking_quality": "good (monkeypatch ≤2 per test; no over-mocking)",
+  "assertion_quality": "good (tests assert real outputs, not mock-call counts)",
+  "findings": [
+    {
+      "severity": "minor",
+      "file": "tests/test_sources_registry.py",
+      "line": 329,
+      "description": "test_sources_are_callables is partially redundant with test_sources_registry_shape: accessing f.__name__ already implies the objects are callable, so the callable() assertion doesn't add a distinct failure mode. Keeping it documents the intent explicitly; removing it trims the suite by one.",
+      "recommendation": "Optional. Either remove (lean suite) or keep (explicit contract documentation). Not blocking."
+    },
+    {
+      "severity": "minor",
+      "file": "tests/test_sources_registry.py",
+      "line": 95,
+      "description": "The comment on test_resolve_source_name_no_scheme is slightly misleading: urlparse('lamleygroup.com/x').netloc is '' (empty), not 'lamleygroup.com/x in path'. The assertion is correct but the comment could be clearer.",
+      "recommendation": "Optional. Could clarify to 'urlparse of a scheme-less string yields an empty netloc, so lookup misses the map'. Not blocking."
+    }
+  ],
+  "good_practices_noted": [
+    "Real feedparser.parse(tiny_rss) used for FeedParserDict normalisation test — exercises the stable API, not an unstable hand-rolled stub (matches task-file hint).",
+    "caplog used with explicit level + logger name for the warning-log assertion — avoids flaky capture of parent-logger output.",
+    "Per-feed error isolation test uses raise-in-mock pattern — natural way to exercise the except branch.",
+    "Empty-feeds fallback test captures the URL list passed to fetch_rss, verifying fallback to RSS_URL by value (not by log message).",
+    "Notifier passthrough test uses a sentinel lambda and `is` identity check — proves the argument actually propagates."
+  ],
+  "additional_edge_cases_covered": [
+    "Empty string input to _resolve_source_name",
+    "Scheme-less URL to _resolve_source_name",
+    "Entry with no 'link' key in _fetch_rss_entries — falls back to feed_url netloc",
+    "fetch_mattel_news returning empty list (distinct from None)",
+    "Notifier kwarg propagation to fetch_mattel_news",
+    "SOURCES items callable",
+    "SOURCES iteration-time round-trip"
+  ]
+}

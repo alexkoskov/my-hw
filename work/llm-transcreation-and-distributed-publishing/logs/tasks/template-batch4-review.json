@@ -1,0 +1,83 @@
+{
+  "validator": "task-validator",
+  "batch": [16, 17, 18, 19],
+  "status": "changes_required",
+  "findings": [
+    {
+      "severity": "critical",
+      "category": "decomposition",
+      "task": 18,
+      "section": "frontmatter",
+      "issue": "Task 18 declares wave=10 and depends_on=[17], but Task 17 also has wave=10. A task with `depends_on: [X]` must be in a later wave than X — otherwise both could be scheduled in parallel and the dependency is meaningless. Sequential chain 17 -> 18 -> 19 is encoded but all three sit in wave 10.",
+      "fix": "Move Task 18 to wave=11 (or split Final Wave into separate sequential waves: 17 in wave 10, 18 in wave 11, 19 in wave 12). Alternatively, if waves represent only semantic grouping (Final Wave) — drop depends_on for 18/19 OR document explicitly that wave is informational, not a parallelism gate."
+    },
+    {
+      "severity": "critical",
+      "category": "decomposition",
+      "task": 19,
+      "section": "frontmatter",
+      "issue": "Task 19 declares wave=10 and depends_on=[18], but Task 18 also has wave=10. Same dependency-vs-wave violation as Task 18.",
+      "fix": "Move Task 19 to wave=12 (or appropriate later wave) so it runs strictly after Task 18 completes. Reflect the sequential 17 -> 18 -> 19 chain in the wave numbers."
+    },
+    {
+      "severity": "minor",
+      "category": "consistency",
+      "task": 17,
+      "section": "frontmatter / Verification Steps",
+      "issue": "Frontmatter `verify: []` but the Verification Steps section contains a Smoke subsection (Claude API live smoke + token redaction smoke + AC traceability check). The two are out of sync — readers consulting the frontmatter would think there are no smoke checks, but there are.",
+      "fix": "Set `verify: [smoke]` in frontmatter to match the actual smoke checks defined in the body. (No 'user' since this QA is fully agent-driven.)"
+    },
+    {
+      "severity": "minor",
+      "category": "consistency",
+      "task": 18,
+      "section": "frontmatter / Verification Steps",
+      "issue": "Frontmatter `verify: [smoke]` but Verification Steps contains both a Smoke subsection AND a User subsection (operator confirms 'деплой прошёл, можно идти в Task 19'). The User check is genuine — operator confirmation is required to close the task — but it's not declared in `verify`.",
+      "fix": "Set `verify: [smoke, user]` to reflect that the task has both a smoke check (artifact parsing) and a user-confirmation check (operator approval before close)."
+    },
+    {
+      "severity": "minor",
+      "category": "content",
+      "task": 19,
+      "section": "Context Files",
+      "issue": "Context File paths for project-knowledge skill use `~/.claude/skills/project-knowledge/project.md`, `architecture.md`, `deployment.md`, `ux-guidelines.md` — i.e. flat in the skill root. The actual layout (used by all other tasks in the batch and by the task template itself) is `~/.claude/skills/project-knowledge/references/<file>.md`. The links will resolve to non-existent files for someone following them.",
+      "fix": "Update Context File links in Task 19 to use the `references/` subpath: `~/.claude/skills/project-knowledge/references/project.md`, `references/architecture.md`, `references/deployment.md`, `references/ux-guidelines.md` — matching tasks 16-18 and the template."
+    },
+    {
+      "severity": "minor",
+      "category": "carry-forward",
+      "task": 19,
+      "section": "Acceptance Criteria",
+      "issue": "Tech-spec Task 19 specifies the explicit tools list 'bash, ssh to VPS, sqlite3 (or Python sqlite3 module), Telegram client'. The task body mentions these tools in the Details/Tools section, but there's no AC item asserting that the verification was performed using these specific tools. Minor — the tool list is informational, but completeness with tech-spec carry-forward is uneven.",
+      "fix": "Either add an AC item like 'Все проверки выполнены через ssh + sqlite3 + Telegram client (без MCP)', or accept as informational. Severity minor — not blocking."
+    },
+    {
+      "severity": "minor",
+      "category": "content",
+      "task": 16,
+      "section": "Verification Steps",
+      "issue": "Verification Steps Automated section uses three command examples (pytest --collect-only, grep on deleted symbols, grep on real network hosts) but does NOT specify expected outputs as concretely as the template asks. E.g. 'pytest --collect-only tests/ -q -> собирает список всех тестов; используется для подсчёта' lacks an explicit pass/fail criterion (collection errors? specific expected count?).",
+      "fix": "Tighten to 'pytest --collect-only tests/ -q -> exits 0 (no collection errors), test count delta matches plan ~28 deleted / ~30 added' and similar concrete pass criteria for the two grep commands."
+    },
+    {
+      "severity": "minor",
+      "category": "consistency",
+      "task": 16,
+      "section": "frontmatter / output path",
+      "issue": "Task body writes the audit report to `logs/audit/test-audit.md` (markdown, not JSON), while the task template's Reviewers section format expects review reports at `logs/working/task-{N}/{name}-{round}.json`. The audit task is conceptually different (produces a report not a review), so the deviation is justified, but it's not documented anywhere as an intentional deviation. Tasks 14/15/16 in tech-spec are also called 'Audit' tasks — a uniform output convention should be picked.",
+      "fix": "Add a one-line note in Details explaining the convention 'Audit reports go to logs/audit/<role>-audit.md (markdown), not logs/working/task-N/ (JSON), because audits are full-feature retrospectives consumed by Task 17, not per-task review rounds.' Already implicit in flow but worth making explicit."
+    },
+    {
+      "severity": "minor",
+      "category": "consistency",
+      "task": 17,
+      "section": "Context Files / output path",
+      "issue": "Task 17 references audit outputs as `logs/working/task-14/...`, `task-15/...`, `task-16/...` (in Context Files and 'What to do' step 1), but Task 16's body specifies its output is `logs/audit/test-audit.md`. So when Task 17 reads 'отчёты от tasks 14, 15, 16' from `logs/working/task-{N}/...`, the test-audit report won't be there. Inconsistency between the two task files about where audit reports actually live.",
+      "fix": "Pick one convention. Either: (a) Task 17 reads from `logs/audit/code-audit.md`, `logs/audit/security-audit.md`, `logs/audit/test-audit.md` — and update tasks 14/15/16 to match; OR (b) Task 16 writes to `logs/working/task-16/test-audit.md` and update Task 17 references. Currently the two contradict each other."
+    }
+  ],
+  "stats": {
+    "tasks_checked": 4,
+    "issues_found": 9
+  }
+}

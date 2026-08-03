@@ -1,0 +1,31 @@
+{
+  "reviewer": "code-reviewer",
+  "round": 1,
+  "task": "01",
+  "commit": "8b42b67",
+  "status": "approved",
+  "findings": [
+    {
+      "severity": "minor",
+      "category": "performance",
+      "issue": "_resolve_body_html compiles a regex per call (line 316-318). The row_id is dynamic, so it can't be lifted entirely, but the surrounding character class is constant. Performance impact is negligible (one regex compile per article fetch, ~10-20 us), so this is purely a style suggestion.",
+      "fix": "Optional: split-based scan (concat.split('<row_id>:T', 1)) followed by a small constant regex over the head, OR lru_cache on row_id. Not blocking.",
+      "location": "mattel_news_source.py:316-318 (_resolve_body_html)"
+    },
+    {
+      "severity": "minor",
+      "category": "readability",
+      "issue": "Envelope dict construction is duplicated across the two branches of _make_flight_article (lines 128-140 with body, 163-175 without body). The two envelopes are byte-identical aside from the unused body field overwrite ordering.",
+      "fix": "Hoist the envelope construction above the if/else, then append the body row push when body_html is not None. Saves ~12 lines.",
+      "location": "tests/fixtures/mattel_flight_builder.py:128-175 (_make_flight_article)"
+    },
+    {
+      "severity": "minor",
+      "category": "readability",
+      "issue": "Hardcoded row id '53' in _make_flight_article (line 119) and row prefix '6:' in _make_flight_listing (line 77) are deterministic test values without a named constant. Minor; works as-is.",
+      "fix": "Optional: extract to module-level constants (e.g., _LISTING_ROW = '6', _BODY_ROW = '53') so the relationship to live snapshot row layout is explicit in one place.",
+      "location": "tests/fixtures/mattel_flight_builder.py:77, 119"
+    }
+  ],
+  "summary": "All 8 Decisions (1-8) honored: semantic anchors only (no row-id dependence in parser), preserved internal helper names (_is_hotwheels, _build_entry, _extract_entries, _notify), module-level _FLIGHT_PUSH_RE compiled once with linear-time character-class form, all 6 Decision 8 security controls present (SSRF guard, regex, JSON depth catch, bracket-match safety + hex cap, notifier sanitisation, allow_redirects=False), fail-soft notifier contract preserved, ES1-ES10 inline error matrix matches code, _NEXT_DATA_RE removed, old 1.16 MB HTML fixture deleted, builder defaults use placeholder URLs only. Code structure is clean: 7 single-responsibility helpers each < 30 lines, well-named, well-commented (comments explain 'why' with Decision references). Tests: 44 pass; full suite: 417 pass + 1 pre-existing unrelated failure (test_hw_review_retry footer ordering noted in commit message). Three minor style suggestions (optional regex hoist, envelope dedup in builder, named constants for test row ids); none blocking. Approved."
+}

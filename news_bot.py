@@ -4566,8 +4566,8 @@ def main():
          correct regardless of the container's wall-clock TZ).
 
     Cron change (Decision 2 + 4): the legacy 12-hour cron is replaced by
-    a single daily fixed-time cron at 10:00 МСК via ``schedule.every().
-    day.at("12:00", tz=pytz.timezone("Europe/Moscow"))``. ``schedule==
+    a single daily fixed-time tick at 10:00 МСК via ``schedule.every().
+    day.at("10:00", tz=pytz.timezone("Europe/Moscow"))``. ``schedule==
     1.2.1`` accepts ``pytz.BaseTzInfo`` or an IANA name string but NOT
     ``zoneinfo.ZoneInfo`` — see TDD anchor in Task 8.
     """

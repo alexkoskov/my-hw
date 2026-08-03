@@ -33,3 +33,13 @@ repos:
         # deploy.yml uses GitHub Actions ${{ ... }} expression syntax that
         # pyyaml's safe_load handles cleanly, but if you add unusual yaml
         # later and check-yaml chokes, add `args: ["--unsafe"]` or exclude.
+        #
+        # work/**/logs/ is excluded (2026-08-03): those are agent-produced
+        # artifacts — interview transcripts, checkpoints, review dumps — not
+        # configuration. Several carry duplicate keys or unquoted colons and
+        # have never been valid YAML; they went unnoticed because a bare
+        # `logs/` rule in .gitignore hid them from git entirely until the
+        # same date. They are a historical record, so they are kept verbatim
+        # rather than rewritten to satisfy a linter. Nothing loads them at
+        # runtime — the only consumer is a human or an agent reading them.
+        exclude: '^work/.*/logs/'

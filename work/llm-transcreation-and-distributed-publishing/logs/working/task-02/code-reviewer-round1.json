@@ -1,0 +1,69 @@
+{
+  "task": "02",
+  "round": 1,
+  "reviewer": "code-reviewer",
+  "skill": "code-reviewing",
+  "verdict": "approved",
+  "changes_required": false,
+  "summary": "compute_publish_slots.py is a clean, side-effect-free, stdlib-only pure function matching the contract from tech-spec Architecture / code-research §14.2 and the adaptive formula from user-spec. Algorithm, signature, constants, docstring, and edge-case handling are correct. Verified arithmetic on every TDD anchor scenario (N=0,1,4,7,10,11,15,20; restart-at-16:00; restart-at-19:50; now>=window_end; tz-naive). No critical or major findings. Two minor observations recorded for transparency; both optional.",
+  "findings": [
+    {
+      "id": "CR-1",
+      "severity": "minor",
+      "dimension": "Code Readability & Maintainability",
+      "location": "compute_publish_slots.py:74 — `if n <= 0`",
+      "issue": "Spec says `if n == 0` and AC documents `n >= 0`. The `<= 0` widening silently coerces negative inputs to the empty-result branch instead of failing fast. For a pure scheduling primitive, a defensive ValueError on negative N would surface caller bugs sooner; a silent empty-result hides them.",
+      "recommendation": "Either (a) keep `n <= 0` and add a one-line comment that negative N is treated as a no-op, or (b) `if n < 0: raise ValueError(...)` then `if n == 0: return [], 0`. Not blocking — current behaviour matches the AC text and is harmless in practice (callers always pass `count_pending()` which is non-negative).",
+      "action": "optional"
+    },
+    {
+      "id": "CR-2",
+      "severity": "minor",
+      "dimension": "Cross-File Consistency",
+      "location": "compute_publish_slots.py:85 — `max(window_start_dt, now)`",
+      "issue": "Comparing two tz-aware datetimes with potentially different `tzinfo` UTC offsets is well-defined (Python normalises via utcoffset), but if `now` arrives with a non-MSK tzinfo (e.g. UTC) the resulting `effective_start` retains MSK tzinfo from `window_start_dt`. The slots are then anchored to MSK while the docstring says they 'inherit tzinfo from `now`'. In practice the bot only passes `pytz.timezone('Europe/Moscow').localize(...)` so this is academic.",
+      "recommendation": "Acceptable as-is given the scheduler-side invariant. If extra safety is wanted, normalise `now = now.astimezone(window_start_dt.tzinfo)` before the `max()` — but this also requires picking which tzinfo wins, which adds policy. Leave for a follow-up if cross-TZ usage ever appears.",
+      "action": "optional"
+    }
+  ],
+  "dimensions_reviewed": [
+    "Architectural Patterns",
+    "Separation of Concerns",
+    "Code Readability & Maintainability",
+    "Error Handling & Logging",
+    "Type Safety",
+    "Testing Coverage",
+    "Dependencies Management",
+    "Security Considerations",
+    "Performance Implications",
+    "Cross-File Consistency",
+    "Resource Management"
+  ],
+  "spec_traceability": {
+    "user-spec AC3 (window 13:00-20:00)": "WINDOW_START/WINDOW_END constants",
+    "user-spec AC4 (min 40min, no publish after 20:00)": "MIN_INTERVAL_MINUTES + strict `now >= window_end_dt` early return",
+    "user-spec AC5 (max 11/day)": "natural cap from floor(420/40)+1; verified by test_n_fifteen_capped_at_eleven",
+    "user-spec AC6 (adaptive interval = max(remaining/N, 40))": "lines 88-89; verified test_restart_at_16_n5 (interval=48)",
+    "user-spec AC7 (container restart recompute)": "effective_start = max(window_start_dt, now); verified test_restart_at_16_n5, test_restart_at_19_50_n5",
+    "user-spec AC8 (TZ invariant)": "ValueError on tzinfo is None; verified test_naive_datetime_raises",
+    "tech-spec Decision 2 (window + floor)": "matches",
+    "tech-spec Decision 3 (in-memory schedule)": "matches — pure function, no persistence",
+    "tech-spec Decision 4 (pytz)": "module is pytz-agnostic; tzinfo is parameter — correct"
+  },
+  "good_practices_observed": [
+    "Module is pure: no imports of project modules, no logging, no DB",
+    "Docstring carries the algorithm formula, the two-branch rationale, and worked examples — strong reading aid",
+    "Constants exported at module level with type annotations",
+    "Strict `>=` boundary on window_end matches AC3 exactly",
+    "No magic 11/420 in code — they emerge from constants",
+    "tzinfo carried via `datetime.combine(..., tzinfo=now.tzinfo)` — idiomatic and avoids `replace()` ambiguity",
+    "Returns plain list[datetime], not generator — caller can iterate twice without surprises",
+    "Negligible algorithmic complexity (O(N))"
+  ],
+  "diff_metrics": {
+    "loc_added_module": 102,
+    "loc_added_tests": 161,
+    "modules_touched": 1,
+    "external_deps_added": 0
+  }
+}

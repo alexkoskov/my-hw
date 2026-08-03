@@ -356,6 +356,8 @@ Section `## Per-source style notes` (lines 74-103) has three blocks: 🟠 Autoev
 
 ### 5.C PT-EN-RU glossary block
 
+> **SUPERSEDED 2026-08-02 (коммит 1825520).** Тир редкости больше НЕ «Хант / Super-T / T-Hunt / охота»: действующий канон — «ТХ / СТХ» (кириллица предпочтительна, латиница TH/STH допустима, ОДНА форма на статью). Таблица ниже сохранена как запись исследования — **не копировать её в `ux-guidelines.md`**. Действующий глоссарий: `.claude/skills/project-knowledge/references/ux-guidelines.md § Glossary — PT/EN/RU`.
+
 User-spec calls for a glossary block. Suggested home: a new `## Glossary — PT/EN/RU` section between `## Per-source style notes` and `## Red flags to self-check before stage` (line 104). Keep entries terse — collector jargon that the LLM must NOT calque:
 
 | PT | EN | RU (preferred) |
@@ -1033,6 +1035,8 @@ Total new test surface: ~32 cases. Expected runtime overhead: <1s (all mocked).
 
 Drop verbatim into `.claude/skills/project-knowledge/references/ux-guidelines.md` between line 102 (end of 🟡 Mattel block) and line 104 (`## Red flags...` heading):
 
+> **SUPERSEDED 2026-08-02 (коммит 1825520) — «drop verbatim» больше не действует для строки Tone dial.** «правильно "хант"» / «правильно "Super-T"» отменены: действующая формулировка тира — «ТХ / СТХ» (НЕ «охота за сокровищами», НЕ «Super-T»). Блок ниже сохранён как запись исследования; действующая версия — `ux-guidelines.md § Per-source style notes → 🟤 t-hunted`.
+
 ```markdown
 ### 🟤 t-hunted
 
@@ -1050,6 +1054,8 @@ The `[TBD operator]` markers are intentional — user-spec AC7 commits to **stru
 ### E. PT-EN-RU glossary baseline (14 entries)
 
 Drop verbatim into `ux-guidelines.md` as a new `## Glossary — PT/EN/RU` H2 section between 🟤 t-hunted block and `## Red flags`. Operator-tunable; `[VERIFY operator]` flags entries where Brazilian collector usage is uncertain.
+
+> **SUPERSEDED 2026-08-02 (коммит 1825520) — «drop verbatim» больше НЕ действует, не копировать этот блок в `ux-guidelines.md`.** Строки тира редкости «Хант» / «Super-T (Супер-хант)» / «T-Hunt» отменены: действующий канон — «ТХ / СТХ» (кириллица предпочтительна, латиница TH/STH допустима, ОДНА форма на статью), основание — ресёрч RU-комьюнити. Устарели и другие строки этой таблицы (напр. предмет — «машинка», а не «машинка / даикаст»; окрас — только «окрас»). Блок ниже сохранён как запись исследования 2026-05; **единственный действующий глоссарий** — `.claude/skills/project-knowledge/references/ux-guidelines.md § Glossary — PT/EN/RU`, его история правок — там же в § Provenance.
 
 ```markdown
 ## Glossary — PT/EN/RU

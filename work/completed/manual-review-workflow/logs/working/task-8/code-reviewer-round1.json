@@ -1,0 +1,66 @@
+{
+  "reviewer": "code-reviewer",
+  "task": 8,
+  "round": 1,
+  "status": "ok-with-nits",
+  "scope": [
+    "hw_review.py (publish subcommand + _cleanup_preview_html helper + argparse wiring)",
+    "tests/test_hw_review_publish_flow.py (15 new tests)"
+  ],
+  "summary": "Implementation matches the task spec and Decision 9/14 contracts. TDD discipline applied (15 tests written first, all failed, then implementation made them pass). Full suite 339/339 green. No critical or major findings. A handful of low/info nits about stylistic / documentation details — all recommend no action.",
+  "findings": [
+    {
+      "id": "CR-1",
+      "dimension": "3 readability",
+      "severity": "low",
+      "where": "hw_review.py cmd_publish step 5 try/except",
+      "finding": "Broad `except Exception` with `# noqa: BLE001` on the teaser call. The comment block above explains the rationale (teaser internally catches TelegramError; this is defence-in-depth for any bubbled exception while preserving KeyboardInterrupt). Acceptable per tech-spec §Details Edge Cases ('three scenarios: missing env var, TelegramError caught internally, or some unexpected exception bubbling up — treat all three identically').",
+      "recommendation": "no action — intentional and documented"
+    },
+    {
+      "id": "CR-2",
+      "dimension": "2 separation of concerns",
+      "severity": "low",
+      "where": "hw_review.py step 1 vs step 2",
+      "finding": "`_resolve_pending` reads list_pending then the publish function re-reads via `get_pending` immediately after. This is a deliberate two-step (resolve 1-based index → re-read authoritative row state) to handle a race where the row mutated between list and publish. The cost is one extra sqlite connection per publish — negligible.",
+      "recommendation": "no action — the two-read pattern is necessary for vanished-row detection"
+    },
+    {
+      "id": "CR-3",
+      "dimension": "3 readability",
+      "severity": "info",
+      "where": "hw_review.py docstring header",
+      "finding": "Header docstring updated from 'Five subcommands' to 'Six subcommands' and the publish paragraph is added. Consistent with the Task 7 style.",
+      "recommendation": "no action — informational"
+    },
+    {
+      "id": "CR-4",
+      "dimension": "4 error handling",
+      "severity": "info",
+      "where": "hw_review.py line 570 `except (TelegraphError, requests.RequestException)`",
+      "finding": "Explicit exception tuple matches tech-spec §Details ('catch TelegraphError, requests.RequestException, telegram.error.TelegramError explicitly'). Only TelegramError is now caught inside the teaser block — and that's intentional because the teaser itself already narrows to TelegramError internally; we still need the broad catch for any bubbled-up oddity, hence the defence-in-depth comment.",
+      "recommendation": "no action — aligns with spec"
+    },
+    {
+      "id": "CR-5",
+      "dimension": "10 cross-file consistency",
+      "severity": "info",
+      "where": "hw_review.py imports",
+      "finding": "Verified: `publish_article` signature (title, paragraphs, images, source_url, subtitle, blocks, access_token, author_name, session) at telegraph_publisher.py:265 — caller passes only the first six as kwargs, matches the required subset. `send_telegraph_teaser(telegraph_url, source_url)` at news_bot.py:463 — caller passes positional (telegraph_url, row['link']) — correct. `mark_telegraph_published(link, url, path)` at pending_articles_repo.py:301, `move_to_published(link, url, path, via_review)` at :464, `get_published(link)` / `get_failed(link)` — all signatures match.",
+      "recommendation": "no action"
+    },
+    {
+      "id": "CR-6",
+      "dimension": "3 readability",
+      "severity": "info",
+      "where": "hw_review.py _cleanup_preview_html",
+      "finding": "Helper is named (not inline) per task requirement: 'This helper MUST be a named module-level function (not inline), because Task 9's _fallback_publish reuses it verbatim.' Signature `(preview_path: Optional[str]) -> None`, handles None, FileNotFoundError, OSError separately. Log levels: debug for already-gone (expected), warning for unexpected OSError.",
+      "recommendation": "no action — matches task directive"
+    }
+  ],
+  "critical_count": 0,
+  "major_count": 0,
+  "minor_count": 0,
+  "low_count": 2,
+  "info_count": 4
+}

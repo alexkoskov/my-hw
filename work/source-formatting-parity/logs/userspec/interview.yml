@@ -1,0 +1,495 @@
+# Interview Plan for Feature Planning
+#
+# Tracks progress of adaptive discovery interview for a new feature/bug/refactoring.
+# Updated after EACH user response with scoring, values, and remaining gaps.
+#
+# Scoring: 0-100% (how well we understand this aspect)
+# Status: pending → partial → complete
+# Required: true = must reach threshold, false = cover if relevant
+
+# ============================================================================
+# Interview Metadata (Session Recovery)
+# ============================================================================
+interview_metadata:
+  started: "2026-07-28 13:40:51"
+  last_updated: "2026-07-29 11:37:39"
+  status: "completed"
+  can_resume: true
+  current_question_num: 14
+  feature_size: "M"
+
+# ============================================================================
+# Conversation History (for session recovery)
+# ============================================================================
+# Preserves complete Q&A. Update after EVERY user response.
+#
+conversation_history:
+  - question_num: 1
+    topic: "feature_name / scope / rendering / llm_added_bold"
+    agent_question: |
+      Батч 1 (4 вопроса): (a) название фичи — source-formatting-parity?
+      (b) объём форматирования: только жирный / +подзаголовки / +списки?
+      (c) жирная строка-подзаголовок — настоящим заголовком Telegraph или
+      жирным абзацем? (d) если жирного в оригинале не было, а LLM добавила
+      `**` сама — уважать её выбор или вырезать?
+    user_answer: |
+      (a) source-formatting-parity
+      (b) Жирный + подзаголовки + списки
+      (c) Настоящим заголовком
+      (d) Уважать выбор LLM
+    summary: "Полный объём форматирования, подзаголовки как heading, LLM-жирный уважаем"
+  - question_num: 2
+    topic: "success_criteria / failure_mode / testing_strategy"
+    agent_question: |
+      Батч 2 (3 вопроса): (a) что считаем успехом — сверка с оригиналом или
+      достаточно того, что звёздочки пропали? (b) что делать, если разметка
+      источника сломается — публиковать без форматирования или придержать
+      статью на утверждение? (c) объём тестов — только юниты на парсеры или
+      плюс интеграционные на всю цепочку?
+    user_answer: |
+      (a) Сравнить со страницей-оригиналом: 3-5 реальных статей с каждого из
+          трёх источников, оригинал и Telegraph рядом
+      (b) Публиковать без форматирования (fail-open, как промо-фильтр и дедуп)
+      (c) Юниты + интеграционные на всю цепочку
+    summary: "Сверка с оригиналом как критерий, fail-open на сбое разметки, тесты до Telegraph"
+  - question_num: 3
+    topic: "scope autoevolution / subtitle lift / orangetrack bug / mattel"
+    agent_question: |
+      Батч 3, после сканирования кода. Поправка: autoevolution тоже ТЕРЯЕТ
+      жирный (его обходчик несёт только href) — сохраняет форматирование
+      только orangetrack. Плюс найдены три живых дефекта (расползание жирного
+      назад в orangetrack; двойные пробелы при склейке; предпросмотр стирает
+      жирные слова целиком). Вопросы: (a) берём ли autoevolution в объём?
+      (b) декоративный лид у t-hunted/lamley — сохранить со снятием из обоих
+      списков или отказаться, как у orangetrack? (c) баг orangetrack —
+      хотфиксом сейчас или в составе фичи? (d) Mattel (отключён) — берём?
+    user_answer: |
+      (a) Да, берём autoevolution
+      (b) Сохранить лид, снимать первый абзац из обоих списков одновременно
+      (c) Хотфикс сразу, отдельно
+      (d) Берём Mattel заодно
+    summary: "Объём вырос до 4 источников; лид сохраняем; баг orangetrack — отдельный хотфикс"
+  - question_num: 4
+    topic: "heading heuristic / lost markup / bold-heavy article"
+    agent_question: |
+      Батч 4, краевые случаи: (a) как отличать жирный ВНУТРИ абзаца от жирной
+      строки-подзаголовка? (b) что делать, если LLM потеряет разметку при
+      переводе конкретного абзаца? (c) что делать со статьёй, где жирным
+      помечено почти всё?
+    user_answer: |
+      (a) Весь абзац жирный и короткий, без точки в конце => заголовок;
+          иначе обычный абзац с выделением внутри
+      (b) Молча публиковать без жирного
+      (c) Переносить как есть, не умничать
+    summary: "Эвристика заголовка по полному покрытию+длине; потеря разметки молча; без порога на переизбыток"
+# Format:
+# - question_num: 1
+#   timestamp: "2025-11-12 15:20:33"
+#   topic: "user_problem"
+#   agent_question: |
+#     [Full question text]
+#   user_answer: |
+#     [Full answer text]
+#   summary: "Brief summary"
+
+# ============================================================================
+# Phase 1: High-Level Feature Understanding
+# ============================================================================
+# Interview Cycle 1 scope
+phase1_feature_overview:
+
+  feature_name:
+    score: 100
+    status: "complete"
+    value: |
+      source-formatting-parity
+    gaps: ""
+    required: true
+
+  feature_description:
+    score: 90
+    status: "complete"
+    value: |
+      t-hunted, lamley и mattel парсят тело статьи через get_text() и отдают плоский
+      список строк — вся разметка оригинала теряется до перевода. autoevolution и
+      orangetrack отдают blocks с runs и форматирование сохраняют. Задача — дотянуть
+      три плоских источника до того же контракта, переиспользуя готовый обходчик HTML
+      и готовый рендер Telegraph.
+    gaps: ""
+    required: true
+
+  work_type:
+    score: 90
+    status: "complete"
+    value: |
+      feature (с багфикс-составляющей). Новая возможность: t-hunted/lamley/mattel
+      начинают отдавать структуру. Багфикс внутри: литеральные ** утекают в публикацию.
+    gaps: ""
+    required: true
+
+  user_problem:
+    score: 90
+    status: "complete"
+    value: |
+      Два симптома. (1) Жирный оригинала пропадает: подзаголовки и выделения внутри
+      абзаца становятся обычным текстом, статья читается сплошняком с телефона.
+      (2) Хуже: LLM иногда сама помечает подзаголовок как **текст**, и эти звёздочки
+      уезжают в Telegraph как видимые символы — читатель видит «**Все ли старые Hot
+      Wheels ценны?**». Оператор поймал это на живой публикации 2026-07-28.
+    gaps: ""
+    required: true
+
+  target_users:
+    score: 80
+    status: "complete"
+    value: |
+      Подписчики Telegram-канала — читают статью на Telegraph с телефона.
+      Оператор — как владелец качества канала.
+    gaps: ""
+    required: false
+
+  success_criteria:
+    score: 90
+    status: "complete"
+    value: |
+      Проверка попарной сверкой: 3-5 реальных статей с каждого из t-hunted, lamley,
+      mattel — страница-оригинал и Telegraph открыты рядом. Везде, где в оригинале
+      жирный / подзаголовок / список, то же самое стоит в переводе. Литеральных **
+      нет нигде. Отдельно: autoevolution и orangetrack публикуются как раньше
+      (регрессии нет).
+    gaps: ""
+    required: true
+
+  constraints:
+    score: 85
+    status: "complete"
+    value: |
+      1. Fail-open обязателен: сбой разбора разметки => статья выходит обычным
+         текстом, как сегодня. Тот же принцип, что у промо-фильтра, контент-гейта и
+         гейта дедупа — фильтр не имеет права убить тик или потерять статью.
+      2. Нельзя менять вывод для autoevolution и orangetrack — они уже работают.
+      3. Telegraph принимает ограниченный набор тегов; preview_renderer.py держит
+         свой allowlist — новые типы блоков должны в него попасть.
+      4. В t-hunted критичен порядок: boilerplate-фильтр ДО подъёма подзаголовка.
+      5. Промпт LLM ограничивает разметку `**`; курсив/подчёркивание через перевод
+         сегодня не проходят (задокументированное ограничение _encode_format_markers).
+      6. Деплой промпта/кода — вне окна публикаций 10:00-20:00 МСК.
+    gaps: ""
+    required: true
+
+  testing_strategy:
+    score: 90
+    status: "complete"
+    value: |
+      Размер M => юниты + интеграционные.
+      Юниты: на каждый из трёх парсеров — жирный внутри абзаца, жирная строка-
+      подзаголовок => heading, список => list_item, битая разметка => плоский текст.
+      Интеграционные: жирный переживает всю цепочку парсер -> insert_pending (JSON в
+      SQLite) -> перевод -> telegraph_publisher, и литеральные ** не доезжают до
+      страницы ни на одном пути. E2E против живых сайтов не делаем — сверка с
+      оригиналом это ручная приёмка оператором после деплоя.
+    gaps: ""
+    required: true
+
+# ============================================================================
+# Phase 2: User Experience & Scenarios
+# ============================================================================
+# Interview Cycle 2 scope (together with Phase 3)
+phase2_user_experience:
+
+  user_stories:
+    score: 90
+    status: "complete"
+    value: |
+      Подписчик открывает статью на Telegraph. Видит подзаголовки как заголовки —
+      статью можно пробежать глазами. Выделенные автором модели и слова выделены и
+      в переводе. Списки выглядят списками. Литеральных ** нигде нет.
+      Оператор после деплоя открывает оригинал и Telegraph рядом и сверяет.
+    gaps: ""
+    required: true
+
+  acceptance_criteria:
+    score: 90
+    status: "complete"
+    value: |
+      AC1 Жирный внутри абзаца из оригинала виден жирным в Telegraph — для всех
+          четырёх источников (t-hunted, lamley, mattel, autoevolution).
+      AC2 Абзац, целиком помеченный жирным, короткий и без завершающей точки,
+          выходит настоящим заголовком Telegraph; остальные жирные абзацы — обычным
+          абзацем с выделением.
+      AC3 Списки оригинала выходят списками.
+      AC4 Литеральные ** не появляются в опубликованной статье НИ НА ОДНОМ пути —
+          включая статьи вообще без разметки, где ** добавила сама LLM.
+      AC5 Жирный, добавленный LLM там, где в оригинале его не было, отрисовывается
+          как жирный (а не режется).
+      AC6 Сбой разбора разметки => статья публикуется обычным текстом (fail-open),
+          тик не падает, статья не теряется.
+      AC7 Потеря разметки самой LLM на конкретном абзаце => абзац выходит обычным
+          текстом молча, без пинга оператору.
+      AC8 Статья, где жирным помечено почти всё, переносится как есть — порога на
+          "слишком много жирного" НЕТ.
+      AC9 orangetrack публикуется в точности как до фичи (эталон не задет).
+      AC10 Декоративный лид «💬 …» у t-hunted и lamley сохраняется, и число
+          переводимых блоков совпадает с числом абзацев (тест-сторож).
+    gaps: ""
+    required: true
+
+  edge_cases:
+    score: 88
+    status: "complete"
+    value: |
+      1. Абзац целиком жирный, но длинный или с точкой => НЕ заголовок (обычный).
+      2. Вложенная разметка (жирный внутри курсива) — рендер уже поддерживает
+         вложение, порядок тегов задан _FORMAT_TAGS.
+      3. Пустой/пробельный жирный кусок — отбрасывается до поиска подстроки.
+      4. Перекрывающиеся куски — правило "первый выигрывает" (уже реализовано).
+      5. Статья без разметки вообще => blocks либо не отдаём, либо все блоки
+         плоские; поведение идентично сегодняшнему.
+      6. t-hunted пост-галерея с единственным абзацем: подъём лида не делается
+         (len(paragraphs) < 2) — снятие из обоих списков должно это учитывать.
+      7. Очень длинный абзац / очень много кусков — DoS-границы в рендере
+         (>100000 символов или >100 кусков => плоский текст + WARNING).
+    gaps: ""
+    required: true
+
+  error_scenarios:
+    score: 88
+    status: "complete"
+    value: |
+      Сбой разбора разметки (сайт сменил вёрстку, битый HTML) => fail-open: отдаём
+      плоский текст как сегодня, тик продолжается. Тот же принцип, что у промо-
+      фильтра, контент-гейта и гейта дедупа.
+      LLM вернула абзац без маркеров => абзац публикуется обычным текстом, молча
+      (решение оператора: не пинговать).
+      LLM вернула непарные/битые ** => декодер уже не даёт им съесть остаток абзаца
+      (регексп запрещает перенос строки в теле маркера).
+      Рассинхрон длин блоков и абзацев => ловится тестом-сторожем на этапе
+      разработки, в прод не уезжает.
+    gaps: ""
+    required: true
+
+  verification_strategy:
+    score: 90
+    status: "complete"
+    value: |
+      Агент: юниты на четыре парсера + интеграционные на всю цепочку
+      (парсер -> insert_pending -> перевод -> telegraph_publisher), плюс
+      предпросмотр через preview_renderer как визуальная проверка.
+      Оператор после деплоя: 3-5 реальных статей с каждого источника, оригинал и
+      Telegraph рядом. E2E против живых сайтов не делаем.
+    gaps: ""
+    required: true
+
+  ui_ux_requirements:
+    score: 85
+    status: "complete"
+    value: |
+      Внешний вид страницы Telegraph меняется только в сторону оригинала: заголовки
+      крупнее и с отступом, выделения жирным, списки списками. Декоративный лид
+      «💬 …» и подпись «Источник: …» сохраняются без изменений.
+    gaps: ""
+    required: false
+
+  risks:
+    score: 85
+    status: "complete"
+    value: |
+      1. Перенос обходчика без починки багов размножил бы расползание жирного на
+         четыре источника — поэтому хотфикс идёт ПЕРВЫМ (сделан).
+      2. Плоский text из runs != get_text(): склейка меняет продовый текст, который
+         сканируют промо-фильтр, контент-гейт и отпечаток дедупа. Существующие тесты
+         на точное равенство это не ловят — в их примерах нет разметки.
+      3. Шесть проверок на точное равенство списков под риском (t-hunted, mattel) +
+         шесть на подъём лида.
+      4. Курсив/подчёркивание через перевод не проходят (** несёт только жирный) —
+         осознанное ограничение, в объём не входит.
+    gaps: ""
+    required: true
+
+  technical_decisions:
+    score: 88
+    status: "complete"
+    value: |
+      Делаем: переиспользуем обходчик разметки orangetrack (уже починенный
+      хотфиксом) и готовый рендер telegraph_publisher.
+      Делаем: снимаем первый абзац из обоих списков одновременно + тест на равенство
+      длин.
+      Не делаем: не трогаем orangetrack (эталон) — только переиспользуем его код.
+      Не делаем: не вводим порог "слишком много жирного".
+      Не делаем: курсив/подчёркивание через перевод — маркеры ** несут только жирный.
+      Не делаем: не оживляем hw_review (архивирован, форматирование выражать не умеет).
+    gaps: ""
+    required: false
+
+  deploy_approach:
+    score: 85
+    status: "complete"
+    value: |
+      Обычный путь: git pull + docker compose up -d --build на московском проде,
+      ВНЕ окна публикаций 10:00-20:00 МСК (перезапуск сбрасывает дневное
+      расписание). Миграций БД нет — колонка blocks уже существует.
+    gaps: ""
+    required: false
+
+  manual_user_actions:
+    score: 90
+    status: "complete"
+    value: |
+      Ручных шагов настройки нет: ни ключей, ни регистраций, ни новых переменных
+      окружения. Единственное ручное действие — приёмочная сверка оператором после
+      деплоя.
+    gaps: ""
+    required: false
+
+# ============================================================================
+# Phase 3: Integration & Technical Context
+# ============================================================================
+# Interview Cycle 2 scope (together with Phase 2)
+phase3_integration:
+
+  integration_points:
+    score: 90
+    status: "complete"
+    value: |
+      Затрагиваются ЧЕТЫРЕ парсера: t_hunted_source, lamley_source,
+      mattel_news_source (плоские) + autoevolution_source (структура есть, но
+      жирный сплющивается — его _runs_from_tag несёт только href).
+      orangetrack_source — эталон, в объём фичи не входит (чинится хотфиксом).
+      Ниже по потоку: boilerplate_filter.filter_blocks, insert_pending (колонка
+      blocks уже есть и уже пишется), _llm_common (кодирование ** и обратное
+      раскодирование), telegraph_publisher._build_content_from_blocks,
+      preview_renderer.
+    gaps: ""
+    required: true
+
+  dependencies:
+    score: 85
+    status: "complete"
+    value: |
+      Готовое, что переиспользуем: telegraph_publisher._render_paragraph_with_runs
+      (рендер уже умеет bold/italic/underline/strikethrough) и обходчик разметки
+      orangetrack_source._runs_from_tag (~190 строк реиспользуемы; _walk на ~80%
+      общий, но это замыкание над локальным состоянием — не импортируется как есть).
+      autoevolution._scrape_article_page переиспользованию не подлежит (~0%).
+    gaps: ""
+    required: false
+
+  technical_constraints:
+    score: 85
+    status: "complete"
+    value: |
+      ГЛАВНОЕ: подъём лида. t-hunted и lamley поднимают paragraphs[0] в subtitle,
+      из-за чего paragraphs станет K-1 при K блоках. _llm_common сопоставляет их
+      ПОЗИЦИОННО при кодировании и последовательно при раскодировании — рассинхрон
+      даёт последний абзац на английском (авария 2026-05-06). Решение оператора:
+      снимать первый элемент из ОБОИХ списков одновременно + тест-сторож на
+      равенство длин. Mattel не затронут — его лид приходит из отдельного поля.
+      Ещё: hw_review._validate_block отвергает list_item и любой ключ runs — путь
+      ручного ревью не умеет выражать форматирование (архивирован с 2026-04-30).
+    gaps: ""
+    required: false
+
+  data_requirements:
+    score: 90
+    status: "complete"
+    value: |
+      Работы по хранению НЕТ. Колонка blocks существует, входит в _PENDING_JSON_COLS,
+      insert_pending сохраняет NULL как NULL, news_bot уже пишет article.get("blocks")
+      безусловно. runs переживают круг через БД внутри JSON без изменений.
+    gaps: ""
+    required: false
+
+  migration_needs:
+    score: 90
+    status: "complete"
+    value: |
+      Миграции не нужны. Уже лежащие в очереди статьи не имеют разметки и выйдут
+      плоским текстом — это допустимо, очередь разгребается за 1-2 дня.
+    gaps: ""
+    required: false
+
+# ============================================================================
+# Phase 4: Completion
+# ============================================================================
+phase4_completion:
+  userspec_file: "work/source-formatting-parity/user-spec.md"  # work/{feature}/user-spec.md
+  status: "pending"  # pending | created | approved
+
+# ============================================================================
+# Decision Rules
+# ============================================================================
+decision_rules:
+
+  required_threshold: 85
+  optional_threshold: 50
+
+  # Stop criteria (BOTH must be true to exit a cycle)
+  stop_criteria:
+    - "All required items in current cycle scope score >= 85%"
+    - "Structural: every required item has non-empty value, no TBD, gaps empty or conscious limitations"
+
+  priority_order:
+    - "Required items with score < 85% (lowest score first)"
+    - "Optional items mentioned by user in context"
+    - "Other optional items if user seems knowledgeable"
+
+  question_strategy:
+    - "3-4 questions per batch about different gaps"
+    - "Run as many batches as needed — batch size is NOT cycle limit"
+    - "Propose solutions based on PK, not just ask questions"
+    - "Challenge with substance: counterexamples, code references, unexplored scenarios"
+    - "After each response: update scores, values, gaps, conversation_history, save"
+
+# ============================================================================
+# Interview Progress
+# ============================================================================
+progress:
+  current_phase: "phase1_feature_overview"
+  questions_asked: 0
+  last_question: ""
+  total_required_score: 0
+  total_optional_score: 0
+  completion_estimate: "0%"
+  user_detail_level: "unknown"  # brief | moderate | detailed
+
+# ============================================================================
+# Notes
+# ============================================================================
+notes: |
+  Free-form notes:
+  - Important insights
+  - Areas of uncertainty
+  - Pivot points
+  - Scope changes
+
+# ============================================================================
+# USAGE INSTRUCTIONS
+# ============================================================================
+#
+# 1. INIT: Created by init-feature-folder.sh at work/{feature}/logs/userspec/interview.yml
+#    Set metadata.started, metadata.status: in_progress
+#
+# 2. INITIAL SCORING: After user's free-form description, score ALL items
+#    Detailed 80-95%, brief 50-70%, vague 20-40%, not mentioned 0%
+#
+# 3. INTERVIEW LOOP (save after EVERY response):
+#    a) Find required items with score < 85% in current cycle scope
+#    b) Ask 3-4 questions about different gaps
+#    c) Propose solutions based on PK
+#    d) User answers
+#    e) Update: conversation_history, scores, values, gaps, metadata
+#    f) Save immediately
+#    g) Check stop criteria (score >= 85% AND structural: value filled, no TBD, gaps resolved)
+#    h) Not done → repeat. Done → next cycle.
+#
+# 4. CYCLES:
+#    Cycle 1: phase1_feature_overview items
+#    Cycle 2: phase2_user_experience + phase3_integration items
+#    Cycle 3: ALL items still below threshold (cleanup pass)
+#
+# 5. RESUME: If metadata.status is "in_progress"
+#    Load, show conversation summary, resume from current state
+#
+# 6. COMPLETION: After user approves user-spec.md
+#    Set phase4_completion.status: approved
+#    Set metadata.status: completed

@@ -1,0 +1,40 @@
+{
+  "status": "approved_with_suggestions",
+  "summary": "Clean, backward-compatible extension of the E014/E015 builders via additive keyword-only `pairs` args. Verified against actual news_bot.py call sites (E015 3-arg positional, E014 all-keyword) and the full test suite (1158 passed, 0 regressions outside the unrelated concurrently-in-progress Task 1 file). Anchors preserved verbatim, output stays plain-text, pair rendering is pure and deterministic. Two minor, non-blocking robustness/test-quality gaps noted below.",
+  "criticalIssues": [],
+  "suggestions": [
+    {
+      "file": "admin_alerts.py",
+      "line": 473,
+      "severity": "minor",
+      "category": "error-handling",
+      "suggestion": "The task spec's own edge-case list says an empty/None optional `pairs` argument must fall back to the legacy model-overlap render '(не выводить `Совпадение: None%`)'. The current `if pairs:` truthy check does fall back correctly for `pairs=None` (the only path any real caller uses today), but if `pairs=[]` (empty list) is ever passed together with no `overlap_pct`, it silently renders 'Совпадение: None%' in `alert_cross_source_blocked` (verified: `alert_cross_source_blocked('u','v', pairs=[])` -> '...Совпадение: None%') and an analogous 'Совпадение моделей: None% (None/None)' in `alert_cross_source_dupe`. Not reachable by any current caller (old set-overlap path never passes `pairs`; the new pair-rule caller in Task 4 only reaches E015/E014 on a non-empty match by construction) and not exercised by any test in this diff.",
+      "benefit": "Guarding this (e.g. `if pairs is not None and len(pairs) > 0:` plus an explicit fallback message, or a defensive assert) turns a silent 'None%' operator ping into a loud signal if a future Task-4 wiring bug ever calls the builder with an empty pairs list instead of omitting the argument — avoids a confusing, hard-to-diagnose operator-facing message.",
+      "optional": true
+    },
+    {
+      "file": "tests/test_admin_alerts.py",
+      "line": 342,
+      "severity": "minor",
+      "category": "testing",
+      "suggestion": "`test_e015_blocked_renders_matched_pairs` passes pairs already in sorted order (`porsche 911...` before `toyota supra...`), and asserts both substrings independently via `assertIn` rather than asserting relative order in the rendered string. `_render_pairs_block` explicitly sorts (`sorted(pairs)`) for determinism per the task's edge-case requirement, but the test as written would still pass even if the `sorted(...)` call were accidentally removed or replaced with a non-deterministic order, since input happens to already be alphabetical.",
+      "benefit": "Feeding pairs in reverse/non-alphabetical order and asserting the output order (e.g. via `msg.index(...)` comparison or a single multi-line `assertIn` of the full expected block) would make the test actually pin the deterministic-sort guarantee instead of only pinning substring presence.",
+      "optional": true
+    }
+  ],
+  "metrics": {
+    "filesReviewed": 2,
+    "criticalIssuesCount": 0,
+    "majorIssuesCount": 0,
+    "minorIssuesCount": 2,
+    "testCoverageAssessment": "adequate"
+  },
+  "verificationNotes": {
+    "backwardCompatibility": "Confirmed by reading actual news_bot.py call sites (lines 2174-2176: alert_cross_source_blocked(link, match['link'], match['overlap_pct']) — 3 positional args; lines 2190-2199: alert_cross_source_dupe(new_link=..., existing_link=..., new_source=..., existing_source=..., overlap_pct=..., n_matches=..., n_total=..., models=...) — all keyword). Both match the new signatures exactly; `pairs` is keyword-only and appended after `*`, so no positional-arg shift occurred.",
+    "anchorsPreserved": "Grepped diff: '[E015] 🚫 Заблокирован дубль' and '[E014] 🤔 Похож на дубль' both present verbatim, unchanged.",
+    "plainTextSafety": "No Markdown/HTML constructed; series/model/pair tokens interpolated as raw f-string values. send_admin_notification (news_bot.py) sends via Telegram Bot API without setting parse_mode, consistent with the plain-text convention. Verified an embedded '*' inside series text (not the theme-only sentinel) passes through untouched rather than being stripped or requiring escaping — correct plain-text behavior, no injection surface.",
+    "purity": "_render_pair / _render_pairs_block / both builders remain pure params->str with no I/O, no mutation of inputs. Pair rendering is deterministic via sorted(pairs). Theme-only '*' sentinel and |D/|B tier suffix are correctly stripped only as whole '|'-delimited path components, not via blanket character-stripping.",
+    "e016Untouched": "alert_dedup_degraded is absent from the diff; confirmed unchanged.",
+    "testExecution": "python3 -m pytest tests/test_admin_alerts.py -v: 36 passed. python3 -m pytest -q -k 'not calibration' --ignore=tests/test_model_extractor.py: 1158 passed, 0 failed. (test_model_extractor.py currently fails to import 'extract_series' — this is the concurrently in-progress sibling Wave-1 Task 1 file, also shown modified in `git status`, and is out of scope for this admin_alerts.py-only review.)"
+  }
+}

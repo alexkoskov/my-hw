@@ -45,7 +45,10 @@ news.db-journal
 
 # Logs
 *.log
-logs/
+# Only the repo-root log dir is ignored. A bare `logs/` matched at ANY depth and
+# silently swallowed work/*/logs/ — the per-feature review and QA trail that every
+# decisions.md links to. Narrowed 2026-08-03; see work/SESSION-2026-08-03.md.
+/logs/
 
 # Test coverage
 coverage/

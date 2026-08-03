@@ -1,0 +1,48 @@
+{
+  "status": "approved",
+  "summary": "Round 2 re-verification. Checked 27 claims, found 0 critical mirages. All three Round 1 critical findings RESOLVED in the updated tech-spec: (1) tests/test_llm_common.py reference dropped — spec lines 29 + 233 now correctly route the list_item patching test through the existing tests/test_openrouter_transcreation.py which already exercises _patch_text_with_ru_paragraphs; (2) preview_nodes vs _build_content_from_blocks confusion fixed — spec lines 14, 18, 28, 53, 163 now consistently identify _build_content_from_blocks as the actual rendering loop and preview_nodes as the dispatcher (matches telegraph_publisher.py:114 and :253 respectively); (3) <li> handler self-contradiction resolved — spec lines 14 + 38 now consistently say 'inline in _walk reusing _runs_from_tag, no separate helper function'. One minor accuracy note (non-blocking).",
+  "findings": [
+    {
+      "severity": "minor",
+      "type": "name_mismatch",
+      "claim": "tech-spec line 233: 'All existing tests in tests/test_openrouter_transcreation.py and tests/test_claude_transcreation.py (_patch_text_with_ru_paragraphs for paragraph/heading/lead — list_item flows through naturally because we extend the _PATCHED_TEXT_BLOCK_TYPES tuple, no new test file is needed).'",
+      "reality": "Only tests/test_openrouter_transcreation.py imports and exercises _patch_text_with_ru_paragraphs directly (line 317: test_patch_text_with_ru_paragraphs_splices_in_order; line 331: openrouter_transcreation._patch_text_with_ru_paragraphs(...)). tests/test_claude_transcreation.py does NOT call _patch_text_with_ru_paragraphs by name — it tests the Claude-specific transcreation flow. The spirit of the claim is correct (both engines share _llm_common._PATCHED_TEXT_BLOCK_TYPES, so extending the tuple changes both code paths uniformly), but the line-233 claim is over-stated: only the OpenRouter test file actually exercises the patcher.",
+      "source": "tech-spec.md, line 233 (Regression coverage section)",
+      "fix": "Optional: tighten to '...test_openrouter_transcreation.py exercises _patch_text_with_ru_paragraphs directly; test_claude_transcreation.py covers the Claude path which shares the same _PATCHED_TEXT_BLOCK_TYPES via _llm_common — no new test file needed.' Non-blocking, no critical/major impact."
+    }
+  ],
+  "stats": {
+    "total_claims_checked": 27,
+    "confirmed": 26,
+    "mirages_found": 1,
+    "verified_claims": [
+      "/workspaces/debian-2/my-hw/orangetrack_source.py exists",
+      "/workspaces/debian-2/my-hw/_llm_common.py exists",
+      "/workspaces/debian-2/my-hw/telegraph_publisher.py exists",
+      "/workspaces/debian-2/my-hw/tests/test_orangetrack_source.py exists",
+      "/workspaces/debian-2/my-hw/tests/test_telegraph_publisher.py exists",
+      "/workspaces/debian-2/my-hw/tests/test_openrouter_transcreation.py exists",
+      "/workspaces/debian-2/my-hw/tests/test_claude_transcreation.py exists",
+      "Round 1 finding: tests/test_llm_common.py reference DROPPED — confirmed file does not exist and spec no longer requires it",
+      "_build_content_from_blocks defined at telegraph_publisher.py:114 (the actual rendering loop)",
+      "preview_nodes defined at telegraph_publisher.py:253 (the dispatcher delegating to _build_content_from_blocks at line 289)",
+      "Round 1 finding: spec lines 14/18/28/53/163 consistently use _build_content_from_blocks for rendering and identify preview_nodes as dispatcher",
+      "_walk function defined at orangetrack_source.py:484",
+      "_emit_heading function defined at orangetrack_source.py:415",
+      "_runs_from_tag function defined at orangetrack_source.py:246",
+      "Heading dispatch call sites at orangetrack_source.py:511 (h2/h3/h4) and 514 (h5)",
+      "Round 1 finding: <li> handler now consistently described as inline in _walk with _runs_from_tag (spec lines 14, 38, 298-303)",
+      "_PATCHED_TEXT_BLOCK_TYPES at _llm_common.py:106 (currently ('lead', 'paragraph', 'heading'))",
+      "_patch_text_with_ru_paragraphs defined at _llm_common.py:321",
+      "_patch_text_with_ru_paragraphs exercised in tests/test_openrouter_transcreation.py at line 317 (test_patch_text_with_ru_paragraphs_splices_in_order)",
+      "paragraphs_flat extraction at orangetrack_source.py:575-577 (currently 'paragraph','heading')",
+      "_emit_heading currently emits type='paragraph' for ALL h-tags (lines 430-434), confirming the spec's premise that the change reverses this for h2/h3/h4",
+      "test_h5_emitted_as_paragraph_block exists at tests/test_orangetrack_source.py:144 (matches spec 'line ~144' claim on line 180)",
+      "babc67c commit referenced in /workspaces/debian-2/my-hw/work/SESSION-2026-05-06.md:54,138 (h5-as-paragraph fix)",
+      "SESSION-2026-05-06.md Break 3 section about h5 typography exists at lines 126-140",
+      "_parse_content_encoded defined at orangetrack_source.py:372 (referenced in integration test description)",
+      "fetch_orangetrack_article defined at orangetrack_source.py:743",
+      "urllib.parse.urlparse — Python stdlib confirmed available; removeprefix is Python 3.9+ stdlib str method"
+    ]
+  }
+}

@@ -1,0 +1,70 @@
+{
+  "validator": "task-validator",
+  "batch": [6, 7, 8, 9, 10],
+  "status": "approved",
+  "findings": [
+    {
+      "severity": "minor",
+      "category": "frontmatter",
+      "task": 6,
+      "section": "frontmatter.depends_on",
+      "issue": "Task 6 declares `depends_on: []` while tech-spec Wave 2 header says 'Wave 2 (parallel — depend on Wave 1)'. Semantically Task 6 only edits requirements.txt and .env.example and does not consume any artifact from Wave 1, so the empty dependency is defensible. Flag for confirmation: either Task 6's wave should drop to 1 (it has no Wave 1 dependency), or `depends_on` should explicitly cite the upstream tasks that justify Wave 2 placement. Currently Wave 2 placement is decorative, not enforced by the dependency graph.",
+      "fix": "Either move Task 6 to Wave 1 (it is a true foundation), or add a brief comment explaining why it is grouped in Wave 2 despite having no concrete predecessor."
+    },
+    {
+      "severity": "minor",
+      "category": "structure",
+      "task": 6,
+      "section": "Reviewers",
+      "issue": "Reviewer report path uses relative form `work/llm-transcreation-and-distributed-publishing/logs/working/task-6/code-reviewer-{round}.json`. Tasks 7, 8, 9, 10 in this batch use the absolute form `/workspaces/debian-2/my-hw/work/...`. Inconsistent within the same feature.",
+      "fix": "Normalize to absolute path: `/workspaces/debian-2/my-hw/work/llm-transcreation-and-distributed-publishing/logs/working/task-6/code-reviewer-{round}.json` to match tasks 7-10."
+    },
+    {
+      "severity": "minor",
+      "category": "content",
+      "task": 6,
+      "section": "TDD Anchor",
+      "issue": "Task 6 has no TDD Anchor section. This is acceptable for a config-only task (template explicitly allows omission for non-code tasks). Flagged only for awareness — the verification commands in Verification Steps already substitute for tests in this case.",
+      "fix": "No action required; confirm intent to omit TDD Anchor for this config-only task."
+    },
+    {
+      "severity": "minor",
+      "category": "carry-forward",
+      "task": 8,
+      "section": "Acceptance Criteria",
+      "issue": "Tech-spec Acceptance Criteria lists AC19 token logging ('every Claude API call logs at INFO level input_tokens, output_tokens, latency_ms, model_version'). This belongs primarily to Task 3 (claude_transcreation) but Task 8 controls the publish loop that calls into the translation layer. Neither Task 8 AC nor TDD Anchor mentions verifying the log emission at the call-site level. Likely fully owned by Task 3, but worth confirming tracing.",
+      "fix": "Confirm AC19 (token logging) is covered by Task 3's tests; if so, no change needed for Task 8. Otherwise, add a Task 8 AC asserting the loop does not swallow the log emission."
+    },
+    {
+      "severity": "minor",
+      "category": "content",
+      "task": 8,
+      "section": "What to do",
+      "issue": "Step 8 ('outage_state.is_fallback_active() → Google-only path') refers to 'existing path through transcreate_text directly or helper _publish_via_google if such will be introduced in Task 7'. The contract with Task 7 is fuzzy here — Task 7 description does not actually introduce a `_publish_via_google` helper; instead Task 7 says the shortcut is implemented inside `_fallback_publish` itself. Risk: ambiguity may cause Task 8 implementer to invent a new helper.",
+      "fix": "Clarify in Task 8 that the Google-only path is reached by calling `_fallback_publish` (which itself short-circuits to Google when `is_fallback_active()`), per Task 7. Remove speculative reference to `_publish_via_google`."
+    },
+    {
+      "severity": "minor",
+      "category": "content",
+      "task": 9,
+      "section": "TDD Anchor",
+      "issue": "Task 9 explains why no new TDD anchor tests are written (pure deletion). The section is present and explains intent. Acceptable but borderline — the template allows the section to be deleted entirely for non-code or pure-deletion tasks. Keeping it as an explanation is clearer; no change required.",
+      "fix": "No action required."
+    },
+    {
+      "severity": "minor",
+      "category": "content",
+      "task": 10,
+      "section": "Acceptance Criteria",
+      "issue": "AC `pytest tests/test_translation.py -v` and `pytest tests/ -q` are present, plus grep-based verifications in Verification Steps. The AC checklist mixes test-run gates with structural gates ('docstring updated', 'no other changes in news_bot.py'). Slight overlap with Verification Steps but acceptable — both perspectives reinforce the same gate.",
+      "fix": "No action required."
+    }
+  ],
+  "stats": {
+    "tasks_checked": 5,
+    "issues_found": 7,
+    "critical": 0,
+    "major": 0,
+    "minor": 7
+  }
+}

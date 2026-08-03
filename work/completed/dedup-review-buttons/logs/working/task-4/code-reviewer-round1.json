@@ -1,0 +1,25 @@
+{
+  "reviewer": "code-reviewer",
+  "task": 4,
+  "round": 1,
+  "verdict": "approved",
+  "findings": [
+    {
+      "severity": "minor",
+      "file": "tests/test_integration.py",
+      "line": 125,
+      "issue": "No TDD-anchor test for an unrecognized/malformed `action` value (anything other than 'cancel'/'keep', e.g. a raw 'c'/'k' letter or garbage string). The task's edge-cases section explicitly allows this branch to be implementer's discretion ('safe no-op / устарела, не падает') and it is not in the required TDD Anchor list, so this is not a contract violation — just a coverage gap for a defensive branch that news_bot.py does implement (lines ~99-102 in the diff, falls through to the stale-token status without deleting the token).",
+      "fix": "Optional: add `test_unknown_action_is_safe_noop` staging a valid token and asserting `resolve_dedup_callback('bogus', token, ADMIN_ID)` returns the stale status/answer, does not delete the token, and does not raise."
+    }
+  ],
+  "summary": {
+    "purity": "Confirmed no Telegram/network I/O. Only reads/writes: int(TELEGRAM_ADMIN_ID) config read, and pending_repo.{get_review_token_link, get_pending, get_published, skip_pending, delete_review_token} calls. Returns plain string tuples only.",
+    "admin_gate_ordering": "Admin check runs strictly first (int(TELEGRAM_ADMIN_ID) parse, then from_user_id compare) before any token lookup — matches Decision 5 and the task's explicit ordering requirement. Fail-closed on non-numeric TELEGRAM_ADMIN_ID and on non-int-convertible from_user_id, both returning (None, \"\").",
+    "branch_completeness": "All contract branches present and correctly ordered: admin-deny -> (None, \"\"); unknown token -> stale (no DB write); action=='keep' -> kept (token deleted, no state change); action=='cancel' with pending row -> skip_pending() + cancelled (token deleted); cancel with published row -> already-published (skip_pending NOT called, token deleted); cancel with neither -> unavailable (token deleted). Task's explicit requirement that branching uses full words 'cancel'/'keep' (not raw 'c'/'k' letters) is honored via `if action == 'keep' / elif action == 'cancel'`.",
+    "status_strings": "All five required strings match the spec byte-for-byte: \"✅ Отменено оператором\", \"⚠️ Уже опубликовано, отменить нельзя\", \"⚠️ Статья уже недоступна\", \"👍 Оставлено\", \"⚠️ Кнопка устарела\". Verified against user-spec.md and tech-spec.md \"How it works\" section.",
+    "token_deletion": "delete_review_token(token) called exactly once, only on the 4 documented terminal outcomes (keep + 3 cancel sub-branches), never on ignored press or unknown-token/unknown-action paths — matches task step 5 and Decision 9 (cancel is final, idempotent).",
+    "dependencies_verified": "pending_articles_repo.py confirmed to already expose get_pending (L409), get_published (L424), skip_pending (L747, idempotent no-op if row absent, only writes processed_news/pending_articles, never published_articles per its own docstring), put_review_token/get_review_token_link/delete_review_token (L1049-1098) from Task 1 — signatures match usage in news_bot.py.",
+    "tests": "Ran `pytest tests/test_integration.py -k ResolveDedupCallback -q` per instructions (avoiding the known TestSlotLoopTransientRetry evening flake) -> 8 passed. All 8 TDD-anchor tests from task 4.md are present and pass: non-admin ignored, non-numeric-admin fail-closed, cancel-pending->skipped (+ idempotent second press), cancel-then-slot-does-not-publish, cancel-published->already-published, cancel-missing->unavailable, keep->kept, stale-token->expired.",
+    "style": "Docstring/comment conventions (rationale + Decision cross-references, ASCII-safe Cyrillic string literals, single-quote action-literal style) match surrounding news_bot.py code (e.g. send_admin_notification just above it). No new imports needed; pending_repo alias and TELEGRAM_ADMIN_ID module attribute already existed and are read live (not cached), matching the test-patchability requirement in the task."
+  }
+}

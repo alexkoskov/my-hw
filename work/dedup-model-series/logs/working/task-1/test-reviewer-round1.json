@@ -1,0 +1,49 @@
+{
+  "status": "failed",
+  "summary": "All 18 TDD-anchor tests are present and green (48/48 non-calibration tests pass), the two updated legacy tests (test_empty_body_four_keys, test_empty_dict_input) correctly assert the 4-key form via exact dict equality without weakening, and the acronym case-sensitivity / no-hyphen-alias / theme-only / distinctive-requires-model behaviors are all genuinely pinned with specific assertions. However, mutation-testing the fail-safe defaulting logic in `_tier_suffix` (the exact mechanism the tech-spec calls 'load-bearing') shows the entire suite stays green even with that fallback removed — the only test aimed at it (`test_default_tier_is_broad`) checks the constant, not its enforcement. There is also a real AC7 coverage gap: two franchises named explicitly in the acceptance criteria (Stranger Things, Top Gun) are never exercised through the actual regex path, along with several other lexicon entries.",
+  "findings": [
+    {
+      "severity": "critical",
+      "category": "missing_coverage",
+      "location": "tests/test_model_extractor.py:426 (TestSeriesLexicon::test_default_tier_is_broad) / model_extractor.py:236-238 (_tier_suffix)",
+      "issue": "The fail-safe default polarity — described in the code comments and tech-spec Decision 2 as 'the load-bearing safety property' — is only checked as a bare constant equality (`_SERIES_DEFAULT_TIER == 'broad'`). No test ever calls `_tier_suffix` or `_build_pairs` with a tier value outside `{'distinctive', 'broad'}` (e.g. a mistyped lexicon tag like `'distinct'`), which is the exact scenario the fallback exists to protect against. I verified this by mutation: replacing `_tier_suffix`'s body with an unguarded `return _TIER_SUFFIX[tier]` (i.e. deleting the fail-safe fallback entirely) still leaves all 48 non-calibration tests green — `python3 -m pytest tests/test_model_extractor.py -v -k 'not calibration'` reports 48 passed against the mutant. Litmus test fails: removing the core fail-safe line does not fail any test.",
+      "recommendation": "Add a test that exercises the actual fallback branch, not just the constant, e.g. in TestSeriesLexicon: `def test_unrecognized_tier_defaults_to_broad(self): assert me._tier_suffix('not-a-real-tier') == 'B'; pairs = me._build_pairs({'porsche 911'}, {('some series', 'not-a-real-tier')}); assert pairs == ['porsche 911|some series|B']; assert not any(p.endswith('|D') for p in pairs)`. This directly pins 'untagged/mistagged series → never |D', which is what AC7 and Decision 2 actually require."
+    },
+    {
+      "severity": "major",
+      "category": "missing_coverage",
+      "location": "tests/test_model_extractor.py (TestExtractSeries class) / model_extractor.py SERIES_LEXICON",
+      "issue": "Several SERIES_LEXICON entries are never exercised through `extract_series`/`_scan_series` (the real regex path), including two franchises user-spec AC7 explicitly names: 'Stranger Things' and 'Top Gun'. 'stranger things' appears only in `TestPairs::test_theme_only_pair_is_broad`, which calls `_build_pairs(set(), {('stranger things', 'distinctive')})` directly with a hand-built tuple — this bypasses `_SERIES_RE` entirely and would still pass even if the lexicon key were misspelled (e.g. 'stranger-things') or the regex alternation dropped the entry. 'top gun', 'monster trucks', 'team transport', 'pop culture', and the bare 'comic-con' alias appear in zero tests. The `zamac` acronym is also untested even though its regex is uniquely dual-cased (`ZAMAC|Zamac`, unlike the single-case SDCC/RLC/STH) — no test proves either casing resolves, nor that lowercase 'zamac' in prose is rejected the way sth/rlc are.",
+      "recommendation": "Add extraction-level cases for the untested entries, e.g.: `@pytest.mark.parametrize('text,expected', [('New Top Gun Maverick set revealed','top gun'), ('Stranger Things Camaro drop','stranger things'), ('Monster Trucks bash event','monster trucks'), ('Team Transport rig and trailer','team transport'), ('Pop Culture crossover wave','pop culture')]) def test_remaining_lexicon_entries_resolve(self, text, expected): assert expected in extract_series(text)` plus a dedicated `test_zamac_acronym_dual_case` mirroring `test_acronym_case_sensitive_no_prose_collision` (assert 'zamac' in extract_series('New ZAMAC casting spotted'), assert 'zamac' in extract_series('New Zamac casting spotted'), assert extract_series('zamac diecast news') == [])."
+    },
+    {
+      "severity": "minor",
+      "category": "redundant_testing",
+      "location": "tests/test_model_extractor.py:481-489 (TestPairs::test_theme_only_pair_is_broad, test_distinctive_requires_concrete_model)",
+      "issue": "Both tests call `_build_pairs(set(), {(<franchise>, 'distinctive')})` and assert the exact same code branch (the `else` / no-models path in `_build_pairs`), differing only in which franchise name is passed. `test_distinctive_requires_concrete_model` additionally asserts `not any(p.endswith('|D') for p in pairs)`, which is already implied by the preceding exact-equality assertion `pairs == ['*|k-pop demon hunters|B']`. Neither test adds coverage the other doesn't already provide.",
+      "recommendation": "Not blocking (both are TDD-anchor-mandated by the task file), but worth a note for a future cleanup pass: either drop the redundant `not any(...)` line, or repurpose one of the two tests to cover a genuinely different input (e.g. a *broad*-tagged series with no model, to confirm the no-models branch is unconditionally `|B` regardless of the series' own tier, not just when the input happens to be distinctive)."
+    },
+    {
+      "severity": "minor",
+      "category": "missing_coverage",
+      "location": "model_extractor.py:_alias_to_pattern / _canonical_series docstring",
+      "issue": "The code comments explicitly claim the bounded `\\s{1,3}` in `_alias_to_pattern` 'tolerates 1-3 whitespace, including a single newline from `_gather_text`' — i.e. a multi-word series alias is expected to match even when split across the title/paragraph join (`_gather_text` joins parts with `'\\n'`). No test exercises this specific cross-boundary case (e.g. title ending in 'San Diego' + a paragraph starting with 'Comic-Con').",
+      "recommendation": "Add a small regression test via `extract_fingerprint`/`extract_series` with `_article(title='... San Diego', paragraphs=['Comic-Con exclusives ...'])` asserting `'san diego comic-con' in fp['series']`, to lock in the documented cross-paragraph-join behavior."
+    }
+  ],
+  "metrics": {
+    "filesReviewed": 2,
+    "litmusTest": {
+      "checked": 23,
+      "passed": 22,
+      "failed": 1
+    },
+    "coverageAssessment": "adequate",
+    "pyramidBalance": {
+      "unit": 48,
+      "integration": 0,
+      "e2e": 0,
+      "assessment": "healthy"
+    }
+  }
+}

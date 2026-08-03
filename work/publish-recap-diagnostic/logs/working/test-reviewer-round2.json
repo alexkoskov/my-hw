@@ -1,0 +1,65 @@
+{
+  "status": "passed",
+  "summary": "Round 2: both major findings from round 1 are genuinely fixed, confirmed by mutation (not eyeballed). (1) test_failed_reason_with_secret_is_sanitized_in_recap embeds a real TELEGRAM_BOT_TOKEN value inside a failing slot's exception, drives it through the real job() -> sanitize_error_message -> recap_failures.append((link, safe)) pipeline, and asserts the [E034] ping contains [REDACTED] and NOT the raw secret. Mutating `recap_failures.append((link, safe))` to `(link, str(err))` in news_bot.py makes this test fail with the raw secret ('TOPSECRET_bot_value_42') visible in the assertion diff; reverted cleanly. (2) The moved_to_failed tail is now pinned twice: the unit test asserts the exact string 'провалов: 1 (снято после 3 промахов: 1)', a sibling negative test asserts the tail is ABSENT when moved==0, and a new integration test drives a row through 3 real strikes (increment_attempt -> move_to_failed) and asserts the same exact-tail string plus that the row actually lands in failed_articles. Mutating the builder's tail computation to `tail = \"\"` makes BOTH the unit test and the new integration test fail; reverted cleanly. All 3 previously-flagged minors are also resolved: the dict-guard now has its own dedicated test (test_non_dict_recap_pins_explicit_guard_message) whose exact-message assertion breaks when the guard is mutated to `if False:` (confirmed by mutation and restored) — the older test_broken_recap_input_does_not_raise still doesn't pin the guard on its own, exactly as round 1 predicted, but the gap is now closed by the new dedicated test sitting alongside it; the cap test uses assertEqual(len(rendered), 5) (exact, not <=); and _recap_failure_lines' non-list branch is exercised by test_malformed_failures_value_renders_tally_without_failure_lines. The old secret-scrub unit test (test_builder_never_renders_raw_secret_text) is honestly re-scoped via comment as belt-and-suspenders pointing at the new integration test for real coverage, rather than implying the builder itself redacts. No regressions found: news_bot.PUBLISH_RECAP_MAX_FAILURES is coupled to admin_alerts.RECAP_MAX_FAILURES (verified equal at runtime, 5==5), the non-dict fallback and the inner-exception fallback both render 🟡 (unified), no existing assertion was weakened (the cap assertion was strengthened, not loosened), and no over-mocking was introduced beyond the pre-existing job()-boundary mocking pattern already accepted in round 1 (datetime/sleep/compute_fixed_slots/_publish_with_retries/SOURCES/send_admin_notification — all pre-existing integration-test boundaries in this file, not new). Full targeted suite: 105/105 passed both before and after every mutation-and-revert cycle. Approved.",
+  "findings": [],
+  "metrics": {
+    "filesReviewed": 4,
+    "litmusTest": {
+      "checked": 4,
+      "passed": 4,
+      "failed": 0
+    },
+    "coverageAssessment": "excellent",
+    "pyramidBalance": {
+      "unit": 10,
+      "integration": 7,
+      "e2e": 0,
+      "assessment": "healthy"
+    }
+  },
+  "round2Verification": {
+    "verdict": "approve",
+    "mutationChecks": [
+      {
+        "target": "news_bot.py:2601 recap_failures.append((link, safe)) -> (link, str(err))",
+        "expectedToFail": [
+          "tests/test_integration.py::TestPublishRecapIntegration::test_failed_reason_with_secret_is_sanitized_in_recap"
+        ],
+        "result": "killed",
+        "detail": "Mutant test failure showed raw secret 'TOPSECRET_bot_value_42' in the recap string where '[REDACTED]' was expected. Reverted; git diff --stat matches original (+57 lines)."
+      },
+      {
+        "target": "admin_alerts.py:419 tail = f\" (снято после 3 промахов: {moved})\" if moved > 0 else \"\" -> tail = \"\"",
+        "expectedToFail": [
+          "tests/test_admin_alerts.py::TestPublishRecap::test_held_and_failed_expanded_yellow",
+          "tests/test_integration.py::TestPublishRecapIntegration::test_moved_to_failed_after_three_strikes_recap_shows_subset"
+        ],
+        "result": "killed",
+        "detail": "Both tests failed as expected: unit test's exact-string assertion 'провалов: 1 (снято после 3 промахов: 1)' not found; integration test's 'провалов: 3 (снято после 3 промахов: 1)' not found after a real 3-strike run. Reverted; git diff --stat matches original (+99 lines)."
+      },
+      {
+        "target": "admin_alerts.py:396 if not isinstance(recap, dict): -> if False: (guard disabled)",
+        "expectedToFail": [
+          "tests/test_admin_alerts.py::TestPublishRecap::test_non_dict_recap_pins_explicit_guard_message"
+        ],
+        "result": "killed",
+        "detail": "New dedicated test failed with '[E034] 🟢 Публикация: опубликовано 0/0' != '[E034] 🟡 Публикация: отчёт недоступен', confirming it (unlike the older test_broken_recap_input_does_not_raise, which still passes under this mutation as predicted in round 1) actually pins the guard. Reverted."
+      }
+    ],
+    "findingsStatus": [
+      { "round1Finding": "major: sanitization wiring untested", "status": "resolved", "evidence": "mutationChecks[0]" },
+      { "round1Finding": "major: moved_to_failed tail unasserted + no 3-strike E2E", "status": "resolved", "evidence": "mutationChecks[1]" },
+      { "round1Finding": "minor: dict-guard not pinned", "status": "resolved", "evidence": "mutationChecks[2]" },
+      { "round1Finding": "minor: cap test used assertLessEqual instead of exact count", "status": "resolved", "evidence": "diff shows assertEqual(len(rendered), 5) and assertEqual(len(rendered), admin_alerts.RECAP_MAX_FAILURES)" },
+      { "round1Finding": "minor: _recap_failure_lines non-list branch unexercised", "status": "resolved", "evidence": "test_malformed_failures_value_renders_tally_without_failure_lines added" },
+      { "round1Finding": "minor: secret-scrub unit test name overpromised builder-level redaction", "status": "resolved", "evidence": "test_builder_never_renders_raw_secret_text re-commented as belt-and-suspenders pointing at test_failed_reason_with_secret_is_sanitized_in_recap" }
+    ],
+    "regressionChecks": {
+      "capsCoupled": "confirmed: news_bot.PUBLISH_RECAP_MAX_FAILURES == admin_alerts.RECAP_MAX_FAILURES == 5 at runtime",
+      "fallbackSeverityUnified": "confirmed: both the non-dict guard (line 400) and the inner-exception fallback (line 105 of diff) render 🟡",
+      "noWeakenedAssertions": "confirmed: cap assertion strengthened (assertLessEqual -> assertEqual), no other existing assertions altered",
+      "noOverMocking": "confirmed: TestPublishRecapIntegration mocks the same pre-existing job()-boundary set (datetime, time.sleep, compute_fixed_slots, _publish_with_retries, SOURCES, send_admin_notification) used by other publish-loop integration tests in this file — not a new pattern introduced by this diff"
+    },
+    "testRunSummary": "python3 -m pytest tests/test_admin_alerts.py tests/test_integration.py -q -> 105 passed (both before mutation testing and after final revert)"
+  }
+}

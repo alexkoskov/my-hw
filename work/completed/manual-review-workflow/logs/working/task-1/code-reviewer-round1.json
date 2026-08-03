@@ -1,0 +1,41 @@
+{
+  "summary": "pending_articles_repo DAO implements all 19 Task 1 API functions with correct DDL, parameterized SQL, JSON encapsulation with ensure_ascii=False, and explicit try/commit/rollback/close on multi-statement transactional moves. Task 1 scope matches implementation (preview_html_path + set_preview_path intentionally deferred to Task 7 per that task's scope note). Code is clean, readable, well-documented; no correctness defects found.",
+  "status": "ok-with-nits",
+  "findings": [
+    {
+      "severity": "low",
+      "file": "pending_articles_repo.py",
+      "line": 38,
+      "description": "Module-level `logger = logging.getLogger(__name__)` is defined but never used anywhere in the module (no .info/.warning/.debug calls).",
+      "recommendation": "Either wire up at-least-debug logging for transactional moves (move_to_published/move_to_failed/skip_pending/retry_from_failed commit + rollback paths) or drop the unused logger to reduce dead code. Logging the rollback-on-exception path would aid ops debugging when the schedule/6 caller hits a transient OperationalError."
+    },
+    {
+      "severity": "low",
+      "file": "pending_articles_repo.py",
+      "line": 254,
+      "description": "`increment_attempt(link, error)` returns 0 when the row is missing (post-UPDATE SELECT yields None). Task file states \"returns new count\" without specifying the missing-row case; returning 0 is silent-success-like and could mask a caller bug where a link was already moved to failed between read and increment.",
+      "recommendation": "Either (a) document the missing-row contract explicitly in the docstring (\"returns 0 if link is no longer in pending\") and add a matching unit test, or (b) raise a LookupError / return -1 to signal the anomaly. Behaviour is acceptable as-is if documented, so this is a docs-only nit."
+    },
+    {
+      "severity": "low",
+      "file": "pending_articles_repo.py",
+      "line": 35,
+      "description": "`import news_bot` at module top couples the DAO to news_bot so `_connect()` can resolve `news_bot.DB_FILE` at call time. When Task 6 wires `import pending_articles_repo as pending_repo` into news_bot.py at module scope, the cycle is guaranteed to resolve (news_bot has no top-level code beyond constants), but it creates a fragile two-way import.",
+      "recommendation": "Consider a lazy lookup or passing DB path through a module-local setter/env var in a future refactor. Not actionable now — Task 6 explicitly plans for this shape and the task-file Details section prescribes this exact pattern (line 143-144). Noting only for architectural awareness."
+    },
+    {
+      "severity": "info",
+      "file": "pending_articles_repo.py",
+      "line": 358,
+      "description": "`list_pending_stale` and `list_notified_overdue` build the hours argument as `f\"-{int(hours)}\"` (a Python f-string), then pass it as a single `?` placeholder. The grep-style audit test only forbids f-strings containing SQL keywords; this f-string contains only a sign + digits, so it is safe and passes. Clarity-wise, a future reader scanning for f-strings in a SQL-adjacent function may flag it.",
+      "recommendation": "Optional: add a 1-line comment at each of the two call sites saying `# f-string is safe: int() coercion, value is a ? placeholder`. Already implicit from surrounding comments; drop if redundant."
+    },
+    {
+      "severity": "info",
+      "file": "pending_articles_repo.py",
+      "line": 443,
+      "description": "`move_to_published` does a SELECT before the first INSERT without an explicit BEGIN IMMEDIATE. Under SQLite's default deferred isolation a concurrent writer could delete the pending row between the SELECT and the first INSERT (INSERT would then silently reference the still-in-memory title copy and succeed — published row would be created for a link a concurrent skip_pending already removed from pending). In practice this is gated by SQLite's single-writer lock, but it is a theoretical TOCTOU window.",
+      "recommendation": "Not actionable for this task — the project runs hw_review as a single operator-triggered CLI and the cron prep runs serially; no realistic concurrent-writer scenario exists. Noting for completeness; revisit if/when WAL mode or multi-writer scaffolding lands."
+    }
+  ]
+}

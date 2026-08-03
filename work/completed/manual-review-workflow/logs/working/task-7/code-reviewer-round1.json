@@ -1,0 +1,46 @@
+{
+  "reviewer": "code-reviewer",
+  "round": 1,
+  "mode": "inline-fallback",
+  "fallback_reason": "Task tool not available in this environment — only ToolSearch / TaskStop are exposed. Reviewed by re-reading the diff and the new module/tests against the 11 review dimensions.",
+  "task": "task-7 hw_review CLI list/show/stage/skip/preview",
+  "commit": "5450d53",
+  "summary": "Clean stdlib-only CLI. argparse subparser dispatch, each cmd_* returns an int exit code, main() pushes it through sys.exit. Inputs validated at the boundary via _validate_stage_payload; failure mode is a ValueError caught once in cmd_stage. Path-guard on preview fires before any webbrowser.open. Preview-html-path column + helper added to repo as scoped by Task 1 deviation note.",
+  "findings": [
+    {
+      "id": "cr-1",
+      "severity": "low",
+      "area": "ux",
+      "finding": "skip prompt used _err() which always appends a newline — so the operator sees the question on one line and their answer prompt on a different line. Minor UX nit.",
+      "recommendation": "Write the prompt with sys.stderr.write + flush, no trailing newline.",
+      "status": "fixed",
+      "fix_commit_ref": "in-round fix below"
+    },
+    {
+      "id": "cr-2",
+      "severity": "info",
+      "area": "style",
+      "finding": "CACHE_DIR is resolved at import time. If a future code-path needs to override it (e.g. integration tests), patching the module-level Path is required. Tests already use patch('hw_review.CACHE_DIR', ...) so the pattern works.",
+      "recommendation": "Keep as-is; documented already.",
+      "status": "no-action"
+    },
+    {
+      "id": "cr-3",
+      "severity": "info",
+      "area": "style",
+      "finding": "Validator raises ValueError with descriptive messages; single catch in cmd_stage rewraps them as 'staging rejected: {exc}'. Consistent with the 'rejection reason is the exception message' pattern used elsewhere in the repo.",
+      "recommendation": "No action.",
+      "status": "no-action"
+    },
+    {
+      "id": "cr-4",
+      "severity": "info",
+      "area": "correctness",
+      "finding": "_age_hours parses SQLite CURRENT_TIMESTAMP as UTC timezone-aware. Guarded against malformed strings via try/except → returns 0.",
+      "recommendation": "No action.",
+      "status": "no-action"
+    }
+  ],
+  "verdict": "ok-with-nits",
+  "action_taken": "Applied fix for cr-1 (skip prompt uses sys.stderr.write + flush). Other findings are info-level with no action required."
+}

@@ -1,0 +1,41 @@
+{
+  "status": "approved_with_suggestions",
+  "summary": "Implementation matches Task 5's spec closely: widened SELECT, upgraded skip-guard, 4-key empty marker, synced docstrings, and all 5 new TDD-anchor tests plus the updated existing test pass (16/16), with no regression in test_pending_articles_repo.py. Found one real (if narrow) crash risk in the new SQL predicate on malformed-JSON blobs, plus a stale --help string and a function-length concern, none of which block approval.",
+  "criticalIssues": [],
+  "suggestions": [
+    {
+      "file": "backfill_fingerprints.py",
+      "line": 279,
+      "severity": "major",
+      "category": "error-handling",
+      "suggestion": "The widened SQL predicate `model_fingerprint IS NULL OR json_extract(model_fingerprint, '$.pairs') IS NULL` raises `sqlite3.OperationalError: malformed JSON` (not NULL) if any row's `model_fingerprint` is genuinely non-JSON text (verified directly against sqlite3/JSON1: `json_extract('not-json', '$.pairs')` raises; `IS NULL` on a non-NULL string does NOT short-circuit the OR in SQLite the way it might in other engines — even `NOT json_valid(x) OR json_extract(x, ...)` still throws in my repro; only a `CASE WHEN NOT json_valid(model_fingerprint) THEN 1 ELSE json_extract(model_fingerprint,'$.pairs') IS NULL END` guard reliably avoids it). Because `rows = [...cur.fetchall()]` eagerly materializes the whole result set before any row is processed, this exception aborts the ENTIRE backfill run for every row in the window, not just the corrupt one — a regression versus the previous `IS NULL`-only SELECT, which never touched blob content and so could never crash this way. It also makes the new `backfill_one` guard's `except (ValueError, TypeError)` around `json.loads` effectively dead code for its intended corrupt-blob case, since a genuinely-malformed row can never survive the SELECT to reach the guard.",
+      "benefit": "Task 5's own edge-case list explicitly requires corrupt/non-JSON blobs to be reprocessed rather than crash the run (\"не падать\"); today that guarantee only holds at the Python layer, not at the SQL layer where the risk was newly introduced. All current writers of `model_fingerprint` go through `_dumps()`/`json.dumps`, so this is unlikely in practice today — but a single manually-edited or externally-corrupted row would take down the whole operator script. Recommend swapping in a `CASE WHEN NOT json_valid(...) THEN 1 ELSE json_extract(...) IS NULL END` (still a static literal, `days` remains the only bound parameter) or documenting/accepting the risk explicitly if judged acceptable for a one-shot ops script.",
+      "optional": true
+    },
+    {
+      "file": "backfill_fingerprints.py",
+      "line": 155,
+      "severity": "major",
+      "category": "maintainability",
+      "suggestion": "`backfill_one` is now ~74 lines (155-228), over the 50-line guideline; it was already borderline before this task's diff (~56-60 lines) and grew further with the new skip-guard parse/probe block (lines 172-189). Consider extracting the guard's parse-then-probe into a small pure helper, e.g. `_already_upgraded(raw_fp: str | None) -> bool`, which would also make that logic independently unit-testable.",
+      "benefit": "Improves readability and gives the corrupt-blob-handling logic a direct unit test surface, without adding any new CLI surface — the task's \"no new functions/flags\" note reads as scoped to avoiding scope creep in the script's public behavior, not as forbidding a private helper for an already-oversized function.",
+      "optional": true
+    },
+    {
+      "file": "backfill_fingerprints.py",
+      "line": 129,
+      "severity": "minor",
+      "category": "readability",
+      "suggestion": "The `argparse` `description=` string (`'... Idempotent — skips rows that already have a non-NULL fingerprint.'`) was not updated and is now factually wrong: a non-NULL fingerprint missing the `pairs` key is explicitly NOT skipped anymore. This is operator-facing text (`--help` output) and falls under the same \"not yet processed\" wording the task asked to sync (module docstring, SELECT comment, INFO log were all updated; this one location was missed).",
+      "benefit": "Keeps `--help` output consistent with the actual idempotency contract described in the module docstring, avoiding operator confusion when running the script interactively.",
+      "optional": true
+    }
+  ],
+  "metrics": {
+    "filesReviewed": 2,
+    "criticalIssuesCount": 0,
+    "majorIssuesCount": 2,
+    "minorIssuesCount": 1,
+    "testCoverageAssessment": "adequate"
+  }
+}

@@ -1,0 +1,371 @@
+{
+  "agent": "qa-runner",
+  "summary": "Pre-deploy QA passed. 383/383 tests green. Full operator flow (prep -> stage -> preview -> publish) runs end-to-end on tempfile DB with admin ping matching byte-for-byte and row migrating to published_articles with via_review=1. All locally-verifiable AC satisfied; 4 criteria deferred to Task 15 (live Telegraph/Telegram visual validation).",
+  "status": "pass",
+  "test_suite": {
+    "total": 383,
+    "passed": 383,
+    "failed": 0,
+    "skipped": 0,
+    "xfailed": 0,
+    "duration_s": 14.79
+  },
+  "acceptance_criteria": [
+    {
+      "id": "US-AC-01",
+      "description": "Prep-phase does not publish to channel directly.",
+      "verification": "test",
+      "status": "pass",
+      "evidence": "tests/test_job_prep_phase.py asserts mock_publish.assert_not_called(); Task 6 (0140a98) deleted process_new_articles; job() smoke confirmed zero teaser calls during prep."
+    },
+    {
+      "id": "US-AC-02",
+      "description": "Each new entry from each source persisted with original fields and empty ru_* at INSERT.",
+      "verification": "test",
+      "status": "pass",
+      "evidence": "tests/test_job_prep_phase.py; tests/test_sources_registry.py; smoke run confirmed 3 rows with ru_* NULL."
+    },
+    {
+      "id": "US-AC-03",
+      "description": "pending_articles has UNIQUE on link (PK) -- duplicate inserts return False.",
+      "verification": "test",
+      "status": "pass",
+      "evidence": "tests/test_pending_articles_repo.py::test_insert_pending_returns_false_on_duplicate; schema verified via PRAGMA."
+    },
+    {
+      "id": "US-AC-04",
+      "description": "Admin ping sent only when queue non-empty; byte-exact '<N> ждут review: 🟠 autoevolution ×K, 🟣 mattel ×M, 🟢 lamley ×L'.",
+      "verification": "test",
+      "status": "pass",
+      "evidence": "tests/test_admin_ping.py (25 cases); smoke: ping_text == '3 ждут review: 🟠 autoevolution ×1, 🟣 mattel ×1, 🟢 lamley ×1'."
+    },
+    {
+      "id": "US-AC-05",
+      "description": "hw_review list: 'queue is empty' on empty; numbered rows on non-empty; failed footer always if failed non-empty.",
+      "verification": "test",
+      "status": "pass",
+      "evidence": "tests/test_hw_review_cli.py; tests/test_hw_review_retry.py pins footer format."
+    },
+    {
+      "id": "US-AC-06",
+      "description": "hw_review stage N rejects partial staging with clear error.",
+      "verification": "test",
+      "status": "pass",
+      "evidence": "tests/test_hw_review_cli.py stage JSON validator (8 vectors incl. partial)."
+    },
+    {
+      "id": "US-AC-07",
+      "description": "hw_review preview N without stage returns 'nothing to preview — stage Russian text first'; with stage renders HTML and opens browser.",
+      "verification": "test",
+      "status": "pass",
+      "evidence": "tests/test_hw_review_cli.py preview tests; smoke --no-open printed cache path and file exists."
+    },
+    {
+      "id": "US-AC-08",
+      "description": "hw_review publish N in one command creates Telegraph page + sends channel post + moves to published.",
+      "verification": "test+smoke",
+      "status": "pass",
+      "evidence": "tests/test_hw_review_publish_flow.py (15 cases); smoke: row moved to published_articles with via_review=1 after single publish call."
+    },
+    {
+      "id": "US-AC-09",
+      "description": "Telegram failure after Telegraph OK: pending row retained; retry reuses stored Telegraph URL (no 2nd createPage).",
+      "verification": "test",
+      "status": "pass",
+      "evidence": "tests/test_hw_review_publish_flow.py::test_publish_retry_reuses_telegraph_url (mock_publish.call_count == 1 across 2 runs). Decision 9."
+    },
+    {
+      "id": "US-AC-10",
+      "description": "hw_review publish N on vanished/published/failed row returns clean error referencing state, no traceback.",
+      "verification": "test",
+      "status": "pass",
+      "evidence": "tests/test_hw_review_publish_flow.py three-state matrix (published/failed/not-found)."
+    },
+    {
+      "id": "US-AC-11",
+      "description": "Queue exactly 10 + 0 new -- overflow fast-track doesn't run.",
+      "verification": "test",
+      "status": "pass",
+      "evidence": "tests/test_overflow.py guards `count_pending() + len(new) > QUEUE_CAP` predicate; empty-entries no-op case."
+    },
+    {
+      "id": "US-AC-12",
+      "description": "hw_review skip N with staged ru requires y/N confirmation; on y writes dedup + deletes pending; no published.",
+      "verification": "test",
+      "status": "pass",
+      "evidence": "tests/test_hw_review_cli.py skip confirmation tests (y/Y/n/N/empty/other)."
+    },
+    {
+      "id": "US-AC-13",
+      "description": "hw_review take N clears notified_at, row stays pending.",
+      "verification": "test",
+      "status": "pass",
+      "evidence": "tests/test_hw_review_take.py (8 cases incl. 5 TDD anchors)."
+    },
+    {
+      "id": "US-AC-14",
+      "description": "hw_review take N after grace + auto-publish returns 'N already auto-published'.",
+      "verification": "test",
+      "status": "pass",
+      "evidence": "tests/test_hw_review_take.py already-left-pending exit-1 case."
+    },
+    {
+      "id": "US-AC-15",
+      "description": "Row idle >48h gets heads-up ping + auto-publish after grace with via_review=False.",
+      "verification": "test",
+      "status": "pass",
+      "evidence": "tests/test_idle_fallback.py (12 cases); SQL-based time simulation; consolidated ping verified."
+    },
+    {
+      "id": "US-AC-16",
+      "description": "Queue never exceeds 10 pending; overflow fast-tracks only ru-NULL rows.",
+      "verification": "test",
+      "status": "pass",
+      "evidence": "tests/test_overflow.py; list_pending_for_eviction filters ru_paragraphs IS NULL (Decision 7)."
+    },
+    {
+      "id": "US-AC-17",
+      "description": "fast-track GT failure: queue stays, new dropped, admin pinged; overflow failures share attempt_count; 3 strikes -> failed.",
+      "verification": "test",
+      "status": "pass",
+      "evidence": "tests/test_overflow.py + tests/test_idle_fallback.py; repo increment_attempt test at 3 strikes."
+    },
+    {
+      "id": "US-AC-18",
+      "description": "hw_review list always shows failed footer '⚠️ K неопубликованных в failed: [titles]. hw_review retry N чтобы переподнять.' (byte-exact).",
+      "verification": "test",
+      "status": "pass",
+      "evidence": "tests/test_hw_review_retry.py exact-format pinning."
+    },
+    {
+      "id": "US-AC-19",
+      "description": "hw_review retry N moves row from failed back to pending with attempt_count=0 and fresh fetched_at.",
+      "verification": "test",
+      "status": "pass",
+      "evidence": "tests/test_hw_review_retry.py (14 cases incl. 6 TDD anchors); pending_articles_repo::retry_from_failed tests."
+    },
+    {
+      "id": "US-AC-20",
+      "description": "Mattel hooked via shared registry (adding source = editing one list).",
+      "verification": "test",
+      "status": "pass",
+      "evidence": "tests/test_sources_registry.py; SOURCES = [_fetch_rss_entries, _fetch_mattel_entries]."
+    },
+    {
+      "id": "US-AC-21",
+      "description": "Dedup table contains link for every published OR skipped article.",
+      "verification": "test",
+      "status": "pass",
+      "evidence": "tests/test_pending_articles_repo.py move_to_published + skip_pending both write to processed_news; smoke verified dedup row after publish."
+    },
+    {
+      "id": "US-AC-22",
+      "description": "CLI uses same logger as news_bot; exit 0 on success, non-zero on error; hw_review show N displays row state.",
+      "verification": "test",
+      "status": "pass",
+      "evidence": "tests/test_hw_review_cli.py; CLI smoke matrix (9 subcommand --help all exit 0)."
+    },
+    {
+      "id": "Tech-AC-01 / Decision 2+10",
+      "description": "init_db() idempotent: second call is no-op.",
+      "verification": "test+smoke",
+      "status": "pass",
+      "evidence": "tests/test_migration.py; smoke: called twice, no error, 4 tables present."
+    },
+    {
+      "id": "Tech-AC-02",
+      "description": "insert_pending UNIQUE-conflict returns False.",
+      "verification": "test",
+      "status": "pass",
+      "evidence": "tests/test_pending_articles_repo.py."
+    },
+    {
+      "id": "Tech-AC-03",
+      "description": "Multi-table repo mutators use explicit commit/rollback transactions.",
+      "verification": "test",
+      "status": "pass",
+      "evidence": "tests/test_pending_articles_repo.py transactional rollback test."
+    },
+    {
+      "id": "Tech-AC-04 / Decision 1",
+      "description": "hw_review preview --no-open exits 0 and prints path; no webbrowser.open call.",
+      "verification": "test+smoke",
+      "status": "pass",
+      "evidence": "tests/test_hw_review_cli.py no-open test; smoke printed /home/vscode/.cache/hw-review/hw-*.html."
+    },
+    {
+      "id": "Tech-AC-05",
+      "description": "hw_review publish N on out-of-range: exit 1 + referenced state, no traceback.",
+      "verification": "test",
+      "status": "pass",
+      "evidence": "tests/test_hw_review_publish_flow.py three-state matrix."
+    },
+    {
+      "id": "Tech-AC-06 / Decision 4",
+      "description": "_fetch_rss_entries sets source_name by URL netloc; unknown -> 'other' with warning.",
+      "verification": "test",
+      "status": "pass",
+      "evidence": "tests/test_sources_registry.py (23 cases incl. 'other' warning assertion)."
+    },
+    {
+      "id": "Tech-AC-07",
+      "description": "build_admin_ping([]) is None; non-None matches format byte-for-byte.",
+      "verification": "smoke",
+      "status": "pass",
+      "evidence": "Smoke: build_admin_ping([]) returned None; job() smoke produced exact byte match."
+    },
+    {
+      "id": "Tech-AC-08",
+      "description": "Existing tests pass unchanged except auto-publish ones rewritten in same wave.",
+      "verification": "test",
+      "status": "pass",
+      "evidence": "pytest tests/ -q -> 383 passed."
+    },
+    {
+      "id": "Tech-AC-09",
+      "description": "Migration test: init_db on empty DB -> all expected columns exist per PRAGMA table_info.",
+      "verification": "test",
+      "status": "pass",
+      "evidence": "tests/test_migration.py dict-literal comparison."
+    },
+    {
+      "id": "Tech-AC-10",
+      "description": "No new package in requirements.txt.",
+      "verification": "manual-command",
+      "status": "pass",
+      "evidence": "requirements.txt reviewed: feedparser, requests, beautifulsoup4, deep-translator, schedule, python-telegram-bot, curl_cffi. All pre-feature."
+    },
+    {
+      "id": "Tech-AC-11",
+      "description": "All repo SQL parametrised (no f-string/concat).",
+      "verification": "manual-command",
+      "status": "pass",
+      "evidence": "grep -nP \"f['\\\"].*(SELECT|INSERT|UPDATE|DELETE)|\\+.*(SELECT|INSERT|UPDATE|DELETE)\" pending_articles_repo.py hw_review.py -> empty."
+    },
+    {
+      "id": "Tech-AC-12 / Decision 11",
+      "description": "last_error written only through sanitize_error_message; all four env secrets stripped.",
+      "verification": "test+smoke",
+      "status": "pass",
+      "evidence": "tests/test_admin_ping.py; smoke: compound exception with all 4 secrets -> [REDACTED] present, no secret_ leak."
+    },
+    {
+      "id": "Tech-AC-13 / Decision 1",
+      "description": "preview_renderer three invariants: tag allowlist + URL-scheme allowlist + CSP meta.",
+      "verification": "test+smoke",
+      "status": "pass",
+      "evidence": "tests/test_preview_renderer.py (63 cases); smoke: javascript: dropped, default-src 'none' present."
+    },
+    {
+      "id": "Tech-AC-14 / Decision 1",
+      "description": "hw_review preview never calls webbrowser.open with path outside ~/.cache/hw-review/.",
+      "verification": "test",
+      "status": "pass",
+      "evidence": "tests/test_hw_review_cli.py path-guard tests."
+    },
+    {
+      "id": "Tech-AC-15 / Decision 6",
+      "description": "stage validator rejects 8 vectors: >256 KiB stdin, depth >3, unknown top keys, non-list ru_paragraphs, non-dict block, unknown block type, unknown block key, string >10 KiB.",
+      "verification": "test",
+      "status": "pass",
+      "evidence": "tests/test_hw_review_cli.py 8 separate rejection vector tests."
+    },
+    {
+      "id": "Tech-AC-16 / Decision 13",
+      "description": "Attempt counter shared across idle-fallback and overflow.",
+      "verification": "test",
+      "status": "pass",
+      "evidence": "repo increment_attempt single mutator; tests/test_overflow.py + tests/test_idle_fallback.py. Test audit flagged mixed-path test gap as MEDIUM (non-blocking) -- code implements correctly via shared _fallback_publish."
+    },
+    {
+      "id": "Tech-AC-17 / Decision 12",
+      "description": "Idle-fallback heads-up ping sent once per tick (consolidated).",
+      "verification": "test",
+      "status": "pass",
+      "evidence": "tests/test_idle_fallback.py::consolidated_ping asserts single send_admin_notification call with all three stale titles."
+    },
+    {
+      "id": "US-User-01",
+      "description": "Visual check of channel post (hashtag, preview card, Instant View button).",
+      "verification": "deferred-to-post-deploy",
+      "status": "deferred",
+      "evidence": "Task 15"
+    },
+    {
+      "id": "US-User-02",
+      "description": "Visual check of local HTML preview (hero, subtitle, paragraphs, blocks order).",
+      "verification": "deferred-to-post-deploy",
+      "status": "deferred",
+      "evidence": "Task 15 (user preview)"
+    },
+    {
+      "id": "Tech-AVP-01",
+      "description": "Real Telegraph page render fidelity (hero + subtitle + body + source footer).",
+      "verification": "deferred-to-post-deploy",
+      "status": "deferred",
+      "evidence": "Task 15 (curl + visual)"
+    },
+    {
+      "id": "Tech-AVP-02",
+      "description": "Live admin-chat ping format conformance (Telegram MCP read).",
+      "verification": "deferred-to-post-deploy",
+      "status": "deferred",
+      "evidence": "Task 15 (Telegram MCP)"
+    }
+  ],
+  "static_checks": {
+    "lint": "not-configured",
+    "typecheck": "not-configured",
+    "details": "CI (.github/workflows/ci.yml) runs only `python -m pytest tests/ -v`. No pyproject.toml / setup.cfg / .flake8 / mypy.ini present. deploy.sh is SCP-only. No ruff/mypy/flake8 configured for this repo."
+  },
+  "import_sanity": "pass",
+  "cli_smoke": [
+    {"command": "python3 hw_review.py --help", "exit_code": 0, "ok": true},
+    {"command": "python3 hw_review.py list --help", "exit_code": 0, "ok": true},
+    {"command": "python3 hw_review.py show --help", "exit_code": 0, "ok": true},
+    {"command": "python3 hw_review.py stage --help", "exit_code": 0, "ok": true},
+    {"command": "python3 hw_review.py preview --help", "exit_code": 0, "ok": true},
+    {"command": "python3 hw_review.py publish --help", "exit_code": 0, "ok": true},
+    {"command": "python3 hw_review.py skip --help", "exit_code": 0, "ok": true},
+    {"command": "python3 hw_review.py take --help", "exit_code": 0, "ok": true},
+    {"command": "python3 hw_review.py retry --help", "exit_code": 0, "ok": true},
+    {"command": "python3 hw_review.py list (empty ephemeral DB)", "exit_code": 0, "ok": true}
+  ],
+  "schema_sanity": {
+    "tables_present": ["failed_articles", "pending_articles", "processed_news", "published_articles"],
+    "preview_html_path_column": "present"
+  },
+  "cron_sanity": "pass",
+  "deferred_to_post_deploy": [
+    {
+      "criterion": "US-User-01: Visual check of channel post (hashtag, Instant View preview card, post layout) against @myhwchannel123 msg 35 golden reference.",
+      "reason": "Requires live Telegram channel and human visual validation.",
+      "verificationCondition": "First real hw_review publish executed against production Telegram after deploy.",
+      "verificationSteps": "1) Deploy dev branch; 2) Stage + publish one real article; 3) Open @myhwchannel123 and confirm hashtag + Instant View card + post layout match golden reference."
+    },
+    {
+      "criterion": "US-User-02: Local HTML preview visual fidelity (hero, subtitle framing, paragraph/block order, footer).",
+      "reason": "Requires human visual validation of the local HTML preview in a real browser.",
+      "verificationCondition": "Operator runs hw_review preview N on a staged row without --no-open.",
+      "verificationSteps": "1) python3 hw_review.py preview <N>; 2) Browser opens local HTML; 3) Confirm hero image, 💬 «subtitle», <hr>, paragraphs, blocks (if autoevolution), 'Источник:' footer all in expected order."
+    },
+    {
+      "criterion": "Tech-AVP-01: Real Telegraph page render fidelity after publish.",
+      "reason": "Requires successful live publish to Telegra.ph API.",
+      "verificationCondition": "After successful hw_review publish, the returned Telegraph URL is reachable.",
+      "verificationSteps": "1) curl -sL <telegraph_url> | grep -E '(figure|p|hr)'; 2) Confirm hero image, subtitle, body paragraphs, source footer all present and in order."
+    },
+    {
+      "criterion": "Tech-AVP-02: Live admin-chat ping format byte-for-byte conformance.",
+      "reason": "Requires Telegram MCP access to read admin chat.",
+      "verificationCondition": "After cron tick with non-empty queue.",
+      "verificationSteps": "1) Telegram MCP read admin chat last 24h; 2) Regex-match 'N ждут review: 🟠 autoevolution ×K, 🟣 mattel ×M, 🟢 lamley ×L' with zero-count sources absent."
+    }
+  ],
+  "blockers": [],
+  "audit_inheritance": {
+    "code_audit_task11": "clean -- 0 CRITICAL/HIGH/MEDIUM, 6 LOW + 5 NIT (all no-action or P3 follow-ups)",
+    "security_audit_task12": "clean -- 0 CRITICAL/HIGH/MEDIUM, 3 LOW + 4 INFO (all P3 defense-in-depth follow-ups)",
+    "test_audit_task13": "needs_fixes (non-blocking) -- 0 CRITICAL/HIGH, 2 MEDIUM coverage gaps (mixed-path 3-strike test + overflow Decision 9 transitive coverage), 5 LOW + 2 NIT. Gaps are test-coverage only; code implements invariants correctly via shared _fallback_publish helper."
+  }
+}

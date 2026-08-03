@@ -1,0 +1,54 @@
+{
+  "validator": "task-validator",
+  "batch": [1, 2, 3, 4, 5],
+  "status": "changes_required",
+  "findings": [
+    {
+      "severity": "critical",
+      "category": "decomposition",
+      "task": 4,
+      "section": "frontmatter",
+      "issue": "Wave/dependency violation: Task 4 has `depends_on: [3]` and `wave: 2`, but Task 3 also has `wave: 2`. Per the validator rule, a task with `depends_on: [X]` must have `wave` > wave of task X. Both being in Wave 2 means Task 4 cannot run in parallel with Task 3 yet they are scheduled in the same wave. This breaks the parallel-execution invariant of waves.",
+      "fix": "Either (a) move Task 4 to `wave: 3` (preferred — preserves the dependency semantic and matches the rule), or (b) drop the `depends_on: [3]` declaration if Task 4 is in fact independent of Task 3 (it isn't — Task 4 updates set/list assertions that reflect Task 3's registry changes). Option (a) is the correct fix. Update tech-spec Implementation Tasks section to reflect the new wave grouping if the intention was a sequential-within-wave model."
+    },
+    {
+      "severity": "minor",
+      "category": "content",
+      "task": 5,
+      "section": "Context Files",
+      "issue": "Two project-knowledge links use the wrong path — they omit the `references/` subfolder. Lines reference `../../../.claude/skills/project-knowledge/project.md` and `../../../.claude/skills/project-knowledge/architecture.md`, but the actual files live at `.claude/skills/project-knowledge/references/project.md` and `.claude/skills/project-knowledge/references/architecture.md` (verified: only `SKILL.md` and `references/` are direct children of `project-knowledge/`). Other tasks in the batch (1, 3, 4) use the correct `references/` path.",
+      "fix": "Update Task 5 Context Files section: change `../../../.claude/skills/project-knowledge/project.md` to `../../../.claude/skills/project-knowledge/references/project.md`, and `../../../.claude/skills/project-knowledge/architecture.md` to `../../../.claude/skills/project-knowledge/references/architecture.md`. (The `patterns.md` and `deployment.md` links in the same file already include `references/` correctly — only `project.md` and `architecture.md` are broken.)"
+    },
+    {
+      "severity": "minor",
+      "category": "content",
+      "task": 4,
+      "section": "TDD Anchor",
+      "issue": "Task 4 is a test-only update (renaming methods and extending set/list assertions) and the TDD Anchor section explicitly states `Новых тестовых кейсов не пишем`. This is acceptable as documentation of the existing tests being updated, but it stretches the TDD Anchor contract (which is for tests written BEFORE implementation). Consider whether this section should be removed entirely (Task 4 modifies tests directly — there is no separate test step), making the section's presence a minor template-fit issue.",
+      "fix": "Either (a) keep as-is — the section documents the three tests that will turn green after the update and serves as a checklist, OR (b) remove the TDD Anchor section since Task 4's deliverable IS the tests themselves and the `What to do` plus `Acceptance Criteria` already enumerate the three test methods. Recommendation: keep but add an explicit note at the top that this is a 'tests-as-deliverable' task, not standard TDD."
+    },
+    {
+      "severity": "minor",
+      "category": "atomicity",
+      "task": 1,
+      "section": "scope",
+      "issue": "Task 1 is at the upper boundary of atomic scope — it creates one new module (~270-320 LoC) plus one large test file (~600-800 LoC) and implements seven separate Decisions (1, 2, 3, 5, 8, 13, 15). Rule of thumb: 1-3 files, single responsibility. Task 1 is technically two files and a large set of concerns (parser + aggregator class + SSRF guard + YouTube wrapper + sanitization helper + fallback HTTP). The Description explicitly enumerates seven Decisions packed into one task. While the parser module forms one cohesive logical unit, this is a candidate for review whether `OrangetrackPingAggregator` (a self-contained class with its own ~14 tests) could be split into a separate task without breaking the parser's `notifier=` callback contract.",
+      "fix": "No required action — flagging for awareness. The current packaging is defensible because (a) the aggregator is consumed by `fetch_orangetrack_article` via the notifier callback, so building both together avoids cross-task interface churn, and (b) the test file is one cohesive suite. If the team finds Task 1 takes too long to implement/review, consider splitting `OrangetrackPingAggregator` + its tests into a separate Wave 1 task and adding `depends_on: [<aggregator_task>]` to Task 1 proper."
+    },
+    {
+      "severity": "minor",
+      "category": "consistency",
+      "task": 3,
+      "section": "Reviewers vs skills mapping",
+      "issue": "Task 3 has `skills: [code-writing]` and includes `security-auditor` as a reviewer. The validator's skill→reviewer mapping rule states `code-writing → includes code-reviewer, test-reviewer`. Adding `security-auditor` is not strictly required by the mapping but is appropriate here because Task 3 introduces SSRF guard call sites, dispatcher routing, and admin-ping wiring — all security-relevant. This matches the tech-spec's explicit Reviewers field for Task 3.",
+      "fix": "No action — flagging for completeness. The reviewer set is correct and matches tech-spec; the validator rule defines a minimum, not a maximum, so adding `security-auditor` is fine."
+    }
+  ],
+  "stats": {
+    "tasks_checked": 5,
+    "issues_found": 5,
+    "critical": 1,
+    "major": 0,
+    "minor": 4
+  }
+}

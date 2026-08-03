@@ -1,0 +1,43 @@
+{
+  "validator": "task-validator",
+  "batch": [11],
+  "status": "approved",
+  "findings": [
+    {
+      "severity": "minor",
+      "category": "frontmatter",
+      "task": 11,
+      "section": "frontmatter.wave",
+      "issue": "`wave: final` is a string keyword, not a number >= 1 as the template specifies (`wave: 1`). Task 10 is also `wave: final`, so Task 11's `depends_on: [10]` points at a same-wave task rather than a strictly-earlier numeric wave.",
+      "fix": "Acceptable as-is IF the orchestrator supports named waves — this matches the project convention (tech-spec 'Final Wave'; Task 10 also uses `wave: final` and depends on the Audit Wave via depends_on). Ordering is correctly enforced by `depends_on: [10]`, so execution is not broken. If the runner expects numeric waves, replace `final` with the next integer after the audit/pre-deploy wave."
+    },
+    {
+      "severity": "minor",
+      "category": "structure",
+      "task": 11,
+      "section": "What to do",
+      "issue": "Leftover template guidance line retained above the real content: 'Конкретные шаги — ЧТО, не КАК. Не псевдокод.' (line 33). The actual numbered steps 1-6 follow it.",
+      "fix": "Delete the template instruction line; the concrete numbered steps already fulfil the section."
+    },
+    {
+      "severity": "minor",
+      "category": "content",
+      "task": 11,
+      "section": "Context Files",
+      "issue": "The Pre-deploy QA report entry (line 66) is plain text with an inline code path — 'Pre-deploy QA отчёт Task 10: `logs/working/qa-report.json`' — not a markdown link `[name](path)`. The path is also bare (`logs/working/...`), which resolves from CWD/project root, not the feature dir; actual location is `work/dedup-model-series/logs/working/`. Same bare path recurs in 'What to do' step 1 (line 35).",
+      "fix": "Convert to a markdown link anchored to the feature dir, e.g. `[qa-report.json](../logs/working/qa-report.json)`, and use the same feature-relative path in the 'What to do' step."
+    },
+    {
+      "severity": "minor",
+      "category": "structure",
+      "task": 11,
+      "section": "Details",
+      "issue": "Details has no **Files:** subsection (template lists Files as the first subsection). Dependencies, Edge cases, and Implementation hints are all present and rich.",
+      "fix": "Acceptable adaptation for a non-code, report-only task that modifies no source files. Optionally add a one-line note ('No source files modified — output is a post-deploy-qa JSON report') to make the omission explicit."
+    }
+  ],
+  "stats": {
+    "tasks_checked": 1,
+    "issues_found": 4
+  }
+}

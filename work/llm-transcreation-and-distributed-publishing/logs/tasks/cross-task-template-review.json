@@ -1,0 +1,228 @@
+{
+  "validator": "task-validator",
+  "mode": "cross-task-integration-check",
+  "batch": [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19],
+  "iteration": 3,
+  "status": "changes_required",
+  "summary": "Cross-task integration review focused on shared-resource ownership, same-wave file conflicts, dependency-graph acyclicity, and wave/dependency coherence. Found 1 critical wave-vs-depends_on inconsistency (Task 3 in wave 2 declares depends_on on Task 6, also in wave 2 — same-wave dependency violates wave parallelism), plus several minor and informational notes. Dependency graph itself is acyclic. No two tasks in the same wave write to the same file. Shared-resource ownership is correct (each owner has exactly one task; consumers declare depends_on on owners). Skill/reviewer assignments coherent across waves. Ready for fix once the wave-3 placement of Task 3 is resolved.",
+  "findings": [
+    {
+      "id": "F1",
+      "severity": "critical",
+      "category": "consistency",
+      "task": 3,
+      "section": "frontmatter (wave + depends_on)",
+      "issue": "Task 3 has wave=2 AND depends_on=[6], where Task 6 is also wave=2. Tasks within the same wave are intended to run in parallel — declaring an intra-wave dependency violates wave semantics. Task 3 explicitly states it cannot proceed without `anthropic>=0.45.0,<0.46.0` from Task 6's requirements.txt update. Concretely: tests in `test_claude_transcreation.py` import `anthropic` exception classes for fixture construction (BadRequestError/RateLimitError etc), and the smoke step makes a real API call — both require the package installed, which only happens after Task 6 lands. Tech-spec Decision 10 originally placed Task 3 in Wave 1 alongside the other foundation modules; the current placement either contradicts that decision OR Task 6 should be moved into Wave 1.",
+      "fix": "Two coherent options: (a) move Task 3 to wave=3 (after Wave 2's Task 6) — keeps the dependency arrow valid but adds an extra wave; OR (b) move Task 6 to wave=1 (no deps in T6, runs alongside T1/T2/T4) and drop Task 3's depends_on=[6] — restores Task 3 to wave 1/2 cleanly per Decision 10. Option (b) is simpler and matches tech-spec intent. Either way: keep depends_on consistent with wave numbering — if A depends_on B, A.wave > B.wave."
+    },
+    {
+      "id": "F2",
+      "severity": "minor",
+      "category": "decomposition",
+      "task": 3,
+      "section": "frontmatter (reviewers)",
+      "issue": "Task 3 lists `prompt-reviewer` in reviewers — this is a non-standard reviewer not seen elsewhere in the project's standard reviewer set (code-reviewer, test-reviewer, security-auditor, deploy-reviewer, skill-checker). The task does involve composing the Claude system prompt from ux-guidelines.md + JSON envelope, which is genuinely prompt-engineering work — so the role is justified, but the agent name is custom. Confirm this reviewer agent exists in the project's agents/ directory; if it does not exist (or is named differently like `prompt-master`), execution will fail when trying to spawn it.",
+      "fix": "Verify that the project has a `prompt-reviewer` agent file in `~/.claude/agents/` (or equivalent). If only `prompt-master` exists (which is a skill, not a reviewer agent), either rename the reviewer to match an existing agent or create `prompt-reviewer.md` in agents/. Same applies to `deploy-reviewer` in Task 13 — confirm the agent file exists."
+    },
+    {
+      "id": "F3",
+      "severity": "minor",
+      "category": "carry-forward",
+      "task": 8,
+      "section": "Acceptance Criteria",
+      "issue": "Tech-spec AC `attempt_count` contract (AC15: attempt_count increments only when both Claude AND Google fail for the same article) is referenced in Task 11/12 traceability but Task 8 (`job()` distributed-publish loop) — which is the call site that increments attempt_count — does not have an explicit AC item or test for the dual-failure case. Task 8 says 'On прочее Exception: стандартный 3-strikes flow' but does not enumerate the 'Google fallback also failed' sub-case as a distinct scenario. This risks the 3-strikes-then-failed pattern accidentally counting per-article Claude failures (where Google then succeeds) as strikes — anti-pattern explicitly called out in Task 7's design note about re-raising ClaudeOutageError.",
+      "fix": "Add to Task 8 acceptance criteria an explicit AC: 'attempt_count incremented only when Google fallback also fails (per AC15). Test: mocked Claude raises ClaudeTranscreationError, Google transcreate_text succeeds → assert pending_repo.increment_attempt NOT called for this row.' Alternatively, surface the rule in Task 7 (already implied by re-raise contract) and add explicit assertion in Task 11/12 integration tests."
+    },
+    {
+      "id": "F4",
+      "severity": "minor",
+      "category": "resource-sharing",
+      "task": 5,
+      "section": "Dependencies",
+      "issue": "Task 5 (outage_state.py) uses `news_bot.DB_FILE` lazily through `_connect()` — the implementation hint correctly says 'import news_bot for DB_FILE at call time so test patches are honoured'. However, Task 11's test plan and Task 12's setUp each independently surface a DB_FILE patching ambiguity (they coordinate through file-internal grep checks). This concern would be eliminated if Task 5 specified the canonical DB_FILE access pattern as a hard contract (not just a hint), and Task 11/12 referenced it. Right now each downstream task re-derives the rule, which risks divergence.",
+      "fix": "Promote Task 5 implementation hint about `news_bot.DB_FILE` lazy resolution from 'hint' to a contractual AC: 'outage_state._connect() reads DB_FILE via `news_bot.DB_FILE` attribute access at call-time (NOT `from news_bot import DB_FILE` at import-time). Test: monkey-patching `news_bot.DB_FILE` in a test must redirect outage_state writes to the new path.' Then in Tasks 11 and 12, replace the long DB_FILE patching guidance with a one-line cross-reference to Task 5's contract."
+    },
+    {
+      "id": "F5",
+      "severity": "minor",
+      "category": "consistency",
+      "task": 7,
+      "section": "Description / What to do",
+      "issue": "Task 7 references the exception class as `ClaudeOutageError` everywhere, but Task 11 and Task 12 mention an alternative spelling `OutageError` ('news_bot.OutageError if it's re-export'd'; 'wrapped OutageError from anthropic SDK'). This naming inconsistency matters: Task 3 is the owner that defines the class — its What-to-do step 1 lists `ClaudeOutageError(Exception)` as the exception name. Tasks 11/12 should use `ClaudeOutageError` consistently. If a re-export alias is intentional, it should be specified in Task 3 (not invented downstream).",
+      "fix": "Pick one canonical name and propagate. Recommend `ClaudeOutageError` (Task 3 + Task 7 already use it; matches the symmetric `ClaudeTranscreationError`). Update Task 11 (line 'news_bot.OutageError' → 'news_bot.ClaudeOutageError' or '`ClaudeOutageError`') and Task 12 ('OutageError' references → 'ClaudeOutageError'). Add a one-line note to Task 3 AC: 'Class is named `ClaudeOutageError`, not `OutageError`.'"
+    },
+    {
+      "id": "F6",
+      "severity": "minor",
+      "category": "decomposition",
+      "task": 13,
+      "section": "What to do (env-write step)",
+      "issue": "Task 13 introduces a new GitHub Actions step that uses `ssh ... 'bash -s' <<'REMOTE'` heredoc with `${ANTHROPIC_API_KEY}` interpolation. The heredoc as written uses single-quoted delimiter `<<'REMOTE'` which DISABLES variable expansion locally but the variables would still need to be expanded on the remote side (after ssh). With single-quote heredoc, `${ANTHROPIC_API_KEY}` is sent literally to the remote shell — which may or may not have the env var set depending on how `env:` is propagated through ssh. The Implementation hint correctly advises passing through `env:` step with stdin, but the example in 'Edge cases' uses single-quoted heredoc that conflicts with this. Risk: deployed `.env` ends up containing the literal string `${ANTHROPIC_API_KEY}` instead of the actual key.",
+      "fix": "Clarify the heredoc semantics in Task 13's env-write example: either (a) use unquoted heredoc `<<REMOTE` and let local expansion fill in the secret value before sending to ssh — but this risks the value appearing in `ps -ef` on the runner; OR (b) use single-quoted heredoc but pass secrets through ssh's `SendEnv` / `AcceptEnv` mechanism, which requires both sides to allow it; OR (c) write the value to a temp file on runner first, then `scp` the .env fragment. Recommendation: pipe via stdin without heredoc — `printf 'ANTHROPIC_API_KEY=%s\\nANTHROPIC_MODEL=%s\\nTZ=%s\\n' \"$KEY\" \"$MODEL\" \"$TZ\" | ssh ... 'cat > .env.new && mv .env.new .env'` — explicit and avoids the quoting trap. Add an integration smoke that asserts `.env` post-deploy contains the actual key value, not a literal placeholder."
+    },
+    {
+      "id": "F7",
+      "severity": "minor",
+      "category": "decomposition",
+      "task": 12,
+      "section": "Pre-requisite — freezegun dependency and CI",
+      "issue": "Task 12 self-introduces a new project-wide concern: creating `requirements-dev.txt` and modifying `.github/workflows/ci.yml`. These two changes are arguably out of scope for a 'create one new test file' task and would be cleaner as a separate prep task or merged into Task 6 (which already touches requirements.txt). Bundling CI workflow editing inside a test-creation task increases blast radius — a CI-syntax mistake here breaks the whole repo's pipeline, while the original purpose of Task 12 (4 integration tests) is unrelated.",
+      "fix": "Either (a) extend Task 6 to also create `requirements-dev.txt` (with `freezegun>=1.5.0`) and to update `.github/workflows/ci.yml` to install it — keeping all dependency/CI changes in one task; OR (b) introduce a small new task '6b: Add requirements-dev.txt + freezegun in CI' as a Wave 2 sibling of Task 6, depended on by Task 12. Option (a) is the lighter-weight refactor."
+    },
+    {
+      "id": "F8",
+      "severity": "minor",
+      "category": "carry-forward",
+      "task": 13,
+      "section": "What to do (deploy.yml editing)",
+      "issue": "Task 13 modifies `.github/workflows/deploy.yml` to add `ANTHROPIC_API_KEY` to 'Verify required secrets', a new env-write step, and FILES list extension. However, no AC explicitly verifies that the deploy.yml YAML remains parseable — only Smoke step 4 mentions `yaml.safe_load`. Given how easy it is to break YAML indentation when adding nested heredoc steps, and given Task 13 has skill=`deploy-pipeline` (no general code-reviewer with YAML-lint context), an automated pre-merge YAML lint AC would be appropriate.",
+      "fix": "Add explicit AC to Task 13: '`python3 -c \"import yaml; yaml.safe_load(open(\\'.github/workflows/deploy.yml\\'))\"` exits 0 — YAML is parseable.' Already present as a Smoke step but should be promoted to an AC checkbox so it is a hard pre-merge gate, not just a check the implementer is suggested to run."
+    },
+    {
+      "id": "F9",
+      "severity": "minor",
+      "category": "consistency",
+      "task": 14,
+      "section": "Reviewers / frontmatter",
+      "issue": "Task 14 (Code Audit) frontmatter has `reviewers: []` and the body explicitly says 'Reviewers: Нет. Аудит-задача сама является ревью; результаты её не пере-ревьюятся.' This is consistent and correct. Same pattern in Task 15, 16, 17, 18, 19. Just noting: the empty `reviewers: []` should be valid per template (template comment says reviewers can be `[]` or `[none]` for self-verifying tasks). Confirm the validator accepts empty array. No fix needed unless framework requires `[none]`.",
+      "fix": "No fix required — flagged for awareness. If feature-execution skill rejects empty reviewers arrays, change to `reviewers: [none]` for Tasks 14-19."
+    },
+    {
+      "id": "F10",
+      "severity": "minor",
+      "category": "decomposition",
+      "task": 8,
+      "section": "Dependencies",
+      "issue": "Task 8 depends_on=[2, 5, 7] but transitively also needs Task 3 (claude_transcreation.health_check) and Task 4 (token redaction extensions for SDK error logging). The transitive chain holds (T8 → T7 → T3, T8 → T7 → T5 → T1, T4 is wave 1 same as T2 so transitively earlier), but the explicit dependency list is incomplete relative to the actual semantic requirements. T8's What-to-do step 2 explicitly calls `claude_transcreation.health_check()` at startup — a direct API consumer, yet T3 is not in T8's depends_on.",
+      "fix": "Add Task 3 to Task 8's depends_on for explicit declaration: `depends_on: [2, 3, 5, 7]`. While transitive dependency works at runtime, making it explicit helps the wave executor and reviewer to spot mismatches faster, and makes it harder for a future refactor to break the chain (e.g., if T7 were removed, T8 would silently lose its T3 transitive). Same consideration for T4 if any of T8's behavior is sensitive to its redaction layer."
+    }
+  ],
+  "shared_resource_ownership_check": {
+    "resources_from_tech_spec_table": [
+      {
+        "resource": "anthropic.Anthropic client",
+        "owner_task": 3,
+        "consumer_tasks": [7, 8],
+        "consumers_declare_depends_on_owner": {"7": "yes (depends_on=[3,5])", "8": "transitive only via T7 — see F10"},
+        "no_competing_instances": true,
+        "status": "pass-with-minor"
+      },
+      {
+        "resource": "pytz.timezone('Europe/Moscow')",
+        "owner_task": 6,
+        "consumer_tasks": [8, 5],
+        "consumers_declare_depends_on_owner": {"8": "transitive via T7→T3→T6", "5": "no (T5 uses stdlib datetime, not pytz directly — caller passes tz-aware datetime)"},
+        "no_competing_instances": true,
+        "status": "pass"
+      },
+      {
+        "resource": "SQLite news.db (bot_state table specifically)",
+        "owner_task": 1,
+        "consumer_tasks": [5, 11, 12],
+        "consumers_declare_depends_on_owner": {"5": "yes (depends_on=[1])", "11": "transitive via [10]→...→[1]", "12": "transitive via [10]→...→[1]"},
+        "no_competing_instances": true,
+        "status": "pass"
+      },
+      {
+        "resource": "Compiled regex (HW glossary, _BOT_TOKEN_RE, _ANTHROPIC_KEY_RE)",
+        "owner_tasks": "T4 owns _ANTHROPIC_KEY_RE + _redact_text; T10 retains hw_glossary in transcreate_text; T3 reuses HW emoji-prefix regex from legacy news_bot.py (copy, not shared)",
+        "consumer_tasks": "scoped within owner module each",
+        "no_competing_instances": true,
+        "status": "pass"
+      }
+    ],
+    "module_ownership_check": [
+      {"file": "compute_publish_slots.py", "owner": 2, "modifiers": [], "ok": true},
+      {"file": "claude_transcreation.py", "owner": 3, "modifiers": [], "ok": true},
+      {"file": "outage_state.py", "owner": 5, "modifiers": [], "ok": true},
+      {"file": "pending_articles_repo.py", "owner": 1, "modifiers": [], "ok": true},
+      {"file": "news_bot.py", "owners": [4, 7, 8, 9, 10], "wave_distribution": [1, 3, 4, 5, 6], "ok": true, "note": "Modified across 5 sequential waves — each in its own single-task wave (except T4 which shares wave 1 with non-news_bot.py tasks). No two tasks in the same wave write to news_bot.py."},
+      {"file": "requirements.txt", "owner": 6, "modifiers": [], "ok": true},
+      {"file": ".env.example", "owner": 6, "modifiers": [], "ok": true},
+      {"file": "deploy.sh", "owner": 13, "modifiers": [], "ok": true},
+      {"file": ".github/workflows/deploy.yml", "owner": 13, "modifiers": [13], "ok": true, "note": "Task 12 also modifies .github/workflows/ci.yml — different file but same directory. See F7."},
+      {"file": "tests/test_migration.py", "owner": 1, "modifiers": [], "ok": true},
+      {"file": "tests/test_no_token_leak_in_logs.py", "owner": 4, "modifiers": [], "ok": true},
+      {"file": "tests/test_translation.py", "owner": 10, "modifiers": [], "ok": true},
+      {"file": "tests/test_integration.py", "owner": 11, "modifiers": [], "ok": true},
+      {"file": "tests/test_job_prep_phase.py", "owner": 11, "modifiers": [], "ok": true},
+      {"file": "tests/test_compute_publish_slots.py", "owner": 2, "ok": true},
+      {"file": "tests/test_claude_transcreation.py", "owner": 3, "ok": true},
+      {"file": "tests/test_outage_state.py", "owner": 5, "ok": true},
+      {"file": "tests/test_fallback_publish_paths.py", "owner": 7, "ok": true},
+      {"file": "tests/test_distributed_schedule_integration.py", "owner": 12, "ok": true}
+    ],
+    "same_wave_file_conflict_check": "PASS — within each wave, no two tasks modify the same file. Waves with potential conflict (4, 5, 6 each touch news_bot.py) are correctly designed as single-task waves per Decision 10.",
+    "summary": "Resource and file ownership is structurally clean. Each module/file has one owner task; consumers (mostly) declare correct depends_on. Sequential single-task waves on news_bot.py prevent the 'two tasks editing same file in parallel' anti-pattern."
+  },
+  "dependency_graph_check": {
+    "edges": [
+      {"from": 3, "to": 6, "wave_from": 2, "wave_to": 2, "violation": "same-wave dependency — see F1"},
+      {"from": 5, "to": 1, "wave_from": 2, "wave_to": 1, "ok": true},
+      {"from": 7, "to": 3, "wave_from": 3, "wave_to": 2, "ok": true},
+      {"from": 7, "to": 5, "wave_from": 3, "wave_to": 2, "ok": true},
+      {"from": 8, "to": 2, "wave_from": 4, "wave_to": 1, "ok": true},
+      {"from": 8, "to": 5, "wave_from": 4, "wave_to": 2, "ok": true},
+      {"from": 8, "to": 7, "wave_from": 4, "wave_to": 3, "ok": true},
+      {"from": 9, "to": 8, "wave_from": 5, "wave_to": 4, "ok": true},
+      {"from": 10, "to": 9, "wave_from": 6, "wave_to": 5, "ok": true},
+      {"from": 11, "to": 10, "wave_from": 7, "wave_to": 6, "ok": true},
+      {"from": 12, "to": 10, "wave_from": 7, "wave_to": 6, "ok": true},
+      {"from": 13, "to": 11, "wave_from": 8, "wave_to": 7, "ok": true},
+      {"from": 13, "to": 12, "wave_from": 8, "wave_to": 7, "ok": true},
+      {"from": 14, "to": 13, "wave_from": 9, "wave_to": 8, "ok": true},
+      {"from": 15, "to": 13, "wave_from": 9, "wave_to": 8, "ok": true},
+      {"from": 16, "to": 13, "wave_from": 9, "wave_to": 8, "ok": true},
+      {"from": 17, "to": 14, "wave_from": 10, "wave_to": 9, "ok": true},
+      {"from": 17, "to": 15, "wave_from": 10, "wave_to": 9, "ok": true},
+      {"from": 17, "to": 16, "wave_from": 10, "wave_to": 9, "ok": true},
+      {"from": 18, "to": 17, "wave_from": 11, "wave_to": 10, "ok": true},
+      {"from": 19, "to": 18, "wave_from": 12, "wave_to": 11, "ok": true}
+    ],
+    "cycles_detected": false,
+    "all_referenced_tasks_exist": true,
+    "single_violation": "Task 3 (wave 2) → Task 6 (wave 2). All other 20 edges respect wave order.",
+    "summary": "Graph is acyclic. 20 of 21 dependency edges respect the rule 'depends_on target wave < current wave'. The single exception (T3 → T6) is the F1 critical finding."
+  },
+  "skill_reviewer_coherence": {
+    "skill_consistency": [
+      {"tasks_1_to_12": "code-writing — appropriate for code/test changes"},
+      {"task_13": "deploy-pipeline — appropriate for deploy.sh/.yml + PK doc updates"},
+      {"task_14": "code-reviewing — audit role"},
+      {"task_15": "security-auditor — audit role"},
+      {"task_16": "test-master — test audit role"},
+      {"task_17": "pre-deploy-qa — QA gate"},
+      {"task_18": "deploy-pipeline — operational deploy"},
+      {"task_19": "post-deploy-qa — live verification"}
+    ],
+    "reviewers_per_skill_match": [
+      {"skill": "code-writing", "expected_reviewers_subset": ["code-reviewer", "test-reviewer"], "all_tasks_compliant": true, "exceptions": "T6 (only code-reviewer; reasonable since it's config-only — minor); T9 (only code-reviewer; reasonable since it's pure deletion + cleanup)"},
+      {"skill": "code-writing-with-security-touchpoints", "expected_reviewers_include": ["security-auditor"], "tasks_with_security_concern": [3, 4, 7], "all_have_security_auditor": true},
+      {"skill": "audit-skills (Task 14, 15, 16)", "reviewers": [], "ok": true, "note": "Self-verifying audit tasks correctly have no reviewers"},
+      {"skill": "qa/deploy/post-deploy (Tasks 17-19)", "reviewers": [], "ok": true}
+    ],
+    "non_standard_reviewers": [
+      {"task": 3, "reviewer": "prompt-reviewer", "concern": "see F2 — confirm agent exists"},
+      {"task": 13, "reviewer": "deploy-reviewer", "concern": "see F2 — confirm agent exists"}
+    ],
+    "summary": "Skill-to-reviewer mapping is coherent. Tasks involving security-sensitive code (3, 4, 7, 13, 15) correctly include security-auditor. Two non-standard reviewer agent names (prompt-reviewer, deploy-reviewer) flagged for existence verification."
+  },
+  "carry_forward_from_tech_spec": {
+    "ac_carry_forward_check": "Spot-checked. Tech-spec ACs are largely traced through to specific tasks (e.g., 'Cron uses schedule.every().day.at(\"12:00\", tz=...)' → Task 8 AC; 'anthropic>=0.45.0,<0.46.0' → Task 6 AC; 'max_tokens=8000 cap' → Task 3 AC; 'PRAGMA busy_timeout=5000' → Task 5 AC). One gap noted in F3 around AC15 attempt_count contract.",
+    "tdd_anchor_carry_forward_check": "Tech-spec Testing Strategy lists ~12+8+6+4 new tests across the four new test files; tasks 2/3/5/12 correctly target these counts (T2: 13 tests, T3: 15 tests, T5: 6 tests, T12: 4 tests). Carry-forward intact.",
+    "implementation_tasks_traceability": "All 13 implementation tasks from tech-spec Decision 10 are present in tasks 1-13. Audit Wave (14-16) and Final Wave (17-19) correctly added per tech-spec section 'Audit Wave' and 'Final Wave'."
+  },
+  "stats": {
+    "tasks_checked": 19,
+    "issues_found": 10,
+    "critical": 1,
+    "major": 0,
+    "minor": 9,
+    "shared_resources_validated": 4,
+    "module_ownerships_validated": 18,
+    "dependency_edges_validated": 21,
+    "dependency_cycles": 0,
+    "same_wave_same_file_conflicts": 0,
+    "same_wave_dependency_violations": 1
+  }
+}

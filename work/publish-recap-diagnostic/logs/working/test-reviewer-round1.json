@@ -1,0 +1,63 @@
+{
+  "status": "needs_improvement",
+  "summary": "TestPublishRecap (7) and TestPublishRecapIntegration (5) genuinely pin the headline behaviors: compact-green vs expanded-yellow branch switch, held note, failure-list content, cap-enforcement direction, no-raise-on-broken-input, and no-markdown. Integration tests correctly drive the real job() publish loop and mock only at the established _publish_with_retries/compute_fixed_slots/time boundary. Mutation testing (5 targeted mutations applied and reverted) found 2 concrete gaps where a real regression would silently pass all 12 tests: (1) the recap-collection wiring in news_bot.py that is supposed to store the *sanitized* failure reason is not actually verified to use the sanitized value — swapping `safe` for `str(err)` at the collection point does not fail any test, which matters because this path feeds directly into an admin Telegram message; (2) the moved_to_failed/'>=3-strike' tail rendering ('снято после 3 промахов: N') is claimed covered by a test comment but has zero assertion backing it — deleting that rendering entirely does not fail any test. Additionally the dedicated 'secret scrubbing' unit test and the top-level isinstance(recap, dict) guard test are both weaker than they appear on inspection (empirically confirmed via mutation). No critical issues; 2 major + 4 minor findings.",
+  "findings": [
+    {
+      "severity": "major",
+      "category": "missing_coverage",
+      "location": "news_bot.py:2590-2599 (recap_failures.append) / tests/test_integration.py:418-436 (test_one_published_one_failed_recap_shows_failure)",
+      "issue": "No test verifies that the (link, reason) pair fed into recap_failures actually uses the SANITIZED reason (`safe = sanitize_error_message(err)`) rather than the raw exception text. Empirically confirmed by mutation: changing `recap_failures.append((link, safe))` to `recap_failures.append((link, str(err)))` (bypassing sanitize_error_message entirely) still passes all 5 TestPublishRecapIntegration tests unchanged, because the test fixture `RuntimeError('telegraph down: token=[REDACTED]')` already contains no value matching the patched secret env vars (TELEGRAM_BOT_TOKEN='mock_token', TELEGRAM_CHANNEL_ID='@mock_channel', TELEGRAM_ADMIN_ID='@admin') — so sanitize_error_message is a no-op on this fixture and `safe == str(err)`, letting the mutation hide in plain sight. This is a real blind spot on a path that posts directly to the admin Telegram chat: a future refactor that accidentally drops the sanitize_error_message call (e.g. someone 'simplifies' the collection line, or passes the original `err` object instead of `safe`) would leak a raw secret into an admin ping and no test would catch it.",
+      "recommendation": "Add an integration test where the failing outcome's exception message actually CONTAINS one of the patched secret values, e.g. `RuntimeError(f'telegraph API call failed: token=mock_token')` (matching self.token_patcher's 'mock_token'), then assert BOTH `self.assertNotIn('mock_token', recap)` AND `self.assertIn('[REDACTED]', recap)` on the returned [E034] ping text. This forces the test to actually exercise sanitize_error_message's replacement logic through the full job() -> recap_failures -> alert_publish_recap pipeline, so bypassing/removing the sanitize call would break the test."
+    },
+    {
+      "severity": "major",
+      "category": "missing_coverage",
+      "location": "admin_alerts.py:90-93 (alert_publish_recap tail rendering) / tests/test_admin_alerts.py:263-277 (test_held_and_failed_expanded_yellow)",
+      "issue": "The `moved_to_failed` / '>=3-strike' tail ('(снято после 3 промахов: N)') is never asserted by any test despite HELD_AND_FAILED explicitly setting `moved_to_failed: 1` and the test carrying a comment `# Failed count + the >=3-strike subset.` implying it's covered. Empirically confirmed by mutation: replacing `tail = f\" (снято после 3 промахов: {moved})\" if moved > 0 else \"\"` with `tail = \"\"` (unconditionally dropping the tail) leaves all 7 TestPublishRecap tests passing. `self.assertIn(\"провалов: 1\", msg)` is a substring check that matches regardless of whatever text follows on the same line, so it doesn't catch the tail's absence. No integration test exercises `moved_to_failed_count > 0` either (none of the 5 integration scenarios drive a row to 3 strikes).",
+      "recommendation": "In test_held_and_failed_expanded_yellow, add `self.assertIn(\"снято после 3 промахов: 1\", msg)`. Also add a dedicated builder unit test with `moved_to_failed: 0` alongside `failed: 1` to pin the negative case (tail must be ABSENT when moved==0) — e.g. `self.assertNotIn(\"снято после\", msg)` on HELD_AND_FAILED's sibling with moved_to_failed=0. Optionally add one integration scenario that drives a row through 3 failed attempts (increment_attempt x3 -> move_to_failed) in the same tick and asserts the recap shows the strike-subset tail, to cover the news_bot.py wiring of moved_to_failed_count too."
+    },
+    {
+      "severity": "minor",
+      "category": "anti_pattern",
+      "location": "tests/test_admin_alerts.py:293-304 (test_builder_never_renders_raw_secret_text)",
+      "issue": "This test's fixture is `'Telegram API 500 [REDACTED]'` — a reason that is already free of any 'sk-'/'Bearer ' pattern before it ever reaches the builder. `alert_publish_recap`/`_recap_failure_lines` perform NO redaction of their own (by design — the docstring says reasons arrive 'already sanitized upstream'); they only clamp length/shape. So this test cannot fail regardless of whether any scrubbing exists in the builder — it only confirms that a pre-clean string passes through unchanged, which `test_held_and_failed_expanded_yellow` already establishes. The name promises more than the assertions can deliver: a reader skimming test names would reasonably conclude the builder itself scrubs secrets, which it does not and is not its contract. This mirrors an existing 'belt-and-suspenders' pattern already used for E009 (test_admin_alerts.py:679, itself commented as belt-and-suspenders) — a pre-existing codebase convention, not a new anti-pattern, but still worth flagging since it was called out for review.",
+      "recommendation": "Either delete this test (real secret-redaction coverage already exists thoroughly in tests/test_admin_ping.py against sanitize_error_message directly) and fold its one non-redundant assertion (`assertIn('[REDACTED]', msg)`, i.e. that an already-redacted marker survives rendering) into test_held_and_failed_expanded_yellow, OR rename it to something honest like `test_pre_sanitized_reason_passes_through_unmodified` and add a comment noting the builder does not itself redact — real redaction is covered by the integration-level fix in finding #1 above."
+    },
+    {
+      "severity": "minor",
+      "category": "missing_coverage",
+      "location": "admin_alerts.py:71-72 (isinstance(recap, dict) guard) / tests/test_admin_alerts.py:314-320 (test_broken_recap_input_does_not_raise)",
+      "issue": "The dedicated 'broken input' test does not actually pin the top-level `if not isinstance(recap, dict): return ...` guard clause. Empirically confirmed by mutation: deleting that guard entirely (letting every input, dict or not, fall into the `try:` block) leaves all 7 TestPublishRecap tests passing, including this one. Reason: `_funnel_int` has its own internal try/except (`funnel.get(key, 0)` raising AttributeError on a str/int/list/object/None is swallowed there, returning 0), so every non-dict fixture in this test's list ('boom', 123, ['x'], object(), None) silently degrades to published=held=failed=0 -> the compact green branch -> '[E034]' present, no '**' — exactly what the test checks, whether or not the explicit guard exists. The one dict fixture in the list (`{'published': 'NaN', 'failures': 'oops'}`) also never reaches `_recap_failure_lines`'s own non-list defensive branch, because 'failed'/'held' both default to 0 (missing keys) and the code short-circuits into the same compact branch before `recap.get('failures')` is ever read.",
+      "recommendation": "Split this into two more targeted tests: (1) assert the explicit non-dict branch's OWN message text (`self.assertEqual(msg, '[E034] \\U0001f7e2 \\u041f\\u0443\\u0431\\u043b\\u0438\\u043a\\u0430\\u0446\\u0438\\u044f: \\u043e\\u0442\\u0447\\u0451\\u0442 \\u043d\\u0435\\u0434\\u043e\\u0441\\u0442\\u0443\\u043f\\u0435\\u043d'`) for a couple of non-dict inputs, so a deleted guard is caught even though it happens to be safe today; (2) add a dict fixture with `held`/`failed` both > 0 AND a malformed `failures` value (e.g. `{'published': 0, 'held': 1, 'failed': 1, 'failures': 'oops'}`) to actually exercise `_recap_failure_lines`'s `isinstance(failures, (list, tuple))` guard, and assert the tally lines ('провалов: 1') still render without a 'провал:' section."
+    },
+    {
+      "severity": "minor",
+      "category": "anti_pattern",
+      "location": "tests/test_admin_alerts.py:279-291 (test_failure_list_capped_at_five)",
+      "issue": "Uses `self.assertLessEqual(len(rendered), 5)` instead of an exact-count assertion. This only pins an upper bound, not the cap's actual value — a mutation that renders fewer than 5 lines (e.g. an off-by-N error that caps at 0, 1, or 3) would still satisfy `<= 5` and pass silently.",
+      "recommendation": "Change to `self.assertEqual(len(rendered), 5)` to pin the exact cap value, matching `_RECAP_MAX_FAILURES = 5`."
+    },
+    {
+      "severity": "minor",
+      "category": "missing_coverage",
+      "location": "tests/test_integration.py (TestPublishRecapIntegration, whole class)",
+      "issue": "No integration scenario drives a row to 3 strikes within a single tick to exercise `moved_to_failed_count` end-to-end (news_bot.py:2611-2618, `pending_repo.increment_attempt` -> `move_to_failed` -> `moved_to_failed_count += 1`). Combined with finding #2 (builder-side tail untested), the entire moved_to_failed signal — from the job() loop through to the rendered [E034] ping — has no test coverage anywhere in this diff.",
+      "recommendation": "Add `test_moved_to_failed_after_three_strikes_recap_shows_subset`: seed one pending row, run job() across 3 slots (or 3 separate job() calls against the same DB) with `_publish_with_retries` always returning `('failed', RuntimeError('boom'))` for that link, then assert the final [E034] recap contains 'снято после 3 промахов: 1'. This closes the wiring gap for the one recap field with zero test coverage today."
+    }
+  ],
+  "metrics": {
+    "filesReviewed": 4,
+    "litmusTest": {
+      "checked": 6,
+      "passed": 3,
+      "failed": 3
+    },
+    "coverageAssessment": "adequate",
+    "pyramidBalance": {
+      "unit": 7,
+      "integration": 5,
+      "e2e": 0,
+      "assessment": "healthy"
+    }
+  }
+}

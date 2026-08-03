@@ -1,0 +1,33 @@
+{
+  "reviewer": "code-reviewer",
+  "round": 1,
+  "mode": "inline (Task tool unavailable — same fallback as tasks 1/5/6/7/8)",
+  "scope": [
+    "hw_review.py (module-level _STAGE_GUIDE_REMINDER + cmd_list tail + cmd_stage head)",
+    "tests/test_hw_review_style_reminder.py (new)"
+  ],
+  "verdict": "ok",
+  "summary": "Ad-hoc workflow-enforcement reminder in hw_review list/stage. Surgical change: module-level constant + two print-site insertions. No scope creep, no regressions, spec requirements all met (exact guide path token, word 'ux-guidelines', placement after failed footer, silent on empty/failed-only). Output-stream discipline correct: reminder on stderr for stage (scriptable stdout preserved), stdout for list (alongside rows).",
+  "dimensions_checked": [
+    "correctness",
+    "scope",
+    "naming",
+    "error-handling",
+    "output-stream-discipline",
+    "comments-explain-why",
+    "test-coverage",
+    "regression-safety",
+    "no-secrets",
+    "idempotency",
+    "style-consistency",
+    "spec-adherence"
+  ],
+  "findings": [],
+  "notes": [
+    "_STAGE_GUIDE_REMINDER sits with the other module-level underscore-prefixed constants (_STDIN_CAP, _MAX_PARAGRAPHS).",
+    "cmd_list reminder only fires when rows is non-empty — matches the spec's 'keep the reminder quiet for empty queue' and the test_list_failed_only_hides_reminder case.",
+    "cmd_stage reminder is Step 0 — strictly before stdin read so even a validation error or out-of-range index still surfaces the guide path (verified by test_stage_validation_error_still_emits_reminder_first and test_stage_out_of_range_still_emits_reminder_first).",
+    "Existing happy-path stage test ('self.stdout.getvalue() == \\'\\'') still holds because the reminder is on stderr. 397 -> 406 full suite passes.",
+    "No bot tokens in tests; reminder text contains only the relative guide path."
+  ]
+}

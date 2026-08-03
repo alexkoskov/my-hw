@@ -258,18 +258,34 @@ class TestCronRegistration(unittest.TestCase):
         s.clear()
 
     def test_main_registers_tz_aware_daily_cron(self):
-        """``main()`` source contains the new fixed-time cron line.
+        """``main()`` registers the daily tick at 10:00 МСК.
 
         We assert the source rather than running ``main()`` (which loops
         forever). This complements ``test_schedule_at_accepts_pytz_timezone``
         — together they prove the registration line both *exists* and
         *executes* without ``ScheduleValueError``.
+
+        The assertion matches the actual ``schedule.every().day.at(...)``
+        CALL, not a bare substring. Until 2026-08-03 this test asserted
+        ``'12:00' in src``, which was satisfied by a stale ``12:00`` in the
+        docstring while the real registration said ``10:00`` — so it would
+        have stayed green through any change to the publish time. Keep the
+        regex anchored to the call.
         """
         import inspect
+        import re
         src = inspect.getsource(news_bot.main)
-        # The new fixed-time cron line.
-        self.assertIn('every().day.at(', src)
-        self.assertIn('12:00', src)
+        m = re.search(
+            r'schedule\.every\(\)\.day\.at\(\s*"(\d{2}:\d{2})"\s*,\s*tz=',
+            src,
+        )
+        self.assertIsNotNone(
+            m, "no schedule.every().day.at(\"HH:MM\", tz=...) call in main()"
+        )
+        self.assertEqual(
+            m.group(1), "10:00",
+            "daily tick must fire at 10:00 МСК — the first publish slot",
+        )
         self.assertIn('Europe/Moscow', src)
         # Old 12-hour cadence must be removed.
         self.assertNotIn('every(12).hours', src)

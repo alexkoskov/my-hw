@@ -1,0 +1,21 @@
+{
+  "status": "approved",
+  "summary": {
+    "totalFindings": 1,
+    "critical": 0,
+    "major": 0,
+    "minor": 1
+  },
+  "findings": [
+    {
+      "severity": "minor",
+      "category": "best-practice",
+      "title": "`sanitize_error_message` must guard against empty env-var values to avoid pathological `str.replace('', ...)` behaviour",
+      "description": "Decision 11 specifies that `sanitize_error_message(exc)` replaces all four env-secret values (`TELEGRAM_BOT_TOKEN`, `TELEGRAM_ADMIN_ID`, `TELEGRAM_CHANNEL_ID`, `TELEGRAPH_ACCESS_TOKEN`) with `[REDACTED]`. The spec does not address the edge case where one of these environment variables is unset or empty at the time the sanitiser runs (e.g. during CLI bootstrap before `.env` is loaded, or in a test that doesn't set all four). `str.replace('', '[REDACTED]')` in Python inserts the replacement between every character of the original string, producing garbage output such as `'[REDACTED]a[REDACTED]p[REDACTED]i[REDACTED]'`. A similar hazard exists with `re.sub` if a pattern is built from an empty value without escaping or length-check. This is a correctness/robustness concern, not an exploitable vulnerability, but it can break `last_error` forensics exactly when the operator needs it most — during a misconfigured deployment. Recommend adding a one-line guard in Decision 11 and the Task 3 verify-smoke: 'empty or unset env values are skipped; sanitiser acts only on values whose length ≥ 8 chars (all four real secrets are longer)'.",
+      "location": "tech-spec.md Decision 11 (`sanitize_error_message` helper); Task 3 verify-smoke line",
+      "impact": "Corrupted `last_error` text on misconfigured systems (empty env var → every character in the error string gets `[REDACTED]` inserted between it). Degrades debuggability, does not leak secrets.",
+      "recommendation": "Update Decision 11: 'sanitize_error_message iterates the four env-var values, skipping any value that is falsy or shorter than 8 characters. Only non-empty secrets are substituted via `str.replace`.' Add unit test `test_sanitize_skips_empty_env_values` — asserts that with `TELEGRAM_ADMIN_ID=''` the output of `sanitize_error_message(Exception('hello'))` is exactly `'hello'`, not `'[REDACTED]h[REDACTED]e[REDACTED]l[REDACTED]l[REDACTED]o[REDACTED]'`.",
+      "cwe": "CWE-20 (Improper Input Validation)"
+    }
+  ]
+}

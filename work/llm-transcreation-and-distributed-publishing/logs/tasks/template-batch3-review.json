@@ -1,0 +1,59 @@
+{
+  "validator": "task-validator",
+  "batch": [11, 12, 13, 14, 15],
+  "status": "approved",
+  "findings": [
+    {
+      "severity": "minor",
+      "category": "consistency",
+      "task": 11,
+      "section": "Reviewers",
+      "issue": "Reviewer report paths use absolute paths (`/workspaces/debian-2/my-hw/work/.../logs/working/task-11/...`) while task 12 in the same batch uses relative paths (`work/.../logs/working/task-12/...`). Both forms are acceptable per task-creator guidance ('anchor to feature_path'), but inconsistency across the batch is stylistically rough.",
+      "fix": "Pick one convention and apply it consistently to tasks 11, 12, 13. Recommend the relative `work/{feature}/logs/working/task-{N}/...` form (matches template example more closely)."
+    },
+    {
+      "severity": "minor",
+      "category": "structure",
+      "task": 13,
+      "section": "Verification Steps",
+      "issue": "Verification Steps has only a `### Smoke` subsection. For a task that touches deploy.sh + workflow YAML + 3 PK docs, an `### Automated` subsection (e.g. `bash -n deploy.sh`, `python3 -c \"import yaml; yaml.safe_load(...)\"`, doc grep) would be useful — and several such checks are actually listed inside Smoke (steps 1, 4, 5). Consider promoting bash/yaml lint and grep checks into an Automated subsection so reviewers see the executable-vs-manual split clearly.",
+      "fix": "Move steps 1 (bash -n), 4 (yaml lint), 5 (doc grep) under a new `### Automated` subsection; keep steps 2 (scp flatten emulation), 3 (.env idempotency), 6 (cross-link) under Smoke since they exercise behavior, not just syntax."
+    },
+    {
+      "severity": "minor",
+      "category": "atomicity",
+      "task": 13,
+      "section": "What to do",
+      "issue": "Task 13 modifies 5 files spanning two concerns: (a) deploy bundle (deploy.sh, .github/workflows/deploy.yml) and (b) project knowledge documentation (architecture.md, patterns.md, deployment.md). The 5-files threshold is borderline; 'split candidate' rule fires at >3 files with unrelated changes. Here changes ARE related ('make bundle deploy-ready for the new feature'), so logical cohesion is acceptable, but a future split into 13a (deploy bundle) + 13b (PK docs) would also be defensible.",
+      "fix": "Acceptable as-is per cohesion (single outcome: deployable bundle + synchronized documentation). If reviewer prefers splitting: extract PK doc updates into a separate task with no dependents, runnable in parallel with task 13."
+    },
+    {
+      "severity": "minor",
+      "category": "carry-forward",
+      "task": 13,
+      "section": "Acceptance Criteria",
+      "issue": "Tech-spec Task 13 has a single Verify-smoke entry: 'dry-run deploy to staging path: copy FILES list manually with scp, verify ux-guidelines.md lands at expected location; verify env file has new vars'. Task 13 expands this into 6 numbered smoke steps (FILES integrity, scp flatten, .env idempotency, YAML lint, doc grep, cross-link). This is enhancement (no loss) — but the expansion adds expectations not in tech-spec. Reasonable refinement during decomposition; flagged for visibility only.",
+      "fix": "No fix required — enhancement is consistent with tech-spec intent. Optional: note in decisions.md that smoke verification was expanded during task decomposition."
+    },
+    {
+      "severity": "minor",
+      "category": "content",
+      "task": 12,
+      "section": "TDD Anchor",
+      "issue": "TDD Anchor framing is slightly awkward: 'TDD-anchor ИСПОЛНЕН тем, что зеленят тесты против уже-смёрженных Wave 1–6 модулей'. The task itself produces tests (4 of them) — these tests ARE the deliverable, so a traditional red→green TDD cycle does not apply cleanly. The 4 named tests below the framing paragraph satisfy the structural requirement (path::name + description), so the section is acceptable.",
+      "fix": "Optional: rephrase the introductory paragraph as 'These tests are the deliverable; the green-on-merge state is the success signal' rather than invoking the red→green TDD ritual that doesn't fit a test-creation task."
+    },
+    {
+      "severity": "minor",
+      "category": "consistency",
+      "task": 15,
+      "section": "Acceptance Criteria",
+      "issue": "AC items reference 'AC419' and 'AC420' (`bot_state.value` corruption tolerance, init_schema exception path) — these labels do not exist in user-spec (which has AC1–AC31) nor in tech-spec Acceptance Criteria block. Likely a typo or reference to internal numbering scheme not in scope.",
+      "fix": "Replace 'AC419' / 'AC420' with the actual referent: tech-spec Acceptance Criteria bullets 'bot_state value reads tolerate corrupted/unexpected text' and 'init_schema() exception path: if migration fails ... admin-ping with the failure type → process exits cleanly'. Quote tech-spec text directly or rename to e.g. 'tech-spec AC: bot_state corruption tolerance'."
+    }
+  ],
+  "stats": {
+    "tasks_checked": 5,
+    "issues_found": 6
+  }
+}

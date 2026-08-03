@@ -1,0 +1,61 @@
+{
+  "summary": "Security audit of sanitize_error_message and related helpers. All four secret env-var values are redacted, empty/whitespace values are correctly skipped (no character-level interleaving), and internal exceptions cannot propagate to break the caller's error path. One LOW-severity observation about ordering vs. overlapping secret values — not a blocker.",
+  "status": "ok",
+  "findings": [
+    {
+      "id": "SEC-1",
+      "severity": "low",
+      "owasp": "A02-Cryptographic-Failures / A09-Logging",
+      "file": "news_bot.py",
+      "line_range": "54-65",
+      "finding": "`sanitize_error_message` replaces secret values in the fixed order of `_SECRET_ENV_NAMES`. If one secret value is a proper substring of another (e.g. TELEGRAM_BOT_TOKEN='abc' and TELEGRAPH_ACCESS_TOKEN='abcdef'), the first replace would turn 'abcdef' into '[REDACTED]def' before the second replace runs, partially leaking 'def'. In practice: all four env vars are independent tokens/IDs and overlap is astronomically unlikely, but this is worth documenting.",
+      "recommendation": "Accept as-is for v1. Real-world Telegram/Telegraph tokens are 30-50 character opaque strings; overlap probability is negligible. If hardening is desired later, sort _SECRET_ENV_NAMES by descending value length at call time. No action for task 3."
+    },
+    {
+      "id": "SEC-2",
+      "severity": "info",
+      "owasp": "A09-Logging",
+      "file": "news_bot.py",
+      "line_range": "57-58",
+      "finding": "Empty-string guard (`if not value or not value.strip()`) is the correct and explicit defense against the `str.replace('', '[REDACTED]')` pathology. Test `test_sanitize_skips_empty_env` proves it. Good.",
+      "recommendation": "No action — implements Decision 11 guard as specified."
+    },
+    {
+      "id": "SEC-3",
+      "severity": "info",
+      "owasp": "A09-Logging",
+      "file": "news_bot.py",
+      "line_range": "50-54",
+      "finding": "Outer try/except around `str(exc)` catches a hypothetical `__str__`-raising exception and returns a safe placeholder ('<unrepresentable exception>'). This prevents sanitisation bugs from breaking the caller's error-reporting path (explicit spec requirement).",
+      "recommendation": "No action — matches spec."
+    },
+    {
+      "id": "SEC-4",
+      "severity": "info",
+      "owasp": "A09-Logging",
+      "file": "tests/test_admin_ping.py",
+      "line_range": "148-155 (clean_secret_env fixture)",
+      "finding": "Fixture unsets all four secret vars at the start of each sanitize test, preventing dev-machine env from polluting test outcomes. Matches task-3's explicit guidance.",
+      "recommendation": "No action."
+    },
+    {
+      "id": "SEC-5",
+      "severity": "low",
+      "owasp": "A09-Logging",
+      "file": "news_bot.py",
+      "line_range": "44-48 (module-level constants)",
+      "finding": "`IDLE_TIMEOUT_HOURS`, `GRACE_WINDOW_HOURS`, `QUEUE_CAP` read env on import. A malicious or malformed env value causes `int(...)` to raise at import time — loud fail, no silent fallback. Acceptable (fail-fast) but means the module cannot be imported by tests without a clean env. In practice tests don't set these, so it's a non-issue.",
+      "recommendation": "No action for task 3. Task 6 (job loop refactor) can revisit if needed."
+    }
+  ],
+  "secret_redaction_verification": {
+    "TELEGRAM_BOT_TOKEN": "redacted in test_sanitize_redacts_bot_token",
+    "TELEGRAM_CHANNEL_ID": "redacted in test_sanitize_redacts_channel_id",
+    "TELEGRAM_ADMIN_ID": "redacted in test_sanitize_redacts_admin_id",
+    "TELEGRAPH_ACCESS_TOKEN": "redacted in test_sanitize_redacts_telegraph_token",
+    "empty_env_no_interleaving": "verified by test_sanitize_skips_empty_env",
+    "whitespace_env_no_interleaving": "verified by test_sanitize_skips_whitespace_env",
+    "unset_env_no_interleaving": "verified by test_sanitize_skips_unset_env",
+    "compound_all_four": "verified by test_sanitize_redacts_all_four_in_one_string"
+  }
+}

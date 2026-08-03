@@ -1,0 +1,190 @@
+{
+  "validator": "task-validator",
+  "mode": "cross-task",
+  "batch": [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11],
+  "iteration": 1,
+  "status": "approved",
+  "findings": [
+    {
+      "severity": "minor",
+      "category": "resource-sharing",
+      "task": 2,
+      "section": "What to do / Acceptance Criteria",
+      "issue": "Task 2 has notable scope breadth (schema migration + 3 query helpers + 4 rate-limit helpers + 2 schema-pin test files + ~12 unit tests). All changes are logically cohesive within the repo/data layer, but the task is borderline large for a single atomic unit. No split is required because removing any sub-piece (e.g. dropping rate-limit helpers) would leave Task 4 unable to function — the cohesion is real. Flagged for visibility only.",
+      "fix": "No action required. If a future reviewer wants finer granularity, the rate-limit helpers could be split out as a separate task that Task 4 depends on additionally — but that would inflate the dependency graph for no atomicity gain."
+    },
+    {
+      "severity": "minor",
+      "category": "decomposition",
+      "task": 5,
+      "section": "Files to modify (deploy.sh ownership)",
+      "issue": "Both Task 5 and Task 10 reference updating deploy.sh FILES list with `model_extractor.py` and `backfill_fingerprints.py`. Task 5 is the canonical owner (Files to modify line). Task 10 includes a defensive 'if Task 5 didn't update — add here' clause. Ownership is clearly stated in Task 5; Task 10 is a safety net. No conflict, but two tasks touching the same line of deploy.sh introduces a small risk of merge confusion if both attempt the edit.",
+      "fix": "Optional: clarify in Task 10 that the deploy.sh update is verified-only, with the add path triggered only on detected absence. Current wording in Task 10 step 1 ('Если их там нет — добавить') is sufficient. Leave as-is."
+    },
+    {
+      "severity": "minor",
+      "category": "consistency",
+      "task": 4,
+      "section": "Implementation hints (line 126)",
+      "issue": "Task 4 directs the implementer to use `pending_articles_repo._connect()` (private helper). Task 2 does not explicitly contract `_connect()` as a stable public API for Task 4 to depend on. The convention works because `_connect()` already exists pre-feature (line 155 per Task 4 hint), but Wave 2 consumer (Task 4) is reaching into a private symbol of Wave 1 deliverable (Task 2). Functionally fine; documentation-level consistency note.",
+      "fix": "Optional: in Task 2 Acceptance Criteria, add a note that `_connect()` remains a valid private helper that Task 4 may use. Not a blocker — current behavior matches existing repo conventions."
+    }
+  ],
+  "shared_resources_check": {
+    "table_compliance": "PASS",
+    "resources_audited": [
+      {
+        "resource": "_BRAND_RE (compiled brand regex)",
+        "owner_task": 1,
+        "owner_declared_in_tech_spec": true,
+        "consumers": ["Task 1 internal (extract_fingerprint)"],
+        "external_consumers_with_depends_on": [
+          {"task": 4, "depends_on_owner": true, "consumed_via": "model_extractor.extract_fingerprint"},
+          {"task": 5, "depends_on_owner": true, "consumed_via": "model_extractor.extract_fingerprint"}
+        ],
+        "competing_instances_in_same_wave": "NONE",
+        "verdict": "PASS"
+      },
+      {
+        "resource": "_LEXICON (brand frozenset)",
+        "owner_task": 1,
+        "owner_declared_in_tech_spec": true,
+        "consumers": ["Task 1 internal (extract_fingerprint, similarity)"],
+        "external_consumers_with_depends_on": [
+          {"task": 4, "depends_on_owner": true, "consumed_via": "model_extractor module"},
+          {"task": 5, "depends_on_owner": true, "consumed_via": "model_extractor module"}
+        ],
+        "competing_instances_in_same_wave": "NONE",
+        "verdict": "PASS"
+      },
+      {
+        "resource": "bot_state k/v table",
+        "owner_task": "pre-existing (pending_articles_repo.init_schema)",
+        "owner_declared_in_tech_spec": true,
+        "new_consumers": [
+          "Task 2 (rate-limit helpers: is_pair_rate_limited, mark_pair_pinged, is_dedup_degraded_rate_limited, mark_dedup_degraded_pinged)",
+          "Task 4 (calls helpers from news_bot.job dedup gate)"
+        ],
+        "external_consumers_with_depends_on": [
+          {"task": 4, "depends_on_owner": true, "consumed_via": "pending_articles_repo helpers from Task 2"}
+        ],
+        "competing_instances_in_same_wave": "NONE",
+        "verdict": "PASS"
+      }
+    ]
+  },
+  "wave_overlap_check": {
+    "wave_1_overlap": {
+      "tasks": [1, 2, 3],
+      "files_modified": {
+        "task_1": ["model_extractor.py (new)", "tests/fixtures/cross_source_dedup_pairs.py (new)", "tests/test_model_extractor.py (new)"],
+        "task_2": ["pending_articles_repo.py (modify)", "tests/test_pending_articles_repo.py (modify)", "tests/test_migration.py (modify)"],
+        "task_3": ["admin_alerts.py (modify)", "tests/test_admin_alerts.py (modify)"]
+      },
+      "overlap": "NONE",
+      "verdict": "PASS"
+    },
+    "wave_2_overlap": {
+      "tasks": [4, 5],
+      "files_modified": {
+        "task_4": ["news_bot.py (modify)", "tests/test_integration.py (modify)"],
+        "task_5": ["backfill_fingerprints.py (new)", "tests/test_backfill_fingerprints.py (new)", "deploy.sh (modify)"]
+      },
+      "overlap": "NONE",
+      "read_consumption": {
+        "task_4_reads_from": [1, 2, 3],
+        "task_5_reads_from": [1, 2]
+      },
+      "verdict": "PASS"
+    },
+    "wave_3_overlap": {
+      "tasks": [6, 7, 8],
+      "type": "read-only audits, no file writes to feature code",
+      "audit_report_paths": {
+        "task_6": "logs/audits/code-audit.md",
+        "task_7": "logs/audits/security-audit.md",
+        "task_8": "logs/audits/test-audit.md"
+      },
+      "overlap": "NONE",
+      "verdict": "PASS"
+    }
+  },
+  "dependency_graph": {
+    "edges": {
+      "1": [],
+      "2": [],
+      "3": [],
+      "4": [1, 2, 3],
+      "5": [1, 2],
+      "6": [4, 5],
+      "7": [4, 5],
+      "8": [4, 5],
+      "9": [6, 7, 8],
+      "10": [9],
+      "11": [10]
+    },
+    "wave_assignment": {
+      "1": 1, "2": 1, "3": 1,
+      "4": 2, "5": 2,
+      "6": 3, "7": 3, "8": 3,
+      "9": 4,
+      "10": 5,
+      "11": 6
+    },
+    "cycle_check": "PASS (acyclic DAG)",
+    "wave_ordering_check": "PASS (every depends_on edge points to a task in a strictly earlier wave)",
+    "verdict": "PASS"
+  },
+  "acceptance_criteria_consistency": {
+    "ac8_one_token_guard": {
+      "referenced_in": ["Task 1 (similarity formula, TestSimilarity::test_one_token_strict_both_sides_no_brand_fallback)", "Task 8 (audit dimension 1, calibration meaningfulness, must-pass fixture)"],
+      "drift_detected": false,
+      "note": "Task 4 does not directly test AC8 — that is a unit-test concern in Task 1. Task 4 owns integration scenarios (block/flag/pass/degraded/within-source/empty-fp), not formula-level coverage. Consistent division of concerns."
+    },
+    "ac5_per_pair_rate_limit": {
+      "referenced_in": ["Task 2 (is_pair_rate_limited / mark_pair_pinged helpers)", "Task 3 (E014 builder is pure; rate-limit applied by caller)", "Task 4 (test_soft_flag_rate_limited integration scenario)", "Task 8 (per-pair rate-limit window-expiry verification)"],
+      "drift_detected": false,
+      "note": "Consistent: 7-day window, key `softflag_pair:{new_link}\\n{existing_link}`, behavior cohesive across tasks."
+    },
+    "ac9_degraded_mode": {
+      "referenced_in": ["Task 2 (is_dedup_degraded_rate_limited / mark_dedup_degraded_pinged)", "Task 3 (alert_dedup_degraded E016 builder, 1-param reason)", "Task 4 (try/except Exception wrap, test_degraded_mode)", "Task 8 (E016 window-expiry audit)"],
+      "drift_detected": false,
+      "note": "Consistent: 1-hour window, broad except, fp=None fallthrough, single param `reason` (corrected from outdated code-research §14.K.3 draft in Task 3 explicitly)."
+    },
+    "ac2_carry_through": {
+      "referenced_in": ["Task 2 (schema migration on published_articles, update_published_fingerprint)", "Task 4 (TestFingerprintCarryThrough)"],
+      "drift_detected": false
+    },
+    "ac11_backfill": {
+      "referenced_in": ["Task 2 (update_published_fingerprint helper)", "Task 5 (backfill_fingerprints.py script)", "Task 11 (operator-driven prod run, DB-counts validation)"],
+      "drift_detected": false,
+      "note": "Decision 10 (Path A re-fetch) consistently referenced across Task 2 / 5 / 11."
+    }
+  },
+  "name_consistency_audit": {
+    "alert_builders": {
+      "task_3_defines": ["alert_cross_source_dupe", "alert_cross_source_blocked", "alert_dedup_degraded"],
+      "task_4_calls": ["alert_cross_source_blocked", "alert_cross_source_dupe", "alert_dedup_degraded"],
+      "match": true
+    },
+    "repo_helpers": {
+      "task_2_defines": ["list_recent_pending_fingerprints", "list_recent_published_fingerprints", "update_published_fingerprint", "is_pair_rate_limited", "mark_pair_pinged", "is_dedup_degraded_rate_limited", "mark_dedup_degraded_pinged"],
+      "task_4_calls": ["list_recent_pending_fingerprints", "list_recent_published_fingerprints", "is_pair_rate_limited", "mark_pair_pinged", "is_dedup_degraded_rate_limited", "mark_dedup_degraded_pinged"],
+      "task_5_calls": ["update_published_fingerprint", "init_schema"],
+      "match": true
+    },
+    "model_extractor_exports": {
+      "task_1_defines": ["extract_fingerprint", "similarity", "Fingerprint type alias"],
+      "task_4_calls": ["extract_fingerprint", "similarity (via _check_cross_source_dedup)"],
+      "task_5_calls": ["extract_fingerprint"],
+      "match": true
+    }
+  },
+  "stats": {
+    "tasks_checked": 11,
+    "issues_found": 3,
+    "critical": 0,
+    "major": 0,
+    "minor": 3
+  }
+}

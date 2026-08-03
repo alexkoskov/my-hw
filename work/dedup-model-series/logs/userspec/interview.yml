@@ -1,0 +1,355 @@
+# Interview Plan for Feature Planning
+#
+# Tracks progress of adaptive discovery interview for a new feature/bug/refactoring.
+# Updated after EACH user response with scoring, values, and remaining gaps.
+#
+# Scoring: 0-100% (how well we understand this aspect)
+# Status: pending → partial → complete
+# Required: true = must reach threshold, false = cover if relevant
+
+# ============================================================================
+# Interview Metadata (Session Recovery)
+# ============================================================================
+interview_metadata:
+  started: "2026-07-09 15:32:00"
+  last_updated: "2026-07-10 13:00:00"
+  status: "completed"  # not_started | in_progress | completed
+  can_resume: true
+  current_question_num: 4
+  feature_size: "L"  # new series/theme extraction + lexicon + dedup-logic change + backfill + calibration; touches publish path
+
+# ============================================================================
+# Conversation History (for session recovery)
+# ============================================================================
+# Preserves complete Q&A. Update after EVERY user response.
+#
+conversation_history:
+  - question_num: 1
+    timestamp: "2026-07-09 15:34:00"
+    topic: "core dedup design (Cycle 1 batch 1)"
+    agent_question: |
+      1. Dedup by ANY source or cross-source only? 2. What counts as "series"
+      (car-lines only vs also events + pop-culture franchises)? 3. Article with a
+      model but no recognised series/theme → block-on-model / fall back to current
+      set-overlap / pass? 4. New rule INSTEAD of or IN ADDITION to the current
+      50%-overlap dedup?
+    user_answer: |
+      1. По любому источнику. 2. По рекомендации — широко: car-lines + события
+      (Comic-Con) + поп-культурные франшизы (Stranger Things, Top Gun, K-Pop
+      Demon Hunters). 3. По рекомендации — откат к нынешней логике (set-overlap
+      ≥50%, 7 дней) когда серию не распознали. 4. В дополнение (не вместо).
+    summary: "ANY source; broad series incl. events+franchises; no-series → fall back to current set-overlap; new (model+series) rule ADDS to the existing dedup."
+  - question_num: 2
+    timestamp: "2026-07-09 15:40:00"
+    topic: "window / multi-item / block-visibility / safety (Cycle 1-2 batch 2)"
+    agent_question: |
+      5. Window = 2 months (60d)? 6. Multi-item articles: block if ≥half the new
+      article's (model+series) pairs were already covered? 7. Silent hard block
+      + [E015] ping, or show operator? 8. Degraded-mode on crash + one-time
+      backfill — ok?
+    user_answer: |
+      5. 30 days (not 60). 6. Block the WHOLE article if there is AT LEAST ONE
+      overlapping (model+series) pair. 7. "Показывать" (notify me, not silent).
+      8. ok.
+    summary: "Window 30d. AGGRESSIVE: block whole article on ANY single overlapping pair. Block must be VISIBLE (notify operator). Degraded-mode + backfill OK. NOTE: any-overlap + broad themes risks over-blocking legit new drops that share one casting — challenge raised in batch 3."
+  - question_num: 3
+    timestamp: "2026-07-10 12:00:00"
+    topic: "success criteria / testing / accepted risk (batch 3) + challenge on aggressiveness"
+    agent_question: |
+      Success = 3 real SDCC dupes MUST be caught + 2-week channel monitoring; tests
+      mirror existing feature (unit + calibration fixture + integration). Accepted
+      risk: aggressive any-overlap block. Manual re-publish for false blocks, or
+      just notify?
+    user_answer: |
+      "ок" to success/testing/accepted-risk. "просто уведомить" — just notify, no
+      manual re-publish button.
+    summary: "Success/testing confirmed. No manual re-publish path — just notify."
+  - question_num: 4
+    timestamp: "2026-07-10 12:30:00"
+    topic: "post-validation redesign — tiering + toggle + composition + backfill"
+    agent_question: |
+      Adequacy+quality validators flagged: (a) aggressive silent block too risky
+      (concrete over-block: theme-only 'stranger things' mainline vs SDCC kills the
+      2nd); (b) 'no soft-flag' was inferred, not chosen; (c) composition gap — old
+      dedup skipped when series recognised but no pair match; (d) prod base likely
+      NEVER backfilled. Choose block rule A (fully aggressive) vs B (tiering); confirm
+      old-dedup always backstops.
+    user_answer: |
+      Block rule = B (tiering). Composition backstop = ok. NEW: make the pair-rule
+      OPTIONAL — a toggle, default ON (main rule) but disableable without a code
+      change. "продолжим двигаться по флоу". Backfill/cold-prod plan = ok.
+    summary: "B (tiering): distinctive model+franchise pair → hard-block [E015]; broad theme-only / recurring car-line → soft-flag [E014]. Old set-overlap ALWAYS backstops when new rule doesn't hard-block. NEW REQUIREMENT: env toggle (default on) to disable the pair-rule — runtime safety valve. Backfill --days 30 warms both base + pairs; pre-deploy SELECT COUNT check."
+# Format:
+# - question_num: 1
+#   timestamp: "2025-11-12 15:20:33"
+#   topic: "user_problem"
+#   agent_question: |
+#     [Full question text]
+#   user_answer: |
+#     [Full answer text]
+#   summary: "Brief summary"
+
+# ============================================================================
+# Phase 1: High-Level Feature Understanding
+# ============================================================================
+# Interview Cycle 1 scope
+phase1_feature_overview:
+
+  feature_name:
+    score: 100
+    status: "complete"
+    value: "dedup-model-series (extends work/cross-source-dedup/)"
+    gaps: ""
+    required: true
+
+  feature_description:
+    score: 85
+    status: "complete"
+    value: "Suppress repeats of the same casting+series/theme already covered within ~2 months (don't translate, don't post). Adds a (model + series/theme) hard-block rule ON TOP of the existing car-model set-overlap dedup; works ANY source (incl. same-source follow-ups). 'Series/theme' is broad: HW car-lines + events (Comic-Con) + pop-culture franchises (Stranger Things, Top Gun, K-Pop Demon Hunters). No series recognised → fall back to current set-overlap (≥50%, 7d)."
+    gaps: "Exact block/flag behaviour, window value, multi-item handling — batch 2"
+    required: true
+
+  work_type:
+    score: 100
+    status: "complete"
+    value: "feature (extends the shipped cross-source-dedup)"
+    gaps: ""
+    required: true
+
+  user_problem:
+    score: 90
+    status: "complete"
+    value: "Same car/theme reaches the channel ~3×/month from different (and same) sources — different articles, but redundant for subscribers. Current dedup misses them: (a) pop-culture tie-ins have no recognisable car model → empty fingerprint → skipped; (b) same-source follow-ups aren't caught (cross-source only). Real trio: SDCC 2026 exclusives (Stranger Things / K-Pop Demon Hunters / Top Gun + a Porsche), incl. a same-source 'more photos' follow-up."
+    gaps: ""
+    required: true
+
+  target_users:
+    score: 0
+    status: "pending"
+    value: ""
+    gaps: "Who specifically will use this"
+    required: false
+
+  success_criteria:
+    score: 88
+    status: "complete"
+    value: "3 real SDCC dupes caught by the calibration fixture (≥7/8); 2-week channel monitoring → 0 visible dupes; SLA ≤1 false block/month. Toggle lets the operator kill the rule instantly if it over-blocks."
+    gaps: ""
+    required: true
+
+  constraints:
+    score: 90
+    status: "complete"
+    value: "No new deps, no LLM (regex+lexicons). No schema migration (pairs in existing model_fingerprint JSON). No new top-level file (extraction inside model_extractor.py). Deploy = container rebuild outside 10:00-20:00 МСК + one-time backfill --days 30. Toggle via env var (default on)."
+    gaps: ""
+    required: true
+
+  testing_strategy:
+    score: 88
+    status: "complete"
+    value: "Unit (series/theme extraction + pair distinctive/broad classification) + calibration fixture (3 real dupes + not-dupes incl. same-series-different-model, theme-only mainline-vs-SDCC) + integration (hard-block/soft-flag/backstop/toggle-off/degraded/pass). E2E replaced by 2-week channel monitoring."
+    gaps: ""
+    required: true
+
+# ============================================================================
+# Phase 2: User Experience & Scenarios
+# ============================================================================
+# Interview Cycle 2 scope (together with Phase 3)
+phase2_user_experience:
+
+  user_stories:
+    score: 88
+    status: "complete"
+    value: "8 scenarios in the spec: same-source exact-pair hard-block; cross-source hard-block; broad-theme soft-flag; new-rule-passes → old-dedup backstop; toggle off; empty fingerprint pass; degraded; deploy+backfill warm-up."
+    gaps: ""
+    required: true
+
+  acceptance_criteria:
+    score: 90
+    status: "complete"
+    value: "AC1-AC11 (spec): pair extraction+storage, hard-block (exact pair, 30d, any source, [E015]), soft-flag (broad, [E014]), old-dedup backstop, env toggle default-on, theme coverage, empty-fp pass, degraded [E016], backfill --days 30 + pre-deploy COUNT check, calibration ≥7/8 incl. 3 real dupes + not-dupes."
+    gaps: ""
+    required: true
+
+  edge_cases:
+    score: 88
+    status: "complete"
+    value: "Theme-only over-block (mainline vs SDCC Stranger Things) → soft-flag not block; same-series-different-model → not block; multi-item roundup; series-recognised-but-no-pair-match → backstop; toggle off; empty fingerprint; cold prod DB."
+    gaps: ""
+    required: true
+
+  error_scenarios:
+    score: 88
+    status: "complete"
+    value: "Degraded mode: any extractor/compare crash → ERROR log + rate-limited [E016] + article publishes. Toggle as a runtime kill-switch. Corrupted timestamps tolerated (existing repo pattern)."
+    gaps: ""
+    required: true
+
+  verification_strategy:
+    score: 88
+    status: "complete"
+    value: "Agent: pytest (unit + integration TestCrossSourceDedup + calibration ≥7/8 + backfill idempotency + toggle-off). User: pre-deploy SELECT COUNT on prod, post-deploy backfill --days 30, 2-week channel monitoring + [E015]/[E014] spot-check."
+    gaps: ""
+    required: true
+
+  ui_ux_requirements:
+    score: 0
+    status: "n/a"
+    value: "No UI — backend bot; operator-facing surface is Telegram admin pings [E015]/[E014]/[E016]."
+    gaps: ""
+    required: false
+
+  risks:
+    score: 90
+    status: "complete"
+    value: "R1 false block (mitigated: tiering→soft-flag broad, toggle kill-switch, calibration not-dupes). R2 pop-culture no-model (theme key + calibration). R3 cold prod base likely un-backfilled (pre-deploy COUNT check + mandatory backfill). R4 lexicon lag (PR top-up). R5 regression (degraded + toggle). Sequencing: base dedup only ~days on prod; new layer optional."
+    gaps: ""
+    required: true
+
+  technical_decisions:
+    score: 90
+    status: "complete"
+    value: "Pairs in existing model_fingerprint JSON (no migration). Extraction inside model_extractor.py (no new file). Gate: toggle → pair-rule (30d, any-source, tiering) → old set-overlap always backstops. Tiering by key type (specific model+franchise=hard; theme-only/recurring-line=soft). Backfill re-select by missing pairs-key, not just IS NULL."
+    gaps: ""
+    required: false
+
+  deploy_approach:
+    score: 88
+    status: "complete"
+    value: "Container rebuild on Moscow prod (git pull && docker compose up -d --build) OUTSIDE 10:00-20:00 МСК. No schema migration. Toggle env var in .env/compose. Pre-deploy: SELECT COUNT(*) WHERE model_fingerprint IS NOT NULL. Post-deploy: backfill_fingerprints.py --days 30."
+    gaps: ""
+    required: false
+
+  manual_user_actions:
+    score: 88
+    status: "complete"
+    value: "Operator runs one-time backfill --days 30 on prod after deploy; sets/flips the toggle env var if needed; spot-checks [E015]/[E014] pings for 2 weeks."
+    gaps: ""
+    required: false
+
+# ============================================================================
+# Phase 3: Integration & Technical Context
+# ============================================================================
+# Interview Cycle 2 scope (together with Phase 2)
+phase3_integration:
+
+  integration_points:
+    score: 88
+    status: "complete"
+    value: "Extends the shipped cross-source-dedup: model_extractor.py (add series/theme extraction + pair build to extract_fingerprint), news_bot._check_cross_source_dedup gate + job() wiring, pending_articles_repo model_fingerprint JSON (new key, no migration) + list_recent_* window queries, backfill_fingerprints.py (--days 30, re-select by missing pairs-key), admin_alerts [E015]/[E014]/[E016]. Env toggle read at startup like DB_FILE/TZ."
+    gaps: ""
+    required: true
+
+  dependencies:
+    score: 80
+    status: "complete"
+    value: "Depends entirely on the shipped cross-source-dedup feature (base fingerprint + repo helpers + pings + backfill). No new external deps. NOTE: base feature only reached prod with the 2026-07-06 migration and its prod DB is likely un-backfilled (cold) — see Risk 3."
+    gaps: ""
+    required: false
+
+  technical_constraints:
+    score: 0
+    status: "pending"
+    value: ""
+    gaps: "Technical limitations, performance, security"
+    required: false
+
+  data_requirements:
+    score: 0
+    status: "pending"
+    value: ""
+    gaps: "What data needed, where from, how stored"
+    required: false
+
+  migration_needs:
+    score: 0
+    status: "pending"
+    value: ""
+    gaps: "Migration plan for existing users/data"
+    required: false
+
+# ============================================================================
+# Phase 4: Completion
+# ============================================================================
+phase4_completion:
+  userspec_file: "work/dedup-model-series/user-spec.md"
+  status: "approved"  # pending | created | approved
+
+# ============================================================================
+# Decision Rules
+# ============================================================================
+decision_rules:
+
+  required_threshold: 85
+  optional_threshold: 50
+
+  # Stop criteria (BOTH must be true to exit a cycle)
+  stop_criteria:
+    - "All required items in current cycle scope score >= 85%"
+    - "Structural: every required item has non-empty value, no TBD, gaps empty or conscious limitations"
+
+  priority_order:
+    - "Required items with score < 85% (lowest score first)"
+    - "Optional items mentioned by user in context"
+    - "Other optional items if user seems knowledgeable"
+
+  question_strategy:
+    - "3-4 questions per batch about different gaps"
+    - "Run as many batches as needed — batch size is NOT cycle limit"
+    - "Propose solutions based on PK, not just ask questions"
+    - "Challenge with substance: counterexamples, code references, unexplored scenarios"
+    - "After each response: update scores, values, gaps, conversation_history, save"
+
+# ============================================================================
+# Interview Progress
+# ============================================================================
+progress:
+  current_phase: "phase1_feature_overview"
+  questions_asked: 0
+  last_question: ""
+  total_required_score: 0
+  total_optional_score: 0
+  completion_estimate: "0%"
+  user_detail_level: "unknown"  # brief | moderate | detailed
+
+# ============================================================================
+# Notes
+# ============================================================================
+notes: |
+  Free-form notes:
+  - Important insights
+  - Areas of uncertainty
+  - Pivot points
+  - Scope changes
+
+# ============================================================================
+# USAGE INSTRUCTIONS
+# ============================================================================
+#
+# 1. INIT: Created by init-feature-folder.sh at work/{feature}/logs/userspec/interview.yml
+#    Set metadata.started, metadata.status: in_progress
+#
+# 2. INITIAL SCORING: After user's free-form description, score ALL items
+#    Detailed 80-95%, brief 50-70%, vague 20-40%, not mentioned 0%
+#
+# 3. INTERVIEW LOOP (save after EVERY response):
+#    a) Find required items with score < 85% in current cycle scope
+#    b) Ask 3-4 questions about different gaps
+#    c) Propose solutions based on PK
+#    d) User answers
+#    e) Update: conversation_history, scores, values, gaps, metadata
+#    f) Save immediately
+#    g) Check stop criteria (score >= 85% AND structural: value filled, no TBD, gaps resolved)
+#    h) Not done → repeat. Done → next cycle.
+#
+# 4. CYCLES:
+#    Cycle 1: phase1_feature_overview items
+#    Cycle 2: phase2_user_experience + phase3_integration items
+#    Cycle 3: ALL items still below threshold (cleanup pass)
+#
+# 5. RESUME: If metadata.status is "in_progress"
+#    Load, show conversation summary, resume from current state
+#
+# 6. COMPLETION: After user approves user-spec.md
+#    Set phase4_completion.status: approved
+#    Set metadata.status: completed

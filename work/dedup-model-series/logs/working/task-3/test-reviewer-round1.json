@@ -1,0 +1,28 @@
+{
+  "status": "passed",
+  "summary": "The rewritten cross_source_dedup_pairs.py fixture is high quality. Ran extract_fingerprint+shares_pair (Task 1's real implementation) over all 8 pairs: expected_verdict, expected_any_distinctive, and expected_shared_pairs match the actual classifier output exactly for 8/8 pairs — not merely plausible, but numerically verified against real code. Structure requirements are all met (exactly 4+4 pairs, unique labels, clean import, DUPE_PAIRS/NON_DUPE_PAIRS names unchanged, tests/test_model_extractor.py untouched by this task). The dropped expected_overlap_min/max fields are confirmed safe: neither surviving test (test_calibration_accuracy, test_calibration_real_pair_must_pass) reads those keys — both were re-run and behave as designed (must-pass PASSES; aggregate accuracy is red by design, per Task 3 instructions, and is not counted as a defect here). One minor realism/documentation finding: all Portuguese diacritics were stripped from every PT-language body in the fixture, including the pair-1 body the note claims was 'kept verbatim'.",
+  "findings": [
+    {
+      "severity": "minor",
+      "category": "anti_pattern",
+      "location": "tests/fixtures/cross_source_dedup_pairs.py (DUPE_PAIRS pair-1-real-2026-06-03, and all new SDCC/pair-6/pair-7 PT bodies)",
+      "issue": "Every Portuguese diacritic was stripped from the fixture's PT-language content ('série'→'serie', 'verde metálico'→'verde metalico', 'peça única'→'peca unica', 'será'→'sera', 'não'→'nao', 'edição'→'edicao', etc.). Verified: `git show HEAD:tests/fixtures/cross_source_dedup_pairs.py` contains accented chars {à,á,ã,ç,é,ê,í,ú}; the new working-tree file contains zero (only a stray '×' in a docstring). This is a regression from the pre-existing pair-1 body, whose diff hunk shows the SAME unchanged sentences losing their accents (e.g. 'série Hot Wheels Car Culture Road Trip Mix' → 'serie Hot Wheels Car Culture Road Trip Mix'). Two problems: (1) it contradicts the pair-1 note's own claim that 'Label + bodies kept verbatim' — they were not kept verbatim, every accented character was rewritten; (2) it is inconsistent with sibling test files in the same suite (tests/test_model_extractor.py::test_pt_text_with_en_brand_model, tests/test_boilerplate_filter.py, tests/test_relevance_filter.py) which all use proper Portuguese diacritics for PT-language fixture text, so a reader will find this file's PT prose reads as broken/non-native next to the rest of the suite. Functionally harmless — the classifier only keys on English brand/model/series tokens, so this does not affect any of the 8 verified verdicts.",
+      "recommendation": "Restore standard Portuguese diacritics throughout every PT-language title/subtitle/paragraph string in the fixture (série, metálico, peça, única, será, não, ração/edição, etc.), matching the convention already used in tests/test_model_extractor.py's own PT fixtures. For pair-1 specifically, either make the body byte-identical to the pre-existing HEAD version (so the 'kept verbatim' note claim is literally true) or reword the note to say something like 'label kept identical; body reworded for the new pair-tier framing, real high strict-overlap preserved' if some rewording is intentional — don't leave a note asserting verbatim-ness that the diff itself contradicts."
+    }
+  ],
+  "metrics": {
+    "filesReviewed": 2,
+    "litmusTest": {
+      "checked": 8,
+      "passed": 8,
+      "failed": 0
+    },
+    "coverageAssessment": "excellent",
+    "pyramidBalance": {
+      "unit": 0,
+      "integration": 8,
+      "e2e": 0,
+      "assessment": "healthy"
+    }
+  }
+}

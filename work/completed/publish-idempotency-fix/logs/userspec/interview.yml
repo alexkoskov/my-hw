@@ -1,0 +1,590 @@
+# Interview Plan for publish-idempotency-fix
+
+interview_metadata:
+  started: "2026-05-07 11:50:00"
+  last_updated: "2026-05-07 12:30:00"
+  status: "completed"
+  can_resume: false
+  current_question_num: 4
+  feature_size: "S"  # confirmed — fix scope <100 LoC across 2 files
+
+conversation_history:
+  - question_num: 1
+    timestamp: "2026-05-07 11:55:00"
+    topic: "scope_symptom_vs_root_cause"
+    agent_question: |
+      Scope фикса: симптом (idempotency-guards в _fallback_publish и move_to_published)
+      vs первопричина (как stale-row появилась). Предложил: только симптом-фикс,
+      первопричину вынести в операторский task расследования.
+    user_answer: "ок"
+    summary: "Symptom-only fix. Root-cause investigation = separate operator task."
+
+  - question_num: 2
+    timestamp: "2026-05-07 11:55:00"
+    topic: "failed_articles_cleanup"
+    agent_question: |
+      Что делать со строкой team-transport-k в failed_articles, которая попала туда
+      ошибочно (статья уже в published_articles). Варианты: (a) оставить, (b) руками
+      DELETE после деплоя, (c) миграция в коде.
+    user_answer: "b"
+    summary: "Manual SQL DELETE FROM failed_articles after deploy. No migration code."
+
+  - question_num: 3
+    timestamp: "2026-05-07 11:55:00"
+    topic: "admin_ping_on_guard"
+    agent_question: |
+      Слать ли admin-ping когда idempotency-guard срабатывает? Предложил: ДА, формат
+      «⚠️ Skipped re-publish of {link} — already in published_articles. Investigate
+      stale pending row.»
+    user_answer: "ok"
+    summary: "Admin ping required when guard fires. Helps catch root cause when it recurs."
+
+  - question_num: 4
+    timestamp: "2026-05-07 11:55:00"
+    topic: "testing_strategy"
+    agent_question: |
+      Глубина тестов: минимум (unit only) / средне (unit + integration test в slot loop) /
+      полно (+ regression на лог-формат). Предложил «средне».
+    user_answer: "средне"
+    summary: "Unit tests for guard + UNIQUE handling, plus integration test that Telegram bot is NOT called when stale row hits already-published link."
+
+# ============================================================================
+# Phase 1: High-Level Feature Understanding
+# ============================================================================
+phase1_feature_overview:
+
+  feature_name:
+    score: 100
+    status: "complete"
+    value: "publish-idempotency-fix"
+    gaps: ""
+    required: true
+
+  feature_description:
+    score: 85
+    status: "partial"
+    value: |
+      Bug fix: цикл публикации в news_bot.job() публикует дубль в Telegram-канал,
+      когда статья уже есть в published_articles, но stale-копия осталась в pending_articles
+      с сохранённым telegraph_url. send_telegraph_teaser срабатывает до move_to_published,
+      и если последний падает с UNIQUE constraint — пост уже ушёл подписчикам, slot loop
+      инкрементит attempt_count и на следующем слоте повторяется.
+
+      Фикс делает _fallback_publish и move_to_published идемпотентными по link:
+      проверка published_articles ДО отправки в Telegram + защита от UNIQUE на INSERT.
+    gaps: ""
+    required: true
+
+  work_type:
+    score: 100
+    status: "complete"
+    value: "bug"
+    gaps: ""
+    required: true
+
+  user_problem:
+    score: 90
+    status: "complete"
+    value: |
+      Подписчики Telegram-канала @myhwchannel123 получили два одинаковых поста про Hot Wheels
+      Team Transport K Case Report сегодня (2026-05-07) в 10:00 и 11:30 МСК с тем же
+      Telegraph URL. Дубль очевиден на глаз — те же изображения, текст, заголовок.
+
+      Severity: HIGH с точки зрения качества канала. Бот теряет доверие как curated
+      news source, если посты повторяются. Оператор сам заметил инцидент (наблюдает
+      за каналом) — это первый incident за наблюдательный период (проект в observation
+      mode с 2026-04-30, ~1 неделя). До этого pipeline считался стабильным.
+
+      Цена бездействия: каждый аналогичный сценарий (stale pending + already-published)
+      даст 2-3 дубля в канале до того, как failed_articles 3-strikes уведёт строку
+      из очереди. Подписчики видят ВСЕ повторы.
+    gaps: ""
+    required: true
+
+  target_users:
+    score: 70
+    status: "partial"
+    value: |
+      Прямые: подписчики канала @myhwchannel123 (видят дубль).
+      Косвенные: оператор (sunny413x) — отвечает за качество канала, реагирует на инциденты.
+    gaps: "TBD"
+    required: false
+
+  success_criteria:
+    score: 90
+    status: "complete"
+    value: |
+      Фикс ПОКРЫВАЕТ ТОЛЬКО СИМПТОМ:
+      1. При любой комбинации (stale pending row с/без telegraph_url + link в published_articles)
+         — Telegram bot НЕ получает вызов send_message. Дубль не уходит подписчикам.
+      2. _fallback_publish и move_to_published идемпотентны: повторный вызов с уже-
+         опубликованным link корректно завершается без побочных эффектов
+         (no Telegram, no Telegraph, no UNIQUE error), pending row очищается.
+      3. При срабатывании guard'а админ получает ping — для отслеживания первопричины.
+      4. Никаких регрессий в нормальном (happy-path) flow публикации.
+      Первопричина (как stale row появился) — ВНЕ scope фичи; выносится в отдельный
+      операторский task диагностики (проверить crontab/backup_db.sh/journal на VPS).
+    gaps: ""
+    required: true
+
+  constraints:
+    score: 90
+    status: "complete"
+    value: |
+      - Project в observation mode — diagnose-first, минимальное вмешательство в работающий код.
+      - Operator handles production ops (не лезу через ssh).
+      - Сохраняем существующий идемпотентный путь move_to_published (Decision 9 манual-review-
+        workflow): первый вызов работает в точности как сейчас, fix добавляется как
+        дополнительный guard.
+      - Schema БД НЕ меняем. Очистка failed_articles от ошибочной строки team-transport-k —
+        ручной SQL DELETE на сервере оператором ПОСЛЕ деплоя (вариант b из вопроса 2).
+      - Стандартный pipeline: dev → test instance → main → prod.
+    gaps: ""
+    required: true
+
+  testing_strategy:
+    score: 95
+    status: "complete"
+    value: |
+      Уровень "средне" + критические дополнения от test-reviewer'а
+      (см. work/publish-idempotency-fix/test-review.md).
+
+      Unit (6 тест-функций):
+
+      tests/test_fallback_publish_paths.py:
+      T1. test_skip_if_link_already_published_claude_path — pre-stage row в published_articles
+          + stale row в pending → _fallback_publish (default Claude-OK path) → assert:
+          НЕ вызвана send_telegraph_teaser, НЕ вызвана publish_article, НЕ вызвана
+          mark_telegraph_published, returns True, pending row удалена, в processed_news
+          appears.
+      T2. [CRITICAL — выявил test-reviewer] test_skip_if_link_already_published_outage_path
+          — те же pre-conditions + outage_state.is_fallback_active() возвращает True →
+          assert те же. ПРИЧИНА: guard ставится на line 985 ДО is_fallback_active-check
+          на line 1045; если guard поставят неправильно (после outage-shortcut), этот
+          тест поймает регрессию.
+      T3. test_skip_if_link_already_published_no_telegraph_url — те же pre-conditions,
+          но stale row.telegraph_url = NULL → guard всё равно срабатывает. EC2.
+      T4. test_admin_ping_fires_when_guard_skips — Claude-path setup → assert
+          send_admin_notification вызвана 1 раз с строкой, начинающейся «⚠️ Skipped re-publish»
+          и содержащей link.
+      T5. test_guard_continues_when_admin_ping_returns_false
+          — patch send_admin_notification чтобы вернула False (имитация internal-caught
+          TelegramError) → guard логирует WARNING, продолжает skip_pending, возвращает True.
+          (Coverage за уточнённый AC5. Поведение реальной функции — она всегда returns
+          True/False, не raises, см. news_bot.py:357.)
+
+      tests/test_pending_articles_repo.py:
+      T6. test_move_to_published_idempotent_on_duplicate_link
+          — call move_to_published с (link, url1, path1, via_review=False) → success.
+            call move_to_published повторно с (link, url2, path2, via_review=True) →
+            assert: НЕ raise, в published_articles ОДНА строка с ОРИГИНАЛЬНЫМИ
+            url1/path1/via_review=False (НЕ перезаписаны на url2 из-за INSERT OR IGNORE,
+            не INSERT OR REPLACE). pending row удалена. AC6 + защита от случайной
+            замены на INSERT OR REPLACE.
+
+      Integration (1 тест):
+
+      tests/test_distributed_schedule_integration.py:
+      T7. test_slot_loop_does_not_repost_already_published
+          — pre-stage published_articles row для link_stale.
+            insert_pending для link_stale с telegraph_url cached (имитация инцидента),
+            fetched_at=2 дня назад (carry-over tier).
+            insert_pending для link_fresh, fetched_at=сегодня (fresh tier).
+          run job() →
+          assert:
+            - send_telegraph_teaser вызвана РОВНО ОДИН РАЗ с link_fresh
+              (НЕ link_stale — критическая litmus-проверка от test-reviewer'а).
+            - published_articles итоговое: 2 строки (1 pre-existing + 1 link_fresh).
+            - failed_articles: 0 строк (link_stale НЕ ушёл туда).
+            - send_admin_notification получила guard-ping для link_stale.
+            - В processed_news: link_stale присутствует.
+
+      Регрессия (без новых тестов, проверка что existing зелёный):
+      - test_fallback_path_via_review_false_lights_marker и подобные happy-path тесты.
+      - test_move_to_published_rollback_on_error (verified: call sequence unchanged
+        per code-researcher §B).
+      - Все 740+ тестов → pytest tests/ green.
+
+      Покрытие: 7 новых тест-функций (5 в test_fallback_publish_paths.py, 1 в
+      test_pending_articles_repo.py, 1 в test_distributed_schedule_integration.py).
+    gaps: ""
+    required: true
+
+# ============================================================================
+# Phase 2: User Experience & Scenarios
+# ============================================================================
+phase2_user_experience:
+
+  user_stories:
+    score: 90
+    status: "complete"
+    value: |
+      Story 1 (subscriber, indirect): подписчик @myhwchannel123 НЕ должен видеть один и тот же
+      Telegraph URL дважды в ленте после фикса.
+
+      Story 2 (operator, primary): когда внутреннее состояние БД рассинхронилось (stale pending +
+      already published), оператор должен (a) НЕ увидеть дубль в канале, (b) получить admin-ping
+      с указанием конкретной link для расследования первопричины, (c) увидеть, что row из pending
+      ушла в processed_news (а не в failed_articles по 3-strikes).
+
+      Story 3 (developer, regression): любой будущий разработчик, читающий news_bot._fallback_publish,
+      должен на старте функции видеть idempotency-guard и комментарий «почему он там стоит».
+    gaps: ""
+    required: true
+
+  acceptance_criteria:
+    score: 90
+    status: "complete"
+    value: |
+      AC1. _fallback_publish guard: если pending_articles_repo.get_published(row['link'])
+           возвращает не-None — функция возвращает True БЕЗ вызовов send_telegraph_teaser,
+           publish_article (telegraph), mark_telegraph_published, update_staged,
+           move_to_published.
+      AC2. Guard срабатывает ДО ветки is_fallback_active()-shortcut (т.е. покрывает и outage-mode).
+      AC3. При срабатывании guard'а: pending row удаляется (через skip_pending → INSERT OR IGNORE
+           processed_news + DELETE pending в одной транзакции).
+      AC4. При срабатывании guard'а: send_admin_notification вызывается ровно один раз с
+           сообщением, начинающимся «⚠️ Skipped re-publish of » и содержащим link.
+      AC5. send_admin_notification внутренне ловит TelegramError и возвращает False
+           (verified в news_bot.py:357 — ловит TelegramError, логирует, returns False).
+           Guard НЕ оборачивает её вызов в try/except: вместо этого проверяет return value;
+           если False — логирует WARNING «admin ping for guard skip failed (Telegram down?)»
+           и продолжает cleanup. Возвращает True всегда.
+      AC6. move_to_published повторно вызванный с тем же link — НЕ бросает IntegrityError.
+           Финальное состояние: 1 строка в published_articles, 0 в pending, link в processed_news.
+      AC7. Прочие sqlite-ошибки (OperationalError, BusyError) в move_to_published по-прежнему
+           пропагируются — обратная совместимость с rollback-тестом.
+      AC8. Slot loop: при срабатывании guard'а attempt_count НЕ инкрементится (потому что
+           _fallback_publish вернул True, а не raise).
+      AC9. Happy path не регрессит — все существующие тесты test_fallback_publish_paths,
+           test_pending_articles_repo, test_distributed_schedule_integration проходят зелёным.
+      AC10. Логирование: при срабатывании guard'а INFO-лог «[idempotency-guard] {link} already
+            published — skipping».
+      AC11. Operator post-deploy SQL: оператор после prod-деплоя выполняет одноразовый
+            DELETE FROM failed_articles WHERE link='https://orangetrackdiecast.com/2026/05/02/
+            hot-wheels-2026-car-culture-team-transport-k-case-report/'; и проверяет, что
+            завтрашний 10:00 cron tick не повторит инцидент (по journalctl).
+    gaps: ""
+    required: true
+
+  edge_cases:
+    score: 90
+    status: "complete"
+    value: |
+      EC1 (целевой) — Stale pending + link в published + telegraph_url кэширован: guard сбрасывает.
+      EC2 — Stale pending + link в published, но telegraph_url=NULL: guard всё равно срабатывает
+            (проверка по published, не по telegraph_url).
+      EC3 (outage) — Stale pending + outage_state.is_fallback_active()=True: guard сбрасывает
+            ДО routing'а в Google. Critical: место вставки guard'а гарантирует это (line 985,
+            до line 1045 is_fallback_active-check).
+      EC4 — Несколько stale rows подряд: K строк → K admin-пингов. Без троттлинга.
+            (При K>5/тик оператор разберётся ad-hoc.)
+      EC5 — Pending row без link в published (нормальный случай): guard НЕ срабатывает,
+            обычный путь.
+      EC6 — Decision 9 retry (telegraph_url есть, link НЕ в published): guard НЕ срабатывает
+            (проверка по published-table), Telegraph переиспользуется, Telegram повторяется
+            — это штатно.
+      EC7 — Link и в published, и в failed_articles одновременно (после ручных операторских
+            операций): guard срабатывает по published, чистит pending. failed_articles остаётся
+            нетронутой. Оператор сам решит, чистить ли (и так уже знает про инцидент).
+      EC8 — send_admin_notification бросает: guard продолжает cleanup, error логируется.
+            (AC5)
+      EC9 — move_to_published повторно с тем же link (через job() как в инциденте):
+            INSERT OR IGNORE skip'ает, DELETE pending выполняется — idempotent. (AC6)
+      EC10 — move_to_published успешно завершился И конкурентный writer (теоретический
+             hw_review архивный путь) сделал то же — finalize по двум путям. INSERT OR IGNORE
+             на published обоих — последний выигрывает. processed_news — INSERT OR IGNORE.
+             DELETE pending — оба DELETE по одному link. Race-safe.
+
+      Сценарии вне scope (НЕ покрываются guard'ом):
+      - Дубль РАЗНЫХ Telegraph URLs одной статьи (новая Telegraph-страница на каждом retry).
+        Guard ловит по link, не по telegraph_url. В нашем инциденте это не проблема —
+        Telegraph reuse работает (Decision 9).
+      - Первопричина появления stale pending row — отдельный операторский task диагностики.
+    gaps: ""
+    required: true
+
+  error_scenarios:
+    score: 90
+    status: "complete"
+    value: |
+      ES1 — get_published бросает sqlite OperationalError: пропагируется в slot loop, ловится
+            как обычная publish failure, attempt_count++. (Acceptable; redundant retry на
+            следующем слоте; первое же выполнение get_published на свежем connection
+            покрывает временные lock'и через PRAGMA busy_timeout=5000.)
+      ES2 — skip_pending бросает (DB lock или disk error): пропагируется в slot loop,
+            attempt_count++. Pending row остаётся. На следующем слоте guard опять сработает
+            и снова попытается — это OK, побочных эффектов в Telegram уже нет.
+      ES3 — send_admin_notification возвращает False (внутренне поймал TelegramError —
+            Telegram down, network): guard видит False, логирует WARNING, продолжает cleanup.
+            Никакого raise. (AC5)
+      ES4 — move_to_published с INSERT OR IGNORE: обычные пути ошибок (sqlite OperationalError,
+            connection drop) пропагируются как раньше. UNIQUE-конфликт теперь silently
+            проглатывается — это намеренно.
+    gaps: ""
+    required: true
+
+  verification_strategy:
+    score: 90
+    status: "complete"
+    value: |
+      Pre-deploy verification:
+      1. Local: `pytest tests/` — все 500+ тестов (включая 4 новых) green.
+      2. Local: вручную проверить test-runner вывод на новые AC (AC1-AC11).
+
+      Post-deploy verification (test instance):
+      3. Push на dev → deploy_test.yml → @myhwchannel123 — наблюдать обычный 10:00 cron tick,
+         подтвердить отсутствие регрессии. Срабатывание guard'а вряд ли возникнет «сразу»
+         (нужен stale row).
+      4. Симуляция инцидента на test instance (опционально): SSH на сервер, в test news.db
+         руками вставить (a) row в published_articles, (b) ту же ссылку в pending_articles
+         с set'нутым telegraph_url, дождаться ближайшего slot'а → проверить:
+           - НЕТ Telegram-поста в @myhwchannel123 (только админ-пинг)
+           - row в pending очищена, в processed_news appears, в failed_articles НЕ попала.
+
+      Post-deploy verification (prod):
+      5. После merge dev→main и deploy на prod: run одноразовый SQL DELETE failed_articles
+         WHERE link=team-transport-k.
+      6. Наблюдать journalctl завтрашнего 10:00 cron tick — никаких UNIQUE constraint failed
+         в логах.
+      7. Через неделю — проверить, что guard НЕ срабатывал (если первопричина закрылась
+         сама собой). Если срабатывает регулярно — оператор открывает task на расследование.
+
+      Agent verification: pytest run + journalctl grep после деплоя.
+      User verification: визуально просмотреть @myhwchannel123 на отсутствие дублей в
+      течение 1-2 дней после prod-деплоя.
+    gaps: ""
+    required: true
+
+  ui_ux_requirements:
+    score: 0
+    status: "pending"
+    value: ""
+    gaps: "N/A для бекенд-фикса"
+    required: false
+
+  risks:
+    score: 90
+    status: "complete"
+    value: |
+      R1 — Guard ложно срабатывает: link есть в published_articles, но pending-row
+      легитимная (например, операторски восстановили БД из бэкапа после rollback кода).
+      Mitigation: admin-ping предупреждает — оператор увидит и решит. Probability LOW
+      (требует ручных операторских операций).
+
+      R2 — INSERT OR IGNORE в move_to_published скрывает реальные проблемы (например,
+      двойной writer с race). Mitigation: в проде один writer (cron); race не возможна
+      по архитектуре. INSERT OR IGNORE — defense-in-depth, не основной механизм.
+
+      R3 — Первопричина (как stale row появился) не закрыта. Probability MEDIUM
+      (может стрельнуть снова на других статьях). Mitigation: admin-ping при срабатывании
+      guard'а ловит каждый случай → оператор расследует.
+
+      R4 — K stale rows = K admin-пингов. При резко возросшем числе stale rows (массовая
+      рассинхронизация БД) операторский Telegram забивается. Mitigation: документировать
+      лимит K=5/тик; если стрельнёт — добавить throttling следующей итерацией.
+
+      R5 — Регрессия в happy path: guard срабатывает на легитимном retry после Telegram-fail
+      (Decision 9). Mitigation: guard проверяет published_articles, retry-сценарий по
+      Decision 9 имеет link только в pending+telegraph_url, НЕ в published. Покрыто AC9
+      и existing test_fallback_publish_paths::test_decision_9_retry_after_teaser_fail.
+    gaps: ""
+    required: true
+
+  technical_decisions:
+    score: 90
+    status: "complete"
+    value: |
+      TD1 — Guard ставится на line 985 в _fallback_publish (сразу после `link = row['link']`).
+            Reason: до всех 4 веток входа (Claude success / per-article fallback /
+            ClaudeOutageError / outage_state.is_fallback_active shortcut). Code-research §A
+            подтвердил.
+
+      TD2 — Cleanup через skip_pending(link), не через прямой DELETE. Reason: skip_pending
+            пишет в processed_news (предотвращает re-fetch на следующем тике) + DELETE
+            pending в одной транзакции. Это семантически корректно: «эта ссылка уже
+            обработана, забудь о ней».
+
+      TD3 — Admin-ping ОБЯЗАТЕЛЕН (не опционален), формат:
+            «⚠️ Skipped re-publish of {link} — already in published_articles.
+            Investigate stale pending row.»
+            Reason: первопричина не закрывается этим фиксом, нужен мониторинг.
+
+      TD4 — INSERT OR IGNORE в move_to_published (line 582 в pending_articles_repo.py)
+            вместо INSERT. Reason: defense-in-depth на случай гонки (теоретической) или
+            если guard каким-то образом промахнётся.
+
+      TD5 — Без миграции в коде. Reason: одноразовая операторская SQL-операция дешевле
+            чем код миграции, который потом будет жить вечно.
+
+      TD6 — Без новых полей в БД, без новых таблиц. Reason: фикс — чисто логика.
+    gaps: ""
+    required: false
+
+  deploy_approach:
+    score: 90
+    status: "complete"
+    value: |
+      Стандартный двухступенчатый деплой:
+      1. git checkout dev && git push origin dev →
+         CI ci.yml (pytest) → deploy_test.yml (SCP в /home/hwbot/bot_test/, restart
+         news_bot_test.service) → @myhwchannel123 (test channel).
+      2. Оператор наблюдает за test instance 0.5-1 день: смотрит journalctl на отсутствие
+         регрессий, опционально симулирует stale row на test news.db.
+      3. git checkout main && git merge dev && git push origin main →
+         deploy.yml → /home/hwbot/bot/, restart news_bot.service → prod канал.
+      4. Оператор после prod-деплоя: одноразовый SQL DELETE failed_articles по link
+         team-transport-k (см. manual_user_actions).
+      5. На следующий день (2026-05-08 10:00 МСК) — оператор проверяет journalctl,
+         что cron tick прошёл без UNIQUE constraint failed.
+
+      Файлы деплоя НЕ меняются (news_bot.py + pending_articles_repo.py уже в FILES list,
+      см. deployment.md:93).
+    gaps: ""
+    required: false
+
+  manual_user_actions:
+    score: 90
+    status: "complete"
+    value: |
+      Pre-deploy: ничего.
+
+      Post-deploy (prod), один раз:
+      1. SSH на VPS и удалить ошибочную failed_articles запись:
+         ssh hwbot@148.135.207.54 "sqlite3 /home/hwbot/bot/news.db \"DELETE FROM failed_articles WHERE link='https://orangetrackdiecast.com/2026/05/02/hot-wheels-2026-car-culture-team-transport-k-case-report/';\""
+         Проверка: SELECT COUNT(*) FROM failed_articles WHERE link LIKE '%team-transport-k%' → 0.
+
+      2. (Опционально, для расследования первопричины) Оператор отдельно проверяет:
+         - crontab -l на VPS (нет ли скрытого таймера)
+         - cat /home/hwbot/bot/backup_db.sh (не пишет ли в news.db)
+         - journalctl -u news_bot.service за последние сутки (нет ли двойных запусков)
+         - sqlite3 news.db "SELECT * FROM published_articles WHERE link='...' "
+           — убедиться, что запись от 2026-05-06 одна (не дубль).
+
+      Никаких операторских действий в течение нормальной работы пайплайна
+      (guard работает автономно).
+    gaps: ""
+    required: false
+
+# ============================================================================
+# Phase 3: Integration & Technical Context
+# ============================================================================
+phase3_integration:
+
+  integration_points:
+    score: 90
+    status: "complete"
+    value: |
+      Меняем (2 файла):
+      - news_bot.py (line 985, immediately after `link = row['link']` в _fallback_publish):
+        вставляем idempotency-guard. ~20 LoC.
+      - pending_articles_repo.py (line 582 в move_to_published): меняем INSERT на
+        INSERT OR IGNORE. ~1 LoC.
+
+      НЕ меняем (но взаимодействуем):
+      - news_bot.job() slot loop (line 1720-1786) — без изменений; guard возвращает True,
+        slot loop трактует как успех (published_count++).
+      - pending_articles_repo.get_published(link) (line 372) — переиспользуем как есть.
+      - pending_articles_repo.skip_pending(link) (line 656) — переиспользуем как есть
+        (INSERT OR IGNORE processed_news + DELETE pending в одной транзакции).
+      - news_bot.send_admin_notification(text) (line 357) — переиспользуем; sync,
+        redacts secrets, prepends [INSTANCE_LABEL], never raises (per code-researcher §C).
+      - hw_review.py (archived) — НЕ деплоится, не вызывает _fallback_publish; guard
+        этот путь не задевает.
+    gaps: ""
+    required: true
+
+  dependencies:
+    score: 80
+    status: "partial"
+    value: |
+      Существующие функции, которые переиспользуем:
+      - pending_articles_repo.skip_pending(link) — пишет в processed_news + DELETE pending
+      - pending_articles_repo.get_published(link) — есть на line 377 (SELECT)
+      Новых внешних зависимостей не нужно.
+    gaps: ""
+    required: false
+
+  technical_constraints:
+    score: 90
+    status: "complete"
+    value: |
+      - SQLite single-writer в проде (один cron-процесс news_bot.service); race conditions
+        не возможны по архитектуре, code-researcher §E подтвердил.
+      - Concurrent writer hw_review.py архивный + не деплоится; guard не задевает.
+      - Backup script /home/hwbot/bot/backup_db.sh использует sqlite3 .backup
+        (consistent snapshot) — не пишет в основную БД, не race.
+      - Цикл слотов синхронный, time.sleep между слотами; никакой многопоточности.
+    gaps: ""
+    required: false
+
+  data_requirements:
+    score: 90
+    status: "complete"
+    value: |
+      Без изменений в схеме. Используем существующие таблицы:
+      - published_articles (READ через get_published, WRITE через move_to_published)
+      - pending_articles (DELETE через skip_pending)
+      - processed_news (INSERT OR IGNORE через skip_pending)
+
+      Одноразовая SQL-операция оператором post-deploy:
+      DELETE FROM failed_articles WHERE link='https://orangetrackdiecast.com/2026/05/02/hot-wheels-2026-car-culture-team-transport-k-case-report/';
+      Обратимость: запись в failed_articles избыточна (link уже в published), удаление безопасно.
+    gaps: ""
+    required: false
+
+  migration_needs:
+    score: 90
+    status: "complete"
+    value: |
+      Без миграции в коде. Schema стабильна, новые поля не нужны.
+      Очистка failed_articles от ошибочной записи team-transport-k — одноразовая ручная
+      SQL-операция оператором (см. manual_user_actions). Документируется в user-spec
+      и tech-spec, не в коде.
+
+      Reasoning против миграции в коде: миграция запустится на каждом deploy ad infinitum,
+      будет жить вечно ради одной разовой ситуации. Переоверинженерно для S-фичи.
+    gaps: ""
+    required: false
+
+# ============================================================================
+# Phase 4: Completion
+# ============================================================================
+phase4_completion:
+  userspec_file: "work/publish-idempotency-fix/user-spec.md"
+  status: "approved"
+
+# ============================================================================
+# Decision Rules
+# ============================================================================
+decision_rules:
+  required_threshold: 85
+  optional_threshold: 50
+  stop_criteria:
+    - "All required items in current cycle scope score >= 85%"
+    - "Structural: every required item has non-empty value, no TBD, gaps empty or conscious limitations"
+
+# ============================================================================
+# Interview Progress
+# ============================================================================
+progress:
+  current_phase: "phase4_completion"
+  questions_asked: 4
+  last_question: "testing_strategy depth"
+  total_required_score: 92
+  total_optional_score: 90
+  completion_estimate: "95%"
+  user_detail_level: "detailed"
+
+# ============================================================================
+# Notes
+# ============================================================================
+notes: |
+  Контекст инцидента полный (см. ARGUMENTS skill-call от orchestrator).
+  Основные открытые вопросы для интервью:
+  1. Scope: симптом / причина / оба / +failed_articles cleanup
+  2. Severity: первый ли это случай, как часто такие риски выстреливают
+  3. Что делать с записью team-transport-k в failed_articles (восстанавливать?)
+  4. Нужен ли админ-пинг при срабатывании guard'а
+  5. Допустимо ли менять схему БД (например, добавить FK или CHECK)
+  6. Гипотезы первопричины — какую расследовать (A/B/C)?

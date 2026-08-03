@@ -1,0 +1,93 @@
+{
+  "validator": "reality-checker",
+  "batch": [7, 8, 9],
+  "iteration": 2,
+  "status": "changes_required",
+  "round2_fix_assessment": {
+    "task7_set_preview_path_mandated": "RESOLVED — step 9 now mandates adding the helper as Task 7 scope with no conditional hedging.",
+    "task7_preview_nodes_signature_locked": "RESOLVED — step 9 now states the contract explicitly: same signature as publish_article minus access_token/author_name/session, returns list[dict].",
+    "task7_news_bot_import_side_effects": "RESOLVED — step 1 now explicitly warns about import news_bot triggering env reads and instructs patching news_bot.TELEGRAM_BOT_TOKEN, news_bot.DB_FILE per test_integration.py:26-29.",
+    "task7_depends_on_added_task3": "RESOLVED — depends_on: [1, 2, 3, 4, 6] confirmed in task header.",
+    "task9_pending_repo_alias": "RESOLVED — What-to-do preamble now explicitly requires `import pending_articles_repo as pending_repo` to be added to news_bot.py head before any other steps."
+  },
+  "findings": [
+    {
+      "severity": "critical",
+      "category": "hallucination",
+      "task": 9,
+      "issue": "Task 9 step 1 instructs the implementor to call `_cleanup_preview_html` after `move_to_published`, describing it as the 'same `_cleanup_preview_html` that `cmd_publish` from Task 8 uses'. Task 8's spec never names or defines a function called `_cleanup_preview_html` — it describes the preview file deletion inline in step 2 success block ('if `row[\"preview_html_path\"]` is non-NULL, delete the file, try/except OSError, log-only on failure'). There is no guarantee that Task 8's implementation will extract a named helper `_cleanup_preview_html`. Task 9 also references `_cleanup_preview_html` again in Details and Edge Cases. If Task 8 implements the cleanup inline (as its spec suggests), Task 9's agents will produce `NameError: name '_cleanup_preview_html' is not defined` or invent their own function with no guarantee of matching behavior.",
+      "fix": "Either (a) update Task 8's step 2 to explicitly extract a helper function named `_cleanup_preview_html(preview_html_path: str | None) -> None` and add it to the deliverables list, or (b) update Task 9 to replace all three references to `_cleanup_preview_html` with the inline pattern described in Task 8 step 2: `if row['preview_html_path']: try: os.unlink(row['preview_html_path']); except OSError: logger.warning(...)`. Option (a) is cleaner since both tasks need the same logic."
+    },
+    {
+      "severity": "critical",
+      "category": "missing_function",
+      "task": 7,
+      "issue": "`pending_articles_repo.set_preview_path(link, path)` is now mandated as Task 7 scope — the task correctly instructs implementing it if Task 1 did not. However, `set_preview_path` is still absent from the tech-spec's Repo module interface table (tech-spec.md §Data Models 'Repo module interface'). Task 1 reads the tech-spec interface as its authoritative source for what functions to implement. If Task 1 is already committed without `set_preview_path` (as is the case post-commit 96a1f1e, given Task 1 preceded Task 7 in wave 1), Task 7 must add the function to `pending_articles_repo.py`. The task does state this ('дописать'). But the tech-spec interface table remains stale — any future Task 11 code audit or Task 12 security audit will see a repo function not listed in the spec, flagging it as undocumented scope creep. More importantly, if the implementor reads the tech-spec Repo interface and considers it normative, they may add the function in the wrong place or miss it entirely.",
+      "fix": "Add `set_preview_path(link: str, path: str) -> None` to the tech-spec.md Repo module interface table. This is a one-line addition to the spec that aligns the authoritative interface with what Task 7 already mandates."
+    },
+    {
+      "severity": "major",
+      "category": "missing_function",
+      "task": 8,
+      "issue": "Task 8 Details (line 129) says 'catch `TelegraphError`, `requests.RequestException`, `telegram.error.TelegramError` explicitly' in `cmd_publish`. Task 8 Implementation hints say `from news_bot import send_telegraph_teaser, logger` but do not include `from telegram.error import TelegramError` in the import instructions. `telegram.error.TelegramError` is not re-exported from `news_bot` — it is imported there as `from telegram.error import TelegramError` (line 17 of news_bot.py). An implementor following the import hint verbatim will produce a `NameError` when the except clause references `TelegramError`. The claim in Edge Cases that `send_telegraph_teaser` can bubble an exception is also misleading — the actual implementation (news_bot.py lines 315-331) catches `TelegramError` internally and returns False; only completely unexpected non-TelegramError exceptions would bubble. The TDD test `test_publish_retry_after_teaser_exception` (TDD Anchor) says 'first teaser call raises TelegramError' which cannot happen with the real function, making the test description inaccurate.",
+      "fix": "Add `from telegram.error import TelegramError` to Task 8's import list in Details. Correct `test_publish_retry_after_teaser_exception` to say 'mock `send_telegraph_teaser` to raise a generic `Exception`' rather than `TelegramError`, since that is the only exception path that can escape the real function. Add a note that normal TelegramError is caught internally and returns False."
+    },
+    {
+      "severity": "major",
+      "category": "hints",
+      "task": 7,
+      "issue": "Implementation Hints still contain full algorithmic pseudocode at the implementation level — step 6 provides a 7-step algorithm for `cmd_stage` with exact code patterns (`sys.stdin.buffer.read(262145); if len(data) == 262145`), step 7 provides a complete per-type key-allowlist specification for `_validate_stage_payload`, and step 9 provides a 9-step `cmd_preview` algorithm including path-guard logic. These sections are partly duplicated in What-to-do. Per validation checklist §G: hints containing step-by-step algorithms with code blocks prescribe the solution rather than pointing to patterns.",
+      "fix": "Consolidate implementation prescriptions into the What-to-do numbered steps, which is the correct section for step-by-step instructions. Implementation Hints should reference patterns (e.g. 'use sys.stdin.buffer.read for byte-accurate limit — see §9.13') rather than reproduce algorithms."
+    },
+    {
+      "severity": "major",
+      "category": "hints",
+      "task": 8,
+      "issue": "Implementation Hints still contain concrete mock construction code (`mock_publish = MagicMock(return_value='https://telegra.ph/Test-04-22'); mock_teaser = MagicMock(side_effect=[False, True])`), complete walrus-operator branch pseudocode for `cmd_publish`, and the exact two-invocation retry test pattern. This is full implementation code in the hints section.",
+      "fix": "Remove the concrete mock construction from hints; keep only the conceptual note about reusing a single MagicMock across both cmd_publish calls. Move the walrus-operator branch structure to the What-to-do section."
+    },
+    {
+      "severity": "major",
+      "category": "feasibility",
+      "task": 9,
+      "issue": "Task 9 step 1 says `_fallback_publish` should reuse 'общий helper с hw_review publish — если Task 8 уже вынес общее ядро, переиспользуй (см. §9.9)'. The 'common core' suggestion is feasible only for the post-translation publish chain (Telegraph + Telegram + move_to_published). However, `_fallback_publish` must translate EN text via `transcreate_text`, while `cmd_publish` uses pre-translated `ru_paragraphs`/`ru_blocks` from the staged row. The two paths are fundamentally different — translation is the primary difference. An implementor may try to factor a helper that includes translation, which is incorrect. The task sentence 'factor a common internal helper' from code-research §9.9 is ambiguous about what 'common' means.",
+      "fix": "Clarify in Task 9 step 1 that `_fallback_publish` and `cmd_publish` share only the idempotent publish chain (Telegraph createPage if telegraph_url is NULL + mark_telegraph_published + send_telegraph_teaser + move_to_published + cleanup preview), NOT the translation step. Explicitly state that `_fallback_publish` owns the translation step, `cmd_publish` does not."
+    },
+    {
+      "severity": "minor",
+      "category": "tdd",
+      "task": 7,
+      "issue": "Edge Cases section (line 207) notes that `input()` on a non-TTY stdin raises `EOFError` and should be caught as 'skip cancelled', exit 0. The TDD Anchor has no corresponding test case (`test_skip_prompt_eoferror_treated_as_cancel` or equivalent). This is a security-relevant prompt-bypass surface — an automated caller piping an empty stdin could silently skip a staged article if EOFError is not handled correctly.",
+      "fix": "Add `tests/test_hw_review_cli.py::test_skip_prompt_eoferror_treated_as_cancel` to the TDD Anchor: patch `input` to `side_effect=EOFError`, assert exit 0, stdout 'skip cancelled', `skip_pending` not called."
+    },
+    {
+      "severity": "minor",
+      "category": "tdd",
+      "task": 7,
+      "issue": "TDD Anchor test `test_preview_path_guard_escape_aborts` says 'patch `Path.resolve` so that it returns a path outside CACHE_DIR'. Patching `pathlib.Path.resolve` globally affects all `Path.resolve()` calls in the test scope, including the `CACHE_DIR.resolve()` call used on the same line of the path-guard check. A naive global patch of `Path.resolve` would cause both `path.resolve()` and `CACHE_DIR.resolve()` to return the same injected value, making the guard trivially pass or fail unpredictably.",
+      "fix": "Specify that the test should inject the malicious path via a helper function or by patching `Path.resolve` with a `side_effect` that returns the evil path only for specific `Path` instances (e.g. wrapping the temp-file path creation to return a controlled path outside CACHE_DIR). Alternatively, expose an internal seam in `cmd_preview` (e.g. `_resolve_path(tmp)` helper) that can be patched without touching `CACHE_DIR.resolve()`."
+    },
+    {
+      "severity": "minor",
+      "category": "tdd",
+      "task": 9,
+      "issue": "TDD Anchor `test_take_when_in_failed` expects stderr to 'указывает на текущее состояние' (indicate current state), implying a message different from 'already auto-published'. But Task 9 What-to-do step 3 says to emit 'N already auto-published' for both the `published_articles` and `failed_articles` cases. A row in `failed_articles` was never published — saying 'already auto-published' is factually wrong for that state. The tech-spec AC says exit 1 with clean stderr 'N already auto-published' for the take-after-autopublish case, which does not contemplate the failed-articles path explicitly.",
+      "fix": "Decide whether `cmd_take` should distinguish the two states. Path of least resistance: update the TDD test description for `test_take_when_in_failed` to assert `stderr contains 'already auto-published'` (matching what step 3 actually produces), and accept that the message is technically imprecise for failed rows. If distinct messages are desired, update step 3 to emit 'N is in failed state' for failed rows and update the tech-spec AC accordingly."
+    },
+    {
+      "severity": "minor",
+      "category": "hints",
+      "task": 9,
+      "issue": "Implementation Hints provide a complete stub plan with specific lambda signatures and DB patching recipe (`monkeypatch.setattr(news_bot, 'transcreate_text', lambda t, **kw: '[ru] ' + t)`). While less extensive than Tasks 7/8, the exact lambda specification crosses into prescribing test setup code rather than pointing to patterns.",
+      "fix": "Reference the pattern ('stub transcreate_text, publish_article, send_telegraph_teaser, send_admin_notification — see test_integration.py setUp pattern') rather than providing exact lambdas."
+    }
+  ],
+  "stats": {
+    "tasks_checked": 3,
+    "claims_verified": 38,
+    "issues_found": 9,
+    "round1_criticals_resolved": 5,
+    "round2_new_criticals": 2,
+    "round2_remaining_majors_from_round1": 3
+  }
+}

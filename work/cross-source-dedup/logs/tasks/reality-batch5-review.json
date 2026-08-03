@@ -1,0 +1,78 @@
+{
+  "validator": "reality-checker",
+  "batch": [4, 10, 11],
+  "iteration": 2,
+  "status": "approved",
+  "findings": [
+    {
+      "severity": "minor",
+      "category": "hallucination",
+      "task": 11,
+      "issue": "Task 11 instructs operator to verify JSON1 availability via `SELECT sqlite_compileoption_used('ENABLE_JSON1');` expecting return value `1`. On SQLite >= 3.38.0 (2022-02-22), JSON functions are built-in unconditionally and this compile option is no longer registered — the check returns `0` even though `json_extract` works perfectly. VPS runs Python 3.13 with SQLite 3.46.1 (confirmed in dev env and consistent with Ubuntu 24.04-class server). The check instruction is misleading: operator sees `0`, may believe JSON1 is absent, and fall back to LIKE unnecessarily.",
+      "fix": "Change the check instruction to: `SELECT json_extract('{\"test\":[]}', '$.test');` — if it returns `[]`, JSON functions are available. Alternatively add a note: 'On SQLite >= 3.38.0 this option returns 0 even though JSON functions are available. Test directly: SELECT json_extract(...) instead of relying on the compile option flag.'"
+    },
+    {
+      "severity": "minor",
+      "category": "feasibility",
+      "task": 10,
+      "issue": "Pre-flight guard says agent should STOP if `model_extractor.py` or `backfill_fingerprints.py` are absent from working directory. This is correct as a guard, but the task also states 'Task 5 должен был обновить deploy.sh FILES list. Если не обновил — Task 10 это исправляет.' The two statements are slightly contradictory: the pre-flight halts if the *source files* are missing (Wave 2 not done), which is correct — but the FILES-list fix is a separate concern (files can exist in working directory but not be in deploy.sh). The task text distinguishes these correctly in the What-to-do steps, but the Pre-flight wording is ambiguous ('если каких-то из новых файлов нет...') — it could be misread as 'if they are not in deploy.sh' rather than 'if the .py files don't exist locally'.",
+      "fix": "Clarify pre-flight wording: 'Если файлы `model_extractor.py` и/или `backfill_fingerprints.py` отсутствуют в рабочей директории локально (т.е. Wave 2 Tasks 4-5 не завершена) — STOP.' Explicitly note that absence from deploy.sh FILES list is a separate issue handled in step 1."
+    }
+  ],
+  "verified_claims": {
+    "task_4": {
+      "_connect_exists_in_pending_articles_repo": {
+        "result": "PASS",
+        "detail": "def _connect() -> sqlite3.Connection confirmed at pending_articles_repo.py:155. Used as per-call pattern throughout all 20+ public functions (conn = _connect() pattern confirmed). No _get_conn() exists anywhere in the file."
+      },
+      "_resolve_source_name_exists_in_news_bot": {
+        "result": "PASS",
+        "detail": "def _resolve_source_name(link) confirmed at news_bot.py:867. Takes single `link` argument, returns source_name string, never raises. Used at line 1819 in row assembly — exactly the formula task 4 references for new_source derivation."
+      },
+      "per_call_connection_pattern_matches_repo_style": {
+        "result": "PASS",
+        "detail": "All public functions in pending_articles_repo.py open their own conn = _connect() per-call. No ambient connection is passed from news_bot.py. Task 4's instruction to open conn = pending_articles_repo._connect() in the try-block and pass it explicitly to new helpers matches the existing pattern exactly."
+      },
+      "insertion_point_lines_1815_1817": {
+        "result": "PASS",
+        "detail": "_is_text_only_checklist check confirmed at lines 1810-1815 (continue on True). row = { assembly confirmed at line 1817. Insertion point between 1815 and 1817 is valid and matches Decision 14 requirements."
+      }
+    },
+    "task_10": {
+      "vps_db_path": {
+        "result": "PASS",
+        "detail": "Path /home/hwbot/bot/news.db confirmed in deployment.md (prod instance at /home/hwbot/bot/, news.db is the SQLite file per architecture docs)."
+      },
+      "grep_pattern_correctness": {
+        "result": "PASS",
+        "detail": "deploy.sh FILES list uses double-quoted filenames (\"news_bot.py\", \"admin_alerts.py\", etc.), one per line. grep -E '\"(model_extractor|backfill_fingerprints)\\.py\"' deploy.sh correctly matches this format. Tested: pattern matches '\"model_extractor.py\"' and '\"backfill_fingerprints.py\"' exactly, would output 2 lines after Task 5 adds them."
+      },
+      "new_files_not_yet_in_deploy_sh": {
+        "result": "INFORMATIONAL",
+        "detail": "model_extractor.py and backfill_fingerprints.py are not yet in deploy.sh FILES list (current list has 21 entries, neither new file present). This is expected — Task 5 is responsible for adding them. Task 10 step 1 correctly handles the 'if not already added' case."
+      }
+    },
+    "task_11": {
+      "json_extract_sqlite_syntax": {
+        "result": "PASS",
+        "detail": "json_extract(model_fingerprint, '$.strict') = '[]' is valid SQLite syntax. Tested against actual _dumps() output '{\"strict\": [], \"brands\": []}' — returns 1 (match). Non-empty fingerprint correctly returns 0. json_extract returns arrays as TEXT in this SQLite version."
+      },
+      "json1_extension_availability": {
+        "result": "PASS",
+        "detail": "json_extract works correctly on the dev env SQLite 3.46.1. SQLite >= 3.38.0 has JSON functions built-in unconditionally. However, sqlite_compileoption_used('ENABLE_JSON1') returns 0 on this build even though json_extract works — this is expected behavior on modern SQLite. The task's operator check instruction is misleading (see finding above). The actual functionality is present and correct."
+      },
+      "like_fallback_correctness": {
+        "result": "PASS",
+        "detail": "LIKE pattern '%\"strict\":%[]%' AND '%\"brands\":%[]%' tested against actual _dumps() output. Empty fingerprint '{\"strict\": [], \"brands\": []}' matches (1). Non-empty fingerprint '{\"strict\": [\"toyota 4runner\"], \"brands\": [\"toyota\"]}' does not match (0). No false positives. SQLite LIKE treats [] as literal characters (not character class like GLOB), so pattern is correct."
+      }
+    }
+  },
+  "stats": {
+    "tasks_checked": 3,
+    "claims_verified": 10,
+    "issues_found": 2,
+    "critical_issues": 0,
+    "major_issues": 0,
+    "minor_issues": 2
+  }
+}

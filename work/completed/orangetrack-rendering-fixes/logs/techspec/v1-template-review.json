@@ -1,0 +1,29 @@
+{
+  "status": "approved",
+  "findings": [
+    {
+      "severity": "minor",
+      "category": "structure",
+      "issue": "Wave naming inconsistency persists — Audit Wave is not numbered (should be Wave 3), and the three Final Wave subsections (QA, Deploy, Post-deploy verification) use repeated 'Final Wave' header instead of sequential Wave 4, Wave 5, Wave 6. This is the round-1 finding 4. Numbered waves are the dominant convention in tech-spec template and across the rest of this spec (Wave 1, Wave 2 are numbered).",
+      "fix": "Rename `### Audit Wave (parallel)` → `### Wave 3 — Audit (parallel)`. Rename `### Final Wave — QA` → `### Wave 4 — Pre-deploy QA`. Rename `### Final Wave — Deploy` → `### Wave 5 — Deploy`. Rename `### Final Wave — Post-deploy verification` → `### Wave 6 — Post-deploy verification`. This makes the 6-wave structure explicit and matches the other validators' expectations."
+    },
+    {
+      "severity": "minor",
+      "category": "tasks",
+      "issue": "Task 6 reviewer audit Skill is `code-reviewing` which is correct per the catalog (and reviewers: none is the documented default). No action needed — this finding is informational only to confirm the catalog match was verified."
+    },
+    {
+      "severity": "minor",
+      "category": "verification",
+      "issue": "Task 10 (Deploy) lacks an explicit `Verify-smoke:` field. The description does mention operator observation of test channel for ~30 min and a CI-driven `deploy_test.yml`; while verification is implicit, an explicit `Verify-smoke:` line would improve uniformity with Wave 1/2 tasks.",
+      "fix": "Add `**Verify-smoke:** Operator confirms `deploy_test.yml` and `deploy.yml` Actions runs are green; `journalctl -u news_bot.service --since <deploy>` on prod shows clean startup with no `ImportError`/`AttributeError`.` to Task 10."
+    },
+    {
+      "severity": "minor",
+      "category": "tasks",
+      "issue": "Task 11 description is a multi-bullet list with concrete `ssh`/`journalctl` invocation and visual scan steps. Borderline detailed for tech-spec level — verges on implementation steps. However, post-deploy QA tasks legitimately need concrete commands as their main deliverable, so this is acceptable but worth noting.",
+      "fix": "Consider keeping the bullets but trimming the journalctl grep regex to a one-liner reference (the exact regex can live in the task file during decomposition). If the regex is load-bearing for the operator at this stage, leave as-is."
+    }
+  ],
+  "summary": "All round-1 critical findings are resolved. Wave 1 (3 tasks across 3 distinct files) and Wave 2 (2 tasks across 2 distinct test files) have zero file conflicts. Final-wave ordering is now correct: Wave 4 QA → Wave 5 Deploy → Wave 6 Post-deploy. All 11 tasks have valid skills from the catalog (code-writing, code-reviewing, security-auditor, test-master, pre-deploy-qa, deploy-pipeline, post-deploy-qa) and reviewer assignments match the skill defaults. Frontmatter compliant (created 2026-05-07, status draft, branch dev, size M). All required template sections present and non-empty (Solution, Architecture w/ both subsections, 10 Decisions w/ Rationale + Alternatives, Data Models, Dependencies, Testing Strategy w/ size, AVP w/ both subsections, Risks table, Acceptance Criteria, Implementation Tasks). Project knowledge files (architecture.md, patterns.md) confirm file paths match conventions. Remaining findings are minor (wave naming consistency, optional Verify-smoke for deploy task, slight Task 11 verbosity) and do not block approval. Zero critical findings → status `approved`."
+}

@@ -1,0 +1,48 @@
+{
+  "validator": "reality-checker",
+  "batch": [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19],
+  "iteration": 3,
+  "status": "changes_required",
+  "findings": [
+    {
+      "severity": "critical",
+      "category": "cross-task-integration",
+      "task": "11+12",
+      "issue": "Exception class name inconsistency: Tasks 3, 7, and 8 all use `ClaudeOutageError` (with 'Claude' prefix). Task 11's pinned import convention (line 37) explicitly states that Task 7 imports `OutageError` (WITHOUT 'Claude' prefix) — this is factually wrong. Task 12 also uses `OutageError` throughout its test scenario descriptions and module-exports list. Any implementor of Tasks 11 or 12 following the stated convention will bind `news_bot.OutageError` (which will not exist) instead of `news_bot.ClaudeOutageError`, resulting in `AttributeError` at runtime.",
+      "fix": "In Task 11, correct line 37 to read `from claude_transcreation import transcreate_via_claude, ClaudeTranscreationError, ClaudeOutageError`. Replace every reference to `OutageError` with `ClaudeOutageError` in both Tasks 11 and 12 (test scenarios, module-exports lists, patch-target strings, etc.)."
+    },
+    {
+      "severity": "major",
+      "category": "cross-task-integration",
+      "task": 3,
+      "issue": "Wave label conflict: tech-spec groups Task 3 in 'Wave 1 (parallel — independent foundations)' alongside Tasks 1, 2, and 4. Task 3's own header states `wave: 2, depends_on: [6]`. An orchestrator using the tech-spec's wave table will schedule Task 3 in Wave 1, before Task 6 adds `anthropic` to `requirements.txt`, causing `ImportError: No module named 'anthropic'` when running Task 3's tests.",
+      "fix": "Update the tech-spec's Implementation Tasks table to move Task 3 from Wave 1 to Wave 2, consistent with its own header. Alternatively, add a note to the Wave 1 entry explicitly excluding Task 3."
+    },
+    {
+      "severity": "major",
+      "category": "cross-task-integration",
+      "task": "11+12",
+      "issue": "Patch-target guidance contradicts between parallel wave-7 tasks. Task 11 definitively states the only valid patch target for `transcreate_via_claude` is `news_bot.transcreate_via_claude` (because `news_bot.py` uses `from claude_transcreation import transcreate_via_claude`, binding the name locally). Task 12 says ambiguously 'claude_transcreation.transcreate_via_claude (or news_bot.transcreate_via_claude — implementor will check)'. If an implementor patches `claude_transcreation.transcreate_via_claude` in any test that exercises the already-bound name in `news_bot`, the mock will be silently ignored and the test will call the real API.",
+      "fix": "Update Task 12 to remove the ambiguous parenthetical and pin the patch target to `news_bot.transcreate_via_claude` exclusively, consistent with Task 11's definitive ruling and with Python `from ... import` binding semantics."
+    },
+    {
+      "severity": "major",
+      "category": "cross-task-integration",
+      "task": "11+12",
+      "issue": "Freezegun coordination gap between parallel wave-7 tasks. Task 12 introduces `freezegun>=1.5.0` by creating a new `requirements-dev.txt` file. Task 11 runs in the same wave (parallel) and tells the implementor to 'check how Task 8 handled time-mocking and reuse that pattern'. Task 8 does NOT introduce freezegun, so following Task 11's guidance will lead to a different (manual) time-mocking approach. If Task 11's integration tests need reliable datetime control, the library may not be available depending on execution order, and the two parallel tasks may produce inconsistent test approaches.",
+      "fix": "Either (a) move Task 12's `requirements-dev.txt` creation to Wave 6 (before wave 7) so it is available to both wave-7 tasks, or (b) add an explicit note in Task 11 that freezegun is introduced by Task 12 and should not be used by Task 11 unless Task 12 is declared as a dependency."
+    },
+    {
+      "severity": "minor",
+      "category": "cross-task-integration",
+      "task": 9,
+      "issue": "Task 9 rewrites `TestFallbackPublishPassesAutoMarkerToPublishArticle` to call `_fallback_publish` directly. The task does not specify the exact `unittest.mock.patch` string to use for `transcreate_via_claude` in this test. Given the active inconsistency between `news_bot.transcreate_via_claude` (Task 11's ruling) and `claude_transcreation.transcreate_via_claude` (Task 12's ambiguous alternative), the implementor of Task 9 has no clear guidance and may choose the wrong form.",
+      "fix": "Add an explicit hint in Task 9 specifying the correct patch target as `news_bot.transcreate_via_claude`, consistent with the `from claude_transcreation import transcreate_via_claude` binding in `news_bot.py`."
+    }
+  ],
+  "stats": {
+    "tasks_checked": 19,
+    "claims_verified": 47,
+    "issues_found": 5
+  }
+}

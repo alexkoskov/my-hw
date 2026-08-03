@@ -1,0 +1,164 @@
+{
+  "validator": "task-validator",
+  "iteration": 3,
+  "focus": "cross-task integration: shared-resource ownership, no competing instances in same wave, dependency consistency, wave-graph correctness, audit-gate dispatch-race",
+  "batch": [1, 2, 3, 4, 5],
+  "status": "approved",
+  "wave_graph": {
+    "wave_1": {
+      "tasks": [1],
+      "task_01": {
+        "depends_on": [],
+        "skills": ["code-writing"],
+        "verify": ["smoke"],
+        "reviewers": ["code-reviewer", "security-auditor", "test-reviewer"]
+      }
+    },
+    "wave_2": {
+      "tasks": [2, 3, 4],
+      "parallel": true,
+      "task_02": {
+        "depends_on": [1],
+        "skills": ["code-reviewing"],
+        "verify": [],
+        "reviewers": [],
+        "writes_to": "logs/tasks/code-audit-report.json"
+      },
+      "task_03": {
+        "depends_on": [1],
+        "skills": ["security-auditor"],
+        "verify": [],
+        "reviewers": [],
+        "writes_to": "logs/tasks/security-audit-report.json"
+      },
+      "task_04": {
+        "depends_on": [1],
+        "skills": ["test-master"],
+        "verify": [],
+        "reviewers": [],
+        "writes_to": "logs/tasks/test-audit-report.json"
+      }
+    },
+    "wave_3": {
+      "tasks": [5],
+      "task_05": {
+        "depends_on": [2, 3, 4],
+        "skills": ["pre-deploy-qa"],
+        "verify": [],
+        "reviewers": [],
+        "writes_to": "logs/tasks/qa-report.json"
+      }
+    },
+    "cycles_detected": false,
+    "wave_monotonicity": "all depends_on point to strictly-earlier waves; no back-edges; topological order is well-formed"
+  },
+  "shared_resource_analysis": {
+    "tech_spec_declaration": "Shared resources: None (tech-spec Architecture line 71 — 'No DB pools, no LLM clients, no browser instances. Module-level compiled regex is standard Python practice, not a heavy shared resource. Single requests.Session remains an optional caller-passed parameter (existing pattern).')",
+    "module_level_regex": {
+      "resource": "_FLIGHT_PUSH_RE compiled once at module level in mattel_news_source.py",
+      "owner": "Task 01 (creates module)",
+      "verdict": "compliant — tech-spec explicitly classifies module-level compiled regex as standard Python practice, not a heavy shared resource; tech-spec AC line 267 mandates compile-once; Task 02 AC line 48 verifies it stays compile-once at module scope",
+      "consumers": "all internal helpers in same module; no cross-task contention",
+      "competing_instance_risk": "none — single owner, no Wave-2 task creates an alternative instance"
+    },
+    "requests_session": {
+      "resource": "requests.Session",
+      "owner": "none — caller-passed optional parameter only (preserved from current contract)",
+      "verdict": "compliant — tech-spec line 71 confirms session stays caller-provided; Task 02 AC line 50 explicitly forbids new Session() construction in the rewritten module ('No NEW shared Session introduced'); round-1 contract preserved",
+      "consumers": "fetch_mattel_news / fetch_mattel_article (caller-passed)"
+    },
+    "audit_report_files": {
+      "resources": [
+        {"path": "logs/tasks/code-audit-report.json", "owner": "Task 02", "consumers": ["Task 05"]},
+        {"path": "logs/tasks/security-audit-report.json", "owner": "Task 03", "consumers": ["Task 05"]},
+        {"path": "logs/tasks/test-audit-report.json", "owner": "Task 04", "consumers": ["Task 05"]}
+      ],
+      "verdict": "compliant — each Wave-2 task writes a distinct path; Task 05 reads all three; no two tasks write to the same path; Task 05 declares depends_on: [02, 03, 04] covering all three owners — no missing edge",
+      "consumer_dependency_check": "Task 05 depends_on includes ALL three owners; no missing or stale edge"
+    },
+    "qa_report_file": {
+      "path": "logs/tasks/qa-report.json",
+      "owner": "Task 05",
+      "consumers": ["operator (post-task, out of feature scope)"],
+      "verdict": "compliant — single owner, no in-feature consumer competes"
+    },
+    "competing_instances_in_wave_2": {
+      "check": "do tasks 02/03/04 each create their own instance of any heavy shared resource?",
+      "verdict": "no — Wave-2 tasks are read-only over source code (mattel_news_source.py, tests/fixtures/mattel_flight_builder.py, tests/test_mattel_news_source.py, tests/test_mattel_integration.py, news_bot.py) and produce reports to disjoint JSON paths; reading the same source files in parallel is not 'competing instances' (no mutation, no init handshake, no port/socket binding, no DB connection, no API client). All three are pure-read auditors.",
+      "race_conditions": "none — disjoint write targets, idempotent reads"
+    },
+    "shared_resources_completeness": {
+      "check": "any heavy dependency (ML model, DB pool, API client) referenced by multiple tasks but missing from tech-spec Shared Resources?",
+      "verdict": "no — feature is a stdlib + requests + bs4 HTTP scraper; no ML, no DB, no cross-task API client; tech-spec 'Shared resources: None' is accurate and complete"
+    }
+  },
+  "wave_3_audit_gate_guard": {
+    "task": 5,
+    "guard_locations": [
+      {
+        "section": "What to do, Step 2",
+        "line": 29,
+        "quote": "Missing-file guard: если хотя бы один из трёх audit-report файлов ОТСУТСТВУЕТ (соответствующая audit-таска ещё не отработала) — записать QA-отчёт со статусом `blocked`, blocker `\"audit task NN not yet run\"` ... и СТОП — НЕ переходить к Step 3 и далее"
+      },
+      {
+        "section": "Acceptance Criteria, item 1 (Audit gates passed)",
+        "line": 40,
+        "quote": "Если хотя бы один файл ОТСУТСТВУЕТ → QA-статус = `blocked`, blocker = \"audit task NN not yet run\", STOP (не переходить к Step 1–6)"
+      },
+      {
+        "section": "Details, Audit gate (precondition), Missing-file guard (FIRST CHECK)",
+        "line": 124,
+        "quote": "если хотя бы один из трёх audit-report файлов ОТСУТСТВУЕТ на диске (например, соответствующая audit-таска ещё не запустилась или прервалась) → пропустить Step 1–6, записать QA-отчёт со статусом `blocked`, blocker = `\"audit task NN not yet run\"` ... и СТОП"
+      },
+      {
+        "section": "Edge cases, Audit-gate missing file",
+        "line": 200,
+        "quote": "Один (или несколько) из трёх audit-report файлов ОТСУТСТВУЕТ на диске — соответствующая audit-таска (02/03/04) ещё не отработала или была прервана. Step 1–6 не запускаем. Пишем QA-отчёт со статусом `blocked`, blocker = `\"audit task NN not yet run\"`, `missing_report` = путь к отсутствующему файлу. ... НЕ путать с `fail` — это другой жизненный путь (failed audit ≠ not-yet-run audit)"
+      },
+      {
+        "section": "Acceptance Criteria, item Audit gates passed (line 40 explicit STOP)",
+        "line": 40,
+        "quote": "Любой `fail` или critical-finding в audit'ах блокирует QA до починки"
+      }
+    ],
+    "redundancy": "guard is mentioned in 4 distinct sections (What-to-do Step 2, AC item 1, Details Missing-file-guard FIRST CHECK, Edge-cases) — strongly enforced",
+    "distinguishes_blocked_vs_fail": true,
+    "blocked_vs_fail_quote": "edge-cases line 200: 'НЕ путать с `fail` — это другой жизненный путь (failed audit ≠ not-yet-run audit)'",
+    "schema_supports_blocked_status": {
+      "qa_status_enum": "pass | pass-with-deferrals | fail | blocked",
+      "blockers_array_includes_missing_report_field": true,
+      "evidence_line": 172
+    },
+    "verdict": "PASS — Task 05 explicitly STOPs with status: blocked if any of the 3 audit reports is missing. Dispatch-race risk eliminated: if Wave 2 hasn't completed all three audits, Task 05 enters `blocked` (not `fail`) and writes the missing path, signaling the orchestrator to spawn the missing audit task before re-running QA."
+  },
+  "dependency_consistency_check": {
+    "all_depends_on_reference_existing_tasks": true,
+    "wave_monotonicity_violated": false,
+    "cycle_detected": false,
+    "details": [
+      "Task 01: depends_on=[], wave=1 (root) — ok",
+      "Task 02: depends_on=[1], wave=2 > wave_of(1)=1 — ok",
+      "Task 03: depends_on=[1], wave=2 > wave_of(1)=1 — ok",
+      "Task 04: depends_on=[1], wave=2 > wave_of(1)=1 — ok",
+      "Task 05: depends_on=[2,3,4], wave=3 > max(wave_of(2,3,4))=2 — ok"
+    ],
+    "graph_topology": "DAG (single source Task 01, fan-out to Wave 2, fan-in to Task 05). No back-edges, no cross-edges within waves."
+  },
+  "skills_and_reviewers_consistency": {
+    "task_01": "skills=[code-writing] -> reviewers=[code-reviewer, security-auditor, test-reviewer]; mapping correct (code-writing requires code-reviewer + test-reviewer; security-auditor added because feature touches HTTP scraper boundary per tech-spec Decision 8)",
+    "task_02": "skills=[code-reviewing] -> reviewers=[]; correct (auditor IS the review)",
+    "task_03": "skills=[security-auditor] -> reviewers=[]; correct (auditor IS the review)",
+    "task_04": "skills=[test-master] -> reviewers=[]; correct (auditor IS the review)",
+    "task_05": "skills=[pre-deploy-qa] -> reviewers=[]; correct (QA self-verifying)"
+  },
+  "findings": [],
+  "stats": {
+    "tasks_checked": 5,
+    "issues_found": 0,
+    "critical": 0,
+    "major": 0,
+    "minor": 0,
+    "scope": "cross-task integration only (per-task structural validation done in earlier iterations 1 and 2)"
+  },
+  "summary": "All 5 tasks PASS cross-task integration check. Wave graph is a clean DAG (1 -> {2,3,4} -> 5), acyclic and wave-monotonic. Tech-spec 'Shared resources: None' holds in practice: only module-level compiled regex (standard practice, single owner Task 01, no competing instances) and three disjoint audit-report JSON files (one owner per Wave-2 task, single consumer Task 05 with correct depends_on=[02,03,04]). No competing resource instances in Wave 2 — three audits are pure read-only over source files and write to distinct paths; no race conditions. Wave-3 audit-gate guard is explicitly redundant: Task 05 STOPs with status: `blocked` in 4 distinct sections (What-to-do Step 2, AC item 1, Details Missing-file-guard FIRST CHECK, Edge-cases) if any of the 3 audit reports is missing, and the schema explicitly distinguishes `blocked` (not-yet-run) from `fail` (audit failed) — dispatch-race risk eliminated. Iteration-3 cross-task pass approved with zero findings."
+}

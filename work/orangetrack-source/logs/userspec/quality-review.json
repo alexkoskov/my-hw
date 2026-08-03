@@ -1,0 +1,54 @@
+{
+  "status": "approved",
+  "checks": {
+    "completeness": "pass",
+    "edge_cases": "pass",
+    "acceptance_criteria": "pass",
+    "contradictions": "pass",
+    "template_compliance": "pass",
+    "size_check": "warning"
+  },
+  "findings": [
+    {
+      "check": "size_check",
+      "severity": "minor",
+      "issue": "19 acceptance criteria in 'Критерии приёмки' exceeds the warning threshold of 10 for M-size features. The criteria are all legitimate and non-redundant, but the count signals possible scope creep or that some operational/deployment criteria (deploy FILES list, test count, test registry update) could be moved to 'Технические решения' or a checklist in 'Как проверить' rather than formal AC.",
+      "location": "## Критерии приёмки",
+      "fix": "Consider grouping 3-4 deployment/hygiene criteria (deploy FILES list invariant, test registry update, test count range) into a single AC or relocating them to 'Как проверить → Агент проверяет'. This would bring the count to ~15, still above threshold but closer to M-size norms. Not a blocker — the extra criteria add precision rather than confusion."
+    },
+    {
+      "check": "completeness",
+      "severity": "minor",
+      "issue": "interview.yml metadata fields 'status' (still 'in_progress') and 'phase4_completion.status' (still 'pending') were never updated to reflect interview completion. The user-spec content is fully consistent with final interview decisions, but the interview log formally shows an unclosed session.",
+      "location": "interview.yml — interview_metadata.status and phase4_completion.status",
+      "fix": "Set interview_metadata.status: 'completed' and phase4_completion.status: 'approved' in interview.yml after user-spec approval. This is an administrative closure, not a content gap."
+    },
+    {
+      "check": "completeness",
+      "severity": "minor",
+      "issue": "interview.yml 'success_criteria' value under phase2_user_experience.acceptance_criteria contains a stale pre-Q9 description: 'no blocks field (we use the flat paragraphs+images path like Lamley, not the autoevolution block path)'. This contradicts the final Q9=B decision (blocks path). The user-spec itself is correct; only the interview log has a stale snapshot.",
+      "location": "interview.yml — phase2_user_experience.acceptance_criteria.value, item AC3",
+      "fix": "This is a documentation inconsistency in the interview log, not in user-spec. No user-spec change needed. Optionally update the interview.yml success_criteria value to reflect the final blocks-path decision for archival integrity."
+    }
+  ],
+  "interview_coverage": {
+    "covered": [
+      "throughput driver rationale (channel backlog empties before window end)",
+      "feed-only parser initially, revised to hybrid feed-first + HTML fallback after Q7",
+      "source naming: source_name='orangetrack', SOURCE_EMOJI='🔵', hashtag='#orangetrackdiecast'",
+      "acceptance criteria baseline (6 AC → expanded to 19)",
+      "testing strategy: unit tests, no new integration test, E2E via test channel",
+      "blocks-path output for YouTube video preservation (Q9=B)",
+      "Lamley video support deferred to separate feature (Q10=β)",
+      "admin-ping aggregated format with error codes (Q11=OK)",
+      "inline affiliate sentences (QUICK LINK) out of scope (Q5=I)",
+      "edge cases: WP block-class drift, video-only post, carousel gallery, post without images, content:encoded fallback, affiliate standalone post",
+      "error scenarios: HTTP 5xx/429/timeout on feed, malformed XML, fallback failure modes, silent successful fallback",
+      "verification strategy: pytest baseline + new tests, post-deploy journalctl, test channel visual check",
+      "risks: WP block-class drift (R1), affiliate inline leak (R2), FILES list invariant (R3), test_sources_registry break (R7), rate limit (R4), RSS window recovery (R5), feed URL change detection (R6)",
+      "hybrid fallback architecture: content:encoded empty → HTTP scrape of article page (Q7 revision)"
+    ],
+    "missing": []
+  },
+  "summary": "Спецификация полная, структурно корректная и внутренне согласованная. Все 19 критериев приёмки конкретны и верифицируемы. Единственное замечание — количество критериев (19) формально превышает пороговое значение для M-size, однако все они обоснованы и не дублируют друг друга. Блокирующих проблем нет, спецификация готова к следующему этапу."
+}

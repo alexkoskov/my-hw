@@ -1,0 +1,67 @@
+{
+  "validator": "task-validator",
+  "batch": [1, 2, 3, 4, 5],
+  "status": "approved",
+  "findings": [
+    {
+      "severity": "minor",
+      "category": "consistency",
+      "task": 3,
+      "section": "Required Skills",
+      "issue": "Required Skills lists `/skill:code-writing` as prose only, with NO markdown link to SKILL.md. Tasks 1, 2, 4, 5 all include the link. Template + checklist require the `/skill:{name}` entry to carry a link to SKILL.md.",
+      "fix": "Add the link, e.g. `- /skill:code-writing — [SKILL.md](~/.claude/skills/code-writing/SKILL.md)` (mirror the form used in Task 5)."
+    },
+    {
+      "severity": "minor",
+      "category": "consistency",
+      "task": 3,
+      "section": "frontmatter / Reviewers",
+      "issue": "skills=[code-writing] but reviewers=[test-reviewer] only. The internal code-writing -> reviewers heuristic expects both code-reviewer and test-reviewer. This exactly matches the approved tech-spec (Task 3 Reviewers: test-reviewer) because the deliverable is a data-only calibration fixture, so it is defensible — flagged only for explicit confirmation.",
+      "fix": "Confirm test-reviewer-only is intended for the data-only fixture (no production logic). If any executable logic lands in the fixture module, add code-reviewer."
+    },
+    {
+      "severity": "minor",
+      "category": "content",
+      "task": 1,
+      "section": "What to do / Details",
+      "issue": "Heavy reliance on absolute source line numbers as anchors (e.g. `строка 248`, `строки 83–87`, `строка 165`, `242`, `284-287`). These drift the moment model_extractor.py is edited and become misleading. Template does not forbid line numbers, so this is advisory, not a violation.",
+      "fix": "Treat line numbers as secondary hints; anchor each reference to the stable symbol name (function/const) that is already cited alongside most of them, so the reference survives code drift."
+    },
+    {
+      "severity": "minor",
+      "category": "content",
+      "task": 2,
+      "section": "Details",
+      "issue": "Uses absolute line-range anchors (`:461-472`, `:427-455`, `:2174-2176`, `:268-325`, `:327-368`) for call sites and existing builders. Brittle to code drift. Template does not forbid; advisory.",
+      "fix": "Keep the symbol names (alert_cross_source_blocked / alert_cross_source_dupe / test_all_alerts_have_unique_codes) as the primary anchor; downgrade the `:NNN` ranges to approximate hints."
+    },
+    {
+      "severity": "minor",
+      "category": "content",
+      "task": 4,
+      "section": "What to do / Acceptance Criteria / Details",
+      "issue": "Frequent bare line-number anchors including inside Acceptance Criteria/What-to-do (`~стр.116`, `:975-980`, `:990-994`, `:933-1025`, `:2130-2247`, `:2213-2247`, `:2156`). news_bot.py is large and actively edited; these will drift fastest. Template does not forbid; advisory.",
+      "fix": "Anchor to symbol names (`_check_cross_source_dedup`, `job()`, the empty-strict short-circuit) already present; keep line numbers only as rough locators."
+    },
+    {
+      "severity": "minor",
+      "category": "content",
+      "task": 5,
+      "section": "What to do / Details",
+      "issue": "Line-number anchors used throughout (`:243-249`, `:164`, `:191`, `16-31`, `236-249`, `254-258`, `274-275`). Brittle to code drift in backfill_fingerprints.py. Template does not forbid; advisory.",
+      "fix": "Prefer symbol/section anchors (the SELECT, backfill_one skip-guard, the empty_fp marker, the Idempotency-contract docstring) over raw line numbers."
+    },
+    {
+      "severity": "minor",
+      "category": "consistency",
+      "task": 4,
+      "section": "What to do / Details",
+      "issue": "Naming divergence vs tech-spec: tech-spec Decision 4 names the toggle `DEDUP_SERIES_ENABLED` and says it is read at import like DB_FILE (implying that is the env var name). Task 4 keeps `DEDUP_SERIES_ENABLED` as the module constant but reads a DIFFERENTLY named env var `DEDUP_SERIES_PAIRS` (per code-research). The task self-documents this and defers final reconciliation to Post-completion / Task 6 runbook + .env.example, so it is handled — flagged for traceability.",
+      "fix": "Lock the final env-var name once (const vs env-var), and make sure Task 4 .env.example, Task 6 deploy runbook, and tech-spec Decision 4 all agree; record the chosen name in decisions.md."
+    }
+  ],
+  "stats": {
+    "tasks_checked": 5,
+    "issues_found": 7
+  }
+}

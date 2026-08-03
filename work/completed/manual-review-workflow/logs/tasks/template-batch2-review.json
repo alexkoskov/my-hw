@@ -1,0 +1,46 @@
+{
+  "validator": "task-validator",
+  "batch": [6, 7, 8, 9, 10],
+  "status": "approved",
+  "iteration": 2,
+  "findings": [
+    {
+      "severity": "minor",
+      "category": "consistency",
+      "task": 6,
+      "section": "Reviewers",
+      "issue": "Reviewer report paths still use relative form `work/manual-review-workflow/logs/working/task-6/...` whereas tasks 7-10 (re-checked at lines 226-228, 150-152, 164-166, 179-181) all use absolute `/workspaces/debian-2/my-hw/work/manual-review-workflow/logs/working/task-N/...` form. Round 1 flagged this; round 2 did not include it in the reported fix list and the inconsistency persists. Stylistic only — no runtime impact because task-creator rule says paths anchor to feature_path; bare `logs/...` would resolve from CWD, but `work/manual-review-workflow/logs/...` remains feature-anchored and works from repo root.",
+      "fix": "Replace Task 6's three reviewer paths with the absolute form used by 7-10, or (alternatively) revert 7-10 to the relative form — pick one convention and apply across the whole batch. The absolute form matches the convention in `task-creator.md` §10 example and the environment-level preference for absolute paths."
+    },
+    {
+      "severity": "minor",
+      "category": "consistency",
+      "task": 6,
+      "section": "Context Files",
+      "issue": "Project-knowledge links in Task 6 (lines 119-122) use the relative form `../../../.claude/skills/project-knowledge/references/...`, whereas tasks 7-10 uniformly use `~/.claude/skills/project-knowledge/references/...` (the tilde-expansion form that the template shows). Round 1 flagged this; round 2 did not include it in the reported fix list and the inconsistency persists.",
+      "fix": "Rewrite Task 6 PK links as `[project.md](~/.claude/skills/project-knowledge/references/project.md)` etc., matching the other four tasks in this batch and the template example at task.md.template:45-48."
+    },
+    {
+      "severity": "minor",
+      "category": "content",
+      "task": 10,
+      "section": "TDD Anchor",
+      "issue": "Round 1 requested a dedicated test that exercises the Decision 13 mixed-path end-to-end scenario: one failure via idle-fallback (Task 9's path) + one failure via overflow (Task 10's path) incrementing the same `attempt_count` column, with the third strike triggering `move_to_failed`. Task 10 still models this only via seeding (`test_overflow_three_strikes_moves_to_failed` uses `attempt_count=2` as a fixture), which does not exercise both mutators into the same row. Round 2 did not address this finding.",
+      "fix": "Add a test like `test_attempt_count_shared_across_idle_and_overflow_paths`: (1) seed one pending row; (2) run `job()`'s idle-fallback step with `_fallback_publish` patched to raise once — assert `attempt_count == 1`; (3) run the overflow fast-track step with `_fallback_publish` patched to raise again — assert `attempt_count == 2` on the SAME row (same column, not a separate counter); (4) run a third failure via either path — assert row is now in `failed_articles` with `attempt_count >= 3`. This is explicitly called out in tech-spec Testing Strategy line 305."
+    }
+  ],
+  "stats": {
+    "tasks_checked": 5,
+    "issues_found": 3,
+    "round1_findings": 5,
+    "round2_fixes_verified": 2,
+    "round2_remaining": 3
+  },
+  "notes": [
+    "Round 2 fixes verified in the task files:",
+    "- Task 6: filter_new_entries inline 2-step filter (line 48), test-flip @patch decorator removal note (line 73), smoke note about Task 1 commit dependency (line 76), `_fallback_publish` stub contract with signature locked (line 78). All applied.",
+    "- Task 7: set_preview_path helper now mandated as part of Task 7 scope (line 65, no longer a half-implementation escape hatch), news_bot module-level env side-effects documented (line 36), preview_nodes signature locked against Task 4 (line 59), explicit `depends_on: [1, 2, 3, 4, 6]` includes Task 3 directly. All applied.",
+    "- Task 9: `import pending_articles_repo as pending_repo` alias requirement added (line 35). Applied.",
+    "Remaining minors (3) are all stylistic/test-coverage; none are critical. Status: approved."
+  ]
+}

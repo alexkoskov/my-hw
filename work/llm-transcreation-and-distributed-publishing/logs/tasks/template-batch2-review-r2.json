@@ -1,0 +1,118 @@
+{
+  "validator": "task-validator",
+  "iteration": 2,
+  "batch": [6, 7, 8, 9, 10],
+  "previous_report": "logs/tasks/template-batch2-review.json",
+  "status": "approved",
+  "r1_resolution_summary": {
+    "total_r1_findings": 7,
+    "resolved": 0,
+    "still_present_actionable": 2,
+    "advisory_no_action_required": 5,
+    "notes": "R1 was already 'approved' (zero criticals, zero majors, 7 minors). Of the 7 minor findings, 5 were explicitly tagged in R1 as 'no action required' (informational/advisory). The remaining 2 minor findings were actionable but were NOT addressed in iteration 2 — they remain present and are re-flagged below at minor severity. Status remains approved (no critical/major findings)."
+  },
+  "findings": [
+    {
+      "severity": "minor",
+      "category": "structure",
+      "task": 6,
+      "section": "Reviewers",
+      "issue": "R1 finding #2 NOT resolved. Task 6 reviewer report path is still relative (`work/llm-transcreation-and-distributed-publishing/logs/working/task-6/code-reviewer-{round}.json`), while tasks 7, 8, 9, 10 in this same batch use the absolute form (`/workspaces/debian-2/my-hw/work/...`). Inconsistent within the same feature.",
+      "fix": "Normalize Task 6 reviewer path to absolute form to match the rest of the batch: `/workspaces/debian-2/my-hw/work/llm-transcreation-and-distributed-publishing/logs/working/task-6/code-reviewer-{round}.json`.",
+      "r1_status": "carried_over_unresolved"
+    },
+    {
+      "severity": "minor",
+      "category": "content",
+      "task": 8,
+      "section": "What to do (step 8) / Implementation hints",
+      "issue": "R1 finding #5 NOT resolved. Task 8 step 8 still reads: 'если outage_state.is_fallback_active() — Google-only path (использовать существующий путь через transcreate_text напрямую или helper _publish_via_google если такой будет введён в Task 7); иначе _fallback_publish(row, via_review=False) — внутри Claude primary + per-article Google fallback'. Task 7 does NOT introduce a `_publish_via_google` helper — Task 7's contract states the Google shortcut is implemented INSIDE `_fallback_publish` itself (Task 7 Description bullet 4: 'Уже-в-fallback shortcut: если outage_state.is_fallback_active() уже True на входе в Step 1, идём сразу на Google-блок без попытки Claude'). The speculative reference may cause Task 8 implementer to invent a redundant helper.",
+      "fix": "In Task 8 step 8, remove the speculative `_publish_via_google` reference. Clarify: when `outage_state.is_fallback_active() == True` the call still goes through `_fallback_publish(row, via_review=False)` — the function itself short-circuits to Google internally per Task 7's contract. Task 8's loop only needs one call site: `_fallback_publish(row, via_review=False)`.",
+      "r1_status": "carried_over_unresolved"
+    }
+  ],
+  "advisory_findings_from_r1_unchanged_in_r2": [
+    {
+      "task": 6,
+      "section": "frontmatter.depends_on",
+      "r1_severity": "minor",
+      "r1_summary": "Task 6 in Wave 2 with depends_on=[] is decoratively grouped — no concrete predecessor. Defensible since Task 6 only edits requirements.txt + .env.example.",
+      "r2_status": "informational only; R1 marked as 'flag for confirmation' not 'fix required'; unchanged in iteration 2"
+    },
+    {
+      "task": 6,
+      "section": "TDD Anchor (absent)",
+      "r1_severity": "minor",
+      "r1_summary": "Config-only task; template explicitly allows TDD Anchor omission for non-code tasks.",
+      "r2_status": "no action required by R1; correctly omitted; verification commands in Verification Steps substitute for tests"
+    },
+    {
+      "task": 8,
+      "section": "Acceptance Criteria (AC19 carry-forward)",
+      "r1_severity": "minor",
+      "r1_summary": "AC19 token logging primarily owned by Task 3 (claude_transcreation). Task 8 controls publish loop but does not duplicate the verification.",
+      "r2_status": "confirmed: AC19 ownership is at Task 3 (out of this batch). Task 8 is not a verification site for log emission. No change required."
+    },
+    {
+      "task": 9,
+      "section": "TDD Anchor (explanation, not tests)",
+      "r1_severity": "minor",
+      "r1_summary": "Pure-deletion task; section explains why no new tests are written. Acceptable.",
+      "r2_status": "no action required"
+    },
+    {
+      "task": 10,
+      "section": "Acceptance Criteria (mixing test-run + structural gates)",
+      "r1_severity": "minor",
+      "r1_summary": "AC checklist mixes pytest-run gates with structural assertions. Acceptable overlap with Verification Steps.",
+      "r2_status": "no action required"
+    }
+  ],
+  "fresh_validation_summary": {
+    "frontmatter": {
+      "task_6": "ok (status=planned, depends_on=[], wave=2, skills=[code-writing], verify=[], reviewers=[code-reviewer], teammate_name=null). Reviewer match: frontmatter has only code-reviewer, body Reviewers section has only code-reviewer. Consistent.",
+      "task_7": "ok (depends_on=[3,5], wave=3, skills=[code-writing], verify=[smoke], reviewers=[code-reviewer, security-auditor, test-reviewer]). Body Reviewers section matches. verify=[smoke] backed by present 'Smoke' subsection.",
+      "task_8": "ok (depends_on=[2,5,7], wave=4, skills=[code-writing], verify=[smoke], reviewers=[code-reviewer, test-reviewer]). Body matches. verify=[smoke] backed by present 'Smoke' subsection.",
+      "task_9": "ok (depends_on=[8], wave=5, skills=[code-writing], verify=[], reviewers=[code-reviewer]). Body matches.",
+      "task_10": "ok (depends_on=[9], wave=6, skills=[code-writing], verify=[], reviewers=[code-reviewer, test-reviewer]). Body matches."
+    },
+    "structure": {
+      "all_required_sections_present": "yes for all 5 tasks (Title, Required Skills, Description, What to do, Acceptance Criteria, Context Files, Verification Steps, Details, Reviewers, Post-completion). TDD Anchor: present for tasks 7, 8, 10; absent for task 6 (config-only — acceptable per template); present in task 9 as explanatory text (acceptable for pure-deletion).",
+      "section_order": "all 5 tasks follow template order",
+      "no_template_placeholders": "verified — no [Task Name], {round}, {feature}, {PK path}, TODO, FIXME, TBD, PLACEHOLDER markers left unfilled"
+    },
+    "content_quality": {
+      "task_6": "Description explains intent + cites tech-spec Decision 4/6; What to do has concrete steps (no pseudocode); ACs are testable (pip install + grep checks); Context Files has all mandatory PK files via markdown links; Verification Steps has concrete commands.",
+      "task_7": "Description has rich rationale tied to Decisions 1, 5, 9; TDD Anchor entries follow `path::test_name — description` format; ACs are testable + lock the OutageError re-raise contract; Implementation hints include real mock patterns (no hallucinated assert_called_before).",
+      "task_8": "Description ties to Decisions 2, 4, 9, 14, 15; What to do covers all 10 numbered steps; TDD Anchor exhaustive (13 tests covering crash-loop guard, cron registration, health checks, distributed loop, backlog warning); minor speculative `_publish_via_google` reference flagged above.",
+      "task_9": "Description grounds the deletion list in code-search anchors; What to do uses grep-by-symbol guidance (not line numbers as ground truth) — appropriate given Tasks 7/8 will move surrounding code; AC includes explicit grep-audit gates.",
+      "task_10": "Description aligned with Decision 11; explicit list of 7 TDD Anchor tests including regression tests on REMOVED behavior (bureaucratic phrase NOT replaced, 4000-char NOT truncated); ACs mirror tests."
+    },
+    "carry_forward": {
+      "task_6_vs_tech_spec": "tech-spec Task 6: pin anthropic>=0.45.0,<0.46.0 + pytz>=2024.1; .env.example removes 4 legacy vars, adds ANTHROPIC_API_KEY/ANTHROPIC_MODEL/TZ. Task file ACs explicitly cover all 5 items. PASS.",
+      "task_7_vs_tech_spec": "tech-spec Task 7: refactor _fallback_publish step 1 only; Steps 2-5 untouched per Decision 9; tests cover both Claude success and Google per-article fallback (Verify-smoke). Task file ACs cover all + adds explicit invariant about re-raising OutageError after degraded-mode publish — refinement beyond tech-spec but consistent with Decision 5 and Task 8 contract. PASS.",
+      "task_8_vs_tech_spec": "tech-spec Task 8: cron change (Decision 2+4) + crash-loop guard (Decision 9) + window-end guard (Decision 15) + startup health checks (Decision 14) + distributed-publish loop. Task file ACs cover all + integration tests. tech-spec Verify-smoke items (crash-loop guard sleep test, schedule.Job.at(tz=pytz.timezone) acceptance, 3-articles-3-slots integration) all present in TDD Anchor. tech-spec AC items 'Crash-loop guard 35min remaining test', 'Health check #1+#2', 'Window-end guard', 'AC20 backlog warning at 50/51' all present. PASS.",
+      "task_9_vs_tech_spec": "tech-spec Task 9: delete _overflow_fast_track, inline idle-fallback, throttle, 4 legacy env vars; delete tests/test_overflow.py, tests/test_idle_fallback.py; trim tests/test_fallback_throttle.py. Task file ACs cover all + adds explicit grep-audit gates ('grep -nE FALLBACK_THROTTLE_SECONDS|...' empty) and explicit rewrite plan for TestFallbackPublishPassesAutoMarkerToPublishArticle. PASS.",
+      "task_10_vs_tech_spec": "tech-spec Task 10: strip bureaucratic regex (19 patterns) + 4000-char truncation; keep HW glossary (14 patterns). Task file ACs cover all explicitly + retains emoji-prefix logic + adds 7 specific TDD anchor tests (regression-style tests on REMOVED behavior). PASS.",
+      "user_spec_ac_carry_forward": "AC1/3/4/7/8 → Task 8; AC9 → Task 7+Task 3; AC10/12/13 → Task 10; AC15 → Task 7 (per-article problem); AC18 → Task 7 (uniform marker preserved); AC20 → Task 8 (BACKLOG_WARNING_THRESHOLD=50); AC26 → Tasks 6+9 (legacy vars removed); AC27 → Task 6 (.env.example cleanup) + Task 13 (deploy bundle, out of batch). No AC dropped at decomposition for tasks 6-10. PASS."
+    },
+    "decomposition_quality": {
+      "dependency_graph_integrity": "Task 6 wave=2 depends_on=[]; Task 7 wave=3 depends_on=[3,5] (waves 1,2); Task 8 wave=4 depends_on=[2,5,7] (waves 1,2,3); Task 9 wave=5 depends_on=[8] (wave 4); Task 10 wave=6 depends_on=[9] (wave 5). All dependent tasks reside in strictly-earlier waves. No cycles. PASS.",
+      "atomicity": "Each task touches a focused set of files. T6=2 config files. T7=1 function in news_bot.py + 1 new test file. T8=2 functions in news_bot.py + 4 new test files (large but cohesive — all tests verify one new daily flow). T9=pure deletion across news_bot.py + 3 test files. T10=1 function in news_bot.py + 1 test file. Task 8 is the largest but its scope is one logical unit. PASS.",
+      "merge_split_candidates": "None identified. Wave 4/5/6 sequential split of news_bot.py edits is intentional per tech-spec Decision 10 (Tasks 8/9/10 all touch news_bot.py — true wave conflict; sequencing across waves rather than batched is the correct design)."
+    },
+    "resource_sharing": {
+      "shared_resources_check": "tech-spec Architecture lists 4 shared resources: anthropic.Anthropic client (owner: claude_transcreation, Task 3 — out of batch); pytz timezone (used by news_bot.main + claude_transcreation, module-level constant); compiled regex (module-level, each module owns its own); SQLite news.db (owner: pending_articles_repo, Task 1 — out of batch). For batch 6-10: Task 7 consumes claude_transcreation (depends_on=[3,5] correctly captures Task 3+5 ownership). Task 8 consumes compute_publish_slots+outage_state+_fallback_publish (depends_on=[2,5,7] correctly captures all three). No competing instances in same wave. No missing owner declarations. PASS."
+    }
+  },
+  "stats": {
+    "tasks_checked": 5,
+    "issues_found": 2,
+    "critical": 0,
+    "major": 0,
+    "minor": 2,
+    "r1_findings_resolved": 0,
+    "r1_findings_still_present_actionable": 2,
+    "r1_findings_advisory_only": 5
+  }
+}

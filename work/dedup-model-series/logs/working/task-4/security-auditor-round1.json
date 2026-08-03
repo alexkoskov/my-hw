@@ -1,0 +1,43 @@
+{
+  "status": "approved",
+  "summary": {
+    "totalFindings": 0,
+    "critical": 0,
+    "major": 0,
+    "minor": 0
+  },
+  "findings": [],
+  "targetedConcerns": [
+    {
+      "concern": "SQL: 30-day candidate fetch via parameterized repo helpers",
+      "result": "confirmed_safe",
+      "detail": "_fetch_dedup_candidates() (news_bot.py) calls pending_repo.list_recent_pending_fingerprints(conn, 30) and list_recent_published_fingerprints(conn, 30) with a hardcoded literal 30, not derived from any request/feed input. Both repo helpers (pending_articles_repo.py:835-877) bind the days value via a '?' placeholder with an int() cast (f\"-{int(days)}\") passed as a parameter, not concatenated into SQL text; the SELECT column list is static. No string-built SQL, no json_extract, no interpolation of untrusted tokens anywhere in the new code path."
+    },
+    {
+      "concern": "Untrusted tokens (matched pairs/series, derived from feed titles) flowing into alert_cross_source_blocked/alert_cross_source_dupe",
+      "result": "confirmed_safe",
+      "detail": "The gate passes match.get('pairs') as plain str list data into the existing Task-2 builders (admin_alerts.py alert_cross_source_blocked:508, alert_cross_source_dupe:454), which render them via _render_pairs_block/_render_pair as plain text lines. send_admin_notification (news_bot.py:462-497) sends with parse_mode unset (None) — Telegram receives no MarkdownV2/HTML entities to parse, so a crafted '*', '_', '[label](url)' etc. in a title-derived series token cannot rewrite the visible message or inject formatting/links. send_admin_notification also runs every message through _redact_text before send, independent of this gate, so no secret/token leakage path is opened. Task 4 adds no new rendering path — it only supplies the pairs= kwarg that Task 2's builders already accept."
+    },
+    {
+      "concern": "Toggle env parse (DEDUP_SERIES_ENABLED)",
+      "result": "confirmed_safe",
+      "detail": "os.getenv(\"DEDUP_SERIES_ENABLED\", \"1\").strip().lower() not in (\"0\",\"false\",\"no\",\"off\") — pure string comparison against a fixed allowlist, no eval/exec, no shell-out, no injection surface. Default (unset/blank) resolves to enabled, matching the documented fail-open default. Read once at import time (module-level constant), matching the DB_FILE/TZ pattern."
+    },
+    {
+      "concern": "Degraded mode try/except must not silently swallow a security-relevant failure, must not crash, and Task 4 must not add a bypass",
+      "result": "confirmed_safe",
+      "detail": "The pre-existing try/except + [E016] block in job() (news_bot.py, unchanged by this diff) wraps extract_fingerprint() and _check_cross_source_dedup() together; the new pair-rule logic lives entirely inside _check_cross_source_dedup, so any exception it raises (e.g. malformed cand_fp, KeyError) is still caught by the same outer handler. On exception: logger.exception() logs the full traceback server-side (not silent), an [E016] admin ping fires (rate-limited, carries only type(exc).__name__ -- deliberately not the raw exception text, avoiding leaking sensitive detail to Telegram while full detail stays in server logs), and the article publishes with model_fingerprint=NULL (fail-open by design, matches AC9). No new early-return or code path in the diff exits job() before reaching this handler, and no new bare except swallows anything without logging."
+    },
+    {
+      "concern": "ReDoS / unbounded loop introduced by the gate itself",
+      "result": "confirmed_safe",
+      "detail": "No regex is compiled or executed anywhere in the diff (news_bot.py or tests) -- the pair-rule loop is pure set/string operations (set(pairs), set intersection, sorted(), str.endswith('|D')) over the single 30-day candidate list already bounded by the SQL WHERE clause. The added Python-side 7-day cutoff filter (string comparison of 'YYYY-MM-DD HH:MM:SS' timestamps) is O(1) per row, not a regex. Candidate volume is bounded by the 30-day window (~200 rows per task spec / shipped Sec 13.5), so the scan is bounded and cheap. No new unbounded loop over untrusted input."
+    },
+    {
+      "concern": "New first-party import added to news_bot.py without FILES-array coverage",
+      "result": "confirmed_safe",
+      "detail": "Diff of news_bot.py adds no import lines at all -- verified against the import block (lines 7-97): pending_repo, model_extractor, admin_alerts, sqlite3, datetime/timedelta/timezone are all already-shipped imports used pre-existing elsewhere in the file. The new helper functions (_fetch_dedup_candidates, _pair_match) and the refactored _check_cross_source_dedup use only already-imported names. No new module introduced, so the FILES-array deploy-crashloop risk (Decision 6 in tech-spec) does not apply here."
+    }
+  ],
+  "notes": "Scope: news_bot.py / tests/test_integration.py / .env.example diff for Task 4 (dedup-model-series) only, per task instructions -- not a full OWASP pass (that is Task 8). Also checked and found clean: no hardcoded secrets in the diff (the .env.example addition is a commented-out toggle line with a non-secret default value '1'); no new log-format-string injection (all logger calls in the touched code use lazy %s-style args, e.g. logger.info(\"...%s...\", link, match['link'], match['overlap_pct']), never f-string-into-first-positional with attacker content as the format string itself); test file additions contain only synthetic fixture data (fake URLs/titles), no real credentials. The candidate rows' model_fingerprint JSON is deserialized by the repo layer (_row_to_dict / json.loads) prior to this gate -- that deserialization path is outside Task 4's diff and was not re-audited here beyond confirming candidates with a None/non-dict fingerprint are skipped silently (isinstance guard), which the diff correctly implements for both the pair loop and the backstop loop."
+}

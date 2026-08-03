@@ -1,0 +1,42 @@
+{
+  "validator": "reality-checker",
+  "batch": [10, 11],
+  "status": "approved",
+  "findings": [
+    {
+      "severity": "minor",
+      "category": "feasibility",
+      "task": 10,
+      "issue": "Smoke step 'python3 backfill_fingerprints.py --days 30 --dry-run на временной БД' does not say how to point the script at that temp DB. backfill_fingerprints.py resolves its connection via `conn = sqlite3.connect(news_bot.DB_FILE)` (backfill_fingerprints.py ~line 231), and `news_bot.DB_FILE` is read once from the `DB_FILE` env var at import time (default relative `news.db`). Run literally as written, the command would open/create `./news.db` in the repo root rather than an isolated temp file.",
+      "fix": "Spell out the env override in the step, e.g. `DB_FILE=/tmp/qa_backfill_test.db python3 backfill_fingerprints.py --days 30 --dry-run`, matching the pattern already used by tests/test_backfill_fingerprints.py's temp_db fixture."
+    }
+  ],
+  "stats": {
+    "tasks_checked": 2,
+    "claims_verified": 42,
+    "issues_found": 1
+  },
+  "notes": {
+    "task_10_pre_deploy_qa": [
+      "All referenced test files exist: tests/test_model_extractor.py, tests/test_integration.py (class TestCrossSourceDedup), tests/test_admin_alerts.py, tests/test_backfill_fingerprints.py, tests/test_deploy_files_invariant.py, tests/fixtures/cross_source_dedup_pairs.py.",
+      "All referenced test functions/anchors verified to exist and collect via `pytest --collect-only`: test_calibration_accuracy, test_calibration_real_pair_must_pass (test_model_extractor.py); TestCrossSourceDedup::{test_hard_block_path,test_soft_flag_path,test_soft_flag_rate_limited,test_degraded_mode,test_pass_through_with_non_empty_fp,test_within_source_not_deduped,test_empty_fingerprint} (test_integration.py); test_e014_cross_source_dupe / test_e015_cross_source_blocked (test_admin_alerts.py).",
+      "Referenced functions extract_fingerprint/similarity (model_extractor.py), list_recent_pending_fingerprints/list_recent_published_fingerprints (pending_articles_repo.py), alert_cross_source_dupe/alert_cross_source_blocked/alert_dedup_degraded (admin_alerts.py), _check_cross_source_dedup (news_bot.py) all exist with matching names.",
+      "model_fingerprint TEXT column confirmed on both pending_articles and published_articles (pending_articles_repo.py + tests/test_migration.py schema pin) — supports the 'no schema migration' AC.",
+      "backfill_fingerprints.py --days flag accepts [1,90] via _DAYS_MIN/_DAYS_MAX, --dry-run is a real store_true flag — the smoke command's flags are valid.",
+      "Ran the full baseline suite (`python3 -m pytest -q` from repo root) before this feature's code exists: 1185 passed, 0 failed — confirms 'весь набор зелёный / нет регрессий' is an achievable, non-flaky baseline for Task 10 to compare against.",
+      "qa-report.json field names (status/summary/testSuite/acceptanceCriteria/findings/deferredToPostDeploy) match .claude/skills/pre-deploy-qa/SKILL.md Output Format exactly; report path logs/working/qa-report.json matches the skill's documented path.",
+      "depends_on: [7, 8, 9] transitively covers Tasks 1-6 (each of 7/8/9 declares depends_on: [1,2,3,4,5,6]), so all code/tests referenced by Task 10 (including Task 6's deployment.md runbook edit, needed by Task 11) will exist by the time Task 10 runs."
+    ],
+    "task_11_post_deploy_qa": [
+      "Prod topology claims cross-checked against .claude/skills/project-knowledge/references/deployment.md and match exactly: host 45.90.216.165 (Moscow), SSH as root/password-auth, deploy dir /root/hw-news, DB at /root/hw-news/data/news.db (bind-mount ./data:/data), DB_FILE=/data/news.db, compose service `news-bot`, container_name `hw-news-bot` (verified directly in docker-compose.yml), branch main, deploy window outside 10:00-20:00 МСК, publish slots 10:00/15:00/19:30, host UTC / container TZ=Europe/Moscow, test bot on NL 148.135.207.54 (systemd, dev branch).",
+      "`docker compose up -d --build` / `docker compose exec -T news-bot ...` commands match deployment.md's documented deploy command and the actual compose service name.",
+      "Dockerfile WORKDIR is /app and COPY . . includes backfill_fingerprints.py (not excluded by .dockerignore), and CMD implies exec runs from /app — so `docker compose exec -T news-bot python3 backfill_fingerprints.py --days 30` resolves the script correctly without a full path.",
+      "`docker compose exec` inherits the service's env_file (.env, including DB_FILE=/data/news.db per deployment.md), supporting the task's claim that backfill 'наследует DB_FILE=/data/news.db' inside the container.",
+      "SELECT COUNT(*) FROM published_articles WHERE model_fingerprint IS NOT NULL is valid SQL against the confirmed schema; identical query appears in user-spec Сценарий 8 and tech-spec Decision 7/Risk 3, so no invented query.",
+      "post-deploy-qa report field names (agentVerification/acceptanceCriteria/findings/blocked/manualVerificationPlan) match .claude/skills/post-deploy-qa/SKILL.md Output Format exactly.",
+      "No .mcp.json / Telegram MCP tool is actually configured in this repo, and project-knowledge/references/patterns.md itself says 'Telegram MCP (if available)' — so Task 11's operator-visual-inspection fallback for the 2-week channel check is the correct adaptation to actual tooling, not a hallucinated capability.",
+      "depends_on: [10] is correctly declared — Task 11 reads Task 10's deferredToPostDeploy section from logs/working/qa-report.json, a hard cross-task read dependency.",
+      "No secrets are echoed in any listed command; SSH/docker one-liners contain no tokens or credentials, consistent with the 'operator handles prod ops, Claude prepares only' project convention."
+    ]
+  }
+}

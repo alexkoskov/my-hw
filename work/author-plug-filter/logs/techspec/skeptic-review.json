@@ -1,0 +1,66 @@
+{
+  "verdict": "pass",
+  "status": "approved",
+  "summary": "Checked 38 factual claims in tech-spec.md; 36 confirmed in code, 2 minor anomalies found. All file paths, symbols, line-bounded code references, deploy structure, and dependency claims verified against the actual codebase. No critical mirages.",
+  "findings": [
+    {
+      "severity": "minor",
+      "type": "name_mismatch",
+      "claim": "tech-spec Task 5 says: 'Add author_plug_filter.py to the FILES=(...) array in both deploy.sh:52 and .github/workflows/deploy.yml:132' — implying the FILES array starts at deploy.sh:52 and deploy.yml:132.",
+      "actual": "FILES=( opens at deploy.sh:37 and at .github/workflows/deploy.yml:117. Lines 52 and 132 happen to be the boilerplate_filter.py entries inside those arrays — the spec is using those line numbers as anchors near where the new entry should be inserted, not as the array start. Both arrays exist with the listed shape and both currently include boilerplate_filter.py exactly at those lines. Reads as confusing but not wrong: the new line would be inserted near the listed lines.",
+      "source": "tech-spec.md, Task 5 (line 319)",
+      "fix": "Reword to 'insert near deploy.sh:52 / deploy.yml:132 (next to the existing boilerplate_filter.py entry)' or refer to the FILES= start lines (37 / 117)."
+    },
+    {
+      "severity": "minor",
+      "type": "missing_pattern",
+      "claim": "tech-spec Solution (line 15) and Architecture diagram (lines 49-52) describe a 'Google Translate fallback (per-article OR global)' path emerging from a per-article ClaudeTranscreationError.",
+      "actual": "news_bot._fallback_publish at lines 943-956 catches ClaudeTranscreationError and re-raises it (slot strike) — there is NO per-article Google fallback in the current code. Google fallback only fires from (a) is_fallback_active() shortcut at line 927, or (b) ClaudeOutageError degraded mode at line 1004. The convergence point at line 1006 is still correct because no Google path exists for ClaudeTranscreationError — those re-raises bypass _fallback_publish entirely and don't reach the planned variant-B insertion. Spec wording about 'per-article' Google fallback overstates the current state; the consequence for variant B's call site is unaffected.",
+      "source": "tech-spec.md, Solution bullet 2 (line 15) + Architecture diagram (lines 51-52)",
+      "fix": "Drop 'per-article' from the Google-fallback description, or note explicitly that per-article Google fallback was removed in earlier work and only the global outage-degraded path remains."
+    }
+  ],
+  "stats": {
+    "total_claims_checked": 38,
+    "confirmed": 36,
+    "mirages_found": 2,
+    "verified_claims": [
+      "boilerplate_filter.py exists",
+      "news_bot.py exists",
+      "_llm_common.py exists",
+      "tests/test_boilerplate_filter.py exists",
+      "tests/test_fallback_publish_paths.py exists",
+      ".claude/skills/project-knowledge/references/ux-guidelines.md exists",
+      ".claude/skills/project-knowledge/references/patterns.md exists",
+      "deploy.sh exists",
+      ".github/workflows/deploy.yml exists",
+      "boilerplate_filter._BOILERPLATE_PATTERNS at line 38",
+      "boilerplate_filter._MAX_BOILERPLATE_LEN = 80 at line 34",
+      "boilerplate_filter.is_boilerplate at line 68",
+      "boilerplate_filter.filter_boilerplate at line 87",
+      "boilerplate_filter.filter_blocks at line 92",
+      "Legacy '^follow us on \\\\w+' pattern at boilerplate_filter.py:49",
+      "_llm_common._PATCHED_TEXT_BLOCK_TYPES at line 106",
+      "_llm_common._patch_text_with_ru_paragraphs at line 321 (uses _PATCHED_TEXT_BLOCK_TYPES at line 340)",
+      "_llm_common._parse_response paragraph count soft-warning at lines 224-231 (matches '226-230' claim)",
+      "news_bot._fallback_publish at line 838",
+      "news_bot._google_translate inner def at line 877",
+      "news_bot.sanitize_error_message at line 118",
+      "news_bot._google_translate unpack at line 1004 + used_google_fallback flag at 1005 (matches '1004-1005' claim)",
+      "telegraph_publisher.publish_article call at line 1027 (matches 'Telegraph upload at line 1027')",
+      "claude_transcreation.transcreate_via_claude at line 330",
+      "llm_transcreation routes to openai/claude/gemini/openrouter (4 LLM paths claim correct)",
+      "tests/test_boilerplate_filter.py:129 contains 'assert len(long_text) > 80' (matches the line-129 claim)",
+      "patterns.md:28 contains 'Length-bounded at 80 chars' (matches Task 2 prose-update claim)",
+      "ux-guidelines.md:64 contains 'Единственные разрешённые дропы:' header",
+      "ux-guidelines.md:65 contains '(a) Author social links' bullet (matches Decision 6 + Task 2 anchor)",
+      "deploy.sh FILES=( opens at line 37, contains boilerplate_filter.py at line 52",
+      ".github/workflows/deploy.yml FILES=( opens at line 117, contains boilerplate_filter.py at line 132",
+      "telegraph_publisher._build_content_from_blocks exists at telegraph_publisher.py:114",
+      "news_bot.py imports near lines 55-67 (matches 'import block has import author_plug_filter near line 55-60' insertion claim)",
+      "Test count = 682 (matches 'All 682 existing tests still pass' claim)",
+      "news_bot.py logger initialised at line 387 (logger.info/.error calls used throughout — matches Decision 9 logging claim)",
+      "boilerplate_filter._BOILERPLATE_PATTERNS contains exactly 16 patterns (so 5 new + 1 removed = 20 final — bookkeeping consistent)"
+    ]
+  }
+}

@@ -1,0 +1,94 @@
+{
+  "validator": "reality-checker",
+  "batch": [13, 14, 15],
+  "iteration": 2,
+  "previous_report": "reality-batch5-review.json",
+  "status": "approved",
+  "r1_fixes_verified": [
+    {
+      "task": 13,
+      "r1_finding": "deploy.sh FILES missing ux-guidelines.md",
+      "resolution": "RESOLVED IN SPEC — task description and AC now explicitly require FOUR files: claude_transcreation.py, compute_publish_slots.py, outage_state.py, ux-guidelines.md. Section 'What to do' step 1 states the array grows from 9 to 13 elements."
+    },
+    {
+      "task": 13,
+      "r1_finding": "deploy.yml FILES missing ux-guidelines.md",
+      "resolution": "RESOLVED IN SPEC — task AC explicitly requires the same four files in deploy.yml, with note that FILES must be byte-identical mirror of deploy.sh."
+    },
+    {
+      "task": 13,
+      "r1_finding": "deploy.yml missing env-write step for ANTHROPIC_API_KEY/ANTHROPIC_MODEL/TZ",
+      "resolution": "RESOLVED IN SPEC — task step 2 now explicitly requires a new step 'Write runtime env vars to server .env' with idempotent heredoc implementation, passing secrets through env: only."
+    },
+    {
+      "task": 13,
+      "r1_finding": "ANTHROPIC_API_KEY absent from Verify required secrets step in deploy.yml",
+      "resolution": "RESOLVED IN SPEC — task step 2 and AC explicitly require ANTHROPIC_API_KEY added to required-secrets verification loop."
+    },
+    {
+      "task": 13,
+      "r1_finding": "R1 minor: Python modules (claude_transcreation.py, compute_publish_slots.py, outage_state.py) missing from FILES",
+      "resolution": "RESOLVED IN SPEC — task description and AC now list all three Python modules as required FILES elements alongside ux-guidelines.md."
+    }
+  ],
+  "findings": [
+    {
+      "severity": "major",
+      "category": "feasibility",
+      "task": 13,
+      "issue": "Task 13 step 1 instructs updating deploy.sh headline comment (lines 12–21) to note that 'three new *.py-modules are now cron-side runtime imports of news_bot.py and ux-guidelines.md is runtime cron-side dependency.' However, the comment currently describes the FILES role as 'everything the hourly cron path in news_bot.job() needs.' After Task 8 changes the cron to daily 12:00 MSK (not hourly), this description is also outdated. The task step mentions updating for the new module roles but does not explicitly flag that 'hourly' in the comment also needs changing to 'daily 12:00 MSK'. An implementer reading only step 1 will update the module list in the comment but may leave 'hourly cron path' unchanged.",
+      "fix": "Add an explicit instruction in step 1 (or step 2's 'deploy summary notice' bullet) to also replace 'hourly cron path' with 'daily 12:00 MSK cron path' in deploy.sh headline comment lines 13-14. The task already requires changing the deploy.yml 'Deploy summary' notice from '12h tick' to '12:00 MSK cron tick' — the same change is needed in deploy.sh headline comment."
+    },
+    {
+      "severity": "major",
+      "category": "feasibility",
+      "task": 13,
+      "issue": "Task 13 'What to do' step 2 instructs adding the idempotent env-write step using 'grep -v + append' pattern: `grep -v '^ANTHROPIC_API_KEY=' .env > .env.tmp && mv .env.tmp .env && echo \"KEY=$VALUE\" >> .env`. The `echo \"KEY=$VALUE\"` form embeds the VALUE directly in the shell command string. If this is implemented as a literal `run:` step in deploy.yml with `echo \"ANTHROPIC_API_KEY=$ANTHROPIC_API_KEY\"`, the value is passed as a shell argument (visible in `ps -ef`, and GitHub Actions masking may not cover the heredoc body). The task's 'Implementation hints' correctly says to pass secrets only through `env:` of the step and NOT use `echo $SECRET` in commands. However, the 'Edge cases' section's idempotency example pattern (`echo \"KEY=$VALUE\" >> .env`) contradicts this by showing a literal echo — an implementer following the Edge cases example literally would write an insecure step. The two instructions conflict.",
+      "fix": "Correct the idempotency example in the 'Edge cases' section to use the variable from `env:` via the SSH heredoc form rather than a local shell echo. The correct pattern is: the run: step SSH-es to the server with the secret as an env var, and the heredoc on the server side appends `\"$ANTHROPIC_API_KEY\"` — which is the env var of the remote bash session, not the local GitHub Actions shell. Example: `ssh ... 'grep -v \"^ANTHROPIC_API_KEY=\" $DEPLOY_PATH/.env > /tmp/.env.tmp && mv /tmp/.env.tmp $DEPLOY_PATH/.env && echo \"ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY}\" >> $DEPLOY_PATH/.env'` where ANTHROPIC_API_KEY is passed to ssh via SSH session env or the heredoc. The task's 'Implementation hints' already recommend the correct SSH approach — the Edge cases example should be replaced with the heredoc form to eliminate the contradiction."
+    },
+    {
+      "severity": "minor",
+      "category": "feasibility",
+      "task": 13,
+      "issue": "Task 13 References architecture.md 'External Integrations' at 'строки 73–113'. Actual architecture.md shows External Integrations section starts at line 76 (not 73), and the section ends around line 113. The line reference is off by 3 lines. Similarly, 'Key Dependencies' is cited at 'строки 53–69' but actual starts at line 55. These minor line number mismatches will not prevent implementation (an agent will find the sections by heading name) but may cause confusion during review when auditing whether the specified lines were modified.",
+      "fix": "Minor correction: update line references in task Details to match actual file: 'Key Dependencies' is lines 55-70, 'External Integrations' is lines 76-113. Not blocking."
+    },
+    {
+      "severity": "minor",
+      "category": "feasibility",
+      "task": 13,
+      "issue": "Task 13 step 5 instructs updating deployment.md 'Optional (tunable defaults)' by removing QUEUE_CAP, IDLE_TIMEOUT_HOURS, GRACE_WINDOW_HOURS, FALLBACK_THROTTLE_SECONDS and adding ANTHROPIC_MODEL. However, the current deployment.md line 85 in the Pre-Deploy Checklist says 'all 4 required vars + optional tuning vars'. After removing the 4 legacy optional vars and adding ANTHROPIC_MODEL, this checklist item text becomes misleading (it says '4 required vars' but after the task Required grows to 6: existing 4 + ANTHROPIC_API_KEY + TZ). Task step 5 says to add ANTHROPIC_API_KEY and TZ to Required and update the checklist, but the count '4 required vars' in the existing checklist text also needs updating. This is a minor doc consistency gap.",
+      "fix": "When updating deployment.md Pre-Deploy Checklist (step 5), also update the count reference from '4 required vars' to '6 required vars' (or remove the specific count and reference .env.example instead)."
+    },
+    {
+      "severity": "minor",
+      "category": "feasibility",
+      "task": 14,
+      "issue": "Task 14 instructs auditor to grep for '_idle_fallback_publish' as a deleted symbol (focus area 5). However, as noted in R1, no function named '_idle_fallback_publish' exists in the current codebase — the pattern is implemented as inline logic in job() with markers like list_notified_overdue/list_pending_stale. The grep will return no results even in the pre-deletion state, creating a false pass. The correct proxy symbols are 'list_notified_overdue', 'list_pending_stale', 'GRACE_WINDOW_HOURS' (in news_bot.py use sites), and 'IDLE_TIMEOUT_HOURS'. This finding was raised as minor in R1 and remains unaddressed in the task spec.",
+      "fix": "Update focus area 5 grep command to include 'list_notified_overdue', 'list_pending_stale' as proxy signals for the inline idle-fallback code alongside the named symbols. Alternatively note in the task that '_idle_fallback_publish' is the conceptual name used in tech-spec but the actual code pattern is inline and should be found via the surrounding env-var markers."
+    },
+    {
+      "severity": "minor",
+      "category": "tdd",
+      "task": 14,
+      "issue": "Task 14 instructs auditor to verify that tests/test_overflow.py and tests/test_idle_fallback.py are physically deleted (Task 9 deliverable). Both files currently exist in the codebase (confirmed via directory listing: tests/test_idle_fallback.py and tests/test_overflow.py present). Since tasks 1-12 are not yet implemented, the auditor would correctly flag their presence — but this is expected pre-implementation. The task correctly declares depends_on: [13] which transitively depends on tasks 1-12, so the dependency is correct. This is not a new finding but remains a pre-condition that must hold before Task 14 runs.",
+      "fix": "No spec change needed. Task 14 must only run after Task 9 (Wave 5) completes and deletes these files. The dependency chain is correctly declared."
+    },
+    {
+      "severity": "minor",
+      "category": "feasibility",
+      "task": 15,
+      "issue": "Task 15 Verification Steps 'Automated' section includes grep commands that will run against post-implementation files (claude_transcreation.py, outage_state.py, etc.). Since these files do not yet exist (tasks 1-12 unimplemented), the greps will return 'no such file' rather than empty results — which is a different outcome than 'grep found nothing (PASS)'. An implementer or CI running these checks before implementation would get misleading 'file not found' errors. The task correctly declares depends_on: [13], so this is a correct pre-condition.",
+      "fix": "No spec change needed. The greps are correct for post-implementation state. Implementer must run Task 15 only after all 13 implementation tasks complete."
+    }
+  ],
+  "stats": {
+    "tasks_checked": 3,
+    "claims_verified": 38,
+    "issues_found": 7,
+    "r1_criticals_resolved": 5,
+    "new_criticals": 0,
+    "new_majors": 2,
+    "new_minors": 5
+  }
+}

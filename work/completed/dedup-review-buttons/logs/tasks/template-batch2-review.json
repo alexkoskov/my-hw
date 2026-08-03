@@ -1,0 +1,43 @@
+{
+  "validator": "task-validator",
+  "batch": [6, 7, 8, 9, 10],
+  "status": "changes_required",
+  "findings": [
+    {
+      "severity": "critical",
+      "category": "structure",
+      "task": 8,
+      "section": "Reviewers",
+      "issue": "The `## Reviewers` section is entirely missing. Structure jumps from `## Details` (L83) straight to `## Post-completion` (L116). Template mandates a `## Reviewers` section for every task; sibling audit tasks 7 and 9 correctly include it (stating `none` / `Нет` with the audit-report output path). frontmatter `reviewers: []` therefore has no body counterpart to cross-check.",
+      "fix": "Add a `## Reviewers` section before `## Post-completion`, e.g.: `- **none** — this task is itself the audit (review). Full report: work/dedup-review-buttons/logs/working/task-8/security-audit.md` (mirror Task 7's Reviewers section)."
+    },
+    {
+      "severity": "critical",
+      "category": "structure",
+      "task": 6,
+      "section": "What to do",
+      "issue": "The `## What to do` section is missing. Structure goes `## Description` (L20) -> `## Acceptance Criteria` (L31), skipping the mandatory `## What to do` section that all sibling tasks (7, 8, 9, 10) include. The step content does exist implicitly inside Description (the three-file bullet list), but the required section header is absent, breaking template compliance and section order.",
+      "fix": "Add a `## What to do` section after `## Description` with the concrete steps (edit .env.example block, add inbound-path subsection + review_token key to architecture.md, add env var + operator runbook to deployment.md, run documentation-writing consistency check). Move the how-to content out of Description into this section."
+    },
+    {
+      "severity": "critical",
+      "category": "decomposition",
+      "task": 6,
+      "section": "frontmatter",
+      "issue": "Dependency/wave violation: Task 6 has `wave: 3` and `depends_on: [5]`, but Task 5 is also `wave: 3` (confirmed in tasks/5.md and tech-spec Wave 3 grouping). A task cannot depend on another task in the SAME wave — waves run in parallel, so Task 6 could start before its dependency Task 5 finishes. Task 6's own Description/Dependencies also state 'Зависит от Task 5 ... должны быть финализированы'. Root cause: tech-spec groups Task 5 and Task 6 under the same 'Wave 3'.",
+      "fix": "Move Task 6 to `wave: 4` (a docs wave after the implementation waves), or drop `depends_on: [5]` if the docs can truly be written in parallel with Task 5. Reconcile with tech-spec Implementation Tasks wave grouping."
+    },
+    {
+      "severity": "minor",
+      "category": "content",
+      "task": 7,
+      "section": "Details",
+      "issue": "The `## Details` section has Files (Файлы фичи), Edge cases, and Implementation hints subsections but lacks an explicit **Dependencies** subsection required by the template. Sibling audit tasks 8 and 9 include an explicit `**Dependencies:**` line (depends on Tasks 1-6, runs in Audit Wave in parallel with the other audits); Task 7 only conveys this indirectly via the Description and 'Границы' notes.",
+      "fix": "Add a `**Dependencies:**` subsection to Details, e.g. 'depends on Tasks 1-6 (all feature code written); runs in Audit Wave in parallel with Task 8 (security) and Task 9 (test audit); no packages added.'"
+    }
+  ],
+  "stats": {
+    "tasks_checked": 5,
+    "issues_found": 4
+  }
+}

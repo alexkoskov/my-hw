@@ -1,0 +1,159 @@
+{
+  "validator": "task-validator",
+  "iteration": 2,
+  "batch": [11, 12, 13, 14, 15],
+  "previous_report": "logs/tasks/template-batch3-review.json",
+  "status": "approved",
+  "summary": "R1 had 0 critical / 0 major / 6 minor findings → status was 'approved'. Iteration 2 re-checks the same 5 task files. None of the 6 R1 minor findings were addressed by the task author between iterations (presumably because R1 status was already 'approved' and the findings were stylistic). Re-validating those findings independently: 4 of 6 are persistent and re-asserted at the same severity; 2 of 6 are downgraded to acknowledgements (R1-#3 explicitly accepted-as-is in R1 fix-text; R1-#4 explicitly 'no fix required' in R1 fix-text — flagging again would be noise). One additional small finding surfaced on closer re-reading. Net: 5 minor findings, no criticals, status remains 'approved'.",
+  "r1_findings_status": [
+    {
+      "r1_index": 1,
+      "r1_severity": "minor",
+      "r1_summary": "Reviewer report path conventions inconsistent across batch (task 11 absolute, task 12 relative, task 13 absolute)",
+      "r2_status": "unresolved",
+      "evidence": "task 11 lines 167-168 still use absolute `/workspaces/debian-2/my-hw/work/...`; task 12 lines 139-140 use relative `work/llm-transcreation-and-distributed-publishing/...`; task 13 lines 165-167 use absolute paths.",
+      "decision": "re-flag at minor"
+    },
+    {
+      "r1_index": 2,
+      "r1_severity": "minor",
+      "r1_summary": "Task 13 Verification Steps lacks Automated subsection; bash -n / yaml lint / doc grep are bundled inside Smoke",
+      "r2_status": "unresolved",
+      "evidence": "task 13 line 107 has only `### Smoke`; steps 1 (bash -n), 4 (yaml lint), 5 (doc grep) at lines 111, 127, 128 are still under Smoke heading.",
+      "decision": "re-flag at minor"
+    },
+    {
+      "r1_index": 3,
+      "r1_severity": "minor",
+      "r1_summary": "Task 13 modifies 5 files spanning two concerns (deploy bundle + PK docs); split candidate but cohesive",
+      "r2_status": "explicitly accepted in R1 fix-text ('Acceptable as-is per cohesion ... if reviewer prefers splitting')",
+      "decision": "do not re-flag — would be noise"
+    },
+    {
+      "r1_index": 4,
+      "r1_severity": "minor",
+      "r1_summary": "Task 13 Acceptance Criteria expands tech-spec single-line Verify-smoke into 6 numbered steps",
+      "r2_status": "explicitly accepted in R1 fix-text ('No fix required — enhancement is consistent with tech-spec intent')",
+      "decision": "do not re-flag — would be noise"
+    },
+    {
+      "r1_index": 5,
+      "r1_severity": "minor",
+      "r1_summary": "Task 12 TDD Anchor introductory paragraph awkwardly invokes red→green TDD ritual for a test-creation task",
+      "r2_status": "unresolved",
+      "evidence": "task 12 line 59 still reads 'TDD-anchor ИСПОЛНЕН тем, что зеленят тесты против уже-смёрженных Wave 1–6 модулей' — original framing intact.",
+      "decision": "re-flag at minor (cosmetic but persistent)"
+    },
+    {
+      "r1_index": 6,
+      "r1_severity": "minor",
+      "r1_summary": "Task 15 references 'AC419' and 'AC420' which do not exist in user-spec (which has AC1–AC31)",
+      "r2_status": "unresolved",
+      "evidence": "task 15 lines 38-39 still contain 'Покрыто ли AC419' and 'init_schema() exception path (AC420)'. user-spec ACs go AC1–AC31; tech-spec Acceptance Criteria has bullets 'bot_state value reads tolerate corrupted/unexpected text' and 'init_schema() exception path' (the actual referents).",
+      "decision": "re-flag at minor — typo is small but reads as a broken cross-reference for the executing agent"
+    }
+  ],
+  "findings": [
+    {
+      "severity": "minor",
+      "category": "consistency",
+      "task": 11,
+      "section": "Reviewers",
+      "issue": "Reviewer report paths use absolute paths (`/workspaces/debian-2/my-hw/work/.../logs/working/task-11/...`) while task 12 in the same batch uses relative paths (`work/.../logs/working/task-12/...`) and task 13 uses absolute paths again. Both forms are acceptable per task-creator guidance, but the inconsistency across this batch was flagged in R1 and remains unaddressed in R2.",
+      "fix": "Pick one convention and apply it to tasks 11, 12, 13 uniformly. Recommend the relative `work/{feature}/logs/working/task-{N}/...` form (matches the template example most closely; task 12 already uses it, so changing tasks 11 and 13 to relative is the smaller diff).",
+      "r1_carry_over": true
+    },
+    {
+      "severity": "minor",
+      "category": "structure",
+      "task": 13,
+      "section": "Verification Steps",
+      "issue": "Verification Steps has only a `### Smoke` subsection. Steps 1 (`bash -n deploy.sh`), 4 (`python3 -c 'import yaml; yaml.safe_load(...)'`), 5 (grep over PK docs for deleted symbols) are non-interactive automated checks that belong under `### Automated` rather than under Smoke. Steps 2 (scp flatten emulation), 3 (.env idempotency), 6 (cross-link grep) genuinely exercise behavior and are correctly under Smoke. R1 finding repeated here unchanged.",
+      "fix": "Promote steps 1, 4, 5 into a new `### Automated` subsection above `### Smoke`. Keep steps 2, 3, 6 under Smoke. Frontmatter `verify: [smoke]` already declared — leave as is.",
+      "r1_carry_over": true
+    },
+    {
+      "severity": "minor",
+      "category": "content",
+      "task": 12,
+      "section": "TDD Anchor",
+      "issue": "TDD Anchor introductory paragraph (line 59) still frames the task as 'TDD-anchor ИСПОЛНЕН тем, что зеленят тесты против уже-смёрженных Wave 1–6 модулей'. The 4 named tests below the framing satisfy the structural requirement (path::name + description), so the section is acceptable, but the framing invokes a red→green TDD cycle that doesn't fit a task whose deliverable IS the tests themselves. Carried over from R1 unchanged.",
+      "fix": "Optional rephrase: 'These 4 tests are the deliverable; the success signal is green-on-merge against post-Wave-6 modules.' Avoids the awkward 'TDD-anchor ИСПОЛНЕН' phrasing while keeping the intent.",
+      "r1_carry_over": true
+    },
+    {
+      "severity": "minor",
+      "category": "consistency",
+      "task": 15,
+      "section": "What to do (item 3)",
+      "issue": "Lines 38-39 still reference 'AC419' and 'AC420' as if they were user-spec acceptance criteria. user-spec has AC1–AC31 only. The actual referents are tech-spec Acceptance Criteria bullets: 'bot_state value reads tolerate corrupted/unexpected text (return None or default; never crash startup)' and 'init_schema() exception path: if migration fails, admin-ping with the failure type → process exits cleanly'. The 'AC419' / 'AC420' labels appear to be typos / internal numbering and will produce a broken cross-reference for the executing agent (which will grep user-spec for these labels and find nothing).",
+      "fix": "Replace 'AC419' with 'tech-spec AC: bot_state value reads tolerate corrupted/unexpected text' (or quote the bullet). Replace 'AC420' with 'tech-spec AC: init_schema() exception path → admin-ping + clean exit (Risk 5 mitigation)'.",
+      "r1_carry_over": true
+    },
+    {
+      "severity": "minor",
+      "category": "consistency",
+      "task": 14,
+      "section": "Reviewers (frontmatter + body)",
+      "issue": "Task 14 frontmatter declares `reviewers: []` (empty array) while the Reviewers body says 'Нет. Аудит-задача сама является ревью; результаты её не пере-ревьюятся.' This is internally consistent, and the validator checklist allows both `[]` and `[none]` for self-verifying tasks. Same pattern in task 15. Flagging only because the audit-wave convention `[none]` (sentinel) is more explicit than `[]` (could be read as 'forgot to fill'). Iteration 1 did not flag this; surfaced on R2 cross-check of audit-wave tasks.",
+      "fix": "Optional: switch `reviewers: []` to `reviewers: [none]` in tasks 14 and 15 (and task 16 if applicable, outside this batch). Pure stylistic cleanup; no functional impact. Leaving as `[]` is also acceptable.",
+      "r1_carry_over": false
+    }
+  ],
+  "carry_forward_check": {
+    "task_11": {
+      "tech_spec_files_to_modify": ["tests/test_integration.py", "tests/test_job_prep_phase.py"],
+      "task_files": ["tests/test_integration.py", "tests/test_job_prep_phase.py"],
+      "match": true,
+      "ac_carry_forward": "tech-spec describes intent in plain prose; task 11 elaborates into 10 explicit AC items covering all named scenarios (outage, recovery, container restart, manual-review preemption) plus crash-loop guard and grep-sanity. No tech-spec AC dropped.",
+      "tdd_carry_forward": "tech-spec does not list explicit TDD anchors for task 11; task adds 9 TDD anchors covering all named test cases. Pure additive."
+    },
+    "task_12": {
+      "tech_spec_files_to_modify": ["tests/test_distributed_schedule_integration.py (new)"],
+      "task_files": ["tests/test_distributed_schedule_integration.py (NEW)"],
+      "match": true,
+      "ac_carry_forward": "tech-spec lists 4 scenarios; task 12 covers all 4 in AC items + adds explicit AC mapping (AC1–AC8, AC14–AC17, AC21). No loss.",
+      "tdd_carry_forward": "tech-spec lists 4 scenarios as plain prose; task 12 names 4 TDD anchors with full path::name + description. Pure additive."
+    },
+    "task_13": {
+      "tech_spec_files_to_modify": ["deploy.sh", ".github/workflows/deploy.yml", "architecture.md", "patterns.md", "deployment.md"],
+      "task_files": ["deploy.sh", ".github/workflows/deploy.yml", "architecture.md", "patterns.md", "deployment.md"],
+      "match": true,
+      "ac_carry_forward": "tech-spec single Verify-smoke 'dry-run deploy to staging path' is expanded to 6 numbered smoke steps in task. No loss; enhancement consistent with intent (already accepted in R1).",
+      "tdd_carry_forward": "N/A — task 13 is deploy/docs, no TDD anchor expected (correctly absent)."
+    },
+    "task_14": {
+      "tech_spec_focus_areas": "(1) idempotency, (2) SDK exception classification, (3) state machine, (4) compute_publish_slots, (5) leftover refs, (6) flat-path fallback, (7) manual-review call sites",
+      "task_focus_areas": "All 7 focus areas reproduced verbatim in task 14 What to do + AC + Description. No loss.",
+      "ac_carry_forward": "Full match. Task adds operational AC (read all sources, write logs/audit/code-audit.md, no in-source edits). Pure additive.",
+      "tdd_carry_forward": "N/A — audit task, no code deliverable. Correctly omitted."
+    },
+    "task_15": {
+      "tech_spec_focus_areas": "(1) ANTHROPIC_API_KEY redaction, (2) prompt injection from article body, (3) SQLite deadlock, (4) bot_state SQL injection, (5) deploy bundle secret exposure, (6) Anthropic API env data leak",
+      "task_focus_areas": "S1–S6 reproduce all 6 tech-spec checks verbatim. No loss. Plus boundary checks for _load_prompt path traversal, bot_state corruption tolerance, init_schema exception path.",
+      "ac_carry_forward": "All 6 tech-spec checks have explicit AC bullets + 3 Decision-mapping ACs (Decision 12, 13, 16). Pure additive.",
+      "tdd_carry_forward": "N/A — audit task, no code deliverable. Correctly omitted."
+    }
+  },
+  "structural_validation": {
+    "frontmatter_well_formed": "all 5 tasks pass: status=planned, depends_on is array of int, wave is int, skills is array, reviewers is array, verify is array",
+    "section_order": "all 5 tasks follow template order",
+    "tdd_anchor_presence": "tasks 11, 12 have TDD Anchor (code-writing tasks) — correct; tasks 13, 14, 15 — task 13 has no TDD Anchor (deploy bundle/docs, correctly absent); tasks 14, 15 are audit tasks without TDD Anchor (correct, non-code deliverable)",
+    "context_files_mandatory": "user-spec.md, tech-spec.md, decisions.md, project.md, architecture.md, patterns.md present in all 5 tasks (some via different relative path style; both `~/.claude/...` and `../../../.claude/...` accepted)",
+    "no_template_placeholders": "no `[Task Name]`, `[What we do...]`, `{round}` (used as legitimate template variable in reviewer paths, expected), `{N}`, `{reviewer-name}` placeholder leakage detected in human-readable content",
+    "skills_match_frontmatter": "task 11/12 [code-writing] ↔ Required Skills body match; task 13 [deploy-pipeline] ↔ body match; task 14 [code-reviewing] ↔ body match; task 15 [security-auditor] ↔ body match",
+    "reviewers_match_frontmatter": "task 11 [code-reviewer, test-reviewer] ↔ body match; task 12 same; task 13 [code-reviewer, security-auditor, deploy-reviewer] ↔ body match; tasks 14, 15 [] ↔ body says 'Нет' (consistent)",
+    "depends_on_valid": "task 11 depends on [10] (wave 7 > task 10's wave); task 12 depends on [10] (wave 7 > task 10's wave); task 13 depends on [11, 12] (wave 8 > both wave 7); tasks 14, 15 depend on [13] (wave 9 > task 13's wave 8). No cycles; all depends_on point to existing tasks."
+  },
+  "stats": {
+    "tasks_checked": 5,
+    "issues_found": 5,
+    "critical": 0,
+    "major": 0,
+    "minor": 5,
+    "r1_findings_total": 6,
+    "r1_findings_persistent": 4,
+    "r1_findings_explicitly_accepted_in_r1": 2,
+    "new_findings_in_r2": 1
+  }
+}

@@ -1,0 +1,196 @@
+{
+  "validator": "reality-checker",
+  "batch": [1, 2, 3, 4, 5],
+  "iteration": 3,
+  "focus": "cross-task integration — duplicate heavy-resource init, hidden dependencies, inconsistent approaches, wave-graph integrity",
+  "status": "approved",
+  "round2_findings_closure": {
+    "C_task01_line121_configure_third_party_logging": {
+      "original_finding": "task01.md:121 retained hallucinated function name `_configure_third_party_logging`",
+      "status": "closed",
+      "evidence": "task01.md:121 now reads 'module-level loops at `news_bot.py:184` and `:227`' — identical phrasing used in tasks 02 and 03. grep confirms 0 occurrences of `_configure_third_party_logging` anywhere in tasks/ directory."
+    },
+    "M_task04_TestIsHotwheels_count": {
+      "original_finding": "task04.md AC breakdown said 'TestIsHotwheels 4'; should be 5",
+      "status": "closed",
+      "evidence": "task04.md:44 now reads '`TestIsHotwheels` 5 + `TestBuildEntry` 5 + остальные сохранённые' — correct."
+    }
+  },
+  "cross_task_checks": {
+    "F1_duplicate_heavy_resource": {
+      "check": "No two tasks init the same heavy resource (ML model, DB pool, browser instance, API client) without shared-resource plan",
+      "result": "pass",
+      "evidence": "tech-spec Architecture 'Shared resources: None'. All tasks are read-only audits (02-04) or a single implementation task (01). No DB pool, browser, or ML model anywhere. Module-level compiled regex in task 01 is standard Python practice explicitly noted as not a heavy shared resource in tech-spec. No new dependencies declared."
+    },
+    "F2_tech_spec_shared_resources_owner": {
+      "check": "Tech-spec 'Shared Resources: None' — no task needs to be designated owner of a resource",
+      "result": "pass",
+      "evidence": "tech-spec line 69-71: 'Shared resources: None.' No DB pools, no LLM clients, no browser instances. No owner task needed."
+    },
+    "F3_wave2_no_shared_file_writes": {
+      "check": "Tasks 02, 03, 04 (Wave 2) do not write to the same file or fixture",
+      "result": "pass",
+      "evidence": "Task 02 writes exclusively to `logs/tasks/code-audit-report.json`. Task 03 writes exclusively to `logs/tasks/security-audit-report.json`. Task 04 writes exclusively to `logs/tasks/test-audit-report.json`. Three distinct output files; no overlap. All three tasks state 'Может выполняться параллельно... нет shared write-state, все три пишут в разные JSON-файлы' (e.g., task04.md:127)."
+    },
+    "F4_audit_tasks_read_task01_outputs": {
+      "check": "Tasks 02-05 reference mattel_news_source.py, mattel_flight_builder.py, and test files that are outputs of task 01; depends_on chain must enforce ordering",
+      "result": "pass",
+      "evidence": "task02.md frontmatter: `depends_on: [01]`. task03.md frontmatter: `depends_on: [01]`. task04.md frontmatter: `depends_on: [01]`. task05.md frontmatter: `depends_on: [02, 03, 04]`. The wave structure (01=wave1, 02-04=wave2, 05=wave3) enforces correct execution order. Tasks 02-04 all state explicitly 'Task 01 должен быть done к старту' and block on in_progress/failed state."
+    },
+    "F5_task05_reads_wave2_outputs": {
+      "check": "Task 05 reads code-audit-report.json, security-audit-report.json, test-audit-report.json produced by tasks 02-04; depends_on and missing-file guard enforce ordering",
+      "result": "pass",
+      "evidence": "task05.md frontmatter: `depends_on: [02, 03, 04]`. Step 2 implements missing-file guard: if any audit report absent → QA status `blocked`, STOP. The guard distinguishes 'not-yet-run' (blocked) from 'failed' (fail). task05.md:29 specifies absolute paths in 'Files to read' section. Schema template uses relative path labels only for documentation."
+    },
+    "F6_wave2_consistent_approaches": {
+      "check": "Tasks 02, 03, 04 use consistent approaches to the same problem — no conflicting patterns or libraries",
+      "result": "pass",
+      "evidence": "All three Wave 2 tasks are read-only audits. They divide scope without overlap: task02=code quality (Decisions 1-7), task03=security (Decision 8), task04=test quality. Each writes to a distinct JSON file. No library or pattern conflict exists because these tasks produce documentation artifacts, not code."
+    },
+    "F7_hallucinated_notify_import_closed": {
+      "check": "_notify hallucination in test imports — confirmed closed across all tasks",
+      "result": "pass",
+      "evidence": "task01.md:22,34: '_notify сохраняется по имени + сигнатуре для module-internal стабильности (тесты его напрямую НЕ импортируют)'. task02.md:29,43,84,117: '_notify в test imports НЕ ожидается — не искать'. task03.md:30,72,91,110: 'функции _configure_third_party_logging НЕ существует — log-suppression реализована именно как module-level loops at news_bot.py:184 and :227'. Verified in current test file: import block (lines 12-22) does NOT include _notify. Consistent and accurate across all tasks."
+    },
+    "F8_configure_third_party_logging_hallucination_closed": {
+      "check": "_configure_third_party_logging hallucination — confirmed closed in all three previously-affected locations",
+      "result": "pass",
+      "evidence": "task01.md:121 fixed (confirmed above). task02.md:29 — 'функции _configure_third_party_logging НЕ существует'. task03.md:30,72,91,110 — all use 'module-level loops at news_bot.py:184 and :227'. Consistent; 0 remaining occurrences of _configure_third_party_logging in any task file."
+    },
+    "F9_report_paths_consistent": {
+      "check": "Report paths in tasks 02/03/04 (producers) match paths consumed by task 05 (consumer)",
+      "result": "pass",
+      "evidence": "Producer paths: task02 → .../logs/tasks/code-audit-report.json; task03 → .../logs/tasks/security-audit-report.json; task04 → .../logs/tasks/test-audit-report.json. Consumer paths in task05 'Files to read': same three absolute paths. Schema labels 'logs/tasks/<which>.json' are documentation-only. No path mismatch."
+    },
+    "F10_test_count_consistent": {
+      "check": "Test count threshold converges on >=32 across all tasks referencing it",
+      "result": "pass",
+      "evidence": "task01.md:31 — '≥32 теста (32-38)'. task01.md:109 — 'Test count: ≥32 теста (точное число 32–38)'. task04.md:44 — 'минимум 32 теста'; 'Проверка: actual >= 32, не строгое равенство'. task05.md Step1 — '≥32 тестов reported'. All tasks use >= threshold, not strict equality. Range 32-38 consistently documented."
+    },
+    "F11_error_matrix_format_consistent": {
+      "check": "Audit tasks reference the canonical inline error matrix from tech-spec; no conflicting formats",
+      "result": "pass",
+      "evidence": "All tasks reference tech-spec 'Architecture / How it works / Error handling' as the authoritative source. task01.md Details section reproduces the exact 12-row matrix ES1-ES10+ES9b+ES9c with precise message formats. task02.md checklist item Decision-6: 'fail-soft notifier-contract: для каждой ES-строки матрицы (ES1–ES10, кроме ES9c) есть путь'. task03.md checklist items cross-reference the same ES codes. task04.md AC line 47 enumerates all 12 rows correctly: 'ES1, ES2, ES3, ES4, ES5, ES6, ES7, ES8, ES9, ES9b, ES9c, ES10'. No task invents alternative error message formats."
+    },
+    "F12_security_review_json_round1_count": {
+      "check": "Task 03 round1Closure verification count (8 entries) matches actual security-review.json",
+      "result": "pass",
+      "evidence": "security-review.json confirmed: round1Closure has 8 entries (entries 1-7 status=closed, entry 8 status=not_addressed). task03.md:31 says 'всего 8 entries'. task03.md:52 says 'round1_closure_verification (8 entries для round-1 #1–#8)'. Match confirmed."
+    }
+  },
+  "findings": [
+    {
+      "severity": "minor",
+      "category": "feasibility",
+      "task": 4,
+      "issue": "task04.md Description (line 22) says 'всех 11 строк error-matrix (ES1–ES10)'. The actual tech-spec error matrix has 12 rows: ES1, ES2, ES3, ES4, ES5, ES6, ES7, ES8, ES9, ES9b, ES9c, ES10. The shorthand 'ES1–ES10' is ambiguous — it could be read as 10 items, not 12. The task's own What-to-do step 5 (line 32) correctly says 'ES1–ES10 + ES9b + ES9c', and the AC section (line 47) correctly enumerates all 12 rows, and the report schema (line 61) says '12 entries — ES1..ES10 + ES9b + ES9c'. However, the description summary is inconsistent with these three places and could cause a task executor to omit ES9b/ES9c from their mental model of required coverage.",
+      "fix": "In task04.md line 22, change 'всех 11 строк error-matrix (ES1–ES10)' to 'всех 12 строк error-matrix (ES1–ES10, включая ES9b и ES9c)' to match the authoritative What-to-do step 5, AC section, and report schema."
+    },
+    {
+      "severity": "minor",
+      "category": "hints",
+      "task": 4,
+      "issue": "task04.md lines 30 and 117 include _notify in the list of 'внутренние helper'ы, импортируемые тестами' or 'импортируемы (Decision 3)'. Decision 3 explicitly distinguishes _notify — kept for module-internal stability only, NOT imported by tests — from _is_hotwheels, _build_entry, _extract_entries which ARE imported by tests. The phrasing 'имена внутренних helper'ов (_is_hotwheels, _build_entry, _notify, _extract_entries) импортируемы (Decision 3)' on line 117 is ambiguous and could cause the test-auditor to look for _notify in the test import block (and incorrectly flag its absence as a problem).",
+      "fix": "In task04.md lines 30 and 117, clarify that the auditor reads mattel_news_source.py to confirm `def _notify(` exists in the module (module-internal), but should NOT look for _notify in test imports. Mirror the phrasing in task02.md:117: '_notify сохранён по имени и сигнатуре для module-internal consistency (НЕ импортируется тестами — не искать его в test imports)'."
+    },
+    {
+      "severity": "minor",
+      "category": "hints",
+      "task": "tech-spec",
+      "issue": "tech-spec Testing Strategy line 186 contains an arithmetic inconsistency: '32 tests after the rewrite (15 keep + 11 update + 6 new + 1 SSRF guard)'. The formula 15+11+6+1=33, not 32. The Acceptance Criteria section (line 273) correctly states '32 in test_mattel_news_source.py (15 keep + 11 update + 6 new)' where the SSRF guard test is counted inside the '6 new' bucket. The tasks themselves use >=32 with the 6-includes-SSRF interpretation, so no executor will fail. But the misleading parenthetical '(15+11+6+1)' in the Testing Strategy description could cause confusion when auditors cross-check counts.",
+      "fix": "In tech-spec line 186, change '(15 keep + 11 update + 6 new + 1 SSRF guard)' to '(15 keep + 11 update + 6 new; where 6 new = 3 base new + 1 SSRF guard + 2 anti-drift smoke)' to make the breakdown self-consistent."
+    }
+  ],
+  "per_task_notes": {
+    "task_01": {
+      "status": "clean",
+      "round3_checks": [
+        "Hallucinated _configure_third_party_logging in Security ACs: CLOSED (line 121 fixed)",
+        "All 12 ES error matrix rows correctly enumerated in AC section (line 125)",
+        "Test count stated as >=32 with range 32-38 — correct",
+        "Builder signatures complete with truncate=False param",
+        "depends_on: [] correct for Wave 1",
+        "Output files: mattel_news_source.py, tests/test_mattel_news_source.py, tests/test_mattel_integration.py, tests/fixtures/mattel_flight_builder.py (CREATE), tests/fixtures/mattel_news.html (DELETE). No conflicts with any other task."
+      ]
+    },
+    "task_02": {
+      "status": "clean",
+      "round3_checks": [
+        "depends_on: [01] correct — reads outputs of task 01",
+        "Output: logs/tasks/code-audit-report.json (unique, no conflict with tasks 03/04)",
+        "Scope correctly bounded to Decisions 1-7 (not Decision 8 = task 03 scope)",
+        "_notify phrasing correct: 'НЕ импортируется тестами — не искать'",
+        "No code modifications — read-only audit task",
+        "No pseudocode in hints — orientation/checklist style throughout"
+      ]
+    },
+    "task_03": {
+      "status": "clean",
+      "round3_checks": [
+        "depends_on: [01] correct — reads outputs of task 01",
+        "Output: logs/tasks/security-audit-report.json (unique, no conflict with tasks 02/04)",
+        "security-review.json path absolute: /workspaces/debian-2/my-hw/work/mattel-parser-rewrite/logs/techspec/security-review.json — file confirmed to exist",
+        "round1Closure 8-entry count matches actual security-review.json",
+        "not_addressed entry #8 correctly handled: 'closure_rejected + rationale, без code-verification'",
+        "_configure_third_party_logging hallucination: fully corrected in all 4 occurrences",
+        "log-suppression lines 184/227 in news_bot.py verified in codebase"
+      ]
+    },
+    "task_04": {
+      "status": "pass-with-minor-findings",
+      "round3_checks": [
+        "depends_on: [01] correct — reads outputs of task 01",
+        "Output: logs/tasks/test-audit-report.json (unique, no conflict with tasks 02/03)",
+        "TestIsHotwheels count: FIXED to 5 (was 4 in round-2)",
+        "test_count >= 32 threshold correct throughout",
+        "ES row count: Description says '11 строк' but actual count is 12 (ES9b + ES9c are separate rows) — minor inconsistency with own AC section (which correctly says 12 entries) — see finding above",
+        "_notify listed as 'importable' in audit scope language — ambiguous, could mislead auditor into checking test imports for _notify — see finding above",
+        "TestExtractListingEntries name in Details (line 114) vs TestExtractEntries in task 01 and tech-spec — qualifed as 'имена приблизительные' on same line, so acceptable"
+      ]
+    },
+    "task_05": {
+      "status": "clean",
+      "round3_checks": [
+        "depends_on: [02, 03, 04] correct — must not run before Wave 2 audits complete",
+        "Output: logs/tasks/qa-report.json (unique, not produced by any other task)",
+        "Missing-file guard implemented: status=blocked + specific missing path + STOP",
+        "Step 1 mkdir uses absolute path: /workspaces/debian-2/my-hw/work/mattel-parser-rewrite/logs/tasks",
+        "Files-to-read section uses absolute paths for all three audit reports",
+        "Schema template uses relative 'logs/tasks/<which>.json' labels only for documentation — not actual read paths",
+        "Step 4 (live smoke) correctly handled as deferred-to-post-deploy when network unavailable",
+        "Step 5 (article smoke) correctly deferred when Step 4 returns [] — baseline scenario documented"
+      ]
+    }
+  },
+  "wave_graph_integrity": {
+    "wave_1": {
+      "tasks": [1],
+      "status": "correct",
+      "note": "Task 01 depends on nothing; is the sole Wave 1 task. Produces all code artifacts consumed by Wave 2."
+    },
+    "wave_2": {
+      "tasks": [2, 3, 4],
+      "status": "correct",
+      "note": "All three tasks depend on [01] only. No inter-wave-2 dependencies. Each writes to a unique output file. Parallel execution safe. Scope partitioned without overlap: code quality (02), security (03), test quality (04)."
+    },
+    "wave_3": {
+      "tasks": [5],
+      "status": "correct",
+      "note": "Task 05 depends on [02, 03, 04]. Reads all three Wave 2 outputs. Only writes to qa-report.json. Missing-file guard prevents premature execution. Correct terminal wave."
+    },
+    "hidden_dependency_check": "No hidden dependencies found. All cross-task file reads are declared in depends_on frontmatter. No Wave 2 task reads outputs of another Wave 2 task (they all read only Task 01 outputs + specs)."
+  },
+  "stats": {
+    "tasks_checked": 5,
+    "claims_verified": 47,
+    "issues_found": 3,
+    "round2_findings_closed": 2,
+    "by_severity": {
+      "critical": 0,
+      "major": 0,
+      "minor": 3
+    },
+    "cross_task_checks_performed": 12,
+    "cross_task_checks_passed": 12
+  }
+}

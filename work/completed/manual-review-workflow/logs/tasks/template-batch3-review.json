@@ -1,0 +1,86 @@
+{
+  "validator": "task-validator",
+  "batch": [11, 12, 13, 14, 15],
+  "iteration": 2,
+  "status": "approved",
+  "findings": [
+    {
+      "severity": "minor",
+      "category": "structure",
+      "task": 11,
+      "section": "Reviewers",
+      "issue": "Reviewers section remains a multi-sentence paragraph (lines 194-196) rather than the template's list-style presentation used by Tasks 12 and 13. Carried over from round 1 as acceptable; not fixed in round 2. Intent is clear (`reviewers: []` in frontmatter, body explains why no reviewers), and round 1 explicitly marked it acceptable — flagging for parity with the template.",
+      "fix": "Optional: shorten to one-liner matching Tasks 12/13 style (`Нет — per catalog, audit IS the review. Отчёт сам является review-артефактом.`). Current form remains acceptable per round 1 guidance."
+    },
+    {
+      "severity": "minor",
+      "category": "content",
+      "task": 13,
+      "section": "Details",
+      "issue": "Details subsection labels `**Файлы на чтение:**` (line 122) and `**Файл на запись:**` (line 124) remain unchanged from round 1 — localized labels deviate from the template's canonical `**Files:**` subsection used by Tasks 11, 12, 14. Semantic content is present (files read, file written, dependencies, edge cases, implementation hints).",
+      "fix": "Normalize to a single `**Files:**` subsection containing the output report path, and list the input source files under Context Files only — mirroring Tasks 11/12/14. Round 1 marked this fix optional."
+    },
+    {
+      "severity": "minor",
+      "category": "content",
+      "task": 11,
+      "section": "Verification Steps",
+      "issue": "Automated subsection is a single `pytest` pre-audit guard with no post-audit re-run command; grep/AST checks live under Smoke. Intent is clear, structure is within template allowance. Carried over from round 1 as 'current form is acceptable'.",
+      "fix": "Optional: split the pre-audit pytest guard into a Preconditions note in Details, reserving Automated for post-audit test re-runs. Current form is acceptable."
+    }
+  ],
+  "round1_fixes_verified": [
+    {
+      "issue": "Task 15 wave conflict with Task 14 (both wave 9)",
+      "round1_severity": "critical",
+      "round2_state": "fixed",
+      "evidence": "tasks/15.md:4 — `wave: 10`; tasks/14.md:4 — `wave: 9`; depends_on: [14] resolved (14 < 15)."
+    },
+    {
+      "issue": "Task 11 Context Files PK links pointed to ~/.claude/... (home) — broken path",
+      "round1_severity": "critical",
+      "round2_state": "fixed",
+      "evidence": "tasks/11.md lines 79-82 now use `../../../.claude/skills/project-knowledge/references/{project,architecture,patterns,deployment}.md` matching Tasks 13/14/15 style; resolves to /workspaces/debian-2/my-hw/.claude/skills/project-knowledge/references/ which exists."
+    },
+    {
+      "issue": "Task 12 Context Files PK links pointed to ~/.claude/... — same broken path as Task 11",
+      "round1_severity": "critical",
+      "round2_state": "fixed",
+      "evidence": "tasks/12.md lines 86-89 now use `../../../.claude/skills/project-knowledge/references/...` — same fix as Task 11."
+    },
+    {
+      "issue": "Task 14 verify: [] inconsistent with presence of ### Smoke block",
+      "round1_severity": "minor",
+      "round2_state": "fixed",
+      "evidence": "tasks/14.md:6 — `verify: [smoke]` now matches Smoke block presence and User subsection's `Не применяется` (user not applicable)."
+    },
+    {
+      "issue": "Task 15 verify: [] inconsistent with presence of ### Smoke + ### User blocks",
+      "round1_severity": "minor",
+      "round2_state": "fixed",
+      "evidence": "tasks/15.md:6 — `verify: [smoke, user]` now matches both sections."
+    },
+    {
+      "issue": "Task 13 grep-count verification infeasible (comparing total test count vs audit-scope tests)",
+      "round1_severity": "reality (not in template batch)",
+      "round2_state": "fixed",
+      "evidence": "tasks/13.md lines 117-118 — single-count comparison removed; replaced with `grep -n \"def {test_name}\" {file}` spot-check per referenced test."
+    },
+    {
+      "issue": "Task 14 smoke script used bash-HEREDOC with non-existent `NEWS_DB_PATH` env var; subprocess.run would escape in-process mocks",
+      "round1_severity": "reality (not in template batch)",
+      "round2_state": "fixed",
+      "evidence": "tasks/14.md lines 102-170 — rewritten as in-process Python: `patch('news_bot.DB_FILE', db_path)`, `patch.object(sys, 'argv', ...)`, `patch.object(sys, 'stdin', ...)`, `hw_review.main()` called directly. Audit report paths corrected to `logs/working/audit/{code,security,test}-audit.md`."
+    }
+  ],
+  "stats": {
+    "tasks_checked": 5,
+    "issues_found": 3,
+    "critical": 0,
+    "major": 0,
+    "minor": 3,
+    "round1_criticals_resolved": 3,
+    "round1_minors_resolved": 2,
+    "round1_minors_carried_over": 3
+  }
+}

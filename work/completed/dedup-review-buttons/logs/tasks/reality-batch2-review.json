@@ -1,0 +1,33 @@
+{
+  "validator": "reality-checker",
+  "batch": [4, 5, 6],
+  "status": "changes_required",
+  "findings": [
+    {
+      "severity": "critical",
+      "category": "cross-task-integration",
+      "task": 4,
+      "issue": "Contract mismatch on the `action` parameter value between Task 4 (producer of resolve_dedup_callback) and Task 5 (consumer/caller). Task 4's own 'What to do' step 3/4 and, decisively, its TDD Anchor specify the function is tested with the raw single-letter action codes: `tests/test_integration.py::TestResolveDedupCallback::test_cancel_pending_row_skips_and_returns_cancelled — action='c', ...` and `test_keep_returns_kept_no_state_change — action='k', ...`. Task 4's Acceptance Criteria, by contrast, talk about `keep` / `cancel` as bare words. Task 5's 'What to do' step 1 explicitly states the listener 'Мапит c → 'cancel', k → 'keep'' BEFORE calling resolve_dedup_callback, and Task 5's own TDD anchor asserts `resolve_dedup_callback('cancel', <token>, <admin_id>)` (full word, not the letter) is the call made for a `dd:c:<token>` press. tech-spec's 'How it works → Listen' section also uses the words 'action keep' / 'action cancel', not letters. If both tasks are implemented literally as written, Task 4's resolve_dedup_callback checks for `action == 'c'`/`'k'` while Task 5's listener always calls it with `'cancel'`/`'keep'` — every real button press in production would miss both branches and fall into the 'unknown action' safe-no-op edge case described in Task 4's Edge cases section, silently breaking the entire feature (cancel would never actually cancel) despite each task's own unit tests passing in isolation.",
+      "fix": "Pick one contract and make it explicit in both task files (and in tech-spec's Listen section for consistency): either (a) resolve_dedup_callback takes the raw grammar letters 'c'/'k' and Task 5's listener must NOT map to full words before calling it — drop the 'Мапит c → 'cancel', k → 'keep'' step and fix Task 5's TDD anchor call to `resolve_dedup_callback('c', <token>, <admin_id>)`; or (b) resolve_dedup_callback takes 'cancel'/'keep' (matches tech-spec wording and Task 5's current text) and Task 4's TDD anchor / 'What to do' must be corrected to use `action='cancel'` / `action='keep'` instead of `'c'`/`'k'`. Recommend (b) since it matches the tech-spec's own prose and keeps Task 4's Acceptance Criteria (which already say `keep`/`cancel`) internally consistent."
+    },
+    {
+      "severity": "minor",
+      "category": "hints",
+      "task": 4,
+      "issue": "Task 4's Details section cites '`_IntegrationBase.setUp` (L69-79)' for the tempfile-SQLite + `news_bot.init_db()` scaffolding. The class actually starts at line 69 but `setUp` itself runs from line 72 through line 100 (tearDown starts at 102); the DB-only part described (mkstemp + patch DB_FILE + init_db) is lines 73-77, well within the cited range, but the full setUp body extends well past line 79 (it also patches TELEGRAM_BOT_TOKEN/CHANNEL_ID/ADMIN_ID, mocks send_admin_notification, Mattel/orangetrack sources).",
+      "fix": "Widen the citation to L69-100 (or just say 'see `_IntegrationBase.setUp`' without a tight line range) so implementers notice the full set of patches already active (in particular that `TELEGRAM_ADMIN_ID` is pre-patched to the non-numeric `'@admin'` by the base class and must be re-patched to a numeric value per-test, which Task 4 does mention separately)."
+    },
+    {
+      "severity": "minor",
+      "category": "hints",
+      "task": 6,
+      "issue": "Task 6's Details section states `.env.example` is 'сейчас 76 строк'; the actual file is 75 lines (`wc -l` and Python line count both confirm 75). All other line citations in Task 6 (DEDUP_SERIES_ENABLED block L11-13, deployment.md L83/90/105/113, architecture.md Data Flow L194 and bot_state L270-278) were verified exact against the current files.",
+      "fix": "Correct '76 строк' to '75 строк', or drop the exact count and just say 'a short file' — purely cosmetic, does not affect where the new block should be inserted."
+    }
+  ],
+  "stats": {
+    "tasks_checked": 3,
+    "claims_verified": 41,
+    "issues_found": 3
+  }
+}

@@ -1,0 +1,81 @@
+{
+  "status": "passed",
+  "summary": "Round-2 re-validation: all 4 major and all 3 minor Round-1 findings are addressed. The three named regression tests (test_publish_retry_reuses_telegraph_url at tests/test_hw_review_publish_flow.py:158, test_publish_retry_after_teaser_exception at :205, test_move_to_published_rollback_on_error at tests/test_pending_articles_repo.py:623) are all verified to exist at the cited line numbers via grep. AC2 4-path coverage is now grounded in dominator-position semantics with an explicit positive assertion (transcreate_via_claude not called) plus T2 covering the line-1045 outage shortcut — sound logical proof that guard at line 985 fires BEFORE all 4 entry conditions. AC10 log marker is now asserted via assertLogs in T1 capturing INFO-level entry containing [idempotency-guard] and the link. Сценарий D (recurring stale row) is explicitly documented as out-of-scope in T7 with rationale (same code path activated K times, no new logic surface). T7 has explicit AC6 check, T1 has positive [idempotency-guard] log capture, T3 specifically asserts publish_article (Telegraph create) NOT called as differentiating regression surface. Mock target symbols (transcreate_via_claude, publish_article, outage_state.is_fallback_active) verified present in news_bot.py and existing test infrastructure. One residual minor nuance on T7's AC6 litmus strength is noted but does not block (status: passed under decision matrix).",
+  "findings": [
+    {
+      "severity": "minor",
+      "category": "anti_pattern",
+      "location": "Section: Testing Strategy → Integration test T7; tech-spec.md line 181",
+      "issue": "T7's AC6 explicit check uses attempt_count=0 on the staged zombie row: 'zombie pending row's attempt_count was 0 before job(); after job() the row is gone (skipped), it never reached failed_articles (would require attempt_count=3)'. With attempt_count=0, even WITHOUT the guard fix, an IntegrityError on duplicate INSERT would only increment attempt_count to 1 — the row would NOT reach failed_articles either way. The assertion 'never reached failed_articles' therefore does not distinguish 'guard fired' from 'first IntegrityError strike, row stays pending'. This weakens the litmus value of the AC6 check vs. Round-1 recommendation #5 (which proposed pre-setting attempt_count=2, one strike away from failed). The check is now textually present (Round-1 finding addressed) but the assertion is logically weaker than it could be.",
+      "recommendation": "Strengthen T7 by pre-setting zombie row's attempt_count=2 via raw UPDATE before job(). Then the assertions become litmus-grade: with the guard, the row is removed from pending and link goes to processed_news (skip_pending path) — failed_articles stays at 0. WITHOUT the guard, the IntegrityError on duplicate publish would push attempt_count from 2 to 3 → slot loop's strike machinery would move the row to failed_articles. This makes 'failed_articles count = 0' an executable proof that the guard short-circuited the strike path. Cost: 1 line of raw UPDATE in test setup, 1 stronger assertion. Optional but recommended for AC6 confidence."
+    }
+  ],
+  "metrics": {
+    "filesReviewed": 4,
+    "litmusTest": {
+      "checked": 7,
+      "passed": 7,
+      "failed": 0
+    },
+    "coverageAssessment": "adequate",
+    "pyramidBalance": {
+      "unit": 6,
+      "integration": 1,
+      "e2e": 0,
+      "assessment": "healthy"
+    }
+  },
+  "round2": {
+    "round1FindingsResolved": [
+      {
+        "round1Severity": "major",
+        "round1Issue": "Two of three named regression tests do not exist (test_decision_9_retry_after_teaser_fail, test_fallback_path_via_review_false_lights_marker)",
+        "round2Status": "resolved",
+        "evidence": "Tech-spec lines 191-193 now reference real tests verified via grep: test_publish_retry_reuses_telegraph_url at tests/test_hw_review_publish_flow.py:158, test_publish_retry_after_teaser_exception at tests/test_hw_review_publish_flow.py:205, test_move_to_published_rollback_on_error at tests/test_pending_articles_repo.py:623. All three exist at cited line numbers."
+      },
+      {
+        "round1Severity": "major",
+        "round1Issue": "AC2 4-path coverage incomplete (only 2 of 4 paths explicitly tested)",
+        "round2Status": "resolved",
+        "evidence": "Tech-spec line 156 (T1) now adds 'transcreate_via_claude not called (positive proof guard fires BEFORE LLM, covering all 4 line-1052/1065/1079 paths via dominator-position semantics)'. Combined with T2 covering the line-1045 outage shortcut path, the dominator argument is made executable: if guard at line 985 returns True before reaching line 1045 OR line 1052+ (Claude/per-article/ClaudeOutageError), then asserting transcreate_via_claude is never called proves the guard executed before all 4 branching points. Logically sound."
+      },
+      {
+        "round1Severity": "major",
+        "round1Issue": "AC10 log marker has no test assertion",
+        "round2Status": "resolved",
+        "evidence": "Tech-spec line 156 (T1) now reads 'Assert (log marker AC10): assertLogs captures one INFO-level entry containing [idempotency-guard] and the link'. Asserts both the literal marker substring and the link content per AC10 ('текст конкретной ссылки')."
+      },
+      {
+        "round1Severity": "major",
+        "round1Issue": "Сценарий D (recurring stale row) not exercised",
+        "round2Status": "resolved",
+        "evidence": "Tech-spec lines 183-184 now contain explicit out-of-scope acknowledgement: 'T7 is single-tick. The recurring case (zombie reappears next tick) is not a separate test — it would be the same code path activated K times, no new logic surface. Documented here so reviewers do not expect a multi-tick test.' Matches Round-1 recommendation option (a)."
+      },
+      {
+        "round1Severity": "minor",
+        "round1Issue": "T7 needs explicit AC6 assertion",
+        "round2Status": "resolved_with_residual_nuance",
+        "evidence": "Tech-spec line 181 adds explicit AC6 check. Resolved textually. Residual minor finding above proposes strengthening attempt_count from 0 to 2 for litmus-grade assertion."
+      },
+      {
+        "round1Severity": "minor",
+        "round1Issue": "T1 only negative assertions",
+        "round2Status": "resolved",
+        "evidence": "T1 (tech-spec line 156) now has positive [idempotency-guard] log capture via assertLogs, plus positive proof via 'transcreate_via_claude not called'. Negative-only chain is balanced with positive guard-fired anchors."
+      },
+      {
+        "round1Severity": "minor",
+        "round1Issue": "T3 near-duplicate of T1",
+        "round2Status": "resolved",
+        "evidence": "Tech-spec line 158 (T3) now reads 'Assert (specifically): publish_article (Telegraph create) NOT called — proves guard fires BEFORE the Telegraph-create branch, not just BEFORE Telegraph-reuse. Other assertions same as T1.' T3 now has a unique differentiating regression surface (Telegraph CREATE vs reuse path) that T1 does not test, justifying its existence per the redundant-testing rule."
+      }
+    ],
+    "newFindingsIntroducedByRound1Fixes": [],
+    "regressionVerification": {
+      "namedRegressionTestsExist": true,
+      "verifiedBy": "grep across tests/ confirms test_publish_retry_reuses_telegraph_url:158, test_publish_retry_after_teaser_exception:205, test_move_to_published_rollback_on_error:623",
+      "mockTargetSymbolsExist": true,
+      "mockTargetVerification": "transcreate_via_claude and publish_article confirmed in tests/test_fallback_publish_paths.py existing patches; outage_state.is_fallback_active() confirmed at news_bot.py:1045"
+    }
+  }
+}

@@ -1,0 +1,67 @@
+{
+  "validator": "task-validator",
+  "batch": [6, 7, 8, 9, 10],
+  "status": "approved",
+  "findings": [
+    {
+      "severity": "minor",
+      "category": "frontmatter",
+      "task": 9,
+      "section": "frontmatter.wave",
+      "issue": "wave value is 'Final' (capitalized string), inconsistent with Task 10's 'final' (lowercase). Template specifies wave as a number >= 1; the project convention here uses string labels (audit, final, 1, 2), but casing should be consistent across the batch.",
+      "fix": "Change 'wave: Final' to 'wave: final' in Task 9 frontmatter to match Task 10 and the lowercase convention used elsewhere (audit, final)."
+    },
+    {
+      "severity": "minor",
+      "category": "frontmatter",
+      "task": 6,
+      "section": "frontmatter.wave",
+      "issue": "wave value is the string 'audit' rather than a number; template specifies wave as number >= 1. Same applies to Tasks 7, 8 (wave: audit) and Tasks 9/10 (wave: Final/final).",
+      "fix": "If the project intentionally uses string wave labels for non-numeric waves (Audit Wave, Final Wave from tech-spec), document this as an accepted deviation from the template; otherwise convert to numbers (e.g., wave: 3 for audit, wave: 4 for final). Apply consistently across Tasks 6-10."
+    },
+    {
+      "severity": "minor",
+      "category": "structure",
+      "task": 8,
+      "section": "Title",
+      "issue": "Title is '# Task 8: Test Audit (Audit Wave)' — has parenthetical ' (Audit Wave)' suffix not present in sibling audit tasks (Task 6 'Code Audit', Task 7 'Security Audit').",
+      "fix": "Drop the '(Audit Wave)' suffix for naming consistency with Tasks 6 and 7. Wave membership is already captured by the frontmatter 'wave: audit' field."
+    },
+    {
+      "severity": "minor",
+      "category": "content",
+      "task": 6,
+      "section": "Verification Steps / Smoke",
+      "issue": "Frontmatter 'verify: []' declares no verification types, but the Verification Steps body includes a 'Smoke' subsection with concrete commands (wc -l, grep). Mismatch is harmless (extra smoke checks for the audit deliverable file are useful) but the verify field should reflect actual presence.",
+      "fix": "Either set 'verify: [smoke]' in frontmatter to reflect the smoke subsection, or remove the Smoke subsection if these checks are merely sanity-only and not part of formal verification. Same review for Task 8 (also has Smoke checks but verify: [])."
+    },
+    {
+      "severity": "minor",
+      "category": "content",
+      "task": 9,
+      "section": "Verification Steps",
+      "issue": "Frontmatter 'verify: []' but body has both Automated and Smoke subsections with concrete commands (pytest, pre-commit, smoke imports, FILES list invariant, feeds.json check). The smoke checks are real verification, not just sanity.",
+      "fix": "Set 'verify: [smoke]' in frontmatter (Task 9 runs real smoke verification before deploy). This aligns the field with the body and matches Task 10's 'verify: [smoke]'."
+    },
+    {
+      "severity": "minor",
+      "category": "consistency",
+      "task": 7,
+      "section": "Acceptance Criteria",
+      "issue": "AC list contains a wide range of detailed checklist items (16+) spanning every Decision and OWASP category. Several items duplicate verifications already implicitly covered by other items (e.g., 'allow_redirects=False on each requests.get' is implicitly covered by the Decision 1 checklist line). Not blocking, but list could be tightened.",
+      "fix": "Optional: dedupe AC list — keep one AC per Decision plus one per OWASP category. Current list still satisfies the testability rule, just verbose."
+    },
+    {
+      "severity": "minor",
+      "category": "content",
+      "task": 10,
+      "section": "Details / Files",
+      "issue": "Details lists 'Files staged in commit' with file paths but does not split into the canonical Files / Dependencies / Edge cases / Implementation hints subsections in the order shown by the template; sections are present but ordering puts 'Branch' first, then 'Files staged', then 'Files NOT staged', then 'Pipeline trigger chain', then 'Edge cases', then 'Implementation hints', then 'Dependencies', then 'Deploy report path'. Dependencies appears late.",
+      "fix": "Reorder Details subsections to template order: Files, Dependencies, Edge cases, Implementation hints. Move 'Dependencies' block up. Pipeline trigger chain and Deploy report path can stay as supplementary content."
+    }
+  ],
+  "stats": {
+    "tasks_checked": 5,
+    "issues_found": 7
+  }
+}

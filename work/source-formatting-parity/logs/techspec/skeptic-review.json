@@ -1,0 +1,113 @@
+{
+  "status": "changes_required",
+  "summary": "Checked 82 claims, found 10 mirages (1 critical, 6 major, 3 minor). Every cited line number in the tech-spec is EXACT — nothing invented, nothing stale. All measured numbers (1628/441 baseline, 286 paragraph blocks, 13-of-14, 14/41/48/50 images, -0.10%/-1.18%, 85 chars) reproduce against code-research.md, and I re-measured the test baseline myself: 1628 passed, 441 subtests passed. The defects are not fabricated citations; they are (a) one claim the tech-spec's OWN cited research explicitly retracted, (b) two claims that contradict the code the spec points at, and (c) three per-site seams that research identified as required and the spec's 'three injected callables' silently drops.",
+  "findings": [
+    {
+      "severity": "critical",
+      "type": "missing_pattern",
+      "claim": "Decision 5 + Task 2: the image cap goes inside `_build_content_from_blocks` ('takes a cap'), and Task 2's Files-to-modify is `telegraph_publisher.py` + `tests/test_telegraph_publisher.py`. Acceptance Criteria: 'Image blocks per page <= the source's existing cap'.",
+      "reality": "The caps are PER-SOURCE and all different: t_hunted_source.py:49 `_IMAGE_LIMIT = 30`, lamley_source.py:93 `IMAGE_LIMIT = 10`, orangetrack_source.py:73 `IMAGE_LIMIT = 10`, autoevolution_source.py:39 `MAX_IMAGES = 10`. user-spec AC9 spells this out ('30 для t-hunted, 10 для lamley') and its test table row 7 repeats it. But `_build_content_from_blocks` is source-agnostic and is reached only via `preview_nodes` (telegraph_publisher.py:562) <- `publish_article` <- the single call site `news_bot.py:3274-3282`, which passes no cap. Nothing in Task 2's file list threads a per-source value to the renderer, so any single default (10 or 30) violates AC9 for at least one source. The value IS available at the call site (`row['source_name']`), but `news_bot.py` is not in Task 2's scope.",
+      "source": "tech-spec.md, Decision 5; Task 2 Files to modify; Acceptance Criteria bullet 6",
+      "fix": "Either add `news_bot.py` to Task 2 and pass `image_cap=` from `row['source_name']` through `publish_article`/`preview_nodes`, or change Decision 5 to a per-source cap applied in each parser after `filter_blocks` (research II-4.3 notes capping must come after `filter_blocks` or the count is wrong), or state a single project-wide cap explicitly as a declared user-spec deviation from AC9."
+    },
+    {
+      "severity": "major",
+      "type": "missing_pattern",
+      "claim": "Decision 5 rationale: 'orangetrack already caps in its post-pass, so the renderer is the single choke point every source passes through'. Task 2 Files-to-read: 'orangetrack_source.py (its existing post-pass cap)'. Solution para 1 frames the cap defect as lamley-prospective ('All four sampled lamley articles exceed their 10-image cap').",
+      "reality": "orangetrack does NOT cap image blocks. `_emit_image` (orangetrack_source.py:646-657) has no counter, no slice, no limit. `IMAGE_LIMIT` is applied only at :850 to the DERIVED FLAT list `images_flat`, which the publisher ignores whenever `blocks` is non-empty. Same shape in autoevolution (`MAX_IMAGES` at :357 slices the flat list only; blocks keep every image). The spec's own cited research says this outright — code-research.md II-4.2: 'all four sources already leak past their cap on the blocks path — orangetrack and autoevolution do it in production today.' Two consequences the spec misses: (1) this is a LIVE prod bug on two sources, not a prospective lamley-only one; (2) applying a cap in the renderer WILL change orangetrack's published output on any post with >10 image blocks, which collides with user-spec AC10 / Ограничения ('вывод байт-в-байт прежний') and with Task 1's byte-identity gate.",
+      "source": "tech-spec.md, Decision 5 Alternatives considered; Task 2 Description + Files to read; Solution item 1",
+      "fix": "Correct the parenthetical to 'orangetrack caps only its derived flat list; its image BLOCKS are uncapped in prod today, as are autoevolution's'. Then resolve the AC10 collision explicitly: either exempt orangetrack from the new cap, or record capping orangetrack as an approved AC10 deviation."
+    },
+    {
+      "severity": "major",
+      "type": "missing_pattern",
+      "claim": "Dependencies section: '`boilerplate_filter.filter_blocks` / `filter_boilerplate` — ... Research finding worth carrying: these are **separate passes over separate lists**, a second desynchronisation source besides the lift.'",
+      "reality": "This is the one claim in the spec that its own cited research explicitly RETRACTED. code-research.md II-9 corrects Part I §7.4: '`filter_blocks` and `filter_boilerplate` call the **same** `is_boilerplate` on the same string for pure-text blocks, so they agree; orangetrack's `filter_boilerplate` at 827 is a no-op after `filter_blocks` at 809. The real second divergence source is the **title-dedup filter** `if text and text != title` (t_hunted_source.py:198, lamley_source.py:390), which the walker lacks.' Verified in code: boilerplate_filter.py:315 (`filter_boilerplate`) and :357 (`filter_blocks`) both delegate to `is_boilerplate` on the same text; orangetrack derives `paragraphs_flat` FROM the already-filtered blocks (:823-826 after :809), so the two cannot disagree. Meanwhile `if text and text != title` exists at t_hunted_source.py:198 and lamley_source.py:390 and has NO equivalent anywhere in orangetrack's walker — so a t-hunted/lamley article whose body repeats its own title will desynchronise by one on the very tasks (5 and 6) that are supposed to keep the two lists aligned. The spec never mentions it.",
+      "source": "tech-spec.md, Dependencies > Using existing (from project), bullet 2",
+      "fix": "Replace the retracted claim with the real one: the second divergence source is the title-dedup predicate `text != title` at t_hunted_source.py:198 / lamley_source.py:390, absent from the block walker. Add it to Tasks 5 and 6 (the walker needs the same predicate, or the flat list must be derived from blocks as orangetrack does) and add a test fixture where a body paragraph equals the title."
+    },
+    {
+      "severity": "major",
+      "type": "missing_function",
+      "claim": "Architecture: '`dom_blocks.py` (new) — the shared mechanism: inline-markup walker (`runs_from_tag`), run flattening (`text_from_runs`), the bold-paragraph heading heuristic (`looks_like_heading`) ... Per-site behaviour arrives as three injected callables; everything else defaults to orangetrack's current, test-pinned policy.'",
+      "reality": "`looks_like_heading` — and any whole-bold heading heuristic — does not exist anywhere in the repo (grep: zero hits for `looks_like_heading`, `whole_bold`, `_is_bold_heading`). code-research.md II-2.1 confirms: 'No bold-paragraph->heading heuristic exists anywhere in the repo.' So it is NEW behaviour, not extraction, and it is therefore NOT part of 'orangetrack's current, test-pinned policy' — yet the spec bundles it into the shared defaults while limiting per-site injection to exactly three callables. Research II-2.4 reached the opposite conclusion and stated a requirement the spec drops: 'If the shared emitter applied the rule unconditionally, any orangetrack paragraph that is entirely bold and short would flip paragraph->heading and those tests would go red. **So the rule has to be gated per source.**' I MEASURED the actual exposure so the reviewer can size it: applying the Decision-2 predicate (whole-bold, no length limit, not ending in `.`) to all 49 paragraph blocks orangetrack produces from the 37 HTML literals in tests/test_orangetrack_source.py yields **0 flips** — so Task 1's *test* gate survives an unconditional heuristic. The unmeasured exposure is real orangetrack PROD output: orangetrack is WordPress and `_has_color_class` maps any `has-*-color` span to `bold` (orangetrack_source.py:286-297), so a whole-colored paragraph flips, and research never fetched orangetrack's feed.",
+      "source": "tech-spec.md, Architecture > What we're building/modifying, bullet 1; Decision 1; Decision 2 ('the heuristic is the fallback')",
+      "fix": "State explicitly whether the heuristic is opt-in per source. Make it a FOURTH injected policy (default off) so orangetrack stays byte-identical by construction rather than by an unmeasured accident, and drop 'orangetrack's current, test-pinned policy' as the description of a rule orangetrack has never had."
+    },
+    {
+      "severity": "major",
+      "type": "missing_pattern",
+      "claim": "Decision 1 + Architecture: exactly three callables are injected per site (chrome-class predicate, image-src picker, video-embed wrapper); `BlockBuilder` 'owns the block accumulator + image dedup'.",
+      "reality": "The image DEDUP KEY is a fourth per-site seam, and research flags it explicitly (code-research.md II-1.3, 'Directly conflicting with the three new sources > image dedup key'). Verified in code: orangetrack keys on `src.split('?', 1)[0]` (orangetrack_source.py:650); t-hunted MUST additionally strip the path-encoded Blogger size suffix — `_BLOGGER_SIZE_SUFFIX_RE = re.compile(r'=s\\d+(-c)?(?:/|$)')` at t_hunted_source.py:64, applied at :244 — because Blogger encodes size in the path, not the query; lamley uses plain `split('?')` at :420. An image-src PICKER cannot substitute: the picker chooses the URL, the key decides identity. With dedup owned by BlockBuilder and no key injection, t-hunted regresses to duplicate Blogger thumbnails on exactly the gallery posts that dominate its feed.",
+      "source": "tech-spec.md, Decision 1; Architecture bullet 1; Shared resources table",
+      "fix": "Make the dedup key the fourth injected callable (default = orangetrack's `split('?', 1)[0]`), and add a Task 5 test asserting a Blogger `=s200` / `=s1200` pair of the same photo dedupes to one image block."
+    },
+    {
+      "severity": "major",
+      "type": "missing_pattern",
+      "claim": "Decision 6 Rationale + Task 3: 'Research found the structural blocker: the three parsers cannot import `news_bot` (circular).'",
+      "reality": "TESTED empirically, both directions, both import forms. `from news_bot import DEDUP_SERIES_ENABLED` at a parser's top level DOES raise ImportError when news_bot is the entrypoint — news_bot.py:54-57 imports the four parsers, and the flags are defined later at :134 and :149, so the parser sees a partially-initialised module. But bare `import news_bot` with late attribute access WORKS in both import orders (flag read back as True in each). That late-attribute pattern is precisely the one news_bot.py:131-133 documents as the house style ('The gate reads the MODULE attribute `news_bot.DEDUP_SERIES_ENABLED`'). The overstatement is inherited from code-research.md II-5.2 ('do not import news_bot — and cannot'), not invented by the spec — but it is still an absolute impossibility claim that a reviewer disproves in one command, and Decision 6's rationale rests entirely on it.",
+      "source": "tech-spec.md, Decision 6 Rationale; Task 3 Description",
+      "fix": "Narrow to 'parsers cannot use `from news_bot import FLAG` (ImportError at news_bot import time); a bare `import news_bot` would work but couples every parser to the 221k-line entrypoint.' The decision stands on the coupling argument — it does not need the false absolute."
+    },
+    {
+      "severity": "major",
+      "type": "missing_file",
+      "claim": "Risks table: '`test_deploy_files_invariant.py` is blind to new modules. It greps only for literal existing filenames. `Dockerfile` does `COPY . .` so Docker prod ships `dom_blocks.py` automatically, but `deploy.sh`'s explicit FILES array does not — Task 1 adds it to both.' Task 1 Files-to-modify: `deploy.sh`, `tests/test_deploy_files_invariant.py`. AC bullet 4 mirrors 'deploy.sh FILES array AND tests/test_deploy_files_invariant.py'.",
+      "reality": "Every factual half is right (Dockerfile:18 `COPY . .`; the test hard-codes `EXPECTED_ENTRY = '\"t_hunted_source.py\"'` at :23 plus `'\"watchdog.sh\"'`, with zero module enumeration), but 'both' undercounts the manifests. The test asserts each tracked filename in THREE files — deploy.sh, .github/workflows/deploy.yml, .github/workflows/deploy_test.yml (6 tests: 2 filenames x 3 manifests). Both workflows exist and each carries its own FILES array (5 `_source.py` entries apiece). code-research.md II-8.5 documents this three-manifest structure that the tech-spec's Task 1 file list omits. Mirroring the existing test pattern for `dom_blocks.py` therefore adds two tests that FAIL against unmodified workflow files.",
+      "source": "tech-spec.md, Risks table row 6; Task 1 Files to modify; Acceptance Criteria bullet 4",
+      "fix": "Add `.github/workflows/deploy.yml` and `.github/workflows/deploy_test.yml` to Task 1's Files-to-modify and reword the AC to 'present in all three deploy FILES arrays'. Worth recording the research nuance too: deploy.sh is the legacy SCP fallback and deploy.yml's prod path is DISARMED (code-research.md II-8.5), so this is fallback hygiene, not a prod-ship risk."
+    },
+    {
+      "severity": "minor",
+      "type": "name_mismatch",
+      "claim": "Decision 2 Rationale: 'Measured on 286 paragraph blocks: 24 promotions, all genuine' — cited in support of the NO-length-limit rule.",
+      "reality": "24 is the count for the rule WITH the `len <= 80` limit. code-research.md II-2.3 states the measurement was 'Implemented as specified (whole paragraph bold + `len <= 80` + does not end with `.`)' and then lists the two paragraphs that limit rejected — the 85-char lamley subheading and `'Also ran….'` — which are exactly the two cases Decision 2 removes the limit and adds the ellipsis carve-out to capture. Under the rule Decision 2 actually specifies the count is 26 / 286, not 24. The load-bearing claim ('zero whole-bold non-headings exist in the data', so length discriminated nothing) is fully supported by research; only the number is the pre-deviation one.",
+      "source": "tech-spec.md, Decision 2 Rationale; User-Spec Deviations, AC2 bullet",
+      "fix": "Say '26 promotions under the final rule (24 under the ≤80 variant; the 2 extra are the 85-char lamley subheading and «Also ran….» that the limit was rejecting)'."
+    },
+    {
+      "severity": "minor",
+      "type": "name_mismatch",
+      "claim": "Data Models: `{'type': 'heading', 'text': str, 'level': 3|4, 'runs': [...]}`, presented as 'unchanged from the contract `telegraph_publisher._build_content_from_blocks` already documents'.",
+      "reality": "The docstring does say 3|4 (telegraph_publisher.py:370), but live data violates it: autoevolution stores the raw tag number via `'level': int(nested_h.name[1])` (:297) and `'level': int(child.name[1])` (:312), so **level 2** is in production and is pinned by tests/test_autoevolution_source.py:216. orangetrack normalises h2/h3/h4 to 3 (:631-637). Nothing breaks — `_build_content_from_blocks` coerces anything outside (3,4) to 3 at :397 — but the documented shape is not the stored shape, and Task 7 must keep autoevolution's level-2 assertion green while the spec lists 'h2/h3/h4 -> level 3' as a shared default (Solution para 3, Testing Strategy).",
+      "source": "tech-spec.md, Data Models; Solution paragraph 3; Testing Strategy > Unit tests",
+      "fix": "Note that level is 2|3|4 in practice and that the h2/h3/h4->3 normalisation is orangetrack policy which Task 7 must NOT apply to autoevolution (Task 7 swaps only `_runs_from_tag`, which is consistent — just make it explicit)."
+    },
+    {
+      "severity": "minor",
+      "type": "name_mismatch",
+      "claim": "Decision 3 Rationale: 'Serves user-spec AC10 and Ограничения.' Also AVP: 'the agent renders a real fixture through `preview_renderer.render_html` and asserts the presence of `<h3>`, `<strong>` and list items'.",
+      "reality": "Two small mis-citations. (a) user-spec AC10 (user-spec.md:102-103) is 'orangetrack публикуется в точности как до фичи — вывод байт-в-байт прежний' — orangetrack byte-identity, which the subtitle-lift decision cannot serve since orangetrack has no lift (it hardcodes `subtitle = \"\"` at :839). The lift alignment serves AC8 (user-spec.md:96-99) plus the «Подъём лида» Ограничения bullet (:119-125). (b) `preview_renderer.render_html(nodes, title)` (preview_renderer.py:169) takes a node TREE, not a fixture — the agent must build nodes via `telegraph_publisher.preview_nodes` first; and list items render as `<p>• …</p>` (telegraph_publisher.py:441) with `li` absent from `_ALLOWED_TAGS` (:58-61), so the assertion must target the bullet, not an `<li>` tag. The AVP's underlying premise checks out: `_ALLOWED_TAGS` does contain h3/h4/strong/u/s and the source comment at :50 confirms 'strong/u/s added 2026-07-28'.",
+      "source": "tech-spec.md, Decision 3 Rationale; Agent Verification Plan > Verification approach",
+      "fix": "Cite AC8 + Ограничения «Подъём лида» in Decision 3. In the AVP, say 'build nodes via telegraph_publisher.preview_nodes, then render_html' and assert the `• ` bullet rather than `<li>`."
+    }
+  ],
+  "stats": {
+    "total_claims_checked": 82,
+    "confirmed": 72,
+    "mirages_found": 10,
+    "verified_claims": [
+      "telegraph_publisher.py:358-363 = _build_content_from_blocks(subtitle, blocks, source_url, auto_marker) — EXACT, no `images` param",
+      "no image cap in _build_content_from_blocks (358-454); zero IMAGE_LIMIT references in telegraph_publisher.py",
+      "orangetrack_source.py:553-554 = `blocks: List[Dict] = []` / `seen_image_bases = set()` — EXACT, captured by all emitters",
+      "orangetrack_source.py:839 = `subtitle = \"\"` — EXACT, pinned by tests/test_orangetrack_source.py:115",
+      "t_hunted_source.py:216-220 = conditional subtitle lift (`if len(paragraphs) >= 2`) — EXACT",
+      "lamley_source.py:400-401 = unconditional subtitle lift — EXACT",
+      "_llm_common.py:115 = _PATCHED_TEXT_BLOCK_TYPES = ('lead','paragraph','heading','list_item') — includes list_item, EXACT",
+      "claude:159 / gemini:132 / openai:129 / openrouter:217 — all four tuples EXACT and all four OMIT list_item",
+      "Decision 7 mechanism verified end to end: shared tuple patches list_item RU text (_llm_common.py:475), then engine-local tuple fails to skip it (claude:187-189) so RU text goes to the second-pass translator",
+      "_llm_common.py:223 = the `if isinstance(blocks, list) and blocks and paragraphs` gate — EXACT; cannot host the fix (each engine reads blocks_in itself: claude:373, gemini:304, openai:306, openrouter:406)",
+      "'both sides swallow the mismatch silently' — confirmed: `except StopIteration: break` (:236) and `: pass` (:488), neither logs",
+      "tests/test_autoevolution_source.py:180-184 = exact-`runs` list equality incl. href — EXACT tripwire",
+      "news_bot.py:134-136 + :149-151 = the two env-flag expressions — EXACT, inverted defaults, no shared helper in repo",
+      "circular import TESTED: `from news_bot import FLAG` in a parser raises ImportError when news_bot is entrypoint; bare `import news_bot` works",
+      "autoevolution_source.py:64-71 _runs_from_tag docstring: href-only, '<strong>/<em> flattened to plain text' — EXACT",
+      "Dockerfile:18 = `COPY . .`; test_deploy_files_invariant.py greps only the literals '\"t_hunted_source.py\"' (:23) and '\"watchdog.sh\"'",
+      "baseline RE-MEASURED by me: `1628 passed, 441 subtests passed in 67.94s` — matches the spec and code-research.md:884 exactly",
+      "orangetrack heading policy EXACT: h2/h3/h4 -> level 3 (:631-637 via :731), h5 -> paragraph (:734-739), h1/h6 dropped (:741-743), bullet-less <li> (:776-796)",
+      "the three named seams all exist: _has_chrome_class (:695-702), _best_img_src (:451-487), _video_embed_url (:138-169); _has_color_class (:286-297) is the sole hook in _runs_from_tag",
+      "no DB migration needed: `blocks TEXT` column (pending_articles_repo.py:77), in _PENDING_JSON_COLS (:141), NULL-preserving in insert_pending (:387); publish_after exists (:314); _PROMO_SCAN_MAX_PARAGRAPHS = 8 (news_bot.py:1633); _CHECKLIST_BODY_TEXT_FLOOR = 500 (:1582); curl_cffi==0.15.0 a direct dep; lamley 20s throttle (:101) + 24h blacklist (:122); job() runs immediately on start (news_bot.py:4645); row assembly at :4173-4193 before insert_pending at :4195"
+    ]
+  }
+}

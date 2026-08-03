@@ -1,0 +1,49 @@
+{
+  "status": "approved",
+  "summary": "Round 2 re-validation: all 3 Round 1 critical/major findings are resolved. Checked 42 claims against the live codebase. Found 1 new minor internal contradiction (Decision 1 alternative says hw_review.cmd_publish calls _fallback_publish, but it does not — Decision 5 correctly states the opposite). Round 1 minor line-number drift (1-4 lines) persists in a couple of spots but is non-blocking and the spec already explicitly notes 'around line X' or X+ semantics in those references.",
+  "findings": [
+    {
+      "severity": "minor",
+      "type": "name_mismatch",
+      "claim": "Decision 1, Alternatives section (tech-spec line 75): '_fallback_publish is also called from hw_review.cmd_publish (live in code, see Decision 5); duplicating the guard at the slot level requires changes in two places. Function-level is the dominator.'",
+      "reality": "hw_review.cmd_publish (hw_review.py:569) does NOT call _fallback_publish. It has its own inline publish path (Telegraph create, mark_telegraph_published, send_telegraph_teaser, then move_to_published directly at hw_review.py:655). grep across hw_review.py shows ZERO calls to _fallback_publish — only one comment-string reference at hw_review.py:553. Decision 5 of THIS SAME tech-spec correctly says (line 106): 'hw_review.cmd_publish does NOT pass through _fallback_publish's guard (it has its own publish path)'. So the tech-spec contradicts itself: Decision 1 alt-rejected reasoning leans on a non-existent call site, while Decision 5 rationale leans on the correct fact (no shared call site).",
+      "source": "tech-spec.md, Decision 1 → Alternatives → 'Inside slot loop in job() (line 1733)' rejection rationale (line 75)",
+      "fix": "Reword the Decision 1 alternative rejection: the function-level guard is still the right architectural choice because (a) it sits BEFORE every path through _fallback_publish (outage shortcut + 3 Claude branches), and (b) future callers of _fallback_publish would inherit the guard for free without duplication. But DROP the false claim that hw_review.cmd_publish calls _fallback_publish today — it doesn't. Suggest: 'rejected — slot-level placement adds a redundant DB read per slot AND would not protect any future caller of _fallback_publish; function-level is the architectural dominator across the 4 internal paths (outage shortcut at 1045, Claude success at ~1056, per-article fallback at 1065, ClaudeOutageError at 1079).'"
+    },
+    {
+      "severity": "minor",
+      "type": "name_mismatch",
+      "claim": "Multiple references in tech-spec cite Claude success at line 1052 (Architecture diagram line 52, Decision 1 rationale line 73, line 64 of Architecture summary).",
+      "reality": "transcreate_via_claude() is actually called at news_bot.py:1056 (the try-block opens at 1055, the call is at 1056). Drift = 4 lines. The except ClaudeTranscreationError line 1065 and except ClaudeOutageError line 1079 are exact. The is_fallback_active() shortcut line 1045 is exact. Spec uses '1052+' notation in the prose, which softens this, but the Architecture ASCII diagram and Decision 1 rationale state '1052' as if precise.",
+      "source": "tech-spec.md, Architecture diagram (line 52), Decision 1 rationale (line 73), Architecture summary (line 63-64)",
+      "fix": "Update '1052' references to '1056' (or keep '~1052' / 'around 1052' to acknowledge approximate). Non-blocking — the semantic point (Claude success path exists, dominator is upstream) is correct."
+    }
+  ],
+  "stats": {
+    "total_claims_checked": 42,
+    "confirmed": 40,
+    "mirages_found": 2,
+    "verified_claims": [
+      "news_bot.py exists and is the cron-deployed entry point",
+      "pending_articles_repo.py exists and ships in deploy.yml FILES list (line 130)",
+      "tests/test_fallback_publish_paths.py exists with _FallbackPublishPathsCase base class at line 90 (Round 1 minor drift was line 90, exact match)",
+      "tests/test_pending_articles_repo.py exists with _TmpDbCase base class at line 99 (exact match)",
+      "tests/test_distributed_schedule_integration.py exists with TestDistributedSchedule at line 128 (Round 1 critical fix verified)",
+      "tests/test_hw_review_publish_flow.py::TestPublishRetryIdempotency::test_publish_retry_reuses_telegraph_url at line 158 (Round 1 critical fix verified)",
+      "tests/test_hw_review_publish_flow.py::test_publish_retry_after_teaser_exception at line 205 (Round 1 critical fix verified)",
+      "tests/test_pending_articles_repo.py::test_move_to_published_rollback_on_error at line 623",
+      "_fallback_publish defined at news_bot.py:960; link = row['link'] at line 984; insert point line 985 confirmed empty",
+      "is_fallback_active() check at news_bot.py:1045",
+      "except ClaudeTranscreationError at news_bot.py:1065",
+      "except ClaudeOutageError at news_bot.py:1079",
+      "Telegraph URL handling at news_bot.py:1180; logger.info reuse at line 1183",
+      "mark_telegraph_published call at news_bot.py:1212",
+      "send_telegraph_teaser call at news_bot.py:1237",
+      "move_to_published call at news_bot.py:1244",
+      "slot loop at news_bot.py:1733-1747; _fallback_publish(row, via_review=False) at line 1747 (exact match)",
+      "send_admin_notification defined at news_bot.py:357-392, returns True/False, never raises (Decision 4 verified)",
+      "crash-loop-guard logger.warning at news_bot.py:1561",
+      "_redact_text defined at news_bot.py:249"
+    ]
+  }
+}

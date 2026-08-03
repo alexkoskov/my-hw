@@ -1,0 +1,31 @@
+# Feature Execution Checkpoint
+# Written by feature-execution skill after each wave.
+# Read by SessionStart(compact) hook for context recovery.
+# Read by feature-execution Phase 1 to detect resume scenario.
+
+skill: feature-execution
+feature: dedup-review-buttons
+feature_dir: work/dedup-review-buttons
+execution_plan: work/dedup-review-buttons/logs/execution-plan.md
+team_name: dedup-review-buttons
+
+last_completed_wave: 7
+total_waves: 7
+
+# Format: task_number: status (planned | in_progress | done)
+# Wave map: w1={1,2} w2={4,3 seq} w3={5,6} w4={7,8,9} w5={10} w6={11} w7={12}
+tasks:
+  1: done
+  2: done
+  3: done
+  4: done
+  5: done
+  6: done
+  7: done
+  8: done
+  9: done
+  10: done
+  11: done
+  12: done
+
+next_wave: done

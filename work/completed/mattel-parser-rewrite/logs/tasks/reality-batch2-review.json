@@ -1,0 +1,65 @@
+{
+  "validator": "reality-checker",
+  "batch": [4, 5],
+  "iteration": 2,
+  "status": "approved",
+  "round1_findings_closure": {
+    "dispatch_ordering_criticals_x4": {
+      "original_finding": "4 dispatch-ordering criticals — orchestrator concern, not task content",
+      "status": "closed",
+      "assessment": "Confirmed orchestrator-only concern. depends_on:[01] in task 04 and depends_on:[02,03,04] in task 05 are correctly declared. No task-content fix was needed or applied. Closed."
+    },
+    "M1_TestBuildEntry_count": {
+      "original_finding": "task 04 implementation hint referenced 'TestBuildEntry 6'; should be 5",
+      "status": "closed",
+      "evidence": "task 04 hint (line 139): 'NOTE: TestBuildEntry содержит 5 тестов (не 6)'. Actual file confirms 5 tests in TestBuildEntry (test_builds_all_fields, test_empty_excerpt_falls_back_to_title, test_missing_handle_returns_none, test_missing_title_returns_none, test_invalid_date_keeps_entry). Correct."
+    },
+    "M2_test_count_threshold": {
+      "original_finding": "test count threshold was strict equality; should be >=32",
+      "status": "closed",
+      "evidence": "task 04 AC (line 44): 'Проверка: actual >= 32, не строгое равенство'. task 05 Step 1: '>=32 тестов reported'. Both tasks use >= correctly."
+    },
+    "M3_step6_cross_check": {
+      "original_finding": "Step 6 cross-check should allow round-2 additions on top of §11.7 base, not require exact §11.7 count",
+      "status": "closed",
+      "evidence": "task 04 Step 6 (line 33): 'НЕ требовать numeric equality фактического count'а к числу из §11.7: round-2 валидация легитимно добавила тесты, и code-research §11.7 фиксирует только pre-round-2 baseline. Расхождение numeric'и при наличии всех ожидаемых классов покрытия — НЕ finding.' Correctly closed."
+    },
+    "C_task05_1_missing_file_guard": {
+      "original_finding": "task 05 audit gate had no explicit status:blocked + missing_report handling for absent audit reports",
+      "status": "closed",
+      "evidence": "task 05 Step 2 now has explicit missing-file guard: 'записать QA-отчёт со статусом blocked, blocker audit task NN not yet run, указать конкретный missing path, и СТОП'. Details section also specifies 'Missing-file guard (FIRST CHECK)' with missing_report field. Schema shows status: blocked. Fully addressed."
+    },
+    "C_task05_2_pytest_prerewrite_failures": {
+      "original_finding": "pytest would fail pre-rewrite; depends_on:[02,03,04] enforces ordering",
+      "status": "closed",
+      "evidence": "task 05 depends_on:[02,03,04] in frontmatter (wave 3). Tasks 02/03/04 are wave 2 and themselves depend on Task 01 (wave 1). Orchestrator wave ordering prevents Task 05 from running against pre-rewrite code. Correct dispatch-ordering resolution."
+    },
+    "M4_step5_hint": {
+      "original_finding": "Step 5 hint needed to clarify not-applicable when live listing has 0 HW (verified 2026-04-24 baseline)",
+      "status": "closed",
+      "evidence": "task 05 Step 5 AC: 'Если Step 4 вернул [] (типичный случай — verified 2026-04-24: live листинг даёт 0 HW-записей; HW-посты редкие, gaps по неделям) — Step 5 = not-applicable, в QA-отчёте записывается со status: deferred, skip_reason: Step 4 returned [] — no HW link to test. Это НЕ fail'. Edge cases section repeats this with 'BASELINE СЦЕНАРИЙ — verified 2026-04-24'. QA report schema also shows 'skip_reason: Step 4 returned [] — no HW link to test (typical/baseline case, verified 2026-04-24)'. Fully addressed."
+    }
+  },
+  "findings": [
+    {
+      "severity": "minor",
+      "category": "hints",
+      "task": 4,
+      "issue": "task 04 AC (line 44) breakdown states '15 keep (TestIsHotwheels 4 + TestBuildEntry 5 + остальные сохранённые)'. TestIsHotwheels has 5 tests per code-research §11.7 (all 5 explicitly listed: test_matches_title, test_matches_handle, test_case_insensitive, test_does_not_match_unrelated, test_missing_fields) and confirmed in the current file. The '4' is incorrect. Auditor computing '4 + 5 = 9' for the two parser-agnostic classes will get a number that does not match §11.7's explicit list of 5+5=10. The surrounding qualifier ('Per-class counts из code-research §11.7 — это OLD inventory baseline, фактические counts могут его превышать') applies to post-rewrite additions, not to this pre-existing discrepancy.",
+      "fix": "Change 'TestIsHotwheels 4' to 'TestIsHotwheels 5' in the AC breakdown hint on line 44. The correct keep tally is: TestIsHotwheels (5) + TestBuildEntry (5) = 10 parser-agnostic keeps; remaining 5 keep tests from TestFetchMattelNews = total 15 keep. Numbers reconcile."
+    }
+  ],
+  "stats": {
+    "tasks_checked": 2,
+    "claims_verified": 31,
+    "issues_found": 1,
+    "round1_findings_closed": 7,
+    "round1_findings_still_open": 0,
+    "by_severity": {
+      "critical": 0,
+      "major": 0,
+      "minor": 1
+    }
+  },
+  "codebase_state_note": "Task 01 (rewrite-parser) has not been executed yet. tests/test_mattel_news_source.py is the pre-rewrite version (30 tests). tests/fixtures/mattel_flight_builder.py does not exist. This is expected — tasks 04 and 05 are designed to run after Task 01 completes (depends_on wave ordering enforced by orchestrator). All round-2 task-content fixes verified present in the task files."
+}

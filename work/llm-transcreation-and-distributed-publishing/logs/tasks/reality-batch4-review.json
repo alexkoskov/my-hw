@@ -1,0 +1,138 @@
+{
+  "validator": "reality-checker",
+  "batch": [10, 11, 12],
+  "status": "changes_required",
+  "findings": [
+    {
+      "severity": "critical",
+      "category": "missing_file",
+      "task": 10,
+      "issue": "Task 10 is Wave 6 and depends_on task 9. Task 9 is supposed to delete legacy code from news_bot.py BEFORE task 10 runs. However, the source file news_bot.py at the time of validation still contains: `_overflow_fast_track` (~line 799), `IDLE_TIMEOUT_HOURS`, `GRACE_WINDOW_HOURS`, `QUEUE_CAP`, `FALLBACK_THROTTLE_SECONDS` constants, and `every(12).hours.do(job)` in main(). This means task 9 (Wave 5) has NOT been completed, and task 10's prerequisite is not met. If task 10 is executed now it will encounter a conflicting codebase state. The depends_on: [9] declaration is correct, but the dependency has not been satisfied.",
+      "fix": "Ensure task 9 is fully completed and committed (legacy symbols removed) before executing task 10. The depends_on declaration is correct."
+    },
+    {
+      "severity": "critical",
+      "category": "missing_file",
+      "task": 11,
+      "issue": "Task 11 depends_on: [10] and also transitively requires tasks 1-9 to be done. Specifically it imports and patches `outage_state`, `compute_publish_slots`, and `claude_transcreation` modules -- none of which exist on disk yet (not found at /workspaces/debian-2/my-hw/outage_state.py, /workspaces/debian-2/my-hw/compute_publish_slots.py, /workspaces/debian-2/my-hw/claude_transcreation.py). Task 11 cannot be executed until those modules exist. The depends_on: [10] transitively covers this but the modules are actually missing.",
+      "fix": "Ensure waves 1-6 are fully completed before executing task 11. Check that outage_state.py, compute_publish_slots.py, and claude_transcreation.py exist at the project root."
+    },
+    {
+      "severity": "critical",
+      "category": "missing_file",
+      "task": 12,
+      "issue": "Task 12 depends_on: [10] and requires all three new modules (compute_publish_slots.py, claude_transcreation.py, outage_state.py) to exist. None exist on disk. The test file tests/test_distributed_schedule_integration.py also does not exist yet (correct -- it is the output of this task), but imports from modules that don't exist will cause ImportError at collection time.",
+      "fix": "Ensure waves 1-6 are fully completed before executing task 12. Modules outage_state.py, compute_publish_slots.py, and claude_transcreation.py must exist."
+    },
+    {
+      "severity": "critical",
+      "category": "missing_function",
+      "task": 11,
+      "issue": "Task 11 requires patching `news_bot.transcreate_via_claude` (or equivalent) as the new Claude primary path. However, `transcreate_via_claude` is NOT imported or defined in news_bot.py at this time -- the file has no import of claude_transcreation and no reference to transcreate_via_claude. The patch target `news_bot.transcreate_via_claude` will fail with AttributeError. This is contingent on Wave 3 (task 7) having been merged, which it has not been.",
+      "fix": "Task 7 must be completed and merged first. After task 7, verify that news_bot.py imports transcreate_via_claude from claude_transcreation (or wraps it) and that the patch target is correct (could be `claude_transcreation.transcreate_via_claude` rather than `news_bot.transcreate_via_claude` depending on how task 7 does the import)."
+    },
+    {
+      "severity": "critical",
+      "category": "missing_function",
+      "task": 11,
+      "issue": "Task 11 step 2 says to patch `news_bot.transcreate_via_claude` (or 'correct public import of new module inside news_bot'). The actual patch target depends entirely on how task 7 implements the import in news_bot.py. If task 7 uses `from claude_transcreation import transcreate_via_claude`, the correct patch target is `news_bot.transcreate_via_claude`. If task 7 uses `import claude_transcreation` and calls `claude_transcreation.transcreate_via_claude(...)`, the target is `claude_transcreation.transcreate_via_claude`. The task text is ambiguous ('uточнить по post-Task-7 состоянию news_bot.py') but does not give the implementer enough guidance to avoid getting this wrong.",
+      "fix": "Clarify in the task which import style task 7 uses, and confirm the exact patch target string. Add a verification step: after task 7 completes, grep news_bot.py for the import pattern and document it here."
+    },
+    {
+      "severity": "critical",
+      "category": "missing_function",
+      "task": 11,
+      "issue": "Task 11 TDD Anchor and step 6 reference `test_crash_loop_guard_delays_first_publish` which requires `job()` to read `MAX(published_at)` from `published_articles` and sleep accordingly. However, there is NO function in pending_articles_repo.py that runs a `SELECT MAX(published_at) FROM published_articles` query. The task assumes this query exists as part of the crash-loop guard implementation (task 8), but if task 8 implements it inline in job() rather than as a repo function, the integration test approach (patching a repo getter) will differ. More critically, no such utility function exists currently.",
+      "fix": "Verify that task 8 exposes a `get_last_published_at()` or equivalent helper in pending_articles_repo.py. If task 8 queries SQLite inline in job(), the integration test must patch at the sqlite3/news_bot level instead. Coordinate between task 8 and task 11 implementers."
+    },
+    {
+      "severity": "major",
+      "category": "feasibility",
+      "task": 10,
+      "issue": "Task 10 says the current state of tests/test_translation.py 'has only one class TestTranslateText covering only translate_text' and imports only `translate_text`. The task instructs adding a new import: `from news_bot import translate_text, transcreate_text`. This is accurate -- the current import is `from news_bot import translate_text` (line 12 of test_translation.py). The task correctly describes the current state and needed change. However, the task says 'if there are tests asserting removed behavior -- find and delete' but instructs only looking in tests/test_translation.py. There are OTHER test files that also patch `transcreate_text` as a dependency: tests/test_mattel_integration.py lines 103 and 174 use `@patch('news_bot.transcreate_text', side_effect=lambda t, **k: t)` and tests/test_integration.py lines 64, 130, 160 patch `news_bot.transcreate_text`. These tests may break if bureaucratic regex removal changes function behavior unexpectedly. Task 10 scopes grep to tests/ broadly in step 2 but explicitly says 'if such asserts exist' - the task should explicitly mention that test_mattel_integration.py and test_integration.py also use transcreate_text patches and may need review.",
+      "fix": "Add explicit verification: `grep -rn 'transcreate_text' tests/` before starting, review ALL files that mock/call transcreate_text to ensure none assert bureaucratic output. The task's verification grep is only on news_bot.py, not on test files."
+    },
+    {
+      "severity": "major",
+      "category": "feasibility",
+      "task": 11,
+      "issue": "Task 11 step 3 adds `TestOutageStateIntegration` tests that read `bot_state` table contents via `outage_state` module getters. However, the `outage_state` module does not exist yet (task 5, Wave 2). The task notes this in Dependencies but does not specify how the test should import outage_state. If outage_state is not installed/importable, the test file itself will fail to import. The task's fixture setup says 'read `bot_state` via outage_state getters' but the module does not exist and the public API (getter names: `get_ping_count`, `get_outage_started_at`, `is_fallback_active`) is only specified in the tech-spec -- it may differ from what task 5 actually implements.",
+      "fix": "After task 5 completes, verify the exact public API of outage_state.py (function names, signatures) and update task 11 accordingly. The task should not assume getter names before task 5 is written."
+    },
+    {
+      "severity": "major",
+      "category": "feasibility",
+      "task": 12,
+      "issue": "Task 12 says `freezegun` is not in the project and recommends using `unittest.mock.patch` on `datetime.datetime.now` directly. However, patching `datetime.datetime.now` at module level is notoriously fragile in Python because `datetime` is a C-extension and `unittest.mock.patch` cannot replace the built-in `now` method directly -- you must patch it at the usage site (e.g., `news_bot.datetime` or the specific module import). The task acknowledges this concern ('помни про tz: возвращай datetime.datetime(2026, 4, 27, 12, 0, tzinfo=pytz.timezone(...))') but gives no concrete guidance on the correct patch target. If news_bot.py uses `datetime.datetime.now(tz)` or `datetime.now(tz)`, the patch must target `news_bot.datetime` or the specific reference used in job(). Getting this wrong will make the container restart test non-functional.",
+      "fix": "Before writing the test, read the post-task-8 news_bot.py to determine exactly how datetime.now is called in job(), and document the correct patch path. If the patch is `news_bot.datetime`, the mock must behave like a datetime module object."
+    },
+    {
+      "severity": "major",
+      "category": "feasibility",
+      "task": 12,
+      "issue": "Task 12 Acceptance Criteria say `outage_state` getters are named `get_ping_count`, `get_outage_started_at`, `is_fallback_active`. These names are not confirmed in any existing code (outage_state.py does not exist). The tech-spec describes the public API conceptually but the actual function names depend on task 5's implementation. If task 5 uses different names (e.g., `get_state('ping_count')` vs `get_ping_count()`), task 12 tests will fail.",
+      "fix": "Coordinate with task 5 implementer to confirm getter API names before writing task 12. Or make task 12 use raw SQLite reads on `bot_state` table for assertions (more resilient to API name changes)."
+    },
+    {
+      "severity": "major",
+      "category": "feasibility",
+      "task": 12,
+      "issue": "Task 12 scenario 2 (Outage during slot mid-day) says: 'статья 2-го слота публикуется через Google (как per-article fallback в этом цикле, потому что state machine форсит немедленный fallback на этой же статье)'. This description conflates two behaviors from the tech-spec: (a) per-article ClaudeTranscreationError routes only that article to Google without state machine advancing, and (b) API-level OutageError (RateLimitError) advances the state machine AND routes the article to Google. The task uses RateLimitError (API-level) but describes behavior as 'per-article fallback'. The actual behavior per tech-spec: RateLimitError is an API-level outage signal -- the state machine records the event AND the article is rerouted to Google in the same slot. This is internally consistent, but the test must correctly model that OutageError from claude_transcreation is caught by job()/_fallback_publish and triggers both state advance AND Google translate for THAT article. If the implementation in task 7 raises OutageError and job() routes to Google as a side-effect, the test mock setup must reflect this dual behavior. The description 'per-article fallback' is misleading.",
+      "fix": "Clarify in the test comment that RateLimitError triggers state machine advance (ping_count='1') AND routes that specific article to Google as part of the outage-handling code path. Ensure the mock for `news_bot.transcreate_text` (Google path) is set up as a fallback so the article is actually 'published' in the test."
+    },
+    {
+      "severity": "major",
+      "category": "tdd",
+      "task": 11,
+      "issue": "Task 11 TDD Anchor references test `test_restart_mid_window_recomputes_schedule` which asserts that `compute_publish_slots(N=5, now=16:00, ...)` was called. This assertion requires introspecting which function was called with which args -- typically done via `mock.assert_called_with`. But `compute_publish_slots` is a module-level function in compute_publish_slots.py. To assert it was called, the test must patch `news_bot.compute_publish_slots` (if news_bot imports it directly) or `compute_publish_slots.compute_publish_slots`. The correct patch target is not specified. If job() calls the function directly after importing it with `from compute_publish_slots import compute_publish_slots`, the patch must be at `news_bot.compute_publish_slots`.",
+      "fix": "Clarify the correct patch path for compute_publish_slots in the task after task 8 is complete. The test should then use that path in @patch decorator."
+    },
+    {
+      "severity": "major",
+      "category": "hints",
+      "task": 12,
+      "issue": "The Implementation hints section contains a concrete algorithm: 'расписание для теста 1 (now=12:00, N=3, window 13:00–20:00, min_interval=40): по формуле floor((20:00-13:00)/N+1) = 7h/3 ≈ 140 min, capped at min_interval — interval 140 мин, слоты 13:00, 15:20, 17:40.' This is a full worked example with arithmetic, slot calculation formula, and specific timestamp values. This crosses from a hint into a prescribed algorithm implementation, which per the validation checklist is severity major in category 'hints'.",
+      "fix": "Replace the worked example with a reference to the compute_publish_slots module: 'Verify expected slots by calling compute_publish_slots(3, now_12_msk, ...) in setUp and using the returned values in assertions, rather than hardcoding 13:00/15:20/17:40.'"
+    },
+    {
+      "severity": "major",
+      "category": "hints",
+      "task": 12,
+      "issue": "The implementation hints section describes a step-by-step mock setup algorithm: 'Outage scenario uses `side_effect = [valid_dict_1, RateLimitError(...), valid_dict_3]` on mock `transcreate_via_claude`' and 'Manual-review scenario uses `side_effect`-function on `time.sleep`, which on first call executes `pending_articles_repo.move_to_published(row_2_link, ...)` directly'. These are specific code-level prescriptions, not pattern pointers. This is implementation detail, not a hint.",
+      "fix": "Replace with pattern references: 'Use side_effect list on the Claude mock to simulate a sequence of success/failure/success. For manual-review preemption, use a side_effect callback on time.sleep that mutates the DB state between calls -- see test_integration.py for the DB mutation pattern.'"
+    },
+    {
+      "severity": "minor",
+      "category": "feasibility",
+      "task": 10,
+      "issue": "Task 10 Details section says 'transcreate_text (~lines 327-439 at time of writing)'. Verified: transcreate_text is defined at line 327 of news_bot.py. The function body contains bureaucratic dict at lines 351-371, hw_glossary at 384-401, is_title branch at 405-423, and body truncation at 425-437. This is accurate. However, the description says 'passive→active 4 lines (~lines 376-379)' -- these lines should be verified to exist between the bureaucratic dict and hw_glossary after the bureaucratic loop.",
+      "fix": "Minor: verify line numbers after task 9 runs (since task 9 will modify news_bot.py and line numbers will shift)."
+    },
+    {
+      "severity": "minor",
+      "category": "feasibility",
+      "task": 11,
+      "issue": "Task 11 step 5 says `test_manual_review_preemption_skips_published_row` should call `pending_articles_repo.move_to_published(row_2_id, telegraph_url='...')` to simulate operator action. However, the actual signature is `move_to_published(link: str, telegraph_url: str, telegraph_path: str, via_review: bool)` -- it takes `link` (not `article_id`) and requires `telegraph_path` and `via_review` parameters. The task uses `row_2_id` and only one kwarg `telegraph_url='...'` which is incorrect.",
+      "fix": "Update the test to use: `pending_articles_repo.move_to_published(row_2_link, telegraph_url='https://telegra.ph/fake', telegraph_path='fake', via_review=True)`. The `link` parameter is the row's URL, not a numeric id."
+    },
+    {
+      "severity": "minor",
+      "category": "feasibility",
+      "task": 12,
+      "issue": "Task 12 says to use `_create_mock_entry` from tests/test_integration.py (can copy or extract to shared fixture). However, `_create_mock_entry` in test_integration.py returns a dict with keys: `link`, `title`, `published`, `summary` -- this is an RSS entry shape, not the full article shape that `_fallback_publish` receives. For distributed publish tests that call job() end-to-end through fetch_full_article, the mock for `fetch_full_article` must return the full article shape (paragraphs, subtitle, images, blocks, source_name) not the RSS entry shape. The two shapes are different and the hint to 'reuse _create_mock_entry' may produce incomplete mocks.",
+      "fix": "Clarify that _create_mock_entry produces RSS entry shape (for mock_fetch_rss return values) while mock_fetch_full_article must return the full article dict shape with all required keys (title, subtitle, paragraphs, images, blocks, source_name, link, pub_date)."
+    },
+    {
+      "severity": "minor",
+      "category": "feasibility",
+      "task": 12,
+      "issue": "Task 12 references `news_bot.fetch_mattel_news` in the list of functions to mock in setUp. In tests/test_integration.py this is `self.mattel_patcher = patch('news_bot.fetch_mattel_news', return_value=[])`. This is verified correct -- `fetch_mattel_news` is imported at the top of news_bot.py from `mattel_news_source` and the function is accessible as `news_bot.fetch_mattel_news`. This is fine. However, the task also lists `news_bot.fetch_mattel_news` to mock in setUp but not in the description of the lamley source -- if lamley is also called in job() it should also be mocked. Verify whether lamley is auto-fetched in job().",
+      "fix": "Verify that all source fetchers called in job() are covered by mocks in setUp (not just mattel and autoevolution/rss). Check if lamley_source is called separately."
+    }
+  ],
+  "stats": {
+    "tasks_checked": 3,
+    "claims_verified": 48,
+    "issues_found": 16
+  }
+}

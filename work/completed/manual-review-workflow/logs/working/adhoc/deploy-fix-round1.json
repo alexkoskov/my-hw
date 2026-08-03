@@ -1,0 +1,61 @@
+{
+  "reviewer": "deploy-reviewer (inline fallback; no subagent type registered)",
+  "skill": "deploy-pipeline",
+  "round": 1,
+  "target_commit": "e341480",
+  "target_file": "deploy.sh",
+  "verdict": "APPROVE",
+  "summary": "FILES list now covers every first-party module reached by the cron path (news_bot.job -> _fallback_publish / _overflow_fast_track). Operator-only modules (hw_review.py, preview_renderer.py) and user data (news.db) correctly excluded. No HIGH findings.",
+  "checks": [
+    {
+      "dimension": "missing_files",
+      "status": "pass",
+      "note": "news_bot.py top-level first-party imports: mattel_news_source, autoevolution_source, lamley_source, telegraph_publisher, pending_articles_repo — all present. feeds.json still loaded by load_feed_urls() at top of job() (grep confirmed 11 references in news_bot.py). Transitive first-party imports: pending_articles_repo imports news_bot only (cycle resolves, already deployed); the three *_source modules and telegraph_publisher import only stdlib + requests/bs4 (both in requirements.txt). No second-order deps missed."
+    },
+    {
+      "dimension": "overly_inclusive_patterns",
+      "status": "pass",
+      "note": "FILES is an explicit whitelist — no globs like *.py that would sweep tests/ or debug scripts."
+    },
+    {
+      "dimension": "excluded_correctly",
+      "status": "pass",
+      "note": "hw_review.py and preview_renderer.py not in FILES — operator runs these in local Claude Code session, not on server. news.db not in FILES — user data, must never be overwritten by deploy."
+    },
+    {
+      "dimension": "ordering",
+      "status": "pass",
+      "note": "Entry module first, then its first-party deps, then config (feeds.json), then meta (requirements.txt, .env.example). Stable and readable."
+    },
+    {
+      "dimension": "set_e_discipline",
+      "status": "pass",
+      "note": "set -e at line 5 unchanged. Existence-check loop aborts via explicit exit 1 on missing file, so set -e interaction is safe."
+    },
+    {
+      "dimension": "secrets_safety",
+      "status": "pass",
+      "note": ".env.example (template placeholders only) is scp'd; actual .env is not in FILES, so real TELEGRAM_BOT_TOKEN / TELEGRAPH_ACCESS_TOKEN cannot leak via scp."
+    },
+    {
+      "dimension": "pip_install_user",
+      "status": "nit_preexisting",
+      "note": "ssh \"$SSH_HOST\" \"... pip install --user -r requirements.txt\" uses --user without a venv. Pre-existing pattern; out of scope for this ad-hoc fix which was explicitly scoped to the FILES list. Not a regression."
+    },
+    {
+      "dimension": "comment_quality",
+      "status": "pass",
+      "note": "Added comment above FILES clearly delineates server-deployed vs operator-local vs never-deployed, matching the feature's split architecture."
+    }
+  ],
+  "findings_high": [],
+  "findings_medium": [],
+  "findings_low": [
+    {
+      "id": "LOW-1",
+      "dimension": "pip_install_user",
+      "message": "pip install --user without a virtualenv is fragile on a shared server, but this predates the ad-hoc fix and the task brief explicitly said to keep the existing shape. Leave for a future deploy hardening ticket."
+    }
+  ],
+  "recommendation": "Merge / run deploy. No re-review cycle needed."
+}

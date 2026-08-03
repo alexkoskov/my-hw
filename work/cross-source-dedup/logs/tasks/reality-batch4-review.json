@@ -1,0 +1,61 @@
+{
+  "validator": "reality-checker",
+  "batch": [10, 11],
+  "status": "changes_required",
+  "findings": [
+    {
+      "severity": "critical",
+      "category": "missing_file",
+      "task": 10,
+      "issue": "deploy.sh FILES list does NOT contain 'model_extractor.py' or 'backfill_fingerprints.py'. Task 10 treats this as a 'verify only' step assuming Task 5 already made the change, but at the time of this review neither file is in the deploy.sh FILES array. If Task 10 executes in verify-only mode and Task 5 did not make the changes, the deploy will ship without the new modules and the first cron tick will fail with ImportError.",
+      "fix": "Task 10 must unconditionally ensure both files are present in deploy.sh FILES list (not assume Task 5 did it). Change the 'What to do' step 1 from 'verify only' to 'ensure present, add if missing' and make it a hard requirement rather than an optional fallback. Same for .github/workflows/deploy.yml."
+    },
+    {
+      "severity": "critical",
+      "category": "missing_file",
+      "task": 10,
+      "issue": "backfill_fingerprints.py does not exist at /workspaces/debian-2/my-hw/backfill_fingerprints.py. Task 10 depends on Task 5 having created this file. The deploy.sh FILES list verification check (step 3: 'verify all files from FILES list exist in working directory') would fail with 'MISSING backfill_fingerprints.py' if Task 5 has not completed. Task 10 has no guard against running with missing source files.",
+      "fix": "Task 10 Acceptance Criteria must include an explicit pre-condition check: 'backfill_fingerprints.py and model_extractor.py exist at repo root (Task 5 prerequisite)'. The depends_on already includes Task 9 (pre-deploy QA), but Task 9's scope should catch this — verify Task 9 explicitly checks file existence."
+    },
+    {
+      "severity": "major",
+      "category": "security",
+      "task": 10,
+      "issue": "Task 10 step 5 instructs the agent: 'подключиться к VPS через ssh hwbot@148.135.207.54 (если оператор разрешит)' — this directly contradicts the project memory rule in feedback_operator_prod_ops.md: 'Claude не делает SSH; оператор управляет прод-операциями, Claude готовит, оператор применяет'. The task does have a fallback ('ИЛИ попросить оператора прислать вывод команды'), but the primary instruction frames direct SSH as the first-choice path, which invites an agent to attempt it. The same pattern recurs in Edge cases: 'Проверить через ssh hwbot@... ls ...'.",
+      "fix": "Rewrite step 5 and the Edge cases section to remove agent SSH as a primary or even conditional path. The agent must always ask the operator to run and paste back the output of VPS commands. Pattern: 'Ask operator to run: <command> and share output' — never 'connect via SSH yourself'."
+    },
+    {
+      "severity": "major",
+      "category": "feasibility",
+      "task": 10,
+      "issue": "deploy.sh default SSH_HOST is 'user@example.com' and default DEPLOY_PATH is '/home/user/bot'. The operator command sequence in Task 10 Details correctly overrides these with env vars (SSH_HOST=hwbot@148.135.207.54 DEPLOY_PATH=/home/hwbot/bot). However, Task 10 Acceptance Criteria item 'Оператор запустил ./deploy.sh, SCP завершился без ошибок' gives no reminder that env vars must be set. An operator running bare './deploy.sh' without env vars will SCP to the placeholder host and fail silently after a timeout.",
+      "fix": "Add a verification step to Task 10 automated checks: ensure the operator is instructed to set SSH_HOST and DEPLOY_PATH before running ./deploy.sh. Add to the operator instruction block: 'Note: deploy.sh defaults to user@example.com — must override SSH_HOST and DEPLOY_PATH or the SCP will fail'."
+    },
+    {
+      "severity": "minor",
+      "category": "feasibility",
+      "task": 10,
+      "issue": "Task 10 Details says 'Текущий FILES list содержит 22 файла; должно стать 24 после Task 5'. The actual deploy.sh FILES array currently has exactly 22 entries, which matches the claim. However, the 22-count claim is accurate only at this snapshot in time — it could change if other features add files between now and Task 10 execution. This is a minor risk of the count assertion going stale.",
+      "fix": "Minor: remove the specific count assertion ('22 → 24') from the task description and replace with a functional check: 'both model_extractor.py and backfill_fingerprints.py must be present in the FILES array'."
+    },
+    {
+      "severity": "minor",
+      "category": "feasibility",
+      "task": 11,
+      "issue": "Task 11 references the production channel as '@myhwchannel' (without the '123' suffix). Per deployment.md, '@myhwchannel123' is the TEST channel and the production channel is identified by numeric ID '-1004027529994'. The handle '@myhwchannel' is consistently used across user-spec.md, tech-spec.md, and task 11 as a human-friendly shorthand for the prod channel, but this shorthand is never confirmed as the actual Telegram handle of the prod channel. If the prod channel's real handle differs from '@myhwchannel', the weekly manual review step ('оператор просматривает @myhwchannel за последние 7 дней') would be looking at the wrong channel.",
+      "fix": "Clarify in Task 11 that '@myhwchannel' is a project shorthand and instruct the operator to navigate to the channel by its numeric ID '-1004027529994' or by the known bookmark, not by typing the handle literally. Alternatively confirm and document the actual Telegram handle in deployment.md."
+    },
+    {
+      "severity": "minor",
+      "category": "feasibility",
+      "task": 11,
+      "issue": "Task 11 Verification Steps (DB-counts, Запрос 3) hardcodes the exact JSON string '{\"strict\":[],\"brands\":[]}' in the SQL query: WHERE model_fingerprint = '{\"strict\":[],\"brands\":[]}'). The actual JSON serialization in the codebase uses _dumps() with ensure_ascii=False and may include spaces after colons/commas depending on Python json.dumps default separators. If the stored value is '{\"strict\": [], \"brands\": []}' (with spaces), the equality match will return 0 even when Empty fp rows exist.",
+      "fix": "Replace the exact-string equality with a JSON_EXTRACT or LIKE match: WHERE json_extract(model_fingerprint, '$.strict') = '[]' AND json_extract(model_fingerprint, '$.brands') = '[]'. Or add a note that the operator should first inspect one sample row to confirm the exact serialization format."
+    }
+  ],
+  "stats": {
+    "tasks_checked": 2,
+    "claims_verified": 21,
+    "issues_found": 7
+  }
+}

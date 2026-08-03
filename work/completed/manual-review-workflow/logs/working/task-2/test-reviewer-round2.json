@@ -1,0 +1,8 @@
+{
+  "reviewer": "test-reviewer",
+  "task": "manual-review-workflow/task-2",
+  "round": 2,
+  "status": "OK",
+  "summary": "Round-2 adds 3 test bodies (2 for attribute-name hardening, 1 HTMLParser structural walk) — 8 new test cases total with the parametrisation. Coverage: single malicious name coexisting with a legitimate name (mixing test proves iteration order does not shadow good attrs); 6 bad-key variants (space-separated attr-injection, angle-bracket, newline, empty, leading-digit, plain space); full-document HTMLParser.feed round-trip catches structural regressions that substring assertions would miss. No skips, no xfails, no bare `assert mock.called`. Assertion strength is high: both presence and absence checks. Total: 63 passing, 0 failing.",
+  "findings": []
+}

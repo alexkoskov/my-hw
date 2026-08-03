@@ -1,0 +1,26 @@
+{
+  "validator": "reality-checker",
+  "batch": [1, 2, 3],
+  "status": "changes_required",
+  "findings": [
+    {
+      "severity": "critical",
+      "category": "cross-task-integration",
+      "task": 1,
+      "issue": "Task 1's own Acceptance Criteria requires `pytest tests/test_model_extractor.py -v` to be green with 'регрессий в TestExtractFingerprint/TestSimilarity/калибровке нет' (no calibration regressions). But `test_calibration_accuracy` and `test_calibration_real_pair_must_pass` (test_model_extractor.py:332-380) import DUPE_PAIRS/NON_DUPE_PAIRS from tests/fixtures/cross_source_dedup_pairs.py and still run the OLD similarity()-threshold classifier (`_classify`, unchanged by Task 1). Task 3 (same wave, depends_on: [], no dependency declared either direction) rewrites that exact fixture: it deletes DUPE_PAIRS pair-2/3/4 (Boulevard/Pop Culture/JDM) and all of NON_DUPE_PAIRS pair-5..8, replaces them with SDCC pop-culture pairs whose `strict`/`brands` sets are empty or near-empty (theme-only tie-ins), and re-labels the surviving Car Culture pair's expected_verdict from 'duplicate' to 'soft-flag'. Verified: `similarity()` (model_extractor.py:290-325) only ever reads `strict`/`brands` keys (never `series`/`pairs`, which Task 1 adds but Task 1 does NOT touch `similarity`/`_classify`). So once Task 3's fixture lands, the old-classifier calibration tests WILL misclassify the new SDCC entries (near-zero strict overlap -> 'non-duplicate' vs expected 'duplicate') and the re-labelled Car Culture pair (still ~100% strict overlap -> 'duplicate' vs expected 'soft-flag') -- this is not hypothetical, it is arithmetically certain given the unchanged `_classify` thresholds. Task 3 itself explicitly acknowledges and accepts this ('Ожидаемая промежуточная краснота... между Wave 1 и Task 6 калибровочный агрегат-тест может быть красным; это by design... НЕ чинить это правкой test_model_extractor.py здесь' -- Task 3 Details), deferring the harness rewrite to Task 6 (Wave 3). Task 1's AC text contradicts this: it unconditionally demands the full pytest run (which includes the shared calibration tests) be green with zero calibration regressions, with no caveat about Task 3's planned interim breakage. This matches the checklist's explicit critical pattern: 'Task reads/imports a module created by another task without declaring dependency' (test_model_extractor.py, whose calibration tests Task 1 is accountable for keeping green, imports a fixture module Task 3 owns and rewrites) and 'A task that reads a file created by another task without declaring that dependency'.",
+      "fix": "Reconcile the two tasks rather than force an artificial depends_on (both are legitimately parallel on disjoint source files). Recommended: (a) soften Task 1's AC bullet to scope 'no regressions' to TestExtractFingerprint/TestSimilarity/TestSeriesLexicon/TestExtractSeries/TestPairs/TestSharesPair only, explicitly excluding test_calibration_accuracy/test_calibration_real_pair_must_pass from the task-level green-bar requirement, with a note that the calibration harness is intentionally red between Wave 1 and Task 6 (mirroring Task 3's own note); or (b) have Task 3 also update `_classify`/test_calibration_accuracy's threshold logic to a temporary pair-aware stub so the suite stays green end-to-end within Wave 1, moving only the final polish to Task 6. Whichever direction is chosen, make the two tasks' AC text say the same thing about calibration-test state at the end of Wave 1."
+    },
+    {
+      "severity": "minor",
+      "category": "hints",
+      "task": 1,
+      "issue": "Implementation hint says multi-word series aliases should sort before short ones in the regex alternation 'чтобы не отгрызался префикс (как «Land Rover» бьёт «Land» в бренд-regex)' -- implying 'Land' alone is a live alternative in `_MODEL_AFTER_BRAND_RE` that 'Land Rover' must beat. It is not: the actual code comment at model_extractor.py:96-99 says explicitly 'while \"Land\" isn't in the alternation, this ordering protects against future single-word additions' -- i.e. there is no live 'Land' vs 'Land Rover' prefix collision today, only a hypothetical future one. The hint states it as if it were a current, active behavior of the codebase.",
+      "fix": "Rephrase the hint to match the code comment's own framing, e.g. '...чтобы не отгрызался префикс (по аналогии с тем, как _MODEL_AFTER_BRAND_RE держит многословные бренды впереди однословных на случай будущих коллизий -- см. комментарий model_extractor.py:96-99, «Land» сегодня не в альтернации, но паттерн защищает от будущих коллизий)'. Purely a documentation-accuracy nit; does not block implementation since the ordering advice itself (multi-word first) is correct practice."
+    }
+  ],
+  "stats": {
+    "tasks_checked": 3,
+    "claims_verified": 52,
+    "issues_found": 2
+  }
+}

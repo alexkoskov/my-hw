@@ -1,0 +1,35 @@
+{
+  "validator": "task-validator",
+  "batch": [11, 12],
+  "status": "changes_required",
+  "findings": [
+    {
+      "severity": "critical",
+      "category": "content",
+      "task": 11,
+      "section": "Context Files",
+      "issue": "Every project-root-relative Context Files link uses a '../../' prefix, which from tasks/ resolves to work/ (not the project root). All of them are broken (verified 9/9 MISS): project.md, architecture.md, deployment.md, deploy.sh, .github/workflows/deploy.yml, .github/workflows/deploy_test.yml, docker-compose.yml, .env.example. Mandatory context docs project.md and architecture.md are therefore unreachable, and every deploy config this task exists to reason about is a dead link. (The feature-local links ../user-spec.md, ../tech-spec.md, ../decisions.md are correct because tasks/ is one level below the feature dir.)",
+      "fix": "Change the prefix from '../../' to '../../../' for all project-root links in Task 11 (PK references and deploy configs). Task 12 already uses the correct '../../../' prefix — copy that convention."
+    },
+    {
+      "severity": "minor",
+      "category": "content",
+      "task": 11,
+      "section": "Required Skills",
+      "issue": "The deploy-pipeline SKILL.md link uses the same wrong '../../.claude/skills/deploy-pipeline/SKILL.md' prefix and is a dead link (resolves to work/.claude/...). Lower impact than the context files because the harness loads skills by the frontmatter 'skills: [deploy-pipeline]' name, not via this markdown path, but the link is still broken.",
+      "fix": "Use '../../../.claude/skills/deploy-pipeline/SKILL.md' (three levels up from tasks/)."
+    },
+    {
+      "severity": "minor",
+      "category": "consistency",
+      "task": 12,
+      "section": "Verification Steps",
+      "issue": "Frontmatter has verify: [] but the Verification Steps section contains both a Smoke and a User subsection. In the normal task flow the verify field mirrors which verification subsections are present ([smoke, user] here). This is plausibly intentional for a post-deploy-qa task (the task itself IS the verification, so a separate verify pass would double-run it), but the mismatch is worth a human glance.",
+      "fix": "Confirm the empty verify: [] is intentional for this QA task; if the do-task flow is expected to trigger the Smoke/User checks, set verify: [smoke, user]. Otherwise leave as-is and the intent is clear from the section comment."
+    }
+  ],
+  "stats": {
+    "tasks_checked": 2,
+    "issues_found": 3
+  }
+}

@@ -1,0 +1,28 @@
+{
+  "status": "approved",
+  "findings": [
+    {
+      "category": "underengineering",
+      "severity": "minor",
+      "issue": "AC12 specifies the calibration fixture shape (8 pairs, 4 dupes + 4 non-dupes, accuracy threshold) but does NOT enumerate the pairs themselves or mandate that the 2026-06-03 t-hunted/autoevolution incident pair (Car Culture Road Trip Mix — Land Rover S2 / Subaru Legacy GT / 2018 Toyota 4Runner) be one of the 4 duplicate pairs. A tech-spec author could pick 8 contrived pairs, pass the >=7/8 gate, and ship a feature that still fails on the actual triggering incident.",
+      "why_matters": "The whole point of the feature is the 2026-06-03 case. If the fixture doesn't anchor on it, the calibration gate becomes circular — it validates against pairs the author chose with the thresholds in mind. The historical incident has known body content (both articles linked in spec section 'Зачем') and is the most realistic dupe-pair available.",
+      "fix": "Strengthen AC12 with a single mandatory sentence: 'Among the 4 duplicate pairs MUST be the 2026-06-03 t-hunted/autoevolution pair from section Зачем (real body content, not synthesized). Among the 4 non-duplicate pairs MUST be at least one pair sharing exactly one brand but different models (probes AC8 brands-only guard). Among the 4 non-duplicate pairs MUST be at least one single-model-each pair (probes 1-token degeneracy guard).'"
+    },
+    {
+      "category": "overengineering",
+      "severity": "minor",
+      "issue": "The verbatim columnar Russian admin-ping template (lines 109-132 of user-spec, 'Что произошло / Что сделать' blocks) is implementation-shaped detail kept in user-spec. Round 1 finding 3 called this out and the spec was simplified for AC9/AC10 but the full ping template was kept. Project convention (E006, E008 in admin_alerts.py per code-research) is that the exact strings live in admin_alerts.py docstrings and tests assert substring presence — they don't live in user-spec.",
+      "why_matters": "Locks tech-spec author into one specific wording for 'Что произошло' / 'Что сделать' that may not be the operator's actual preference once they see it in Telegram. Minor because the format is genuinely a UX requirement (operator-facing string) and arguably belongs in user-spec under that framing — but the verbatim multiline block is more detail than needed.",
+      "fix": "Either (a) keep as-is and explicitly mark the template as illustrative ('Пример формата — точные строки в tech-spec') so tech-spec can refine wording without amending user-spec, or (b) reduce to a short description: 'columnar Russian, по образцу E006: оба линка, источники, %, список моделей, секции \"Что произошло\" и \"Что сделать\".' Not a blocker."
+    },
+    {
+      "category": "sizing",
+      "severity": "minor",
+      "issue": "Declared size is M. The feature now includes: new model_extractor.py module, schema migration on 2 tables, 2 new repo helpers, 2 new admin alert builders (E014 + E015), rate-limit state storage (new table OR bot_state row — tech-spec decides), backfill script with its own test file, calibration fixture file, 5+ integration tests, updates to 2 schema-pin test files. Total greenfield surface per code-research section 12 is ~2 new production modules, ~7 edited files, plus backfill script and fixtures. This is at the upper edge of M and reasonably could be L.",
+      "why_matters": "Sizing mismatch doesn't change correctness but affects expectations during execution (review-cycle limits, parallel agent dispatch). Not a blocker since the spec is internally consistent and each piece is genuinely small — but worth a sanity-check.",
+      "fix": "Either bump declared size to L, or explicitly justify M in the spec ('M — каждая часть мелкая, нет нетривиальной логики кроме самого extractor'). No structural changes needed."
+    }
+  ],
+  "worst_category": "underengineering",
+  "summary": "All 6 round 1 findings are substantively resolved: AC8 closes the single-token degeneracy via brands-only-when-both-have-2+-brands guard; AC12 makes threshold calibration a pre-deploy gate; AC11 adds the idempotent backfill script (paragraphs are preserved in published_articles per code-research, so extractor can re-run cleanly); AC9/AC10 generalized; AC5 caps per-pair E014 noise at one per 7 days; AC3 adds the quiet E015 ping for hard-block visibility. No new critical issues introduced. Three minor refinements remain: fixture content should anchor on the real 2026-06-03 incident pair, the verbatim ping template could be marked illustrative, and the M sizing is on the edge given the expanded scope. Spec is buildable and approved for tech-spec phase."
+}

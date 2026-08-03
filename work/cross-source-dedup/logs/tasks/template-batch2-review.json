@@ -1,0 +1,108 @@
+{
+  "validator": "task-validator",
+  "batch": [6, 7, 8, 9, 10, 11],
+  "status": "changes_required",
+  "findings": [
+    {
+      "severity": "critical",
+      "category": "decomposition",
+      "task": 10,
+      "section": "frontmatter",
+      "issue": "Task 10 declares `depends_on: [9]` but both are in `wave: 4`. Validator rule: 'Task with depends_on:[X] must have wave > wave of task X' — dependent task must be in a later wave than its dependency. Same-wave dependency means Task 10 cannot start in parallel with Task 9 yet shares the same wave bucket, which contradicts wave semantics (parallel execution within a wave).",
+      "fix": "Either move Task 10 to wave 5 (and Task 11 to wave 6) to make the dependency chain explicit, OR drop depends_on/redefine waves so that Final Wave tasks (9, 10, 11) become a strict serial wave chain: wave 4 = QA (9), wave 5 = Deploy (10), wave 6 = Post-deploy (11). Mirror this change in tech-spec Implementation Tasks section."
+    },
+    {
+      "severity": "critical",
+      "category": "decomposition",
+      "task": 11,
+      "section": "frontmatter",
+      "issue": "Task 11 declares `depends_on: [10]` but both are in `wave: 4`. Same wave violation as Task 10 — a dependent task must be in a later wave than its dependency.",
+      "fix": "Move Task 11 to wave 6 (following the fix on Task 10). Final Wave should be expressed as three sequential waves (4, 5, 6) not a single wave 4 with internal dependencies."
+    },
+    {
+      "severity": "minor",
+      "category": "content",
+      "task": 7,
+      "section": "Required Skills",
+      "issue": "Required Skills format does not match template — it says `/skill:security-auditor — методология OWASP Top 10 ревью кода` with no markdown link to SKILL.md. Template expects `/skill:{name} — [SKILL.md](path/to/SKILL.md)`. Tasks 6, 8, 9, 10, 11 all use the linked format correctly; Task 7 is the outlier.",
+      "fix": "Replace the Required Skills line with: `- `/skill:security-auditor` — [skills/security-auditor/SKILL.md](~/.claude/skills/security-auditor/SKILL.md)` to match the project convention used by every other task in the batch."
+    },
+    {
+      "severity": "minor",
+      "category": "structure",
+      "task": 6,
+      "section": "Verification Steps",
+      "issue": "Verification Steps -> Automated subsection contains prose rather than executable commands. It states 'Эта задача — аудит, не код. Автоматических тестов нет' but still labels the section `### Automated`. The template's Automated subsection is for test commands. For audit tasks the entire Verification Steps section can be repurposed (e.g., 'Verification: report file exists and covers required sections') or the Automated subsection should be omitted.",
+      "fix": "Either remove the `### Automated` subsection header and place the verification prose at the section root, or rename the subsection (e.g., 'Deliverable checks') to clarify these are not test commands. Same pattern applies to Tasks 7 and 8 which use the same structure."
+    },
+    {
+      "severity": "minor",
+      "category": "structure",
+      "task": 7,
+      "section": "Verification Steps",
+      "issue": "Verification Steps contains only `### Automated` subsection with prose 'Не применимо — задача аудит, не код'. No executable verification of the audit deliverable. The report-existence check applied to Task 8 would also be valuable here.",
+      "fix": "Add a deliverable existence check: `test -f work/cross-source-dedup/logs/audits/security-audit.md && echo OK`, mirroring Task 8's pattern. Alternatively rename the subsection to 'Deliverable' to be honest about its role."
+    },
+    {
+      "severity": "minor",
+      "category": "content",
+      "task": 10,
+      "section": "Reviewers",
+      "issue": "Reviewers section content is just `(none — deploy-pipeline task, no review round)` — a single-line parenthetical. Tasks 6/7/8/9/11 all use a fuller phrasing explaining the no-reviewer rationale (verification result IS the review / auditor IS the review). Task 10 is terser than its siblings.",
+      "fix": "Expand to 1-2 sentences explaining no reviewer rationale (deploy is operator-driven, success criteria verified via VPS schema checks + journalctl, not by a reviewer agent). Match the style of Tasks 6, 7, 8, 11."
+    },
+    {
+      "severity": "minor",
+      "category": "content",
+      "task": 10,
+      "section": "Details",
+      "issue": "Details subsection 'Edge cases' is rich but there is no explicit 'Implementation hints' as a labelled subsection — hints are folded under 'Implementation hints' but split across the section. Other tasks use a clearly delimited `**Implementation hints:**` bold prefix. Style consistency only — Task 10 actually has `**Implementation hints:**` near the end. On closer read this is fine; flagging as info-level only that the Details block could be reordered for parallelism with the other tasks (Files / Dependencies / Edge cases / Implementation hints order).",
+      "fix": "Optional reorder: move `**Implementation hints:**` block to the bottom of Details (it already is). No action required — flag was a near-miss; leaving as advisory."
+    },
+    {
+      "severity": "minor",
+      "category": "carry-forward",
+      "task": 11,
+      "section": "Acceptance Criteria",
+      "issue": "Hard gate 'Zero false negatives on critical pair' is a strong AC but the 2-week monitoring window is operator-dependent — task can technically not be completed by an agent alone. This is the nature of post-deploy QA and is acknowledged in the tech-spec; minor flag because the AC framing could mislead about timing (a passing verdict here may take 14+ calendar days, blocking /done).",
+      "fix": "Add a note in the AC or Post-completion clarifying that 'pass' verdict requires a full 2-week observation window AND that interim pass-with-pending-monitoring is an acceptable intermediate state if operator needs to /done earlier (e.g., monitoring continues but feature is archived)."
+    },
+    {
+      "severity": "minor",
+      "category": "consistency",
+      "task": 6,
+      "section": "Context Files",
+      "issue": "PK paths use relative form `../../../.claude/skills/project-knowledge/references/project.md` while Tasks 7, 9, 10, 11 use tilde-prefixed form `~/.claude/skills/project-knowledge/references/project.md`. Both resolve but the inconsistency across the batch is a style nit.",
+      "fix": "Pick one style for the feature. Tilde form is more portable (works regardless of feature-folder depth) and is used by Task 7, 9, 10, 11 — recommend converting Tasks 6 and 8 to the tilde form."
+    },
+    {
+      "severity": "minor",
+      "category": "consistency",
+      "task": 8,
+      "section": "Context Files",
+      "issue": "Same as Task 6 — uses relative `../../../.claude/skills/project-knowledge/...` form instead of tilde-prefixed form used by Tasks 7, 9, 10, 11.",
+      "fix": "Convert to tilde form for consistency across the batch."
+    }
+  ],
+  "stats": {
+    "tasks_checked": 6,
+    "issues_found": 10,
+    "critical": 2,
+    "major": 0,
+    "minor": 8
+  },
+  "notes": {
+    "frontmatter_validation": {
+      "task_6": "OK - depends_on [4,5], wave 3, skills [code-reviewing], reviewers [], no TDD Anchor — matches user instructions.",
+      "task_7": "OK - depends_on [4,5], wave 3, skills [security-auditor], reviewers [], no TDD Anchor — matches user instructions.",
+      "task_8": "OK - depends_on [4,5], wave 3, skills [test-master], reviewers [], no TDD Anchor — matches user instructions.",
+      "task_9": "OK - depends_on [6,7,8], wave 4, skills [pre-deploy-qa], reviewers [] — matches user instructions.",
+      "task_10": "frontmatter values match user instructions (depends_on [9], wave 4, skills [deploy-pipeline], reviewers []) but wave=4 conflicts with depends_on=[9] which is also wave=4 — see critical finding above.",
+      "task_11": "frontmatter values match user instructions (depends_on [10], wave 4, skills [post-deploy-qa], reviewers []) but wave=4 conflicts with depends_on=[10] which is also wave=4 — see critical finding above."
+    },
+    "tdd_anchor_absence": "All 6 tasks correctly omit TDD Anchor section (per template instructions for non-code tasks: 'For non-code tasks (user instructions, deploy, config) — delete this section.'). No findings on this dimension.",
+    "acceptance_criteria_quality": "All 6 tasks have meaningful, concrete, testable AC items — not vague phrasings like 'audit completed'. Task 6 has 7 specific criteria covering report structure, finding format, cross-component checks, Shared Resources compliance, pattern adherence, read-only discipline. Task 7 has 6 criteria including PASS/FAIL verdict requirement and the import-order invariant. Task 8 has 10 criteria covering each audit dimension. Task 9 has 10 criteria covering pytest result, AC verification, smoke checks, coverage. Task 10 has 9 criteria including VPS schema checks. Task 11 has 7 criteria including hard gates on false-negatives and E016. All pass the meaningfulness test.",
+    "shared_resources_compliance": "Not applicable to tasks 6-11 (audit/QA/deploy/post-deploy — no code creates shared resources here). Wave 1-2 tasks (1-5) are responsible for shared resource ownership per tech-spec Architecture Shared Resources table.",
+    "carry_forward_check": "Tech-spec Implementation Tasks for 6, 7, 8, 9, 10, 11 give one-line descriptions plus Skill + Reviewers. All task files faithfully expand on those descriptions with no dropped AC or TDD items (no TDD items expected). Tech-spec did not include AC list per-task; technical AC are collected in the global Acceptance Criteria section and Task 9 explicitly cross-references all 11 of them. No carry-forward losses found."
+  }
+}

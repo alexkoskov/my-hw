@@ -1,0 +1,42 @@
+{
+  "status": "needs_improvement",
+  "summary": "Both TDD-anchor tests exist and correctly test behavior (anchors [E014]/[E015], emoji, guidance blocks, decoded pair text, absence of raw-key artifacts) rather than implementation details, and the three pre-existing pins (test_e015_cross_source_blocked, test_e014_cross_source_dupe, test_all_alerts_have_unique_codes) are unmodified and remain meaningful/green. No over-mocking (pure str-builder unit tests, correct test type). However, two task-specified edge cases are effectively unverified: the 'deterministic sorted order' claim for multiple matched pairs is not actually exercised (empirically confirmed: removing the sorted() call in _render_pairs_block leaves both new tests green), and the 'empty/None optional arg must not leak Совпадение: None%' edge case has no covering test at all — and empirically the current implementation DOES leak literal 'None%'/'None/None' when both the new and legacy params are absent, which is exactly the failure mode the task explicitly warns against.",
+  "findings": [
+    {
+      "severity": "major",
+      "category": "missing_coverage",
+      "location": "tests/test_admin_alerts.py:342-367 (test_e015_blocked_renders_matched_pairs)",
+      "issue": "Task edge cases require 'несколько совпавших пар → отрендерить все ... детерминированный порядок (сортировка)'. The test passes pairs=[\"porsche 911|k-pop demon hunters|D\", \"toyota supra|top gun|D\"] — already in ascending lexical order — so sorted(pairs) is a no-op for this input and the test cannot distinguish 'sorted' from 'insertion order'. Empirically verified: with the sorted() call removed from _render_pairs_block in admin_alerts.py (iterating pairs in given order instead), both test_e015_blocked_renders_matched_pairs and test_e014_broad_series_flag still pass unchanged. Litmus test fails for this specific claim.",
+      "recommendation": "Pass the pairs in reverse-of-expected order, e.g. pairs=[\"toyota supra|top gun|D\", \"porsche 911|k-pop demon hunters|D\"] (toyota listed first), and assert the rendered order reflects the sort rather than input order: self.assertLess(msg.index(\"porsche 911 + k-pop demon hunters\"), msg.index(\"toyota supra + top gun\")). This fails immediately if sorted() is removed, closing the litmus gap."
+    },
+    {
+      "severity": "major",
+      "category": "missing_coverage",
+      "location": "admin_alerts.py:477-484 (alert_cross_source_dupe match_block else-branch) and admin_alerts.py:520 (alert_cross_source_blocked match_block else-branch); no covering test in tests/test_admin_alerts.py",
+      "issue": "Task edge cases explicitly require: 'Пустой/None опциональный аргумент → откат на legacy-рендер модельного overlap (не выводить `Совпадение: None%`)'. No test calls either builder with pairs empty/None together with the legacy overlap params also absent. This is not just a theoretical gap — verified against the actual working-tree implementation: admin_alerts.alert_cross_source_blocked('a', 'b') renders '...Совпадение: None%' verbatim, and admin_alerts.alert_cross_source_dupe('a', 'b', 's1', 's2') renders '...Совпадение моделей: None% (None/None)\\nОбщие модели:\\n\\n...'. Both reproduce exactly the forbidden output the task calls out, and both are reachable through the new fully-optional signature (a caller need only omit both the new pairs kwarg and the legacy overlap args).",
+      "recommendation": "Add regression tests for both builders, e.g. test_e015_blocked_no_pairs_and_no_overlap_pct (call with only new_link/existing_link) asserting assertNotIn(\"None%\", msg), and an analogous test_e014_broad_flag_no_pairs_and_no_overlap_params asserting assertNotIn(\"None%\", msg) and assertNotIn(\"None/None\", msg). These tests will currently FAIL against the working-tree implementation, which needs a guard (e.g. only render the overlap_pct line when overlap_pct is not None, otherwise fall back to a safe placeholder or raise) — flag this to code-reviewer as a real defect, not just a test gap."
+    },
+    {
+      "severity": "minor",
+      "category": "missing_coverage",
+      "location": "tests/test_admin_alerts.py:298-330, 342-374 (both new tests)",
+      "issue": "Task edge cases require plain-text passthrough with no markdown escaping: 'случайный `_`/`*` в серии не должен требовать экранирования'. All pair values used in the new tests ('porsche 911', 'k-pop demon hunters', 'toyota supra', 'top gun', 'stranger things') contain no underscore and no asterisk embedded in an actual model/series token — the only '*' present is the theme-only sentinel character, which exercises a different code path (the 'no concrete model' marker) rather than the escaping concern. So nothing currently proves a real pair value containing a markdown-significant character passes through byte-for-byte unescaped.",
+      "recommendation": "Add a case with a pair like \"model_x|series*name|D\" (or extend an existing test) and assert the exact decoded substring \"model_x + series*name\" appears verbatim, plus assertNotIn(\"\\\\_\", msg) and assertNotIn(\"\\\\*\", msg), to lock in that no escaping is introduced for these characters."
+    }
+  ],
+  "metrics": {
+    "filesReviewed": 2,
+    "litmusTest": {
+      "checked": 5,
+      "passed": 4,
+      "failed": 1
+    },
+    "coverageAssessment": "adequate",
+    "pyramidBalance": {
+      "unit": 2,
+      "integration": 0,
+      "e2e": 0,
+      "assessment": "healthy"
+    }
+  }
+}

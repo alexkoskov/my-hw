@@ -1,0 +1,70 @@
+{
+  "validator": "task-validator",
+  "batch": [1, 2, 3, 4, 5],
+  "status": "approved",
+  "findings": [
+    {
+      "severity": "minor",
+      "category": "consistency",
+      "task": 2,
+      "section": "Reviewers",
+      "issue": "Reviewer report paths use project-root-relative form `work/publish-idempotency-fix/logs/working/task-2/...` instead of the absolute path anchored to feature_path used in Tasks 1, 3, 4 (`/workspaces/debian-2/my-hw/work/publish-idempotency-fix/logs/working/task-2/...`). Task-creator rule: 'bare logs/... paths resolve from CWD (project root), not from the feature directory. Always anchor to feature_path.'",
+      "fix": "Replace each reviewer line in Task 2 Reviewers section with the absolute path form: `/workspaces/debian-2/my-hw/work/publish-idempotency-fix/logs/working/task-2/{reviewer}-{round}.json` to match Tasks 1/3/4."
+    },
+    {
+      "severity": "minor",
+      "category": "consistency",
+      "task": 5,
+      "section": "Reviewers",
+      "issue": "Reviewer report paths use project-root-relative form `work/publish-idempotency-fix/logs/working/task-5/...` instead of the absolute path anchored to feature_path used in Tasks 1, 3, 4. Inconsistency with task-creator rule (always anchor to feature_path).",
+      "fix": "Replace each reviewer line in Task 5 with `/workspaces/debian-2/my-hw/work/publish-idempotency-fix/logs/working/task-5/{reviewer}-{round}.json` to align with Tasks 1/3/4."
+    },
+    {
+      "severity": "minor",
+      "category": "content",
+      "task": 1,
+      "section": "TDD Anchor",
+      "issue": "Task 1 is a code task and the template says TDD Anchor lists tests to write BEFORE implementation. Section instead defers all 5 tests to Task 3 (Wave 2). This is a deliberate decomposition pattern (per tech-spec) and the listed test names/paths are real and concrete, but the section no longer anchors red-green TDD for Task 1's implementation; Task 1's executor cannot run any failing tests before writing the guard.",
+      "fix": "Either acknowledge the limitation explicitly (already partially done — 'verify-smoke ограничен компиляцией'), or add at least one minimal pre-implementation smoke-test stub the implementer can write before the guard (e.g. `tests/test_fallback_publish_paths.py::test_idempotency_guard_smoke` calling `_fallback_publish` with a stubbed get_published returning a dict and asserting return True). Optional — current decomposition is acceptable per tech-spec."
+    },
+    {
+      "severity": "minor",
+      "category": "content",
+      "task": 2,
+      "section": "TDD Anchor",
+      "issue": "Same defer-to-Wave-2 pattern as Task 1: Task 2 is a code task but its TDD Anchor points to T6 in Task 4 instead of providing pre-implementation tests for Task 2 itself. Acceptable per tech-spec decomposition, but the executor of Task 2 has no failing test to drive the change.",
+      "fix": "Optional — explicitly note (already mostly done) that single-keyword change does not need a pre-implementation test, OR move T6 into Task 2 to make it true TDD. Current decomposition is consistent with tech-spec; flag is informational."
+    },
+    {
+      "severity": "minor",
+      "category": "carry-forward",
+      "task": 2,
+      "section": "Acceptance Criteria",
+      "issue": "Tech-spec Regression Coverage section lists `test_publish_retry_reuses_telegraph_url` and `test_publish_retry_after_teaser_exception` as MUST-stay-green for the `INSERT OR IGNORE` change. Task 2 mentions them in Verification Steps → Automated (`pytest tests/test_hw_review_publish_flow.py -q -k 'publish_retry'`) but the Acceptance Criteria checklist does not include an explicit checkbox for those regression tests staying green.",
+      "fix": "Add an AC bullet: `- [ ] Регрессия: pytest tests/test_hw_review_publish_flow.py -q -k 'publish_retry' остаётся зелёным (test_publish_retry_reuses_telegraph_url, test_publish_retry_after_teaser_exception).`"
+    },
+    {
+      "severity": "minor",
+      "category": "structure",
+      "task": 1,
+      "section": "Context Files",
+      "issue": "Context Files block mixes the standard markdown link list with paragraph-style notes appended after `news_bot.py` and `pending_articles_repo.py` entries (e.g. 'send_admin_notification определён там же на строке 357' / 'не raise-ит на missing row, raise-ит на DB-уровне ошибки'). Template format is `[name](path)` per line; inline annotations make the block harder to scan and parse.",
+      "fix": "Move per-file annotations either into the Details → Files subsection (which already exists and is the right place), or keep them but format clearly: `[news_bot.py](../../../news_bot.py) — целевой файл (см. Details → Files)`. Keep the Context Files block link-only."
+    },
+    {
+      "severity": "minor",
+      "category": "carry-forward",
+      "task": 5,
+      "section": "Acceptance Criteria",
+      "issue": "Tech-spec T7 explicitly mandates the assertion that `link_zombie` did NOT get marched into `failed_articles` (covers AC6) AND the explicit statement of the litmus connection (`attempt_count=2` ⇒ without guard `failed_articles=1`). The task ACs cover the empty `failed_articles` assertion but the litmus comment requirement (tech-spec: 'Out-of-scope acknowledgement... Documented here so reviewers don't expect a multi-tick test') is in 'What to do' step 7, not in AC. Minor — could be promoted to AC for visibility.",
+      "fix": "Add an AC bullet: `- [ ] В docstring/комментарии теста явно документирована связка attempt_count=2 ↔ пустой failed_articles ↔ AC6 (литмус guard'а).`"
+    }
+  ],
+  "stats": {
+    "tasks_checked": 5,
+    "issues_found": 7,
+    "critical": 0,
+    "major": 0,
+    "minor": 7
+  }
+}

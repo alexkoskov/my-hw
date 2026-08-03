@@ -1,0 +1,76 @@
+{
+  "validator": "reality-checker",
+  "batch": [1, 2, 3],
+  "iteration": 1,
+  "status": "changes_required",
+  "findings": [
+    {
+      "severity": "critical",
+      "category": "feasibility",
+      "task": 2,
+      "issue": "Algorithm in 'What to do' (step 3) specifies `raw_interval = (window_end - window_start) total minutes / n` (420/N, fixed full window), but TDD Anchor test `test_restart_at_16_n5` expects 5 slots at 48-min intervals. With the fixed-window formula at N=5/now=16:00: raw_interval=84, max_publishable=floor(240/84)+1=3, producing only 3 slots — not 5. The 48-min interval and 5-slot result are only achievable with `raw_interval = remaining_minutes / n` (adaptive formula). An implementer following the prescribed algorithm will produce code that fails the stated test. The code-research §14.2 also uses the fixed 420/N formula, reinforcing the confusion.",
+      "fix": "Reconcile the algorithm and the test. Either: (a) change the algorithm in 'What to do' step 3 to use `raw_interval = remaining_minutes / n` for the restart-mid-window case (two-branch logic: if now < window_start → 420/N, else remaining/N), or (b) update `test_restart_at_16_n5` to expect 3 slots at 84-min intervals and carry_over=2. Option (a) matches the user-spec intent of adapting to remaining time; document the two-branch formula explicitly."
+    },
+    {
+      "severity": "major",
+      "category": "feasibility",
+      "task": 2,
+      "issue": "Inconsistent test count across the task: 'Description' says '~12 тестов', 'Context Files' says '~12 unit-тестов', the TDD Anchor lists 13 named test functions, and 'Acceptance Criteria' + 'Verification Steps' say 'все 13 тестов зелёные'. The discrepancy between '~12' and '13' is a minor clarity issue, but the AC and Verification Step explicitly call 13 — a test-reviewer will flag if 12 are delivered.",
+      "fix": "Unify the count to 13 everywhere: update 'Description' paragraph and both Details entries from '~12' to '13' to match TDD Anchor and AC."
+    },
+    {
+      "severity": "major",
+      "category": "feasibility",
+      "task": 2,
+      "issue": "The `What to do` algorithm (step 3) includes `slots_count = min(n, max_publishable_now, MAX_POSTS_PER_DAY)` with a hardcoded `MAX_POSTS_PER_DAY=11` cap. But code-research §14.2 and §8 do NOT include `MAX_POSTS_PER_DAY` as a separate cap — the 11-slot ceiling emerges naturally from `floor(420/40)+1`. Adding an explicit `MAX_POSTS_PER_DAY` cap in the algorithm changes behavior for edge cases (e.g., N=11 with a non-standard `min_interval_min` param that would naturally allow more slots). The cap is declared as 'documentation only' in the constant definition but then applied in the algorithm.",
+      "fix": "Remove `MAX_POSTS_PER_DAY` from the `slots_count` formula to match code-research §14.2. Keep the constant as a documented alias only (add a comment '# alias: floor((WINDOW_END-WINDOW_START)/MIN_INTERVAL)+1 = 11'). This keeps the algorithm consistent with the reference spec."
+    },
+    {
+      "severity": "major",
+      "category": "hallucination",
+      "task": 3,
+      "issue": "Task 3 references `anthropic.UnprocessableEntityError` (422) as a per-article exception class to handle. This class does not exist in the standard anthropic Python SDK exception hierarchy (verified: anthropic SDK uses `BadRequestError` for 400, and `APIStatusError` as the generic base for other status codes). The code-research §14.7 lists it and it appears plausible by analogy, but if `anthropic.UnprocessableEntityError` does not exist in `anthropic>=0.45.0,<0.46.0`, the `except anthropic.UnprocessableEntityError` clause will raise `AttributeError` at import time or be silently dead code.",
+      "fix": "Before implementing, confirm whether `anthropic.UnprocessableEntityError` exists in SDK version 0.45.x by checking the SDK changelog or source. If absent, replace with `anthropic.BadRequestError` or catch it via `anthropic.APIStatusError` with `exc.status_code == 422`. Update both the task and tests accordingly."
+    },
+    {
+      "severity": "major",
+      "category": "hints",
+      "task": 3,
+      "issue": "Implementation hints contain a prescriptive step-by-step algorithm with specific regex patterns, full code structures for singleton client, mtime caching, and JSON parsing. For example: `_DEFAULT_CLIENT = None`; `def _get_default_client():`; `re.match(r'^\\s*```(?:json)?\\s*\\n', text)` + `re.search(r'\\n\\s*```\\s*$', text)`; `logger.info(\"claude_call model=%s input_tokens=%d output_tokens=%d latency_ms=%d\", ...)`. These are full implementations disguised as hints, prescribing the solution rather than pointing to patterns.",
+      "fix": "Reduce hints to patterns: 'For the prompt cache, see the mtime-comparison pattern in existing file loaders in the codebase. For JSON fence stripping, see how existing parsers handle markdown code blocks. Log token usage at INFO level — see existing log call patterns in news_bot.py.'"
+    },
+    {
+      "severity": "major",
+      "category": "missing_file",
+      "task": 3,
+      "issue": "Task 3 'Dependencies' section states: 'For development of this task, `pip install anthropic>=0.45.0,<0.46.0` is needed locally, or use `try: import anthropic` with graceful skip in tests'. The `anthropic` package is NOT in `requirements.txt` (current file contains only feedparser, requests, beautifulsoup4, deep-translator, schedule, python-telegram-bot, curl_cffi, python-dotenv). Task 6 adds it. Since Task 3 and Task 6 are in different waves (Wave 1 vs Wave 2) and `depends_on: []` for Task 3, the runtime dependency is not formally declared. While the task text acknowledges this, the `depends_on` field should list Task 6 OR the task should explicitly guard against import errors in the new module.",
+      "fix": "Either: (a) add `depends_on: [6]` to Task 3 to ensure the anthropic package is installed before Task 3's smoke test can run (requires moving Task 3 to Wave 2 or later), or (b) add an explicit note that `compute_publish_slots.py` imports anthropic only inside `transcreate_via_claude`, not at module top-level, so `pytest` can collect the test file even without the package installed (tests must skip via `pytest.importorskip('anthropic')`)."
+    },
+    {
+      "severity": "minor",
+      "category": "missing_function",
+      "task": 3,
+      "issue": "Task 3 'What to do' step 1 says `_apply_emoji_safety_net` re-uses 'the same logic as in legacy `transcreate_text(is_title=True)` in `news_bot.py:404-423`'. The actual emoji logic in `news_bot.py` is at lines 404-423 but the task references it as ll. 404-423 (OK). However, the implementation hint says 'Emoji-prefix detection: `EMOJIS = ('🏆','🏎️','🚀','💎','🤝','📢','🚗','🔥')`; `if not title.startswith(EMOJIS):` — call contentful regex chain'. The `str.startswith()` method does NOT accept a tuple of multi-character strings containing emoji (it accepts a tuple of str prefixes). For multi-character emoji like 🏎️ (which is a 2-codepoint sequence: U+1F3CE + U+FE0F), `startswith` comparison works on the raw string but the check must compare against each emoji individually. This is a subtle footgun if copied literally.",
+      "fix": "In the implementation hint, clarify: 'Use `any(title.startswith(e) for e in EMOJIS)` rather than `title.startswith(EMOJIS)` — the tuple form works only for single-codepoint str prefixes; multi-codepoint emoji like 🏎️ require explicit iteration.'"
+    },
+    {
+      "severity": "minor",
+      "category": "feasibility",
+      "task": 1,
+      "issue": "Task 1 step 3 says to extend `test_init_db_idempotent` by adding a `bot_state` INSERT in the seed-data block 'между двумя вызовами init_db()'. The existing test seeds 4 tables. Task 1 instructs adding `bot_state` to the loop in the 'финальной проверке row-counts'. But `bot_state` is not a table the current `_tables()` query returns — it will only appear AFTER the migration runs. The test structure is correct but the hint says 'добавить `bot_state` к списку проверяемых таблиц с ожидаемым count == 1', which is fine. Just confirming the pattern matches the actual idempotent test structure in the file (confirmed: it does).",
+      "fix": "No fix needed — this is informational. The test structure in test_migration.py supports the proposed extension cleanly."
+    },
+    {
+      "severity": "minor",
+      "category": "tdd",
+      "task": 3,
+      "issue": "TDD Anchor lists 15 test entries but the description says ~14 tests and AC says '~14 тестов'. The 15th entry `test_load_prompt_subdir_then_flat_fallback` is in the TDD Anchor but not counted in the test count summary. Minor inconsistency that will not cause implementation failure but could confuse a test-reviewer checking coverage.",
+      "fix": "Update description and AC to '~15 тестов' to match the TDD Anchor, or explicitly count only the ones in the TDD list."
+    }
+  ],
+  "stats": {
+    "tasks_checked": 3,
+    "claims_verified": 41,
+    "issues_found": 9
+  }
+}

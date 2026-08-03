@@ -1,0 +1,86 @@
+{
+  "validator": "reality-checker",
+  "batch": [4, 5, 6],
+  "iteration": 1,
+  "status": "changes_required",
+  "findings": [
+    {
+      "severity": "critical",
+      "category": "hallucination",
+      "task": 4,
+      "issue": "_parse_content_encoded returns a dict with key 'paragraphs' (not 'paragraphs_flat'). The task's What-to-do step 3 and TDD Anchor say to 'parse via _parse_content_encoded → получить blocks и paragraphs_flat'. The internal variable paragraphs_flat is never exposed in the return dict — it is assigned to body_paragraphs and returned as 'paragraphs'. Any test code that accesses result['paragraphs_flat'] will raise KeyError at runtime. Verified by reading orangetrack_source.py lines 575-612.",
+      "fix": "Replace 'paragraphs_flat' with 'paragraphs' everywhere in Task 4 descriptions and TDD Anchor that refer to the return value of _parse_content_encoded. The integration test should access result['paragraphs'] (or result['blocks']) from the returned dict."
+    },
+    {
+      "severity": "major",
+      "category": "hallucination",
+      "task": 4,
+      "issue": "_parse_content_encoded is not imported in the existing test file. The existing tests/test_orangetrack_source.py imports only: OrangetrackPingAggregator, _has_empty_embed_wrapper, _is_allowed_orangetrack_url, _safe_for_ping, _video_embed_url, fetch_orangetrack_article (lines 22-29). All existing tests call fetch_orangetrack_article, not _parse_content_encoded. The task instructs the agent to use _parse_content_encoded for all new unit tests, but omits the instruction to add it to the import list.",
+      "fix": "Add 'from orangetrack_source import _parse_content_encoded' (or use 'ots._parse_content_encoded') in the test file. The function exists at orangetrack_source.py:372 and is importable — this is a missing instruction, not a missing function."
+    },
+    {
+      "severity": "major",
+      "category": "feasibility",
+      "task": 4,
+      "issue": "The integration test description says to call preview_nodes with positional args: 'preview_nodes(title, paragraphs, images, source_url=..., subtitle, blocks)'. In the actual signature (telegraph_publisher.py:253), subtitle comes BEFORE blocks and source_url is positional. However, passing 'subtitle' as positional AFTER 'source_url=' as keyword creates a syntax conflict: keyword argument followed by positional. The example in the task mixes positional and keyword in an ambiguous way that may cause a SyntaxError if the agent copies it literally. Actual signature: preview_nodes(title, paragraphs=None, images=None, source_url=None, subtitle='', blocks=None, auto_marker=False).",
+      "fix": "In the task description, clarify that all non-title args must be passed as keyword arguments to avoid confusion. Example: preview_nodes(title='...', paragraphs=None, images=None, source_url='https://orangetrackdiecast.com/article', subtitle='', blocks=blocks)."
+    },
+    {
+      "severity": "major",
+      "category": "tdd",
+      "task": 5,
+      "issue": "Existing test test_runs_are_metadata_not_rendered_inline (test_telegraph_publisher.py:167) asserts that _build_content_from_blocks with source_url=None returns plain text even when runs contain hrefs. This test will still pass after Task 3 IF the implementation correctly handles source_url=None (skips link rendering). However, if Task 3's _render_paragraph_with_runs calls urlparse(source_url) when source_url=None, it will raise a TypeError or AttributeError. Task 5 adds tests for a 'new' helper but makes no mention of verifying the existing test remains green under the new implementation. The task must explicitly call out that source_url=None must be handled gracefully by the helper (returning plain text), and the existing test serves as a regression check for this exact scenario.",
+      "fix": "Add to Task 5 AC: 'Existing test test_runs_are_metadata_not_rendered_inline remains green — verifies source_url=None produces plain text.' Confirm in the task context that Task 3 must guard against source_url=None before calling urlparse."
+    },
+    {
+      "severity": "minor",
+      "category": "hints",
+      "task": 5,
+      "issue": "The overlapping-runs implementation hint (Task 5, Details section) shows: block.text='ABCDE', run1=BCD, run2=CDE → expected children ['A', <a>BCD</a>, 'E']. The hint claims 'second appears plain' but the expected output has no 'CDE' as a plain text string — only 'E' appears after the <a> node. The text of run2 ('CDE') is partly inside the <a> ('CD') and partly in the trailing 'E'. This does not illustrate 'second appears plain as its own segment'; it shows the overlap absorbs run2's text into surrounding segments. The hint is misleading — an implementor following it literally may produce a different (also valid) interpretation of 'second appears plain', such as inserting 'CDE' as a separate plain string after the <a> node.",
+      "fix": "Replace the overlapping-runs example with a clearer one where run2's text falls ENTIRELY after run1's span, so 'second appears plain' is unambiguous. Alternatively, annotate the example: 'Note: run2.text CDE is not inserted as a separate plain string — the overlap means positions 2-4 are already rendered inside <a>BCD</a>; only position 4 (E) is a new segment.'"
+    },
+    {
+      "severity": "minor",
+      "category": "hints",
+      "task": 5,
+      "issue": "Task 5 DoS-test hint says to assert 'any(\"DoS\" in r.message or \"skipped\" in r.message ... for r in caplog.records)' — the exact WARNING message text is unknown at task-writing time and must be inferred from Task 3 implementation. The hint correctly defers to 'уточнить из реализации Task 3', but the placeholder assertion string ('DoS' or 'skipped') may not match what Task 3 actually logs, causing the test to be vacuously True or False. This is a test quality risk.",
+      "fix": "After Task 3 is implemented, confirm the actual WARNING message format and pin the assertion to a substring that will definitely appear (e.g., 'too large' or 'fallback'). Until then, the hint should instruct the agent to read the Task 3 WARNING log call and match that string."
+    },
+    {
+      "severity": "minor",
+      "category": "feasibility",
+      "task": 6,
+      "issue": "Task 6 is a read-only audit that writes to logs/working/wave-3-code-audit.md. The directory logs/working/ exists (verified) but is empty. The Verification Steps include a shell test: 'test -s work/orangetrack-rendering-fixes/logs/working/wave-3-code-audit.md' — this uses a relative path. Depending on where the agent's cwd is set, this could fail. The absolute path would be /workspaces/debian-2/my-hw/work/orangetrack-rendering-fixes/logs/working/wave-3-code-audit.md.",
+      "fix": "In Task 6 Verification Steps, replace 'test -s work/...' with 'test -s /workspaces/debian-2/my-hw/work/orangetrack-rendering-fixes/logs/working/wave-3-code-audit.md' or document the expected cwd."
+    }
+  ],
+  "stats": {
+    "tasks_checked": 3,
+    "claims_verified": 31,
+    "issues_found": 7
+  },
+  "cross_task_checks": {
+    "tasks_4_and_5_different_files": "CONFIRMED — Task 4 modifies tests/test_orangetrack_source.py, Task 5 modifies tests/test_telegraph_publisher.py. No Wave 2 conflict.",
+    "task_4_depends_on_1_2_3": "CONFIRMED — Task 4 header declares depends_on: [1, 2, 3]. Correct: integration test needs parser (Task 1), LLM-types (Task 2), and publisher helper (Task 3).",
+    "task_5_depends_on_3_only": "CONFIRMED — Task 5 header declares depends_on: [3]. Correct: tests only telegraph_publisher.py helpers added in Task 3.",
+    "task_6_depends_on_4_5": "CONFIRMED — Task 6 header declares depends_on: [4, 5]. Correct for Wave 3 audit after Wave 2 tests.",
+    "task_6_no_tdd_anchor": "CONFIRMED — Task 6 is code-reviewing skill, read-only audit. No TDD anchor is appropriate.",
+    "task_6_output_path": "CONFIRMED — logs/working/ directory exists. wave-3-code-audit.md will be created by Task 6."
+  },
+  "reality_checks": {
+    "_parse_content_encoded_exists": "CONFIRMED at orangetrack_source.py:372, signature: (html_str: str, link: str) -> Optional[Dict]",
+    "_parse_content_encoded_return_keys": "Returns dict with keys: title, subtitle, paragraphs, images, blocks — NOT 'paragraphs_flat'",
+    "_runs_from_tag_exists": "CONFIRMED at orangetrack_source.py:246",
+    "_emit_heading_exists": "CONFIRMED at orangetrack_source.py:415 — currently emits as 'paragraph' type (pre-Task-1 state). Task 1 will change this.",
+    "paragraphs_flat_extraction_exists": "CONFIRMED at orangetrack_source.py:575-576 — currently includes ('paragraph', 'heading') but NOT 'list_item'. Task 1 will add 'list_item'.",
+    "preview_nodes_exists": "CONFIRMED at telegraph_publisher.py:253, signature: (title, paragraphs=None, images=None, source_url=None, subtitle='', blocks=None, auto_marker=False)",
+    "_build_content_from_blocks_exists": "CONFIRMED at telegraph_publisher.py:114",
+    "_render_paragraph_with_runs_exists": "NOT FOUND in current telegraph_publisher.py — will be added by Task 3 (correct: Task 5 depends_on Task 3)",
+    "_is_same_site_exists": "NOT FOUND in current telegraph_publisher.py — will be added by Task 3 (correct)",
+    "_PATCHED_TEXT_BLOCK_TYPES_current": "('lead', 'paragraph', 'heading') in _llm_common.py:106 — 'list_item' absent (pre-Task-2 state, correct)",
+    "test_orangetrack_source_py_exists": "CONFIRMED at tests/test_orangetrack_source.py",
+    "test_telegraph_publisher_py_exists": "CONFIRMED at tests/test_telegraph_publisher.py",
+    "existing_test_h5_emitted_as_paragraph_block": "CONFIRMED at test_orangetrack_source.py:144 — uses SAMPLE_WITH_H5_HTML (h5 only, no h2/h3/h4). Will remain green after Task 1.",
+    "existing_test_runs_are_metadata_not_rendered_inline": "CONFIRMED at test_telegraph_publisher.py:167 — calls _build_content_from_blocks with source_url=None. Risk: Task 3 must handle None source_url gracefully."
+  }
+}

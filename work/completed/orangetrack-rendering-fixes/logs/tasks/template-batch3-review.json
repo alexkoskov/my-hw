@@ -1,0 +1,19 @@
+{
+  "validator": "task-validator",
+  "batch": [11],
+  "status": "approved",
+  "findings": [
+    {
+      "severity": "minor",
+      "category": "frontmatter",
+      "task": 11,
+      "section": "frontmatter.verify",
+      "issue": "Frontmatter has `verify: []` but the body contains both `### Smoke` and `### User` subsections under Verification Steps with real, concrete verification gates (journalctl grep command + 1-2 day visual channel scan). Per template (`# типы верификации: smoke, user`) and task-creator rules (`verify` derives from tech-spec Verify-smoke/Verify-user presence), when both verification types are real gates of the task, the frontmatter should reflect this so downstream automation (feature-execution / pre-deploy gates) picks them up. The mismatch is mild because tech-spec's Task 11 entry does not list explicit `Verify-smoke:`/`Verify-user:` fields (Task 10 has them, Task 11 does not), so the task-creator legitimately had nothing to copy. Still — once the body grew real Smoke+User content, frontmatter should align.",
+      "fix": "Either: (a) set `verify: [smoke, user]` in frontmatter to match the body's two verification subsections, OR (b) keep `verify: []` and add a note in tech-spec Task 11 that this task is operator-driven and `verify` field is intentionally empty because the operator (not the agent) executes the verification. Option (a) is preferred — it keeps frontmatter as the single source of truth for the verification pipeline."
+    }
+  ],
+  "stats": {
+    "tasks_checked": 1,
+    "issues_found": 1
+  }
+}

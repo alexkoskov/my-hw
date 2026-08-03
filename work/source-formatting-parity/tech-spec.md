@@ -1,6 +1,6 @@
 ---
 created: 2026-07-30
-status: draft
+status: approved
 branch: dev
 size: L
 ---
@@ -445,7 +445,12 @@ reading of the channel.
   orangetrack's rendered output on gallery posts. Tech-spec honours AC9 and treats this
   as an intended bug fix, reading AC10's intent as «don't break orangetrack» rather
   than «keep its bugs». The golden file will show the diff explicitly, so the change is
-  reviewed rather than discovered. → **[PENDING USER APPROVAL]**
+  reviewed rather than discovered. → **APPROVED by operator 2026-08-03.** Fix the cap
+  everywhere, orangetrack included. Two conditions the operator's approval rests on, so
+  Task 6 must honour both: (1) the orangetrack image-count change is presented as a
+  reviewable golden-file diff BEFORE it ships — it must not first appear in the channel;
+  (2) the diff is expected to show FEWER images on gallery posts and nothing else — any
+  other orangetrack difference is a regression, not part of this deviation.
 - **AC11 (kill switch):** means *no formatting, flat text*, not byte-identity —
   measured drift −0.10 % / −1.18 %. Default **ON** per operator, against the security
   review's opt-in recommendation (see Risks). → **APPROVED 2026-07-30**

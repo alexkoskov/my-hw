@@ -1,0 +1,66 @@
+{
+  "status": "approved",
+  "checks": {
+    "completeness": "pass",
+    "edge_cases": "pass",
+    "acceptance_criteria": "pass",
+    "contradictions": "pass",
+    "template_compliance": "pass",
+    "size_check": "warning"
+  },
+  "findings": [
+    {
+      "check": "size_check",
+      "severity": "minor",
+      "issue": "11 acceptance criteria (threshold >10) and 4 user flows (A/B/C/D — threshold >3) slightly exceed warning thresholds for declared size M. For 3 bugs fixed in 2 files this is defensible, but warrants awareness.",
+      "location": "user-spec.md: Критерии приёмки (AC1–AC11), Как должно работать (Сценарии A–D)",
+      "fix": "Либо принять как есть (спек описывает 3 независимых бага, AC-детализация оправдана), либо сгруппировать AC9 (edge cases) под AC6–AC8 как подпункты, сократив общее число до 9."
+    },
+    {
+      "check": "template_compliance",
+      "severity": "minor",
+      "issue": "В разделе Ограничения фраза «telegraph_publisher.py (рендер runs + бул `_llm_common.py`» содержит обрезанное слово «бул» — по-видимому, осколок от редактирования. Смысл предложения неполный.",
+      "location": "user-spec.md: Ограничения — третий bullet",
+      "fix": "Восстановить полную фразу, например: «telegraph_publisher.py (рендер runs) + при необходимости `_llm_common.py` (добавить новый block-type в список patchable если решим разделять list_item от paragraph)»."
+    },
+    {
+      "check": "completeness",
+      "severity": "minor",
+      "issue": "interview.yml по-прежнему содержит conversation_history: [] и phase2_user_experience с status: pending (user_stories, acceptance_criteria, verification_strategy). Принято в Round 1 как паттерн pre-filled из контекста — трассируемость «вопрос → решение» через interview.yml недоступна, но содержательно спек полный.",
+      "location": "interview.yml: conversation_history, phase2_user_experience",
+      "fix": "Принято. Если потребуется аудит трассируемости — обновить interview.yml post-factum, перевести pending-секции в complete с реальными значениями. Не блокирует."
+    }
+  ],
+  "interview_coverage": {
+    "covered": [
+      "Три бага: <li>-пункты теряются, h2/h3/h4 → plain text, same-site ссылки стираются",
+      "Bug 1 решение: paragraph с префиксом «• », добавляется в telegraph_publisher после LLM (AC2)",
+      "Bug 1 edge cases: пустые <li> пропускаются (AC1), вложенные теги сохраняются (AC1)",
+      "Bug 2 решение: h2/h3/h4 → единое визуальное выделение (AC3), h5 → paragraph (AC4), h1/h6 → игнорируются (AC5)",
+      "Bug 2 особый случай h5: сохраняет фикс babc67c из SESSION-2026-05-06.md (Технические решения)",
+      "Bug 3 решение: same-site only (orangetrackdiecast.com), exact case-sensitive substring, первое вхождение (AC6)",
+      "Bug 3 edge cases: EN не в RU → silently drop (AC8), пустой href/malformed URL/спецсимволы → no crash (AC9)",
+      "Heading cap: единый h3 для всех уровней h2/h3/h4 (Технические решения, AC3)",
+      "Same-site domain: только orangetrackdiecast.com через urllib.parse (Ограничения, Технические решения)",
+      "Поведение при повторе run.text: оборачивать только первое вхождение (AC6, Технические решения)",
+      "Integration test: обязателен — synthetic HTML → парсинг → LLM симуляция → Telegraph-рендер (AC11, Тестирование)",
+      "Регрессии для autoevolution/lamley/mattel/hw_review: не должны регрессить (AC10, Сценарий D)",
+      "Ограничения: без изменений схемы БД, без новых deps, только 2 файла",
+      "Деплой комбинированный с publish-idempotency-fix через стандартный CI pipeline",
+      "Error paths: urlparse на malformed → drop link (AC9), LLM перевёл фразу → drop (AC8)"
+    ],
+    "missing": [
+      "interview.yml TD2 зафиксировал 'heading level cap=4', спек принял 'единый h3' — расхождение остаётся в interview.yml, но НЕ в user-spec (спек внутренне консистентен). Принято в Round 1.",
+      "phase2_user_experience.user_stories (status: pending) — не закрыта формально в interview.yml, хотя сценарии A–D в спеке покрывают это содержательно.",
+      "phase2_user_experience.verification_strategy (status: pending) — не закрыта формально, хотя раздел 'Как проверить' в спеке детально покрывает это."
+    ]
+  },
+  "round2_verification": {
+    "major_interview_empty": "ACCEPTED — pre-filled pattern, topics from notes-раздела interview.yml покрыты в спеке (5 открытых вопросов → все решены в AC/Технических решениях)",
+    "major_heading_cap_inconsistency": "ADDRESSED IN SPEC — user-spec.md внутренне консистентен: h2/h3/h4 → единое выделение (AC3), h5 → paragraph (AC4). Расхождение interview.yml TD2 vs спек — артефакт interview.yml, не user-spec.",
+    "major_risk4_bullet_mitigation": "ADDRESSED — AC2 явно требует добавления буллита в telegraph_publisher после LLM-перевода; Технические решения bullet 1 закрепляет это решение. Риск теперь закрыт дизайном.",
+    "minor_ac_duplication": "FIXED — AC8/AC9 (duplication) заменены на один AC10 для регрессий; текущий спек имеет AC1–AC11 без дублирования.",
+    "minor_testing_incomplete": "ACCEPTED — 'Тестирование' теперь содержит unit/integration/E2E с rationale. Фраза про tech-spec для имён функций остаётся — намеренно."
+  },
+  "summary": "Round 2: все three major-находки Round 1 закрыты или приняты; оба minor-находки адресованы. Новых critical-находок нет. Обнаружены два новых minor: size_check warning (11 AC и 4 сценария превышают пороги для M) и typographical fragment «бул» в Ограничениях. Статус remains approved — спек готов к tech-spec планированию."
+}

@@ -1,0 +1,70 @@
+{
+  "verdict": "pass",
+  "summary": {
+    "totalFindings": 7,
+    "critical": 0,
+    "high": 0,
+    "medium": 2,
+    "low": 3,
+    "info": 2
+  },
+  "findings": [
+    {
+      "category": "best-practice",
+      "owasp": "A03 — Injection (Log Injection)",
+      "severity": "medium",
+      "issue": "Variant-B INFO log line `[author_plug] stripped from {link}: {frag!r}` interpolates the bare `link` value (sourced from `pending_articles.link`, ultimately from RSS/HTML scraping of autoevolution/lamley/mattel). `link` is attacker-controllable in principle: a malicious upstream feed could inject `\\n[author_plug] stripped from victim.url: 'forged log entry`, terminal-control escapes (ESC sequences), or a `journalctl`-confusing payload. `repr(frag)` neutralises the *fragment* side correctly (escapes newlines, quotes, control chars) — but `link` itself is unescaped. This matches the EXISTING convention in `news_bot.py` (lines 1350/1369/1372 all interpolate `{link}` bare), so the new code does not introduce a NEW class of risk — but it perpetuates it for one more log line. Real-world impact is low: feeds come from trusted-ish sources behind Cloudflare, terminal-control injection only matters when a human reads `journalctl` in a raw-TTY tail (operator workflow does this per AC9 verification step).",
+      "location": "tech-spec.md Decision 9 / code-research.md §18 — proposed line `logger.info(f\"[author_plug] stripped from {link}: {frag!r}\")`",
+      "impact": "Forged log entries that look like genuine `[author_plug]`-tagged INFO lines could mislead an operator investigating a false positive; terminal escape codes could corrupt the operator's terminal during `journalctl -u news_bot.service | grep author_plug` review. Not a privilege/data risk.",
+      "mitigation_suggestion": "Two options, listed by preference: (1) Apply the same `!r` treatment to `link`: `logger.info(f\"[author_plug] stripped from {link!r}: {frag!r}\")`. Cost: zero runtime, zero readability harm (URLs in repr look identical to bare URLs apart from outer quotes). Side benefit: visually parseable boundary between URL and fragment in journalctl. (2) Sanitise `link` once at the top of `_fallback_publish` (e.g. `safe_link = link.replace('\\n', '\\\\n').replace('\\r', '\\\\r')`) and use `safe_link` in all subsequent log lines. Higher footprint, addresses ALL existing `{link}` log lines too — could be a separate hardening pass. Recommend option (1) for this feature; option (2) as a follow-up cleanup ticket if log-injection becomes a real concern."
+    },
+    {
+      "category": "A09 — Security Logging and Monitoring",
+      "severity": "medium",
+      "issue": "The proposed INFO log line `[author_plug] stripped from {link}: {frag!r}` carries the stripped fragment verbatim. The existing `_TokenRedactingFilter` (news_bot.py:286-312, attached to the root logger AND its handlers at lines 320/329-330) DOES intercept this — `news_bot.logger` is `logging.getLogger('news_bot')` (line 387), which propagates to root, where the filter rewrites `record.msg` to scrub Telegram bot tokens, Anthropic / OpenAI / OpenRouter / Gemini API keys (`AIza…`-shape included). So a stripped fragment containing `(подписывайтесь @user AIzaXXXXXX)` would be redacted before reaching the journal handler. **However**, the redaction filter scrubs only those FIVE specific shapes — it does NOT cover: AWS keys, generic JWTs, generic `Bearer ...`, GitHub PATs (`ghp_...`), Slack tokens, custom-format secrets. If an upstream RSS feed ever carries one of those (theoretically possible if a source CMS leaks an internal admin token in article body), the fragment would propagate raw to journalctl. This is an existing project-wide gap, not a new one introduced by this feature.",
+      "location": "tech-spec.md Decision 9; news_bot.py:245-343 (existing redaction filter scope)",
+      "impact": "Hypothetical secret leak in INFO logs for non-LLM-API secret shapes. Probability low (HW news sources don't traffic in secrets), severity moderate if it happens (journalctl may persist on the VPS for 7+ days, accessible to anyone with SSH).",
+      "mitigation_suggestion": "Two complementary defences: (1) **Verify variant-B INFO routing in tests** — add an assertion to `tests/test_no_token_leak_in_logs.py` (already exists in the project) that injects an `AIza…`-shape fragment into a synthetic `ru_paragraphs` entry, runs `_fallback_publish` with mocked downstream, captures the journal-style log, and asserts the `AIza…` substring is replaced by `***`. This makes the existing redaction filter coverage explicit for the new log surface — no code change, just test expansion. (2) **(Out of scope for this feature, deferred)** Broaden `_redact_text` to cover GitHub PAT / AWS-key / generic-Bearer shapes — separate hardening ticket. Keep this audit's recommendation limited to (1) since variant-B is the trigger for adding this test, but the broader filter expansion can be a follow-up."
+    },
+    {
+      "category": "A04 — Insecure Design (Input Validation on Untrusted Structure)",
+      "severity": "low",
+      "issue": "Tech-spec Decision 5 + code-research §13 specify that `strip_in_blocks(blocks)` reads `block.get('text')` / `block.get('caption')` from a list of dicts originating from LLM JSON output (Claude / OpenRouter / OpenAI / Gemini) or the Google Translate fallback rebuild. The LLM is prompted for a specific schema but is non-deterministic — it may return `{'text': {'nested': 'dict'}}`, `{'text': 42}`, `{'text': None}`, or non-dict entries (already handled by the §13 'pass-through unknown types' rule). A non-string `text` value would crash the regex helper (`TypeError: expected string or bytes-like object`). Risks: (a) the `try/except Exception` wrapper at the call site (Decision 8) catches this, logs ERROR, returns ORIGINAL strings — channel keeps publishing — so impact is bounded. (b) BUT the FIRST malformed block aborts processing of ALL subsequent blocks in that article — even clean ones. So a single LLM glitch on one block disables variant-B for the whole article. This is a graceful degradation, not a bug, but worth documenting.",
+      "location": "tech-spec.md Decision 8 (try/except wrap), Decision 5 (block traversal), Risk #5",
+      "impact": "Single malformed LLM block disables variant-B for one article; INFO/ERROR log emitted; original (potentially plug-laden) RU is published. Channel keeps running.",
+      "mitigation_suggestion": "Add per-block defensive `isinstance(block.get('text'), str)` and `isinstance(block.get('caption'), str)` type-guards INSIDE `strip_in_blocks` so that one malformed block degrades only itself, not the whole article. Pseudo-code: `txt = block.get('text'); if isinstance(txt, str): cleaned, frags = strip_author_plugs(txt); ... else: # pass through, log debug`. This is a pure-defensive widening of the existing 'unknown types pass through' contract from code-research §13. Add one negative test in `tests/test_author_plug_filter.py` covering `{'type': 'paragraph', 'text': 42}` and `{'type': 'paragraph', 'text': None}` — assert pass-through, no exception. Cost: ~6 LoC + 2 tests."
+    },
+    {
+      "category": "A04 — Insecure Design (Defensive Exception Handling Scope)",
+      "severity": "low",
+      "issue": "Decision 8 wraps variant-B in `try/except Exception`. Tech-spec correctly justifies this (publish-something > publish-nothing). However, broad `except Exception` can mask security-relevant errors that should ideally surface: e.g. `MemoryError` from a regex on a pathological 100MB input (would be caught by `Exception` parent), `KeyboardInterrupt` is NOT caught (good), but `RecursionError`, `SystemError`, and `re.error` from a corrupt compiled-regex state ARE caught silently. The ERROR log line uses `sanitize_error_message(exc)` (good — also routes through `_redact_text`-attached root logger). The remaining concern: if a future regex change in variant-B accidentally introduces a catastrophic-backtracking pattern, the `try/except` would NOT catch the resulting hang (Python regex CPU-binds; no exception raised). A signal-based timeout would catch it but adds platform-specific complexity (signal-only-on-main-thread).",
+      "location": "tech-spec.md Decision 8; code-research §10 (regex sketches), §12 (insertion site)",
+      "impact": "Catastrophic-backtracking introduced by a future regex change would hang the publish loop indefinitely (silent stall, not a caught exception). Tech-spec AC line 272 explicitly forbids `(.+)+ / (a|a)*` shapes, which is the right preventive control — this finding is about *future* changes that a reviewer might miss.",
+      "mitigation_suggestion": "Three layers of preventive defence (defence-in-depth, all cheap): (1) **Codify the regex-shape AC in a runtime test** — add `tests/test_author_plug_filter.py::test_regex_no_catastrophic_backtracking` that runs each compiled pattern against synthetic adversarial inputs (e.g. `'a' * 10000 + '!'`, `'(' * 5000`, `'подпишитесь ' * 1000`) under a `signal.alarm(2)` budget OR using `pytest-timeout`. The test SHOULD complete in <100ms; the alarm is the safety. (2) **Document the AC** in the new module's docstring: 'All regexes use bounded char classes and non-greedy quantifiers; do NOT add nested unbounded quantifiers (e.g. `(.+)+`) — this would risk catastrophic backtracking and the call-site try/except would NOT catch the resulting hang.' (3) **Lint hint** in code-review checklist — security-auditor in Wave-3 review should grep new `re.compile(...)` calls for `+)+`, `*)*`, `(.+)+`. Round-1 audit already verified the proposed §10 patterns are linear-time on adversarial inputs; this finding is for future-proofing."
+    },
+    {
+      "category": "best-practice",
+      "severity": "low",
+      "issue": "Tech-spec acknowledges in user-spec AC16 that the corporate plug `Follow Mattel on Instagram, X, and Facebook` is OUT OF SCOPE and will pass through unchanged. From a security/privacy perspective this is intentional — but worth documenting more explicitly in the tech-spec's Risks table. Reasoning: (a) the channel `@myhwchannel123` re-publishes Mattel marketing as if it's editorial content, which could be argued to be a (mild) trademark/branding misrepresentation — Mattel never authorised this aggregator to redistribute their corporate plugs. (b) GDPR / privacy-wise, no PII is involved. (c) Russian VKontakte/Telegram-channel norms about brand mentions don't trigger here. Net assessment: **very low risk**, acceptable for a hobby HW news channel, but tech-spec's Risks table should mention this so a future reader doesn't think it's an oversight.",
+      "location": "user-spec.md AC16; tech-spec.md Risks table",
+      "impact": "Trace-level brand-redistribution concern. No data leak. No privacy concern.",
+      "mitigation_suggestion": "Add one row to tech-spec.md Risks table: `| Corporate plugs (e.g. 'Follow Mattel on Instagram') survive both filters | Out of scope per AC16; documented in user-spec; addressable in a future 'press-release boilerplate' feature if operator deems necessary. No PII / privilege impact. |`. Zero code change. Optional but improves spec hygiene."
+    },
+    {
+      "category": "info",
+      "severity": "info",
+      "issue": "Verified: the proposed regex shapes from code-research §10 are NOT vulnerable to catastrophic backtracking (ReDoS). Empirical testing against adversarial inputs (50K-char no-match strings, 1000 nested unmatched parens, 1000 repeated cue-verbs without sentence terminators, mixed Unicode noise) showed ALL patterns complete in < 5ms. Reasons: (a) B1 `_RU_SENTENCE_WITH_CUE` uses negated char class `[^\\.\\!\\?]*?` which cannot overlap with itself (linear-time guarantee). (b) B2 `_PARENTHETICAL_PLUG` uses `[^()]*?` — same property. (c) Variant A patterns (A1–A5) are all `^`-anchored with bounded `\\w+` / `\\w{2,30}` quantifiers, gated by the 120-char `_MAX_BOILERPLATE_LEN` bound which is itself a defence-in-depth limit. No `(.+)+` / `(a|a)*` shapes in the proposed set. AC line 272 ('No regex in either module uses catastrophic-backtracking shapes') is satisfied by the proposed implementation.",
+      "location": "code-research.md §9 (variant A patterns), §10 (variant B patterns); tech-spec AC line 272",
+      "impact": "None — this is a positive finding (the design is sound on this axis).",
+      "mitigation_suggestion": "Keep the proposed shapes. When implementing, do NOT switch to `.+?` / `.*?` (greedy or non-greedy unbounded `.`) inside `[\\.\\!\\?]`-bounded sentence regions — that would re-introduce ReDoS risk. The `[^X]*?` (non-greedy negated class) idiom is the safe choice and should be preserved verbatim from §10."
+    },
+    {
+      "category": "info",
+      "severity": "info",
+      "issue": "Verified: NO hardcoded secrets in the proposed design. The new module `author_plug_filter.py` is pure-stdlib (`re`, `logging`), takes no credentials, makes no network calls, reads no environment variables. The boilerplate-filter extension and prompt-edit are also secret-free. `deploy.sh` / `.github/workflows/deploy.yml` changes are FILES-array additions only (no new secrets, no new SSH keys, no new env-vars per Dependencies → 'New packages: None'). User-spec line 84 explicitly states 'Никаких новых пакетов, env-переменных, DB-полей'.",
+      "location": "tech-spec.md Dependencies section; user-spec.md Ограничения",
+      "impact": "None — this is a positive finding.",
+      "mitigation_suggestion": "No action required."
+    }
+  ]
+}

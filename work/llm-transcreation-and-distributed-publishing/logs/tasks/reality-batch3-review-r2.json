@@ -1,0 +1,71 @@
+{
+  "validator": "reality-checker",
+  "batch": [7, 8, 9],
+  "iteration": 2,
+  "status": "changes_required",
+  "r1_findings_resolved": [
+    {
+      "r1_severity": "critical",
+      "r1_issue": "OutageError re-raise contract not stated in Task 7 AC",
+      "resolution": "FIXED. Task 7 R2 now explicitly documents re-raise in Description (line 26), AC (line 61: 're-raise OutageError наружу'), Edge cases (line 113: 'if outage_exc is not None: raise outage_exc'), and adds optional TDD test test_fallback_publish_outage_error_degraded_then_reraises (line 53)."
+    },
+    {
+      "r1_severity": "critical",
+      "r1_issue": "assert_called_before hallucinated API in Task 7 hints",
+      "resolution": "FIXED. Task 7 R2 line 125 now explicitly states 'assert_called_before(...) — НЕ существует в unittest.mock' and provides three correct alternatives: MagicMock manager, assert_has_calls, side_effect callback."
+    },
+    {
+      "r1_severity": "major",
+      "r1_issue": "TestFallbackPublishPassesAutoMarkerToPublishArticle fundamentally broken by Task 8 rewrite",
+      "resolution": "FIXED. Task 9 R2 has a full ПЕРЕПИСАТЬ section (lines 50-55) with concrete new design: direct _fallback_publish call, unittest.TestCase parent, patch targets include claude_transcreation.transcreate_via_claude, assertions preserved."
+    },
+    {
+      "r1_severity": "major",
+      "r1_issue": "Task 8 hints too prescriptive (SQL queries, variable names)",
+      "resolution": "FIXED. Task 8 R2 implementation hints (lines 150-157) are now directional: 'add a public function in pending_articles_repo returning most recent published_at (or None)' without prescribing SQL form, variable name, or return type. Implementer retains those decisions."
+    },
+    {
+      "r1_severity": "major",
+      "r1_issue": "Task 8 called private _load_prompt() across module boundary",
+      "resolution": "FIXED. Task 8 R2 consistently calls claude_transcreation.health_check() throughout (Description line 26, What-to-do line 44, TDD Anchor line 69, AC line 81, Dependencies line 136). No remaining reference to _load_prompt() in Task 8."
+    },
+    {
+      "r1_severity": "minor",
+      "r1_issue": "Task 7 hints referenced non-existent tests/test_fallback_paths.py",
+      "resolution": "FIXED. Task 7 R2 line 122 now explicitly states: 'Файла tests/test_fallback_paths.py НЕ существует — не ссылайся на него' and references the correct files (test_idle_fallback.py, test_fallback_throttle.py)."
+    },
+    {
+      "r1_severity": "minor",
+      "r1_issue": "Task 9 grep audit included _idle_fallback which never existed as a symbol",
+      "resolution": "FIXED. Task 9 R2 line 62 explicitly notes: 'символа _idle_fallback в коде никогда не было — idle-fallback реализован inline в job() (steps 1a/1b), без выделенной функции. Поэтому отдельного grep'а на это имя не делаем.' Replaced with correct grep on list_pending_stale, list_notified_overdue, mark_notified."
+    },
+    {
+      "r1_severity": "minor",
+      "r1_issue": "Task 9 line number estimates off",
+      "resolution": "FIXED (acceptable). Task 9 R2 now explicitly warns (line 115): 'все номера строк ниже — приблизительные ориентиры для grep'а, а не точные адреса (Task 8 двигает соседний код, а Task 7 уже мог сместить блоки). Перед удалением сделать grep -n по символу и работать с актуальными строками.'"
+    }
+  ],
+  "findings": [
+    {
+      "severity": "critical",
+      "category": "hallucination",
+      "task": 7,
+      "issue": "Exception name mismatch: Task 3 (03.md) defines and exports 'ClaudeOutageError' (verified at line 32 and AC line 98: 'экспортирует transcreate_via_claude, ClaudeTranscreationError, ClaudeOutageError, ...'). However, Task 7 imports 'OutageError' — not 'ClaudeOutageError' — from claude_transcreation (line 40: 'from claude_transcreation import transcreate_via_claude, ClaudeTranscreationError, OutageError'). Task 7 line 107 also erroneously states 'Task 3 экспортирует... OutageError'. This name mismatch will cause ImportError at runtime when _fallback_publish tries to import the non-existent 'OutageError' symbol. All catch blocks in Task 7 and Task 8 using 'OutageError' will also silently never match if the implementer follows Task 3's 'ClaudeOutageError' name.",
+      "fix": "In Task 7: replace all occurrences of 'OutageError' with 'ClaudeOutageError' to match the actual name exported by claude_transcreation (Task 3). Update the import line to: 'from claude_transcreation import transcreate_via_claude, ClaudeTranscreationError, ClaudeOutageError'. Update line 107 to say 'ClaudeOutageError'. In Task 8: same replacement in all references. Alternatively — if 'OutageError' is the intended public name — update Task 3's spec to export 'OutageError' instead of 'ClaudeOutageError'."
+    },
+    {
+      "severity": "major",
+      "category": "feasibility",
+      "task": 8,
+      "issue": "health_check() return type contradiction between Task 3 and Task 8. Task 3 (03.md line 51) defines: 'health_check(client=None) -> bool — на ClaudeOutageError возвращает False, на success True'. Task 8 describes the same function differently in three places: (1) Description line 26: 'raises если ux-guidelines.md отсутствует/нечитаемый'; (2) What-to-do line 44: 'функция возвращает None при успехе, raises если ux-guidelines.md отсутствует/нечитаемый'; (3) Dependencies line 136: 'health_check() -> None'. The TDD test (line 69) mocks it to raise FileNotFoundError, which is consistent with Task 3's behavior (FileNotFoundError from _load_prompt propagates before any API call). However, the described return type 'None' in Task 8 contradicts Task 3's '-> bool'. An implementer of Task 3 reading Task 8's cross-reference will be confused whether to return bool or None. An implementer of Task 8 testing 'if health_check() == False: ...' will find the function returns None (from Task 8 spec) and the comparison silently passes when it should not.",
+      "fix": "Align Task 8's description of health_check() with Task 3's authoritative spec: the function returns bool (True on success, False on API-level outage). The startup health check in main() should check: 'ok = claude_transcreation.health_check()' then 'if not ok: ...' (for API outages) AND separately 'try: _load_prompt_check()' for missing file (FileNotFoundError propagates naturally). Or simplify Task 3's health_check to raise on any problem (including API outage) and return None on success — then Task 8's 'try/except' pattern works cleanly. Either approach is valid but the two tasks must agree. Update Task 8 Dependencies section 'health_check() -> None' vs Task 3's 'health_check() -> bool'."
+    }
+  ],
+  "stats": {
+    "tasks_checked": 3,
+    "claims_verified": 46,
+    "issues_found": 2,
+    "r1_issues_resolved": 8,
+    "r1_issues_total": 8
+  }
+}

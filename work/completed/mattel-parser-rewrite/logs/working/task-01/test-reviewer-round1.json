@@ -1,0 +1,62 @@
+{
+  "reviewer": "test-reviewer",
+  "round": 1,
+  "task": "01",
+  "commit": "8b42b67",
+  "status": "approved",
+  "test_count_unit": 41,
+  "test_count_integration": 3,
+  "ac_coverage": {
+    "AC1": "covered",
+    "AC2": "covered",
+    "AC3": "covered",
+    "AC4": "covered",
+    "AC5": "covered",
+    "AC6": "covered",
+    "AC7": "covered",
+    "AC8": "covered",
+    "AC9": "covered",
+    "AC10": "covered",
+    "AC11": "covered",
+    "AC12": "covered",
+    "AC13": "covered"
+  },
+  "es_coverage": {
+    "ES1": "covered",
+    "ES2": "covered",
+    "ES3": "covered",
+    "ES4": "covered",
+    "ES5": "covered",
+    "ES6": "covered",
+    "ES7": "covered",
+    "ES8": "covered",
+    "ES9": "covered",
+    "ES9b": "covered",
+    "ES9c": "covered",
+    "ES10": "covered"
+  },
+  "findings": [
+    {
+      "severity": "minor",
+      "category": "anti_pattern",
+      "issue": "Test name `test_http_error_returns_none_and_notifies` (line 407) implies HTTPError but injects requests.ConnectionError. Both flow through the same `requests.RequestException` handler (mattel_news_source.py:466), so semantically ES6 (HTTP 4xx/5xx via raise_for_status) and ES7 (timeout/connection) share one assertion path. Coverage is adequate via the shared handler, but the test name and ES6 specificity are slightly under-covered for the article path.",
+      "fix": "Either rename to `test_request_error_returns_none_and_notifies` for accuracy, or add a sibling test that constructs a response whose `raise_for_status` raises `requests.HTTPError('404')` (the listing path already does this in `test_http_error_returns_empty_and_notifies` at line 220). Optional cleanup; current coverage is functionally complete.",
+      "location": "tests/test_mattel_news_source.py:407"
+    },
+    {
+      "severity": "minor",
+      "category": "anti_pattern",
+      "issue": "`TestExtractEntries.test_extracts_entries_from_synthetic_flight` (line 129) asserts `len(entries) == 3` and field-key presence but not field values. A buggy `_extract_entries` that returned the entries with mutated content would still pass. Litmus test still passes (a stub returning `[{}, {}, {}]` would fail the `'handle' in raw` check) so the test earns its place, but value-fidelity could be tightened.",
+      "fix": "Add per-entry value assertion after the loop: `assert {e['handle'] for e in entries} == {'hot-wheels-a', 'other-b', 'other-c'}` to lock that the parser preserves entry identity verbatim.",
+      "location": "tests/test_mattel_news_source.py:129"
+    },
+    {
+      "severity": "minor",
+      "category": "missing_coverage",
+      "issue": "AC11 (import contract preservation) is not asserted by an explicit test — it's only covered transitively because the test file's top-level import block (lines 12-22) succeeds. If the module accidentally drops, e.g., `MAX_RESPONSE_SIZE`, the test file fails at collection rather than via a clear AC11 assertion.",
+      "fix": "Add `class TestExports: def test_public_exports_present(self): ...` that imports and asserts existence of each documented export (`fetch_mattel_news, fetch_mattel_article, MattelNewsError, NEWS_URL, ARTICLE_URL_PREFIX, MAX_RESPONSE_SIZE`). Optional — collection-time failure is functionally equivalent.",
+      "location": "tests/test_mattel_news_source.py:12-22"
+    }
+  ],
+  "summary": "Test suite is high quality. 41 unit + 3 integration = 44 tests, all pass under pytest -q. Every AC1-AC13 from user-spec maps to at least one test; every ES1-ES10 (incl. ES9b, ES9c) from the inline error matrix is exercised. Specific spec-mandated checks are all in place: AC3 silent-zero (line 202) asserts `entries == []` AND `notifier.assert_not_called()`; AC6 dict-form excerpt (line 394) verifies `{text: ...}` flows into `subtitle`; AC7 url-fallback (line 533) verifies handle-mismatch + url-match returns the article; AC8 multi-chunk (line 474) asserts paragraphs in exact order with `notifier.assert_not_called()`; AC9 empty/truncated body (lines 494, 512) assert `paragraphs == []` with no notifier; AC10 thumbnail-only regression (line 337) has non-empty `download_media` AND asserts `images == [thumbnail.url]` only; ES10 SSRF (line 570) asserts the malicious URL is NOT echoed in the notifier message and that no HTTP call is issued. Anti-drift smokes (lines 597, 613) are skip-guarded on `os.path.exists('/tmp/mattel_*.html')`. Zero `__NEXT_DATA__` literals in test code; zero references to deleted `tests/fixtures/mattel_news.html`. Integration tests cleanly use `_make_flight_listing` from the new builder module. All assertions are meaningful (concrete expected values, not just 'doesn't raise'). Three minor findings recorded for future polish; none block approval."
+}

@@ -1,0 +1,50 @@
+{
+  "validator": "reality-checker",
+  "batch": [10, 11],
+  "status": "approved",
+  "findings": [
+    {
+      "severity": "minor",
+      "category": "feasibility",
+      "task": 11,
+      "issue": "The journalctl command in Verification Steps (line 68) is called WITHOUT `sudo`: `ssh hwbot@148.135.207.54 \"journalctl -u news_bot.service --since '...' --no-pager | grep -E ...\"`. The sudoers rule in deployment.md (line 107) covers `sudo /usr/bin/journalctl -u news_bot.service` — meaning sudo-based access is explicitly configured, but the task command omits sudo. Non-sudo journalctl access depends on `hwbot` being a member of the `systemd-journal` group, which is not documented anywhere in deployment.md or the task. Additionally, the sudoers rule lists the command as `/usr/bin/journalctl -u news_bot.service` with no wildcard — on strict Debian sudoers parsing, extra flags like `--since` and `--no-pager` would NOT be permitted via sudo either, making the `sudo` path also potentially broken for this extended invocation.",
+      "fix": "Either: (a) add `sudo` prefix AND extend the sudoers rule to allow flags, e.g. `hwbot ALL=(ALL) NOPASSWD: /usr/bin/journalctl -u news_bot.service *`, or (b) confirm that `hwbot` is in the `systemd-journal` group so non-sudo journalctl works, and document this in deployment.md. The simplest safe fix for the task: add a note that if the bare `journalctl` fails due to permission, operator should prepend `sudo` and extend the sudoers rule. The verification hint at line 98 of task 11 uses `systemctl show` without sudo, which has the same implicit group-membership assumption."
+    },
+    {
+      "severity": "minor",
+      "category": "feasibility",
+      "task": 10,
+      "issue": "Task 10 step 3 (Verify-smoke) says 'опционально оператор выполняет `ssh hwbot@148.135.207.54 \"systemctl status news_bot_test.service\"`'. The sudoers rule in deployment.md explicitly covers `systemctl status news_bot_test.service` ONLY via sudo (`/usr/bin/systemctl status ...`). Without `sudo`, this command may fail if `hwbot` lacks direct systemctl status access. The task text does not include `sudo` in the command snippet, creating a potential UX confusion for the operator.",
+      "fix": "Add `sudo` to the status command snippets in both the Verify-smoke and Verify-user sections of Task 10, consistent with how deploy.yml itself restarts services via `sudo /usr/bin/systemctl restart ...`."
+    }
+  ],
+  "stats": {
+    "tasks_checked": 2,
+    "claims_verified": 18,
+    "issues_found": 2
+  },
+  "verified_claims": {
+    "task_10": {
+      "orangetrack_source_py_in_deploy_yml": "CONFIRMED — deploy.yml line 128",
+      "telegraph_publisher_py_in_deploy_yml": "CONFIRMED — deploy.yml line 129",
+      "_llm_common_py_in_deploy_yml": "CONFIRMED — deploy.yml line 136",
+      "orangetrack_source_py_in_deploy_test_yml": "CONFIRMED — deploy_test.yml line 99",
+      "telegraph_publisher_py_in_deploy_test_yml": "CONFIRMED — deploy_test.yml line 100",
+      "_llm_common_py_in_deploy_test_yml": "CONFIRMED — deploy_test.yml line 113",
+      "no_files_list_change_needed": "CONFIRMED — all three feature files already present in both workflows",
+      "operator_handles_prod_ops_principle": "CONFIRMED — task explicitly states Claude prepares commands, operator performs git push / SSH (task line 26, 112)",
+      "no_secrets_echoed": "CONFIRMED — task line 114 explicitly prohibits echoing secrets",
+      "depends_on_9": "CONFIRMED — task frontmatter depends_on: [9], wave: 5",
+      "two_stage_deploy_flow": "CONFIRMED — matches deployment.md two-instance topology and iteration cycle description"
+    },
+    "task_11": {
+      "ssh_host_148_135_207_54_valid": "CONFIRMED — deployment.md lines 53, 77 document this exact IP for both instances",
+      "journalctl_service_name_news_bot_service": "CONFIRMED — deployment.md sudoers rule covers news_bot.service",
+      "secret_redaction_guideline_applied": "CONFIRMED — task Details section line 95 explicitly cites 'never echo secrets' memory rule",
+      "depends_on_10": "CONFIRMED — task frontmatter depends_on: [10], wave: 6",
+      "no_code_changes_in_task": "CONFIRMED — task explicitly states code is not modified (line 84)",
+      "operator_driven_qa": "CONFIRMED — task description line 26 explicitly references MEMORY operator-handles-prod-ops rule",
+      "idempotency_guard_note": "CONFIRMED — task correctly explains idempotency-guard is expected signal from publish-idempotency-fix feature and should not be treated as regression in this feature's context (line 99)"
+    }
+  }
+}

@@ -1,0 +1,139 @@
+{
+  "auditor": "code-reviewer",
+  "task": "02",
+  "audit_target": "mattel_news_source.py + tests/fixtures/mattel_flight_builder.py + tests/test_mattel_news_source.py + tests/test_mattel_integration.py",
+  "status": "approved",
+  "decision_compliance": {
+    "decision_1_rsc_flight": "pass",
+    "decision_2_semantic_anchors": "pass",
+    "decision_3_preserved_helpers": "pass",
+    "decision_4_shared_builder": "pass",
+    "decision_5_atomic_wave": "pass",
+    "decision_6_fail_soft": "pass",
+    "decision_7_anti_drift_skip_guarded": "pass"
+  },
+  "checklist": [
+    {
+      "id": "decision-1",
+      "title": "Decision 1 honored — RSC flight payload parsing, no __NEXT_DATA__ code references",
+      "result": "pass",
+      "evidence": "mattel_news_source.py:54-56 — `_FLIGHT_PUSH_RE = re.compile(r'self\\\\.__next_f\\\\.push\\\\(\\\\[\\\\s*1\\\\s*,\\\\s*\"((?:[^\"\\\\\\\\]|\\\\\\\\.)*)\"\\\\s*\\\\]\\\\)')`. Module is wired entirely around `_iter_flight_payloads` / `_concat_flight` / `_extract_listing_entries`. Single occurrence of the string `__NEXT_DATA__` is at line 11 inside the migration-note docstring, explicitly framed as historical: '<script id=\"__NEXT_DATA__\"> JSON island disappeared'. No `_NEXT_DATA_RE`, no `<script id=` substring matches in active code.",
+      "comment": "Pass. The single docstring mention is intentional migration documentation, not leftover code. See additional finding F1 for nuance."
+    },
+    {
+      "id": "decision-2",
+      "title": "Decision 2 honored — semantic anchors only, no positional row-IDs",
+      "result": "pass",
+      "evidence": "mattel_news_source.py:58 — `_ARTICLE2_ANCHOR = '\"article2\":{\"entries\":['`. _extract_listing_entries (l.208-240) iterates ALL pushes and selects by `_ARTICLE2_ANCHOR not in payload: continue` (l.226) — no 'biggest push wins', no row-6 hardcoding. _find_entry_by_handle_or_url (l.256-268) matches on `entry.get('handle') == slug` and `entry.get('url') == link` — field-name based. _resolve_body_html (l.298-340) parses the row-id from the entry's runtime `body: '$<row-id>'` field (l.310 `row_id = body_ref[1:]`) — not hardcoded.",
+      "comment": "Pass. All anchors are field-name / substring based; numeric row ids in the parser come from runtime data, not literals. The builder's '6:' (line 77) and '53' (line 119) are synthetic test-fixture choices and the parser is row-id-agnostic, so they don't violate Decision 2."
+    },
+    {
+      "id": "decision-3",
+      "title": "Decision 3 honored — _is_hotwheels, _build_entry, _extract_entries, _notify preserved",
+      "result": "pass",
+      "evidence": "mattel_news_source.py:70 `def _is_hotwheels(entry: dict) -> bool`; :86 `def _build_entry(raw: dict) -> Optional[dict]`; :243 `def _extract_entries(html: str) -> List[dict]` (thin wrapper over `_extract_listing_entries`); :361 `def _notify(notifier, message: str) -> None`. tests/test_mattel_news_source.py:12-22 imports `_build_entry, _extract_entries, _is_hotwheels` (NOT `_notify` — matches spec). All 4 names + signatures match code-research §11.3.",
+      "comment": "Pass. `_extract_entries` exists as importable symbol per Decision 3; the rewrite cleanly delegates to `_extract_listing_entries` (l.249) so internal logic is rebuilt while the public-by-test name is stable."
+    },
+    {
+      "id": "decision-4",
+      "title": "Decision 4 honored — builders in shared tests/fixtures/mattel_flight_builder.py",
+      "result": "pass",
+      "evidence": "tests/fixtures/mattel_flight_builder.py:53 `def _make_flight_listing(entries: List[dict]) -> str`; :86-91 `def _make_flight_article(entry, body_html=None, body_chunks=1, truncate=False) -> str` — signatures match code-research §11.4. tests/test_mattel_news_source.py:23-26 imports `_make_flight_article, _make_flight_listing` from the shared module; tests/test_mattel_integration.py:22 `from tests.fixtures.mattel_flight_builder import _make_flight_listing`. No inline duplicates of these helpers in either test file.",
+      "comment": "Pass. Single source of truth honored; defaults use placeholder URLs (example.com) per Decision 8 testing AC."
+    },
+    {
+      "id": "decision-5",
+      "title": "Decision 5 honored — atomic single-wave delivery",
+      "result": "pass",
+      "evidence": "All four files (mattel_news_source.py, tests/fixtures/mattel_flight_builder.py, tests/test_mattel_news_source.py, tests/test_mattel_integration.py) coexist coherently. No references to the deleted `tests/fixtures/mattel_news.html`: `grep -n 'mattel_news\\.html' tests/` returns only line 598 of test_mattel_news_source.py which references `/tmp/mattel_news.html` for Decision 7 anti-drift snapshot — a different path. decisions.md confirms Task 01 reports 44 tests pass with no half-deleted state.",
+      "comment": "Pass. No half-deleted intermediate state; all imports resolve."
+    },
+    {
+      "id": "decision-6",
+      "title": "Decision 6 honored — fail-soft notifier contract for every error path",
+      "result": "pass",
+      "evidence": "fetch_mattel_news (l.376-422): ES1 (l.401-404 RequestException → _notify + return []), ES2 (l.396-399 oversized → raise/catch → l.405-411 _notify + return []), ES3/ES4/ES5 (l.405-411 MattelNewsError → _notify + return []). fetch_mattel_article (l.425-507): ES10 (l.448-450 SSRF guard → _notify + return None, link NOT echoed), ES6/ES7 (l.466-471 RequestException → _notify + return None), ES8/ES9/ES9b (l.472-478 MattelNewsError → _notify + return None). ES9c (body absent / truncated / over-cap): l.481-486 — _resolve_body_html returns \"\" (l.309, 312, 321, 327, 332, 338) → paragraphs=[] → dict returned with NO _notify call. _notify (l.361-368) swallows notifier exceptions via try/except.",
+      "comment": "Pass. Full ES1-ES10 matrix verified path-by-path. ES9c correctly bypasses notifier per AC9. _notify still wraps notifier call in try/except (l.365-368)."
+    },
+    {
+      "id": "decision-7",
+      "title": "Decision 7 honored — anti-drift smoke tests skip-guarded on /tmp/mattel_*.html",
+      "result": "pass",
+      "evidence": "tests/test_mattel_news_source.py:597-610 `test_live_listing_snapshot_parses_without_notifier` — `if not os.path.exists(snapshot): pytest.skip('live listing snapshot not available')` (l.599-600). tests/test_mattel_news_source.py:613-633 `test_live_article_snapshot_parses_without_notifier` — same skip-guard pattern at l.615-616. Both assert `notifier.assert_not_called()`. CI cannot fail from missing snapshots.",
+      "comment": "Pass. Skip-guards correct, both snapshots covered."
+    },
+    {
+      "id": "flight-push-re-module-level",
+      "title": "_FLIGHT_PUSH_RE compiled at module level",
+      "result": "pass",
+      "evidence": "mattel_news_source.py:54-56 — module-scope `re.compile(...)` assignment. Used inside `_iter_flight_payloads` (l.124) via `_FLIGHT_PUSH_RE.findall(html)` — no per-call recompilation of the flight regex.",
+      "comment": "Pass. Note: there is a SECOND `re.compile` at l.316-318 inside `_resolve_body_html`; that pattern depends on a runtime row-id (`re.escape(row_id)`) so a module-level form would require restructuring. See additional finding F2 (minor)."
+    },
+    {
+      "id": "shared-resources-none",
+      "title": "Architecture 'Shared resources: None' — no module-level mutable shared state",
+      "result": "pass",
+      "evidence": "mattel_news_source.py module-level statements: imports, `logger = logging.getLogger(__name__)`, constants (NEWS_URL, ARTICLE_URL_PREFIX, USER_AGENT, REQUEST_TIMEOUT, MAX_RESPONSE_SIZE, _ARTICLE2_ANCHOR), the immutable compiled regex `_FLIGHT_PUSH_RE`, exception class `MattelNewsError`, function defs. No global dicts, no mutable lists, no Session, no DB pool, no caches.",
+      "comment": "Pass. Compiled regex is stateless and standard Python practice (not a 'shared resource' in the architectural sense)."
+    },
+    {
+      "id": "no-new-session",
+      "title": "No NEW shared `requests.Session()` introduced",
+      "result": "pass",
+      "evidence": "`grep -n 'requests\\.Session(' mattel_news_source.py` → zero matches. The only `requests.Session` reference is the type annotation `Optional[requests.Session]` in fetch_mattel_news (l.378) and fetch_mattel_article (l.427) parameter signatures. The module uses `http = session or requests` (l.386, l.452), preserving the existing caller-injects pattern.",
+      "comment": "Pass. Module body never instantiates a Session; behavior matches pre-rewrite contract."
+    },
+    {
+      "id": "code-quality",
+      "title": "Code quality — clear naming, single-responsibility helpers, no dead code",
+      "result": "pass",
+      "evidence": "Helpers are well-scoped: `_iter_flight_payloads` (yields raw payloads), `_concat_flight` (joins payloads), `_find_entries_slice` (bracket-match), `_decode_entries` (slice + JSON decode), `_extract_listing_entries` (listing pipeline), `_extract_article_entry` (article pipeline), `_find_entry_by_handle_or_url` (entry lookup), `_resolve_body_html` (body-row resolution), `_paragraphs_from_body` (BS4 walk), `_excerpt_to_str` (excerpt normalisation), `_slug_from_link` (URL parsing), `_notify` (sanitised admin notifier). Each helper has a docstring. No unreferenced functions, constants, or imports. Function lengths within reasonable bounds (longest is fetch_mattel_article at ~80 lines including docstring; well-commented). No commented-out old logic.",
+      "comment": "Pass. Clean refactor; clear separation of pipeline stages."
+    },
+    {
+      "id": "no-leftover-next-data-comments",
+      "title": "No leftover comments referencing __NEXT_DATA__",
+      "result": "pass",
+      "evidence": "Single occurrence at mattel_news_source.py:10-11 in module docstring under explicit 'Migration note (2026-04)' heading: '<script id=\"__NEXT_DATA__\"> JSON island disappeared'. This is intentional historical-context documentation, not stale code/comments. No inline comments, no TODOs, no dead code mention `props.pageProps.page.data.state.article2.entries` as an old dict-path reference.",
+      "comment": "Pass with note. Migration-note docstring is reasonable documentation of why the module looks the way it does. See additional finding F1 (minor / info)."
+    },
+    {
+      "id": "imports-clean",
+      "title": "Imports clean — no leftover unused imports, ordering correct",
+      "result": "pass",
+      "evidence": "mattel_news_source.py:25-34 — stdlib (`json`, `logging`, `re`, `time`, `typing`) → third-party (`requests`, `bs4`). All imports used: `json` (l.129, l.198), `logging` (l.36), `re` (l.54, l.316), `time` (l.99), `Callable/Dict/Iterator/List/Optional/Tuple` typing (function signatures), `requests` (l.386, l.452, l.401, l.466), `BeautifulSoup` (l.347). `from __future__ import annotations` present (l.25) for clean typing. No leftover imports tied to `_NEXT_DATA_RE`.",
+      "comment": "Pass. Order is stdlib → third-party with clean separation."
+    },
+    {
+      "id": "audit-report-written",
+      "title": "Audit report written to expected paths",
+      "result": "pass",
+      "evidence": "logs/working/audit/code-audit-report.json + logs/tasks/code-audit-report.json (this file) written with full structure (auditor, task, audit_target, status, decision_compliance, checklist, additional_findings, summary).",
+      "comment": "Pass."
+    }
+  ],
+  "additional_findings": [
+    {
+      "severity": "minor",
+      "category": "documentation-hygiene",
+      "issue": "Module docstring at mattel_news_source.py:10-17 contains the literal string `__NEXT_DATA__` in the historical migration-note paragraph. The audit checklist literally says 'No leftover comments referencing __NEXT_DATA__'. While this is clearly intentional historical documentation (not stale leftover code), a strict reading of the checklist could call it out.",
+      "fix": "Either (a) keep as-is and rely on this audit's interpretation (recommended — the migration context is genuinely useful for future maintainers), or (b) rephrase to 'the legacy embedded-JSON island disappeared' without naming it. Low-stakes call, leaving to operator/team preference.",
+      "location": "mattel_news_source.py:10-17"
+    },
+    {
+      "severity": "minor",
+      "category": "performance / style",
+      "issue": "`_resolve_body_html` calls `re.compile` once per article fetch (mattel_news_source.py:316-318). The pattern depends on a runtime `row_id` so a direct module-level compile is not possible, but the row_id can equally be matched via a generic module-level pattern `re.compile(r'(?:^|[^0-9])(\\d+):T([0-9a-fA-F]+),')` and then the matched group compared to `row_id` in Python. Avoids per-fetch regex compilation.",
+      "fix": "Optional refactor: hoist a generic row-marker regex to module scope, scan with `finditer`, filter for `m.group(1) == row_id`. Performance gain is small (article fetch is dominated by HTTP); main benefit is consistency with `_FLIGHT_PUSH_RE` placement and clearer audit story (single module-level regex constant).",
+      "location": "mattel_news_source.py:316-318"
+    },
+    {
+      "severity": "minor",
+      "category": "code clarity",
+      "issue": "`_extract_entries` (mattel_news_source.py:243-249) is a one-line wrapper around `_extract_listing_entries`. The comment explains it exists for Decision 3 import-stability. This is fine as-is; just noting that future readers may wonder why two names exist for the same operation. The docstring already covers it.",
+      "fix": "No change needed — documented intent is clear. Could optionally add a `# noqa` or move the docstring's Decision-3 reference closer to the def. Low priority.",
+      "location": "mattel_news_source.py:243-249"
+    }
+  ],
+  "summary": "All 7 architectural Decisions (1–7) are honored end-to-end, the fail-soft ES1–ES10 notifier matrix is correctly implemented (including the no-notifier ES9c body-empty path), preserved helper names + signatures (`_is_hotwheels`, `_build_entry`, `_extract_entries`, `_notify`) match code-research §11.3, the shared `tests/fixtures/mattel_flight_builder.py` module exposes the API per §11.4 with placeholder defaults, `_FLIGHT_PUSH_RE` is module-level, no `requests.Session()` constructor exists, and the anti-drift smoke tests are correctly `pytest.skip`-guarded on `/tmp/mattel_*.html`. Three minor findings (one documentation-hygiene call on the migration-note docstring, one performance/style suggestion to hoist `_resolve_body_html`'s regex, one optional clarity note on the `_extract_entries` wrapper) — all non-blocking. Verdict: approved."
+}

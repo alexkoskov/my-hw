@@ -1,0 +1,38 @@
+# Feature Execution Checkpoint
+# Written by feature-execution skill after each wave.
+# Read by SessionStart(compact) hook for context recovery.
+# Read by feature-execution Phase 1 to detect resume scenario.
+
+skill: feature-execution
+feature: manual-review-workflow
+feature_dir: work/manual-review-workflow
+execution_plan: work/manual-review-workflow/logs/execution-plan.md
+team_name: manual-review-workflow
+
+last_completed_wave: 9
+total_waves: 10
+
+# Format: task_number: status (planned | in_progress | done)
+# Example:
+#   1: done
+#   2: done
+#   3: in_progress
+#   4: planned
+tasks:
+  1: done
+  2: done
+  3: done
+  4: done
+  5: done
+  6: done
+  7: done
+  8: done
+  9: done
+  10: done
+  11: done
+  12: done
+  13: done
+  14: done
+  15: planned
+
+next_wave: 9

@@ -1,0 +1,41 @@
+{
+  "status": "approved",
+  "summary": {
+    "totalFindings": 3,
+    "critical": 0,
+    "major": 0,
+    "minor": 3
+  },
+  "findings": [
+    {
+      "severity": "minor",
+      "category": "A09: Security Logging and Monitoring",
+      "title": "Silent INSERT OR IGNORE removes concurrent-write detection signal",
+      "description": "Decision 5 changes 'INSERT INTO published_articles' to 'INSERT OR IGNORE INTO published_articles' at pending_articles_repo.py:582. While correct as defense-in-depth and consistent with existing pattern at line 593 (processed_news), the silent IGNORE removes the IntegrityError signal that historically surfaced when two writers attempted to publish the same link. The current architecture is single-writer (cron news_bot.service), but if a second writer is ever introduced (e.g., a re-armed hw_review.cmd_publish path, a maintenance script, or a parallel slot loop in future), races will be silently swallowed with no log/alert. The tech-spec acknowledges this in Risks (row 3) and Decision 5 'Alternatives considered', but does not add observability. Recommend logging at DEBUG when INSERT OR IGNORE is a no-op, OR documenting in operator-runbook that concurrent-writer detection is now exclusively the responsibility of the function-entry guard + admin ping.",
+      "location": "Section: Decisions / Decision 5; pending_articles_repo.py:582 (proposed change)",
+      "impact": "Reduced ability to detect future architectural regressions where a second writer is added. No direct exploitation vector; pure observability degradation. Bounded by the explicit single-writer architectural invariant.",
+      "recommendation": "Either (a) add a SELECT changes() check after the INSERT OR IGNORE and log INFO '[move-to-published] no-op (link already published)' when rows-affected==0, OR (b) explicitly document the single-writer invariant in pending_articles_repo.py module docstring so a future contributor adding a second writer must consciously revisit the IGNORE.",
+      "cwe": "CWE-778 (Insufficient Logging)"
+    },
+    {
+      "severity": "minor",
+      "category": "A09: Security Logging and Monitoring",
+      "title": "Admin-ping failure swallowed silently in guard cleanup path",
+      "description": "Decision 4 specifies that if send_admin_notification returns False (Telegram down / TelegramError caught internally per news_bot.py:389-391), the guard logs WARNING and proceeds with skip_pending + return True. This is correct behavior for subscriber priority (no duplicate post) and matches existing outage-state-machine pattern. However, when both the zombie-row cleanup AND the admin-ping fail-and-recover happen during a Telegram outage, the operator has zero awareness that a guard activation occurred — the WARNING log line is the sole signal, and 'operator does not grep journalctl daily' is explicitly stated as a project assumption in Decision 3 'Alternatives'. If an attacker (or buggy upstream RSS source) repeatedly stages zombie rows during a Telegram outage window, the guard quietly absorbs them without any visible signal until Telegram recovers AND a fresh activation pings.",
+      "location": "Section: Decisions / Decision 4",
+      "impact": "Operator blind spot during simultaneous Telegram outage + zombie-row recurrence. No data integrity impact (cleanup still runs). Probability is low (intersection of two rare conditions).",
+      "recommendation": "Consider a deferred-ping queue: if send_admin_notification returns False, append the link to a small in-memory list and re-attempt at the start of the next slot. Alternatively, document explicitly in user-spec Risk 5 that 'guard activations during Telegram outage will only surface via journalctl' so the operator post-outage runbook includes a journalctl grep for '[idempotency-guard]'.",
+      "cwe": "CWE-223 (Omission of Security-relevant Information)"
+    },
+    {
+      "severity": "minor",
+      "category": "best-practice",
+      "title": "Admin-ping payload embeds full link URL — verify _redact_text scope is intentional",
+      "description": "Decision 3 + the guard pseudocode (tech-spec line 40) sends 'Skipped re-publish of {link} ...' through send_admin_notification. The tech-spec claims '_redact_text handles URLs cleanly'. Verified at news_bot.py:249-287: _redact_text scrubs ONLY known credential shapes (Telegram bot tokens, Anthropic/OpenAI/OpenRouter/Gemini keys via _BOT_TOKEN_RE / _ANTHROPIC_KEY_RE / _OPENAI_KEY_RE / _OPENROUTER_KEY_RE / _GEMINI_KEY_RE). It does NOT redact arbitrary URL components such as query parameters, UTM tags, session tokens embedded in URL paths, or referral fingerprints. The article links come from controlled RSS feeds (feeds.json validated in load_feeds at news_bot.py:165-187 — scheme/netloc check, max 5 URLs, http/https only), so URLs are vetted at ingest. Combined with parse_mode=None (news_bot.py:383-385) eliminating Markdown/HTML injection, AND the _TokenRedactingFilter on the root logger covering log lines, the payload is safe in practice. Flagging only for explicit confirmation that 'pass article URL into admin chat' is an accepted information-exposure decision (the URL itself is by definition public — it points to autoevolution.com / orangetrackdiecast.com / other vetted feeds).",
+      "location": "Section: Decisions / Decision 3; tech-spec line 40 (admin-ping payload)",
+      "impact": "Information exposure if a vetted feed ever serves a URL with embedded sensitive query params (e.g. a malformed share link from a third party). Probability bounded by the curated feeds.json allowlist.",
+      "recommendation": "No code change required. Add a one-line note to the user-spec or tech-spec Risks section: 'Admin ping intentionally includes the full article URL; URLs from vetted feeds are not considered confidential. _redact_text handles only credential shapes, not URL query params.' This locks in the design intent so a future maintainer does not assume defense-in-depth that does not exist.",
+      "cwe": "CWE-200 (Information Exposure)"
+    }
+  ]
+}

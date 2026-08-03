@@ -1,0 +1,53 @@
+{
+  "validator": "reality-checker",
+  "batch": [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11],
+  "status": "changes_required",
+  "findings": [
+    {
+      "severity": "critical",
+      "category": "cross-task-integration",
+      "task": 4,
+      "issue": "Env-var name for the DEDUP_SERIES_ENABLED kill-switch is inconsistent between the task that implements it and every task that operates it. Task 4 ('What to do' step 1 and 'Implementation hints') explicitly instructs: 'Имя env-переменной — по рекомендации code-research `DEDUP_SERIES_PAIRS`' and gives the literal implementation `os.getenv(\"DEDUP_SERIES_PAIRS\", \"1\").strip().lower() not in (...)` (tasks/4.md:51, :257-258), while the Python module attribute is named `DEDUP_SERIES_ENABLED`. But Task 6's deployment runbook (tasks/6.md:170: '«Тёмный» деплой = выставить `DEDUP_SERIES_ENABLED=0` в прод-`.env`'), Task 10's smoke check (tasks/10.md:110: 'Toggle-off прогон гейта: `DEDUP_SERIES_ENABLED=0` (env / monkeypatch...)'), and Task 11's operator commands (tasks/11.md:36,40,78,85,94: 'в прод-`.env` `DEDUP_SERIES_ENABLED=0`'/'=1') all assume the .env key IS `DEDUP_SERIES_ENABLED` itself, not `DEDUP_SERIES_PAIRS`. Verified against the actual codebase pattern Task 4 claims to mirror: `news_bot.py:116` is `DB_FILE = os.getenv(\"DB_FILE\", \"news.db\")` — env-var name identically matches the Python constant name for every existing config const in the file (grep for `os.getenv(` in news_bot.py confirms this convention). If Task 4 is implemented literally as written (reads `DEDUP_SERIES_PAIRS` from env into `DEDUP_SERIES_ENABLED`), then the entire staged-rollout safety procedure in Task 6/11 (set `DEDUP_SERIES_ENABLED=0` in prod `.env` for a 'dark' deploy before backfill) becomes a silent no-op: the code never reads that key, so the toggle stays at its default 'on' the whole time, and the pair-rule goes live immediately instead of staying dark during the observation window. This directly defeats the tech-spec Risk-table mitigation 'toggle kill-switch' for 'Over-block on distinctive tier (no manual re-publish)'.",
+      "fix": "Pick one env-var name and propagate it everywhere. Recommended: rename to `DEDUP_SERIES_ENABLED` (matches the Python constant, matches the DB_FILE-pattern precedent Task 4 itself invokes, and matches 3 of the 4 tasks that already assume it) — update Task 4's 'What to do' step 1 and 'Implementation hints' to `os.getenv(\"DEDUP_SERIES_ENABLED\", \"1\")...` instead of `DEDUP_SERIES_PAIRS`, and update Task 4's `.env.example` line accordingly. Also update Task 4's Post-completion caveat which currently only checks deviation 'если отличается от `DEDUP_SERIES_PAIRS`' — that phrasing should be dropped or flipped now that the canonical name is fixed."
+    },
+    {
+      "severity": "major",
+      "category": "cross-task-integration",
+      "task": 2,
+      "issue": "Task 2's own Acceptance Criteria (tasks/2.md, last AC bullet: '`pytest tests/test_admin_alerts.py -v` зелёный; полный прогон без регрессий.') and its Verification Steps ('`python3 -m pytest -q` → нет регрессий по всему сьюту', tasks/2.md:132) both require the FULL test suite to be green as part of Task 2's own completion gate. But Task 2 is Wave 1, running in parallel with Task 3 (also Wave 1, depends_on: []), which intentionally rewrites `tests/fixtures/cross_source_dedup_pairs.py` such that the still-unmodified old calibration harness in `tests/test_model_extractor.py` (`test_calibration_accuracy`, `test_calibration_real_pair_must_pass`, still on `_classify(similarity(...))` until Task 6/Wave 3 rewires them) goes red — Task 1 and Task 3 both explicitly document this as expected, by-design intermediate redness (tasks/1.md AC: 'Калибровочные тесты ... в этой волне НЕ обязаны быть зелёными ... это by design, не регрессия этой задачи'; tasks/1.md now runs its own suite with `-k 'not calibration'` specifically to avoid this false signal, tasks/1.md:143,179). Task 2 was never given the same `-k 'not calibration'` carve-out, so a literal 'full run, no regressions' AC/verification step is unsatisfiable at the point Task 2 completes, through no fault of Task 2's own changes — a false-regression signal on a task-completion gate.",
+      "fix": "Mirror Task 1's fix onto Task 2: change the AC bullet and the Verification 'Automated' step to `python3 -m pytest -q -k 'not calibration'` (or equivalent scoped invocation), with the same one-line caveat Task 1 carries about calibration tests being intentionally red until Task 6 rewires the harness in Wave 3."
+    },
+    {
+      "severity": "major",
+      "category": "cross-task-integration",
+      "task": 4,
+      "issue": "Task 4's Verification Steps → Automated includes `python3 -m pytest -q` → 'полный набор зелёный (после Wave 1 задач)' (tasks/4.md:195). Task 4 is Wave 2, executed after Wave 1 (Tasks 1-3) completes but BEFORE Task 6 (Wave 3), which is the task that actually rewires the calibration harness from `_classify(similarity(...))` to `shares_pair`/`any_distinctive`. At the point Task 4 runs its own verification, Task 3's fixture rewrite has already landed (Wave 1 is done) but Task 6 has not — so the old `test_calibration_accuracy`/`test_calibration_real_pair_must_pass` tests are still red for the same by-design reason documented in Task 1/Task 3 (empty-`strict` SDCC pairs score ~0 under the old similarity threshold). A literal `pytest -q` run at this point would show failures unrelated to Task 4's own diff, exactly the false-regression pattern Task 1 was already patched to avoid with `-k 'not calibration'` — but that carve-out was not propagated to Task 4's later-wave 'full suite green' check.",
+      "fix": "Scope Task 4's full-suite verification step to `python3 -m pytest -q -k 'not calibration'` (or explicitly note that `test_calibration_*` failures at this point are expected/out-of-scope until Task 6, mirroring the caveat already present in Task 1 and Task 3)."
+    },
+    {
+      "severity": "minor",
+      "category": "cross-task-integration",
+      "task": 7,
+      "issue": "Round-1 fix normalized Task 8's report path/wave to match Task 7 and Task 9's `logs/working/task-N/` convention (confirmed: Task 8 now writes `logs/working/task-8/security-audit.md`, Task 9 writes `logs/working/task-9/test-audit.md` — both pin an exact filename). Task 7 itself, however, still only says 'Сохранить audit-отчёт в `work/dedup-model-series/logs/working/task-7/`' (tasks/7.md:126) without pinning an exact filename, unlike its two Audit-Wave siblings. This is the same minor gap flagged in the round-1 batch review (reality-batch3-review.json) and was not addressed by the round-1 fix pass (which only touched Task 8).",
+      "fix": "Pin an explicit filename for Task 7's report, e.g. `work/dedup-model-series/logs/working/task-7/code-audit.md`, to match the now-consistent Task 8/Task 9 convention."
+    }
+  ],
+  "stats": {
+    "tasks_checked": 11,
+    "claims_verified": 38,
+    "issues_found": 4
+  },
+  "notes": {
+    "confirmed_coherent": [
+      "Task 4 depends_on: [1, 2] is correctly declared (round-1 fix verified present in tasks/4.md frontmatter).",
+      "Task 6's prescribed import 'from model_extractor import extract_fingerprint, similarity, shares_pair' correctly retains `similarity` (round-1 fix verified present in tasks/6.md:143, avoids NameError in TestSimilarity).",
+      "Task 1's AC/Verification correctly use `pytest tests/test_model_extractor.py -v -k 'not calibration'` (round-1 fix verified present in tasks/1.md:143,179).",
+      "Task 8's wave (audit) and report path (logs/working/task-8/security-audit.md) now match Task 7/Task 9's convention (round-1 fix verified present in tasks/8.md).",
+      "Pair-key format `\"<model>|<series>|<tier>\"` / theme-only `\"*|<series>|B\"` and shares_pair(fp_a, fp_b) -> (any_shared, sorted_shared_pairs, any_distinctive) are stated identically (same separator, same token order, same tier semantics) across Task 1 (producer), Task 2, Task 3, Task 4, Task 6, Task 7, Task 8 (all consumers checked) — no drift found.",
+      "Window values are consistent everywhere: 30-day any-source pair-rule (Tasks 1 n/a, 4, 5, 6, 7, 8, 10, 11) and 7-day cross-source-only set-overlap backstop (Task 4, Task 7, Task 9, Task 10) — no numeric drift.",
+      "Verdict polarity (distinctive->block/[E015], broad->flag/[E014], fail-safe untagged->broad, |D| wins |B|) is stated consistently across Tasks 1, 2, 3, 4, 6, 7, 8, 9, 10.",
+      "Calibration timing chain is coherent end-to-end except for the two gaps flagged above: Task 1 (Wave 1) excludes calibration from its own green-bar; Task 3 (Wave 1) rewrites the fixture (acknowledged interim redness); Task 6 (Wave 3) rewires the harness and renames tests to test_calibration_pair_tier_accuracy / test_calibration_sdcc_dupes_hard_block / test_calibration_not_dupes_never_hard_block; Task 10 (final wave) correctly references the new names and uses `-k calibration` (confirmed tasks/10.md:89,103). Only Task 2 (Wave 1) and Task 4 (Wave 2) still assert an un-scoped full-suite green bar that would trip on the intentionally-red interim calibration tests.",
+      "No shared/heavy resource duplicate-init found: tech-spec 'Shared Resources: None' is accurate — DEDUP_SERIES_ENABLED is read exactly once at import time in Task 4 only; no other task re-reads it via os.getenv (Tasks 6/10/11 reference it only in documentation/operator commands, not code); the 30-day candidate fetch is performed once in the Task 4 gate and not duplicated elsewhere."
+    ]
+  }
+}

@@ -1,0 +1,65 @@
+{
+  "status": "approved_with_suggestions",
+  "summary": "Series/theme extraction, tier-tagged lexicon, and pair-key building are implemented cleanly, mirror the existing Pass-1/Pass-2 regex style, are ReDoS-safe (bounded quantifiers throughout, verified empirically at ~6.5ms/50KB), and correctly preserve the fail-safe polarity (untagged/theme-only series can never yield |D). Public contract (4-key fingerprint, pair-key format, shares_pair signature) matches the tech-spec exactly and all 48 non-calibration tests pass. One real correctness risk found: the pair-key's <model> component can differ for the SAME physical car across differently-worded articles (reproduced with the task's own real motivating example), which would miss a required hard-block rather than cause a false one — flagged for a decision, not blocking.",
+  "criticalIssues": [],
+  "suggestions": [
+    {
+      "file": "model_extractor.py",
+      "line": 365,
+      "severity": "major",
+      "category": "best-practices",
+      "suggestion": "Pair-key <model> tokens are not stable across differently-worded articles about the same car, so the new exact-match pair mechanism can miss the feature's own motivating case. Reproduced with the literal 3rd article from user-spec Scenario 1 / this task's own smoke script: extract_fingerprint({'title': 'Mais fotos do Porsche de K-Pop Demon Hunters', ...}) yields strict=['porsche de k-pop'], pairs=['porsche de k-pop|k-pop demon hunters|D']. A companion article that names the real model (e.g. 'Porsche 911 GT3 ... K-Pop Demon Hunters') yields strict=['porsche 911 gt3'] and pairs=['porsche 911 gt3|k-pop demon hunters|D']. These two pair keys never intersect, so shares_pair() returns any_distinctive=False for exactly the pairing the user-spec cites as the required hard-block example. Root cause is pre-existing: _MODEL_AFTER_BRAND_RE's PRIMARY model capture (lines 202-219) has no prose-word filter — only the model_extra continuation tokens are filtered via _MODEL_EXTRA_KEEP_RE (line 234) — so short lowercase connector words (PT 'de'/'do'/'da', likely also 'of'/'the' in EN) get captured as the model token verbatim. That weakness already existed for the old fuzzy Jaccard similarity() (which tolerates partial overlap), but _build_pairs turns it into a load-bearing EXACT-STRING key with no partial-credit fallback, and this case is NOT rescued by the theme-only '*|series|B' fallback because strict is non-empty (a wrong model, not an absent one). Direction is fail-safe (a missed dupe, never a false hard-block), and Task 6 (Wave 3) is explicitly designed to catch this via the '3 real SDCC dupes MUST hard-block' calibration invariant once Task 3 wires in the real article bodies — so this does not need to block Task 1. Recommend: (1) note this explicitly in decisions.md now so Task 3's fixture uses the real body text (not a simplified paraphrase) for this pair, guaranteeing Task 6 actually exercises the gap; (2) consider, scoped to _build_pairs only (not touching the shared _MODEL_AFTER_BRAND_RE used by the shipped similarity()), rejecting connector-like primary model tokens (e.g. reuse _MODEL_EXTRA_KEEP_RE-style validation, or a short lowercase-alpha-only denylist) before they enter a pair key — a rejected model there correctly degrades to the theme-only '*|series|B' fail-safe path instead of a wrong '|D' key that can never match."
+    },
+    {
+      "file": "model_extractor.py",
+      "line": 416,
+      "severity": "major",
+      "category": "maintainability",
+      "suggestion": "extract_fingerprint is now 79 lines (416-494), over the 50-line guideline. It was already 65 lines pre-task (Pass 1 + Pass 2 inline); this task's Pass 3 addition (+series_with_tier/series/pairs, ~14 lines) pushed it further. Not a new problem this task created, but worth addressing while the file is being touched: extracting the Pass 3 body into a small private helper (e.g. something like `_pass3_series(text) -> tuple[list, list]` returning `(series, pairs)`) would bring the function back under the guideline and match the module's existing pattern of factoring pure logic into named helpers (_scan_series, _build_pairs already exist and are called from here — the remaining bulk is Pass 1/2's inline loops, not Pass 3). Low priority; does not block this task.",
+      "optional": true
+    },
+    {
+      "file": "model_extractor.py",
+      "line": 335,
+      "severity": "minor",
+      "category": "readability",
+      "suggestion": "_canonical_series(raw) and shares_pair(fp_a, fp_b) (line 509) lack return-type annotations, and _build_pairs's `series_with_tier` parameter (line 365) is untyped — inconsistent with every other function in the file, which all carry full `-> Type` annotations (e.g. _canonical_brand(raw: str) -> str). Suggest `_canonical_series(raw: str) -> Optional[Tuple[str, str]]`, `_build_pairs(strict: set, series_with_tier: Iterable[Tuple[str, str]]) -> List[str]`, `shares_pair(fp_a: dict, fp_b: dict) -> Tuple[bool, List[str], bool]` (needs `from typing import Iterable, Optional, Tuple`).",
+      "benefit": "Restores type-hint consistency across the module and lets static checkers catch misuse of the new public API (extract_series/shares_pair) the same way they already can for extract_fingerprint/similarity.",
+      "optional": true
+    },
+    {
+      "file": "model_extractor.py",
+      "line": 133,
+      "severity": "minor",
+      "category": "readability",
+      "suggestion": "`SERIES_LEXICON: Dict[str, tuple] = {...}` uses the bare `tuple` type instead of `Tuple[str, str]` (Tuple isn't imported). Precise typing would be `Dict[str, Tuple[str, str]]`.",
+      "benefit": "Documents the (canonical, tier) shape at the type level instead of only in the comment above the constant.",
+      "optional": true
+    },
+    {
+      "file": "model_extractor.py",
+      "line": 162,
+      "severity": "minor",
+      "category": "maintainability",
+      "suggestion": "The load-time assert only checks '|'/newline-freedom of each canonical (pair-key integrity) — there's no check that every alias sharing the same canonical also shares the same tier. Currently all canonicals are internally consistent (verified by inspection: e.g. all 3 SDCC aliases and both k-pop aliases are 'distinctive'), but nothing enforces this for future lexicon additions; a mistyped alias could silently split one canonical's tier across two values, and since _build_pairs groups by canonical in `series` but keeps (canonical, tier) pairs from _scan_series, a mismatched-tier alias for an already-distinctive canonical would only ever downgrade (fail-safe direction) rather than upgrade — low risk, but a one-line defensive assert alongside the existing pipe/newline one would catch the authoring mistake at import time instead of relying on lexicon-review vigilance.",
+      "benefit": "Extends the existing load-time integrity guarantee to cover tier consistency, not just key-format safety, at negligible cost.",
+      "optional": true
+    },
+    {
+      "file": "model_extractor.py",
+      "line": 276,
+      "severity": "minor",
+      "category": "best-practices",
+      "suggestion": "_ACRONYM_ALIASES routes 'zamac' to the case-sensitive pass, so only exact-cased 'ZAMAC'/'Zamac' match — plain lowercase 'zamac' in prose (plausible in a casual title/body, unlike the genuinely ambiguous SDCC/RLC/STH acronyms) will not be recognised at all. Fail-safe direction (under-match, never over-match), and the task's own Verification step 8 (real-DB lexicon validation) is the designated place to catch this kind of recall gap — flagging so that smoke check specifically eyeballs 'zamac' casing in real titles before sign-off.",
+      "benefit": "Avoids silently under-covering a broad-tier line during real-feed validation.",
+      "optional": true
+    }
+  ],
+  "metrics": {
+    "filesReviewed": 2,
+    "criticalIssuesCount": 0,
+    "majorIssuesCount": 2,
+    "minorIssuesCount": 4,
+    "testCoverageAssessment": "adequate"
+  }
+}

@@ -1,0 +1,68 @@
+{
+  "validator": "reality-checker",
+  "batch": [10, 11],
+  "status": "changes_required",
+  "findings": [
+    {
+      "severity": "critical",
+      "category": "feasibility",
+      "task": 10,
+      "issue": "Task 10 assumes Tasks 1-9 are fully completed (orangetrack_source.py exists, news_bot.py is wired, deploy FILES lists are updated, tests pass). The codebase checkpoint shows last_completed_wave: 0 and tasks: {} — none of the prerequisite tasks have been executed. Task 10 cannot be executed as written against the current codebase state.",
+      "fix": "No changes needed to the task description itself — the dependency chain (depends_on: [9]) is correctly declared. This is a runtime-state issue, not a task defect. Executor must ensure Tasks 1-9 are complete before running Task 10. Flag as a pre-condition check at the start of execution."
+    },
+    {
+      "severity": "critical",
+      "category": "feasibility",
+      "task": 10,
+      "issue": "Task 10 step 4 monitors deploy_test.yml succeeding on the dev push, but deploy_test.yml has its own independent FILES array (lines 88-108 of .github/workflows/deploy_test.yml) that currently does NOT include orangetrack_source.py — and Task 5 (which Task 10 depends on) only mandates updating deploy.sh and .github/workflows/deploy.yml. If Task 5 omits deploy_test.yml, the deploy_test.yml workflow will SCP files WITHOUT orangetrack_source.py, causing news_bot_test.service to crash with ImportError: No module named 'orangetrack_source' on the very restart that Task 10 step 6 and Task 11 step 1 check for.",
+      "fix": "Task 5 already has a step 4 and an optional AC noting deploy_test.yml may need syncing, but the tech-spec FILES-to-modify list for Task 5 does not explicitly list deploy_test.yml. Add deploy_test.yml to Task 5's required files-to-modify and Acceptance Criteria (not just a note). Alternatively, add an explicit verification step to Task 10 that confirms deploy_test.yml FILES array also contains orangetrack_source.py before pushing."
+    },
+    {
+      "severity": "major",
+      "category": "feasibility",
+      "task": 10,
+      "issue": "Task 10 step 1 says to stage 'отчёты аудитов из Tasks 6-8 (work/orangetrack-source/logs/audit/)'. The logs/audit directory exists but contains no files (ls shows empty). If tasks 6-8 audit reports are not present, the commit step cannot include them as described. The step would either silently omit them (if git status doesn't show them) or the executor would be confused about which files to stage.",
+      "fix": "Minor wording fix in step 1: change 'застейджены' to 'застейджены (если существуют)' for audit and QA logs, or add a pre-check note that these are only staged when the audit tasks produced their artifacts."
+    },
+    {
+      "severity": "major",
+      "category": "feasibility",
+      "task": 10,
+      "issue": "Task 10 step 5 says 'Оба workflow (ci.yml и deploy_test.yml) должны быть зелёными в GitHub Actions UI на ветке dev для последнего коммита.' But the pipeline trigger chain described in the Details section is: push → ci.yml → (workflow_run on success) → deploy_test.yml. There is a timing race: deploy_test.yml only fires AFTER ci.yml concludes. The step conflates checking that both are green at the same moment, whereas deploy_test.yml will still be queued/running when ci.yml just turned green. The gh run commands in Verification/Smoke correctly use separate run IDs, but the narrative in step 5 may mislead the executor into thinking they appear simultaneously.",
+      "fix": "Clarify step 5 to say: 'First confirm ci.yml is green, then wait for deploy_test.yml to appear (triggered by workflow_run) and confirm it is green as well.' This matches the actual trigger chain documented in Details."
+    },
+    {
+      "severity": "major",
+      "category": "hints",
+      "task": 10,
+      "issue": "Implementation hints in Task 10 say: 'Использовать gh run list --branch dev --commit <SHA> --json databaseId,name,conclusion,url для надёжного матчинга по SHA.' However, gh run list does not have a --commit flag as a standard option in the GitHub CLI. The correct approach is to filter by --branch and then match the SHA from the JSON field headSha, or use gh run list --branch dev --json headSha,databaseId,name,conclusion,url and filter client-side. Providing a non-existent flag as an implementation hint will cause the executor to get a CLI error.",
+      "fix": "Replace the hint with: 'gh run list --branch dev --json headSha,databaseId,name,conclusion,url | jq --arg sha \"<SHA>\" \\'.[].select(.headSha == $sha)\\'` — or simply use `gh run list --branch dev --limit 5` and visually match by time proximity after the push."
+    },
+    {
+      "severity": "minor",
+      "category": "feasibility",
+      "task": 10,
+      "issue": "Task 10 step 8 specifies report path work/orangetrack-source/logs/deploy/deploy.md. The directory logs/deploy exists as an empty folder (confirmed by ls). This is fine — the file creation will succeed. However, no smoke or automated check verifies that the report was actually written; the task relies entirely on executor discipline.",
+      "fix": "No change required — operational tasks commonly rely on executor discipline for reporting. Consider adding a one-line smoke check: 'test -f work/orangetrack-source/logs/deploy/deploy.md && echo OK' as a post-task self-check."
+    },
+    {
+      "severity": "minor",
+      "category": "feasibility",
+      "task": 11,
+      "issue": "Task 11 step 2 says to 'подождать ближайший слот в окне 10:00-20:00 МСК'. The task does not specify a timeout strategy if no orangetrack articles are in the RSS feed (e.g. Brad hasn't posted). The Details section does mention 'first orangetrack publication may take up to 24h' and the PARTIAL PASS path, which handles this correctly. However, step 2 as written (numbered step list) doesn't cross-reference this edge case clearly, which may cause an executor to wait indefinitely in step 2 rather than moving to step 5 with a PARTIAL PASS.",
+      "fix": "Minor: add a sentence to step 2 pointing to the 24h timeout and PARTIAL PASS path documented in Details. E.g.: 'If no article appears within 24 hours, proceed to step 5 with status PARTIAL PASS per the edge case in Details.'"
+    },
+    {
+      "severity": "minor",
+      "category": "feasibility",
+      "task": 11,
+      "issue": "Task 11 Acceptance Criteria item: 'orangetrack-фид зафетчен хотя бы один раз на cron-tick (запись в логе).' The bot's cron window is 10:00-20:00 MSK. If Task 11 is executed immediately after Task 10 and no cron tick has fired yet (e.g. it's 21:00 MSK), this AC cannot be confirmed until the next day's window. The task doesn't mention this timing dependency in the AC section itself (only in Details), which could cause a premature FAIL determination.",
+      "fix": "Add a note to the AC: 'If cron tick has not fired since deploy, this AC is deferred to the next 10:00-20:00 MSK window — defer, do not mark as FAIL.'"
+    }
+  ],
+  "stats": {
+    "tasks_checked": 2,
+    "claims_verified": 31,
+    "issues_found": 8
+  }
+}

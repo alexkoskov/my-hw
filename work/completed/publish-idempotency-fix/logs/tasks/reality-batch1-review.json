@@ -1,0 +1,40 @@
+{
+  "validator": "reality-checker",
+  "batch": [1, 2, 3],
+  "status": "changes_required",
+  "findings": [
+    {
+      "severity": "critical",
+      "category": "hallucination",
+      "task": 1,
+      "issue": "Task 1 'What to do' step 2 and TDD Anchor both instruct the developer to write `pending_articles_repo.get_published(link)` and `pending_articles_repo.skip_pending(link)` in the guard code inside news_bot.py. But news_bot.py imports the module as `import pending_articles_repo as pending_repo` (line 48). The unqualified name `pending_articles_repo` is not bound in news_bot.py's namespace — using it at runtime would raise NameError. All existing code in news_bot.py uses `pending_repo.*`. The TDD Anchor compounds this by saying tests can mock via `pending_articles_repo.get_published` — but the real mock path is `news_bot.pending_repo.get_published` (as correctly shown in Task 3 line 148).",
+      "fix": "In Task 1 'What to do' step 2 replace all occurrences of `pending_articles_repo.get_published(link)` with `pending_repo.get_published(link)` and `pending_articles_repo.skip_pending(link)` with `pending_repo.skip_pending(link)`. In the TDD Anchor section replace `pending_articles_repo.get_published` / `pending_articles_repo.skip_pending` with `news_bot.pending_repo.get_published` / `news_bot.pending_repo.skip_pending` (the actual patch target path). The Acceptance Criteria item 'Guard читает `pending_articles_repo.get_published(link)`' must also be updated to `pending_repo.get_published(link)`."
+    },
+    {
+      "severity": "minor",
+      "category": "feasibility",
+      "task": 1,
+      "issue": "Task 1 references `# Step 1: EN → RU` as 'current line 986'. Actual line 986 is `# Step 1: EN → RU` — confirmed correct. However the tech-spec architecture diagram and task description repeatedly say `claude_result = transcreate_via_claude(row)` is at line 1052. Actual code shows `transcreate_via_claude(row)` is on line 1056 (the `try:` block header is on 1055, the call itself on 1056). Lines 1065 and 1079 for the two except clauses are accurate. This is a minor off-by-4 that won't affect implementation but could confuse a developer using line numbers to navigate.",
+      "fix": "Update tech-spec and task 1 description to reference line 1056 for the `transcreate_via_claude(row)` call, or drop the line number reference for the Claude call and keep only the except-clause line numbers (1065, 1079) which are accurate."
+    },
+    {
+      "severity": "minor",
+      "category": "feasibility",
+      "task": 2,
+      "issue": "Task 2 Smoke check says 'До правки: 4 матча (line 593 + 673 + 2 в `processed_news` ветках); после правки: 5.' But `grep -c 'INSERT OR IGNORE' pending_articles_repo.py` currently returns 3, not 4 (line 554 is a docstring comment containing the text 'INSERT OR IGNORE into `processed_news`', line 593 and 673 are the two actual SQL statements). After the fix it becomes 4, not 5. The sanity-check arithmetic is wrong and will confuse the implementer who runs this check.",
+      "fix": "Update the smoke sanity note to 'До правки: 3 матча (1 в docstring line 554 + 2 SQL-стейтмента lines 593 + 673); после правки: 4.' Alternatively drop the count check and only rely on the targeted `grep -n \"INSERT OR IGNORE INTO published_articles\"` check which returns 0 before and 1 after — that check is correct."
+    },
+    {
+      "severity": "minor",
+      "category": "feasibility",
+      "task": 3,
+      "issue": "Task 3 'What to do' step 1 says to look at `TestClaudePath` at 'line 131+'. The actual `TestClaudePath` class definition is at line 131, confirmed. However the task says 'T2 включает отсутствие вызова `transcreate_via_claude` и `transcreate_text`'. For T2 (outage shortcut path, `is_fallback_active=True`), the outage shortcut at line 1045 routes directly to `_google_translate()` which internally calls `transcreate_text`. Guard fires BEFORE line 1045, so `transcreate_text` is also not called — the assertion is correct in intent. But the task does not clarify that in T2 both `transcreate_via_claude` AND `transcreate_text` should be asserted absent, while existing tests for the outage-shortcut path DO call `transcreate_text`. This could cause confusion about what the T2 negative assertion set should include.",
+      "fix": "Make explicit in T2 description that when the guard fires on the outage-shortcut path, neither `transcreate_via_claude` nor `transcreate_text` is called (guard returns before line 1045). A clarifying sentence 'Assert `transcreate_text` also NOT called — guard fires before the Google routing at line 1045' would close the ambiguity."
+    }
+  ],
+  "stats": {
+    "tasks_checked": 3,
+    "claims_verified": 31,
+    "issues_found": 4
+  }
+}

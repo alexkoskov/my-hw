@@ -1,0 +1,189 @@
+{
+  "status": "passed",
+  "feature": "dedup-review-buttons",
+  "task": 10,
+  "date": "2026-07-25",
+  "codebase": {
+    "branch": "dev",
+    "head": "a6b56e0",
+    "featureCommits": "e0c8bc7..ed10c58"
+  },
+  "summary": {
+    "totalChecks": 20,
+    "passed": 19,
+    "failed": 0,
+    "notVerifiable": 1,
+    "criticals": 0,
+    "majors": 0,
+    "minors": 0
+  },
+  "testSuite": {
+    "status": "passed",
+    "details": "Full suite: python3 -m pytest tests/ -q -> 1333 passed, 0 failed, 0 skipped in 48.93s (expected 1333 per audit-fix baseline ed10c58). Focused feature files (test_pending_articles_repo.py, test_admin_alerts.py, test_admin_ping.py, test_integration.py) -> 228 passed. Watch item test_main_wires_review_listener (flaked once in a subset run during audit verification) PASSED in this full run - no re-run needed. Smoke checks from tasks 1/2/5 re-run green: task-1 token round-trip on temp DB -> ok; task-2 keyboard callback_data ['dd:c:t','dd:k:t'] -> ok; task-5 hasattr(news_bot,'_run_review_listener') -> True."
+  },
+  "acceptanceCriteria": [
+    {
+      "id": "U1",
+      "criterion": "Под [E014] «Похож на дубль» — ровно две кнопки «🚫 Не публиковать» / «👍 Оставить»; под другими алертами (E006/E008/E009/E015/E034…) кнопок нет",
+      "status": "passed",
+      "evidence": "tests/test_admin_alerts.py::TestDedupReviewKeyboard::{test_two_buttons_callback_data,test_button_labels} (exactly two buttons, exact labels); tests/test_integration.py::TestDedupReviewButtons::test_flag_on_e014_send_includes_review_keyboard (real job() run, E014 carries the keyboard); ::test_only_e014_carries_keyboard (mixed E014+E015 run: E015 provably fired and it plus every other admin ping has no reply_markup — non-vacuous control). Builder: admin_alerts.py:754-770."
+    },
+    {
+      "id": "U2",
+      "criterion": "«Не публиковать» до слота убирает статью из pending_articles — в свой слот она в канал не выходит",
+      "status": "passed",
+      "evidence": "tests/test_integration.py::TestResolveDedupCallback::test_cancel_pending_row_skips_and_returns_cancelled (real tempfile SQLite: row deleted from pending_articles, present in processed_news) and ::test_cancel_then_slot_publish_does_not_publish (after cancel, slot publish drive: cancelled link never handed to _fallback_publish, absent from list_pending()/published_articles)."
+    },
+    {
+      "id": "U3",
+      "criterion": "После «Не публиковать» кнопки заменяются на «✅ Отменено оператором»; повторно нажать нельзя (клавиатура снята)",
+      "status": "passed",
+      "evidence": "Logic fully autotested: tests/test_integration.py::TestReviewListener::test_review_listener_dispatches_admin_cancel (edit_message_text called with original text + '✅ Отменено оператором' appended and reply_markup=None — keyboard dropped; answer_callback_query sent); TestResolveDedupCallback::test_stale_token_returns_expired (second press of a consumed button → «⚠️ Кнопка устарела», no crash). Visual in-chat confirmation deferred to Task 12 (see deferredToPostDeploy)."
+    },
+    {
+      "id": "U4",
+      "criterion": "«Оставить» не отменяет публикацию; кнопки заменяются на «👍 Оставлено»",
+      "status": "passed",
+      "evidence": "tests/test_integration.py::TestResolveDedupCallback::test_keep_returns_kept_no_state_change (status «👍 Оставлено», pending row untouched, no publish cancellation); listener applies the same edit-with-status/drop-keyboard path proven in test_review_listener_dispatches_admin_cancel. Visual in-chat confirmation deferred to Task 12."
+    },
+    {
+      "id": "U5",
+      "criterion": "«Не публиковать» после публикации → «⚠️ Уже опубликовано, отменить нельзя», пост в канале остаётся",
+      "status": "passed",
+      "evidence": "tests/test_integration.py::TestResolveDedupCallback::test_cancel_published_returns_already_published (published_articles row intact after press) and ::test_cancel_race_published_between_check_and_skip (row published between get_pending check and skip_pending → honest «уже опубликовано», not «отменено»). Visual in-chat confirmation deferred to Task 12."
+    },
+    {
+      "id": "U6",
+      "criterion": "Повторное/устаревшее нажатие (уже отменили/опубликовали, рестарт и строки нет) не приводит к ошибке — понятный статус, бот не падает",
+      "status": "passed",
+      "evidence": "tests/test_integration.py::TestResolveDedupCallback::test_stale_token_returns_expired («⚠️ Кнопка устарела»), ::test_cancel_missing_returns_unavailable («⚠️ Статья уже недоступна»), ::test_unknown_action_safe_fallback_token_not_consumed (garbage actions safe, token kept); TestReviewListener::test_review_listener_handler_error_advances_offset_and_survives (poisoned update logged, offset acked, thread survives)."
+    },
+    {
+      "id": "U7",
+      "criterion": "Кнопки действуют только для администратора (from_user.id vs числовой TELEGRAM_ADMIN_ID); чужие нажатия игнорируются, очередь не меняется",
+      "status": "passed",
+      "evidence": "tests/test_integration.py::TestResolveDedupCallback::test_non_admin_press_ignored_no_state_change (queue untouched, (None,'') returned) and ::test_non_numeric_admin_id_fail_closed (non-numeric admin id → nobody authorized); TestReviewListener::test_ignored_press_answers_empty_and_never_edits (non-admin: empty answer only, no edit, ZERO DB reads — get_review_token_link not-called spy). Gate: news_bot._is_admin_press (news_bot.py:559-579), applied before any DB read (news_bot.py:806)."
+    },
+    {
+      "id": "U8",
+      "criterion": "«Слушание» включено только на прод-инстансе; тест не обслуживает кнопки (общий токен)",
+      "status": "not_verifiable",
+      "evidence": "The live property (only the prod instance polls; the test instance serves no presses; no 409 Conflict between real instances) requires two live deployments on the shared bot token — cannot be verified pre-deploy. The gate LOGIC that implements it is autotested green under T7 (flag off / non-numeric admin / empty token → no thread; default off). Deferred to post-deploy Task 12 per task plan."
+    },
+    {
+      "id": "U9",
+      "criterion": "Приём нажатий работает параллельно с отбором/публикацией по слотам и не ломает/не задерживает публикации",
+      "status": "passed",
+      "evidence": "tests/test_pending_articles_repo.py::TestConcurrentWriters::test_two_writers_no_database_locked (genuinely contended two-writer test, threading.Event-synced while the write lock is provably held — no 'database is locked'); tests/test_integration.py::TestInFlightCancelGuard::{test_cancel_mid_publish_aborts_before_teaser,test_publish_proceeds_when_row_still_pending} (cancel racing an in-flight publish resolves safely both ways); TestReviewListener::test_review_listener_error_does_not_propagate (listener failure never reaches the publish loop). Listener is a daemon thread with per-thread SQLite connections (news_bot.py:1027-1032, pending_articles_repo._connect)."
+    },
+    {
+      "id": "U10",
+      "criterion": "Существующая отправка алертов и все текущие тесты зелёные (обратная совместимость)",
+      "status": "passed",
+      "evidence": "Full suite 1333 passed, 0 failed (includes all pre-feature tests). Alert-text anchors intact: «Похож на дубль» asserted at tests/test_admin_alerts.py:289,314,413; tests/test_admin_ping.py::test_reply_markup_is_keyword_only pins that the existing positional call contract is unchanged; Task 2 TDD note confirms alert texts untouched."
+    },
+    {
+      "id": "T1",
+      "criterion": "send_admin_notification пробрасывает reply_markup; вызов без него → byte-identical сегодняшнему (существующие позиционные тесты зелёные)",
+      "status": "passed",
+      "evidence": "tests/test_admin_ping.py::test_reply_markup_forwarded_when_passed (markup reaches bot.send_message) and ::test_reply_markup_is_keyword_only (keyword-only, default None → call identical to pre-feature). All existing test_admin_ping.py tests green in the 228-test focused run. Implementation: news_bot.py:487,529."
+    },
+    {
+      "id": "T2",
+      "criterion": "[E014] несёт ровно две кнопки dd:c:<token> / dd:k:<token>; ни один другой алерт кнопок не несёт",
+      "status": "passed",
+      "evidence": "tests/test_admin_alerts.py::TestDedupReviewKeyboard::{test_two_buttons_callback_data,test_callback_data_under_64_bytes}; tests/test_integration.py::TestDedupReviewButtons::test_only_e014_carries_keyboard (E015 in the same run carries none; all non-E014 pings checked); TestReviewListener::test_keyboard_callback_data_round_trips_through_parser (real secrets.token_urlsafe(9) through builder → _parse_review_callback_data returns ('cancel',token)/('keep',token))."
+    },
+    {
+      "id": "T3",
+      "criterion": "Токен round-trip через bot_state; неизвестный токен → безопасный статус «устарела»",
+      "status": "passed",
+      "evidence": "tests/test_pending_articles_repo.py::TestReviewTokenStore (6 tests: put/get round-trip, unknown → None, delete, delete-unknown no-op, overwrite, prefixed key review_token:<token>); tests/test_integration.py::TestResolveDedupCallback::test_stale_token_returns_expired (unknown token → «⚠️ Кнопка устарела», no DB writes). Store: pending_articles_repo.py:1092-1144 over the existing bot_state table."
+    },
+    {
+      "id": "T4",
+      "criterion": "resolve_dedup_callback: numeric-admin auth (не-админ → без изменения состояния) + ветки pending/published/missing/keep/stale",
+      "status": "passed",
+      "evidence": "All 10 tests in tests/test_integration.py::TestResolveDedupCallback on real tempfile SQLite: non_admin_press_ignored_no_state_change, non_numeric_admin_id_fail_closed, cancel_pending_row_skips_and_returns_cancelled, cancel_published_returns_already_published, cancel_missing_returns_unavailable, keep_returns_kept_no_state_change, stale_token_returns_expired, unknown_action_safe_fallback_token_not_consumed, cancel_race_published_between_check_and_skip, cancel_then_slot_publish_does_not_publish. Auth gate runs FIRST (news_bot.py:626-629)."
+    },
+    {
+      "id": "T5",
+      "criterion": "Отмена до слота удаляет строку из pending_articles → не публикуется; отмена после публикации → «уже опубликовано», published-строка цела",
+      "status": "passed",
+      "evidence": "tests/test_integration.py::TestResolveDedupCallback::test_cancel_then_slot_publish_does_not_publish and ::test_cancel_published_returns_already_published (published row intact). Strengthened in-flight coverage (audit CA-1, current spec text): TestInFlightCancelGuard::test_cancel_mid_publish_aborts_before_teaser (pre-teaser re-check at news_bot.py:2340-2346 aborts as success-without-publish) and tests/test_pending_articles_repo.py::TestMoves::{test_move_to_published_missing_row_warns_and_dozapis_published,test_move_to_published_missing_row_no_processed_news_uses_link} (CA-1b: move_to_published WARN+dozapis instead of silent no-op)."
+    },
+    {
+      "id": "T6",
+      "criterion": "_connect() ставит busy_timeout; тест конкурентной записи не даёт database is locked",
+      "status": "passed",
+      "evidence": "tests/test_pending_articles_repo.py::TestConnectBusyTimeout::test_connect_sets_busy_timeout (PRAGMA busy_timeout reads 5000) and ::test_connect_passes_explicit_timeout_parameter (call-spy pins timeout=5.0, verified to fail on revert); TestConcurrentWriters::test_two_writers_no_database_locked (Event-synced contention while the lock is held) plus negative control ::test_zero_timeout_control_raises_database_locked. Mechanism note (Task 1 decision): connect-param sqlite3.connect(..., timeout=5.0) — equivalent to PRAGMA busy_timeout=5000 without an extra execute() (pending_articles_repo.py:182-197)."
+    },
+    {
+      "id": "T7",
+      "criterion": "Listener стартует только при REVIEW_BUTTONS_ENABLED И числовом admin id; иначе потока нет (fail-closed)",
+      "status": "passed",
+      "evidence": "tests/test_integration.py::TestReviewListener::{test_review_listener_starts_when_enabled_and_numeric_admin,test_review_listener_not_started_when_flag_off,test_review_listener_not_started_when_admin_non_numeric,test_review_listener_not_started_when_bot_token_missing} (gate strengthened by audit CA-3 to include empty TELEGRAM_BOT_TOKEN — matches current spec text); tests/test_job_distributed_publish.py::test_main_wires_review_listener (mutation-verified pin that main() actually calls _maybe_start_review_listener, news_bot.py:3377). Gate: _review_listener_gate_reason() news_bot.py:935-963. Runtime 'review listener active' line in docker logs → deferred to Task 12."
+    },
+    {
+      "id": "T8",
+      "criterion": "Ошибка в listener никогда не прерывает публикационный цикл",
+      "status": "passed",
+      "evidence": "tests/test_integration.py::TestReviewListener::test_review_listener_error_does_not_propagate (poll failure → backoff-pinned sleep spy, no propagation), ::test_review_listener_handler_error_advances_offset_and_survives (poisoned update logged and skipped), ::test_review_listener_conflict_409_logged_with_backoff (409 → explicit single-listener ERROR + 60s backoff). Three-layer isolation: per-update try/except, poll-cycle try/except with backoff, belt-and-braces outer handler; daemon=True thread (news_bot.py:879-932, 1027-1031)."
+    },
+    {
+      "id": "T9",
+      "criterion": "Каждое терминальное нажатие логирует решение оператора (cancel/keep + link + статус) на уровне INFO",
+      "status": "passed",
+      "evidence": "tests/test_integration.py::TestReviewListener::test_decision_logged_even_when_edit_fails (assertLogs('news_bot', level='INFO'): exactly one 'operator decision' line with action+link+status, emitted BEFORE Telegram I/O so a failing edit does not cost the audit line — audit CA-2) and ::test_review_listener_dispatches_admin_cancel. Log site: news_bot.py:833-836 (no token value — log hygiene)."
+    },
+    {
+      "id": "T10",
+      "criterion": "Полный существующий набор зелёный; регрессий нет",
+      "status": "passed",
+      "evidence": "python3 -m pytest tests/ -q → 1333 passed, 0 failed, 0 skipped (48.93s). Baseline arithmetic consistent: 1284 pre-feature → +40 (tasks 1-5) → +9 (audit fixes ed10c58) = 1333. Focused feature files → 228 passed."
+    }
+  ],
+  "findings": [],
+  "coverageVerification": {
+    "scopeFiles": [
+      {
+        "file": "pending_articles_repo.py",
+        "tests": "tests/test_pending_articles_repo.py — TestReviewTokenStore (6), TestConnectBusyTimeout (2), TestConcurrentWriters (2), TestMoves CA-1b (+2)"
+      },
+      {
+        "file": "admin_alerts.py",
+        "tests": "tests/test_admin_alerts.py::TestDedupReviewKeyboard (4)"
+      },
+      {
+        "file": "news_bot.py",
+        "tests": "tests/test_admin_ping.py (reply_markup, 2); tests/test_integration.py — TestResolveDedupCallback (10), TestDedupReviewButtons (4), TestReviewListener (13), TestInFlightCancelGuard (2); tests/test_job_distributed_publish.py::test_main_wires_review_listener"
+      },
+      {
+        "file": ".env.example",
+        "tests": "documentation — REVIEW_BUTTONS_ENABLED block present (line 23), verified by grep; reviewed in Task 6"
+      }
+    ],
+    "edgeCases": "All mandatory edge cases have tests: stale/unknown token (test_stale_token_returns_expired), non-admin press (test_non_admin_press_ignored_no_state_change + zero-DB-read listener spy), slot-boundary race (test_cancel_race_published_between_check_and_skip + TestInFlightCancelGuard), database-is-locked (test_two_writers_no_database_locked + zero-timeout negative control), fail-closed gate (3 not-started tests + bot-token variant), listener crash isolation (3 tests).",
+    "behavioralDepth": "Tests exercise real behavior, not imports/mocks-only: TestResolveDedupCallback and TestReviewListener dispatch tests run against real tempfile SQLite with seeded rows; TestDedupReviewButtons drives the real job(); decision-log test asserts INFO records via assertLogs; multiple assertions are mutation-verified per decisions.md (wiring pin, backoff spies, token-before-send ordering, gate guards)."
+  },
+  "deferredToPostDeploy": [
+    {
+      "criterion": "U8: «Слушание» включено только на прод-инстансе; тест кнопки не обслуживает (общий токен)",
+      "reason": "Requires two live instances on the shared bot token; only the gate logic is autotestable (done, see T7).",
+      "verificationCondition": "Prod deployed with REVIEW_BUTTONS_ENABLED=1 + numeric TELEGRAM_ADMIN_ID; test instance flag off.",
+      "verificationSteps": "Task 12: confirm test-instance logs show no listener startup and no 409 Conflict in either instance's logs; prod serves presses."
+    },
+    {
+      "criterion": "U3/U4/U5 (visual part): real tap in Telegram — buttons visibly replaced by «✅ Отменено оператором» / «👍 Оставлено» / «⚠️ Уже опубликовано» in the chat",
+      "reason": "A real button press and the in-chat edit_message_text rendering need a live bot; only prod can listen. Status-text logic is autotested (U3/U4/U5 passed).",
+      "verificationCondition": "Real or synthetic [E014] alert on prod after deploy.",
+      "verificationSteps": "Task 12: tap «🚫 Не публиковать» on one [E014] → article does not publish in its slot, buttons become «✅ Отменено оператором»; tap «👍 Оставить» on another → publishes, «👍 Оставлено»."
+    },
+    {
+      "criterion": "T7 (runtime part): 'review listener active' line in docker logs at prod startup",
+      "reason": "Startup log of the live container cannot be observed pre-deploy.",
+      "verificationCondition": "Prod container restarted with the feature flag on (outside the 10:00–20:00 МСК window).",
+      "verificationSteps": "Task 12: docker logs hw-news-bot | grep 'review listener active' → present exactly once per start."
+    }
+  ]
+}

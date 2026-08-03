@@ -1,0 +1,23 @@
+{
+  "reviewer": "security-auditor",
+  "task": 1,
+  "round": 1,
+  "verdict": "approved",
+  "findings": [
+    {
+      "severity": "low",
+      "file": "pending_articles_repo.py",
+      "line": 1090,
+      "issue": "put_review_token/get_review_token_link/delete_review_token are three independent operations with no atomic 'consume' (peek-and-invalidate) primitive. A future caller (Wave 2 resolve_dedup_callback) doing get() then delete() across two separate transactions leaves a window where a duplicate/replayed callback_query (Telegram retry, double-tap) can read the same still-valid token before it is deleted, potentially double-invoking the consuming action.",
+      "fix": "Not a defect in this task's scope (put/get/delete match the spec's 'three thin helpers' contract and tech-spec Decision 3/Risks already documents the double-press race as resolved via idempotent handler design in Wave 2). Recommend Wave 2 either wrap get+delete in one BEGIN IMMEDIATE transaction (e.g. an atomic consume_review_token() built from these primitives) or explicitly rely on downstream idempotency (skip_pending is a no-op on an already-missing row) as tech-spec states. Flagging so the Wave 2 reviewer confirms the chosen mitigation before merge."
+    },
+    {
+      "severity": "low",
+      "file": "pending_articles_repo.py",
+      "line": 1055,
+      "issue": "put_review_token/get_review_token_link/delete_review_token accept an unvalidated token: str with no length/charset bound at this layer. Not exploitable here (all SQL is parameterized, so no injection risk and no bare-key collision — the review_token: prefix guarantees this store's keys can't collide with unrelated bot_state keys such as dedup_degraded_last_pinged_at), but there is no defense-in-depth cap on token size independent of the Telegram callback_data 64-byte limit enforced by a different layer.",
+      "fix": "Informational only — no change required in this task. When Wave 2/3 wires these helpers to callback_query.data, confirm the 64-byte callback_data cap and the from_user_id admin check (tech-spec Decision, line ~144) are enforced before the token ever reaches these helpers."
+    }
+  ],
+  "notes": "Focus areas checked: (1) SQL injection — every statement in the diff (INSERT OR REPLACE / SELECT / DELETE on bot_state, and the pre-existing DDL/DML) uses '?' placeholders exclusively; no string interpolation into SQL text; the only f-string in the diff (_review_token_key) builds a bind-parameter VALUE, never SQL text, and TestSqlAudit::test_parameterized_queries_only passes. (2) Secret/URL leak paths — the stored 'link' is a public article URL (not a credential/secret); no logging statements were added in this diff that could leak tokens or URLs; sqlite3.OperationalError messages from parameterized queries do not embed bound values. (3) Token key handling — the review_token: prefix constant is used consistently via _review_token_key(), never hardcoded inline, and namespaces the token store away from other bot_state keys; verified via test_token_stored_under_prefixed_key. (4) Transaction safety — put_review_token and delete_review_token both use BEGIN IMMEDIATE + commit, with rollback-on-exception and connection close in finally, mirroring the already-accepted outage_state._set pattern; get_review_token_link is a single read, matching outage_state._get. (5) busy_timeout — _connect() now passes timeout=5.0 explicitly; verified experimentally that Python's sqlite3.connect default timeout is already 5.0s, so this is a correctness/documentation clarification rather than a security-relevant behavior change, and does not weaken anything. Ran the full tests/test_pending_articles_repo.py (64 tests) — all green, including the fault-injection rollback test and the new concurrent-writer test. No critical/high/medium findings; the two low-severity items above are forward-looking notes for the Wave 2 callback-handling task and do not block this task."
+}

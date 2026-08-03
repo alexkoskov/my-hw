@@ -1,0 +1,131 @@
+{
+  "validator": "reality-checker",
+  "batch": [13, 14, 15],
+  "status": "changes_required",
+  "findings": [
+    {
+      "severity": "critical",
+      "category": "missing_file",
+      "task": 13,
+      "issue": "deploy.sh does not include `.claude/skills/project-knowledge/references/ux-guidelines.md` in the FILES array. Task 13's primary deliverable is adding this file to the deploy bundle, but as of the current codebase state the FILES array contains only 9 entries (news_bot.py, autoevolution_source.py, mattel_news_source.py, lamley_source.py, telegraph_publisher.py, pending_articles_repo.py, feeds.json, requirements.txt, .env.example). `ux-guidelines.md` is absent. Without it, `claude_transcreation._load_prompt` will fail the Decision 14 health check on startup and the bot will fall back to Google Translate for the entire day — the exact failure mode the task exists to prevent.",
+      "fix": "Add `.claude/skills/project-knowledge/references/ux-guidelines.md` as the 10th element of the FILES array in deploy.sh, and mirror the same addition in the FILES array of the `.github/workflows/deploy.yml` 'Copy files to server' step."
+    },
+    {
+      "severity": "critical",
+      "category": "missing_file",
+      "task": 13,
+      "issue": "`.github/workflows/deploy.yml` does not include `ux-guidelines.md` in its FILES array (lines 82–92 currently list the same 9 files as deploy.sh). The task requires both files to be kept in sync. The missing entry means CI-triggered deploys will also omit the file.",
+      "fix": "Add `.claude/skills/project-knowledge/references/ux-guidelines.md` to the FILES array in the 'Copy files to server' step of deploy.yml."
+    },
+    {
+      "severity": "critical",
+      "category": "missing_file",
+      "task": 13,
+      "issue": "`.github/workflows/deploy.yml` has no step that writes `ANTHROPIC_API_KEY`, `ANTHROPIC_MODEL`, or `TZ` into the server's `.env` file. Without these vars the Anthropic SDK raises `AuthenticationError` on first invocation, and the cron fires in UTC instead of MSK. Task 13 explicitly requires an idempotent ssh+heredoc step inserted after 'Copy files to server' and before 'Install Python dependencies'.",
+      "fix": "Add a new step 'Write runtime env vars to server .env' that passes ANTHROPIC_API_KEY via `env:` (not inline in the run command) and uses grep -v + append idiom for idempotency. ANTHROPIC_MODEL and TZ can be vars (non-sensitive) with documented defaults."
+    },
+    {
+      "severity": "critical",
+      "category": "missing_file",
+      "task": 13,
+      "issue": "`ANTHROPIC_API_KEY` is absent from the 'Verify required secrets' step in deploy.yml (lines 39–51). The step currently only verifies SSH_HOST, SSH_USER, DEPLOY_PATH, SSH_PRIVATE_KEY. Without the check, a deploy with a missing Anthropic key completes without error but produces a broken bot that fails on every Claude API call.",
+      "fix": "Add ANTHROPIC_API_KEY to the required-secrets verification loop in the 'Verify required secrets' step."
+    },
+    {
+      "severity": "critical",
+      "category": "missing_file",
+      "task": 13,
+      "issue": "None of the three new source modules referenced throughout the feature (`claude_transcreation.py`, `compute_publish_slots.py`, `outage_state.py`) exist in the codebase. Tasks 1–12 (Waves 1–8) are all listed as `status: planned` and no completion entries appear in `decisions.md`. Task 13 depends_on [11, 12], which in turn depend on all earlier waves. The task spec states 'Task 11 and Task 12 must be green — otherwise deploy bundle ships broken code.' The deploy bundle update cannot be reality-checked as deployable because the code it will deploy does not yet exist.",
+      "fix": "Task 13 must not be executed until tasks 1–12 are complete. The dependency chain in the task header (depends_on: [11, 12]) correctly captures this. Ensure earlier waves are implemented before executing this task."
+    },
+    {
+      "severity": "critical",
+      "category": "missing_file",
+      "task": 14,
+      "issue": "All source files that Task 14 (Code Audit) must read are absent from the codebase: `claude_transcreation.py`, `compute_publish_slots.py`, `outage_state.py` do not exist. All new test files listed in Context Files (`tests/test_compute_publish_slots.py`, `tests/test_claude_transcreation.py`, `tests/test_outage_state.py`, `tests/test_distributed_schedule_integration.py`, `tests/test_fallback_publish_paths.py`) also do not exist. The audit task header correctly declares `depends_on: [13]`, but task 13's own dependencies (tasks 1–12) are unimplemented. Task 14 is infeasible in the current codebase state.",
+      "fix": "Execute tasks 1–13 before starting Task 14. The declared dependency chain is correct; enforcement is the issue."
+    },
+    {
+      "severity": "critical",
+      "category": "missing_file",
+      "task": 15,
+      "issue": "All source files that Task 15 (Security Audit) must read are absent: `claude_transcreation.py`, `outage_state.py` do not exist. Without these files, the six OWASP checks (S1–S6) cannot be performed: S1 (token leak via Anthropic SDK), S2 (prompt injection), S3 (SQLite deadlock), S4 (SQL injection in bot_state), S5 (secret exposure in deploy bundle — partly checkable), S6 (environment leak via Anthropic API) are all blocked by missing implementation. Task 15 declares `depends_on: [13]` which is correct; but task 13 depends on tasks 1–12 which are unimplemented.",
+      "fix": "Execute tasks 1–13 before starting Task 15. S5 (deploy bundle secrets) can be partially audited now on existing deploy.yml — see the critical findings above for the gaps already found."
+    },
+    {
+      "severity": "critical",
+      "category": "cross-task-integration",
+      "task": 13,
+      "issue": "`requirements.txt` does not contain `anthropic>=0.45.0,<0.46.0` or `pytz>=2024.1`. Task 6 was responsible for adding these. They are listed as `status: planned` and are not present. Task 13 includes deploying `requirements.txt` via the FILES list, which means the current (pre-Task-6) requirements.txt will be deployed, and `pip install` on the server will not install the Anthropic SDK or pytz. Claude API calls will fail with ImportError, and the cron TZ trigger will fail with ScheduleValueError.",
+      "fix": "Complete Task 6 before Task 13. After Task 6, requirements.txt will have the correct pins and the deploy will install them."
+    },
+    {
+      "severity": "major",
+      "category": "feasibility",
+      "task": 13,
+      "issue": "The `architecture.md` file currently contains a `Planned Enhancements` section listing 'LLM-powered transcreation fallback' (lines 193–195). Task 13 requires deleting this section because the feature is now being delivered. The task also requires adding three new modules to Project Structure, updating Operator-side vs cron-side split, adding `anthropic`/`pytz` to Key Dependencies, adding Anthropic Claude API to External Integrations, adding `bot_state` to Data Model, and rewriting Data Flow. These are all non-trivial documentation edits that require the implementation artifacts (new modules) to already exist so descriptions are accurate. Currently the architecture.md describes the old data flow (idle-fallback pass, overflow fast-track) with no reference to the new distributed-publish loop.",
+      "fix": "After tasks 1–12 complete, update architecture.md following the detailed step-by-step instructions in Task 13 'What to do' section 3. The 'Planned Enhancements → LLM-powered transcreation fallback' item must be deleted. The Data Flow section rewrite is the most load-bearing change."
+    },
+    {
+      "severity": "major",
+      "category": "feasibility",
+      "task": 13,
+      "issue": "`patterns.md` still contains the legacy 'Auto-fallback throttle' section (lines 47–51) describing `_overflow_fast_track` and `FALLBACK_THROTTLE_SECONDS`, and the 'Overflow fast-track' section (lines 91–100) describing `QUEUE_CAP` and eviction logic. Task 13 requires both sections to be deleted and the 'Scheduling' section (lines 86–89) to be rewritten from `schedule.every(12).hours` to `schedule.every().day.at('12:00', tz=...)`. None of these changes have been made. The current documentation is actively misleading about how the scheduler works.",
+      "fix": "After Task 9 (legacy deletes) completes, update patterns.md following Task 13 section 4. Delete 'Auto-fallback throttle' and 'Overflow fast-track' sections entirely. Rewrite 'Scheduling' and 'Transcreation' sections. Add new 'Auto-publish path' section."
+    },
+    {
+      "severity": "major",
+      "category": "feasibility",
+      "task": 13,
+      "issue": "`deployment.md` still lists `QUEUE_CAP`, `IDLE_TIMEOUT_HOURS`, `GRACE_WINDOW_HOURS`, `FALLBACK_THROTTLE_SECONDS` as Optional tunable defaults (lines 42–45) and the Scheduling section describes `schedule.every(12).hours` (line 75). Task 13 requires removing the legacy vars and rewriting Scheduling. The Pre-Deploy Checklist (lines 82–88) does not mention `ANTHROPIC_API_KEY`, `ANTHROPIC_MODEL`, or `TZ`, and there is no 'Cost Monitoring' section.",
+      "fix": "After Task 9 completes, update deployment.md following Task 13 section 5. Remove legacy optional vars. Add ANTHROPIC_API_KEY and TZ to Required. Add ANTHROPIC_MODEL to Optional. Add Cost Monitoring section."
+    },
+    {
+      "severity": "major",
+      "category": "feasibility",
+      "task": 13,
+      "issue": "deploy.yml line 114 still reads 'news_bot cron will pick up changes on next 12h tick'. Task 13 requires updating this to 'next 12:00 МСК cron tick'. While minor in isolation, this is a documented acceptance criterion of Task 13 and is currently incorrect.",
+      "fix": "Update the Deploy summary step in deploy.yml: replace '12h tick' with '12:00 МСК cron tick'."
+    },
+    {
+      "severity": "major",
+      "category": "feasibility",
+      "task": 14,
+      "issue": "Task 14 requires producing `logs/audit/code-audit.md`. The `logs/audit/` directory does not exist in the feature folder. While the task instructs the agent to create it, this is noted here as a setup step that must not be skipped.",
+      "fix": "Create `work/llm-transcreation-and-distributed-publishing/logs/audit/` before writing the audit report. The task instructions already say to use `mkdir -p`."
+    },
+    {
+      "severity": "major",
+      "category": "feasibility",
+      "task": 15,
+      "issue": "Task 15 requires producing `logs/audit/security-audit.md`. Same as Task 14 — the `logs/audit/` directory does not exist. Additionally, the S5 partial audit possible now (deploy.yml secret handling) reveals actual critical gaps (no ANTHROPIC_API_KEY in Verify required secrets, no env-write step) that should be flagged as pre-blocking issues even before full implementation exists.",
+      "fix": "Create `logs/audit/` directory. The critical S5 findings about deploy.yml can be documented now from the existing deploy.yml state without waiting for implementation."
+    },
+    {
+      "severity": "minor",
+      "category": "feasibility",
+      "task": 13,
+      "issue": "Task 13's Verification Steps 'Smoke' section instructs running `bash -n deploy.sh` (syntax check) then a FILES loop to verify all files including `ux-guidelines.md` exist locally. This smoke test will fail if run before the new modules (`claude_transcreation.py`, `compute_publish_slots.py`, `outage_state.py`) are added to the FILES list — but they are cron-side modules and should be added to the FILES list too (they are new cron-side modules that must be deployed). The task description only mentions adding `ux-guidelines.md` to FILES but the new Python modules also need to be in the list.",
+      "fix": "When implementing Task 13, also add `claude_transcreation.py`, `compute_publish_slots.py`, and `outage_state.py` to the FILES arrays in both deploy.sh and deploy.yml. The task description omits this — it appears to be an oversight in the task spec."
+    },
+    {
+      "severity": "minor",
+      "category": "hints",
+      "task": 14,
+      "issue": "Task 14 instructs the auditor to check for leftover references to `_idle_fallback_publish` as a deleted symbol (grep target). However, reviewing news_bot.py, the actual pattern name used in the existing codebase is the inline idle-fallback logic inside `job()` — there is no discrete function named `_idle_fallback_publish`. The tech-spec refers to this as 'inline idle-fallback in job() step 1a/1b' and 'inline idle-fallback steps'. The grep will return no results even in the pre-deletion state, creating a false pass. The correct grep target is the surrounding logic markers (e.g. `GRACE_WINDOW_HOURS`, `list_notified_overdue`, `list_pending_stale`).",
+      "fix": "Update the grep command in Task 14 audit checklist to include `list_notified_overdue` and `list_pending_stale` as proxy signals for the inline idle-fallback code, in addition to the named symbols."
+    },
+    {
+      "severity": "minor",
+      "category": "tdd",
+      "task": 14,
+      "issue": "Task 14 instructs the auditor to verify that `tests/test_overflow.py` and `tests/test_idle_fallback.py` are physically deleted (Task 9 deliverable). Both files currently exist in the codebase (`tests/test_idle_fallback.py` and `tests/test_overflow.py` are present per directory listing). Since tasks 1–12 are unimplemented, the auditor would correctly flag their presence — but this is expected pre-implementation and the finding would be spurious during a pre-implementation audit.",
+      "fix": "Task 14 should only be run after Task 9 (Wave 5) completes and deletes these files."
+    }
+  ],
+  "stats": {
+    "tasks_checked": 3,
+    "claims_verified": 47,
+    "issues_found": 16
+  }
+}

@@ -1,0 +1,944 @@
+# Interview Plan for Feature Planning
+#
+# Tracks progress of adaptive discovery interview for a new feature/bug/refactoring.
+# Updated after EACH user response with scoring, values, and remaining gaps.
+#
+# Scoring: 0-100% (how well we understand this aspect)
+# Status: pending → partial → complete
+# Required: true = must reach threshold, false = cover if relevant
+
+# ============================================================================
+# Interview Metadata (Session Recovery)
+# ============================================================================
+interview_metadata:
+  started: "2026-04-22 10:55:00"
+  last_updated: "2026-04-22 13:00:00"
+  status: "completed"
+  can_resume: false
+  current_question_num: 5
+  feature_size: "M"  # High-end M after Telegraph-draft surface cut; tech-spec may sequence into 2 increments
+  predecessor: "work/archived/llm-transcreation-deferred/"
+
+# ============================================================================
+# Conversation History (for session recovery)
+# ============================================================================
+# Preserves complete Q&A. Update after EVERY user response.
+#
+conversation_history:
+  - question_num: 5
+    timestamp: "2026-04-22 12:10:00"
+    topic: "cycle3_cleanup — startup double-run + preview creation timing + retry mechanics"
+    agent_question: |
+      Completeness-checker raised three open points:
+      9) news_bot.py:461 runs job() immediately on start — accept the
+         deploy-day double ping (a) or suppress immediate run (b).
+      10) When does Telegraph draft get created — at preview time (a)
+          or at stage time (b).
+      11) hw_review retry N mechanics — move back to pending (a),
+          synchronous GT in CLI (b), or delete + let RSS re-surface (c).
+    user_answer: |
+      All three: accept my recommendations.
+      - 9(a): keep the immediate job() run. Accept double ping on deploy day.
+      - 10(a): draft created only at preview time; publish skips blank
+        step if preview_path is NULL.
+      - 11(a): retry moves row back from failed_articles to
+        pending_articles, resets attempt_count to 0, lets the next
+        fallback pass handle GT.
+    summary: |
+      Cleanup pass closed. Cycle 3 items locked with option (a) across
+      the board. Ready for user-spec.md creation.
+
+  - question_num: 4
+    timestamp: "2026-04-22 11:50:00"
+    topic: "cycle2_batch2 — table name + skipped semantics + data model + verification + risks + deploy + manual actions"
+    agent_question: |
+      Follow-ups after batch 1:
+      (a) Dead-table naming — proposed failed_articles.
+      (b) Skipped storage options (i/ii/iii).
+      (c) Confirm 4-table data model.
+      5) Verification strategy (pytest + MCP + golden-post diff).
+      6) Risks list for approval.
+      7) Deploy approach, current/future hosting, CI gates, staging.
+      8) Manual user actions (env, trigger phrase, cron frequency,
+         optional test channel).
+    user_answer: |
+      (a) failed_articles name accepted. NEW REQUIREMENT: every time
+          `hw_review list` runs, if failed_articles is non-empty, the
+          CLI surfaces the count + titles with a retry hint.
+      (b) Option (ii): write skipped link to processed_news (treated
+          as seen), no published_articles row. Keeps the channel-aggr
+          table pure for real publishes.
+      (c) 4-table data model approved.
+      5) Verification plan approved.
+      6) Risks list approved.
+      7) Hosting: currently local Docker; moving to VPS later.
+         CI migration gate — user defers to my call.
+         No staging — asks if they should set one up.
+      8) "Do as much as you can; I do the rest."
+    summary: |
+      Cycle 2 items closed. New requirement: failed_articles
+      surfaced on every `hw_review list`. Skipped links go into
+      processed_news only. My call on CI + staging: add cheap CI
+      migration check; skip formal staging, use a separate test
+      Telegram channel for pre-prod smoke.
+
+  - question_num: 3
+    timestamp: "2026-04-22 11:30:00"
+    topic: "cycle2_batch1 — user-stories + error-scenarios + staged-vs-skip + mattel-registry"
+    agent_question: |
+      Four questions in Cycle 2 batch 1:
+      1) Walk through happy path user story. Where does the row go
+         after successful publish — stay in pending_articles with
+         status='published', or move to a separate table?
+      2) Error scenarios with proposed handling for each
+         (GT fails, editPage fails, publish mid-way fails, admin ping
+         fails, stage crashes).
+      3) skip N when ru_* already staged — silent discard vs
+         confirmation prompt.
+      4) fetch_mattel_news — keep hardcoded in job() or extract to a
+         source registry.
+    user_answer: |
+      1) Happy path confirmed. Move successful publishes to a separate
+         `published` table, flag there whether the article went through
+         review or through GT fallback.
+      2) GT fallback failure: log + admin ping, bump attempt_count; on
+         the 3rd failure move to an `unpublished`-style table. User
+         asks me to propose a name. All other error handling as
+         proposed (editPage log+retry daily, publish mid-way retries
+         with same ru_*, admin ping idempotent, stage-crash leaves
+         ru_* NULL).
+      3) Option (b): when ru_* already staged, `skip` requires explicit
+         confirmation.
+      4) Option (b): extract sources into a registry, so Mattel lives
+         alongside RSS sources in a declarative list.
+    summary: |
+      Data model becomes 3-table: pending, published (with
+      via_review bool), failed (gave-up-after-3-GT-attempts, name TBD).
+      Skip with staged ru triggers confirmation. Source registry
+      replaces hardcoded Mattel call.
+
+  - question_num: 2
+    timestamp: "2026-04-22 11:10:00"
+    topic: "cycle1_batch2 — testing strategy + queue overflow + fallback timing"
+    agent_question: |
+      Three follow-ups after user asked what was missed:
+      1) Testing strategy — proposed plan: unit (pending_articles CRUD,
+         CLI parsing, admin-ping format), integration prep-phase + publish
+         with mocks, migration test, idle-fallback test, regression.
+      2) Queue overflow at cap=10:
+         (a) drop incoming new entries (they return next RSS run),
+         (b) FIFO evict oldest pending (lost forever),
+         (c) fast-track oldest through transcreate_text to free slot.
+      3) Fallback publish after 48h idle:
+         (i) silent publish + admin summary ping,
+         (ii) admin heads-up, 1h intercept window via hw_review take N, then publish,
+         (iii) never publish automatically — require user action.
+    user_answer: |
+      1) Testing plan approved as proposed.
+      2) Overflow handling — option (c): add new, fast-track old via
+         transcreate_text to free slots.
+      3) Fallback — option (ii): heads-up before auto-publish, user can
+         intercept via `hw_review take N` during the grace window.
+         Exact window length tactical (current cron is daily; actual
+         interval depends on cron frequency decision — deferred to
+         tech-spec).
+    summary: |
+      Testing plan locked. Overflow and fallback both have explicit
+      user-facing steps (admin ping, grace window, intercept command).
+      1h literal duration in option (ii) is aspirational and depends
+      on cron frequency — note for tech-spec.
+
+  - question_num: 1
+    timestamp: "2026-04-22 11:00:00"
+    topic: "cycle1_batch1 — success_criteria + edge-cases + preview-mode + trigger"
+    agent_question: |
+      Four questions covered together:
+      1) Success criteria — accept a proposed list of testable signals
+         (prep touches no Telegram channel, queue captures every new
+         entry, admin ping only when non-empty, publish output matches
+         locked post-format, skipped never re-appears, existing 106
+         tests stay green).
+      2) Queue retention — behaviour when user is away, stale entries,
+         hard limit.
+      3) Preview step — Telegraph draft vs local HTML render.
+      4) Trigger — phrase, slash-command, or fully manual terminal.
+    user_answer: |
+      1) Accept the proposed success list. Admin-ping format fixed to
+         "3 ждут review: 🟠 autoevolution ×2, 🟣 mattel ×1".
+      2) Hard cap of 10 pending articles at any time. After 2 days of
+         no user reaction to a pending article, translate it via the
+         existing Google Translate fallback (transcreate_text) and
+         publish automatically.
+      3) Telegraph draft (option a). Ask whether there is a way to
+         remove failed drafts after the fact.
+      4) Trigger phrase is "посмотрим очередь".
+      User explicitly asks what was not yet covered.
+    summary: |
+      User confirmed success_criteria list with the fixed admin-ping
+      format; set queue max=10 and auto-Google-Translate-fallback
+      after 48h idle; chose Telegraph draft for preview (with cleanup
+      question); trigger phrase "посмотрим очередь". Testing strategy
+      and max-queue overflow semantics still open.
+
+# ============================================================================
+# Phase 1: High-Level Feature Understanding
+# ============================================================================
+# Interview Cycle 1 scope
+phase1_feature_overview:
+
+  feature_name:
+    score: 95
+    status: "complete"
+    value: "manual-review-workflow"
+    gaps: ""
+    required: true
+
+  feature_description:
+    score: 95
+    status: "complete"
+    value: |
+      Split the bot pipeline into two independent phases:
+
+      (1) **Prep phase** — cron (daily at 12:00 today; frequency may
+          increase in tech-spec to support the 1h grace window).
+          Fetches RSS + Mattel + Lamley, dedupes via processed_news,
+          runs fetch_full_article for each new entry, stores results
+          in a new `pending_articles` table. Admin Telegram ping is
+          sent ONLY if queue non-empty, format:
+          "3 ждут review: 🟠 autoevolution ×2, 🟣 mattel ×1".
+          Publishes NOTHING directly.
+
+      (2) **Review + publish phase** — user-triggered via Claude Code.
+          Trigger phrase: "посмотрим очередь" — Claude runs hw_review
+          list, walks each item, the user and Claude co-write Russian
+          inline, hw_review preview creates a Telegraph draft for
+          visual check, hw_review publish finalises to a fresh
+          Telegraph page + Telegram channel card + mark_processed.
+          Discarded drafts are blanked via editPage (Telegra.ph lacks a
+          delete endpoint) and tracked in a cleanup list.
+
+      (3) **Stale fallback** — if a pending article has been sitting
+          >48h, a fallback pass in job() sends a heads-up admin ping
+          ("Will auto-publish in <grace window>: [titles]"). During the
+          grace window the user can intercept via `hw_review take N`.
+          When the window elapses and the article still has no Russian
+          text, the bot runs transcreate_text (Google Translate + regex)
+          and auto-publishes to keep the channel alive.
+
+      (4) **Overflow handling (cap=10)** — when prep-phase finds the
+          pending queue at or near its 10-slot cap, it fast-tracks the
+          oldest pending entries through transcreate_text + publish to
+          free slots before adding new ones. Oldest entries thereby
+          graduate to the channel one way or the other (either via
+          user review, or via Google-Translate fallback on pressure).
+
+      Trade-off: the channel is no longer fully unattended; the user
+      reviews day-to-day, but a degraded safety net exists so the feed
+      never goes completely silent.
+    gaps: ""
+    required: true
+
+  work_type:
+    score: 95
+    status: "complete"
+    value: "feature"
+    gaps: ""
+    required: true
+
+  user_problem:
+    score: 90
+    status: "complete"
+    value: |
+      Current fully-automatic flow produces mechanical Russian (Google
+      Translate + regex): calques, wrong agreement, glossary misses,
+      passive cluncky phrasing. User wants channel posts rewritten by a
+      human-in-the-loop at the quality Claude Code produces — but
+      without paying for OpenAI API tokens now and without changing the
+      Python-on-Linux bot architecture. The existing Max subscription
+      covers unlimited interactive Claude Code work, so the translation
+      engine becomes "the operator sitting at Claude Code". The bot's
+      job changes from end-to-end automation to preparing a review
+      queue and publishing what the operator blesses, with a
+      transcreate_text safety net when the operator is absent.
+    gaps: ""
+    required: true
+
+  target_users:
+    score: 80
+    status: "complete"
+    value: |
+      Primary: the bot operator (user) — gains full editorial control
+      over what ships to @myhwchannel123 and in what Russian voice.
+      Secondary: Hot Wheels enthusiasts on the channel — receive higher
+      quality posts. No change to audience, only improved output.
+    gaps: ""
+    required: false
+
+  success_criteria:
+    score: 95
+    status: "complete"
+    value: |
+      - Prep phase runs on cron without touching Telegram channel.
+      - Every new entry from every source (RSS, Mattel, Lamley) lands
+        in pending_articles with full title/subtitle/paragraphs/images
+        (+ blocks if source provides them).
+      - Admin Telegram ping fires ONLY if queue non-empty; format
+        exactly "N ждут review: 🟠 autoevolution ×K, 🟣 mattel ×M,
+        🟢 lamley ×L" (skip sources with zero new entries).
+      - `hw_review publish N` produces a Telegram channel post visually
+        identical to the current automatic flow (same locked post-format).
+      - Skipped articles never resurface in `hw_review list`.
+      - Articles idle >48h trigger a heads-up admin ping with
+        intercept window; after the window, transcreate_text +
+        auto-publish runs and the entry leaves the queue.
+      - Queue never exceeds 10 concurrent pending entries. When the
+        cap is hit, oldest entries graduate via the fast-track
+        Google-Translate path before new entries are added.
+      - Telegraph drafts created during preview are blanked via
+        editPage when the user skips the article or when publish
+        creates the final page.
+      - All 106 existing tests stay green after job() refactor.
+      - New test suite covers pending_articles CRUD, CLI parsing,
+        admin-ping format, prep-phase integration, publish-phase
+        integration, migration (fresh DB), and the idle-fallback
+        + overflow paths.
+    gaps: ""
+    required: true
+
+  constraints:
+    score: 95
+    status: "complete"
+    value: |
+      - Stay on Python (n8n rejected 2026-04-22).
+      - No external LLM API in this feature (no OpenAI, no Anthropic API).
+        Claude Code session under Max subscription is the translation tool.
+      - Locked post format (`work/telegraph-pipeline/post-format.md`)
+        unaffected — output shape identical to current automatic flow.
+      - Duplicate detection (`processed_news` table) stays unchanged.
+      - `job()` keeps running on cron; its body shrinks to
+        prep + fallback-heads-up + overflow-fast-track (no direct publish
+        for user-reviewable entries).
+      - Queue hard cap: 10 concurrent pending_articles.
+      - Idle timeout: 48h without user action → heads-up admin ping,
+        then (after the grace window elapses) transcreate_text +
+        auto-publish.
+      - Overflow semantics: when the cap is reached, oldest pending
+        entries are fast-tracked through transcreate_text + auto-publish
+        to free slots before new entries are added.
+      - Trigger phrase to switch Claude Code into review mode:
+        "посмотрим очередь".
+      - Intercept phrase (bypass fallback): `hw_review take N`.
+      - Preview uses Telegraph drafts; discarded drafts are blanked via
+        editPage (Telegra.ph has no delete endpoint).
+      - 1h grace-window length is aspirational — actual interval is
+        determined by cron frequency, which may be bumped from daily
+        to every few hours during tech-spec.
+    gaps: ""
+    required: true
+
+  testing_strategy:
+    score: 90
+    status: "complete"
+    value: |
+      Approved plan (user sign-off 2026-04-22 Q2):
+      - Unit: pending_articles CRUD, CLI argument parsing, admin-ping
+        format (source emoji mapping + count aggregation).
+      - Integration prep-phase: mocked source fetchers, verify queue
+        population + admin ping + no Telegram channel writes.
+      - Integration publish-phase: mocked telegraph_publisher + Telegram
+        Bot, verify final page matches locked post-format, verify
+        mark_processed called, verify draft blanking on skip.
+      - Migration: fresh DB creates pending_articles with correct schema.
+      - Idle-fallback test: simulate >48h stale entry, verify heads-up
+        admin ping → intercept window → transcreate_text + publish path.
+      - Overflow test: fill queue to 10, verify fast-track of oldest
+        entries on next prep-phase run.
+      - Regression: all 106 existing tests green after job() refactor.
+    gaps: ""
+    required: true
+
+# ============================================================================
+# Phase 2: User Experience & Scenarios
+# ============================================================================
+# Interview Cycle 2 scope (together with Phase 3)
+phase2_user_experience:
+
+  user_stories:
+    score: 90
+    status: "complete"
+    value: |
+      **Story 1: Happy-path morning triage.**
+      - 12:00 cron fires; prep fetches from all sources, dedupes via
+        processed_news / seen-links, calls fetch_full_article for each
+        new link, INSERTs row into pending_articles with ru_* = NULL,
+        status='pending', fetched_at=now.
+      - Bot sends admin Telegram: "3 ждут review: 🟠 autoevolution ×2,
+        🟣 mattel ×1".
+      - User opens Claude Code, types "посмотрим очередь".
+      - Claude runs hw_review list → shows numbered rows with source,
+        title, paragraph count, age.
+      - User picks #1; Claude runs hw_review show 1 → dumps English.
+      - Claude writes a Russian retelling in chat; user iterates via
+        edits ("сократи", "добавь ироничности", etc.).
+      - Claude calls hw_review stage 1 with final ru_title,
+        ru_subtitle, ru_paragraphs, ru_blocks.
+      - Claude calls hw_review preview 1 → Telegraph draft URL; user
+        opens in browser.
+      - User says "публикуй"; Claude runs hw_review publish 1 →
+        createPage (fresh final page), send_telegraph_teaser, editPage
+        to blank the draft, move row from pending_articles to
+        published_articles with via_review=true.
+      - Loop through items 2–N.
+
+      **Story 2: Silent morning (nothing to review).**
+      - 12:00 cron runs, queue stays empty. No admin ping. No channel
+        post. Logs only.
+
+      **Story 3: Stale-entry fallback.**
+      - Day N 12:00: article X added to pending_articles.
+      - Day N+2 12:00 (≥48h): fallback pass finds X idle; sends admin
+        heads-up "Will auto-publish in <grace>: [X title]. Intercept
+        via `hw_review take 1`". Stamps notified_at.
+      - After the grace window elapses on a later cron tick, if
+        ru_* still NULL, bot calls transcreate_text → publishes →
+        move to published_articles with via_review=false.
+      - If user ran hw_review take 1 during the grace window, row's
+        notified_at is cleared; article goes through normal review
+        flow.
+
+      **Story 4: Queue overflow.**
+      - Prep fetches and finds that len(pending_articles) + new_count
+        > 10. Identifies oldest N pending rows to graduate: for those,
+        runs transcreate_text + publish immediately (same as stale
+        fallback, but without the grace window — slot pressure forces
+        action). Moves them to published_articles with via_review=false.
+        Admin ping: "Queue pressure: auto-published 2 entries, 3 new
+        added".
+
+      **Story 5: GT fallback fails repeatedly.**
+      - Fallback attempts transcreate_text; Google Translate returns
+        an empty string / raises.
+      - Log + admin ping, attempt_count += 1. After 3rd failure the
+        row moves from pending_articles to failed_articles with
+        last_error, failed_at. User can later inspect and optionally
+        re-trigger.
+
+      **Story 6: Skip with staged text.**
+      - User runs hw_review skip N where ru_* is non-NULL.
+      - CLI prompts: "В записи N уже сохранён твой русский (title/
+        subtitle/paragraphs). Точно скипнуть? (y/N)".
+      - On y: blank preview draft via editPage if preview_path is set;
+        delete row from pending_articles; write link to processed_news
+        so it never resurfaces from RSS. No row in published_articles
+        — skipped isn't a publish.
+
+      **Story 7: Retry from failed.**
+      - User sees failed backlog in `hw_review list` footer.
+      - User runs `hw_review retry N` where N references a failed row.
+      - CLI moves row back to pending_articles (attempt_count=0,
+        status='pending', fetched_at=now), deletes from failed_articles.
+      - Next cron tick: fallback pass treats it as fresh; if it's been
+        there >grace (it has, because it's old), GT is tried again.
+        On third new failure → back to failed_articles.
+
+      **Story 8: Startup double-run on deploy day.**
+      - Container starts after deploy. news_bot.main() calls job()
+        immediately (news_bot.py:461) → prep fetches sources, INSERTs
+        into pending_articles, sends admin ping.
+      - Same day 12:00 scheduled job() runs: filter_new_entries skips
+        already-queued links (processed_news covers them), admin ping
+        reflects current queue.
+      - Accepted trade-off: one extra admin ping on deploy day only.
+    gaps: ""
+    required: true
+
+  acceptance_criteria:
+    score: 90
+    status: "complete"
+    value: |
+      Cross-referenced with `phase1_feature_overview.success_criteria`
+      (canonical list). Additional user-flow specific criteria:
+
+      - `hw_review list` on empty queue shows "queue is empty"; on
+        non-empty shows numbered rows with source emoji + title +
+        paragraph count + age.
+      - `hw_review list` always footer-reports non-empty
+        `failed_articles` (count + titles + retry hint).
+      - `hw_review stage N` requires all ru_* fields; partial staging
+        rejected.
+      - `hw_review preview N` without prior `stage` refuses with clear
+        error.
+      - `hw_review skip N` with staged ru_* requires y/N confirmation.
+      - `hw_review publish N` is idempotent on Telegram-only retry
+        (same ru_* state yields the same channel post).
+      - Source registry in news_bot.py iterates autoevolution RSS +
+        Mattel uniformly; adding a new source is editing one list.
+      - CI gate runs pytest on every PR; migration test asserts fresh
+        DB has all 4 tables with correct schema.
+      - processed_news row exists for every link that was EITHER
+        published OR skipped — the dedup set is the union.
+    gaps: ""
+    required: true
+
+  edge_cases:
+    score: 90
+    status: "complete"
+    value: |
+      - **skip with staged ru.** Requires y/N confirmation (option b).
+      - **Skipped link destination.** Written to processed_news only
+        (option ii). Never reappears in review (dedupe guarantee) and
+        never appears in published_articles (aggr purity).
+      - **Same link appears in two sources (cross-post).** processed_news
+        PRIMARY KEY on link dedupes; second source's link is skipped at
+        filter_new_entries time.
+      - **Article preview requested before stage.** hw_review preview N
+        where ru_* is NULL → CLI refuses: "Nothing to preview — stage
+        Russian text first via `hw_review stage N`".
+      - **Admin ping when queue empty.** Do not send (success criterion).
+        Exception: if failed_articles is non-empty, may still ping with
+        only the "failed backlog" line.
+      - **`hw_review list` reminder for failed_articles.** Every run
+        appends a footer like "⚠️ 2 неопубликованных в failed: [titles].
+        `hw_review retry N` чтобы переподнять". Consistent visibility.
+      - **Queue at exactly 10, prep finds 0 new.** Do not fast-track;
+        overflow trigger requires slot pressure (new_count > free_slots).
+      - **User intercepts fallback (`take N`) after grace window has
+        already fired.** CLI refuses: "N already auto-published, nothing
+        to intercept". Idempotent.
+      - **attempt_count resets.** A successful `publish` removes the row
+        from pending_articles entirely (moves to published_articles), so
+        attempt_count is implicitly zeroed.
+      - **Two cron preps overlap (if hourly schedule).** SQLite UNIQUE
+        on `pending_articles.link` prevents duplicate inserts; raced
+        IntegrityError is caught + logged as expected race.
+      - **news.db deleted / recreated.** CLI on empty DB says "queue
+        empty, failed_articles empty". Nothing to rollback — RSS will
+        re-surface entries.
+      - **Article has empty paragraphs after fetch_full_article.**
+        Current pipeline skips (news_bot.py:372-374). New prep phase
+        preserves the same skip rule — no stub rows in pending_articles.
+    gaps: ""
+    required: true
+
+  error_scenarios:
+    score: 90
+    status: "complete"
+    value: |
+      - **Google Translate fails during fallback.** Log + admin ping
+        "GT fallback failed for N: <error>. Attempts: K/3". Bump
+        attempt_count column on the pending row. On the 3rd failure
+        move the row to `failed_articles` (terminal state, no more
+        retries; user can re-trigger manually if desired).
+      - **editPage fails when blanking a discarded draft.** Log
+        warning. Don't retry in-line (the final page is already live,
+        user isn't blocked). `hw_review cleanup-drafts` runs lazily on
+        next cron tick and retries.
+      - **Publish fails mid-way (Telegraph ok, Telegram fail).**
+        Rollback-none: Telegraph page stays live. pending row keeps
+        ru_* intact and status='pending'. processed_news not written,
+        published_articles not written. Next `hw_review publish N`
+        uses same ru_* to retry Telegram only (idempotent — same URL).
+      - **Admin ping fails (Telegram bot down).** Log error, no retry.
+        Next cron tick's ping reflects the current queue state, so
+        transient failures self-heal.
+      - **`hw_review stage` crashes mid-execute.** Nothing committed —
+        CLI uses a single UPDATE statement. ru_* stay NULL. User
+        re-runs.
+      - **Cron prep crashes between fetch_full_article and INSERT.**
+        Nothing written. Link isn't in processed_news yet. Next cron
+        tick sees it as "new" and re-fetches. Safe, slightly wasteful.
+      - **Cron prep crashes after INSERT but before admin ping.** Row
+        exists in pending_articles; next cron tick includes it in
+        the counts — user gets the ping then.
+      - **Two cron preps overlap (e.g. on hourly schedule).**
+        SQLite UNIQUE(link) on pending_articles prevents duplicates.
+        Second prep's INSERT raises IntegrityError which is caught +
+        logged (expected race).
+    gaps: ""
+    required: true
+
+  verification_strategy:
+    score: 90
+    status: "complete"
+    value: |
+      **Agent-side (automated and for my sessions):**
+      - pytest covers CRUD, CLI parsing, admin-ping format, prep/publish
+        integration, migration, idle-fallback, overflow, regression.
+      - Telegram MCP (if installed) reads last channel message to
+        confirm hashtag + preview after a publish run.
+      - curl/HTTP GET on Telegraph draft URL confirms blanked content
+        after cleanup-drafts.
+      - news.db snapshot after prep: row counts by source match admin
+        ping numbers.
+
+      **User-side (manual):**
+      - Open @myhwchannel123 after first review post — visual match
+        with locked post-format reference (msg 35).
+      - Open Telegraph draft URL during preview step — visual layout,
+        hero image, subtitle, body.
+      - Check admin chat for ping format: emoji per source + counts.
+
+      **Golden post:** after the feature ships, publish one article via
+      the full review flow and diff the channel card + Telegraph page
+      against msg 35 — should be indistinguishable.
+    gaps: ""
+    required: true
+
+  ui_ux_requirements:
+    score: 0
+    status: "pending"
+    value: ""
+    gaps: "Specific UI/UX requirements if applicable"
+    required: false
+
+  risks:
+    score: 90
+    status: "complete"
+    value: |
+      - **Refactor of job() breaks 8 existing auto-publish tests**
+        (test_integration, test_mattel_integration, test_feed_iteration).
+        **Mitigation:** rewrite those tests in the same PR; green-run
+        before merge.
+      - **Cron frequency bump hits rate limits on RSS/Mattel.**
+        **Mitigation:** keep daily default; document optional hourly;
+        fetch_full_article cached once per run; curl_cffi backoff stays
+        on autoevolution.
+      - **news.db corruption loses queue.** **Mitigation:** RSS
+        re-surfaces entries; no long-term damage; `.db` backup optional
+        pre-deploy.
+      - **Telegraph editPage API changes / deprecates.**
+        **Mitigation:** cleanup-drafts catches errors and alerts;
+        fall back to "leave draft alive, user manually cleans".
+      - **publish_article signature change (return path) breaks
+        test_telegraph_publisher.** **Mitigation:** fix in same PR.
+      - **User away >48h but failed_articles fills up repeatedly**
+        (GT hiccups). **Mitigation:** every `hw_review list` surfaces
+        failed backlog; user can `hw_review retry N` manually.
+      - **Bot moves from local Docker to VPS mid-feature.**
+        **Mitigation:** feature is hosting-agnostic; deployment steps
+        are identical.
+    gaps: ""
+    required: true
+
+  technical_decisions:
+    score: 85
+    status: "complete"
+    value: |
+      - **`publish_article` return shape:** change to return a dict
+        `{'url': str, 'path': str}` (keep `path` that API already gives
+        us in `result["path"]`; stop discarding it). Needed for later
+        `editPage` calls on the same page. Parsing path from URL is
+        brittle — URL slug is auto-generated with date suffix.
+      - **`editPage` wrapper:** add a new function `edit_page(path,
+        title, content, ...)` in telegraph_publisher.py following the
+        same pattern as `_api_call("createPage", ...)`. No new module.
+      - **CLI entry point:** `hw_review.py` at repo root (consistent
+        with other scripts like `post_latest_news.py`). stdlib argparse,
+        no new dependency. Invokable both as `python hw_review.py list`
+        and via a thin shell alias.
+      - **Telegraph draft creation timing:** draft created only on
+        explicit `hw_review preview N` call (never at prep or stage
+        time). `hw_review publish N` skips the `editPage` blanking
+        step when `preview_path` is NULL. Minimizes Telegraph page
+        count for articles that never got a visual check.
+      - **Startup immediate run:** news_bot.main() keeps its
+        immediate `job()` call at startup (news_bot.py:461). Accepted
+        side effect: on deploy day the admin may see two queue pings
+        (immediate + scheduled). Trade-off accepted for simplicity.
+      - **Retry mechanics:** `hw_review retry N` moves a row from
+        failed_articles back to pending_articles (attempt_count=0,
+        status='pending', fetched_at=now). The next cron tick's
+        fallback pass then re-tries GT. No synchronous translation
+        inside the CLI — keeps the command responsive.
+      - **Repository layer:** new `pending_articles_repo.py` at repo
+        root holds CRUD for pending / published / failed tables. Keeps
+        news_bot.py focused. Matches `*_source.py` naming convention.
+      - **Source registry:** `SOURCES` list in news_bot.py mapping name
+        → callable returning entries. RSS expanded to (name='rss',
+        fn=lambda: fetch_rss_feeds()). Mattel as (name='mattel',
+        fn=lambda: fetch_mattel_news(...)). Iteration in job() becomes
+        a simple for-loop.
+      - **Deferred:** LLM-based transcreation (separate feature), Batch
+        API (separate feature), auto-retry from failed_articles
+        (manual via `hw_review retry N`).
+    gaps: ""
+    required: false
+
+  deploy_approach:
+    score: 90
+    status: "complete"
+    value: |
+      Current hosting: local Docker on user's workstation. Target:
+      migrate to VPS later (out of scope for this feature — the feature
+      is hosting-agnostic).
+
+      Deploy steps:
+      1. Develop on dev branch; pytest all green (106 existing + new).
+      2. CI gate on every PR — `pytest tests/` plus new migration test
+        (create fresh tempfile DB, run init_db, assert all 4 tables
+        exist with correct DDL). Catches migration regressions cheaply.
+      3. Merge dev → main.
+      4. Stop running container (`docker stop`).
+      5. `git pull`, rebuild image if needed.
+      6. Start container. First cron tick creates missing tables via
+        `CREATE TABLE IF NOT EXISTS`. Existing processed_news rows
+        untouched — backward compatible.
+      7. First admin ping arrives with real queue.
+
+      No formal staging environment. For extra safety before first
+      real run, optionally: clone the channel to a test channel,
+      switch TELEGRAM_CHANNEL_ID in .env, run one smoke cycle, then
+      switch back. My recommendation: skip staging, since the feature
+      stops auto-posting entirely on its own — no risk of bad posts
+      flooding the channel during rollout.
+    gaps: ""
+    required: false
+
+  manual_user_actions:
+    score: 90
+    status: "complete"
+    value: |
+      What the user MUST do manually (I cannot):
+      - Pull the updated repo to their Docker host / VPS.
+      - Stop and restart the bot container.
+      - Confirm env vars in .env: `TELEGRAM_ADMIN_ID` explicitly set
+        (not rely on the hardcoded default `@sunny413x` unless that
+        matches them).
+      - After first deploy, wait for first admin ping and invoke the
+        review flow at least once to confirm end-to-end behavior.
+      - Optional: decide on cron frequency (daily vs hourly) and
+        tweak `news_bot.py:458`. Default stays daily in this feature;
+        bumping is a 1-line follow-up.
+
+      What I do for them:
+      - All code: refactor job(), new repo module, new CLI, editPage
+        wrapper, source registry, migration.
+      - All tests: rewrite affected integration tests, new unit +
+        integration tests for the new paths.
+      - CI migration gate.
+      - Documentation updates (project-knowledge files after
+        `/done`).
+      - Code review + security audit via agents.
+    gaps: ""
+    required: false
+
+# ============================================================================
+# Phase 3: Integration & Technical Context
+# ============================================================================
+# Interview Cycle 2 scope (together with Phase 2)
+phase3_integration:
+
+  integration_points:
+    score: 90
+    status: "complete"
+    value: |
+      Backed by code-research.md §1. Summary of what this feature
+      touches in existing code:
+
+      - **news_bot.job()** (`news_bot.py:423-449`): body refactored to
+        iterate SOURCES registry → fetch_full_article per new entry →
+        INSERT pending_articles → admin ping. `process_new_articles`
+        deleted or reduced to legacy.
+      - **news_bot.init_db()** (`news_bot.py:113-121`): add
+        `CREATE TABLE IF NOT EXISTS` for pending_articles,
+        published_articles, failed_articles (or delegate to
+        pending_articles_repo.init_schema()).
+      - **news_bot.filter_new_entries** (`news_bot.py:154-164`):
+        unchanged; processed_news still authoritative for dedup.
+      - **news_bot.mark_processed** (`news_bot.py:132-140`): extended
+        role — called from publish AND skip paths.
+      - **news_bot.transcreate_text** (`news_bot.py:177-289`): reused
+        verbatim for stale fallback + overflow fast-track. No changes.
+      - **news_bot.send_telegraph_teaser** (`news_bot.py:303-333`):
+        unchanged; hw_review publish calls it directly.
+      - **news_bot.send_admin_notification** (`news_bot.py:38-52`):
+        unchanged; new callers: prep-phase queue ping, fallback
+        heads-up, overflow notice, failed-article alert.
+      - **telegraph_publisher.publish_article** (`:225-266`):
+        return type changes from `str` → `dict {url, path}`. All
+        existing callers updated.
+      - **telegraph_publisher.edit_page** (new function): wraps
+        `_api_call("editPage", {...})`.
+      - **New files:** `pending_articles_repo.py` (DAO for 3 new
+        tables), `hw_review.py` (CLI with argparse).
+      - **Tests affected** (per code-research §4):
+        `test_integration.py`, `test_mattel_integration.py`,
+        `test_feed_iteration.py` flip from "asserts auto-publish" to
+        "asserts staging only". `test_database.py` adds new-table
+        assertions. `test_telegraph_publisher.py` adds edit_page tests.
+        New `test_pending_articles_repo.py`, `test_hw_review_cli.py`.
+    gaps: ""
+    required: true
+
+  dependencies:
+    score: 70
+    status: "complete"
+    value: |
+      Relies on unchanged existing modules:
+      - autoevolution_source / mattel_news_source / lamley_source —
+        contracts already documented in post-format.md.
+      - telegraph_publisher — extended with edit_page but
+        same base wrapper.
+      - python-telegram-bot — unchanged usage.
+      - schedule — unchanged.
+      - deep-translator — used by transcreate_text fallback only.
+      No new pip dependencies. Everything in stdlib
+      (argparse, sqlite3, json).
+    gaps: ""
+    required: false
+
+  technical_constraints:
+    score: 0
+    status: "pending"
+    value: ""
+    gaps: "Technical limitations, performance, security"
+    required: false
+
+  data_requirements:
+    score: 85
+    status: "complete"
+    value: |
+      Three new SQLite tables in `news.db`:
+
+      **pending_articles** — work in progress.
+      Columns: link (PK), title, subtitle, paragraphs (JSON),
+      images (JSON), blocks (JSON nullable), pub_date, fetched_at,
+      status ('pending' | 'notified' | 'taken'), notified_at,
+      attempt_count (default 0),
+      ru_title, ru_subtitle, ru_paragraphs (JSON nullable),
+      ru_blocks (JSON nullable), preview_url, preview_path.
+
+      **published_articles** — audit of successful publishes.
+      Columns: link (PK), source, title, ru_title, telegraph_url,
+      telegraph_path, published_at, via_review (bool).
+
+      **failed_articles** — gave up after 3 GT attempts.
+      Columns: link (PK), source, title, last_error, attempt_count,
+      failed_at.
+
+      Existing processed_news unchanged — role clarified to "every
+      link ever observed" (union of published + skipped +
+      historically processed).
+    gaps: ""
+    required: false
+
+  migration_needs:
+    score: 90
+    status: "complete"
+    value: |
+      No row-level migration needed; all 4 tables created via
+      CREATE TABLE IF NOT EXISTS on first `init_db` after deploy.
+      Existing processed_news rows preserved, meaning unchanged.
+      No historical re-processing of old links — the queue starts
+      empty on first boot, gets populated on the first cron tick.
+
+      CI gate: new test `test_migration.py` opens an empty tempfile
+      DB, calls init_db(), introspects sqlite_master and confirms
+      all 4 tables + their exact schemas. Catches accidental DDL
+      drift on every PR.
+    gaps: ""
+    required: false
+
+# ============================================================================
+# Phase 4: Completion
+# ============================================================================
+phase4_completion:
+  userspec_file: "work/manual-review-workflow/user-spec.md"
+  status: "approved"
+  approved_at: "2026-04-22 13:00:00"
+  validation_rounds: 2
+  quality_final: "approved (1 major + 4 minor addressed)"
+  adequacy_final: "approved (4 minor — tech-spec territory)"
+
+# ============================================================================
+# Decision Rules
+# ============================================================================
+decision_rules:
+
+  required_threshold: 85
+  optional_threshold: 50
+
+  # Stop criteria (BOTH must be true to exit a cycle)
+  stop_criteria:
+    - "All required items in current cycle scope score >= 85%"
+    - "Structural: every required item has non-empty value, no TBD, gaps empty or conscious limitations"
+
+  priority_order:
+    - "Required items with score < 85% (lowest score first)"
+    - "Optional items mentioned by user in context"
+    - "Other optional items if user seems knowledgeable"
+
+  question_strategy:
+    - "3-4 questions per batch about different gaps"
+    - "Run as many batches as needed — batch size is NOT cycle limit"
+    - "Propose solutions based on PK, not just ask questions"
+    - "Challenge with substance: counterexamples, code references, unexplored scenarios"
+    - "After each response: update scores, values, gaps, conversation_history, save"
+
+# ============================================================================
+# Interview Progress
+# ============================================================================
+progress:
+  current_phase: "phase7_create_userspec"
+  questions_asked: 5
+  last_question: "cycle3_cleanup — startup + preview timing + retry"
+  total_required_score: 93
+  total_optional_score: 88
+  completion_estimate: "100%"
+  user_detail_level: "detailed"
+
+# ============================================================================
+# Notes
+# ============================================================================
+notes: |
+  Pivot from llm-transcreation (now archived at
+  work/archived/llm-transcreation-deferred/):
+  - Original plan: replace transcreate_text with OpenAI API call.
+  - User paused that path — wants to use Claude Code session (Max
+    subscription) as the translation engine, no API key, no extra billing.
+  - Architecture decided 2026-04-22: split pipeline into prep (cron,
+    fetches + stages queue) and publish (manual, CLI + Claude Code).
+  - Carry-overs kept: Python-only (n8n rejected), post-format inviolable,
+    target audience unchanged.
+  - Mattel filter expansion — originally bundled in llm-transcreation.
+    In this feature it is LESS urgent: with human review every article
+    is filtered by the user anyway. Possibly relax the fetch-time filter
+    (let more Mattel entries into the queue, user skips manually) or
+    drop the planned bundle. Open question for Cycle 1.
+
+  Future feature after this one (not bundled here):
+  - llm-transcreation revived: add `hw_review auto-translate <id>` that
+    fills ru_* fields via OpenAI/Anthropic API. The manual workflow
+    remains the authoritative UX; LLM is an optional accelerator.
+
+# ============================================================================
+# USAGE INSTRUCTIONS
+# ============================================================================
+#
+# 1. INIT: Created by init-feature-folder.sh at work/{feature}/logs/userspec/interview.yml
+#    Set metadata.started, metadata.status: in_progress
+#
+# 2. INITIAL SCORING: After user's free-form description, score ALL items
+#    Detailed 80-95%, brief 50-70%, vague 20-40%, not mentioned 0%
+#
+# 3. INTERVIEW LOOP (save after EVERY response):
+#    a) Find required items with score < 85% in current cycle scope
+#    b) Ask 3-4 questions about different gaps
+#    c) Propose solutions based on PK
+#    d) User answers
+#    e) Update: conversation_history, scores, values, gaps, metadata
+#    f) Save immediately
+#    g) Check stop criteria (score >= 85% AND structural: value filled, no TBD, gaps resolved)
+#    h) Not done → repeat. Done → next cycle.
+#
+# 4. CYCLES:
+#    Cycle 1: phase1_feature_overview items
+#    Cycle 2: phase2_user_experience + phase3_integration items
+#    Cycle 3: ALL items still below threshold (cleanup pass)
+#
+# 5. RESUME: If metadata.status is "in_progress"
+#    Load, show conversation summary, resume from current state
+#
+# 6. COMPLETION: After user approves user-spec.md
+#    Set phase4_completion.status: approved
+#    Set metadata.status: completed

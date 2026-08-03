@@ -1,0 +1,42 @@
+{
+  "status": "approved",
+  "summary": {
+    "totalFindings": 0,
+    "critical": 0,
+    "major": 0,
+    "minor": 0
+  },
+  "findings": [],
+  "notes": [
+    {
+      "check": "No untrusted content leaks into the ping",
+      "result": "confirmed safe",
+      "detail": "funnel dict in news_bot.py:job() is populated exclusively via len(...) and '+= 1' counter increments (sources_fetched, sources_failed, new_count, dropped_no_article, dropped_checklist, dropped_dedup_block, dedup_degraded, staged). No article title, link, source name, or exception/error string is ever written into the funnel dict. admin_alerts._format_funnel / _format_funnel_line / _funnel_collapse_note only read these int fields via _funnel_int() (which itself coerces via int(...)) and interpolate them alongside static Russian labels. grep confirms the only writers of funnel[...] are the counter increments listed above (news_bot.py:2229-2448); the only readers/callers of alert_quiet_day/alert_plan_of_day are the two call sites inside job() (news_bot.py:2472,2474), so no other code path can inject attacker-controlled data through the 'funnel' parameter."
+    },
+    {
+      "check": "Plain-text send preserved",
+      "result": "confirmed safe",
+      "detail": "send_admin_notification (news_bot.py:462) is unchanged by this diff: parse_mode is still never set (bot.send_message call has no parse_mode kwarg, i.e. defaults to None/plain text), and _redact_text(message) still runs before every admin send. The new funnel text uses only plain characters ('•', digits, colons, parentheses, Cyrillic labels) — no markdown-significant characters ('*', '_', '[', '](', backtick) are introduced. plan_msg is passed to send_admin_notification exactly as before (news_bot.py:2478), no new formatting path added."
+    },
+    {
+      "check": "No secret leakage",
+      "result": "confirmed safe",
+      "detail": "The '[funnel]' logger.info line (news_bot.py:2441-2449) uses %-style logging with %d placeholders bound only to the int funnel values — no token, API key, DB path, or file path is interpolated. No new imports of credentials/config were added in either admin_alerts.py or the news_bot.py funnel block (verified import list unchanged aside from pre-existing 'Optional' which was already imported before this diff)."
+    },
+    {
+      "check": "No new attack surface",
+      "result": "confirmed safe",
+      "detail": "No deserialization introduced. No new network or DB calls: funnel increments are inserted into already-existing loops/except-blocks over SOURCES and new_entries (pre-existing loop bounds, unchanged by this diff). All funnel operations are O(1) dict/int operations (get, +=, len of an already-materialized list). _funnel_collapse_note's 'drops' tuple is a fixed 3-element structure, not a loop over untrusted input. No new first-party or third-party dependency imported."
+    },
+    {
+      "check": "Fail-safe scope",
+      "result": "confirmed safe",
+      "detail": "The try/except blocks added are confined to the pure-formatting helpers in admin_alerts.py (_format_funnel, _format_funnel_line, _funnel_collapse_note) and to the call sites that invoke them inside alert_quiet_day/alert_plan_of_day — all of which only ever degrade to an empty string (falling back to the legacy single-line ping) on a formatting/type error. None of these try/except blocks wrap security-relevant logic (auth, dedup gating, redaction, or the admin-notification send itself); the pre-existing broad except around the dedup gate in news_bot.py (job(), dedup_degraded path) is untouched in behavior — the diff only adds a counter increment ('funnel[\"dedup_degraded\"] += 1') immediately before the pre-existing logger.exception call, it does not add, remove, or widen any exception handling."
+    },
+    {
+      "check": "Hardcoded secrets scan",
+      "result": "confirmed safe",
+      "detail": "No API_KEY=/SECRET=/PASSWORD=/TOKEN=/base64-looking credential/connection-string/private-key patterns found in the diff (admin_alerts.py, news_bot.py, tests/test_admin_alerts.py, tests/test_integration.py). Test fixtures use only synthetic int counters and fake URLs (example.com)."
+    }
+  ]
+}

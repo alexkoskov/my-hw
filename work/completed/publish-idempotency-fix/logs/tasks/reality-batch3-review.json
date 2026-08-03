@@ -1,0 +1,82 @@
+{
+  "validator": "reality-checker",
+  "batch": [7, 8, 9],
+  "status": "changes_required",
+  "findings": [
+    {
+      "severity": "critical",
+      "category": "missing_function",
+      "task": 7,
+      "issue": "Task 7 says 'Прочитать guard-блок в news_bot.py (после Task 1) — конкретно от точки link = row[\"link\"] (line 984) до начала исходной логики _fallback_publish (~line 1003+)'. The guard block DOES NOT EXIST in the current codebase. At line 985, immediately after `link = row['link']` at line 984, the code goes directly to Step 1 translation logic (`en_title = row.get('title') or ''`). Task 1 has not been executed yet at the time this task file is written (it's planned). Task 7 depends_on [3, 4, 5] which transitively covers Task 1 completion via wave ordering (1→Wave1 → 3→Wave2 → 7→Wave3), so the guard will exist by the time Task 7 executes. However, the task description's instruction to verify 'guard-блок на lines 985-1003' presupposes those lines will be inserted by Task 1, and the security auditor must understand they are auditing future code, not present code. This is a documentation precision issue but not a blocking infeasibility — wave ordering guarantees Task 1 completes first.",
+      "fix": "Clarify in Task 7's description that the guard block at lines 985-~1003 is inserted by Task 1 and will be present by the time Task 7 executes. Add a note: 'If the guard is not present (Task 1 incomplete), halt and report dependency not met.' Consider also explicitly listing Task 1 and Task 2 in depends_on (currently only [3,4,5]) to make the dependency explicit rather than relying on transitivity."
+    },
+    {
+      "severity": "critical",
+      "category": "missing_function",
+      "task": 7,
+      "issue": "Task 7 instructs auditor to 'Прочитать изменённую строку в pending_articles_repo.py (после Task 2) — line 582 INSERT OR IGNORE INTO published_articles'. The actual line 582 currently reads `\"INSERT INTO published_articles \"` (no OR IGNORE). Task 2 has not been applied. Same wave-ordering argument applies (Task 2 is Wave 1, Task 7 is Wave 3), but same documentation precision issue: the auditor must find 'INSERT OR IGNORE' at line 582; if Task 2 was skipped or failed, they will find plain 'INSERT INTO' and may incorrectly conclude the change is not there rather than that the task dependency was not satisfied.",
+      "fix": "Add an explicit pre-check step to Task 7: 'Before starting audit, verify grep -n \"INSERT OR IGNORE INTO published_articles\" pending_articles_repo.py returns exactly one match. If not found, stop — Task 2 is incomplete.' Also add Task 2 to depends_on."
+    },
+    {
+      "severity": "major",
+      "category": "hallucination",
+      "task": 7,
+      "issue": "Task 7 (and tech-spec) reference 'Claude success at line 1052' as one of the 4 dominator paths. The actual line for `claude_result = transcreate_via_claude(row)` is line 1056, not 1052. Line 1052 is a comment: '# Try Claude. The classifier inside...'. The tech-spec propagates this as 'line 1052+' and 'line 1052/1065/1079'. Task 9 also inherits this: 'guard на line 985 идёт ДО line 1052/1065/1079'. The correct line numbers are 1056 (claude_result assignment), 1065 (ClaudeTranscreationError except), 1079 (ClaudeOutageError except). The functional claim is correct (guard at 985 dominates all three), but the line reference is off by 4.",
+      "fix": "Update tech-spec and task references: replace '1052' with '1056' for the claude_result call site. Correct form: 'line 985 guard fires BEFORE line 1056 (transcreate_via_claude call), line 1065 (ClaudeTranscreationError), line 1079 (ClaudeOutageError)'. No code change needed — this is documentation only."
+    },
+    {
+      "severity": "critical",
+      "category": "missing_function",
+      "task": 8,
+      "issue": "Task 8 instructs the auditor to read T1-T5 in tests/test_fallback_publish_paths.py. None of these tests exist yet. Current test functions in that file are: test_fallback_publish_claude_path (line 133), test_fallback_publish_per_article_failure_re_raises_immediately (line 228), test_pure_english_google_output_raises (line 287), test_fallback_publish_already_in_fallback (line 318), test_fallback_publish_outage_error_degraded_then_reraises (line 370). None of the T1-T5 test names (test_skip_if_link_already_published_claude_path, test_skip_if_link_already_published_outage_shortcut_path, test_skip_if_link_already_published_no_telegraph_url, test_admin_ping_fires_when_guard_skips, test_guard_continues_when_admin_ping_returns_false) are present. Wave ordering (Task 3 completes before Task 8) means they will exist at execution time, but if Tasks 3-5 fail or are incomplete, Task 8 will audit non-existent tests.",
+      "fix": "Add an explicit pre-check step to Task 8: 'Before audit, run: pytest tests/test_fallback_publish_paths.py --collect-only -q | grep skip_if_link_already_published — must find 3 entries; and grep admin_ping — must find 2 entries. If any missing, stop and report Task 3 dependency not met.' Consider adding Tasks 1, 2, 3, 4, 5 explicitly to depends_on."
+    },
+    {
+      "severity": "critical",
+      "category": "missing_function",
+      "task": 8,
+      "issue": "Task 8 instructs auditor to read T6 in tests/test_pending_articles_repo.py. The test test_move_to_published_idempotent_on_duplicate_link does NOT exist in the file. Existing move_to_published tests are: test_move_to_published_atomic (577), test_move_to_published_via_review_false (608), test_move_to_published_rollback_on_error (623). T6 will be added by Task 4, which Task 8 depends on (via [3,4,5]). Same wave-ordering argument applies, but same documentation precision risk.",
+      "fix": "Add pre-check to Task 8: verify grep -n 'test_move_to_published_idempotent_on_duplicate_link' tests/test_pending_articles_repo.py returns one result before starting audit."
+    },
+    {
+      "severity": "critical",
+      "category": "missing_function",
+      "task": 8,
+      "issue": "Task 8 instructs auditor to read T7 in tests/test_distributed_schedule_integration.py. The test test_slot_loop_does_not_repost_already_published does NOT exist. Existing tests in that file are: test_full_happy_path_three_articles_three_slots_three_publishes (282), test_outage_mid_day_advances_state_and_recovers_on_next_slot (396), test_container_restart_mid_window_recomputes_slots_and_continues (470), test_manual_review_preemption_skips_locally_published_row (580). T7 will be added by Task 5 (which is in depends_on). Same wave-ordering argument applies.",
+      "fix": "Add pre-check to Task 8: verify pytest tests/test_distributed_schedule_integration.py -k test_slot_loop_does_not_repost_already_published --collect-only returns 1 collected test before starting audit."
+    },
+    {
+      "severity": "major",
+      "category": "feasibility",
+      "task": 9,
+      "issue": "Task 9 instructs 'python -m py_compile news_bot.py pending_articles_repo.py' (steps 5, 41, 50, 76). The `python` executable is NOT available in this environment — only `python3` is installed at /usr/bin/python3. Running `python -m py_compile` will fail with 'python: command not found'. The command needs to be `python3 -m py_compile news_bot.py pending_articles_repo.py`. Note: python3 -m py_compile was verified to succeed on both files (exit 0).",
+      "fix": "Replace all occurrences of `python -m py_compile` with `python3 -m py_compile` in Task 9 (lines 41, 50, 76). Also verify tech-spec's Acceptance Criteria item uses `python3`. Cross-check CI environment — if CI uses `python` as a symlink, document environment-specific invocation."
+    },
+    {
+      "severity": "major",
+      "category": "feasibility",
+      "task": 9,
+      "issue": "Task 9's pre-check for 7 new tests (T1-T5 in test_fallback_publish_paths.py, T6 in test_pending_articles_repo.py, T7 in test_distributed_schedule_integration.py) requires those tests to have been written by Tasks 3, 4, 5. Task 9 depends_on [6, 7, 8], and Tasks 6/7/8 depend_on [3,4,5]. The chain is correct. However, the 'total >= 829' check will fail if Tasks 3-5 are incomplete or if any of the 7 tests were written but skipped via @pytest.mark.skip. The pytest filter commands (`-k 'skip_if_link_already_published or admin_ping or guard_continues'`) will silently return 0 tests if the test names don't match. The task does instruct checking this ('если меньше — проверить что все 3 test-файла есть') but doesn't give a specific fallback diagnosis for partial completion (e.g. 4 of 5 T1-T5 tests present).",
+      "fix": "Add explicit per-name collection check: `pytest tests/test_fallback_publish_paths.py --collect-only -q | grep -E 'test_skip_if.*_claude_path|test_skip_if.*_outage|test_skip_if.*_no_telegraph|test_admin_ping_fires|test_guard_continues'` must return 5 lines. If fewer, report which specific test is missing."
+    },
+    {
+      "severity": "minor",
+      "category": "hints",
+      "task": 7,
+      "issue": "Task 7 implementation hints say 'Если find findings — severity low/medium достаточно для pass-with-recommendations (record в decisions.md и продолжать). high/critical — fail, blocking deploy.' This prescribes the output format and verdict logic of the security audit in the implementation hints section, which is appropriate guidance. However it references 'decisions.md' for recording findings, while the Acceptance Criteria and Post-completion checklist also say 'записать в decisions.md'. No actual path is given — this may confuse the executor who needs to know the full path (/workspaces/debian-2/my-hw/work/publish-idempotency-fix/decisions.md) vs. the patterns.md or architecture-level decisions.md. Minor ambiguity only.",
+      "fix": "Specify full relative path in decisions.md references: 'work/publish-idempotency-fix/decisions.md' to avoid ambiguity with project-level decisions files."
+    },
+    {
+      "severity": "minor",
+      "category": "tdd",
+      "task": 8,
+      "issue": "Task 8 Acceptance Criteria note: 'T1 может использовать caplog (pytest-style) вместо assertLogs (unittest-style) — оба валидны'. However the tech-spec says the base class is _FallbackPublishPathsCase(unittest.TestCase) at line 90 — a unittest.TestCase subclass. In unittest.TestCase, `assertLogs` is the standard method; `caplog` is a pytest fixture not automatically available to unittest.TestCase subclasses without explicit pytest configuration. The edge-case note may mislead the auditor into accepting a caplog-based assertion that won't work correctly in a unittest.TestCase context without pytest-specific setup. This is a minor precision issue — caplog can work with unittest.TestCase if the test method accepts it as a parameter via pytest injection, but it's unusual.",
+      "fix": "Clarify: 'If the test class inherits unittest.TestCase (as _FallbackPublishPathsCase does), assertLogs is the expected mechanism. caplog is acceptable only if the test method explicitly receives it as a pytest fixture parameter — verify the method signature.' Add: 'In this codebase caplog is not used in existing _FallbackPublishPathsCase tests; assertLogs is the established pattern.'"
+    }
+  ],
+  "stats": {
+    "tasks_checked": 3,
+    "claims_verified": 31,
+    "issues_found": 10
+  }
+}

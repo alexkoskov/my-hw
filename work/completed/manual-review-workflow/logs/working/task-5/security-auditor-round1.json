@@ -1,0 +1,62 @@
+{
+  "reviewer": "security-auditor",
+  "round": 1,
+  "task": "task-5 — SOURCES registry + source_name tagging",
+  "commit": "93b800419028b6bada0aee57c67be63f372c052f",
+  "mode": "inline-fallback (Task tool unavailable)",
+  "summary": "No high/critical findings. The exact-match dict lookup in _resolve_source_name fails-closed on all tested spoofing vectors (@-userinfo, IDN, percent-encoded dot, subdomain suffix, port injection). Warning log prints only public URL strings; no secrets leak. _resolve_source_name is exception-safe.",
+  "status": "pass",
+  "owasp_categories_reviewed": [
+    "A01 Broken Access Control (N/A — no auth decisions)",
+    "A03 Injection (URL parsing — stdlib urlparse, no string-concat SQL/HTML)",
+    "A04 Insecure Design (source_name = internal vocabulary, no trust decision)",
+    "A05 Security Misconfiguration (N/A — no config change)",
+    "A07 ID & Auth Failures (N/A)",
+    "A08 Software & Data Integrity (FeedParserDict normalisation prevents non-JSON values from leaking into pending_articles JSON columns — defence-in-depth)",
+    "A09 Logging Failures (warning format reviewed — no secret leak)",
+    "A10 SSRF (feed URLs come from operator-controlled feeds.json; load_feeds already validates http/https scheme at news_bot.py:137)"
+  ],
+  "findings": [],
+  "spoofing_vectors_tested": [
+    {
+      "vector": "@-userinfo hostname swap (https://www.autoevolution.com@evil.com/)",
+      "netloc": "www.autoevolution.com@evil.com",
+      "resolution": "other",
+      "result": "fails-closed (correct)"
+    },
+    {
+      "vector": "IDN homograph (xn--autoevolutiо-7gb.com)",
+      "netloc": "xn--autoevolutiо-7gb.com",
+      "resolution": "other",
+      "result": "fails-closed (correct)"
+    },
+    {
+      "vector": "percent-encoded dot (www.autoevolution.com%2Eevil.com)",
+      "netloc": "www.autoevolution.com%2Eevil.com",
+      "resolution": "other",
+      "result": "fails-closed (correct)"
+    },
+    {
+      "vector": "subdomain suffix (www.autoevolution.com.evil.com)",
+      "netloc": "www.autoevolution.com.evil.com",
+      "resolution": "other",
+      "result": "fails-closed (correct)"
+    },
+    {
+      "vector": "port injection (www.autoevolution.com:8080)",
+      "netloc": "www.autoevolution.com:8080",
+      "resolution": "other",
+      "result": "fails-closed (correct)"
+    }
+  ],
+  "log_leak_analysis": {
+    "warning_log_contents": "Unknown netloc for RSS entry: link={link!r} feed={url!r}",
+    "secret_risk": "None. `link` and `url` are public RSS URLs from feedparser / operator-controlled feeds.json. Project-wide pattern: regular logger.warning output is NOT routed through sanitize_error_message (Decision 11 scopes sanitisation to last_error storage + admin-chat). Introducing sanitisation only here would be inconsistent; not a Task 5 concern."
+  },
+  "malformed_url_handling": {
+    "behaviour": "_resolve_source_name wraps urlparse in try/except and handles None/empty via `link or ''`. Returns 'other' on any failure. Verified by tests: test_resolve_source_name_empty_string + test_resolve_source_name_no_scheme.",
+    "result": "safe"
+  },
+  "dependencies_added": "None. Uses only stdlib urllib.parse.urlparse and existing project functions.",
+  "secrets_in_diff": "None. Test fixtures use synthetic URLs (example.com, unknown.example)."
+}

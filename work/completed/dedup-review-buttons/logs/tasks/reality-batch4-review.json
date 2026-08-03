@@ -1,0 +1,26 @@
+{
+  "validator": "reality-checker",
+  "batch": [10, 11, 12],
+  "status": "approved",
+  "findings": [
+    {
+      "severity": "minor",
+      "category": "hallucination",
+      "task": 10,
+      "issue": "Task 10 Details section states 'Набор ~500 тестов' as the expected scale of the full pytest suite. Actual collection (`pytest tests/ --collect-only -q` from /workspaces/debian-2/my-hw) reports 1284 tests collected — the stated figure undercounts by ~2.5x.",
+      "fix": "Update the figure to '~1200-1300 тестов' (or drop the specific number) so the QA agent's expectations for run time/scope aren't anchored to a stale count. Does not block the task's actual mechanics (still just 'run pytest tests/, record total/passed/failed/skipped')."
+    },
+    {
+      "severity": "minor",
+      "category": "feasibility",
+      "task": 12,
+      "issue": "Task 12's Smoke section gives the operator this one-liner for the test instance: `ssh hwbot@148.135.207.54 \"journalctl -u news_bot_test.service -S today | grep -iE '...'\"`. Per deployment.md's 2026-07-07 hardening note, the NOPASSWD sudoers entry for `systemctl status`/`journalctl` was deliberately REMOVED (GTFOBins pager-root risk) — only `systemctl restart` remains NOPASSWD — and deployment.md explicitly says 'the operator runs status/journalctl as root directly'. Reading the systemd journal for another user's service typically requires root or systemd-journal group membership; nothing in deployment.md confirms `hwbot` has that. As written the command may return permission-denied/empty for reasons unrelated to the actual 409 check.",
+      "fix": "Use `ssh root@148.135.207.54 \"journalctl -u news_bot_test.service ...\"` (root is documented as available for that host in deployment.md Access Information) instead of the `hwbot` account, or add a one-line caveat that the operator should run it as root if `hwbot` reports a permission error."
+    }
+  ],
+  "stats": {
+    "tasks_checked": 3,
+    "claims_verified": 42,
+    "issues_found": 2
+  }
+}

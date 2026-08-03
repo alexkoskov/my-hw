@@ -1,0 +1,63 @@
+{
+  "reviewer": "code-reviewer",
+  "task": 3,
+  "round": 1,
+  "commit": "8ba09b7",
+  "verdict": "approve",
+  "summary": "E014 send-site keyboard attachment is correctly flag-gated, scoped, and ordered. Flag defined once with clear inverted-default comment near DEDUP_SERIES_ENABLED. Flag-off path is byte-identical to pre-feature behavior. Token mint + put_review_token happen before send and are contained within the existing E014 try/except so a storage/build fault degrades to a logged failed-ping, never breaking E015/E016 paths or publishing. No other alert site touched. All 3 new tests pass; full suite (1310 tests, known flaky TestSlotLoopTransientRetry excluded) is green.",
+  "findings": [
+    {
+      "id": 1,
+      "dimension": "Cross-File Consistency",
+      "severity": "info",
+      "location": "news_bot.py L2494-2513",
+      "description": "Verified signatures against definitions: admin_alerts.build_dedup_review_keyboard(token) (admin_alerts.py L754), pending_articles_repo.put_review_token(token, link) (L1049), send_admin_notification(message, *, max_attempts=..., reply_markup=None) (news_bot.py L485-506). All calls match; reply_markup=None default makes the flag-off call identical to pre-feature invocation.",
+      "recommendation": "None — confirms correctness."
+    },
+    {
+      "id": 2,
+      "dimension": "Architecture / Scope Containment",
+      "severity": "info",
+      "location": "news_bot.py L2431-2560 (job() dedup gate)",
+      "description": "Confirmed the diff touches only the `if decision == 'flag': ... if alerted:` branch. The `block` (E015) branch at L2441-2464 and the outer except handler (E016, L2527-2559) are untouched and never receive reply_markup — verified no other send_admin_notification call in this region got a keyword change.",
+      "recommendation": "None."
+    },
+    {
+      "id": 3,
+      "dimension": "Error Handling",
+      "severity": "info",
+      "location": "news_bot.py L2481-2519",
+      "description": "kb=None default plus token mint/put_review_token/build_dedup_review_keyboard all execute inside the same try that wraps send_admin_notification. A failure in put_review_token or the keyboard builder is caught by `except Exception as notify_err` and logged as \"Failed to send E014 notification\", exactly matching the 'dedup never blocks publishing' contract carried by the surrounding outer try/except (L2433-2559). mark_pair_pinged + dedup_conn.commit() at L2520-2523 execute regardless, so rate-limiting bookkeeping is unaffected by a keyboard-path fault.",
+      "recommendation": "None — matches Decision 12 / task hint explicitly calling this out."
+    },
+    {
+      "id": 4,
+      "dimension": "Readability / Naming",
+      "severity": "minor",
+      "location": "news_bot.py L133-147 (REVIEW_BUTTONS_ENABLED block comment)",
+      "description": "Comment is thorough (arguably longer than needed) but correctly documents the deliberately-inverted default vs DEDUP_SERIES_ENABLED and the const/env name-drift risk, matching the task's explicit ask for a 'clear inverted-default comment'.",
+      "recommendation": "No change needed; flagged only as a style observation, not a defect."
+    },
+    {
+      "id": 5,
+      "dimension": "Testing Coverage",
+      "severity": "info",
+      "location": "tests/test_integration.py TestDedupReviewButtons",
+      "description": "3 tests cover: flag-on (keyboard shape + button order cancel-first + token persisted to bot_state before send), flag-off (no reply_markup, no bot_state row, asserts REVIEW_BUTTONS_ENABLED not in os.environ to guard the default), and mixed E014+E015 run (only E014 call carries reply_markup, confirms E015 fired in the same run so the assertion isn't vacuous). Helpers reused from TestCrossSourceDedup via plain-function assignment (not subclassing) to avoid re-running its 20 methods — noted and correct.",
+      "recommendation": "None."
+    }
+  ],
+  "tests_run": [
+    "pytest tests/test_integration.py -k DedupReviewButtons -q  => 3 passed",
+    "pytest tests/test_integration.py -k \"CrossSourceDedup or DedupReviewButtons or ResolveDedupCallback\" -q  => 31 passed",
+    "pytest tests/ -q -k \"not TestSlotLoopTransientRetry\"  => 1310 passed, 2 deselected"
+  ],
+  "acceptance_criteria_check": {
+    "single_flag_definition_clear_comment": "pass",
+    "flag_on_token_put_before_send_kb_attached": "pass",
+    "flag_off_byte_identical_no_token_no_kb": "pass",
+    "only_e014_gets_keyboard": "pass",
+    "mint_and_put_inside_if_alerted_only": "pass",
+    "full_suite_green": "pass"
+  }
+}

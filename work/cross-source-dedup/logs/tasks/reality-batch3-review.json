@@ -1,0 +1,63 @@
+{
+  "validator": "reality-checker",
+  "batch": [7, 8, 9],
+  "status": "approved",
+  "findings": [
+    {
+      "severity": "minor",
+      "category": "feasibility",
+      "task": 7,
+      "issue": "The security caveat wording is slightly misleading: it says backfill_fingerprints.py must 'import news_bot BEFORE logging.basicConfig()'. The actual mechanism is that importing news_bot runs ALL of news_bot's module-level code — including news_bot's own logging.basicConfig() call (line 211) AND _TokenRedactingFilter attachment (lines 339-344). So the instruction is accurate in effect (don't call your own basicConfig before importing news_bot), but the rationale could mislead an implementer into thinking _TokenRedactingFilter is defined separately from news_bot's basicConfig. In practice the constraint is: backfill_fingerprints.py must NOT call logging.basicConfig() before 'import news_bot', because that would create handlers without the filter. The constraint as stated is correct but the implementation check should verify order of lines in backfill_fingerprints.py rather than any property of news_bot itself.",
+      "fix": "No code change needed. During audit, verify that backfill_fingerprints.py has 'import news_bot' as the first substantial statement before any logging.basicConfig() call of its own. The existing wording is operationally correct."
+    },
+    {
+      "severity": "minor",
+      "category": "feasibility",
+      "task": 8,
+      "issue": "Task 8 asks the auditor to verify '_PENDING_JSON_COLS is the actual constant name'. This is correct: the constant exists at pending_articles_repo.py:118 as '_PENDING_JSON_COLS = (\"paragraphs\", \"images\", \"blocks\", \"ru_paragraphs\", \"ru_blocks\")'. However, at the time Task 8 runs (after Tasks 1-5 are complete), 'model_fingerprint' should already be added to the tuple by Task 2. Task 8's instruction to verify the name is valid, but it should also verify the tuple CONTAINS 'model_fingerprint' as an element — not just that the constant's name is correct. The current wording only pins the identifier name, not the presence of the new column. If a Task 2 implementer uses a different approach (e.g. a set, or a different name for the constant), the audit may miss it.",
+      "fix": "Minor wording gap — low risk since Task 2 explicitly targets this constant. During audit, check both that the constant name is '_PENDING_JSON_COLS' AND that 'model_fingerprint' appears in its value."
+    },
+    {
+      "severity": "minor",
+      "category": "feasibility",
+      "task": 9,
+      "issue": "Task 9 AC states '11 technical AC from tech-spec ## Acceptance Criteria' — count verified: tech-spec lines 371-381 contain exactly 11 bullet items. No mismatch. Separately, user-spec AC count is 12 (AC1-AC12 at lines 57-73). Both counts are accurate. No issue with the numbers themselves.",
+      "fix": "No change needed — both counts are verified correct."
+    },
+    {
+      "severity": "minor",
+      "category": "feasibility",
+      "task": 8,
+      "issue": "Task 8 lists 'test_admin_alerts — existing modified' as one of the test files it must read. The user-spec testing section (lines 151-152) lists only TWO new tests in test_admin_alerts.py: 'test_e014_cross_source_dupe' and 'test_e015_blocked_dupe'. However, tech-spec Testing Strategy (line 307) adds a THIRD test: 'test_e016_dedup_degraded'. The Task 8 description at line 61 lists all three (test_e014, test_e015, test_e016) as what it expects to find. This is correct per tech-spec. No mismatch — but the auditor should be aware that user-spec only anticipated 2 tests and tech-spec extended to 3; the task correctly follows tech-spec.",
+      "fix": "No fix needed. Task 8 correctly references tech-spec Testing Strategy (3 tests) rather than user-spec testing section (2 tests). Auditor should verify all three exist."
+    }
+  ],
+  "stats": {
+    "tasks_checked": 3,
+    "claims_verified": 21,
+    "issues_found": 4
+  },
+  "verification_notes": {
+    "task_7": {
+      "_TokenRedactingFilter_exists": "CONFIRMED — defined at news_bot.py:310, attached to root logger at line 344. Class and singleton _TOKEN_FILTER both exist.",
+      "SSRF_focus_valid": "CONFIRMED — fetch_full_article exists in news_bot.py; backfill_fingerprints.py will call it with entry_stub. Audit focus is correctly scoped.",
+      "ReDoS_focus_valid": "CONFIRMED — model_extractor.py is a NEW file (does not yet exist at audit time — Task 7 depends_on [4,5] which depends_on [1,2,3]). Correctly deferred.",
+      "SQL_injection_focus_valid": "CONFIRMED — pending_articles_repo.py exists and has 7 new helpers planned by Task 2. Focus is correctly scoped.",
+      "logging_basicConfig_location": "news_bot.py calls logging.basicConfig at line 211 and attaches _TokenRedactingFilter at lines 339-344 — both are module-level, so 'import news_bot' in backfill_fingerprints.py runs both in sequence. The security constraint (do not call your own basicConfig before importing news_bot) is logically sound."
+    },
+    "task_8": {
+      "_PENDING_JSON_COLS_name": "CONFIRMED — constant exists at pending_articles_repo.py:118 with that exact name.",
+      "test_files_status": "test_model_extractor.py, test_backfill_fingerprints.py, tests/fixtures/cross_source_dedup_pairs.py do NOT yet exist (correct — Tasks 1-5 are 'planned', not 'done'). Task 8 correctly depends_on [4,5].",
+      "test_admin_alerts_existing": "tests/test_admin_alerts.py EXISTS — confirmed. New tests (e014/e015/e016) will be added by Task 3.",
+      "test_pending_articles_repo_existing": "tests/test_pending_articles_repo.py EXISTS — confirmed.",
+      "test_migration_existing": "tests/test_migration.py EXISTS — confirmed.",
+      "test_integration_existing": "tests/test_integration.py EXISTS — confirmed."
+    },
+    "task_9": {
+      "user_spec_AC_count": "CONFIRMED 12 ACs (AC1-AC12) in user-spec.md lines 57-73.",
+      "tech_spec_AC_count": "CONFIRMED 11 technical ACs in tech-spec.md ## Acceptance Criteria section (lines 371-381). Task 9 claim of '11 tech-spec ACs' is accurate.",
+      "pytest_runner": "CONFIRMED — pytest>=8.0.0,<10.0.0 in requirements-dev.txt.",
+      "no_new_source_files_yet": "model_extractor.py and backfill_fingerprints.py do not yet exist at repo root — correct for a 'planned' pre-execution validation."
+    }
+  }
+}

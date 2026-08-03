@@ -1,0 +1,68 @@
+{
+  "validator": "reality-checker",
+  "batch": [4, 5, 6],
+  "status": "changes_required",
+  "findings": [
+    {
+      "severity": "critical",
+      "category": "missing_function",
+      "task": 4,
+      "issue": "Task 4 Details section (line 127) references `news_bot.py` line 209 as location of `_BOT_TOKEN_RE`, and the redaction filter at lines 212-235 and `_TOKEN_FILTER` at 238-245. These exist and are verified. HOWEVER, `send_admin_notification` is defined at line 116-130, which is BEFORE the `_BOT_TOKEN_RE` / `_TokenRedactingFilter` block (lines 209-245). The implementation hint says to either move `send_admin_notification` below `_redact_text`, or move the regex block above it. The task prescribes wrapping `message` through `_redact_text` inside `send_admin_notification`. If the developer places `_redact_text` after `send_admin_notification` without reordering, the forward reference will cause a `NameError` at runtime when `send_admin_notification` is called. The task acknowledges this but marks it as a hint ('rекомендуемый ход: переместить...'), not an explicit step in 'What to do'. Steps 1-6 do not include a reordering step, making it easy to miss. This produces a critical runtime defect.",
+      "fix": "Add an explicit step to 'What to do' (e.g. step 0 or step 3a-prelude): 'Move the token-redaction block (_BOT_TOKEN_RE, _ANTHROPIC_KEY_RE, _redact_text, _TokenRedactingFilter) to ABOVE send_admin_notification in news_bot.py, so _redact_text is defined before it is referenced.' Do not leave this as a hint only."
+    },
+    {
+      "severity": "major",
+      "category": "tdd",
+      "task": 4,
+      "issue": "The TDD Anchor test `test_send_admin_notification_redacts_anthropic_key_before_send` calls `send_admin_notification` and patches `news_bot.Bot.send_message`. However, the actual `send_admin_notification` in `news_bot.py` (lines 116-130) constructs a local `Bot(token=TELEGRAM_BOT_TOKEN)` instance inside the inner async function `_send`, then calls `bot.send_message(...)`. Patching `news_bot.Bot.send_message` (class method) will NOT intercept an instance's `send_message` since python-telegram-bot's `Bot.send_message` is an async method — the test needs to patch either `telegram.Bot.send_message` or `news_bot.Bot` class itself and capture the instance. The hint suggests `monkeypatch.setattr(news_bot, 'Bot', FakeBotClass)` which IS correct, but the TDD Anchor section describes patching `news_bot.Bot.send_message` as a class-level mock without clarifying this is async. If the developer patches `news_bot.Bot.send_message` as a regular Mock (not AsyncMock), `asyncio.run(_send())` will fail with 'coroutine never awaited'. Additionally, `TELEGRAM_ADMIN_ID` has a hard-coded default `'@sunny413x'` so the early-return guard (`if not TELEGRAM_BOT_TOKEN or not TELEGRAM_ADMIN_ID`) will NOT fire when only `TELEGRAM_BOT_TOKEN` is falsy — the monkeypatch hint in Details section correctly patches both token and admin_id, but the TDD Anchor does not mention this requirement, creating risk of a test that passes vacuously (early-return False before reaching send).",
+      "fix": "Update TDD Anchor test description to specify: (1) patch `news_bot.Bot` class with a FakeBot whose `send_message` is an AsyncMock; (2) also set `news_bot.TELEGRAM_BOT_TOKEN` to a non-empty fake value so the early-return guard doesn't fire before the send call. The Details section hint is correct — align TDD Anchor with it."
+    },
+    {
+      "severity": "major",
+      "category": "hints",
+      "task": 4,
+      "issue": "The Details section (lines 127-131) prescribes specific implementation steps including exact line numbers to modify, explicit attribute names (`record.msg`, `record.args`), and an explicit code algorithm for `_TokenRedactingFilter.filter` ('переписать так, чтобы вызывал `_redact_text(rendered)`; если результат отличается от `rendered` — записать в `record.msg` и сбросить `record.args`'). This is more than a hint — it is a prescribed implementation. Per the checklist, hints should point to patterns and approaches, not prescribe the solution. The level of prescriptiveness crosses the threshold into full algorithm specification.",
+      "fix": "Reduce the Details section to pattern-level guidance: reference the existing filter structure as the pattern, note that _redact_text should be the single redaction call site, and point to the existing filter tests as the model. Remove line-by-line implementation directives."
+    },
+    {
+      "severity": "major",
+      "category": "feasibility",
+      "task": 5,
+      "issue": "Task 5 depends_on: [1] (the bot_state DDL migration). However, the test fixture instruction says 'Тесты должны вызывать `pending_articles_repo.init_schema(conn)` в setUp/fixture перед использованием outage_state'. The actual `init_schema` function signature is `init_schema(conn: sqlite3.Connection) -> None` — it takes a connection object. But until Task 1 is merged, `init_schema` only creates the three existing tables (pending_articles, published_articles, failed_articles) — it does NOT yet create `bot_state`. Therefore `test_outage_state.py` tests that call `init_schema(conn)` expecting `bot_state` to exist will fail unless Task 1 is completed first. The depends_on: [1] is declared correctly in the frontmatter, so the dependency is tracked — but the test instructions do not warn the developer that `init_schema` will not create `bot_state` until Task 1 lands. If a developer writes tests against a local branch that doesn't have Task 1 merged, all 6 outage_state tests will fail with 'no such table: bot_state'.",
+      "fix": "Add a note in the Details or Edge cases section: 'init_schema MUST be called on the Task 1 branch (or with a patched version that adds the bot_state DDL) — on the current main/dev branch it does not yet create bot_state. If testing in isolation before Task 1 merges, call conn.execute(\"CREATE TABLE IF NOT EXISTS bot_state (key TEXT PRIMARY KEY, value TEXT)\") directly in the test fixture as a temporary workaround.' This clarifies the sequencing dependency."
+    },
+    {
+      "severity": "minor",
+      "category": "feasibility",
+      "task": 5,
+      "issue": "Task 5's TDD Anchor for `test_record_outage_event_advance_to_ping_2` states: `fallback_now=True`. However the transition table in the same task (and code-research §14.4) says `fallback_now=False` only for `no_outage → ping_1_sent`; for all subsequent outage events `fallback_now=True`. The TDD Anchor says `test_record_outage_event_advance_to_ping_2` (the second transition, `ping_1_sent → ping_2_sent`) should return `fallback_now=True`. This appears correct per the spec — but it conflicts with one possible interpretation where `fallback_now=True` only after the global Google switch (ping_3). Cross-checking the tech-spec 'How it works' section ('On OutageError: this article was already routed through Google as a side effect') and the transition table ('fallback_now: False only on the very first transition no_outage→ping_1_sent; True in all remaining outage events'), the TDD Anchor is correct. However the description in `test_record_outage_event_advance_to_ping_2` is the ONLY place this semantics is tested — the spec should clarify that 'fallback_now=True' on ping_2_sent means 'this article goes to Google' (not 'global fallback is active'). A developer might confuse `fallback_now` (per-article routing decision) with `is_fallback_active()` (global state).",
+      "fix": "Add a brief clarification to the TDD Anchor test descriptions or the 'fallback_now semantics' subsection (already present in the Details section): 'fallback_now=True means the caller routes THIS article to Google; it does NOT mean global fallback is active. Global fallback (is_fallback_active()) becomes True only at the ping_2_sent→google_fallback_active transition.'"
+    },
+    {
+      "severity": "minor",
+      "category": "hints",
+      "task": 5,
+      "issue": "The implementation hint suggests `_compute_next_state(current_state_dict, now) -> (next_state_dict, pings, fallback_now)` as a separate pure function. This is good design. However the hint then also suggests 'Текст admin-пингов хранить как module-level константы (`_PING_1_TEXT`, `_PING_2_TEXT`, `_PING_3_TEXT`, `_RECOVERY_TEXT`)'. The actual ping text content is not specified in the task, the tech-spec, or code-research — the developer must invent it. This is fine, but since the text will appear in admin Telegram messages, it should match the language (Russian) and tone implied by the spec's example ('✓ Claude API recovered, switching back from Google Translate fallback.' appears in English in the TDD Anchor). The inconsistency between Russian interface (admin pings throughout the spec are implied in Russian) and the English recovery ping text in the TDD Anchor is a minor inconsistency.",
+      "fix": "Decide and specify in the task whether admin ping text should be in Russian or English. The code-research uses Russian ('Переключился на Google'), while the TDD Anchor uses English ('Claude API recovered...'). Pick one and apply consistently to all _PING_*_TEXT constants."
+    },
+    {
+      "severity": "minor",
+      "category": "reality",
+      "task": 6,
+      "issue": "Task 6 Details section states: 'Существующие 8 строк `requirements.txt` не изменены (пины зафиксированы).' Verified: current `requirements.txt` has exactly 8 entries. `python-dotenv` has no version pin. The task correctly notes 'python-dotenv в текущем requirements.txt не имеет пина — не трогать'. The acceptance criterion 'Existing 8 rows not changed' is accurate. No issue with reality — this is a minor observation that the verification command `python -c \"import anthropic; assert anthropic.__version__.startswith('0.45')\"` assumes `anthropic==0.45.x` will be installed. With `anthropic>=0.45.0,<0.46.0`, if anthropic 0.45.x is the current latest, this is fine, but if the resolver installs 0.45.0 the startswith check passes. This is cosmetic — the assertion is adequate for intent.",
+      "fix": "No action required. The verification command is acceptable for CI-level smoke."
+    },
+    {
+      "severity": "major",
+      "category": "cross-task-integration",
+      "task": 6,
+      "issue": "Task 6 has `depends_on: []` (Wave 2, no declared dependencies). However, the tech-spec notes that `schedule==1.2.1`'s `Job.at(tz=...)` internally imports pytz at call time via `import pytz` inside the function body. This means: if pytz is NOT installed and a developer runs any test that invokes `schedule.every().day.at('12:00', tz='Europe/Moscow')` or passes a pytz object, the `import pytz` inside `schedule.Job.at` will raise `ModuleNotFoundError`. Task 8 (cron change to `schedule.every().day.at('12:00', tz=...)`) depends on pytz being installed, and Task 8 depends_on Task 6 indirectly (through the wave structure). This is correctly sequenced in the wave model (Task 6 is Wave 2, Task 8 is Wave 4). However, Task 4 (Wave 1) has `depends_on: []` and does NOT depend on Task 6 — this is correct since Task 4 only attaches to logger names (not importing anthropic), so no pytz or anthropic import is needed in Task 4. Cross-task sequencing is correct. This is informational, not a defect.",
+      "fix": "No change needed — wave sequencing already ensures pytz is in requirements.txt before Task 8 runs."
+    }
+  ],
+  "stats": {
+    "tasks_checked": 3,
+    "claims_verified": 38,
+    "issues_found": 8
+  }
+}

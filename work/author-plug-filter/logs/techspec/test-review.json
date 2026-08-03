@@ -1,0 +1,94 @@
+{
+  "verdict": "needs_changes",
+  "status": "needs_improvement",
+  "summary": "Testing Strategy is well-structured for size S and correctly chooses constant-import over fixture-extension for the literal-80 fix. Pyramid balance (22 unit + 1 integration smoke + 0 E2E) is appropriate. Negatives are meaningful, not trivial. However: (1) the caplog assertion is mis-placed — Task 3 says the helper logs nothing yet the unit-test list asks caplog of news_bot logger; (2) two of the seven negative-fixtures from code-research §10 (bare-brand 'Instagram' on a line, and the soft-edge 'подписывайтесь на новости через RSS' bare-cue-without-platform) are not picked up; (3) AC4 (bullet-point plug with neighbours preserved) and AC5 (10-platform list) are not explicitly mapped to fixtures — '10 cases' could miss platforms; (4) block-traversal coverage is partial — only paragraph 'text' and image 'caption' are listed, but lead/heading text and video/unknown passthrough are documented in code-research §13 and not in the test plan; (5) empty-block disposal (Decision 10) has no test; (6) the integration smoke is purely a mock-wiring assertion (litmus-test failure on its own) and needs at least one behavioural anchor.",
+  "findings": [
+    {
+      "scope": "Unit tests / test_author_plug_filter.py",
+      "severity": "high",
+      "category": "anti_pattern",
+      "location": "Section: Testing Strategy → Unit tests, sub-bullet 'INFO logging: capture caplog for news_bot logger'",
+      "issue": "The unit-test list for tests/test_author_plug_filter.py asserts caplog on the news_bot logger, but Task 3 explicitly states the new module is 'pure stdlib; no API/IO; no log calls inside (caller logs)'. With no log emission from the helper, caplog will capture nothing at the unit level. The test as described will be either always-passing (broken assertion) or always-failing (correct assertion with nothing to capture).",
+      "suggestion": "Move the caplog INFO-log assertion (AC9) out of the unit-test list for test_author_plug_filter.py and into the integration smoke in test_fallback_publish_paths.py, where _fallback_publish is the actual log emitter. Concretely: in the smoke, run _fallback_publish with a row whose ru_paragraphs contains a plug, capture caplog at logging.INFO for the 'news_bot' logger (caplog.set_level(logging.INFO, logger='news_bot')), and assert at least one record matches r'\\[author_plug\\] stripped from .* :' with the stripped fragment in the message. At the unit level, drop the caplog claim entirely — instead assert the helper's removed_fragments tuple is non-empty and contains the expected substring."
+    },
+    {
+      "scope": "Unit tests / test_author_plug_filter.py — negative coverage",
+      "severity": "high",
+      "category": "missing_coverage",
+      "location": "Section: Testing Strategy → Unit tests → Negatives bullet",
+      "issue": "Code-research §10 enumerates a 7-item negative-fixture battery as MANDATORY. Tech-spec picks up only AC13/AC14/AC15a/AC15b/AC16 (5 of 7). Two are missing: (a) bare-brand 'Instagram' on its own line (defensive — not orphan, no '@'), (b) 'Подписывайтесь на новости индустрии через RSS-агрегаторы — это удобно' (bare-cue-without-platform — explicitly flagged in §10 as a 'known soft-edge' that the regex may over-strip if the cue verb alone qualifies).",
+      "suggestion": "Add to NEGATIVES list in test_author_plug_filter.py: assert strip_author_plugs('Instagram') == ('Instagram', []) — bare brand survives. assert strip_author_plugs('Подписывайтесь на новости индустрии через RSS-агрегаторы — это удобно.') leaves the sentence unchanged (no @-handle, no platform name, generic cue). The second one specifically guards the documented soft-edge in code-research §10's Recommendation: cue verb alone must NOT match — additional anchor required (на/за меня/нас OR a platform name). If this fixture would currently fail, the regex shape itself needs tightening per code-research §10 paragraph 'Recommendation'."
+    },
+    {
+      "scope": "Unit tests / test_boilerplate_filter.py — AC4/AC5 mapping",
+      "severity": "medium",
+      "category": "missing_coverage",
+      "location": "Section: Testing Strategy → Unit tests → '10 cases per pattern A1–A5' bullet",
+      "issue": "AC4 ('plug as bullet-point with neighbouring real-content bullets preserved') and AC5 ('platform list: instagram/twitter/x/tiktok/youtube/facebook/reddit/patreon/discord/linktree — 10 platforms') are not explicitly mapped to fixtures. '1 positive + 1 negative per pattern A1–A5 (10 cases)' is too generic — it will cover 5 platforms at most (one per pattern), leaving 5 platforms untested.",
+      "suggestion": "Two concrete additions: (1) Parametrize the A1 positive over the full 10-platform list: @pytest.mark.parametrize('platform', ['instagram','twitter','x','tiktok','youtube','facebook','reddit','patreon','discord','linktree']) → assert is_boilerplate(f'Follow me on {platform}') is True. Same for A2's parenthesised shape. (2) Add a TestFilterBoilerplate-class case for AC4: paragraphs = ['Real content paragraph A.', 'Follow me on Instagram for the next reveal', 'Real content paragraph B.'] → assert filter_boilerplate(paragraphs) == ['Real content paragraph A.', 'Real content paragraph B.']. This proves bullet/paragraph-context preservation, not just predicate behaviour."
+    },
+    {
+      "scope": "Unit tests / test_author_plug_filter.py — block-traversal coverage",
+      "severity": "medium",
+      "category": "missing_coverage",
+      "location": "Section: Testing Strategy → Unit tests → 'Cross-cutting positives' bullet",
+      "issue": "Code-research §13 is explicit about block-traversal: 'lead', 'paragraph', 'heading' all carry text needing strip; 'image' caption only; 'video' and unknown types must pass through unchanged. Tech-spec lists only 'plug in text of paragraph block, plug in caption of image block' — leaving lead/heading text and video/unknown-type passthrough untested. Decision 5 ('Variant B applied to all RU fields') is therefore not behaviourally verified.",
+      "suggestion": "Add five fixture-cases to test_author_plug_filter.py: (1) lead-block with plug in text → text cleaned. (2) heading-block with plug in text → text cleaned. (3) video-block with caption containing plug-shape → block returned UNCHANGED (caption never reaches Telegraph per §13 table; but more importantly tests the contract). (4) unknown-type block with plug-shape in arbitrary fields → block returned UNCHANGED. (5) image-block where caption becomes whitespace after strip → block KEPT (Decision 10: 'image/video blocks where caption becomes empty — keep the block')."
+    },
+    {
+      "scope": "Unit tests / test_author_plug_filter.py — empty-block disposal (Decision 10)",
+      "severity": "medium",
+      "category": "missing_coverage",
+      "location": "Section: Testing Strategy → Unit tests → 'Empty-paragraph handling' bullet",
+      "issue": "Tech-spec covers 'paragraph with only a plug becomes empty → dropped' (flat ru_paragraphs case), but Decision 10's second clause — 'After variant B strips a block of type paragraph/lead/heading, if the result is empty text — drop the entire block from ru_blocks' — has no test. This is the higher-impact case (block-mode publishing for autoevolution articles). Without a test, an implementation that keeps zero-length blocks (rendering visible blank <p> in Telegraph) would not be caught.",
+      "suggestion": "Add to test_author_plug_filter.py: blocks = [{'type':'paragraph','text':'(подписывайтесь на меня в Instagram @x)'}, {'type':'paragraph','text':'Реальный контент.'}] → cleaned_blocks, removed = strip_in_blocks(blocks); assert len(cleaned_blocks) == 1; assert cleaned_blocks[0]['text'] == 'Реальный контент.'. Mirror for lead and heading types."
+    },
+    {
+      "scope": "Integration tests / test_fallback_publish_paths.py — smoke shape",
+      "severity": "medium",
+      "category": "mock_only",
+      "location": "Section: Testing Strategy → Integration tests bullet",
+      "issue": "Smoke as described — 'Patch news_bot.author_plug_filter.strip_* with mocks; assert strip_author_plugs called for ru_title/ru_subtitle and strip_in_paragraphs/strip_in_blocks each called once' — is a pure mock-wiring assertion. Litmus test: if the variant-B insertion block in news_bot.py:1006 were replaced with `pass`, the test would FAIL only if mocks are present, but the wiring claim alone says nothing about behaviour — strip_* could be a no-op and the test still passes. The user-spec quote 'variant B вызывается на canonical-пути и не вызывается дважды' is satisfied; the AC11 'обе ветки сходятся в одних и тех же RU-локалах' is satisfied via 'Same assertion on Google-fallback path'. Acceptable for wiring-only goal but the current text leaves it as the ONLY end-to-end check.",
+      "suggestion": "Keep the mock-wiring smoke as-is for AC11 (it's the right tool for that AC). Add ONE additional smoke that does NOT mock the strip functions: feed _fallback_publish a row whose Claude-mock returns ru_paragraphs containing the leak fixture '(подписывайтесь на меня в Instagram @diecast215 )', then assert that the value passed to telegraph_publisher.publish_article (or pending_repo.update_staged — whichever is mockable lower-noise) has ru_paragraphs cleaned. This anchors the behavioural promise that 'clean text reaches Telegraph + DB' (the actual user-visible outcome) with one extra assertion."
+    },
+    {
+      "scope": "Acceptance Criteria — test count estimate",
+      "severity": "low",
+      "category": "anti_pattern",
+      "location": "tech-spec.md:264 'Test count grows by ~25'",
+      "issue": "Enumerating the test list in the strategy section yields ~38 cases (5 A1 platforms-positive + 5 A1 negatives + 4 A2-A5 + 4 cross-cutting positives + 7 negatives + 2 empty-handling + 1 caplog/log + 1 try/except defence + 1 wiring smoke + ... see expanded coverage above). The headline number '~25' undercounts the spec's own scope by ~50%. Mismatch between AC and strategy can mislead pre-deploy QA into accepting too few tests as 'done'.",
+      "suggestion": "Adjust the AC to '~35–40 new tests' OR explicitly cap the strategy at '~25' by trimming (e.g., parametrise 10-platform A1 positive as one parametrised test rather than ten). Recommend the former — tighter coverage with honest count."
+    },
+    {
+      "scope": "Unit tests / caplog plumbing",
+      "severity": "low",
+      "category": "anti_pattern",
+      "location": "Section: Testing Strategy → Unit tests → 'INFO logging' bullet (and the moved-to-integration version)",
+      "issue": "caplog tests against named loggers (logger='news_bot') frequently fail when the logger's effective level is WARNING or propagation is disabled. Tech-spec mentions 'capture caplog for news_bot logger' without pinning level/propagation. Risk of intermittent CI failures on pristine pytest runs.",
+      "suggestion": "Pin in the test: 'caplog.set_level(logging.INFO, logger=\"news_bot\")' at start of any test asserting INFO-level capture. Add this requirement explicitly to tech-spec under the integration-smoke description so the agent implementing Task 4 doesn't omit it."
+    },
+    {
+      "scope": "Negative tests — pattern overlap with cue-only edge case",
+      "severity": "low",
+      "category": "missing_coverage",
+      "location": "Section: Testing Strategy → Unit tests → Negatives",
+      "issue": "Code-research §10 final paragraph: 'Recommendation: require either (на|за)\\s+(меня|нас|нами|мной) OR a platform name within the sentence to qualify, so generic subscribe-to-RSS survives.' This is an architectural recommendation that needs both a test fixture AND a regex constraint — currently tech-spec captures neither. If the regex shape compiled in Task 3 strictly anchors on cue verbs alone (per Decision 4 wording 'B1 cue-verb sentence (RU)'), the bare-cue RU sentence WILL match and be over-stripped.",
+      "suggestion": "Two-part: (a) Decision 4 wording for B1 should be tightened to 'cue verb + (на/за {меня,нас,...} OR platform name) within sentence'. (b) Add to NEGATIVES: 'Подписывайтесь на новости индустрии через RSS-агрегаторы — это удобно.' assert unchanged. This is the same fixture as finding 2 above; calling it out separately because it has a regex-design implication, not just a missing test."
+    }
+  ],
+  "metrics": {
+    "filesReviewed": 3,
+    "litmusTest": {
+      "checked": 6,
+      "passed": 4,
+      "failed": 2
+    },
+    "coverageAssessment": "adequate",
+    "pyramidBalance": {
+      "unit": 22,
+      "integration": 1,
+      "e2e": 0,
+      "assessment": "healthy"
+    }
+  }
+}

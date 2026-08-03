@@ -1,0 +1,67 @@
+{
+  "status": "approved_with_suggestions",
+  "summary": "Both M1 and M2 are correctly resolved. _SERIES_ACRONYM_RE is now derived from _ACRONYM_ALIASES via _acronym_to_pattern() with no hand-typed alternation, the built pattern is a pure re.escape-d literal alternation (one branch scoped case-insensitive for zamac) with no unbounded quantifiers, confirmed ReDoS-safe by direct timing probes (worst case ~4ms on ~50-200KB adversarial input, far under the 100ms bar). Behavioral checks (SDCC/RLC/STH case sensitivity, lowercase zamac match, full 8/8 fixture) all pass, and the full suite is green (1244 passed). deployment.md's new note is accurate and correctly placed in the Staged rollout section. One pre-existing minor doc comment (line ~131) was left stale by the fix and should be tightened in a follow-up.",
+  "criticalIssues": [],
+  "suggestions": [
+    {
+      "file": "model_extractor.py",
+      "line": 131,
+      "severity": "minor",
+      "category": "readability",
+      "suggestion": "The SERIES_LEXICON header comment at line 131 still reads: \"Aliases resolve case-insensitively EXCEPT the short/ambiguous acronyms in `_ACRONYM_ALIASES`, which are matched case-sensitively to avoid prose collisions (e.g. prose \\\"sth\\\"/\\\"rlc\\\").\" This is now imprecise: `zamac` is a member of `_ACRONYM_ALIASES` but, per the new `_CASE_INSENSITIVE_ACRONYMS` carve-out, is matched case-INsensitively, not case-sensitively as this sentence implies. The more detailed comment block above `_SERIES_ACRONYM_RE` (lines ~296-312) does correctly document the split, so this is purely a stale summary one screen away, not a functional issue.",
+      "benefit": "Keeps the two self-documenting comment blocks in the same file from contradicting each other, avoiding confusion for the next person who edits the acronym set and only reads the nearer (older) comment.",
+      "optional": true
+    }
+  ],
+  "metrics": {
+    "filesReviewed": 2,
+    "criticalIssuesCount": 0,
+    "majorIssuesCount": 0,
+    "minorIssuesCount": 1,
+    "testCoverageAssessment": "adequate"
+  },
+  "verificationDetail": {
+    "M1": {
+      "status": "resolved",
+      "derivation_covers_all_aliases": {
+        "ACRONYM_ALIASES": ["rlc", "sdcc", "zamac", "sth"],
+        "ACRONYM_BRANCHES_built": ["(?i:zamac)", "SDCC", "RLC", "STH"],
+        "verdict": "all 4 aliases present in the derived branch list, no silent drop; _ACRONYM_BRANCHES is a list comprehension over the full _ACRONYM_ALIASES frozenset so a future alias addition is automatically covered"
+      },
+      "redos_safety": {
+        "compiled_pattern": "\\b(?P<series>(?i:zamac)|SDCC|RLC|STH)\\b",
+        "structure": "pure re.escape-d literal alternation, one branch scoped (?i:...), no \\s+/\\s*/.*/nested quantifiers",
+        "adversarial_timing_probe": [
+          "repeated_partial_zamac 19.5KB -> 0.27ms",
+          "repeated_zamac_prefix_ci 19.5KB -> 0.25ms",
+          "repeated_S_noise 48.8KB -> 0.61ms",
+          "repeated_SDCC_almost 43.9KB -> 0.57ms",
+          "repeated_word_boundary_noise 48.8KB -> 1.55ms",
+          "mixed_case_zamac_boundary 46.9KB (8000 matches) -> 3.91ms",
+          "long_no_match_prose 60.5KB -> 1.28ms",
+          "acronym_pattern_stress 58.6KB -> 0.68ms",
+          "combined adversarial extract_series() pipeline 71.3KB -> 3.04ms",
+          "_SERIES_ACRONYM_RE only, 213.9KB -> 2.89ms"
+        ],
+        "verdict": "linear-time, all probes well under 100ms even at 4x the requested ~50KB size -> confirmed ReDoS-safe"
+      },
+      "case_behavior": {
+        "sdcc_rlc_sth_lowercase_prose": "extract_series() returns [] for lowercase 'sdcc'/'rlc'/'sth' embedded in prose -- confirmed no match",
+        "sdcc_rlc_sth_uppercase": "extract_series() resolves uppercase SDCC/RLC/STH to their canonical multi-word series names -- confirmed match",
+        "zamac_lowercase": "extract_series('... zamac ...') -> ['zamac'] -- confirmed match (was [] before the fix, per prior audit M1)",
+        "zamac_mixed_and_uppercase": "'Zamac' and 'ZAMAC' both -> ['zamac'] -- confirmed"
+      },
+      "fixture_8_of_8": "Ran extract_fingerprint + shares_pair over all 8 DUPE_PAIRS/NON_DUPE_PAIRS from tests.fixtures.cross_source_dedup_pairs: 8/8 any_distinctive and shared-pairs match expected_* exactly (pair-1 through pair-8)",
+      "strict_brands_similarity_untouched": "git diff confirms the only model_extractor.py hunks touch the acronym-derivation block (_ACRONYM_ALIASES, new _CASE_INSENSITIVE_ACRONYMS, new _acronym_to_pattern, _ACRONYM_BRANCHES, _SERIES_ACRONYM_RE) and surrounding comments; _canonical_brand, _jaccard, similarity(), and the strict/brands extraction passes (_MODEL_AFTER_BRAND_RE, _UPPERCASE_BRANDS_RE) are outside the diff hunks, i.e. byte-identical to before"
+    },
+    "M2": {
+      "status": "resolved",
+      "location": "deployment.md, inside '### Staged rollout (strictly outside the window)', immediately after step 6 ('Enable')",
+      "accuracy": "Correctly states that a broad-tier republish (e.g. recurring Car Culture line) that the legacy >=50% backstop used to silently hard-block now soft-flags and PUBLISHES with an [E014] ping, per Decision 3 tiering (only a distinctive |D pair can hard-block). Matches the prior audit's M2 finding and the fixture's pair-1 expected_verdict='soft-flag' behavior exactly. Explicitly frames it as expected/intended, not a regression, and names the recovery path (hw_review.py)."
+    }
+  },
+  "testResults": {
+    "target_suite": "python3 -m pytest tests/test_model_extractor.py -q -> 63 passed",
+    "full_suite": "python3 -m pytest -q -> 1244 passed (prior audit reported 1241; delta is pre-existing/unrelated, no failures)"
+  }
+}

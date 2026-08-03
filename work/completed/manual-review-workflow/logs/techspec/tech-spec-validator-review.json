@@ -1,0 +1,24 @@
+{
+  "status": "approved",
+  "findings": [
+    {
+      "severity": "minor",
+      "category": "tasks",
+      "issue": "Task count is exactly 15, which is at — not over — the >15 threshold for recommending an MVP + Extension split. The user-spec Sizing note itself already flags the feature as \"formally M, but at the upper edge\" and permits splitting into two increments: (1) prep/publish + core CLI + tables + admin-ping; (2) idle-fallback + overflow + retry + failed-table. Round 3's correct-but-conservative fix of putting each implementation task in its own wave (Waves 2-7) means 7 serial implementation waves plus Audit + Final = 9 waves total. This is long but not a blocker.",
+      "fix": "Optional: consider executing Waves 1-5 (Tasks 1-8) as an MVP cut and Waves 6-7 (Tasks 9-10) as a follow-up increment per the user-spec's Sizing note. Alternatively, consider whether Tasks 9 and 10 could share a wave with a single file owner — currently each edits both `news_bot.py` and `hw_review.py`, so serialisation is correct as-is. Informational only."
+    },
+    {
+      "severity": "minor",
+      "category": "tasks",
+      "issue": "Waves 2, 3, 4, 5, 6, 7 each contain exactly one implementation task. This is a safe and mechanical fix to the round-2 conflict findings but produces a \"tall\" wave graph (7 sequential implementation waves). Each wave's sole task becomes a wave-granularity commit checkpoint, which is fine for auditability but heavier than necessary if Waves 4+5 (Task 7 → Task 8, both on hw_review.py) or Waves 6+7 (Task 9 → Task 10, both on news_bot.py + hw_review.py) could be merged into larger tasks once the foundations are in place.",
+      "fix": "Optional: during execution, decomposition can choose to collapse two consecutive single-task waves into one larger task if that better fits the execution model. Structural validator has no objection to the current layout."
+    },
+    {
+      "severity": "minor",
+      "category": "task_quality",
+      "issue": "Task 11 (Code Audit) description includes specific feature-context bullets (`shared-resource compliance with the Architecture table, architectural consistency with existing *_source.py style, error-handling uniformity...`). This is richer than the minimal audit scope. Acceptable — adds value without crossing into implementation detail.",
+      "fix": "No action needed."
+    }
+  ],
+  "summary": "Round 3 fixes are correctly applied and fully resolve the round-2 critical wave conflicts. Wave layout: Wave 1 (Tasks 1-4, parallel, four disjoint files: pending_articles_repo.py, preview_renderer.py, news_bot.py for Task 3, telegraph_publisher.py for Task 4); Waves 2-7 each contain exactly one implementation task, so no intra-wave file conflicts are possible by construction. Dependency ordering matches file dependencies: Task 3 (Wave 1) → Task 5 (Wave 2) → Task 6 (Wave 3) for news_bot.py; Task 7 (Wave 4) → Task 8 (Wave 5) for hw_review.py; Tasks 9 and 10 run serially in Waves 6 and 7. Test file split is clean: Task 9 owns tests/test_hw_review_take.py, Task 10 owns tests/test_hw_review_retry.py — no shared test files between sibling tasks. Audit Wave (Tasks 11-13) and Final Wave (Tasks 14-15) use catalog-conformant skills with empty reviewer sets. Frontmatter (created 2026-04-22, status draft, branch dev, size M), all required sections present (Solution, Architecture with two subsections, 14 Decisions each with Decision/Rationale/Alternatives/User-spec anchor, Data Models with three new tables documented, Dependencies with New/Using-existing subsections, Testing Strategy with Feature size: M, Agent Verification Plan with Verification approach + Tools required, Risks as table with realistic entries + mitigations, Acceptance Criteria non-empty, Implementation Tasks organised by waves). No time-based estimates, no line-number references in task descriptions, no acceptance criteria or TDD anchors embedded in tasks, no decision-like content scattered across task descriptions. All skills (code-writing, code-reviewing, security-auditor, test-master, pre-deploy-qa, post-deploy-qa) match the Execution Skills table; all reviewers (code-reviewer, security-auditor, test-reviewer) match the Reviewer Agents table and exist in ~/.claude/agents/. Status: approved."
+}

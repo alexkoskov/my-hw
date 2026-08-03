@@ -1,0 +1,136 @@
+{
+  "auditor": "code-audit",
+  "summary": "Final-state code audit of manual-review-workflow (Tasks 1-10). Overall quality is high: layering is clean (pending_articles_repo DAO / preview_renderer pure / hw_review CLI / news_bot prep-pipeline), Decision 9 and Decision 13 contracts are implemented consistently across all call-sites, error handling routes through sanitize_error_message on every feature-introduced error path inside the hot cron + publish loops, and process_new_articles is fully deleted (only referenced in two backward-pointing comments). Zero CRITICAL / zero HIGH / zero MEDIUM findings. 6 LOW and 5 NIT findings — all defense-in-depth hygiene, naming drift, or minor duplication; none block Pre-deploy QA.",
+  "status": "clean",
+  "findings": [
+    {
+      "severity": "low",
+      "file": "news_bot.py:10,16,27",
+      "description": "Three module-level imports are no longer referenced in the post-Task-6 code: `import requests` (line 10), `from datetime import datetime` (line 16), and `from telegraph_publisher import TelegraphError` (line 27). `requests` and `TelegraphError` were flagged by Task 6's code-reviewer as 'defer to Task 11 audit'; `datetime` appears to have been left behind after the refactor. Grep confirms zero runtime references. Harmless but adds noise to the module header and fails a strict `ruff F401` / `pylint unused-import` pass.",
+      "recommendation": "Delete the three unused imports. If any are kept as placeholders for a near-future consumer, add a `# noqa: F401 — placeholder for X` inline comment so future auditors see intent."
+    },
+    {
+      "severity": "low",
+      "file": "news_bot.py:1142,1151",
+      "description": "Two `logger.error(f'...: {exc}')` sites inside `job()` step (6) do NOT route through `sanitize_error_message`, breaking the uniformity that the rest of `job()` / `_fallback_publish` / `_overflow_fast_track` establish. Also flagged by security-audit as an info-level uniformity nit. Grep confirms lines 1054, 889 are similar. Risk is theoretical (these sites handle sqlite / admin-ping errors which don't realistically embed tokens), but uniformity guards against future regressions where a new error path reuses this pattern.",
+      "recommendation": "Wrap both `exc` / `notify_err` values in `sanitize_error_message(...)` to match the pattern used at every other error site in the same function (e.g. news_bot.py:968, 1003, 1047, 1091, 1133)."
+    },
+    {
+      "severity": "low",
+      "file": "news_bot.py:889,1054",
+      "description": "`logger.error(f'Failed to fetch feed {url}: {exc}')` (inside `_fetch_rss_entries`) and `logger.error(f'Failed to send admin notification: {notify_err}')` (inside `job()` step 2) do not pass `exc` / `notify_err` through `sanitize_error_message`. Same uniformity concern as finding #2; separated because these live in different helpers and a fix would need to touch each call-site.",
+      "recommendation": "Same remediation as finding #2 — apply `sanitize_error_message(...)` uniformly at every feature-introduced logger.error site in `news_bot.py`."
+    },
+    {
+      "severity": "low",
+      "file": "news_bot.py:506-518 AND hw_review.py:518-534",
+      "description": "Two near-identical `_cleanup_preview_html` helpers exist: one in `news_bot.py` (used by `_fallback_publish`), one in `hw_review.py` (used by `cmd_publish`). The hw_review docstring says 'Task 9's `_fallback_publish` reuses this verbatim', but `_fallback_publish` actually calls `news_bot._cleanup_preview_html`, not the CLI copy. The duplication is intentional per Task 9's CR-2 finding ('deliberate parallel helper — avoids news_bot→hw_review reverse import'), but the hw_review docstring is stale.",
+      "recommendation": "Either (a) update the hw_review docstring to say 'mirror of `news_bot._cleanup_preview_html` — deliberate parallel helper to avoid a reverse import', or (b) move the helper to a shared third module (`preview_utils.py`) and import from both. Option (a) is lower-risk and matches the decisions-log note."
+    },
+    {
+      "severity": "low",
+      "file": "hw_review.py:75 vs 74,84,180,580,607",
+      "description": "Import style for `news_bot` is mixed: line 74 does `import news_bot` (used as `news_bot.logger`, `news_bot.SOURCE_EMOJI`, `news_bot.sanitize_error_message`), but line 75 does a separate `from news_bot import send_telegraph_teaser` that is used bare at line 605. Harmless but inconsistent — a future contributor patching this file may bind `send_telegraph_teaser` via `monkeypatch.setattr('news_bot.send_telegraph_teaser', ...)` expecting tests to see the change, and be surprised that the already-bound local reference is immune.",
+      "recommendation": "Drop the `from news_bot import send_telegraph_teaser` line and call `news_bot.send_telegraph_teaser(...)` at line 605 for style uniformity and monkey-patch friendliness. Alternatively: keep the from-import but note its test-patch implication in a comment."
+    },
+    {
+      "severity": "low",
+      "file": "hw_review.py:744-747",
+      "description": "`--ru-title` / `--ru-subtitle` argparse values bypass `_validate_string_field` — the 10 KiB cap is enforced on JSON-on-stdin `ru_paragraphs` / `ru_blocks` but not on the CLI flags. Already flagged in security-audit as P3 follow-up (status: accept_or_fix, trust boundary is operator). Listed here as a code-quality concern too: the two input validators should be symmetric since both feed into the same DB column set.",
+      "recommendation": "Apply `_validate_string_field(args.ru_title, '--ru-title')` and `_validate_string_field(args.ru_subtitle, '--ru-subtitle')` at the top of `cmd_stage` before row resolution. Matches the security-audit recommendation."
+    },
+    {
+      "severity": "nit",
+      "file": "pending_articles_repo.py:31,38",
+      "description": "`import logging` + `logger = logging.getLogger(__name__)` is defined but never used inside the module — the repo is deliberately silent (all exceptions propagate to callers who own logging). Already flagged in Task 1's code-review as 'info/no-action' but surfacing here for completeness.",
+      "recommendation": "Delete both lines, OR keep them and add a comment 'reserved — future debug logging on SQL timing'. Current state is fine; purely cosmetic."
+    },
+    {
+      "severity": "nit",
+      "file": "news_bot.py:655,660",
+      "description": "Two `# Step 5` comments in `_fallback_publish` — the second should be `# Step 6`. The numbering is broken (Step 1 → Step 2 → Step 3 → Step 4 → Step 5 → Step 5 → log). Does not affect runtime; merely confuses readers of the step-by-step flow.",
+      "recommendation": "Renumber the second comment to `# Step 6: best-effort preview cleanup ...`."
+    },
+    {
+      "severity": "nit",
+      "file": "news_bot.py:747-779",
+      "description": "In `_overflow_fast_track`, `evicted_count` is incremented both for successful `_fallback_publish` calls (line 754) AND for rows that land in `failed_articles` after the 3rd strike (line 779). The admin-ping string `'auto-published {evicted_count}'` therefore counts 3-strike-failed rows as 'auto-published', which is semantically misleading — the row is in `failed`, not `published`. Already accepted by Task 10's reviewer on grounds of 'slot freed'. Flagged here as a naming/semantic cohesion nit.",
+      "recommendation": "Either rename `evicted_count` to `freed_slots` (matches the comment 'Slot is freed once the row leaves pending'), or split into `published_count` vs `moved_to_failed_count` and surface both in the admin ping. Lowest-friction: just rename the variable — the ping text can stay."
+    },
+    {
+      "severity": "nit",
+      "file": "news_bot.py:29-36 import ordering",
+      "description": "`import pending_articles_repo as pending_repo` is placed at line 36, but `DB_FILE = 'news.db'` (which the repo reads at call time via `news_bot.DB_FILE`) is assigned at line 44. The import succeeds because `_connect` reads `news_bot.DB_FILE` lazily (confirmed pending_articles_repo.py:140-143), but a future refactor that causes the repo to touch `news_bot.DB_FILE` at module-import time would blow up. The inline comment on line 33-35 acknowledges the cycle but doesn't pin the ordering.",
+      "recommendation": "Move `import pending_articles_repo as pending_repo` to AFTER the `DB_FILE = 'news.db'` assignment (below line 44). Documents the dependency via code ordering rather than comment. Functionally equivalent today; defensive against future drift."
+    },
+    {
+      "severity": "nit",
+      "file": "hw_review.py:79",
+      "description": "`from telegraph_publisher import publish_article, TelegraphError` is a from-import used only inside `cmd_publish` (single call-site each). The parallel `telegraph_publisher.preview_nodes(...)` at line 464 uses qualified access. Mixed-style inside the same file. Matches finding #5 pattern (news_bot mixed imports).",
+      "recommendation": "Pick one style per file. Preferred: drop the from-import and call `telegraph_publisher.publish_article(...)` / `except telegraph_publisher.TelegraphError` inside `cmd_publish` for consistency with line 464 and with the rest of the CLI's `repo.XXX` / `news_bot.XXX` access pattern."
+    }
+  ],
+  "dimensions_reviewed": [
+    "architecture",
+    "naming",
+    "error_handling",
+    "imports",
+    "separation_of_concerns",
+    "cohesion",
+    "dead_code",
+    "consistency",
+    "docs",
+    "robustness",
+    "simplicity"
+  ],
+  "contracts_verified": {
+    "decision_9_url_reuse": "consistent at 3 call-sites (hw_review.cmd_publish:567-595 reuses stored URL before createPage; news_bot._fallback_publish:603-628 reuses stored URL; _overflow_fast_track:753 delegates to _fallback_publish, inheriting the contract). All three call-sites persist telegraph_url via mark_telegraph_published BEFORE the Telegram teaser step, so a teaser failure leaves the row retry-ready with zero duplicate createPage calls. CR-1 fix from Task 9 (reorder update_staged AFTER mark_telegraph_published) verified at news_bot.py:628 then :637.",
+    "decision_13_attempt_counter": "consistent at 2 call-sites (news_bot.job() step 1b:1010-1034 and news_bot._overflow_fast_track:752-784). Both paths call the same pending_repo.increment_attempt(link, safe) on every _fallback_publish exception, and both call pending_repo.move_to_failed(link, safe) at new_count >= 3. Shared counter via pending_articles.attempt_count column — one SQL UPDATE with `attempt_count = attempt_count + 1`, never two separate per-path counters. hw_review publish intentionally does NOT participate (manual publishes don't strike the row — matches user-spec L70)."
+  },
+  "dimension_summary": {
+    "architecture": "Layered correctly: pending_articles_repo (DAO, zero business logic) / preview_renderer (pure function, zero I/O) / hw_review (CLI dispatcher, no repo SQL) / news_bot (prep-pipeline + shared helpers). No god-objects. No circular-dependency runtime risk (news_bot ↔ pending_articles_repo cycle resolves via late binding in _connect, verified).",
+    "naming": "Vocabulary consistent: source_name is always the internal key ('autoevolution'/'mattel'/'lamley'), _source_hashtag stays TLD-stripped (Decision 14 respected). pending_repo alias in news_bot matches repo alias in hw_review. SOURCE_EMOJI / SOURCE_LABEL / _ADMIN_PING_ORDER all agree on the three-source vocabulary. Minor naming cohesion nit on evicted_count (finding #9).",
+    "error_handling": "Uniform across feature-introduced code: every exception path in _fallback_publish, _overflow_fast_track, and hw_review.cmd_publish/cmd_stage/cmd_retry passes through news_bot.sanitize_error_message before reaching storage or admin-chat. 4 non-uniform sites (findings #2, #3) exist in news_bot.py step (6) and _fetch_rss_entries — low-risk but inconsistent.",
+    "imports": "Unused imports detected: 3 in news_bot.py (requests, datetime, TelegraphError) and 1 in pending_articles_repo.py (logging.getLogger). Zero circular-dependency issues at runtime. Mixed import style in hw_review.py (findings #5, #11) — cosmetic.",
+    "separation_of_concerns": "Respected. news_bot.py is large (1177 LOC) but that reflects its multi-role nature (pre-existing RSS/translation/admin helpers + new prep pipeline + _fallback_publish + _overflow_fast_track). No DAO code leaking from news_bot — every DB mutation goes through pending_articles_repo. No CLI code in news_bot.",
+    "cohesion": "Decision 9 and Decision 13 contracts are pinned at every touchpoint. The _fallback_publish helper is the single source of truth for the 4-step EN→RU→Telegraph→Telegram pipeline used by both idle-fallback and overflow — zero drift risk. Telegraph node-tree generation centralised in telegraph_publisher.preview_nodes which both publish_article and preview_renderer consume.",
+    "dead_code": "process_new_articles fully removed (grep confirms only backward-pointing comments at news_bot.py:567 and :1099). No other dead code branches detected. Placeholders from Task 6 (TODO-tagged idle-fallback / overflow) have all been filled by Tasks 9 & 10.",
+    "consistency": "Mostly consistent. Minor drift: mixed import styles (findings #5, #11), duplicated _cleanup_preview_html helpers (finding #4), broken step numbering in _fallback_publish (finding #8).",
+    "docs": "Docstrings are thorough — every new function has a purpose + contract docstring with Decision-N anchors. The hw_review module docstring accurately describes all 8 subcommands. One stale docstring (finding #4) saying the helper is 'reused verbatim' when actually a parallel copy exists.",
+    "robustness": "Per-row try/except in cron loops prevents single-row failures from aborting the whole tick (news_bot.py:1006, 749). Transactional moves use explicit try/commit/rollback/close (pending_articles_repo.py:481-525, 533-566, 574-599, 612-657). Path-guard on webbrowser.open (hw_review.py:491), size-cap + depth-cap on stage JSON (hw_review.py:336-343, 257-264), attribute-name allowlist on preview HTML (preview_renderer.py:73, 118).",
+    "simplicity": "Code is readable; functions stay under 50 LOC except the clearly-structured _overflow_fast_track (~137 lines, with 6 labelled sections) and job() (~200 lines, with 6 labelled steps). Both are justified by their role as top-level orchestrators."
+  },
+  "contract_verification_details": {
+    "decision_9_call_sites": [
+      {"site": "hw_review.cmd_publish", "file": "hw_review.py:564-595", "behaviour": "if row.get('telegraph_url') is set, skip publish_article and log 'reusing stored telegraph_url'; else call publish_article → compute telegraph_path → mark_telegraph_published BEFORE Telegram. PASS."},
+      {"site": "news_bot._fallback_publish", "file": "news_bot.py:603-628", "behaviour": "if row.get('telegraph_url') set, log '[fallback] reusing stored telegraph_url' and skip; else publish_article → compute path → mark_telegraph_published BEFORE update_staged + send_telegraph_teaser. CR-1 fix from Task 9 (reorder update_staged after mark_telegraph_published) preserves ru_paragraphs IS NULL on Telegraph failure → next list_notified_overdue tick re-matches the row. PASS."},
+      {"site": "news_bot._overflow_fast_track", "file": "news_bot.py:749-753", "behaviour": "calls _fallback_publish(row, via_review=False) per candidate — inherits the Decision 9 contract transitively. PASS."}
+    ],
+    "decision_13_call_sites": [
+      {"site": "news_bot.job() step 1b", "file": "news_bot.py:1006-1034", "behaviour": "per-row try/except around _fallback_publish; on raise: sanitize_error_message → increment_attempt(link, safe). new_count >= 3 → move_to_failed(_link, safe). PASS."},
+      {"site": "news_bot._overflow_fast_track", "file": "news_bot.py:749-784", "behaviour": "per-row try/except around _fallback_publish; on raise: sanitize_error_message → increment_attempt(link, safe). new_count >= 3 → move_to_failed(link, safe). Same SQL column — shared counter verified. PASS."}
+    ]
+  },
+  "files_reviewed": [
+    "/workspaces/debian-2/my-hw/pending_articles_repo.py",
+    "/workspaces/debian-2/my-hw/preview_renderer.py",
+    "/workspaces/debian-2/my-hw/news_bot.py",
+    "/workspaces/debian-2/my-hw/telegraph_publisher.py",
+    "/workspaces/debian-2/my-hw/hw_review.py",
+    "/workspaces/debian-2/my-hw/autoevolution_source.py (source_name stamp path only — confirmed untouched, source_name added in news_bot._fetch_rss_entries wrapper)",
+    "/workspaces/debian-2/my-hw/mattel_news_source.py (source_name stamp path only — source_name='mattel' added in news_bot._fetch_mattel_entries wrapper)",
+    "/workspaces/debian-2/my-hw/lamley_source.py (source_name stamp path only)",
+    "/workspaces/debian-2/my-hw/work/manual-review-workflow/decisions.md (12 prior entries)",
+    "/workspaces/debian-2/my-hw/work/manual-review-workflow/tech-spec.md (14 decisions)",
+    "/workspaces/debian-2/my-hw/work/manual-review-workflow/logs/working/audit/security-audit.json",
+    "/workspaces/debian-2/my-hw/work/manual-review-workflow/logs/working/audit/test-audit.json"
+  ],
+  "findings_by_severity": {
+    "critical": 0,
+    "high": 0,
+    "medium": 0,
+    "low": 6,
+    "nit": 5
+  },
+  "recommendation": "Safe to proceed to Pre-deploy QA (Task 14). All 11 findings are defense-in-depth hygiene, naming drift, or import cleanup — none affect correctness, security, or behaviour. Finding #1 (unused imports) and #7 (unused logger) are the cleanest quick wins and could be bundled into a single 'P3 hygiene cleanup' follow-up PR along with the security-audit's LOW findings. Findings #2/#3 (non-uniform sanitize_error_message usage) are the most worth addressing for regression defence; findings #4/#5/#8/#11 are pure cosmetics."
+}

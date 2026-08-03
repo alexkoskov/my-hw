@@ -1,0 +1,174 @@
+{
+  "status": "pass",
+  "sources": {
+    "user_spec": true,
+    "tech_spec": true,
+    "tasks": false
+  },
+  "requirements_total": 17,
+  "requirements_covered": 15,
+  "requirements_partial": 2,
+  "requirements_missing": 0,
+  "findings": [
+    {
+      "type": "partial",
+      "source": "tech-spec",
+      "requirement": "US-9 / AC9: runs with empty text must be silently skipped",
+      "detail": "AC9 explicitly lists 'runs с пустым текстом' as an edge case that must not crash. The test test_runs_empty_text_skipped confirms the intended behaviour, but the Solution/Architecture sections never state the guard condition (e.g. 'skip run if run.text is empty or None'). str.find('') returns 0 for any string, so without an explicit guard the empty-run branch would silently wrap the start of the text rather than skip. The algorithm description should call this out. Non-core aspect (guard clause), hence partial/minor.",
+      "severity": "minor"
+    },
+    {
+      "type": "partial",
+      "source": "tech-spec",
+      "requirement": "US-11 / AC11: integration test location",
+      "detail": "The Solution section lists integration test location as TBD between tests/test_distributed_schedule_integration.py and a new tests/test_orangetrack_rendering_integration.py. The Testing Strategy section then resolves this to tests/test_orangetrack_source.py, and Task 7 confirms that choice. The three-way inconsistency (Solution vs Testing Strategy vs Task 7) leaves the canonical location ambiguous until the task is executed. The resolution is present in Testing Strategy and Task 7, so coverage is not missing — but a reader consulting only the Solution section gets an outdated TBD. Non-core aspect of the requirement (the test itself is fully specified).",
+      "severity": "minor"
+    },
+    {
+      "type": "structural_gap",
+      "source": "tech-spec",
+      "requirement": "Decision 8 [TECHNICAL] label is inaccurate",
+      "detail": "Decision 8 ('Both ul and ol children get bullet prefix, no numbering for ol') is labelled [TECHNICAL] and listed under User-Spec Deviations as having no entry needed. However AC1 in the user-spec explicitly states: 'каждый li-пункт из исходной ul ИЛИ ol' — both list types are in scope, and the decision to treat them identically (bullet prefix rather than numbered prefix) is directly traceable to AC1. The [TECHNICAL] label implies the decision is not derived from the user-spec, which is incorrect. This is a documentation inaccuracy, not a behaviour gap: the decision correctly implements AC1. However, a future reviewer relying on the traceability table in User-Spec Deviations would not find the link. Severity minor because correct behaviour is implemented and tested.",
+      "severity": "minor"
+    }
+  ],
+  "traceability_matrix": {
+    "US-1_AC1_li_bullet_paragraph": {
+      "status": "covered",
+      "decisions": ["Decision 1", "Decision 8"],
+      "tasks": ["Task 1", "Task 4"],
+      "tests": ["test_li_parsed_as_list_item_block", "test_ol_parsed_as_list_item_block", "test_empty_li_dropped", "test_li_with_inline_anchor", "test_li_with_strong", "test_list_item_renders_with_bullet_prefix"]
+    },
+    "US-2_AC2_bullet_added_after_llm_in_publisher": {
+      "status": "covered",
+      "decisions": ["Decision 1"],
+      "tasks": ["Task 1", "Task 4"],
+      "tests": ["test_list_item_renders_with_bullet_prefix", "integration test asserts bullet in final nodes"]
+    },
+    "US-3_AC3_h234_visually_distinguished": {
+      "status": "covered",
+      "decisions": ["Decision 2", "Decision 3"],
+      "tasks": ["Task 2", "Task 4"],
+      "tests": ["test_h2_h3_h4_parsed_as_heading", "test_heading_block_renders_h3"]
+    },
+    "US-4_AC4_h5_stays_paragraph": {
+      "status": "covered",
+      "decisions": ["Decision 2"],
+      "tasks": ["Task 2"],
+      "tests": ["test_h5_remains_paragraph"]
+    },
+    "US-5_AC5_h1_h6_ignored": {
+      "status": "covered",
+      "decisions": ["Decision 3"],
+      "tasks": ["Task 2"],
+      "tests": ["test_h1_h6_ignored"],
+      "note": "Mechanism described as 'current behavior' without specifying the dispatch guard — acceptable for M-size since tested"
+    },
+    "US-6_AC6_same_site_links_clickable": {
+      "status": "covered",
+      "decisions": ["Decision 4", "Decision 5", "Decision 6", "Decision 7"],
+      "tasks": ["Task 4"],
+      "tests": ["test_render_paragraph_with_same_site_link", "test_run_text_repeated_first_only_wrapped", "test_www_prefix_normalized_for_same_site", "test_list_item_with_same_site_link_combines", "test_heading_block_with_link_combines"]
+    },
+    "US-7_AC7_external_links_plain_text": {
+      "status": "covered",
+      "decisions": ["Decision 4"],
+      "tasks": ["Task 4"],
+      "tests": ["test_render_paragraph_with_external_link_dropped"]
+    },
+    "US-8_AC8_en_text_not_in_ru_silently_dropped": {
+      "status": "covered",
+      "decisions": ["Decision 6"],
+      "tasks": ["Task 4"],
+      "tests": ["test_run_text_not_in_paragraph_text_dropped"]
+    },
+    "US-9_AC9_edge_cases_no_crash": {
+      "status": "partial",
+      "decisions": ["Decision 4", "Decision 5"],
+      "tasks": ["Task 4"],
+      "tests": ["test_malformed_href_dropped", "test_overlapping_runs_first_wins", "test_runs_empty_text_skipped", "test_no_runs_renders_plain_text"],
+      "gap": "Empty run.text guard not described in Solution algorithm text — only implied by test name"
+    },
+    "US-10_AC10_no_regressions": {
+      "status": "covered",
+      "decisions": [],
+      "tasks": ["Task 5", "Task 6", "Task 11"],
+      "tests": ["Regression coverage section lists all 829+ tests across 5 test files"]
+    },
+    "US-11_AC11_integration_test_full_pipeline": {
+      "status": "partial",
+      "decisions": [],
+      "tasks": ["Task 7"],
+      "tests": ["test_orangetrack_rendering_end_to_end"],
+      "gap": "Integration test location is inconsistent between Solution section (TBD) and Testing Strategy/Task 7 (test_orangetrack_source.py). Test content fully specified."
+    },
+    "C1_no_db_schema": {
+      "status": "covered",
+      "reference": "Data Models: 'No schema changes'"
+    },
+    "C2_no_new_dependencies": {
+      "status": "covered",
+      "reference": "Dependencies: 'New packages: None'"
+    },
+    "C3_minimal_invasive_files": {
+      "status": "covered",
+      "reference": "Architecture lists exactly 3 source files + 3 test files"
+    },
+    "C4_hw_review_not_touched": {
+      "status": "covered",
+      "reference": "hw_review.py absent from all Files to modify lists; implicitly covered by regression suite"
+    },
+    "C5_other_parsers_not_touched": {
+      "status": "covered",
+      "reference": "AC10 regression coverage; Architecture explicitly scopes to orangetrack files"
+    },
+    "C6_combined_deploy": {
+      "status": "covered",
+      "reference": "Task 12 and Acceptance Criteria both describe combined deploy with publish-idempotency-fix"
+    }
+  },
+  "reverse_traceability": {
+    "Decision_1": "AC1, AC2 — traced",
+    "Decision_2": "AC3, AC4 — traced",
+    "Decision_3": "AC3, AC5 — traced",
+    "Decision_4": "AC6, AC7, AC9 — traced",
+    "Decision_5": "AC9 — traced",
+    "Decision_6": "User-spec Risk 4 + Технические решения section — traced",
+    "Decision_7": "[TECHNICAL] — pure engineering consistency (single render path, no user-visible difference). Infrastructure concern, acceptable without Deviations entry",
+    "Decision_8": "[TECHNICAL] label inaccurate — directly traceable to AC1 which explicitly names both ul and ol. Minor documentation issue, behaviour is correct"
+  },
+  "solution_depth": {
+    "verdict": "pass",
+    "notes": "Solution section specifies concrete types (list_item dict shape), helper signatures (_render_paragraph_with_runs, _is_same_site), algorithm description (str.find, span deduplication, first-wrap-wins, text segmentation), specific line numbers in existing code, and integration test structure. Substantially exceeds user-spec paraphrasing."
+  },
+  "architecture_adequacy": {
+    "bugs_interaction_described": true,
+    "notes": "Architecture section traces all three bugs through the unified pipeline: (1) _walk li-dispatch adds list_item blocks, (2) _emit_heading level-dispatch fixes headings, (3) _render_paragraph_with_runs handles link rendering at publisher stage. Pipeline flow diagram shows how all three changes compose without interfering. Adequately describes the three-bug interaction.",
+    "verdict": "pass"
+  },
+  "testing_strategy": {
+    "m_size_norm_met": true,
+    "unit_tests": "13 tests in test_orangetrack_source.py, 13 in test_telegraph_publisher.py, 1 in test_llm_common.py — comprehensive coverage of all branches including negative cases",
+    "integration_test": "test_orangetrack_rendering_end_to_end — one test covering full pipeline (parse → simulated LLM patch → preview_nodes → node tree assertions). Meets M-size mandatory integration test requirement.",
+    "e2e": "Correctly omitted with justification (pytest-only project; integration test covers deepest feasible layer)",
+    "regression": "5 existing test files listed with explicit 829-test count baseline",
+    "verdict": "pass"
+  },
+  "overengineering": {
+    "verdict": "pass",
+    "notes": "No YAGNI violations. New types and helpers are the minimum needed. No unnecessary abstractions (no interfaces, factories, strategies). Task descriptions are brief scope statements without pseudocode or algorithms. _render_paragraph_with_runs applied to headings is acknowledged as 'theoretical; harmless' — 1-2 extra lines, not an abstraction penalty."
+  },
+  "underengineering": {
+    "verdict": "pass_with_minor_gap",
+    "notes": "Error handling covered (malformed URL returns False, overlapping spans resolved by first-wrap-wins, empty li dropped). Input validation described. Empty run.text handling implied by test but not stated in algorithm — minor gap. No concurrent access issues (single-threaded, no shared state). No fragile dependencies introduced."
+  },
+  "user_spec_deviations_integrity": {
+    "verdict": "pass",
+    "notes": "User-Spec Deviations section says 'None'. Decisions 7 and 8 are marked [TECHNICAL]. Decision 7 is a genuine infrastructure concern (no user-visible change). Decision 8 [TECHNICAL] label is inaccurate (traceable to AC1) but does not constitute undocumented scope creep — it is a simplification within the requirement, not an addition beyond it. No PENDING USER APPROVAL items. No unjustified entries (no entries at all). Spec status is 'draft', so no unapproved deviation concern."
+  },
+  "structural_integrity": {
+    "verdict": "pass_with_minor_note",
+    "notes": "All 8 decisions are in the Decisions section. Task descriptions reference decisions by number. No architectural choices buried in task descriptions. One minor issue: the Solution section contains an unresolved TBD for integration test file location that is resolved in Testing Strategy — this is an internal inconsistency, not a structural gap per the formal definition."
+  },
+  "summary": "15/17 requirements fully covered, 2 partial (both minor). 0 missing. 0 critical findings. 3 minor findings: (1) empty-string run.text guard not described in Solution algorithm text, only implied by test; (2) integration test file location inconsistency between Solution TBD and Testing Strategy/Task 7 resolution; (3) Decision 8 [TECHNICAL] label inaccurate (traceable to AC1). Solution depth is substantial, architecture adequately describes 3-bug interaction and their pipeline composition, testing strategy meets M-size norm (1 integration test + 27 unit tests + full regression suite). Tech-spec passes completeness validation."
+}

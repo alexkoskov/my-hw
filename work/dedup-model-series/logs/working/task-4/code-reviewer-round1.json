@@ -1,0 +1,50 @@
+{
+  "status": "approved_with_suggestions",
+  "summary": "The tiered pair-rule refactor of _check_cross_source_dedup implements the spec branch order exactly (toggle+pairs -> 30d scan block/flag terminal -> empty short-circuit on strict AND series -> 7d backstop), and every scrutinized correctness property (terminality, |D wins over |B across candidate orderings, single-fetch reuse, lexical timestamp compare, match-dict/alert wiring, degraded mode) checks out against the actual code and passes 13/13 targeted tests plus 1214/1216 in the broader suite (2 deselected calibration tests, as expected pre-Wave-3). No critical issues found; one major maintainability suggestion (function length) and a couple of minor notes.",
+  "criticalIssues": [],
+  "suggestions": [
+    {
+      "file": "news_bot.py",
+      "line": 987,
+      "severity": "major",
+      "category": "maintainability",
+      "suggestion": "_check_cross_source_dedup now spans 987-1121 (135 physical lines: 2-line signature + ~35-line docstring + ~98 lines of code). It correctly hosts two structurally independent rules (tiered pair rule, set-overlap backstop) joined only by the shared `candidates` lazy-fetch. Consider extracting each rule into a private helper (e.g. `_pair_rule_verdict(fingerprint, candidates)` returning ('block'|'flag'|'pass', match) and `_set_overlap_backstop_verdict(fingerprint, strict, candidates, new_source)`), with `_check_cross_source_dedup` reduced to orchestration (fetch candidates once, call rule 1, short-circuit, call rule 2). This continues the pattern already established by extracting `_fetch_dedup_candidates`/`_pair_match`, and would bring the orchestrator under the ~50-line guideline without losing the single-fetch guarantee (pass `candidates` explicitly instead of relying on a shared local).",
+      "benefit": "Two independently testable units instead of one large function; easier to reason about/modify each rule (e.g. Wave-3 calibration tuning) without touching the other. Not blocking — logic is correct, well-commented, and fully covered by tests; flagging for the maintainability record given the automatic function-length threshold in the review methodology.",
+      "optional": true
+    },
+    {
+      "file": "news_bot.py",
+      "line": 116,
+      "severity": "minor",
+      "category": "best-practices",
+      "suggestion": "The task's own 'Implementation hints' example for the toggle parse included an extra `\"\"` in the off-tuple (`not in (\"0\",\"false\",\"no\",\"off\",\"\")`), which would make an explicitly-blank env value (`DEDUP_SERIES_ENABLED=`) resolve to OFF -- contradicting AC6's 'unset/blank -> on'. The shipped code correctly omits `\"\"` from the tuple (`not in (\"0\", \"false\", \"no\", \"off\")`), verified empirically: `os.getenv('X','1')` returns `''` (not the default) when the var is present-but-empty, and `''` is not in the 4-item tuple, so it evaluates True/on -- matching AC6 exactly. This is the correct behavior, but it is a literal deviation from the task file's own hint text. Per the task's post-completion checklist ('если отклонились от спека — описать отклонение и причину'), worth a one-line note in decisions.md so a future reader doesn't 'fix' it back to the buggy 5-tuple.",
+      "benefit": "Prevents an accidental regression (re-adding the empty string to the off-tuple) by a future maintainer who copies the task file's example literally.",
+      "optional": true
+    },
+    {
+      "file": "news_bot.py",
+      "line": 947,
+      "severity": "minor",
+      "category": "maintainability",
+      "suggestion": "The 30-day and 7-day windows are hardcoded inline (`_fetch_dedup_candidates`'s `30` literals, `timedelta(days=7)`) rather than named module-level constants, unlike the adjacent `_DEDUP_BLOCK_THRESHOLD`/`_DEDUP_FLAG_THRESHOLD`. This matches the pre-existing precedent (the old code also hardcoded `7` inline before this diff), so it's not a new deviation -- flagging only as an optional follow-up to name them (e.g. `_DEDUP_PAIR_WINDOW_DAYS = 30`, `_DEDUP_BACKSTOP_WINDOW_DAYS = 7`) for self-documentation, matching the threshold constants' style.",
+      "benefit": "Slightly easier to locate/tune the window sizes without reading into the function bodies; purely cosmetic.",
+      "optional": true
+    }
+  ],
+  "metrics": {
+    "filesReviewed": 3,
+    "criticalIssuesCount": 0,
+    "majorIssuesCount": 1,
+    "minorIssuesCount": 2,
+    "testCoverageAssessment": "excellent"
+  },
+  "verificationNotes": {
+    "branchOrderAndTerminality": "Confirmed exact order: toggle+pairs gate -> 30d any-source scan (block returns immediately from inside the loop; flag returns right after the loop via `if flag_match is not None: return`) -> empty short-circuit re-gated to `not strict and not series` -> 7d backstop (unchanged same-source skip). Both block and flag are true `return` statements inside/immediately after the pair-rule block, so control can never fall through to the backstop in the same call -- no double-verdict path exists structurally.",
+    "dWinsOverB": "Verified structurally: `if any(p.endswith('|D') for p in shared): return ('block', ...)` fires per-candidate and stops the scan immediately; a broad match only sets `flag_match` if still None and the loop continues, so a later candidate's |D always overrides. `test_distinctive_wins_over_broad` seeds both candidate orders via a table-reset helper and asserts block in both orders -- test passes.",
+    "singleFetchAnd7dSubset": "`candidates` is a lazy local fetched at most once via `_fetch_dedup_candidates` (30-day pending+published) and reused by rule 2 via `if candidates is None`. The 7-day cutoff is computed once as `datetime.now(timezone.utc) - timedelta(days=7)` formatted `'%Y-%m-%d %H:%M:%S'`, compared lexically against `row.get('fetched_at') or row.get('published_at')`. VERIFIED against actual schema: both columns are `TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP` (pending_articles_repo.py lines 77/93) and every INSERT path (insert_pending, move_to_published, requeue) either omits these columns (falls to DEFAULT) or explicitly writes the literal `CURRENT_TIMESTAMP`; no other writer in the repo sets a different format. Empirically confirmed SQLite's CURRENT_TIMESTAMP renders exactly `'YYYY-MM-DD HH:MM:SS'` UTC (no microseconds, no 'T', no timezone suffix) via a live sqlite3 check, and the connections used (`pending_repo._connect()` -> `sqlite3.connect(DB_FILE)`) register no `detect_types` converter, so values arrive as plain `str`. The lexical `<`/`>=` comparison is therefore sound.",
+    "matchDictAndAlertWiring": "`_pair_match` builds link/source_name/models/pairs/overlap_pct/n_matches/n_total; the backstop's match dict omits `pairs`. job() passes `pairs=match.get('pairs')` to both `alert_cross_source_blocked` and `alert_cross_source_dupe` -- read the actual admin_alerts.py signatures: `alert_cross_source_blocked(new_link, existing_link, overlap_pct=None, *, pairs=None)` and `alert_cross_source_dupe(new_link, existing_link, new_source, existing_source, overlap_pct=None, n_matches=None, n_total=None, models=None, *, pairs=None)` -- call sites match exactly, no signature drift. `_check_cross_source_dedup` signature itself is unchanged (`article, fingerprint, conn, new_source=None`), matching job()'s call site.",
+    "toggle": "`DEDUP_SERIES_ENABLED = os.getenv(\"DEDUP_SERIES_ENABLED\", \"1\").strip().lower() not in (\"0\", \"false\", \"no\", \"off\")` -- verified blank env value resolves to enabled (see minor suggestion above); reads the bare module global at call time inside the same module, which is equivalent to `news_bot.DEDUP_SERIES_ENABLED` for monkeypatch purposes (`monkeypatch.setattr`/`patch('news_bot.DEDUP_SERIES_ENABLED', ...)` mutate the same `__dict__` the function's global lookup reads) -- `test_toggle_off_skips_pair_rule` exercises this and passes.",
+    "degradedMode": "job()'s try/except + `[E016]` block (lines ~2213-2340) is untouched by this diff; the dedup gate call sits inside it unchanged. `.get('pairs') or []` / `.get('series') or []` / `isinstance(fingerprint, dict)` guards prevent KeyError on back-compat rows; `isinstance(cand_fp, dict)` skip guards cover None/non-dict candidate fingerprints in both rules.",
+    "testsRun": "python3 -m pytest tests/test_integration.py::TestCrossSourceDedup -v -> 13 passed. python3 -m pytest tests/test_integration.py -q -> 25 passed (no regressions). python3 -m pytest -q -k 'not calibration' --ignore=tests/test_backfill_fingerprints.py -> 1214 passed, 2 deselected (backfill_fingerprints.py excluded per instructions as parallel Task 5 in progress)."
+  }
+}

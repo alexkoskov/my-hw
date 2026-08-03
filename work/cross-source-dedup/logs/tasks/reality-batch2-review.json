@@ -1,0 +1,47 @@
+{
+  "validator": "reality-checker",
+  "batch": [4, 5, 6],
+  "status": "changes_required",
+  "findings": [
+    {
+      "severity": "critical",
+      "category": "hallucination",
+      "task": 4,
+      "issue": "Implementation hints in step 3 reference `pending_repo._get_conn()` as the way to obtain a database connection: \"получить conn (использовать тот же conn, что и pending_repo.insert_pending ниже — через pending_repo._get_conn() или существующий контекст)\". This function does not exist. The actual private function is `pending_articles_repo._connect()` (confirmed at line 155). There is no shared `conn` object in `job()` — all existing repo calls open their own per-call connections internally. The agent following this hint will either call a non-existent function (NameError/AttributeError) or be confused about how to obtain a connection. The correct approach: call `pending_articles_repo._connect()` directly (or alias it), pass the returned conn to the new conn-accepting helpers, and close it in a `finally`.",
+      "fix": "Replace `pending_repo._get_conn()` in the hint with `pending_articles_repo._connect()`. Clarify that the dedup gate must open its own connection explicitly (e.g. `conn = pending_repo._connect()`) since there is no ambient conn in job(), then pass it to the conn-accepting helpers and close in finally/after the dedup block."
+    },
+    {
+      "severity": "major",
+      "category": "hints",
+      "task": 4,
+      "issue": "Step 3 flag-branch hint uses a variable `row_source` that does not exist at the point of the dedup gate: \"new_source=row_source\". The dedup gate runs BEFORE `row = {...}` assembly (line 1817), so `row` does not yet exist and `row_source` is never defined in the loop body prior to the gate. The source name value IS derivable from `entry.get('source_name') or _resolve_source_name(link)` (exactly what line 1819 assembles into `row['source_name']`), but the hint uses a fictional variable name that will produce a NameError if followed literally.",
+      "fix": "Replace `new_source=row_source` in the hint with `new_source=(entry.get('source_name') or _resolve_source_name(link))`, mirroring the expression already used at line 1819."
+    },
+    {
+      "severity": "minor",
+      "category": "feasibility",
+      "task": 4,
+      "issue": "The integration tests for TestCrossSourceDedup require that `model_extractor.py` (Task 1) and the new helpers in `pending_articles_repo.py` (Task 2) exist at test-run time. These are correctly declared in `depends_on: [1, 2, 3]`, so the dependency is sound. However, the test hint for `test_empty_fingerprint` says to patch via `patch('news_bot.model_extractor.extract_fingerprint', ...)`, which requires that `news_bot.py` imports `model_extractor` at module level (e.g. `import model_extractor`). Task 4's description does not explicitly state this module-level import must be added to `news_bot.py`. If the agent adds `import model_extractor` inside the helper function rather than at module level, the patch path would break. Minor risk but worth calling out.",
+      "fix": "Add a note in task 4 that `import model_extractor` must be a module-level import in `news_bot.py` (not a local import inside `_check_cross_source_dedup`) so that `patch('news_bot.model_extractor.extract_fingerprint', ...)` works in tests."
+    },
+    {
+      "severity": "minor",
+      "category": "feasibility",
+      "task": 5,
+      "issue": "Task 5 security caveat description is accurate in intent but slightly imprecise in mechanism. The claim is: \"if you reverse the import order, _TokenRedactingFilter won't attach\". In reality, `_TokenRedactingFilter` is attached at `news_bot.py:344` unconditionally on import — it always attaches regardless of whether `logging.basicConfig` was called before or after. The real risk is subtler: if `backfill_fingerprints.py` calls `logging.basicConfig()` BEFORE importing `news_bot`, its own `basicConfig` call creates the root-logger handlers first; then when `news_bot` is imported it calls `basicConfig` again (no-op per Python logging semantics), and the filter attaches at line 344 to root logger AND at lines 353-354 to all current root handlers — so the filter IS installed either way. The caveat is not wrong to state the import order, but the explanation in the description (\"иначе _TokenRedactingFilter не успеет прикрепиться\") slightly overstates the risk. This could confuse the implementing agent into thinking the filter truly won't attach if order is wrong, when the real concern is future-proofing for refactors of news_bot internals.",
+      "fix": "Softening the description to: \"import news_bot BEFORE any logging configuration in backfill_fingerprints.py — this is the established pattern (matches hw_review.py) and future-proofs against refactors of news_bot's logging setup\" would be more accurate. The import-first rule is still correct to enforce."
+    },
+    {
+      "severity": "minor",
+      "category": "feasibility",
+      "task": 6,
+      "issue": "Task 6 declares `depends_on: [4, 5]`. Task 4 itself declares `depends_on: [1, 2, 3]`, so Tasks 1-3 are transitively satisfied. Task 6 correctly states \"Tasks 1-3 неявно done (Task 4 от них зависит)\" in its Dependencies section. The dependency graph is valid. However, Task 6 asks the auditor to read `model_extractor.py` (new, Task 1) and `backfill_fingerprints.py` (new, Task 5) — both confirmed non-existent at batch validation time. This is expected and correctly handled: Task 6 sits in Wave 3 and should only run after Wave 1+2 complete. No action needed — this is a correct by-design constraint, not a defect.",
+      "fix": "No fix required. Calling this out explicitly to confirm the validator is aware and the dependency chain is sound."
+    }
+  ],
+  "stats": {
+    "tasks_checked": 3,
+    "claims_verified": 31,
+    "issues_found": 5
+  }
+}

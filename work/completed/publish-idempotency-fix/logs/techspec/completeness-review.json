@@ -1,0 +1,78 @@
+{
+  "status": "fail",
+  "sources": {
+    "user_spec": true,
+    "tech_spec": true,
+    "tasks": false
+  },
+  "requirements_total": 14,
+  "requirements_covered": 12,
+  "requirements_partial": 2,
+  "requirements_missing": 0,
+  "findings": [
+    {
+      "type": "partial",
+      "source": "tech-spec",
+      "requirement": "US-8 / AC8: Other DB errors during any write (cleanup, move, etc.) propagate as normal publish failures with attempt_count increment",
+      "detail": "AC8 is only implicitly covered. Decision 5 explains INSERT OR IGNORE preserves rollback+raise for genuine errors via the existing try/except in move_to_published. However, the tech-spec does not address the guard path explicitly: if skip_pending raises (e.g. sqlite3.OperationalError on disk), the exception propagates out of _fallback_publish and the slot loop catches it as a generic Exception, incrementing attempt_count — which contradicts AC6 (guard activation must not increment attempt_count). There is no Decision or Architecture note clarifying how exceptions from skip_pending should be handled or whether they should be treated differently from the guard-hit case. This gap means the guard path has different error semantics from what AC6 and AC8 jointly require: a disk error during cleanup would be treated as a strike, not as a clean guard skip.",
+      "severity": "major"
+    },
+    {
+      "type": "partial",
+      "source": "tech-spec",
+      "requirement": "US-5 / AC5: Admin-ping failure does not block cleanup; failure is logged",
+      "detail": "Decision 4 states 'No try/except wrapper needed (function never raises — verified at news_bot.py:357-392)' and the Architecture diagram shows 'if not ok: logger.warning(...)' (return-value check). However the code-research §G implementation snippet (which this tech-spec references as the canonical concrete example via 'Files to read: code-research.md §H') uses try/except around send_admin_notification instead. An implementor reading both will encounter a contradiction: Decision 4 says never-raises so try/except is dead code, but the example snippet uses try/except. The log level in the diagram uses logger.warning for the guard activation line, while Decision 1 says 'log INFO with [idempotency-guard] tag'. This inconsistency means AC10 (log with identifiable tag) and AC5 (log failure) could be implemented differently depending on which reference the implementor follows.",
+      "severity": "minor"
+    },
+    {
+      "type": "gap",
+      "source": "tech-spec",
+      "requirement": "US-8 / AC8 + US-6 / AC6: interaction when skip_pending raises during guard cleanup",
+      "detail": "AC6 requires the guard slot NOT to increment attempt_count. AC8 requires OTHER DB errors to propagate as publish failures (with attempt_count). The tech-spec does not define what constitutes 'guard path error' vs 'other DB error' when skip_pending raises during the guard's cleanup. If skip_pending raises, the exception propagates uncaught through _fallback_publish to the slot loop's except Exception branch at line 1762, which increments attempt_count — violating AC6. The tech-spec has no Decision or note resolving this collision. A correct implementation would need to either (a) wrap skip_pending in try/except inside the guard and log+swallow, or (b) accept AC6 is violated on DB failure during guard cleanup. Neither choice is documented.",
+      "severity": "critical"
+    },
+    {
+      "type": "undocumented_deviation",
+      "source": "tech-spec",
+      "requirement": "US-spec Deviations integrity: Decision 6 cites non-existent AC11",
+      "detail": "The User-Spec Deviations section states 'Decision 6 → user-spec Ограничения, AC11 (now in manual_user_actions section)'. The approved user-spec has AC1–AC10 only. AC11 does not exist. Decision 6 is correctly grounded in user-spec Ограничения ('Без миграции в коде') but the citation 'AC11' is a phantom reference. This makes the forward-traceability claim in the Deviations section technically false and will cause confusion in reviews that trace each Decision to its stated AC. The correct citation should be 'user-spec Ограничения' alone.",
+      "severity": "major"
+    },
+    {
+      "type": "structural_gap",
+      "source": "tech-spec",
+      "requirement": "Architecture section: admin-ping log level is contradicted by Decision 1",
+      "detail": "The Architecture 'How it works' ASCII diagram shows 'logger.info(\"[idempotency-guard] {link} already published — skipping re-publish\")' for the guard activation log line. Decision 1 rationale also says 'log INFO with [idempotency-guard] tag'. However the code-research §G snippet (the concrete implementation cue that implementors will use as the primary reference) uses 'logger.warning(...)' for the same line. These two authoritative documents disagree on log level. AC10 requires the log to have an 'identifiable tag' — both INFO and WARNING satisfy that, but the ambiguity means different implementors will produce different log levels. The tech-spec should contain an explicit Decision or note resolving this, rather than leaving it to be discovered by comparing a reference document against a diagram.",
+      "severity": "major"
+    },
+    {
+      "type": "partial",
+      "source": "tech-spec",
+      "requirement": "US-2 / AC2: Guard covers per-article fallback (ClaudeTranscreationError) branch",
+      "detail": "Decision 1 and code-research §A.3 both note that when ClaudeTranscreationError is raised (case 2), the function propagates the error out before reaching any Step 2/4/5 side effects — so a guard at line 985 is 'harmless but already correct' on this path. The tech-spec's Testing Strategy does NOT include a test for the ClaudeTranscreationError path with a pre-staged published row. T1 covers Claude-success, T2 covers outage/is_fallback_active, T3 covers no-telegraph_url. None of T1–T5 explicitly exercises the per-article ClaudeTranscreationError branch. While the guard at line 985 structurally dominates this path (it runs before the try block), the absence of a test for it is noted in code-research §A.3. This is a testing gap for one of the 4 paths AC2 requires.",
+      "severity": "minor"
+    },
+    {
+      "type": "scope_creep",
+      "source": "tech-spec",
+      "requirement": "Implementation Tasks: Audit Wave presence beyond user-spec scope",
+      "detail": "The tech-spec includes Task 6 (Code Audit), Task 7 (Security Audit), and Task 8 (Test Audit) as a named Audit Wave. These audit tasks are not requested by the user-spec and do not trace to any AC. However, these are pure infrastructure/engineering additions (quality gates, not new functionality). Per validation rules, 'Acceptable without user-spec tracing: infrastructure and engineering additions (error handling, logging, migrations, tests, monitoring).' Code/security/test audits fall into engineering process additions. Downgrading to documented_deviation is not applicable since this is infrastructure. Noting as scope creep for awareness but classifying as acceptable infrastructure addition.",
+      "severity": "minor"
+    },
+    {
+      "type": "underengineering",
+      "source": "tech-spec",
+      "requirement": "US-5 / AC5 + US-8 / AC8: Error handling for skip_pending within guard path",
+      "detail": "The guard block calls skip_pending(link) without any error handling. skip_pending raises on DB failure (rollback+raise). If skip_pending raises, the slot loop treats it as a publish failure and increments attempt_count, violating AC6. The tech-spec does not address this error scenario in any Decision, Risk, or Architecture note. Given the S-size of this fix, a one-line error note in Architecture or a Risk table entry would suffice to document the chosen behavior (propagate vs swallow). The absence leaves an unresolved AC6/AC8 conflict.",
+      "severity": "major"
+    }
+  ],
+  "summary": "12/14 requirements covered (2 partial, 0 missing). 1 critical gap: skip_pending error propagation creates an unresolved AC6/AC8 conflict (guard cleanup failure would increment attempt_count, violating AC6's 'no strike on guard activation' guarantee). 1 major undocumented issue: Decision 6 cites non-existent AC11. 1 major structural gap: log level for guard activation (logger.info in Architecture/Decision 1 vs logger.warning in code-research §G) is unresolved in the tech-spec. 1 major underengineering: skip_pending error path within guard not addressed. 2 minor findings: per-article ClaudeTranscreationError branch untested (AC2 partial); admin-ping AC5 handling contradicted between Decision 4 and code-research snippet. Solution depth is adequate. No YAGNI, no overengineering. User-Spec Deviations section is present and has no unapproved pending items; the phantom AC11 citation is the only integrity issue.",
+  "notes": {
+    "solution_depth": "PASS — Solution section provides specific line numbers, function names, transaction shapes, and return-value semantics. Architecture ASCII diagram is detailed and accurate. Not a paraphrase of user-spec.",
+    "overengineering": "PASS — Two surgical edits, one new guard block (~10 lines), one SQL keyword change, 7 tests. Proportional to S-size bug fix.",
+    "testing_strategy_depth": "PASS with minor gap — Unit tests (5) mandatory, 1 integration test as agreed, no E2E. AC2 per-article ClaudeTranscreationError path untested (minor). Regression tests listed.",
+    "implementation_tasks": "PASS — All 11 tasks have description, skill, reviewers (where applicable), and files. Audit Wave (Tasks 6-8) present. Final Wave (Tasks 9-11) present with pre-deploy QA, deploy, and post-deploy verification. Task 10 contains the full prod deploy URL (148.135.207.54) — acceptable in a private feature spec.",
+    "bidirectional_traceability": "PARTIAL — Forward: all AC1–AC10 map to at least one Decision. Reverse: all Decisions trace to ACs or [TECHNICAL]. Exception: Decision 6 cites AC11 (does not exist). No functionality in tech-spec is untraced to user-spec."
+  }
+}

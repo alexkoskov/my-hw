@@ -1,0 +1,40 @@
+{
+  "status": "approved",
+  "summary": "Round 2 re-validation after commit abadf4d. Verified round-1 fixes (NETLOC_TO_SOURCE map in Decision 4, rewording in Deviation #2) and the four new Decisions 11-14. All new factual claims hold against the codebase: sanitize_error_message references to env-secrets and _api_call's form-data POST of access_token are accurate; _source_hashtag at news_bot.py:291-300 produces exactly the hashtags Decision 14 claims (#lamleygroup, #mattel, #autoevolution); stdlib tempfile.NamedTemporaryFile / pathlib / uuid / webbrowser are all available; preview_html_path column addition is self-consistent with Decision 1. No mirages; no critical or major findings.",
+  "findings": [],
+  "stats": {
+    "total_claims_checked": 28,
+    "confirmed": 28,
+    "mirages_found": 0,
+    "verified_claims": [
+      "news_bot.py:29-31 defines TELEGRAM_BOT_TOKEN / TELEGRAM_CHANNEL_ID / TELEGRAM_ADMIN_ID env reads (Decision 11 sanitiser targets exist)",
+      "telegraph_publisher.py:23 ENV_TOKEN_KEY = 'TELEGRAPH_ACCESS_TOKEN' confirmed (Decision 11 fourth secret target exists)",
+      "telegraph_publisher.py:255-264 _api_call('createPage', {'access_token': token, ...}) POSTs token as form data — Decision 11 rationale accurate",
+      "telegraph_publisher.py:30-37 _api_call uses requests.post — requests-layer network errors can embed form data in exception strings (Decision 11 premise holds)",
+      "news_bot.py:38 send_admin_notification location confirmed (Decision 11 'next to send_admin_notification' placement valid)",
+      "news_bot.py:291-300 _source_hashtag definition — Decision 14's line-range claim exact match",
+      "_source_hashtag('https://lamleygroup.com/...') runtime-derives '#lamleygroup' (Decision 14 unchanged-hashtag claim holds)",
+      "_source_hashtag('https://autoevolution.com/...') runtime-derives '#autoevolution' (Decision 14 claim holds)",
+      "_source_hashtag('https://corporate.mattel.com/...') runtime-derives '#mattel' (Decision 14 claim holds)",
+      "mattel_news_source.py:21 NEWS_URL = 'https://corporate.mattel.com/news' — corporate.mattel.com netloc in NETLOC_TO_SOURCE map is real",
+      "feeds.json contains 'https://www.autoevolution.com/rss/...' and 'https://lamleygroup.com/category/hot-wheels/feed/' — NETLOC_TO_SOURCE keys cover actual production netlocs",
+      "tempfile.NamedTemporaryFile available in stdlib (Decision 1 runtime-verified)",
+      "pathlib, uuid, webbrowser all stdlib available (Decision 1 dependencies)",
+      "schedule==1.2.1 supports .every().hour.do() (Decision 5 runtime-verified)",
+      "news_bot.py:458 schedule.every().day.at('12:00').do(job) — current cadence confirmed as starting point for Decision 5 bump",
+      "news_bot.py:372-374 current skip rule confirmed (Risks table citation)",
+      "news_bot.py top-level functions load_feeds / init_db / is_processed / mark_processed / fetch_rss / filter_new_entries / transcreate_text / _source_hashtag / send_telegraph_teaser / fetch_full_article / process_new_articles / job / main — all exist at claimed semantics",
+      "telegraph_publisher.publish_article / _api_call / _build_content / _build_content_from_blocks / ensure_access_token all exist (Task 4 preconditions hold)",
+      "telegraph_publisher.preview_nodes does NOT exist yet (consistent with 'new public wrapper' claim in Task 4 and Deviation #3)",
+      "pending_articles_repo.py / preview_renderer.py / hw_review.py do NOT exist yet (consistent with 'new' claims)",
+      "Test line references exact match: test_integration.py:54/115/146/178/205, test_mattel_integration.py:59/104, test_feed_iteration.py:35",
+      "work/telegraph-pipeline/post-format.md exists (Decision 14 anchor)",
+      "'@myhwchannel123' referenced across project-knowledge patterns.md and telegraph-pipeline/decisions.md — Decision 14 channel-name claim is grounded",
+      "user-spec AC L59 (partial staging rejection), L67 (take after grace), L70 (shared attempt counter across idle+overflow) all present in user-spec.md — Decisions 6/9/13 anchors valid",
+      "NETLOC_TO_SOURCE dict in Decision 4 covers the exact netlocs appearing in feeds.json + mattel_news_source.py — no omission",
+      "requests / python-telegram-bot / deep-translator / feedparser / curl_cffi / beautifulsoup4 / schedule all in requirements.txt — Dependencies section accurate",
+      "news_bot.py:20 'from urllib.parse import urlparse' already imported — Decision 4 netloc lookup mechanism has no new-import burden",
+      "Decision 12's consolidated-ping rationale self-consistent with user-spec Fallback-путь line 'Will auto-publish in ~{grace}: [titles]' (plural)"
+    ]
+  }
+}

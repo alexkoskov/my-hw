@@ -1,0 +1,15 @@
+{
+  "reviewer": "test-reviewer",
+  "task": 1,
+  "round": 2,
+  "verdict": "approved",
+  "findings": [
+    {
+      "severity": "low",
+      "file": "tests/test_pending_articles_repo.py",
+      "line": "1436-1461 (SignallingConn in TestConcurrentWriters::test_two_writers_no_database_locked)",
+      "issue": "Residual, near-negligible race window: write_reached.set() and the subsequent self._inner.execute(sql, params) call are two separate Python statements in the writer thread. In principle the GIL could switch to the main thread between them, letting locker.commit() run a beat before the writer's blocking execute() actually starts, which would silently skip real lock contention on that run. This is not a correctness bug (the test's assertions would still hold either way, so it cannot produce a false failure) and is a huge improvement over the previous time.sleep(0.3) version — ran the test 15x in a row with no flakiness. Recording as informational only; no action required.",
+      "fix": "No fix required. If ever desired, could be closed entirely by having SignallingConn.execute() block on a second event (set by the main thread after commit) before calling self._inner.execute(), turning the handoff into a strict two-phase rendezvous — but current margin is already effectively deterministic in practice."
+    }
+  ]
+}

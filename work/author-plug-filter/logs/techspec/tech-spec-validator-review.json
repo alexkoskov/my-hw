@@ -1,0 +1,49 @@
+{
+  "verdict": "pass",
+  "status": "approved",
+  "summary": "Tech-spec is structurally complete, frontmatter valid, all skills/reviewers match the catalog, no wave conflicts, audit + final waves correctly populated. 11 tasks (under the 15-cap). Two minor issues: Task 4 and Task 5 embed concrete line numbers in descriptions (implementation detail that belongs in task files during decomposition), and Task 3/Task 4/Task 11 descriptions are slightly verbose (4-6 sentences vs target <=3). Zero high-severity findings — no blockers; the noted items can be tightened during decomposition or accepted as-is.",
+  "findings": [
+    {
+      "section": "Implementation Tasks / Task 4",
+      "category": "task_quality",
+      "severity": "medium",
+      "issue": "Task 4 description embeds concrete line numbers ('line ~1006', 'line 1004–1005', 'line 1027') and an implementation-size hint ('~12-line variant-B call block'). Per task brevity rules, line numbers and size-of-diff hints belong in the per-task file produced during decomposition, not in the tech-spec scope description.",
+      "fix": "Replace the line-number references with a logical anchor: e.g. 'Insert a single variant-B call block at the convergence point of the LLM and Google-Translate branches in _fallback_publish (per code-research §12).' Drop the '~12-line' size hint."
+    },
+    {
+      "section": "Implementation Tasks / Task 5",
+      "category": "task_quality",
+      "severity": "medium",
+      "issue": "Task 5 description embeds concrete line numbers ('deploy.sh:52', '.github/workflows/deploy.yml:132'). Same rule — line-number references belong in the decomposed task file, not in the tech-spec.",
+      "fix": "Rewrite as: 'Add author_plug_filter.py to the FILES=(...) array in deploy.sh and .github/workflows/deploy.yml (both must mirror per the patterns.md deploy invariant).'"
+    },
+    {
+      "section": "Implementation Tasks / Task 3",
+      "category": "task_quality",
+      "severity": "low",
+      "issue": "Task 3 description runs to ~6 sentences and reads as a step list ('Create...', 'Compile...', 'Re-use...', 'Drop...', 'Create...'). The target for tech-spec scope descriptions is <=3 sentences; the granular steps should land in the decomposed task file.",
+      "fix": "Compress to: 'Create author_plug_filter.py with three pure-stdlib helpers (strip_author_plugs, strip_in_paragraphs, strip_in_blocks) implementing the B1/B2/B3 patterns and empty-paragraph disposal per Decisions 4, 10, 11. Add tests/test_author_plug_filter.py covering all positives + AC13–AC15 negatives, empty-handling, INFO-logging, and try/except defence.'"
+    },
+    {
+      "section": "Implementation Tasks / Task 4",
+      "category": "task_quality",
+      "severity": "low",
+      "issue": "Task 4 description spans ~6 sentences with several procedural details ('Wrap in try/except Exception', 'Emit one logger.info per removed fragment', 'Add ONE smoke test...'). Target is <=3 sentences referencing Decisions, with details in the decomposed task file.",
+      "fix": "Compress to: 'Integrate variant B into news_bot._fallback_publish at the LLM/Google-Translate convergence point per Decisions 2, 8, 9 (try/except wrap, INFO log per fragment). Add one smoke test in tests/test_fallback_publish_paths.py asserting variant B helpers are called exactly once on both Claude-success and Google-fallback branches.'"
+    },
+    {
+      "section": "Implementation Tasks / Task 11",
+      "category": "task_quality",
+      "severity": "low",
+      "issue": "Task 11 (Post-deploy verification) is structured as a 5-bullet procedure inside the Description. Tech-spec post-deploy task is allowed to enumerate verification steps, but the current form duplicates content already specified in Agent Verification Plan and may drift from it.",
+      "fix": "Either keep one short paragraph in the task and reference 'see Agent Verification Plan', or move the detailed bullet list into the Agent Verification Plan and leave a 2-sentence pointer in Task 11. Single source of truth."
+    },
+    {
+      "section": "Architecture / What we're building/modifying",
+      "category": "task_quality",
+      "severity": "low",
+      "issue": "The 'What we're building/modifying' bullets contain line-number references ('line ~1006', 'line 1004–1005', 'line 1027', 'line 129', 'line ~64–69'). These are useful for the implementer but become stale fast and ideally live in code-research.md (which they already cite). Architecture section should describe what changes structurally, not point at line numbers.",
+      "fix": "Replace line numbers with logical anchors ('between the _google_translate unpack and Telegraph upload', 'at the literal-80 assertion in test_boilerplate_filter') and keep code-research.md as the precise-line source of truth."
+    }
+  ]
+}

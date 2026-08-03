@@ -1,0 +1,52 @@
+{
+  "status": "approved",
+  "mode": "tech-spec-design-review",
+  "target": "work/dedup-model-series/tech-spec.md (+ code-research.md), verified against model_extractor.py, admin_alerts.py, backfill_fingerprints.py, news_bot.py, tests/test_pending_articles_repo.py",
+  "summary": {
+    "totalFindings": 3,
+    "critical": 0,
+    "major": 0,
+    "minor": 3
+  },
+  "cleared_concerns": [
+    "SQL injection (A03): the new `json_extract(model_fingerprint,'$.pairs') IS NULL` fragment is a STATIC literal with a hardcoded JSONPath; the only bound value remains `days` (via `?` placeholder, cast `int(args.days)`, clamped to [1,90] by `_days_in_range`). Untrusted series/model tokens are never interpolated into SQL — they ride inside the opaque `model_fingerprint` TEXT blob (written via parameterized `_dumps`) and are compared in Python by set-intersection. No injection surface.",
+    "Markup injection into admin pings (A03/output-encoding): E015/E014 builders return plain strings sent via `send_admin_notification`, which forces `parse_mode=None` (news_bot.py:471-481) precisely to remove the `[label](url)` spoofing/entity-parse risk. Additionally, rendered pair components are a constrained charset (model = lexicon brand + `[A-Za-z0-9\\- ]` designators; series = lexicon-canonical string) so they cannot carry newlines or Markdown metacharacters. The channel-post path (parse_mode='Markdown') renders only the source hashtag, never dedup pairs. No markup/newline injection.",
+    "Insecure deserialization (A08): the fingerprint blob is read via `json.loads` (`_loads_or_none`, pending_articles_repo.py:153-157) — not pickle/yaml.load. Safe.",
+    "DoS (bounded scan): 30-day any-source candidate scan is ~200 rows, one set-intersection each; fetch-once-at-30-days derives the 7-day subset in Python. Within the <100ms/article budget. No unbounded growth.",
+    "Secrets: no new secret handling. `DEDUP_SERIES_PAIRS` is a boolean kill-switch (trusted config), the SERIES_LEXICON is trusted operator config, and `_redact_text` still scrubs admin pings for stray tokens.",
+    "Fail-safe polarity (A04/availability): untagged/unknown series default to `broad` (`_SERIES_DEFAULT_TIER='broad'`) and can never silently hard-block legitimate content — a well-designed availability safety control, test-pinned.",
+    "Logging/monitoring (A09): block/flag/degraded decisions all emit [E015]/[E014]/[E016] admin pings + logs, preserving an audit trail for the security-relevant dedup verdicts."
+  ],
+  "findings": [
+    {
+      "severity": "minor",
+      "category": "A03:2021 Injection (ReDoS / CWE-1333)",
+      "title": "New `_SERIES_RE` must pin bounded quantifiers at implementation (design mandate not yet enforced by a test)",
+      "description": "The design classifies UNTRUSTED feed/LLM article text through a NEW compiled series alternation (`_SERIES_RE`) that does not exist yet — it is built dynamically from SERIES_LEXICON alias keys in Task 1. A pure alternation of literal aliases is inherently low-risk (no nested quantifier over an ambiguous group), and the tech-spec explicitly requires mirroring `_MODEL_AFTER_BRAND_RE` (all quantifiers bounded `{1,N}`). The residual risk is purely in the construction: if the implementer joins multi-word aliases with unbounded whitespace (`\\s+` / `\\s*`) or wraps the alternation in an unbounded repetition to tolerate flexible spacing, catastrophic backtracking could be reintroduced. There is currently no explicit ReDoS/quantifier test pinning the new pattern, and the extractor runs over the full concatenated body (`_gather_text`: title+subtitle+all paragraphs) with no upstream body-size cap in the extractor path (pre-existing; the two existing passes already scan the same text, so this feature does not worsen input-size exposure).",
+      "location": "Section: Architecture / Task 1 (model_extractor.py `_SERIES_RE`); mirror model_extractor.py:115-132",
+      "impact": "A mis-constructed pattern with unbounded whitespace/repetition between alias words could degrade to super-linear matching on adversarial feed text, stalling the per-tick job (DoS of the publish pipeline). Bounded as designed, the impact is negligible.",
+      "recommendation": "Construct `_SERIES_RE` from `re.escape`'d alias literals, replace any intra-alias whitespace with a bounded `\\s{1,3}` (never `\\s+`/`\\s*`/`.*`), sort multi-word aliases longest-first, and run short/ambiguous acronyms (SDCC/STH/RLC/Zamac) in a separate case-sensitive pass mirroring `_UPPERCASE_BRANDS_RE`. Add a unit test asserting no quantifier in the compiled pattern is unbounded and that a pathological long input (e.g. 100k spaces/near-aliases) matches in well under a fixed time budget.",
+      "cwe": "CWE-1333"
+    },
+    {
+      "severity": "minor",
+      "category": "best-practice (SQL audit coverage / CWE-89 assurance)",
+      "title": "The `json_extract` backfill change lands in a file TestSqlAudit does not scan",
+      "description": "Tech-spec AC states \"SqlAudit остаётся зелёным (json_extract — статический фрагмент)\". That is true, but for a subtle reason worth recording: `TestSqlAudit.test_parameterized_queries_only` (tests/test_pending_articles_repo.py:1290-1321) only reads `pending_articles_repo.py`. The new `OR json_extract(model_fingerprint,'$.pairs') IS NULL` predicate is added to `backfill_fingerprints.py:243-249`, which the audit never inspects — so SqlAudit staying green is not evidence that the backfill query is safe; the query is safe by inspection (static fragment, only `days` bound). The 30-day pair-rule window reuses the already-parameterized `list_recent_*_fingerprints` helpers (pending_articles_repo.py:853/872) with no SQL change, so no repo-side audit regression is possible.",
+      "location": "backfill_fingerprints.py:243-249; audit scope tests/test_pending_articles_repo.py:1290-1321",
+      "impact": "Low. No injection today, but the automated guardrail cited in the AC does not actually cover the file being modified, so a future f-string SQL edit in backfill_fingerprints.py would pass CI unnoticed.",
+      "recommendation": "Either widen `TestSqlAudit` to also scan `backfill_fingerprints.py` (and any module issuing raw SQL), or reword the AC to state the backfill predicate is safe-by-inspection (static JSONPath literal, sole bound param `days` cast `int()` and clamped [1,90]) rather than implying SqlAudit covers it.",
+      "cwe": "CWE-89"
+    },
+    {
+      "severity": "minor",
+      "category": "A04:2021 Insecure Design (pair-key integrity / defense-in-depth)",
+      "title": "Pair-key separator `|` and tier suffix rely on lexicon canonicals being `|`/newline-free",
+      "description": "Verdict is read by string ops on the stored pair key `\"<model>|<series>|<tier>\"` (`p.endswith('|D')`, and `set(a['pairs']) & set(b['pairs'])`). The tech-spec correctly argues untrusted-derived components cannot contain `|` (model tokens are `[a-z0-9 -]`; series tokens only exist if they matched a lexicon entry and are then REPLACED by the canonical string). The one component that is NOT charset-bounded is the canonical string itself, which is trusted operator config. A canonical entry that accidentally contains `|`, a newline, or a literal `|D`/`|B` suffix would corrupt tier parsing / pair matching (e.g. a broad entry mis-read as distinctive → unintended hard-block, or a split producing a phantom pair). This is a config-integrity edge, not an untrusted-input vuln, but it is the load-bearing invariant behind the tier decision.",
+      "location": "Section: Decision 1 / code-research §2.2-2.3 (pair-key format, SERIES_LEXICON canonicals)",
+      "impact": "Low and operator-triggered only: a malformed lexicon canonical could invert a broad→distinctive verdict (false hard-block, over-suppressing legitimate content) or break pair equality. Not reachable from feed/LLM input.",
+      "recommendation": "Add a module-load assertion (or a unit test iterating SERIES_LEXICON) that every canonical value matches a safe charset (e.g. `^[a-z0-9 &+.-]+$`) and contains neither `|` nor whitespace-control chars; prefer deriving tier from a structured field rather than an `endswith('|D')` suffix if cheap, so verdict parsing does not depend on the separator being absent from data.",
+      "cwe": "CWE-707"
+    }
+  ]
+}

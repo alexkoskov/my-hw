@@ -1,0 +1,41 @@
+{
+  "summary": "No HIGH or CRITICAL security findings. SQL uses ? placeholders exclusively; JSON (de)serialisation is safe (json.loads with Python stdlib, only round-tripping DB-owned data); ensure_ascii=False is applied correctly on every write path; no credentials/tokens are read, logged, or echoed by the DAO; transactional moves rollback-and-reraise on any exception. Raw last_error storage is intentional per task AC L103 (sanitisation is Task 3's sanitize_error_message helper, called by writers before increment_attempt/move_to_failed).",
+  "status": "ok",
+  "findings": [
+    {
+      "severity": "info",
+      "file": "pending_articles_repo.py",
+      "line": 362,
+      "description": "`list_pending_stale(hours)` and `list_notified_overdue(grace_hours)` construct the datetime modifier as `f\"-{int(hours)}\"` and pass it as a ? placeholder. The int() coercion guarantees no SQL fragment can be injected even if a caller passes a malicious string. SAFE — documenting that the audit specifically examined this path.",
+      "recommendation": "No action. Coverage note only."
+    },
+    {
+      "severity": "info",
+      "file": "pending_articles_repo.py",
+      "line": 259,
+      "description": "`increment_attempt` stores `error` verbatim via a parameterised UPDATE. The repo is explicitly *not* responsible for sanitising error messages (Decision 11 / task AC L103). If a caller forgets to call sanitize_error_message first, a raw Telegram token or Telegraph access token could end up in pending_articles.last_error and later be printed by `hw_review show N`.",
+      "recommendation": "No action at the DAO layer — the contract is correct. This is flagged so that Task 3 (sanitize_error_message) and any call site (Tasks 9/10) wrap every increment_attempt / move_to_failed `last_error` argument in the sanitiser. Review-reminder, not a defect."
+    },
+    {
+      "severity": "info",
+      "file": "pending_articles_repo.py",
+      "line": 443,
+      "description": "Transactional moves (move_to_published, move_to_failed, skip_pending, retry_from_failed) all wrap INSERT/DELETE sequences in try/commit/except-rollback-raise/finally-close. The rollback test (test_move_to_published_rollback_on_error) empirically confirms pending row survives, published and processed_news stay empty for the link. No partial-state vulnerability.",
+      "recommendation": "No action. Coverage note: the rollback behaviour relies on sqlite3 Python module's implicit BEGIN on first write — which holds because every transactional move starts with a SELECT then a write on the same connection."
+    },
+    {
+      "severity": "info",
+      "file": "pending_articles_repo.py",
+      "line": 110,
+      "description": "`_dumps` applies json.dumps(ensure_ascii=False). No custom serialisers. Python's json module does not permit code execution via json.dumps or json.loads (unlike pickle). Cyrillic round-trip test (test_insert_pending_preserves_cyrillic) asserts raw TEXT contains `Привет` and not `\\u`. No JSON-deserialisation attack surface.",
+      "recommendation": "No action."
+    },
+    {
+      "severity": "info",
+      "file": "tests/test_pending_articles_repo.py",
+      "line": 739,
+      "description": "TestSqlAudit::test_parameterized_queries_only greps the repo source for f-string / %-format / string-concat SQL construction adjacent to SQL keywords. Triple-pattern regex passes the current source; if future tasks (e.g. Task 7 adding set_preview_path) introduce bad patterns, this guard will fail CI.",
+      "recommendation": "No action — reviewer-value note. This guard should be kept in place when Task 7 appends set_preview_path."
+    }
+  ]
+}

@@ -1,0 +1,345 @@
+# Interview Plan for Feature Planning
+#
+# Tracks progress of adaptive discovery interview for a new feature/bug/refactoring.
+# Updated after EACH user response with scoring, values, and remaining gaps.
+#
+# Scoring: 0-100% (how well we understand this aspect)
+# Status: pending → partial → complete
+# Required: true = must reach threshold, false = cover if relevant
+
+# ============================================================================
+# Interview Metadata (Session Recovery)
+# ============================================================================
+interview_metadata:
+  started: "2026-07-22 14:08:43"  # Timestamp (YYYY-MM-DD HH:MM:SS)
+  last_updated: "2026-07-22 14:08:43"
+  status: "completed"  # not_started | in_progress | completed
+  can_resume: true
+  current_question_num: 1
+  feature_size: "M"  # S | M | L — reassessed from S: first-ever inbound Telegram handling, new listen loop, SQLite concurrency, auth, shared-token 409 constraint
+
+# ============================================================================
+# Conversation History (for session recovery)
+# ============================================================================
+# Preserves complete Q&A. Update after EVERY user response.
+#
+conversation_history:
+  - question_num: 1
+    timestamp: "2026-07-22 14:08:43"
+    topic: "buttons / missed-window / feedback"
+    agent_question: |
+      Батч 1 (AskUserQuestion): (a) какие кнопки под E014? (b) поведение,
+      если статья уже вышла? (c) как показать, что нажатие сработало?
+    user_answer: |
+      (a) «Не публиковать» + «Оставить» (две кнопки).
+      (b) Написать «Уже опубликовано» (отменить нельзя).
+      (c) Заменить кнопки на статус (✅ Отменено / 👍 Оставлено).
+    summary: "2 кнопки; missed-window → сообщение; feedback → edit message на статус."
+  - question_num: 2
+    timestamp: "2026-07-22 14:08:43"
+    topic: "instances / shared-token 409"
+    agent_question: |
+      Один бот-аккаунт на прод и тест; слушать getUpdates может только один
+      (иначе Telegram 409 Conflict). Как поступаем?
+    user_answer: |
+      Слушает только прод.
+    summary: "Только прод-инстанс включает listen-loop; тест кнопки не слушает."
+  - question_num: 3
+    timestamp: "2026-07-22 14:08:43"
+    topic: "code-research findings (subagent)"
+    agent_question: "(авто) разбор кода интеграционных точек"
+    user_answer: |
+      code-research.md готов. Ключевое: skip_pending(link) — готовая атомарная
+      отмена; PK очереди = link (URL) → callback_data 64б не влезает, нужен
+      короткий id/токен; publish-loop перечитывает list_pending каждый слот →
+      удаление строки до слота достаточно; PTB 21.10 async, sends через
+      asyncio.run, постоянного Application нет → нужен фоновый поток c getUpdates;
+      skip_pending на bare sqlite3.connect без busy_timeout → закрыть риск
+      «database is locked»; TELEGRAM_ADMIN_ID по умолчанию @username, а
+      callback.from_user.id числовой → нужен числовой admin-id для auth.
+    summary: "Интеграционные точки и 3 подводных камня зафиксированы для тех-спека."
+# Format:
+# - question_num: 1
+#   timestamp: "2025-11-12 15:20:33"
+#   topic: "user_problem"
+#   agent_question: |
+#     [Full question text]
+#   user_answer: |
+#     [Full answer text]
+#   summary: "Brief summary"
+
+# ============================================================================
+# Phase 1: High-Level Feature Understanding
+# ============================================================================
+# Interview Cycle 1 scope
+phase1_feature_overview:
+
+  feature_name:
+    score: 100
+    status: "complete"
+    value: "dedup-review-buttons"
+    gaps: ""
+    required: true
+
+  feature_description:
+    score: 70
+    status: "partial"
+    value: >
+      Под алертом «[E014] Похож на дубль» (и ТОЛЬКО под ним) добавить
+      инлайн-кнопки в Telegram, чтобы оператор одним нажатием из чата убрал
+      подозрительную новую статью из очереди до её публикации. Сейчас бот
+      только отправляет и не принимает никаких входящих (нет getUpdates /
+      обработчиков) — фича впервые вводит «слушание» нажатий.
+    gaps: "Уточнить набор кнопок, обратную связь после нажатия, поведение при упущенном окне"
+    required: true
+
+  work_type:
+    score: 100
+    status: "complete"
+    value: "feature"
+    gaps: ""
+    required: true
+
+  user_problem:
+    score: 85
+    status: "complete"
+    value: >
+      Оператор получил алерт о возможном дубле и захотел отменить публикацию
+      прямо из Telegram, но не смог — бот не принимает ответы. Единственный
+      способ убрать статью — CLI hw_review.py на сервере, что оператору
+      недоступно/неудобно с телефона. Ценность: быстрый контроль над спорной
+      публикацией из чата, в окно между алертом (~10:00) и слотом публикации
+      (15:00/19:30 МСК).
+    gaps: ""
+    required: true
+
+  target_users:
+    score: 0
+    status: "pending"
+    value: ""
+    gaps: "Who specifically will use this"
+    required: false
+
+  success_criteria:
+    score: 0
+    status: "pending"
+    value: ""
+    gaps: "How we measure success (concrete, testable)"
+    required: true
+
+  constraints:
+    score: 0
+    status: "pending"
+    value: ""
+    gaps: "Technical/business constraints"
+    required: true
+
+  testing_strategy:
+    score: 0
+    status: "pending"
+    value: ""
+    gaps: "Integration tests needed? E2E? Why/why not?"
+    required: true
+
+# ============================================================================
+# Phase 2: User Experience & Scenarios
+# ============================================================================
+# Interview Cycle 2 scope (together with Phase 3)
+phase2_user_experience:
+
+  user_stories:
+    score: 0
+    status: "pending"
+    value: ""
+    gaps: "Step-by-step user interaction scenarios"
+    required: true
+
+  acceptance_criteria:
+    score: 0
+    status: "pending"
+    value: ""
+    gaps: "Testable checklist of what must work"
+    required: true
+
+  edge_cases:
+    score: 0
+    status: "pending"
+    value: ""
+    gaps: "Unusual scenarios, boundary conditions"
+    required: true
+
+  error_scenarios:
+    score: 0
+    status: "pending"
+    value: ""
+    gaps: "What can go wrong, how to handle errors"
+    required: true
+
+  verification_strategy:
+    score: 0
+    status: "pending"
+    value: ""
+    gaps: "How to verify feature works (agent and/or user)"
+    required: true
+
+  ui_ux_requirements:
+    score: 0
+    status: "pending"
+    value: ""
+    gaps: "Specific UI/UX requirements if applicable"
+    required: false
+
+  risks:
+    score: 0
+    status: "pending"
+    value: ""
+    gaps: "Risks and mitigations"
+    required: true
+
+  technical_decisions:
+    score: 0
+    status: "pending"
+    value: ""
+    gaps: "Key decisions (what we do/don't, why)"
+    required: false
+
+  deploy_approach:
+    score: 0
+    status: "pending"
+    value: ""
+    gaps: "How to deploy: CI/CD, manual, Docker? What needs setup?"
+    required: false
+
+  manual_user_actions:
+    score: 0
+    status: "pending"
+    value: ""
+    gaps: "Steps user must do manually (create bot, get API keys, configure service)"
+    required: false
+
+# ============================================================================
+# Phase 3: Integration & Technical Context
+# ============================================================================
+# Interview Cycle 2 scope (together with Phase 2)
+phase3_integration:
+
+  integration_points:
+    score: 0
+    status: "pending"
+    value: ""
+    gaps: "Where this fits in existing system"
+    required: true
+
+  dependencies:
+    score: 0
+    status: "pending"
+    value: ""
+    gaps: "Existing features/services this depends on"
+    required: false
+
+  technical_constraints:
+    score: 0
+    status: "pending"
+    value: ""
+    gaps: "Technical limitations, performance, security"
+    required: false
+
+  data_requirements:
+    score: 0
+    status: "pending"
+    value: ""
+    gaps: "What data needed, where from, how stored"
+    required: false
+
+  migration_needs:
+    score: 0
+    status: "pending"
+    value: ""
+    gaps: "Migration plan for existing users/data"
+    required: false
+
+# ============================================================================
+# Phase 4: Completion
+# ============================================================================
+phase4_completion:
+  userspec_file: "work/dedup-review-buttons/user-spec.md"  # work/{feature}/user-spec.md
+  status: "approved"  # pending | created | approved
+
+# ============================================================================
+# Decision Rules
+# ============================================================================
+decision_rules:
+
+  required_threshold: 85
+  optional_threshold: 50
+
+  # Stop criteria (BOTH must be true to exit a cycle)
+  stop_criteria:
+    - "All required items in current cycle scope score >= 85%"
+    - "Structural: every required item has non-empty value, no TBD, gaps empty or conscious limitations"
+
+  priority_order:
+    - "Required items with score < 85% (lowest score first)"
+    - "Optional items mentioned by user in context"
+    - "Other optional items if user seems knowledgeable"
+
+  question_strategy:
+    - "3-4 questions per batch about different gaps"
+    - "Run as many batches as needed — batch size is NOT cycle limit"
+    - "Propose solutions based on PK, not just ask questions"
+    - "Challenge with substance: counterexamples, code references, unexplored scenarios"
+    - "After each response: update scores, values, gaps, conversation_history, save"
+
+# ============================================================================
+# Interview Progress
+# ============================================================================
+progress:
+  current_phase: "phase1_feature_overview"
+  questions_asked: 0
+  last_question: ""
+  total_required_score: 0
+  total_optional_score: 0
+  completion_estimate: "0%"
+  user_detail_level: "unknown"  # brief | moderate | detailed
+
+# ============================================================================
+# Notes
+# ============================================================================
+notes: |
+  Free-form notes:
+  - Important insights
+  - Areas of uncertainty
+  - Pivot points
+  - Scope changes
+
+# ============================================================================
+# USAGE INSTRUCTIONS
+# ============================================================================
+#
+# 1. INIT: Created by init-feature-folder.sh at work/{feature}/logs/userspec/interview.yml
+#    Set metadata.started, metadata.status: in_progress
+#
+# 2. INITIAL SCORING: After user's free-form description, score ALL items
+#    Detailed 80-95%, brief 50-70%, vague 20-40%, not mentioned 0%
+#
+# 3. INTERVIEW LOOP (save after EVERY response):
+#    a) Find required items with score < 85% in current cycle scope
+#    b) Ask 3-4 questions about different gaps
+#    c) Propose solutions based on PK
+#    d) User answers
+#    e) Update: conversation_history, scores, values, gaps, metadata
+#    f) Save immediately
+#    g) Check stop criteria (score >= 85% AND structural: value filled, no TBD, gaps resolved)
+#    h) Not done → repeat. Done → next cycle.
+#
+# 4. CYCLES:
+#    Cycle 1: phase1_feature_overview items
+#    Cycle 2: phase2_user_experience + phase3_integration items
+#    Cycle 3: ALL items still below threshold (cleanup pass)
+#
+# 5. RESUME: If metadata.status is "in_progress"
+#    Load, show conversation summary, resume from current state
+#
+# 6. COMPLETION: After user approves user-spec.md
+#    Set phase4_completion.status: approved
+#    Set metadata.status: completed

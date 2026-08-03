@@ -1,0 +1,57 @@
+{
+  "reviewer": "test-reviewer",
+  "round": 1,
+  "mode": "inline-fallback",
+  "summary": "Task 10 tests reviewed inline. All 13 TDD anchors from task-file covered; smoke scenario from Verify-smoke included as integration test. 24 new tests, all green. Full suite: 383 passed (was 359).",
+  "findings": [
+    {
+      "id": "tr-1",
+      "severity": "low",
+      "area": "tests/test_overflow.py",
+      "finding": "Tests use tempfile-DB + SQLite fixtures matching the project's integration-test pattern (tests/test_idle_fallback.py, tests/test_job_prep_phase.py). Mocks _fallback_publish at integration boundaries but exercises the real repo (insert_pending, list_pending_for_eviction, increment_attempt, move_to_failed, move_to_published).",
+      "action": "none"
+    },
+    {
+      "id": "tr-2",
+      "severity": "low",
+      "area": "tests/test_overflow.py ping-format tests",
+      "finding": "Byte-exact assertEqual on the admin-ping string (both the all-staged and mixed-eviction variants) + a dedicated suffix test — format is pinned. Any future drift will fail loudly.",
+      "action": "none"
+    },
+    {
+      "id": "tr-3",
+      "severity": "low",
+      "area": "tests/test_overflow.py smoke test",
+      "finding": "test_job_overflow_smoke_mixed_queue covers Verify-smoke — queue pre-filled to cap with staged+unstaged mix, job() runs the full prep pass, staged rows survive, unstaged rows evicted with via_review=False. Real repo + real job() body, only _fallback_publish and fetch_full_article mocked.",
+      "action": "none"
+    },
+    {
+      "id": "tr-4",
+      "severity": "low",
+      "area": "tests/test_hw_review_retry.py happy-path",
+      "finding": "Three happy-path variants (fresh, title-printing, index-2) cover the TDD anchor. failed_at timestamps pinned explicitly so ORDER BY DESC is deterministic — no timing flake.",
+      "action": "none"
+    },
+    {
+      "id": "tr-5",
+      "severity": "low",
+      "area": "tests/test_hw_review_retry.py edge cases",
+      "finding": "Zero, negative, above-count, and empty-queue — all four out-of-range variants tested. Also test_retry_when_already_in_pending covers the defensive repo-False path (accepts either exit code per task-file flexibility).",
+      "action": "none"
+    },
+    {
+      "id": "tr-6",
+      "severity": "low",
+      "area": "tests/test_hw_review_retry.py footer tests",
+      "finding": "Pins the exact failed-footer format (Decision 8) via a single byte-exact assertion + three separate coverage tests (empty failed, empty pending, both non-empty, ordering). TestRetryListIntegration asserts list → retry index-ordering lines up — the contract that matters to the operator.",
+      "action": "none"
+    }
+  ],
+  "pyramid_balance": {
+    "unit": 19,
+    "integration": 4,
+    "smoke": 1,
+    "note": "Unit-heavy (80%+), smoke-light (1 explicit + 4 integration via job()) — matches project's pyramid."
+  },
+  "overall": "approved"
+}

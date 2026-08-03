@@ -27,8 +27,10 @@ Decisions implemented
   model = Haiku 4.5; ``max_retries=2`` (SDK default); no streaming;
   no prompt caching.
 * Decision 8: Flat-path fallback for ``ux-guidelines.md`` on server.
-* Decision 13: ``max_tokens=8000``; per-paragraph defensive 4000-char cap;
-  paragraph-count validation.
+* Decision 13: bounded ``max_tokens``; per-paragraph defensive 4000-char cap;
+  paragraph-count validation. The bound is ``_DEFAULT_MAX_TOKENS`` below — do not
+  restate the number here: it drifted to a stale ``8000`` once already and three
+  reference docs copied it from this line (corrected 2026-08-03).
 """
 
 from __future__ import annotations
@@ -352,7 +354,7 @@ def transcreate_via_claude(
     model: str, optional
         Defaults to ``ANTHROPIC_MODEL`` env or ``claude-haiku-4-5``.
     max_tokens: int
-        Output cap. Default 8000 (Decision 13).
+        Output cap (Decision 13). Defaults to ``_DEFAULT_MAX_TOKENS``.
     timeout_s: int
         Per-call timeout (forwarded to SDK).
     client: anthropic.Anthropic, optional

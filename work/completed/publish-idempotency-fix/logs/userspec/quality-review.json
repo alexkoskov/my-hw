@@ -1,0 +1,43 @@
+{
+  "status": "approved",
+  "checks": {
+    "completeness": "pass",
+    "edge_cases": "pass",
+    "acceptance_criteria": "pass",
+    "contradictions": "pass",
+    "template_compliance": "pass",
+    "size_check": "pass"
+  },
+  "findings": [
+    {
+      "check": "acceptance_criteria",
+      "severity": "minor",
+      "issue": "AC9 was flagged in round-1 for removal (it describes a regression gate — 'existing tests pass green' — not an observable system behavior of the fix), but it is still present unchanged on line 60. AC11 was correctly removed. AC9 continues to be a meta-criterion about the test suite rather than a criterion about what the system does.",
+      "location": "Критерии приёмки, AC9 (line 60)",
+      "fix": "Remove AC9 from 'Критерии приёмки'. The regression guarantee is already captured in 'Тестирование' ('Конкретные тест-функции, файлы и asserts — в tech-spec') and the existing test count note. If a positive behavioral criterion is needed, rephrase as: 'Нормальная публикация (link не в published_articles) завершается штатно: Telegraph и Telegram вызываются как прежде' — that describes observable system behavior."
+    },
+    {
+      "check": "acceptance_criteria",
+      "severity": "minor",
+      "issue": "AC10 contains HOW-detail that belongs in tech-spec, not in a user-facing criterion: the exact log marker string '«idempotency-guard»' and the grep tool 'journalctl' are implementation specifics. The criterion intent ('срабатывание заметно в логах') is valid, but the exact string format and tool are tech-spec decisions.",
+      "location": "Критерии приёмки, AC10 (line 61)",
+      "fix": "Rewrite AC10 as: 'Срабатывание guard'а фиксируется в логах сервера с достаточной детализацией, чтобы оператор мог определить, для какой ссылки guard сработал и когда.' The exact log marker string ('idempotency-guard'), log level (INFO), and grep command belong in tech-spec or 'Как проверить → Агент проверяет'."
+    }
+  ],
+  "interview_coverage": {
+    "covered": [
+      "scope_symptom_vs_root_cause — covered in 'Что делаем' and 'Зачем' (guard in _fallback_publish, root cause deferred to operator task)",
+      "failed_articles_cleanup — covered in 'Ограничения' ('Без миграции в коде') and 'Как проверить → Агент проверяет' (Step 6, SQL DELETE post-deploy)",
+      "admin_ping_on_guard — covered in AC4, 'Как должно работать' Сценарий A step 5, 'Технические решения' (Admin-ping обязателен), Риск 2 митигация",
+      "testing_strategy — covered in 'Тестирование' with integration test rationale and E2E rationale; detail delegated to tech-spec"
+    ],
+    "missing": []
+  },
+  "round": 2,
+  "delta_from_round1": {
+    "AC11_removed": true,
+    "AC9_removed": false,
+    "how_detail_cleaned_from_ac": "partial — AC10 still contains exact log string and journalctl reference; other ACs (AC3, AC6, AC8) have minor technical terms but these describe observable behavior, not implementation mechanics"
+  },
+  "summary": "Спецификация остаётся утверждённой: все 6 проверок проходят, критических замечаний нет. Из двух незакрытых minor-замечаний раунда 1 одно устранено (AC11 удалён), одно нет (AC9 по-прежнему в критериях). Дополнительно: AC10 содержит конкретную строку лога и имя инструмента journalctl — это HOW-деталь, которая относится к tech-spec. Итого два минорных замечания; блокировок для написания tech-spec нет."
+}

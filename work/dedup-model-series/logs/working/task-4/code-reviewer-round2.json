@@ -1,0 +1,44 @@
+{
+  "status": "approved",
+  "summary": "The round-1 major finding is resolved cleanly: _check_cross_source_dedup is now a ~69-line orchestrator (~34 non-docstring code lines) that fetches candidates at most once and delegates to _pair_rule_verdict (Rule 1) and _set_overlap_backstop_verdict (Rule 2), with byte-identical branch order, terminality, and single-fetch behavior verified against the round-1 baseline. Both new window constants are wired correctly with no off-by-one. 15/15 TestCrossSourceDedup + 28/28 test_integration.py pass reproducibly; a full unfiltered `pytest -q` shows the pre-existing, by-design-red calibration test plus one rare (~1-in-11), non-reproducible-standalone flake in an unrelated new test that is not attributable to this refactor.",
+  "criticalIssues": [],
+  "suggestions": [
+    {
+      "file": "tests/test_integration.py",
+      "line": 844,
+      "severity": "minor",
+      "category": "testing",
+      "suggestion": "test_theme_only_pop_culture_not_short_circuited failed once in ~11 full unfiltered `pytest -q` runs (2 failed: it + the known-red calibration test) but passed in every other full run and in every standalone/scoped/PYTHONHASHSEED-pinned run I could reproduce. Investigated for ~30 min: ruled out DB cross-contamination (each test gets its own mkstemp'd sqlite file, unlinked in tearDown), ruled out model_extractor's `_seen_canonical_tier` (a module-load-time-only dict that is `del`eted immediately after the consistency check, not a runtime cache), and ruled out set-ordering/PYTHONHASHSEED as the sole cause (pinned seeds 1/2/3/100/200/300/400/500/600/700/800 never reproduced it). Root cause not found within this review's time budget.",
+      "benefit": "Worth a short, separately-scoped investigation (e.g. add `pytest-randomly` with a fixed/loggable seed, or bisect with `--lf`/`-p no:cacheprovider` across more iterations) so a rare full-suite flake doesn't erode trust in CI green/red signals later. Not blocking round-2: the two commands this review was specifically asked to gate on (`TestCrossSourceDedup -v` and `test_integration.py -q`) pass 100% reproducibly, and the refactor introduces no new source of non-determinism (the extraction is a mechanical move with `sorted()` already applied to every set-derived output, unchanged from round-1).",
+      "optional": true
+    },
+    {
+      "file": "work/dedup-model-series/decisions.md",
+      "line": 96,
+      "severity": "minor",
+      "category": "best-practices",
+      "suggestion": "Round-1's optional suggestion to record the blank-env-value toggle deviation (task file's own hint example would have made `DEDUP_SERIES_ENABLED=` blank resolve to OFF; the shipped code correctly keeps it ON per AC6) has not yet been added — there is no Task 4 entry in decisions.md yet, which is expected since the task is still mid-review. Carry this into the Task 4 decisions.md entry when the task is finalized.",
+      "benefit": "Prevents a future maintainer from copying the task file's example literally and reintroducing the off-by-blank bug.",
+      "optional": true
+    }
+  ],
+  "metrics": {
+    "filesReviewed": 3,
+    "criticalIssuesCount": 0,
+    "majorIssuesCount": 0,
+    "minorIssuesCount": 2,
+    "testCoverageAssessment": "excellent"
+  },
+  "round1ItemsStatus": {
+    "majorFunctionLength": "RESOLVED. _check_cross_source_dedup split into _pair_rule_verdict(pairs, candidates) [news_bot.py:1000-1035, 36 physical / ~24 code lines] and _set_overlap_backstop_verdict(fingerprint, strict, candidates, new_source) [news_bot.py:1038-1095, 58 physical / ~48 code lines], both under the 50-line code-threshold. _check_cross_source_dedup itself is now news_bot.py:1098-1166 (69 physical lines: 2-line signature + 35-line docstring + ~32 lines of orchestration code) — well under both the physical-135 baseline and the 50-line code guideline once the (unusually thorough, project-standard) docstring is excluded. Signature unchanged: `_check_cross_source_dedup(article: dict, fingerprint: dict, conn: sqlite3.Connection, new_source=None)`.",
+    "minorWindowLiterals": "RESOLVED. New constants `_DEDUP_PAIR_WINDOW_DAYS = 30` (news_bot.py:952) wired into both `_fetch_dedup_candidates` calls to `list_recent_pending_fingerprints`/`list_recent_published_fingerprints`, and `_DEDUP_BACKSTOP_WINDOW_DAYS = 7` (news_bot.py:957) wired into the backstop's cutoff `datetime.now(timezone.utc) - timedelta(days=_DEDUP_BACKSTOP_WINDOW_DAYS)`. Values (30, 7) match the prior inline literals exactly — no off-by-one.",
+    "minorToggleBlankDeviationNote": "NOT YET DONE (optional, non-blocking) — see suggestions above; no Task 4 decisions.md entry exists yet since the task isn't finalized."
+  },
+  "verificationNotes": {
+    "branchOrderAndTerminality": "Re-verified against the actual post-split code (news_bot.py:1135-1166): Rule 1 (pair rule, gated on `DEDUP_SERIES_ENABLED and pairs`) runs first and returns immediately on any non-'pass' decision (block/flag both TERMINAL — comment at line 1148 states this explicitly and the `return (decision, match)` is unconditional inside the `if decision != 'pass':` branch, so no fallthrough path exists). The empty short-circuit (`if not strict and not series: return ('pass', None)`) sits between Rule 1 and Rule 2, matching AC8's re-gate exactly as in round-1. Rule 2 (backstop) is reached only after both gates pass. Identical order to round-1's baseline.",
+    "singleFetchPreserved": "`candidates = None` is initialized once before Rule 1; Rule 1 sets it via `_fetch_dedup_candidates(conn)` only inside its own `if` block; Rule 2 fetches only `if candidates is None`. Structurally impossible for `_fetch_dedup_candidates` to run twice in one call. Confirmed empirically: `test_pair_pass_falls_through_to_backstop_block` wraps both `list_recent_pending_fingerprints`/`list_recent_published_fingerprints` with `assert_called_once()` spies and exercises the ONE scenario that reaches both rules (pair rule passes, falls through to backstop) — passes.",
+    "helperCohesion": "_pair_match (news_bot.py:976) is a pure dict-builder with no side effects, used only by _pair_rule_verdict. _pair_rule_verdict (1000) owns the scan-and-remember |D/|B logic verbatim from the pre-split inline version (round-1's verificationNotes.dWinsOverB description matches the extracted code line-for-line: `any(p.endswith('|D') ...)` hard-blocks and returns immediately; a `|B` sets `flag_match` only `if flag_match is None`, scan continues). _set_overlap_backstop_verdict (1038) owns the legacy cutoff/same-source-skip/similarity-scan logic, also verbatim from the pre-split version per round-1's verificationNotes.singleFetchAnd7dSubset (same lexical-string cutoff comparison, same same-source skip comment/logic, same NULL-fingerprint guard). No behavior drift detected in either extraction.",
+    "alertWiringAndFailSafe": "admin_alerts.alert_cross_source_blocked(new_link, existing_link, overlap_pct=None, *, pairs=None) and alert_cross_source_dupe(new_link, existing_link, new_source, existing_source, overlap_pct=None, n_matches=None, n_total=None, models=None, *, pairs=None) signatures (read directly from admin_alerts.py:454-465, 508-514) match the job() call sites (`pairs=match.get('pairs')`) exactly — unchanged from round-1, no drift introduced by the split. `.get('pairs') or []` / `.get('series') or []` / `isinstance(fingerprint, dict)` guards intact in the new orchestrator (lines 1135-1138); `isinstance(cand_fp, dict)` skip guards intact in both extracted rule bodies.",
+    "testsRun": "python3 -m pytest tests/test_integration.py::TestCrossSourceDedup -v -> 15 passed (up from round-1's 13; 2 new tests: test_within_source_distinctive_pair_blocks, test_theme_only_pop_culture_not_short_circuited / flags_no_model pair). python3 -m pytest tests/test_integration.py -q -> 28 passed (up from 25; +1 new TestFingerprintCarryThrough roundtrip-with-pairs test). Both commands re-run 2x each, 100% reproducible. python3 -m pytest -q (full, unfiltered) -> reproducibly shows exactly 1 failure (tests/test_model_extractor.py::test_calibration_accuracy, 4/8 — confirmed 'red by design this wave' per work/dedup-model-series/decisions.md Task 1 entry, Task 6 rewires the calibration harness) across 9 of 11 attempts; 1 of 11 attempts additionally showed tests/test_integration.py::TestCrossSourceDedup::test_theme_only_pop_culture_not_short_circuited failing, not reproduced again despite 10 further attempts including PYTHONHASHSEED pinning — logged as a non-blocking minor finding above."
+  }
+}

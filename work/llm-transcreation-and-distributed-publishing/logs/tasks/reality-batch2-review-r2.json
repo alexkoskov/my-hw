@@ -1,0 +1,83 @@
+{
+  "validator": "reality-checker",
+  "iteration": 2,
+  "batch": [4, 5, 6],
+  "status": "changes_required",
+  "r1_regression_check": {
+    "task4_critical_reorder_fixed": true,
+    "task4_major_asyncmock_tdd_fixed": true,
+    "task4_major_hints_prescriptiveness_partially_fixed": true,
+    "task5_major_init_schema_note_still_present": true,
+    "task5_minor_fallback_now_semantics_unchanged": true,
+    "task5_minor_ping_language_unchanged": true,
+    "task6_minor_informational_no_change_needed": true
+  },
+  "findings": [
+    {
+      "severity": "major",
+      "category": "hallucination",
+      "task": 4,
+      "issue": "Task 4 TDD Anchor (line 67) and Details section (line 153) both state 'образец см. в tests/test_admin_ping.py (там уже есть рабочий шаблон подмены news_bot.Bot на FakeBot с AsyncMock-методом и захвата text= аргумента)'. Verified: tests/test_admin_ping.py contains ONLY tests for build_admin_ping, sanitize_error_message, SOURCE_EMOJI, and SOURCE_LABEL — it has ZERO references to AsyncMock, FakeBot, news_bot.Bot, or send_admin_notification. The correct file containing the @patch('news_bot.Bot') + AsyncMock pattern for Telegram Bot testing is tests/test_telegram.py (lines 44–92+). A developer following the hint to look at test_admin_ping.py will find nothing relevant and may waste significant time or write an incorrect test.",
+      "fix": "Replace both references to 'tests/test_admin_ping.py' with 'tests/test_telegram.py' as the FakeBot/AsyncMock pattern reference. In the Details section: 'Для теста админ-нотификации — образец см. в tests/test_telegram.py (TestSendTelegraphTeaser.test_sends_source_hashtag_with_link_preview — там рабочий шаблон @patch(\"news_bot.Bot\") + MagicMock с AsyncMock.send_message + assert_awaited_once).' In TDD Anchor similarly replace the file reference."
+    },
+    {
+      "severity": "major",
+      "category": "hints",
+      "task": 4,
+      "issue": "R1 raised this as major; partially fixed in R2. The Details section at line 132 now ends with 'Конкретные имена атрибутов LogRecord и порядок присвоений — за реализующим' which is a meaningful improvement. However, the preceding text in the same bullet still states the algorithm explicitly: 'фильтр читает то, что увидит handler (rendered message), и атомарно подменяет источник данных перед re-render-ом, сохраняя ровно один call-site фактической замены — это и есть _redact_text'. This prescribes the algorithm (pre-render, replace source, single call-site) rather than pointing to a pattern. It crosses from hint to implementation spec. The R1 finding on full algorithm prescription is only partially resolved.",
+      "fix": "Trim the algorithmic narrative from the _BOT_TOKEN_RE bullet in Details. Replace with: 'Существующий _TokenRedactingFilter — образец стиля и инварианта: при ошибке возвращает True без модификации. _redact_text должен быть единственным местом применения regex. Детали реализации — за кодером.' Remove the description of the pre-render/replace/nullify-args sequence."
+    },
+    {
+      "severity": "major",
+      "category": "feasibility",
+      "task": 5,
+      "issue": "UNCHANGED from R1. Task 5 Edge cases (line 98) states: 'Тесты должны вызывать pending_articles_repo.init_schema(conn) в setUp/fixture перед использованием outage_state.' Verified: current pending_articles_repo.init_schema() at line 150-159 creates ONLY pending_articles, published_articles, and failed_articles tables. It does NOT create bot_state. This DDL is added by Task 1. The task note does not warn that init_schema() will silently fail to create bot_state if Task 1 is not merged — all 6 outage_state tests will fail with 'no such table: bot_state' if the developer writes them against main/dev without Task 1. The depends_on: [1] in frontmatter is correct but the test fixture instruction is misleading without this caveat.",
+      "fix": "Add to the Edge cases or Details section of Task 5: 'ВАЖНО: pending_articles_repo.init_schema() создаёт bot_state ТОЛЬКО после merge Task 1. На main/dev без Task 1 init_schema() не создаёт эту таблицу. При написании тестов изолированно (до merge Task 1): добавить в фикстуру conn.execute(\"CREATE TABLE IF NOT EXISTS bot_state (key TEXT PRIMARY KEY, value TEXT)\") напрямую как временный workaround.'"
+    },
+    {
+      "severity": "minor",
+      "category": "feasibility",
+      "task": 5,
+      "issue": "UNCHANGED from R1. TDD Anchor test test_record_outage_event_advance_to_ping_2 asserts fallback_now=True for the ping_1_sent→ping_2_sent transition. This is correct per the transition table. However the only place where fallback_now semantics are defined is the final paragraph of the Details section ('fallback_now semantics: False only on the very first transition no_outage→ping_1_sent; True in all remaining outage events'). A developer could confuse fallback_now=True (route THIS article to Google) with is_fallback_active()=True (global Google mode). The test description does not distinguish these two concepts.",
+      "fix": "Add a one-line clarification to the TDD Anchor for test_record_outage_event_advance_to_ping_2: 'fallback_now=True здесь означает: caller роутит ЭТОТ article через Google; is_fallback_active() остаётся False до перехода ping_2_sent→google_fallback_active.'"
+    },
+    {
+      "severity": "minor",
+      "category": "hints",
+      "task": 5,
+      "issue": "UNCHANGED from R1. The TDD Anchor for test_record_recovery_event_clears_state uses English ping text: 'Claude API recovered, switching back from Google Translate fallback.' The state machine transition table in the same task uses Russian: 'Переключился на Google'. The implementation hint suggests _PING_1_TEXT/_PING_2_TEXT/_PING_3_TEXT/_RECOVERY_TEXT constants but does not specify language. The test will be tightly coupled to whichever string the developer chooses — if they pick Russian (matching the table) the test will fail against the English string in the TDD Anchor, or vice versa. Pick one language and apply consistently.",
+      "fix": "Standardise admin ping language throughout Task 5: the transition table already uses Russian ('Переключился на Google'); align the TDD Anchor recovery ping text to Russian: 'Claude API восстановлен, переключаюсь обратно на Claude с Google Translate fallback.' or a similar Russian phrasing. Update both the TDD Anchor and the hint about _RECOVERY_TEXT."
+    },
+    {
+      "severity": "minor",
+      "category": "reality",
+      "task": 6,
+      "issue": "UNCHANGED from R1 — informational only. Task 6 Acceptance Criteria: 'Существующие 8 строк requirements.txt не изменены'. Verified: current requirements.txt has exactly 8 lines matching the task's list (feedparser==6.0.10, requests==2.32.3, beautifulsoup4==4.12.3, deep-translator==1.11.4, schedule==1.2.1, python-telegram-bot==21.10, curl_cffi==0.15.0, python-dotenv without pin). The task description is accurate. No defect.",
+      "fix": "No change needed."
+    }
+  ],
+  "r1_fixes_verified": [
+    {
+      "task": 4,
+      "finding": "critical/missing_function — forward reference NameError risk",
+      "r1_status": "FIXED",
+      "evidence": "Task 04.md 'What to do' Step 0 is now an explicit mandatory step (not a hint) requiring the developer to move the token-redaction block above send_admin_notification before any other changes. Step text starts with 'Reorder module-level definitions (предусловие, обязательно)' and lists specific verification checkpoints (a), (b), (c). Confirmed: news_bot.py still has send_admin_notification at line 116 and _BOT_TOKEN_RE at line 209 — so the problem is real in the codebase, and the task now correctly mandates fixing it as step 0."
+    },
+    {
+      "task": 4,
+      "finding": "major/tdd — AsyncMock requirement not stated, early-return risk",
+      "r1_status": "FIXED",
+      "evidence": "TDD Anchor for test_send_admin_notification_redacts_anthropic_key_before_send now contains a full 'Требования к тесту (важно)' block: explicitly requires AsyncMock (not Mock) for FakeBot.send_message, explicitly requires monkeypatching both TELEGRAM_BOT_TOKEN (to non-empty fake) and TELEGRAM_ADMIN_ID, explains why (early-return guard, asyncio.run coroutine). The requirement is precise and self-contained. The identical note for test_send_admin_notification_preserves_clean_message also lists the same requirements."
+    }
+  ],
+  "stats": {
+    "tasks_checked": 3,
+    "claims_verified": 41,
+    "issues_found": 6,
+    "critical": 0,
+    "major": 3,
+    "minor": 3,
+    "r1_regressions": 0,
+    "r1_fixes_confirmed": 2
+  }
+}

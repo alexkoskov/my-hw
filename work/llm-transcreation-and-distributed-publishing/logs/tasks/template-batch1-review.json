@@ -1,0 +1,75 @@
+{
+  "validator": "task-validator",
+  "batch": [1, 2, 3, 4, 5],
+  "status": "approved",
+  "findings": [
+    {
+      "severity": "major",
+      "category": "carry-forward",
+      "task": 5,
+      "section": "TDD Anchor / Acceptance Criteria",
+      "issue": "Tech-spec Acceptance Criteria 'Outage state machine' explicitly demands 'All 12 state transitions from code-research §14.4 covered by tests (5 states × triggers)'. Task 5 TDD Anchor only lists 6 tests covering 4 transitions explicitly (no_outage→ping_1_sent, ping_1_sent→ping_2_sent, ping_2_sent→google_fallback_active, *→no_outage). The 'no-op' branches (e.g. ping_1_sent + outage error AND now-t0 < 1h → stays at ping_1_sent, no pings) and recovery_pending state probes are not anchored as tests, so a regression there would not be caught.",
+      "fix": "Add TDD Anchor entries (and corresponding AC line) covering: (a) ping_1_sent within 1h window — no advance, no extra ping; (b) ping_2_sent within 2h window — no advance, no fallback flip; (c) recovery_pending probe rate-limit via last_health_check_at; (d) recovery from google_fallback_active when fallback_active=1; (e) recovery_event when outage_started_at IS NULL (was_active=False) — already partially covered, make it explicit. Bring the count up to ~10–12 transition tests as tech-spec AC requires."
+    },
+    {
+      "severity": "minor",
+      "category": "carry-forward",
+      "task": 3,
+      "section": "TDD Anchor",
+      "issue": "Decision 5 enumerates 7 API-level + 3 per-article anthropic SDK exception classes (10 total): APIConnectionError, APITimeoutError, RateLimitError, InternalServerError, AuthenticationError, PermissionDeniedError, NotFoundError, BadRequestError, UnprocessableEntityError, APIStatusError (unrecognized). Tech-spec AC 'All 9 anthropic SDK exception classes from Decision 5 covered by classifier tests' — Task 3 TDD Anchor explicitly tests 9 classes but `APIStatusError` for unrecognized codes is described in 'What to do' bullet 1 yet has no dedicated TDD anchor entry. Only the 9 named classes are covered.",
+      "fix": "Either (a) add `tests/test_claude_transcreation.py::test_unrecognized_api_status_raises_per_article` to TDD Anchor — synthetic `APIStatusError(status_code=418)` → `ClaudeTranscreationError`, OR (b) explicitly document in the AC that `APIStatusError` is the catch-all for non-listed status codes and confirm tech-spec '9 classes' matches the 9 listed. Bring the test inventory and Decision 5 enumeration into exact alignment."
+    },
+    {
+      "severity": "minor",
+      "category": "structure",
+      "task": 1,
+      "section": "Reviewers",
+      "issue": "Reviewers section uses absolute filesystem path `/workspaces/debian-2/my-hw/work/llm-transcreation-and-distributed-publishing/logs/working/task-1/code-reviewer-{round}.json`. Template specifies relative-feature form `work/{feature}/logs/working/task-{N}/{name}-{round}.json`. Absolute paths break portability if the workspace is mounted/cloned to a different prefix.",
+      "fix": "Change to template form: `work/llm-transcreation-and-distributed-publishing/logs/working/task-1/code-reviewer-{round}.json` (and same for test-reviewer). Apply consistently — Task 5 already uses the relative form; Tasks 1, 2, 3, 4 should match it."
+    },
+    {
+      "severity": "minor",
+      "category": "structure",
+      "task": 2,
+      "section": "Reviewers",
+      "issue": "Same as Task 1: absolute paths in Reviewers section diverge from template's relative-feature form.",
+      "fix": "Change to `work/llm-transcreation-and-distributed-publishing/logs/working/task-2/code-reviewer-{round}.json` (and test-reviewer)."
+    },
+    {
+      "severity": "minor",
+      "category": "structure",
+      "task": 3,
+      "section": "Reviewers",
+      "issue": "Same as Task 1: absolute paths in Reviewers section diverge from template's relative-feature form.",
+      "fix": "Change to `work/llm-transcreation-and-distributed-publishing/logs/working/task-3/{reviewer}-{round}.json` for all four reviewers."
+    },
+    {
+      "severity": "minor",
+      "category": "structure",
+      "task": 4,
+      "section": "Reviewers",
+      "issue": "Same as Task 1: absolute paths in Reviewers section diverge from template's relative-feature form.",
+      "fix": "Change to `work/llm-transcreation-and-distributed-publishing/logs/working/task-4/{reviewer}-{round}.json` for both reviewers."
+    },
+    {
+      "severity": "minor",
+      "category": "content",
+      "task": 2,
+      "section": "Acceptance Criteria",
+      "issue": "AC says 'Все 13 тестов из TDD Anchor проходят' but the TDD Anchor section header introduction in this task says '~12 тестов' in the Description, and the actual TDD Anchor list contains 13 entries. The 'What to do' step 4 also says '~12 тестов'. Minor inconsistency in count messaging — readers may be unsure whether 12 or 13 is the target.",
+      "fix": "Reconcile to a single number across Description, What to do, TDD Anchor, and Acceptance Criteria — either 12 (drop one test from anchors) or 13 (update Description / What to do)."
+    },
+    {
+      "severity": "minor",
+      "category": "consistency",
+      "task": 4,
+      "section": "Acceptance Criteria",
+      "issue": "AC 'В коде/документации зафиксировано: для outage admin-пингов использовать type(exc).__name__, не str(exc)' is satisfied by adding only a comment/docstring. Tech-spec AC under 'Token redaction & SDK loggers' is stricter: 'Admin-ping template uses type(exc).__name__ (not str(exc)) for user-visible messages on outage paths.' The task defers actual enforcement to downstream tasks (7, 8) without a test asserting any current admin-ping template uses the form. If downstream tasks miss the invariant, the redaction test won't catch it.",
+      "fix": "Either (a) add a test in this task that scans `news_bot.send_admin_notification`/related call sites for any plain `str(exc)` usage in outage-related templates and asserts none exist (lint-style), or (b) explicitly note in Post-completion that this AC is an invariant verified in Tasks 7 and 8 by their test suites, with a cross-reference. Avoid leaving the invariant as comment-only."
+    }
+  ],
+  "stats": {
+    "tasks_checked": 5,
+    "issues_found": 8
+  }
+}

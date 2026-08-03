@@ -1,0 +1,48 @@
+{
+  "summary": "31 tests, all green. Every TDD anchor from task-1.md is covered, plus solid extras (PRAGMA table_info dict-literal comparison for all three tables, blocks NULL vs [] distinction, rollback via WrappingConn-with-execute-counter, raw-TEXT Cyrillic assertion, PK-collision guard on retry_from_failed). Tempfile+monkeypatch pattern aligns with tests/test_integration.py. No HIGH findings; a few small gaps worth adding for robustness but none block release.",
+  "status": "ok-with-nits",
+  "findings": [
+    {
+      "severity": "low",
+      "file": "tests/test_pending_articles_repo.py",
+      "line": 465,
+      "description": "No test for `increment_attempt` on a missing link. The current implementation returns 0 (row is None path). Undocumented behaviour — if a future refactor flips this to a LookupError, callers (Tasks 9/10) break silently.",
+      "recommendation": "Add `test_increment_attempt_missing_link_returns_zero` that deletes the pending row and calls `increment_attempt('http://gone/', 'err')`, asserting the return is 0 and no exception. Pair with a docstring note on the function. Nit-level."
+    },
+    {
+      "severity": "low",
+      "file": "tests/test_pending_articles_repo.py",
+      "line": 624,
+      "description": "No test for `move_to_failed` when the pending row is absent (no-op branch at pending_articles_repo.py:520-521). Current code silently returns; a test freezes this contract so callers in Task 9 know they can call it defensively.",
+      "recommendation": "Add `test_move_to_failed_missing_link_is_noop` — call `move_to_failed('http://does-not-exist/', 'err')` on empty DB, assert no exception raised and failed_articles stays empty. Mirror for skip_pending / move_to_published no-op branches. Nit-level."
+    },
+    {
+      "severity": "low",
+      "file": "tests/test_pending_articles_repo.py",
+      "line": 215,
+      "description": "No explicit test that `insert_pending` tolerates missing-or-None `images` / `paragraphs` keys. Current impl does `entry.get('paragraphs') or []` so the defensive default works, but a regression that drops `or []` would only be caught by an IntegrityError from outside.",
+      "recommendation": "Add a test where `entry` omits `images` entirely — assert `insert_pending` returns True and `get_pending(...)['images']` == []. Same for `blocks` omission (already covered by _sample_entry default) and `paragraphs` is intentionally required — can be skipped. Nit-level."
+    },
+    {
+      "severity": "info",
+      "file": "tests/test_pending_articles_repo.py",
+      "line": 556,
+      "description": "`test_move_to_published_rollback_on_error` counts the execute-call index to 3 to land the fault between INSERT-published and DELETE-pending. This is tightly coupled to the exact ordering of conn.execute calls inside move_to_published. If the implementation is refactored to read the source row via executescript or changes order, the test silently lands the fault in a different step and may no longer exercise the intended partial-state window.",
+      "recommendation": "No action required; the test's docstring explicitly enumerates the 4-call sequence so the coupling is self-documenting. Flagging for future maintainers — if move_to_published gains a step, update the comment AND the `self._n == 3` trigger to match the new call graph."
+    },
+    {
+      "severity": "info",
+      "file": "tests/test_pending_articles_repo.py",
+      "line": 94,
+      "description": "`_TmpDbCase.setUp` pre-creates `processed_news` with a minimal DDL that omits some columns present in the real `news_bot.init_db`. move_to_published only writes (link, title, pub_date) so the test works, but if Task 6 extends processed_news the stub DDL will drift.",
+      "recommendation": "Consider importing the actual processed_news CREATE from `news_bot.init_db` (currently a string literal) or calling `news_bot.init_db()` at setUp time to keep the test DB and prod DB in lock-step. Low-priority — the current DDL matches the existing production schema."
+    },
+    {
+      "severity": "info",
+      "file": "tests/test_pending_articles_repo.py",
+      "line": 739,
+      "description": "`test_parameterized_queries_only` uses three regex patterns to grep for forbidden SQL construction. The test comment acknowledges false-positive tolerance. Current patterns do NOT catch a pattern like `conn.execute(\"SELECT * FROM \" + table_name, ())`. Not present in current code, but a future Task 7 addition could slip past.",
+      "recommendation": "Optional: extend the middle pattern with a broader concat heuristic. Not required for Task 1 sign-off."
+    }
+  ]
+}

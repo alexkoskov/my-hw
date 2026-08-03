@@ -1,0 +1,547 @@
+# Interview Plan for cross-source-dedup feature
+
+interview_metadata:
+  started: "2026-06-03 13:42:00"
+  last_updated: "2026-06-03 14:30:00"
+  status: "completed"
+  can_resume: false
+  current_question_num: 13
+  feature_size: "L"  # bumped from M after backfill addition: new module + backfill script + schema migration + 7 test files
+
+conversation_history:
+  - question_num: 1
+    timestamp: "2026-06-03 13:50:00"
+    topic: "soft_flag_destination"
+    agent_question: |
+      Куда идёт soft-flag (30-49% overlap)?
+      (а) молча в БД
+      (б) реанимировать hw_review.py
+      (в) admin-ping в Telegram «🤔 Похож на дубль» (рекомендую)
+    user_answer: "в"
+    summary: "Soft-flag → admin Telegram-ping; формат columnar Russian как existing pings."
+  - question_num: 2
+    timestamp: "2026-06-03 13:50:00"
+    topic: "success_criteria"
+    agent_question: |
+      3 критерия успеха:
+      1. 0 дублей в канале за месяц
+      2. <=1 ложный блок в месяц
+      3. На исторических данных классификация >=95%
+    user_answer: "2 (принять)"
+    summary: "Утверждены 3 критерия успеха."
+  - question_num: 3
+    timestamp: "2026-06-03 13:50:00"
+    topic: "error_tolerance"
+    agent_question: |
+      Цена ошибки:
+      (а) канал чистый > всё (агрессивный порог, риск ложных блоков)
+      (б) лучше дубль чем потеря (мягкий порог)
+      (в) сбалансированный 50% block + 30-49% flag (рекомендую)
+    user_answer: "в"
+    summary: "Сбалансированный подход: 50% block + 30-49% admin-flag."
+  - question_num: 4
+    timestamp: "2026-06-03 13:50:00"
+    topic: "extraction_method"
+    agent_question: |
+      Как извлекаем модели:
+      (а) regex + lexicon ~30 брендов (быстро, бесплатно) — MVP
+      (б) LLM extractor (Claude/OpenRouter, ~$0.0005/article)
+    user_answer: "а"
+    summary: "Regex + lexicon. Если точность <85% на исторических, рассмотреть путь Б."
+  - question_num: 5
+    timestamp: "2026-06-03 14:00:00"
+    topic: "fingerprint_storage"
+    agent_question: |
+      Где хранить отпечаток:
+      (а) колонка model_fingerprint TEXT в pending+published (рекомендую)
+      (б) отдельная таблица article_fingerprints
+      (в) только pending
+    user_answer: "а"
+    summary: "Колонка model_fingerprint TEXT JSON в pending_articles и published_articles."
+  - question_num: 6
+    timestamp: "2026-06-03 14:00:00"
+    topic: "backfill_strategy"
+    agent_question: |
+      Backfill для исторических статей:
+      (а) не делаем, окно прогревается 7 дней (рекомендую)
+      (б) скрипт пересчитывает за 14 дней
+    user_answer: "а (первоначально); пересмотрено после adequacy review"
+    summary: "Изначально 'не делаем'. После adequacy review разворот на 'делаем' — оператор подтвердил 2026-06-03 14:20."
+  - question_num: 13
+    timestamp: "2026-06-03 14:20:00"
+    topic: "backfill_reversal"
+    agent_question: |
+      Adequacy review: статья Car Culture Road Trip Mix уже в БД без fingerprint.
+      Любая PT-перепечатка этой же темы в первые 7 дней проскочит. Фича не ловит
+      ровно тот класс дублей, ради которого делается.
+      (а) оставить без backfill (как договорились)
+      (б) сделать backfill 5 мин на проде (рекомендую)
+    user_answer: "на твоё усмотрение"
+    summary: "Оператор делегирует решение. Применяем (б) — backfill 14 дней, идемпотентный, оператор запускает один раз."
+  - question_num: 7
+    timestamp: "2026-06-03 14:00:00"
+    topic: "time_window"
+    agent_question: |
+      Окно сравнения: 3, 7 или 14 дней?
+    user_answer: "7"
+    summary: "7 дней — золотая середина."
+  - question_num: 8
+    timestamp: "2026-06-03 14:00:00"
+    topic: "testing_strategy"
+    agent_question: |
+      Тестовая стратегия:
+      1. Unit на extractor (~10 кейсов)
+      2. Unit на similarity scorer (~5)
+      3. Integration test с двумя статьями
+      4. Регрессия на реальной паре (Car Culture Road Trip Mix)
+      5. Fallback test (extractor крашится → статья публикуется)
+    user_answer: "согласен"
+    summary: "Утверждены 5 направлений тестов."
+  - question_num: 9
+    timestamp: "2026-06-03 14:05:00"
+    topic: "token_granularity"
+    agent_question: |
+      Гранулярность токенов:
+      (а) только полная модель: "toyota 4runner"
+      (б) двухуровневая: "toyota 4runner" И "toyota" (рекомендую)
+      (в) только бренды
+    user_answer: "б"
+    summary: "Двухуровневая — модель и бренд отдельно; Jaccard на обоих уровнях, берём максимум."
+  - question_num: 10
+    timestamp: "2026-06-03 14:05:00"
+    topic: "year_in_token"
+    agent_question: |
+      Год выпуска (2018) в фингерпринт?
+      (а) выбрасываем (рекомендую — PT часто без года)
+      (б) оставляем
+    user_answer: "а"
+    summary: "Год не входит в токен."
+  - question_num: 11
+    timestamp: "2026-06-03 14:05:00"
+    topic: "empty_fingerprint"
+    agent_question: |
+      Статья без моделей:
+      (а) пропустить дедуп, пишем '[]' в колонку (рекомендую)
+      (б) считать дубликатом другой пустой
+    user_answer: "а"
+    summary: "Пустой fp → дедуп пропускается, в БД пишем '[]'."
+  - question_num: 12
+    timestamp: "2026-06-03 14:05:00"
+    topic: "remaining_decisions_bundle"
+    agent_question: |
+      Пакет решений (архитектура, acceptance criteria, edge cases, deploy, verification).
+    user_answer: "все по твоей рекомендации"
+    summary: "Утверждено целиком: новый model_extractor.py, 2 repo-helper'а, alert E014, новый этап в news_bot.py:1815. 8 acceptance criteria. Fallback degraded mode. Auto-migration через init_db()."
+
+# ============================================================================
+# Phase 1: High-Level Feature Understanding
+# ============================================================================
+phase1_feature_overview:
+
+  feature_name:
+    score: 95
+    status: "complete"
+    value: "cross-source-dedup"
+    gaps: ""
+    required: true
+
+  feature_description:
+    score: 88
+    status: "complete"
+    value: "Дедуп между источниками по отпечатку моделей машин (regex+lexicon, ~30 брендов): hard-block при >=50% overlap за 7 дней + soft-flag в admin Telegram-ping при 30-49%. Текущий дедуп (только по URL) сохраняется как первая линия защиты."
+    gaps: ""
+    required: true
+
+  work_type:
+    score: 95
+    status: "complete"
+    value: "feature"
+    gaps: ""
+    required: true
+
+  user_problem:
+    score: 88
+    status: "complete"
+    value: |
+      В канал @myhwchannel (продакшен) попадают дубли одного релиза с разных
+      источников. T-hunted (PT) по своей природе — derivative source: он часто
+      пере-публикует/переводит то, что уже было в autoevolution или lamley на EN.
+
+      Текущий дедуп (processed_news.link PRIMARY KEY) ловит только одинаковые URL.
+      Между источниками URL разные → защиты нет.
+
+      Конкретный инцидент 2026-06-03:
+      - t-hunted: "Um novo lote da série Car Culture com carros de viagem"
+        https://t-hunted.blogspot.com/2026/06/um-novo-lote-da-serie-car-culture-com.html
+      - autoevolution: "New Hot Wheels Car Culture Road Trip Mix preorders start now"
+        https://www.autoevolution.com/news/new-hot-wheels-car-culture-road-trip-mix-preorders-start-now-270722.html
+
+      Обе про одну партию (Land Rover S2, Subaru Legacy GT, 2018 Toyota 4Runner).
+
+      Природа повторения структурная (не разовая) — пока t-hunted остаётся
+      активным источником, такие дубли будут регулярными.
+    gaps: ""
+    required: true
+
+  target_users:
+    score: 90
+    status: "complete"
+    value: |
+      - Подписчики канала: получают чистую ленту без дублей.
+      - Оператор: получает admin-ping E014 при пограничных случаях (30-49% overlap), сам решает что делать.
+    gaps: ""
+    required: false
+
+  success_criteria:
+    score: 90
+    status: "complete"
+    value: |
+      1. 0 дублей в канале за месяц после деплоя (проверяется глазами по архиву).
+      2. <=1 ложный блок (false positive) в месяц.
+      3. На исторических данных классификация >=95% корректных решений.
+    gaps: ""
+    required: true
+
+  constraints:
+    score: 88
+    status: "complete"
+    value: |
+      - Окно сравнения: 7 дней.
+      - Перформанс: regex-extractor синхронный (~10ms на статью), сравнение Jaccard против ~30-50 фингерпринтов в окне — суммарно <100ms на проверку.
+      - Schema migration: 2 ALTER TABLE (новая колонка model_fingerprint в pending_articles и published_articles).
+      - Backfill для исторических статей: НЕ делаем. Окно "прогревается" 7 дней после деплоя.
+      - Fallback: если extractor крашится — статья всё равно публикуется (degraded mode).
+      - Цена ошибки: <=1 ложный блок в месяц приемлемо; false negative (пропущенный дубль) приемлем при близких порогах.
+    gaps: ""
+    required: true
+
+  testing_strategy:
+    score: 90
+    status: "complete"
+    value: |
+      1. Unit-тесты на extractor (~10 кейсов): корректные модели, edge cases без моделей, "Land Rover S2 (BP)", "2018 Toyota 4Runner".
+      2. Unit-тесты на similarity scorer (~5 кейсов): пустые fp, полный overlap, 50%, разные серии, 1-модельный край.
+      3. Integration test в tests/test_integration.py: сценарий с двумя статьями (t-hunted-like + autoevolution-like) — вторая блокируется.
+      4. Регрессия на сегодняшней паре: фикстуры с реальными моделями (Land Rover S2, Subaru Legacy GT, 2018 Toyota 4Runner) — assertion is_duplicate == True.
+      5. Fallback test: extractor бросает exception — статья публикуется (degraded mode).
+    gaps: ""
+    required: true
+
+# ============================================================================
+# Phase 2: User Experience & Scenarios
+# ============================================================================
+phase2_user_experience:
+
+  user_stories:
+    score: 88
+    status: "complete"
+    value: |
+      Story 1 (хочется поймать): Источник A публикует статью про новую партию Hot Wheels. На следующий день источник B перепечатывает то же на другом языке. Бот должен опубликовать только первую, вторую отбросить молча.
+
+      Story 2 (промежуточный случай): Две статьи про разные партии Car Culture, опубликованные в одну неделю. Имеют 1-2 общие модели. Бот публикует обе, но шлёт оператору admin-ping `[E014] 🤔 Похож на дубль` для проверки.
+
+      Story 3 (industry news): Статья «Mattel Q3 earnings» без моделей машин. Бот пропускает дедуп-этап (пустой fp), статья проходит в pending как обычно.
+
+      Story 4 (edge): На проде первая неделя после деплоя. Окно ещё пустое — дубли могут проскочить. Это приемлемо, через 7 дней окно прогревается полностью.
+    gaps: ""
+    required: true
+
+  acceptance_criteria:
+    score: 92
+    status: "complete"
+    value: |
+      AC1. Если у статьи есть body (paragraphs), `model_fingerprint` извлекается и сохраняется в `pending_articles.model_fingerprint` как JSON list[str].
+      AC2. При публикации фингерпринт переезжает в `published_articles.model_fingerprint` (как и остальные поля статьи).
+      AC3. Hard-block: статья с >=50% Jaccard overlap по моделям с любой статьёй в окне 7 дней — НЕ попадает в `pending_articles`. Link уходит в `processed_news` (не будет re-fetched). В логе INFO «Skipping cross-source duplicate <link>; matched <existing_link> (overlap N%)».
+      AC4. Soft-flag: статья с 30-49% overlap публикуется как обычно. Оператор получает admin-ping `[E014] 🤔 Похож на дубль` с обеими ссылками, источниками, % совпадения и списком общих моделей.
+      AC5. Пустой фингерпринт у новой статьи → дедуп-этап пропускается (no-op), статья проходит дальше как обычно. В БД сохраняется '[]'.
+      AC6. Сравнение идёт против ВСЕХ источников (no source_name filter): cross-source и within-source republishes оба ловятся.
+      AC7. Если `extract_fingerprint` или dedup-comparison крашится (любой exception) — статья ВСЁ РАВНО публикуется (degraded mode). В лог ERROR с traceback. Канал не страдает.
+      AC8. Schema migration выполняется автоматически при первом `init_db()` тике после деплоя через `try/except sqlite3.OperationalError` (паттерн уже есть в pending_articles_repo.py:185-194). На уже-мигрированной БД повторный вызов — no-op.
+      AC9. Гранулярность токенов: двухуровневая. «2018 Toyota 4Runner» → токены {"toyota 4runner", "toyota"}. Год отбрасывается.
+      AC10. Метрика Jaccard считается как max(jaccard(models_strict), jaccard(brands_only)) — поэтому даже с лёгкими разночтениями моделей бренды дают сигнал.
+    gaps: ""
+    required: true
+
+  edge_cases:
+    score: 90
+    status: "complete"
+    value: |
+      EC1. Empty fingerprint (статья без моделей) → дедуп пропущен, '[]' в БД.
+      EC2. Один токен в fp (статья про одну машину) → 50% порог достигается при 1 совпадении. Это намеренно — статья про "только Subaru Legacy" имеет высокий шанс быть дублем другой статьи про эту же машину.
+      EC3. Race на параллельных job() тиках — снимается существующим URL-фильтром на news_bot.py:1779-1782.
+      EC4. Первая неделя после деплоя — окно пустое, ловим только дубли внутри новых статей. Дубли против исторических могут пройти (acceptable trade-off, обсуждено).
+      EC5. Mattel/orangetrack отключены — но колонка должна быть готова если их когда-то включат обратно.
+      EC6. Длинная статья (1000+ paragraphs) — extract_fingerprint должен иметь O(n) bound, не зависать.
+    gaps: ""
+    required: true
+
+  error_scenarios:
+    score: 88
+    status: "complete"
+    value: |
+      ES1. extract_fingerprint() raises (regex compile error, malformed input) → log ERROR, статья публикуется без фингерпринта (degraded mode). См. AC7.
+      ES2. list_recent_*_fingerprints() raises (DB locked, schema mismatch) → log ERROR, статья публикуется без проверки. AC7.
+      ES3. malformed JSON в model_fingerprint при чтении → пропускаем эту строку в сравнении, не падаем.
+      ES4. send_admin_notification crashes при отправке E014 — не блокирует пайплайн публикации (admin узнает по логам).
+      ES5. ALTER TABLE при init_schema падает с НЕ-OperationalError exception → пайплайн падает (это правильно — schema corruption должна быть видна).
+    gaps: ""
+    required: true
+
+  verification_strategy:
+    score: 90
+    status: "complete"
+    value: |
+      During development:
+      - pytest -q зелёный (включая новые test_model_extractor + test_admin_alerts E014 + test_integration TestCrossSourceDedup).
+      - test_migration.py зелёный после обновления EXPECTED_PENDING_COLUMNS.
+      - Запуск news_bot с тестовой БД на 2-3 моковых статьях, проверка `model_fingerprint` записывается.
+
+      Post-deploy на проде:
+      - Неделя 1: следить за журналом admin-ping'ов. Любой `[E014]` — спот-чек: реально дубль или false positive?
+      - Неделя 2: проверить published_articles — все ли свежие записи имеют `model_fingerprint`. Если NULL — баг в insert_pending.
+      - 1 раз в месяц: ручной чек архива канала на дубли. Если найден неуловленный дубль — кейс для тюнинга порога/лексикона.
+    gaps: ""
+    required: true
+
+  ui_ux_requirements:
+    score: 88
+    status: "complete"
+    value: |
+      Формат admin-ping `[E014] 🤔 Похож на дубль` — columnar Russian по образцу E006:
+
+      ```
+      [E014] 🤔 Похож на дубль
+
+      Новая статья:
+      {new_link}
+
+      Похож на:
+      {existing_link}
+
+      Источник новой: {new_source}
+      Источник существующей: {existing_source}
+      Совпадение моделей: {overlap_pct}% ({n_matches}/{n_total})
+      Общие модели:
+      {model_list}
+
+      Что произошло:
+      статья прошла в очередь, потому что
+      порог автоблокировки (50%) не достигнут.
+
+      Что сделать:
+      посмотри обе статьи — если это дубль,
+      удали через hw_review (если поднимешь
+      его) или игнорируй, если разные.
+      ```
+    gaps: ""
+    required: false
+
+  risks:
+    score: 88
+    status: "complete"
+    value: |
+      R1. False positive (блок уникальной статьи): порог 50% специально завышен, чтобы это было редко. Цель — <=1 в месяц. Митигация: spot-check логов первые 2 недели; если порог слишком жёсткий — поднять до 60%.
+      R2. False negative (дубль проскочит): первая неделя — окно пустое, риск высокий. После прогрева — низкий. Митигация: ручная проверка архива канала 1 раз в месяц.
+      R3. Лексикон неполный (~30 брендов покрывает 95% случаев): новая редкая модель не извлечётся. Митигация: legacy добавление новых брендов через PR при первом промахе.
+      R4. PT/EN разнопись модели ("Legacy GT" vs "Legacy"): двухуровневая гранулярность (модель+бренд) снижает риск. Митигация: если регулярно проскакивают такие — добавить fuzzy matching или LLM extractor как backup.
+      R5. SQLite ALTER TABLE на горячей prod БД: пишет схему атомарно, no-op при повторе. Митигация: idempotency через try/except, паттерн уже отработан (telegraph_url migration 2026-04-30).
+      R6. Регрессия в пайплайне: новый этап добавляет точку отказа. Митигация: fallback degraded mode (AC7) — статья всё равно публикуется при любом сбое extractor'а.
+    gaps: ""
+    required: true
+
+  technical_decisions:
+    score: 92
+    status: "complete"
+    value: |
+      TD1. Extractor: regex + lexicon ~30 брендов в новом модуле model_extractor.py. Без LLM в MVP.
+      TD2. Гранулярность: двухуровневая (модель + бренд), Jaccard = max(strict, brands).
+      TD3. Год отбрасывается из токенов.
+      TD4. Метрика сходства: Jaccard на set[str], пороги 50% (block) / 30-49% (flag).
+      TD5. Окно сравнения: 7 дней.
+      TD6. Storage: новая колонка model_fingerprint TEXT (JSON list) в pending_articles + published_articles. JSON через _dumps() (ensure_ascii=False, как другие JSON-колонки).
+      TD7. Backfill: не делаем.
+      TD8. Source-filter в сравнении: НЕТ (within-source republishes тоже ловим).
+      TD9. Admin-alert code: E014 (свободен в диапазоне платформенных).
+      TD10. Schema migration: try/except OperationalError (паттерн в pending_articles_repo.py:185).
+      TD11. Fallback degraded mode при exception в extractor — статья публикуется (AC7).
+      TD12. Hard-block путь вызывает mark_processed (отличие от _is_text_only_checklist, который не вызывает) — чтобы не re-fetched на каждом тике.
+      TD13. Без новых внешних зависимостей (stdlib re + json + set операции).
+    gaps: ""
+    required: false
+
+  deploy_approach:
+    score: 90
+    status: "complete"
+    value: |
+      - Деплой через стандартный SCP-bundle (deploy.sh).
+      - Файлы в bundle: model_extractor.py (новый), пересланные pending_articles_repo.py, news_bot.py, admin_alerts.py.
+      - Migration выполняется автоматически: news_bot.init_db() → pending_articles_repo.init_schema() → try ALTER TABLE pending_articles ADD COLUMN model_fingerprint TEXT.
+      - На первом тике после деплоя ALTER отработает. На последующих — no-op (OperationalError caught).
+      - Никаких ручных шагов на проде.
+      - INSTANCE_LABEL env var остаётся как есть — admin-ping E014 наследует префикс.
+    gaps: ""
+    required: false
+
+  manual_user_actions:
+    score: 80
+    status: "complete"
+    value: |
+      Оператор не выполняет ничего вручную при деплое.
+      После деплоя — мониторинг admin-pings E014 первые 2 недели и ручной чек архива канала 1 раз в месяц.
+    gaps: ""
+    required: false
+
+  technical_decisions:
+    score: 90
+    status: "complete"
+    value: |
+      - Extractor: regex + lexicon ~30 брендов. Без LLM в MVP.
+      - Метрика сходства: Jaccard на set[str] моделей.
+      - Hard-block threshold: >=50% overlap за окно 7 дней.
+      - Soft-flag threshold: 30-49% overlap → admin Telegram-ping (columnar Russian, формат как `🤔 Похож на дубль`).
+      - Существующий URL-дедуп (processed_news) остаётся первой линией защиты.
+      - Storage: новая колонка model_fingerprint TEXT (JSON list) в pending_articles + published_articles.
+      - Backfill: не делаем, окно "прогревается" 7 дней.
+    gaps: ""
+    required: false
+
+  deploy_approach:
+    score: 0
+    status: "pending"
+    value: ""
+    gaps: "Schema migration: добавление колонки/таблицы. Запуск миграции на проде."
+    required: false
+
+  manual_user_actions:
+    score: 0
+    status: "pending"
+    value: ""
+    gaps: ""
+    required: false
+
+# ============================================================================
+# Phase 3: Integration & Technical Context
+# ============================================================================
+phase3_integration:
+
+  integration_points:
+    score: 92
+    status: "complete"
+    value: |
+      Code refs (от code-researcher):
+      - news_bot.py:1815 — после `_is_text_only_checklist`, перед формированием `row` dict (line 1817). Новый предикат `_is_cross_source_duplicate(article, fingerprint)`. На True → mark_processed + continue.
+      - pending_articles_repo.py:118 — добавить 'model_fingerprint' в _PENDING_JSON_COLS.
+      - pending_articles_repo.py:218-231 — добавить колонку в insert_pending column list + values.
+      - pending_articles_repo.py:185-194 — расширить migration block ALTER TABLE на model_fingerprint в обеих таблицах.
+      - pending_articles_repo.py — добавить list_recent_pending_fingerprints(days=7) и list_recent_published_fingerprints(days=7).
+      - admin_alerts.py — новый builder alert_cross_source_dupe(...) с кодом E014.
+      - НОВЫЙ: model_extractor.py — лексикон ~30 брендов, regex, extract_fingerprint(article), jaccard(a, b). Mirror boilerplate_filter.py structure.
+    gaps: ""
+    required: true
+
+  dependencies:
+    score: 88
+    status: "complete"
+    value: |
+      Без новых внешних зависимостей.
+      - stdlib re для regex.
+      - stdlib json для serialisation (через существующий _dumps в pending_articles_repo).
+      - stdlib set для Jaccard.
+      - Существующая admin_alerts инфраструктура для E014.
+    gaps: ""
+    required: false
+
+  technical_constraints:
+    score: 90
+    status: "complete"
+    value: |
+      - Имена моделей машин остаются английскими в PT/EN — это hardcoded reality, lexicon на EN работает кросс-языково.
+      - SQLite без ALTER TABLE IF NOT EXISTS — используем try/except OperationalError (паттерн уже есть).
+      - Performance: ~50 fingerprints в окне × ~5 моделей в каждом, regex extract ~10ms на статью, Jaccard ~1ms × 50 = 50ms. Total < 100ms per article (acceptable).
+      - ReDoS-safe regex (bounded quantifiers, ^-anchor) — convention из boilerplate_filter.py.
+    gaps: ""
+    required: false
+
+  data_requirements:
+    score: 92
+    status: "complete"
+    value: |
+      Schema:
+      - pending_articles.model_fingerprint TEXT (nullable) — JSON list[str], e.g. '["toyota 4runner", "toyota", "subaru legacy gt", "subaru"]'.
+      - published_articles.model_fingerprint TEXT (nullable).
+      - При insert новой строки — всегда заполняется (даже пустым '[]' для статей без моделей).
+      - При чтении в _row_to_dict — auto-deserialize в list[str] через _PENDING_JSON_COLS.
+
+      Query shape:
+      ```sql
+      SELECT link, source_name, model_fingerprint
+      FROM published_articles
+      WHERE published_at >= datetime('now', '-7 days')
+        AND model_fingerprint IS NOT NULL
+        AND model_fingerprint != '[]'
+      ```
+      Аналогично для pending_articles по fetched_at.
+    gaps: ""
+    required: false
+
+  migration_needs:
+    score: 90
+    status: "complete"
+    value: |
+      - Auto-migration через init_schema() при первом тике после деплоя.
+      - Backfill для исторических данных НЕ делаем — окно прогревается 7 дней.
+      - Существующие записи в pending_articles на момент деплоя останутся без fingerprint (NULL). Это ОК: при их публикации они переедут в published_articles тоже без fingerprint — выпадут из dedup-окна. Через неделю все актуальные записи будут иметь fingerprint.
+    gaps: ""
+    required: false
+
+# ============================================================================
+# Phase 4: Completion
+# ============================================================================
+phase4_completion:
+  userspec_file: "work/cross-source-dedup/user-spec.md"
+  status: "approved"
+
+# ============================================================================
+# Decision Rules
+# ============================================================================
+decision_rules:
+  required_threshold: 85
+  optional_threshold: 50
+
+  stop_criteria:
+    - "All required items in current cycle scope score >= 85%"
+    - "Structural: every required item has non-empty value, no TBD, gaps empty or conscious limitations"
+
+  priority_order:
+    - "Required items with score < 85% (lowest score first)"
+    - "Optional items mentioned by user in context"
+    - "Other optional items if user seems knowledgeable"
+
+  question_strategy:
+    - "3-4 questions per batch about different gaps"
+    - "Propose solutions based on PK"
+    - "Plain Russian for non-programmer operator"
+
+progress:
+  current_phase: "phase4_completion"
+  questions_asked: 12
+  last_question: "Q12 — bundle of remaining decisions"
+  total_required_score: 1063  # sum of required item scores
+  total_optional_score: 423
+  completion_estimate: "95%"
+  user_detail_level: "terse_decisive"  # answers in 1-3 char options
+
+notes: |
+  Critical caveat: Variant 4 references hw_review which is ARCHIVED (per architecture.md
+  "Operator-side only — archived 2026-04-30"). Need to clarify with user where soft-flag
+  should actually go in production: admin Telegram ping? Revive hw_review? New mini-queue?
+
+  Pipeline placement: model extraction MUST run after fetch_full_article (body needed)
+  but BEFORE insert_pending (so we don't waste LLM translation on duplicates). Fits
+  alongside _is_text_only_checklist (step b3 in job()).
+
+  Model fingerprint storage proposal: add `model_fingerprint TEXT` (JSON list) to
+  pending_articles AND published_articles. processed_news doesn't have body — can't
+  back-compute fingerprint there. So canonical lookup table = published_articles
+  + pending_articles for last 7 days.

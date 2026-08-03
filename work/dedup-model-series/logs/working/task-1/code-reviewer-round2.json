@@ -1,0 +1,41 @@
+{
+  "status": "approved_with_suggestions",
+  "summary": "Round-1 major #1 (unstable pair-key model token) is fixed correctly and surgically: strict/brands and the shipped similarity() Jaccard path are byte-unchanged (verified against the diff — the connector check is an ADDITIONAL statement after strict_tokens.add(token), not a modification of it), and the degrade-to-theme-only fail-safe is correct and regression-tested against the real motivating example. All three typing/assert minors are resolved exactly as suggested. Round-1 major #2 (79-line extract_fingerprint) is only partially resolved: the Pass-3 extraction into _pass3_series is genuine and clean, but the connector-stopword fix added enough new code+comments back into extract_fingerprint that its raw line count grew from 79 to 89 lines (measured 475-563 via AST), the opposite of the stated goal. This is not a new problem and stays non-blocking (same category round 1 already marked optional), but the claim that the function is 'now ~42 lines' does not hold for physical line count. No critical issues; all 58 non-calibration tests pass (calibration red by design, as expected pre-Task-4-wiring).",
+  "criticalIssues": [],
+  "suggestions": [
+    {
+      "file": "model_extractor.py",
+      "line": 475,
+      "severity": "major",
+      "category": "maintainability",
+      "suggestion": "Round-1 major #2 (extract_fingerprint over the 50-line guideline) is not resolved by this round's changes — measured via ast (def-to-closing-brace, same methodology as round 1's '79 lines (416-494)' citation): extract_fingerprint is now 475-563 = 89 physical lines, UP from 79. The _pass3_series extraction itself is a real win (a clean, pure, 19-line helper at 429-447 that removes Pass 3's body from the parent function), but the round-1 major #1 fix reintroduced more lines than that removed: a 5-line comment block for `pair_strict_tokens` (503-507), a 4-line comment for the eligibility check (540-543), plus the `pair_strict_tokens: set = set()` declaration and the `if model_lower not in _MODEL_CONNECTOR_STOPWORDS:` branch itself, all inline in Pass 1's loop (374-547 region). Net effect: +10 lines despite the helper extraction. Excluding comments/docstring/blank lines the 'code' portion is closer to ~39 lines (consistent with the task's '~42 lines' framing), so this is not a complexity regression — cyclomatic complexity only grew by one `if` — but the raw-line metric the automatic severity table keys off is still breached and now by a slightly wider margin than round 1 found. Non-blocking (round 1 already scored this 'optional': true), but worth a note in decisions.md rather than treating it as closed. If it's ever worth revisiting: the two new comment blocks in Pass 1 could be condensed to one-liners with the full rationale left solely in the `_MODEL_CONNECTOR_STOPWORDS` constant's docstring/comment above it (which already carries the full explanation), removing ~6-7 lines without losing any information.",
+      "benefit": "Keeps the function-length metric accurate in decisions.md instead of carrying forward a now-inaccurate 'resolved by helper extraction' assumption into Task 7's whole-feature audit.",
+      "optional": true
+    },
+    {
+      "file": "model_extractor.py",
+      "line": 265,
+      "severity": "minor",
+      "category": "best-practices",
+      "suggestion": "Verified fail-safe direction and scoping of `_MODEL_CONNECTOR_STOPWORDS` (requested scrutiny point b): the regex `(?P<model>[A-Za-z0-9][A-Za-z0-9\\-]{1,24})` requires at least 2 characters, so 1-character stopword entries ('a', 'e') can never actually match and are dead weight (harmless, not a bug). More substantively: a few 2-letter entries in the list ('na', 'no', 'on', 'or', 'at', 'to') are also plausible short chassis/trim codes in car culture (e.g. Mazda's 'NA' Miata generation code, if it were ever captured as the bare PRIMARY model token directly after the brand rather than as a model_extra suffix). I could not find a real collision in the current lexicon/fixtures, and the failure direction is safe (a real model coinciding with a stopword only degrades that one article to the theme-only broad key — a missed hard-block, never a false one, same polarity as the round-1 finding this fix addresses). Flagging so the real-DB smoke pass (already planned for the zamac-casing gap) also eyeballs whether any real title produces a 2-letter primary model token that got silently dropped from `pairs`.",
+      "benefit": "Closes out the residual risk on scrutiny point (b) with an explicit real-data check rather than leaving it purely theoretical.",
+      "optional": true
+    },
+    {
+      "file": "model_extractor.py",
+      "line": 566,
+      "severity": "minor",
+      "category": "readability",
+      "suggestion": "`extract_series(article_or_text)` (new public API) has no parameter type annotation — every other function in the module, including the ones added this round (`_canonical_series`, `_build_pairs`, `_pass3_series`, `shares_pair`), carries full annotations. Since the parameter is a genuine union (`dict | str`), `Union[dict, str]` (or `dict[str, object] | str` if being stricter) would restore consistency without needing `Any`.",
+      "benefit": "Keeps the newly-added public API's type coverage consistent with the rest of the module for static checkers.",
+      "optional": true
+    }
+  ],
+  "metrics": {
+    "filesReviewed": 2,
+    "criticalIssuesCount": 0,
+    "majorIssuesCount": 1,
+    "minorIssuesCount": 2,
+    "testCoverageAssessment": "excellent"
+  }
+}

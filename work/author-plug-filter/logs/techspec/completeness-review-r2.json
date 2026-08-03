@@ -1,0 +1,56 @@
+{
+  "status": "pass",
+  "round": 2,
+  "base_commit": "6e6be05",
+  "sources": {
+    "user_spec": true,
+    "tech_spec": true,
+    "tasks": false
+  },
+  "requirements_total": 17,
+  "requirements_covered": 16,
+  "requirements_partial": 1,
+  "requirements_missing": 0,
+  "round1_findings_resolution": {
+    "GAP-1": {
+      "original": "No variant-A negative test for Mattel corporate plug (AC16)",
+      "status": "resolved",
+      "evidence": "tech-spec line 38: explicit mention of AC16 negative in test_boilerplate_filter.py additions; line 264: 'AC16 negative: Follow Mattel on Instagram, X, and Facebook — corporate plug must pass through variant A unchanged. Lives in this file'; line 276: same fixture included in variant-B 7-fixture battery"
+    },
+    "GAP-2": {
+      "original": "Bullet-list handling for lamley/mattel — no explicit test verifying neighboring real-content bullets survive",
+      "status": "partially_resolved",
+      "evidence": "tech-spec line 260: 'One positive + one negative per new pattern A1–A5 (10 cases)' covers the per-item drop. The architectural reason neighboring items survive (filter_boilerplate is a per-element list comprehension over is_boilerplate, with each <li> as an independent element per code-research §2) is implicit but not called out as a named test case. No explicit multi-paragraph test like 'plug item dropped, content item preserved' is listed in the unit test inventory."
+    },
+    "GAP-3": {
+      "original": "Two adjacent cue sentences without terminal punct between them not covered",
+      "status": "resolved",
+      "evidence": "tech-spec line 267: 'two adjacent plug sentences without terminal punct between them (AC8 corner case from completeness GAP-3)' — explicitly listed as a B1 positive test case by name"
+    },
+    "SH-1": {
+      "original": "Final B1 regex string not reproduced verbatim",
+      "status": "resolved",
+      "evidence": "tech-spec Decision 4 (lines 125-165) contains complete Python code block with _PLATFORM_OR_TARGET_RU, _CUE_RU, _RU_SENTENCE_WITH_CUE, _PARENTHETICAL_PLUG, and _ORPHAN_HANDLE. Redesigned vs code-research: (a) _CUE_RU factored out as raw string (not re.compile object), (b) 'мой/наш/моего/нашего + platform' moved from _CUE_RU to _PLATFORM_OR_TARGET_RU, (c) 'найди(те)? меня' added as cue verb, (d) post-match guard pattern _PLATFORM_OR_TARGET_RU with finditer+re.search gate documented. Replacement logic also documented."
+    },
+    "SH-2": {
+      "original": "strip_in_paragraphs API does not document drop-empty behavior",
+      "status": "resolved",
+      "evidence": "tech-spec line 31 (Architecture, API contract): 'drops paragraphs that became whitespace-only (per Decision 10)'; Decision 10 lines 218-225 specifies the exact logic ([p for p in cleaned if p.strip()]) and the rationale; line 274 (Testing Strategy): 'Empty-paragraph disposal' test case listed"
+    },
+    "SH-3": {
+      "original": "None-safety not documented",
+      "status": "resolved",
+      "evidence": "tech-spec line 30 (Architecture, API contract): 'None and non-str pass through as-is with empty removed_fragments (no exception, no log)'; line 275 (Testing Strategy): explicit test cases for strip_author_plugs(None), strip_author_plugs(42), and strip_in_blocks with text=None; Risks table last row documents per-block isinstance guard"
+    }
+  },
+  "findings": [
+    {
+      "type": "partial",
+      "source": "tech-spec",
+      "requirement": "US-4 (AC4): Plug as bullet-list item dropped; neighboring bullet items with real content preserved",
+      "detail": "GAP-2 is partially resolved. The per-item drop is covered by the 'one positive + one negative per new pattern A1-A5' inventory. However, the tech-spec still has no named multi-element list test (e.g. ['Follow me on Instagram for the next reveal', 'Here is the actual content'] → only first dropped). The architectural guarantee (filter_boilerplate is a per-element list comprehension) is implicit from code-research but is not surfaced as an explicit test case in the Testing Strategy. For size S this is minor — the mechanism is correct and the omission is documentation-only.",
+      "severity": "minor"
+    }
+  ],
+  "summary": "16/17 requirements covered. All 6 round-1 findings addressed: GAP-1 (AC16 variant-A negative) resolved; GAP-3 (adjacent cue sentences) resolved; SH-1 (B1 regex reproduced) resolved; SH-2 (strip_in_paragraphs drop-empty documented) resolved; SH-3 (None-safety documented) resolved. GAP-2 (bullet-list neighbor preservation) is partially resolved — per-item drop is covered but no explicit multi-element list integration test is named. One minor finding remains. Zero critical findings: status PASS."
+}

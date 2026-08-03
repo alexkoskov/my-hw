@@ -1,0 +1,34 @@
+{
+  "reviewer": "test-reviewer",
+  "round": 1,
+  "mode": "inline (Task tool unavailable — same fallback as tasks 1/5/6/7/8)",
+  "scope": [
+    "tests/test_hw_review_style_reminder.py (9 new tests)"
+  ],
+  "verdict": "ok",
+  "summary": "Coverage matches the spec's required scenarios 1:1 plus three guard tests. Tests are behavior-focused (stdout/stderr substring + ordering via positional find), follow the existing tempfile-DB + MagicMock stdin pattern from test_hw_review_cli.py, and avoid over-mocking (real sqlite3, real repo, real SOURCE_EMOJI).",
+  "dimensions_checked": [
+    "scenarios-covered",
+    "test-pyramid-placement",
+    "assertion-quality",
+    "isolation (tempfile DB per test)",
+    "no-real-secrets",
+    "one-scenario-per-test",
+    "mock-discipline (<=3 mocks per test)"
+  ],
+  "scenarios": {
+    "list_nonempty_reminder_visible_after_rows": "covered (test_list_nonempty_queue_shows_reminder_after_rows)",
+    "list_empty_reminder_hidden": "covered (test_list_empty_queue_hides_reminder)",
+    "list_failed_only_reminder_hidden": "covered (test_list_failed_only_hides_reminder)",
+    "list_reminder_after_failed_footer_ordering": "covered (test_list_reminder_after_failed_footer)",
+    "stage_any_input_first_line_stderr": "covered (test_stage_success_emits_reminder_first_on_stderr + validation_error + out_of_range variants)",
+    "exact_guide_path_present": "covered (test_reminder_contains_exact_guide_path)",
+    "ux_guidelines_word_present": "covered (test_reminder_mentions_ux_guidelines)"
+  },
+  "findings": [],
+  "notes": [
+    "Constant-shape tests (TestReminderConstant) guard against silent drift of the load-bearing path token.",
+    "Stage-error variants (invalid JSON, out-of-range) confirm the reminder is emitted pre-stdin-read — stricter than the spec asked for, but cheap.",
+    "No bot token ever referenced; fake tokens would only be needed if tests exercised send_telegraph_teaser, which they do not."
+  ]
+}

@@ -1,0 +1,49 @@
+{
+  "reviewer": "test-reviewer",
+  "round": 1,
+  "mode": "inline-fallback",
+  "fallback_reason": "Task tool not available in this environment.",
+  "task": "task-7 hw_review CLI list/show/stage/skip/preview",
+  "commit": "5450d53",
+  "summary": "46 unit tests in tests/test_hw_review_cli.py covering all 5 subcommands, the validator (6 direct tests), argv smoke, plus 2 repo tests for set_preview_path. Total suite 324 green. Tests follow the tempfile-DB pattern from tests/test_integration.py:22-28. Mocks are limited to external boundaries: webbrowser.open, builtins.input, sys.stdin, Path.resolve (for the path-guard escape test), and update_staged (vanished-row test).",
+  "coverage_map": {
+    "list": ["empty-marker", "numbered-rows", "failed-footer empty queue", "failed-footer non-empty queue", "no-footer when failed empty"],
+    "show": ["out-of-range (99)", "out-of-range (0)", "all fields present", "NULL vs FILLED markers"],
+    "stage": ["happy path", "blocks-parity happy path", "empty ru_paragraphs accepted", "stdin > 256 KiB reject", "invalid JSON reject", "depth > 3 reject", "unknown top-key reject", "non-list ru_paragraphs reject", "non-dict block reject", "unknown block type reject", "unknown block key reject", "string > 10 KiB reject", "ru_blocks null vs EN-has-blocks cross-check", "ru_blocks set vs EN-null cross-check", "vanished row", "out-of-range index"],
+    "skip": ["no prompt when not staged", "y confirms", "N cancels", "empty cancels", "garbage cancels", "EOF cancels"],
+    "preview": ["precondition no staged ru", "writes html in CACHE_DIR", "--no-open skips browser", "default opens browser", "path-guard escape aborts", "headless (open returns False) still exits 0", "rerun cleans old file"],
+    "validator_direct": ["valid minimal", "missing top key", "valid block types", "heading level bounds", "non-string paragraph", "paragraphs list > 100"]
+  },
+  "findings": [
+    {
+      "id": "tr-1",
+      "severity": "info",
+      "area": "coverage",
+      "finding": "Every TDD-anchor item from tasks/7.md is represented, plus extras: test_skip_cancelled_on_eof (edge-case §9.13 п.5), test_preview_removes_old_file_on_rerun (idempotent re-preview §Risks), test_stage_accepts_empty_ru_paragraphs (§9.13 п.1), test_stage_reports_vanished_row (AC L63).",
+      "status": "no-action"
+    },
+    {
+      "id": "tr-2",
+      "severity": "info",
+      "area": "mock-hygiene",
+      "finding": "Only boundary mocks: webbrowser.open (external process), input (interactive), sys.stdin (byte stream), Path.resolve (escape-simulation), update_staged (vanished row race). No mocking of the SUT's own internals.",
+      "status": "no-action"
+    },
+    {
+      "id": "tr-3",
+      "severity": "info",
+      "area": "assertions",
+      "finding": "Negative-path tests assert both exit code AND stderr content AND (where relevant) absence of DB mutation. Happy-path tests verify persisted fields via repo.get_pending round-trip.",
+      "status": "no-action"
+    },
+    {
+      "id": "tr-4",
+      "severity": "info",
+      "area": "isolation",
+      "finding": "Each test gets its own tempfile DB; CACHE_DIR is patched to a tempdir per preview-test, cleaned up in tearDown.",
+      "status": "no-action"
+    }
+  ],
+  "verdict": "clean",
+  "action_taken": "None — no findings requiring code changes."
+}

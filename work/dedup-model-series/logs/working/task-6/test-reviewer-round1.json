@@ -1,0 +1,20 @@
+{
+  "status": "passed",
+  "summary": "Calibration harness fully re-wired onto the new pair-tier verdict (shares_pair + |D/|B tier) over the real 8-pair fixture; old similarity/_classify harness cleanly removed with no dead code, TestSimilarity/TestExtractFingerprint untouched, similarity still imported and used. The two hard asymmetric invariants are separate, non-vacuous tests (SDCC selection is guarded by an explicit len==3 assert; not-dupe selection is guarded by a non-empty assert) and are not folded into the 1-error aggregate budget. No mocking anywhere in the calibration block — real extract_fingerprint/shares_pair over real fixture data. tests/test_model_extractor.py -v is fully green (61/61) and the whole suite pytest -q is fully green (1241/1241) with no -k exclusion. deployment.md runbook (AC10) is operationally correct: cold-DB SQL matches the real published_articles.model_fingerprint column (added via idempotent ALTER TABLE in pending_articles_repo.init_schema, called from init_db() on every boot), the DEDUP_SERIES_ENABLED toggle name/default/parsing matches news_bot.py exactly, the compose service name (news-bot) and container name (hw-news-bot) are used correctly and consistently with the rest of deployment.md, the DB path and repo path match, --days 30 is within the documented [1,90] clamp, and the staged rollout order (pre-check -> dark deploy toggle off -> build -> backfill -> observe -> toggle on) is safe and correctly gated to outside the 10:00-20:00 MSK window at every restart step.",
+  "findings": [],
+  "metrics": {
+    "filesReviewed": 4,
+    "litmusTest": {
+      "checked": 3,
+      "passed": 3,
+      "failed": 0
+    },
+    "coverageAssessment": "excellent",
+    "pyramidBalance": {
+      "unit": 3,
+      "integration": 0,
+      "e2e": 0,
+      "assessment": "healthy"
+    }
+  }
+}

@@ -1,0 +1,135 @@
+{
+  "status": "fail",
+  "sources": {
+    "user_spec": true,
+    "tech_spec": true,
+    "tasks": false
+  },
+  "requirements_total": 18,
+  "requirements_covered": 15,
+  "requirements_partial": 2,
+  "requirements_missing": 1,
+  "findings": [
+    {
+      "id": "F-01",
+      "type": "gap",
+      "source": "user-spec",
+      "requirement": "US-3 / AC3: Hard-block must NOT save article to pending_articles",
+      "detail": "AC3 explicitly says the article is NOT saved to pending_articles — only the link goes to processed_news. The Architecture flow diagram in tech-spec shows `mark_processed` + `continue`, which skips `insert_pending`. However, Decision 8 only documents the mark_processed rationale; nowhere does the tech-spec explicitly confirm that hard-blocked articles are never written to pending_articles. The flow diagram is the only evidence. More critically: in the dedup-gate pseudocode (Architecture section, line 53), `fp` is stored in `row` and then passed to `insert_pending` after the except block — but the `continue` statement in the block path means the `insert_pending` on line 55 is never reached. This logic is correct, but the spec relies on the reader understanding that `continue` exits the per-entry loop iteration. For an L-size feature with multiple developers, this implicit control-flow dependency should be explicitly stated in Decision 8 or the dedup gate description. Current coverage is partial — the intent is correct but under-stated.",
+      "severity": "minor"
+    },
+    {
+      "id": "F-02",
+      "type": "gap",
+      "source": "user-spec",
+      "requirement": "US-9 / AC9: Log ERROR with traceback — tech-spec replaces this with E016 ping without confirming traceback is still logged",
+      "detail": "AC9 requires 'В лог ERROR с traceback'. Tech-spec Decision 12 says 'log logger.exception(...)' which does emit a traceback, and the architecture pseudocode shows `logger.exception(\"dedup gate failed, degraded mode active\")`. This is correct. However, User-Spec Deviations documents E016 as an extension of AC9 but does not explicitly confirm that the logger.exception call (which satisfies the original AC9 log requirement) is still present. A reader of the deviations section alone would not know AC9's log requirement is preserved. Partial coverage — traceback logging is present in the Architecture section but omitted from the Deviations entry.",
+      "severity": "minor"
+    },
+    {
+      "id": "F-03",
+      "type": "gap",
+      "source": "user-spec",
+      "requirement": "US-11 / AC11: backfill_fingerprints.py handles malformed paragraphs JSON",
+      "detail": "User-spec AC11 requires the backfill to handle 'malformed paragraphs JSON' — the test spec at user-spec line 154 explicitly lists `tests/test_backfill_fingerprints.py` with 'обработка malformed paragraphs JSON' as a required test case. Tech-spec Decision 10 documents fetch failure modes (404, Cloudflare 403) but does not address the case where `fetch_full_article` returns content with malformed JSON structure. Task 6 description mentions 'error counting on fetch failures' but does not enumerate malformed-JSON handling as a distinct failure mode in the backfill script's error handling. The corresponding test in Testing Strategy (test_backfill_fingerprints.py) also omits this scenario. This is a gap: the failure mode exists (some published_articles may have been saved with corrupt paragraph data), and the user-spec explicitly required it to be tested.",
+      "severity": "major"
+    },
+    {
+      "id": "F-04",
+      "type": "partial",
+      "source": "user-spec",
+      "requirement": "US-12 / AC12: Calibration fixture — 'not-dupe shape with 1-token on each side'",
+      "detail": "AC12 mandates three specific not-dupe shapes: (1) the real 2026-06-03 pair as a dupe, (2) same-brand different-models (Subaru BRZ vs Subaru WRX) as not-dupe, (3) 1-token-per-side not-dupe. Tech-spec Task 1 mentions 'AC8 probes, and 1-token guard' in the fixture description and TestSimilarity mentions '1-strict-token both sides → brands fallback NOT applied'. However, the Testing Strategy section for `test_calibration_accuracy` only specifies '8-pair fixture, ≥7/8 correct' without enumerating the mandatory fixture shapes from AC12. The required shapes appear only in Task 1's description — not in the Testing Strategy section where they would be most visible during review. Structural scatter (content in task, not in testing strategy) — the requirement is partially covered.",
+      "severity": "minor"
+    },
+    {
+      "id": "F-05",
+      "type": "scope_creep",
+      "source": "tech-spec",
+      "requirement": "E016 degraded-mode Telegram ping — not in user-spec",
+      "detail": "User-spec AC9 requires only: (a) article publishes, (b) log ERROR with traceback. The tech-spec adds E016 — a rate-limited Telegram admin ping when degraded mode fires. This is new functionality (a new Telegram notification code) not requested in the user-spec. It is documented in User-Spec Deviations with reason: 'AC9 visibility requirement (operator can't read VPS logs in real-time)' and marked [APPROVED via user-spec Решения]. However, the user-spec Решения section only generally discusses operator visibility for hard-blocks (E015) and soft-flags (E014) — it does not explicitly mention or approve a ping for degraded mode. The approval reference is indirect. Downgraded to documented_deviation per methodology (deviation is documented with reason). Flagged for operator awareness.",
+      "severity": "minor"
+    },
+    {
+      "id": "F-06",
+      "type": "documented_deviation",
+      "source": "tech-spec",
+      "requirement": "US-1 / AC1: model_fingerprint stored as JSON list → tech-spec uses JSON object",
+      "detail": "User-spec AC1 says 'JSON-список' (JSON list). Tech-spec stores `{\"strict\": [...], \"brands\": [...]}` — a JSON object with two keys. This is a refinement of the fingerprint shape, not just an implementation detail, because AC1 explicitly specifies the storage format. The deviation is documented in User-Spec Deviations with reason and marked [APPROVED]. Per methodology this becomes a documented_deviation (minor, for awareness). However, the deviation entry says 'operator confirmed AC8/AC9/AC10 intent during user-spec phase' — AC8 is the correct reference (two-level granularity), not AC9 or AC10. Minor inaccuracy in the approval rationale.",
+      "severity": "minor"
+    },
+    {
+      "id": "F-07",
+      "type": "underengineering",
+      "source": "tech-spec",
+      "requirement": "US-11 / AC11: backfill error strategy — fetch failure stores empty fp, permanently loses retry opportunity",
+      "detail": "Decision 10 states: 'Fetch returns None → store {\"strict\": [], \"brands\": []}'. But the idempotency mechanism (skip rows where model_fingerprint IS NOT NULL) means that a row where the fetch failed permanently has an empty fingerprint — a second run will SKIP it (it is no longer NULL). The user-spec requires idempotency AND correctness. Storing an empty-fp for a fetch failure conflates 'no brands in article' with 'fetch failed' — the backfill cannot distinguish them on a second run. The user-spec risk of Cloudflare 403s (mentioned in tech-spec Risks) means partial backfill is a real scenario. The correct approach would be to distinguish fetch-failure (keep NULL, retry possible) from genuine-empty-fp (store `{\"strict\": [], \"brands\": []}`). This is an underengineering finding: the error recovery path permanently destroys retry opportunity for transiently unavailable articles.",
+      "severity": "major"
+    },
+    {
+      "id": "F-08",
+      "type": "underengineering",
+      "source": "tech-spec",
+      "requirement": "US-5 / AC5: Soft-flag rate-limit — bot_state key uses newline separator in URLs",
+      "detail": "Decision 6 specifies key shape `softflag_pair:{new_link}\\n{existing_link}` with comment 'newline separator — links contain `:` and `/`'. However, URLs can also contain newline-equivalent characters (URL-encoded `%0A`) in edge cases, and the newline separator itself could cause issues in any k/v display, export, or backup tooling. More importantly, there is no documented key-length bound — modern article URLs can be 200+ characters, and two of them plus prefix could exceed 450 characters. If `bot_state` has any TEXT column length assumption or sqlite display truncation in admin tooling, this could silently corrupt the key. A hash of the pair (e.g., SHA256 of `new_link + '|' + existing_link`) would be more robust. This is a minor underengineering finding since the risk is low in practice for this project's URL patterns, but the chosen separator is fragile by design.",
+      "severity": "minor"
+    },
+    {
+      "id": "F-09",
+      "type": "underengineering",
+      "source": "tech-spec",
+      "requirement": "US-3 / AC3 + US-4 / AC4: Dedup compares new article against BOTH pending and published windows",
+      "detail": "The architecture correctly queries both `list_recent_pending_fingerprints` and `list_recent_published_fingerprints`. However, there is no explicit handling of the case where the same article URL appears in BOTH pending and published (e.g., an article promoted from pending to published within the 7-day window). In this case `_check_cross_source_dedup` would compare against itself twice — once from each list — potentially producing a 100% self-match that triggers a hard-block on the original article's own re-processing. The URL-equality guard mentioned in Decision 9 ('URL-equality at news_bot.py:1779-1782 already prevents same-link self-match') applies to the FETCH loop deduplication, not to the fingerprint comparison. If the dedup gate processes a re-fetched URL that already exists in both tables, the self-match protection is not documented in the similarity comparison path. This is a minor gap in boundary-condition handling for an L-size feature.",
+      "severity": "minor"
+    },
+    {
+      "id": "F-10",
+      "type": "shallow_solution",
+      "source": "tech-spec",
+      "requirement": "Decision 4 rationale cites AC10 instead of AC8",
+      "detail": "Decision 4 rationale states 'Supports user-spec AC8, AC10'. AC10 covers schema migration idempotency — it has no relationship to the similarity formula. The correct reference is AC8 (false-100% protection) and AC6 (empty fingerprint skip). This is a traceability error: AC10 support is documented under Decision 11 (migration), not Decision 4 (similarity). While this does not represent a missing implementation, it is a factual error in the Decisions section that would mislead a reviewer checking AC10 coverage. The finding type shallow_solution applies narrowly — the rationale contains a citation error that weakens the decision's traceability to user requirements.",
+      "severity": "minor"
+    },
+    {
+      "id": "F-11",
+      "type": "overengineering",
+      "source": "tech-spec",
+      "requirement": "Task split: Task 2 (schema + repo helpers) and Task 4 (rate-limit helpers) both modify pending_articles_repo.py",
+      "detail": "Tasks 2 and 4 both target the same file (`pending_articles_repo.py`), both have skill `code-writing`, both are in Wave 1 (independent), and both modify the same test file (`tests/test_pending_articles_repo.py`). Splitting them creates a merge conflict risk: if both agents run in parallel and both add to the same test file, one will overwrite the other's additions. The split adds coordination overhead with no parallelism benefit for an independent wave. A single task covering all repo changes would be simpler and conflict-free. This is a task-level overengineering finding: the split is not justified by independent ownership, test isolation, or file separation — it actually increases risk.",
+      "severity": "major"
+    },
+    {
+      "id": "F-12",
+      "type": "structural_gap",
+      "source": "tech-spec",
+      "requirement": "Task 5 description contains integration path rationale not in Decisions section",
+      "detail": "Task 5 description states: 'Wire into job() between line 1815 (post _is_text_only_checklist) and line 1817 (pre row dict) per Architecture diagram'. The specific line numbers and the choice of insertion point (between these two specific lines, not earlier or later in the pipeline) constitute an architectural decision about integration point. This decision is not documented in the Decisions section — only in the task description. Decision 8 documents why `mark_processed` is called on hard-block, and the Architecture section shows the flow, but nowhere in the Decisions section is the choice of integration point (why between line 1815 and 1817, rather than e.g. after `row` assembly or before `fetch_full_article`) formally justified. A future maintainer reading only the Decisions section will not find the rationale for the dedup gate placement.",
+      "severity": "critical"
+    },
+    {
+      "id": "F-13",
+      "type": "underengineering",
+      "source": "tech-spec",
+      "requirement": "US-8 / AC8: Similarity formula edge case — article with 2 strict tokens but 1 brand (e.g. Toyota Supra + Toyota 4Runner)",
+      "detail": "The guarded Jaccard in Decision 4 checks `len(brands_a) < 2 OR len(brands_b) < 2` to gate brand fallback. Consider an article with `strict=['toyota supra', 'toyota 4runner']` and `brands=['toyota']`. len(strict)=2 (passes first guard), len(brands)=1 (fails second guard, so brands fallback NOT applied). Result: pure strict Jaccard only. This is the correct behavior. However, the spec does not document this corner case explicitly — an article can have multiple strict tokens but only 1 brand. The TestSimilarity scenarios in Testing Strategy do not include this case. Since AC8 is a core safety feature of an L-size feature, this boundary condition should be explicitly tested. Missing test scenario for a documented corner case is a minor underengineering finding.",
+      "severity": "minor"
+    },
+    {
+      "id": "F-14",
+      "type": "underengineering",
+      "source": "tech-spec",
+      "requirement": "US-16 / Scenario 4: Deploy flow — tech-spec Task 11 does not verify deploy.sh FILES list update",
+      "detail": "User-spec Scenario 4 requires deploy via `deploy.sh`. Task 11 (Deploy) states 'Verify deploy bundle FILES list at top of deploy.sh is updated to include the new top-level files'. However, there is no corresponding task or acceptance criterion that ensures `deploy.sh` is MODIFIED before deployment. The deploy task is in the Final Wave after code is written, which means the FILES list update could be missed if not explicitly tracked. The tech-spec Acceptance Criteria section does not include a criterion for deploy.sh completeness. For an L-size feature adding two new top-level files (`model_extractor.py`, `backfill_fingerprints.py`), missing these from deploy.sh would cause a silent production failure (dedup gate imports would fail). This is an underengineering finding — the deploy verification step is described but not enforced by any earlier task or AC.",
+      "severity": "major"
+    },
+    {
+      "id": "F-15",
+      "type": "partial",
+      "source": "user-spec",
+      "requirement": "US-18 / Constraint: Performance <100ms per article — partially covered",
+      "detail": "User-spec constraint: '<100 ms на статью'. Tech-spec Acceptance Criteria states 'Performance: extract_fingerprint на 10KB body <10ms; полный dedup-этап (extract + 50 similarity calls + repo query) <100ms per article'. The 10ms unit test for extract_fingerprint (in TestExtractFingerprint, 'Long body bounded performance') is well-specified. However, the '50 similarity calls + repo query' component of the 100ms budget has no corresponding test. The integration test (Task 5) verifies correctness but not latency. No performance test or profiling step is mentioned for the full dedup gate. For an L-size feature on a constrained VPS, the performance budget for the full gate should have an explicit test, not just the unit-level extractor test. Partial coverage — micro-benchmark present, system-level benchmark absent.",
+      "severity": "minor"
+    }
+  ],
+  "summary": "15/18 requirements covered (2 partial, 1 missing). 1 critical structural gap (integration-point decision buried in task description, absent from Decisions section — F-12). 3 major findings: malformed-paragraphs JSON not addressed in backfill error handling (F-03), fetch-failure stores empty-fp conflating error with genuine empty — destroys retry opportunity (F-07), Tasks 2+4 splitting a single file creates merge-conflict risk with no parallelism benefit (F-11), deploy.sh update not enforced by any task or AC (F-14). 9 minor findings including documented deviations, boundary condition gaps, and a citation error in Decision 4 rationale. No scope creep beyond documented deviations. No YAGNI abstractions detected. E016 is the only addition not directly in user-spec, and it is documented with reason. Regex approach is appropriate for stated constraints — no LLM fallback path needed per user-spec explicit constraint ('Без LLM в MVP')."
+}

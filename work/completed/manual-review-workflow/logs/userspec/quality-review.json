@@ -1,0 +1,107 @@
+{
+  "status": "approved",
+  "checks": {
+    "completeness": "pass",
+    "edge_cases": "pass",
+    "acceptance_criteria": "pass",
+    "contradictions": "pass",
+    "template_compliance": "pass",
+    "size_check": "warning"
+  },
+  "findings": [
+    {
+      "check": "completeness",
+      "severity": "major",
+      "issue": "Interview edge_cases (interview.yml phase2_user_experience.edge_cases) explicitly states: 'Queue at exactly 10, prep finds 0 new. Do not fast-track; overflow trigger requires slot pressure (new_count > free_slots).' This behavioral guard is never stated in the spec. The overflow condition formula 'pending + new_count > 10' implies the correct behavior mathematically (0+10=10, not >10), but the spec never says it explicitly. A full queue of staged operator work should not be silently evicted on a cron tick that brings zero new entries.",
+      "location": "Как должно работать — Overflow-путь; Критерии приёмки",
+      "fix": "Add a criterion or an explicit note in the Overflow-путь description: 'Если новых записей нет (new_count = 0), overflow-пасс не запускается — переполнение требует реального slot pressure (new_count > 0 И pending + new_count > 10).'"
+    },
+    {
+      "check": "acceptance_criteria",
+      "severity": "minor",
+      "issue": "Criterion at line 73 ('Существующий test suite остаётся зелёным после рефакторинга') is a regression gate, not a user-observable feature behavior. The CI-гейт was correctly moved to Тестирование in round 1, but this companion criterion was not. Its presence in Критерии приёмки mixes test infrastructure mandates with product acceptance criteria.",
+      "location": "Критерии приёмки — последний bullet",
+      "fix": "Move 'Существующий test suite остаётся зелёным после рефакторинга...' from Критерии приёмки to the Тестирование section, alongside the CI-гейт bullet that is already there."
+    },
+    {
+      "check": "acceptance_criteria",
+      "severity": "minor",
+      "issue": "Criterion 8 (line 62) says: 'повторный hw_review publish N идемпотентно создаёт новый пост (запись всё ещё в очереди со staged ru, не в published)'. The phrase 'новый пост' is ambiguous — does the retry create a new Telegraph page (leaving the first one orphaned), or does it reuse the Telegraph URL from the failed first attempt? If a new page is created each time, orphaned Telegraph pages accumulate silently. The spec does not address the Telegraph side of the retry.",
+      "location": "Критерии приёмки — criterion о повторном publish N (Telegram-пост упал)",
+      "fix": "Clarify whether the retry reuses the already-created Telegraph URL (preferred: store telegraph_url in the pending row after createPage succeeds, then retry only sends the Telegram message using that stored URL) or creates a new Telegraph page each time. Add the clarification to the criterion and to Технические решения."
+    },
+    {
+      "check": "contradictions",
+      "severity": "minor",
+      "issue": "Criterion 8 (line 61) claims hw_review publish N works 'в одной команде' (atomic), but criterion 9 (line 62) immediately describes a partial-failure scenario where the command can succeed for Telegraph and fail for Telegram. These two criteria together imply non-atomicity, which is correct and expected, but the word 'атомарно' in 'Как должно работать' step 7 (line 30) is now inconsistent with the half-committed failure case described in criterion 9.",
+      "location": "Как должно работать — step 7 ('CLI атомарно'); Критерии приёмки — criterion 9",
+      "fix": "Replace 'атомарно' in step 7 with a more accurate phrase such as 'в одной операции, последовательно:' or 'без промежуточного состояния для пользователя:'. Add a note that Telegraph-only partial failure is handled by criterion 9 (idempotent retry)."
+    },
+    {
+      "check": "edge_cases",
+      "severity": "minor",
+      "issue": "The interview error_scenarios (interview.yml lines 535-558) documents 'editPage fails when blanking a discarded draft' with hw_review cleanup-drafts as the lazy-retry mechanism. The local HTML pivot correctly removed both editPage and cleanup-drafts from the feature. However, neither the spec nor Технические решения explicitly notes that the cleanup-drafts command was considered and dropped — the decision record only says 'не требует отдельной команды cleanup-drafts'. A reader unfamiliar with the pivot may wonder why no cleanup mechanism exists for the local HTML file.",
+      "location": "Технические решения — local HTML preview bullet",
+      "fix": "Minor improvement: add to the local HTML decision note that 'HTML-файл автоматически удаляется после publish (step 7 happy-path); при skip или сбое файл остаётся в /tmp и удаляется ОС при следующей перезагрузке — не требует явного cleanup.' This closes the mental gap without adding surface."
+    },
+    {
+      "check": "size_check",
+      "severity": "minor",
+      "issue": "Size M is declared. The spec now has 20 acceptance criteria (threshold >10), 8 distinct user stories in the interview, 4 explicit flow paths (happy-path, fallback, overflow, retry), and touches 7+ integration points (job(), init_db(), telegraph_publisher, pending_articles_repo, hw_review.py CLI, send_admin_notification, send_telegraph_teaser). The interview.yml itself notes 'borderline L'. 20 criteria is double the M threshold.",
+      "location": "Frontmatter — size: M",
+      "fix": "Consider upgrading to L. If M is intentionally kept (e.g. because the core logic change is small and complexity lives in tests), add a brief justification comment in the frontmatter or Ограничения section: 'Размер M несмотря на >10 критериев: основная бизнес-логика — рефакторинг одного job(), новая CLI-обёртка и три таблицы; большинство критериев — тонкие поведенческие гарантии без архитектурных изменений.'"
+    }
+  ],
+  "interview_coverage": {
+    "covered": [
+      "split pipeline into prep and publish phases",
+      "pending_articles table with full article data and ru_* NULL at INSERT",
+      "admin ping format with source emoji and counts, only when queue non-empty",
+      "hw_review CLI commands: list, show, stage, preview, publish, skip, take, retry",
+      "trigger phrase 'посмотрим очередь' (as UX convention, not product invariant)",
+      "preview is local HTML file opened via webbrowser.open — not Telegraph draft",
+      "local HTML pivot rationale: no editPage, no cleanup-drafts, no draft column",
+      "queue hard cap of 10 pending entries",
+      "overflow path: fast-track only records with empty ru_* (staged rows protected)",
+      "idle timeout 48h with heads-up admin ping",
+      "grace window default 2h, parametrised in tech-spec",
+      "intercept command hw_review take N during grace window",
+      "take N after grace expired returns 'already auto-published' error",
+      "fallback via transcreate_text on stale entries",
+      "three new tables: pending_articles, published_articles, failed_articles",
+      "via_review bool flag in published_articles",
+      "failed_articles after 3 GT failures",
+      "hw_review retry N moves row from failed to pending with attempt_count=0",
+      "skip with staged ru_* requires y/N confirmation",
+      "skipped links written to dedup-table only, not published_articles",
+      "dedup-table semantics: published OR skipped = full set of 'processed'",
+      "startup double-run accepted — one extra admin ping on deploy day",
+      "no OpenAI or Anthropic API in this feature",
+      "Python-only stack, no n8n",
+      "locked post format unchanged",
+      "Mattel source moved to SOURCES registry, one-list principle",
+      "pending_articles_repo.py as new DAO module",
+      "hw_review.py with argparse, no new pip dependencies",
+      "UNIQUE(link) on pending_articles to handle cron overlap, IntegrityError logged",
+      "SQLite concurrent INSERT risk documented in Риски with UNIQUE mitigation",
+      "testing plan: unit + integration + migration + regression",
+      "CI migration gate on every PR in Тестирование section",
+      "no formal staging environment",
+      "failed_articles surfaced in hw_review list footer on every call",
+      "hw_review list footer format: '⚠️ K неопубликованных в failed: [titles]. hw_review retry N'",
+      "hw_review list on empty queue shows 'queue is empty'",
+      "hw_review stage N partial staging rejected with clear error",
+      "hw_review preview N without stage fails with 'nothing to preview' error",
+      "hw_review publish N idempotent Telegram-only retry (same ru_* state)",
+      "source registry criterion: adding new source = editing one list",
+      "overflow-eviction protection for staged rows explicitly in criteria",
+      "GT fast-track failure handling: queue stays full, new entries deferred, operator ping",
+      "deploy approach: stop container, git pull, restart; hosting-agnostic"
+    ],
+    "missing": [
+      "Interview edge_cases: 'Queue at exactly 10, prep finds 0 new → do not fast-track; overflow trigger requires slot pressure (new_count > 0)' — implied by the overflow formula but never stated as explicit protection in spec",
+      "Interview technical_decisions: publish_article return type change from str to dict{url, path} needed to store telegraph_path in published_articles — not mentioned in user-spec Технические решения (acceptable omission for user-spec level, but relevant for tech-spec derivation)"
+    ]
+  },
+  "summary": "Спек значительно улучшен в раунде 1: все три major-находки (grace window, критерий визуальной идентичности, ru_* NULL при INSERT) устранены, 7 из 8 пробелов интервью закрыты. Документ готов к передаче в tech-spec. Остались одна major-находка (явная защита от overflow при new_count=0) и четыре minor (регрессионный критерий в приёмке, амбигуозность retry-поведения для Telegraph-страницы, слово 'атомарно' vs идемпотентный retry, размер M при 20 критериях)."
+}

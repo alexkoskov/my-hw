@@ -1,0 +1,35 @@
+{
+  "status": "approved",
+  "findings": [
+    {
+      "category": "sizing",
+      "severity": "minor",
+      "issue": "Size reclassified to M after removing Telegraph-draft subsystem (edit_page wrapper, cleanup-drafts subcommand, preview_path column, draft lifecycle). Remaining surface area: prep/publish split, three new SQLite tables, CLI with 7 verbs (list, show, stage, preview, publish, skip, take, retry), overflow fast-track, idle fallback + grace window, Mattel-into-registry refactor, and rewriting ~8 existing integration tests. That's still the high end of M — plausibly 2 increments — but the ~40% surface cut is real and the earlier critical L-sized scope is resolved.",
+      "why_matters": "Not a blocker. Flagged for awareness: if implementation slips, a clean split exists (increment 1 = prep split + pending_articles table + admin ping + minimal list/show/stage/publish; increment 2 = idle fallback + overflow + failed-retry). Tech-spec author should consider whether to sequence the work.",
+      "fix": "Optional. Tech-spec may opt to sequence the delivery: land the prep/publish split and core CLI first (verifiable in isolation), then layer overflow + idle-fallback + retry as a second wave. No change required to user-spec."
+    },
+    {
+      "category": "underengineering",
+      "severity": "minor",
+      "issue": "Overflow fast-track failure AC says 'queue stays full, new entries dropped, admin ping includes deferred count' — but does not address the case where the same stuck row keeps failing GT on each subsequent cron tick. With attempt_count incremented on each overflow cycle, the spec implies the 3-strikes rule will eventually move the row to failed_articles and free its slot, but this is not stated in AC. The operator sees 'N deferred' pings on repeat tickets without an obvious escape valve until 3 cron ticks pass.",
+      "why_matters": "During a multi-day GT outage the operator gets repeated overflow pings with no way to resolve other than manual SQL. At daily cadence that is 3 days of blocked queue. Clarifying the auto-escalation path (overflow GT failure contributes to attempt_count; 3 failures in overflow path move row to failed) removes ambiguity for the tech-spec author.",
+      "fix": "Add explicit AC: 'Failures inside overflow fast-track count toward attempt_count; after 3 failures the row moves to failed_articles, freeing its slot.' Optionally: admin ping message also hints at retry path ('use hw_review retry N after fixing GT')."
+    },
+    {
+      "category": "underengineering",
+      "severity": "minor",
+      "issue": "Observability for CLI is still not specified. Where does `hw_review publish` log to? If Telegraph createPage raises mid-publish and the CLI exits non-zero, how does the operator inspect state — re-run show? Raw sqlite3 on news.db? The spec has no AC for CLI exit codes, no mention of structured log output, no `hw_review show N` semantics for a row in intermediate state (staged but not published).",
+      "why_matters": "The entire feature inserts a human into the loop — when something goes wrong, that human must debug quickly. Without observability guidance, implementer will likely print() to stdout, losing diagnostics when the terminal scrolls.",
+      "fix": "Add AC: CLI writes to the same logger as news_bot (stdout INFO for normal flow, ERROR on failure). Exit codes: 0 success, non-zero on failure. `hw_review show N` displays row status — which fields are populated, staged vs empty ru_*, last error message if any — so the operator can diagnose without opening news.db. Can be added as a single AC bullet; tech-spec fills in details."
+    },
+    {
+      "category": "underengineering",
+      "severity": "minor",
+      "issue": "`hw_review publish N` on a row that was evicted by overflow or auto-published by fallback between stage and publish is still not covered by an AC. AC covers the converse (take after auto-publish → error) but not publish on a vanished-from-queue row. With the round-1 fix (staged rows are protected from eviction), this is now much rarer — only happens if operator staged, went idle >48h+grace, and the fallback fired. But if it happens, the operator's carefully-written Russian is lost with a bare PK collision stacktrace.",
+      "why_matters": "Low likelihood given the staged-row protection, but the outcome is silent loss of the exact artifact this feature exists to preserve. A 1-line AC ('publish N on a row no longer pending returns a clear error with current state') prevents a stacktrace and points the operator at next steps.",
+      "fix": "Add AC: `hw_review publish N` where N is no longer in pending_articles returns a clean error identifying current state (published via-review, published via-GT, in failed, or not found) with the Telegraph URL when applicable. No dumping of operator's staged ru_* is required — just a clean error instead of a stacktrace."
+    }
+  ],
+  "worst_category": "sizing",
+  "summary": "Round-2 spec is approved for tech-spec handoff. All round-1 critical and major findings are resolved: Telegraph-draft subsystem dropped in favour of local HTML preview (removes ~40% surface), CLI-cron race closed by protecting staged rows from overflow eviction, overflow GT failure path specified, take/publish idempotency ACs added, test count claim removed, trigger phrase moved to constraints as UX convention, Технические решения slimmed of column-level and file:line details. Remaining findings are minor clarifications (CLI observability, multi-tick overflow failure escalation, publish-on-vanished-row error message) that the tech-spec author can resolve without re-opening user-spec."
+}

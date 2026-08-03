@@ -1,0 +1,75 @@
+{
+  "status": "passed",
+  "summary": "All 2 critical and 3 major findings from round 1 are genuinely resolved, verified by two independent mutation checks (not eyeballed). Mutation 1: neutering _funnel_collapse_note's entire stage-selection body to always return the generic fallback string killed 9 tests (test_format_funnel_shape, test_e009_quiet_day_with_funnel_renders_breakdown, test_quiet_day_ping_shows_dedup_collapse, plus the 5 new stage-coverage unit tests and the new source-exception integration test) — confirming the collapse-note assertions now target the note-specific 'label + parenthesised count' format, which cannot be produced by the fixed breakdown lines above it. Mutation 2: dropping the failed_part branch in _format_funnel_line killed test_e008_plan_of_day_with_funnel_adds_compact_line, confirming the BUSY compact-line assertions are now load-bearing. All previously-missing funnel branches (sources_failed, new_count==0, dropped_no_article-dominant, dropped_checklist-dominant) now have dedicated unit fixtures with exact-string assertions and runner-up-NOT-picked checks, plus a new integration test that drives a real SOURCES fetcher exception (not a hand-set funnel value) through to the E009 ping. The 'falls back to legacy' comment is corrected to distinguish the non-dict-fallback case from the bad-valued-dict zeroed-breakdown case. Diffed the test files for removed/weakened lines: zero found — all round-2 changes are additive. Mocking in the new integration tests matches the pre-existing convention in the same test classes (external I/O boundaries only: fetch_rss, load_feeds, fetch_full_article, transcreate_via_claude, publish_article, send_telegraph_teaser); the SOURCES-exception test uses minimal mocking (patches only news_bot.SOURCES) to exercise the real except-path. Full suite: 88/88 passed. No new issues introduced by the round-2 changes.",
+  "findings": [],
+  "metrics": {
+    "filesReviewed": 4,
+    "litmusTest": {
+      "checked": 18,
+      "passed": 18,
+      "failed": 0
+    },
+    "coverageAssessment": "excellent",
+    "pyramidBalance": {
+      "unit": 15,
+      "integration": 3,
+      "e2e": 0,
+      "assessment": "healthy"
+    }
+  },
+  "round1FindingsVerification": [
+    {
+      "round1Severity": "critical",
+      "round1Location": "tests/test_admin_alerts.py:338-351, 368-384",
+      "status": "resolved",
+      "verification": "Mutation check: neutered _funnel_collapse_note to always return the generic fallback string 'Где схлопнулось: обработка статей (детали в логах)'. test_format_funnel_shape and test_e009_quiet_day_with_funnel_renders_breakdown both now assert the exact note format 'Где схлопнулось: дубль-блок (3)' (parenthesised count), which the mutant could not produce ('дубль-блок 3' from the fixed breakdown line is a distinct string). Both tests failed under the mutant and pass with the real implementation restored."
+    },
+    {
+      "round1Severity": "critical",
+      "round1Location": "tests/test_integration.py:500-547 (test_quiet_day_ping_shows_dedup_collapse)",
+      "status": "resolved",
+      "verification": "Same mutation as above. Assertion now reads self.assertIn('Где схлопнулось: дубль-блок (1)', ping) — the parenthesised-count format. Confirmed failing under the mutant (was previously passing per round-1 report), confirmed passing after restore. The real (unmocked) dedup-block count still drives the assertion."
+    },
+    {
+      "round1Severity": "major",
+      "round1Location": "sources_failed branch untested",
+      "status": "resolved",
+      "verification": "Unit: test_collapse_note_sources_failed with SOURCES_DOWN fixture asserts 'Где схлопнулось: источники не ответили (2)'; counterpart test_collapse_note_no_entries_fetched asserts the failure-attribution branch is NOT taken when nothing threw (assertNotIn). Integration: test_source_exception_counts_in_funnel_quiet_day_ping patches news_bot.SOURCES with a function that raises RuntimeError plus one that returns [], runs the real job(), and asserts the E009 ping contains 'Где схлопнулось: источники не ответили (1)' plus an E002 alert fired. This exercises the real except-path (funnel['sources_failed'] += 1 in news_bot.py), not a forced/hand-set count. Killed by the mutation check."
+    },
+    {
+      "round1Severity": "major",
+      "round1Location": "new_count==0 branch untested",
+      "status": "resolved",
+      "verification": "test_collapse_note_all_known with ALL_KNOWN fixture (sources_fetched=4, new_count=0) asserts 'Где схлопнулось: все записи уже известны (фильтры отсеяли всё)'. Killed by the mutation check."
+    },
+    {
+      "round1Severity": "major",
+      "round1Location": "dropped_no_article / dropped_checklist winning-stage untested",
+      "status": "resolved",
+      "verification": "test_collapse_note_no_article_dominant (NO_ARTICLE_MAX: no_article=5 > checklist=1) asserts 'Где схлопнулось: нет статьи/текста (5)' and assertNotIn on the checklist wording (runner-up not picked). test_collapse_note_checklist_dominant (CHECKLIST_MAX: checklist=4 > no_article=1) asserts 'Где схлопнулось: чеклист без текста (4)' with the symmetric assertNotIn check. Both killed by the mutation check."
+    },
+    {
+      "round1Severity": "minor",
+      "round1Location": "test_e008_plan_of_day_with_funnel_adds_compact_line — BUSY fixture asserts unused",
+      "status": "resolved",
+      "verification": "Added self.assertIn('источники-сбои 1', msg) and self.assertIn('отсеяно 2', msg). Verified with a second, independent mutation check: dropping _format_funnel_line's failed_part branch and hardcoding the dropped count to 0 killed this test. Restored and confirmed 88/88 pass."
+    },
+    {
+      "round1Severity": "minor",
+      "round1Location": "test_format_funnel_shape — bare-digit asserts",
+      "status": "resolved",
+      "verification": "self.assertIn(\"5\", block) / self.assertIn(\"3\", block) replaced with label-anchored self.assertIn(\"получено записей: 5\", block) and self.assertIn(\"новых после фильтров: 3\", block)."
+    },
+    {
+      "round1Severity": "minor",
+      "round1Location": "test_e009_quiet_day_broken_funnel_does_not_raise — misleading 'falls back to legacy' comment",
+      "status": "resolved",
+      "verification": "Comment now correctly distinguishes the two fallback paths: non-dict funnel -> \"\" -> legacy single line; dict with bad-valued fields -> coerced to 0 -> zeroed breakdown rendered (does NOT fall back to legacy). Matches the option (a) fix recommended in round 1. The docstrings on _format_funnel and _format_funnel_line state the same contract."
+    }
+  ],
+  "additionalChecks": {
+    "noWeakenedAssertions": "Confirmed via git diff — grep for lines starting with a single '-' in tests/test_admin_alerts.py and tests/test_integration.py returned zero results; all round-2 changes are pure additions.",
+    "noOverMocking": "New integration tests mock only external I/O boundaries (fetch_rss, load_feeds, fetch_full_article, transcreate_via_claude, publish_article, send_telegraph_teaser), matching the pre-existing convention used by sibling tests in the same classes (e.g. test_error_isolation, test_no_article_data_skips_publish). The new sources_failed test uses minimal mocking (patches only news_bot.SOURCES) to drive the real exception path.",
+    "testSuiteRun": "python3 -m pytest tests/test_admin_alerts.py tests/test_integration.py -q -> 88 passed, 0 failed."
+  }
+}

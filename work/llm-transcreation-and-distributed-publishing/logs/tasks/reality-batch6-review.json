@@ -1,0 +1,97 @@
+{
+  "validator": "reality-checker",
+  "batch": [16, 17, 18],
+  "iteration": 1,
+  "status": "changes_required",
+  "findings": [
+    {
+      "severity": "critical",
+      "category": "missing_file",
+      "task": 16,
+      "issue": "Task 16 reads 5 new test files that do not exist yet: tests/test_compute_publish_slots.py, tests/test_claude_transcreation.py, tests/test_outage_state.py, tests/test_distributed_schedule_integration.py, tests/test_fallback_publish_paths.py. Feature checkpoint shows last_completed_wave=0 — none of tasks 1-13 have been executed. Task 16 depends_on: [13], which is correct, but if the dependency chain fails silently, the auditor will attempt to read absent files and produce a vacuous report.",
+      "fix": "No task change needed — depends_on: [13] is the correct guard. Add an explicit pre-check step in the 'What to do' section: verify that all expected test files exist before starting the audit (e.g., assert file existence for each of the 5 new test files and report a blocker if any are missing rather than producing an empty matrix)."
+    },
+    {
+      "severity": "critical",
+      "category": "missing_file",
+      "task": 16,
+      "issue": "Task 16 asks to 'verify removal' of tests/test_overflow.py and tests/test_idle_fallback.py, but both files currently exist in the codebase. Task 16 depends_on: [13] and task 13 does not delete test files — deletion is Task 9's responsibility, and Task 13 depends_on: [11, 12], which both depend on completed waves 1-6. If Task 9 has not run before Task 16, the auditor will find these files present and incorrectly report them as not deleted, producing a misleading finding.",
+      "fix": "Change depends_on to include task 9 explicitly, or add a note clarifying that 'verify deletion' means confirming task 9 was completed before the audit starts. Current depends_on: [13] transitively covers task 9 only if the execution chain ran cleanly — make this explicit."
+    },
+    {
+      "severity": "critical",
+      "category": "hallucination",
+      "task": 17,
+      "issue": "Task 17 'What to do' step 1 and 'Context Files' section both direct the QA agent to read audit reports from 'logs/working/task-14/...', 'logs/working/task-15/...', 'logs/working/task-16/...'. However, tasks 14, 15, and 16 each explicitly write their output to 'logs/audit/code-audit.md', 'logs/audit/security-audit.md', and 'logs/audit/test-audit.md' respectively. The path 'logs/working/task-{14,15,16}/' does not exist and will not be created by those tasks. The QA agent will fail to find any audit reports.",
+      "fix": "In task 17 'What to do' step 1, replace 'logs/working/task-14/...', 'task-15/...', 'task-16/...' with 'logs/audit/code-audit.md', 'logs/audit/security-audit.md', 'logs/audit/test-audit.md'. Update the 'Context Files' section and 'Dependencies' block to reference the correct paths."
+    },
+    {
+      "severity": "critical",
+      "category": "hallucination",
+      "task": 17,
+      "issue": "Task 17 smoke command references 'from news_bot import _redact_text' — but _redact_text does not exist in the current news_bot.py (only _TokenRedactingFilter and _TOKEN_FILTER exist). _redact_text is created by Task 4. If Task 17 runs before Task 4 is committed, or if Task 4 deviates from plan, the smoke command fails with ImportError. The smoke is the primary pre-deploy validation of token redaction and a failure would block QA progress.",
+      "fix": "Add a note that smoke #2 requires Task 4 to be complete. Consider adding a fallback smoke approach: 'if _redact_text does not exist yet, test the redaction via _TokenRedactingFilter.filter() directly on a synthetic LogRecord'. Also verify in dependencies that task 4 is in the completion chain before task 17 runs."
+    },
+    {
+      "severity": "critical",
+      "category": "missing_file",
+      "task": 18,
+      "issue": "deploy.sh FILES array does NOT include the three new Python modules claude_transcreation.py, compute_publish_slots.py, and outage_state.py. Task 13 only adds ux-guidelines.md to FILES. These modules are imported by news_bot.py at runtime ('from claude_transcreation import ...', 'from compute_publish_slots import ...', 'from outage_state import ...'). If they are not in the FILES array, they will not be scp'd to the production server, causing ImportError on startup after deploy. Task 18 does not check for presence of these three modules in deploy logs.",
+      "fix": "Task 13 must also add 'claude_transcreation.py', 'compute_publish_slots.py', and 'outage_state.py' to the FILES array in both deploy.sh and .github/workflows/deploy.yml. Task 18 'What to do' step 3 should include a check that the deploy log shows all five new files (3 modules + 1 requirements.txt update + ux-guidelines.md) were copied. This is a deploy-breaking gap."
+    },
+    {
+      "severity": "major",
+      "category": "feasibility",
+      "task": 16,
+      "issue": "Task 16 instructs the auditor to use 'git diff dev -- tests/' to compute an accurate test count delta. The feature branch is NOT currently on dev (checkpoint shows the feature was just scaffolded, no commits). Running this git diff command against dev will show changes only if the implementation tasks have been committed to the correct branch. If the agent runs this command prematurely or on the wrong branch, the delta count will be wrong (0 deleted, 0 added), producing a false audit.",
+      "fix": "Update the implementation hint to specify the correct git command: 'git diff $(git merge-base HEAD dev) -- tests/' or 'git diff dev...HEAD -- tests/', which computes the delta from the branch point rather than assuming the current branch is dev. Also clarify that the auditor must confirm they are on the correct feature branch before running the diff."
+    },
+    {
+      "severity": "major",
+      "category": "hints",
+      "task": 17,
+      "issue": "Task 17 'Verification Steps' section contains a full ready-to-run Python one-liner as a smoke command: 'python -c \"from claude_transcreation import transcreate_via_claude; import json, time; sample = {...}; t0 = time.time(); result = transcreate_via_claude(sample); print(f'Elapsed: {time.time()-t0:.2f}s'); print(json.dumps(result, ensure_ascii=False, indent=2))\"'. This is a complete implementation prescribing exact function calls, sample data structure, and output format. Per the hints severity guide, hints should point to patterns and approaches, not prescribe the solution.",
+      "fix": "Replace the full one-liner with a description of what to test: 'Invoke transcreate_via_claude with a sample EN article dict (source_name, title, subtitle, paragraphs list, blocks list). Verify the return dict has all required keys (title with emoji, alts[2-3], subtitle, paragraphs of matching length). Log elapsed time and token counts.' Leave the specific invocation to the executing agent."
+    },
+    {
+      "severity": "major",
+      "category": "hints",
+      "task": 17,
+      "issue": "Task 17 'Verification Steps' smoke section contains a second full Python one-liner: 'python -c \"from news_bot import _redact_text; samples = [...]; [print(_redact_text(s)) for s in samples]\"'. This is a complete prescriptive implementation of the smoke test, not a hint.",
+      "fix": "Replace with: 'Test _redact_text (from news_bot) against a prod-shaped key (sk-ant-api03-...) and a sandbox-shaped key (sk-ant-test_=.....). Verify neither appears in the output.' Leave exact invocation to the agent."
+    },
+    {
+      "severity": "major",
+      "category": "feasibility",
+      "task": 18,
+      "issue": "Task 18 'What to do' step 3 checks that the deploy log includes 'ux-guidelines.md' in the copied files list, and step 4 checks for three env keys. However, it does not verify that claude_transcreation.py, compute_publish_slots.py, and outage_state.py were copied (given they are missing from deploy.sh FILES per the critical finding above). Even after task 13 is fixed to include these modules, task 18's verification steps should explicitly confirm all new runtime modules are present on the server.",
+      "fix": "Add to step 3: 'Verify that the deploy log also shows claude_transcreation.py, compute_publish_slots.py, and outage_state.py in the copied files list. These are new runtime imports in news_bot.py that must be present on the server.'"
+    },
+    {
+      "severity": "major",
+      "category": "feasibility",
+      "task": 18,
+      "issue": "Task 18 description says 'after Task 13 расширил deploy-bundle (добавлен ux-guidelines.md в FILES, проброс ANTHROPIC_API_KEY / ANTHROPIC_MODEL / TZ в .env на сервере)'. This correctly describes what task 13 should do, but task 13's acceptance criteria and FILES description in its task file omit the three new Python modules entirely. Task 18's description therefore creates a false confidence that the deploy bundle is complete when it is not.",
+      "fix": "Task 18 description should be updated to also mention that Task 13 adds claude_transcreation.py, compute_publish_slots.py, and outage_state.py to FILES, after fixing Task 13."
+    },
+    {
+      "severity": "minor",
+      "category": "feasibility",
+      "task": 16,
+      "issue": "Task 16 'What to do' step 6 says to verify integration tests have no real network calls via 'grep -RE \"anthropic.com|api.telegram.org|telegra.ph|autoevolution.com\" tests/ | grep -v mock'. This grep pattern may produce false negatives: URLs appearing in test strings as expected mock return values would be filtered out by 'grep -v mock' even if they appear in non-mock context. Also, URL-based HTTP calls might use variable-based URLs not matching the literal string.",
+      "fix": "Supplement with: grep for 'requests.get\\|requests.post\\|httpx.get' outside of mock/patch blocks, and verify no test calls urllib or requests directly without a mocker. The audit note is minor because grep-based checks are supplementary to reading the code."
+    },
+    {
+      "severity": "minor",
+      "category": "feasibility",
+      "task": 18,
+      "issue": "Task 18 'What to do' step 4 instructs the agent to pass a grep command to the operator: 'ssh ... \"grep -E \"ANTHROPIC_API_KEY|ANTHROPIC_MODEL|TZ\" /home/user/bot/.env | sed \"s/=.*/=***/'\"'. The .env path is hardcoded as '/home/user/bot/.env' but the actual DEPLOY_PATH on the production server is an operator secret not known to the agent. This grep command will fail if the real deploy path differs.",
+      "fix": "Replace the hardcoded path with '$DEPLOY_PATH/.env' and have the operator substitute their actual DEPLOY_PATH when running the command, or instruct the operator to run the grep against the known-to-them path."
+    }
+  ],
+  "stats": {
+    "tasks_checked": 3,
+    "claims_verified": 31,
+    "issues_found": 12
+  }
+}

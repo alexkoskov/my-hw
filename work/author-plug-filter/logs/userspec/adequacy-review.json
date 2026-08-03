@@ -1,0 +1,29 @@
+{
+  "verdict": "pass",
+  "status": "approved",
+  "round": 2,
+  "previous_findings_resolution": {
+    "round1_finding_1_techspec_leakage": "resolved",
+    "round1_finding_2_prompt_only_alternative": "resolved",
+    "round1_finding_3_path_documented": "resolved",
+    "round1_finding_4_ac15_umbrella_handle": "resolved"
+  },
+  "findings": [
+    {
+      "category": "overengineering",
+      "severity": "minor",
+      "issue": "Technical decisions section ('Технические решения') still lists 9 items, several of which are HOW-level (try/except wrapping shape, regex-vs-NLP-tokenizer choice). Round-1 reduction kept the list size at 9; the change is in framing (design rationale) not in count.",
+      "why_matters": "User-spec → tech-spec hand-off: the next agent has fewer decisions left to make. Not blocking because the items are now phrased as architectural rationale supporting WHY (split A+B, new module, single call site, mandatory @handle), not implementation procedures.",
+      "fix": "Optional follow-up: move 'try/except shape' and 'regex vs NLP-tokenizer' decisions to tech-spec.md when it is authored; keep only WHY-level architectural choices in user-spec."
+    },
+    {
+      "category": "underengineering",
+      "severity": "minor",
+      "issue": "AC numbering is out of sequence: AC1–AC4, AC14, AC5–AC11, AC12, AC13, AC14a, AC15, AC16. Reader has to mentally re-sort to validate coverage.",
+      "why_matters": "Doesn't change adequacy of the design — the criteria themselves are sound — but harder to audit completeness. A doc-quality issue, more appropriate for quality-validator than adequacy.",
+      "fix": "Renumber sequentially within sections (variant A, variant B, negatives, boundary, regression). Preserve the AC content verbatim, just fix the numbers."
+    }
+  ],
+  "worst_category": "overengineering",
+  "summary": "All four round-1 major findings are resolved. (1) Tech-spec leakage: file:line refs removed, regex literal in AC15 removed, _MAX_BOILERPLATE_LEN now defers to tech-spec ('детали — в tech-spec'), FILES list invariant gone. (2) Prompt-only alternative: new 'Альтернативы' section explicitly evaluates 3 simpler options (prompt-only, variant A only, status quo) and rejects them with concrete reasoning, then justifies the chosen hybrid. (3) Trigger path (auto vs manual): line 12 + line 17 explicitly document auto-path scope and exclude hw_review with reference to hw_review.py:569-662; matches interview Q23 confirming leak source = auto-publish. (4) AC15 umbrella regex now mandates @handle (renumbered AC11) — explicit prose 'обязательным @handle, чтобы не зацепить журналистские отсылки', with AC14a covering '(см. фото в Instagram)' / '(трансляция шла на YouTube)' negatives. Two minor follow-ups remain (residual decisions-section depth, AC numbering disorder) but neither blocks adequacy approval."
+}

@@ -1,0 +1,159 @@
+{
+  "validator": "task-validator",
+  "batch": [16, 17, 18, 19],
+  "iteration": 2,
+  "status": "approved",
+  "previous_iteration": {
+    "report": "logs/tasks/template-batch4-review.json",
+    "critical_findings": 2,
+    "minor_findings": 7
+  },
+  "r1_resolution_check": {
+    "critical_wave_18": {
+      "issue": "Task 18 declared wave=10 with depends_on=[17] (also wave 10) — dependency-vs-wave violation",
+      "status": "resolved",
+      "evidence": "tasks/18.md frontmatter now has `wave: 11`, depends_on=[17] where Task 17 is wave 10. Sequential 17 (w10) -> 18 (w11) chain is correctly encoded."
+    },
+    "critical_wave_19": {
+      "issue": "Task 19 declared wave=10 with depends_on=[18] (also wave 10) — dependency-vs-wave violation",
+      "status": "resolved",
+      "evidence": "tasks/19.md frontmatter now has `wave: 12`, depends_on=[18] where Task 18 is wave 11. Sequential 18 (w11) -> 19 (w12) chain is correctly encoded."
+    },
+    "minor_verify_task_17": {
+      "issue": "frontmatter verify: [] but body has Smoke section",
+      "status": "not_resolved",
+      "note": "Task 17 still declares `verify: []` while Verification Steps body retains a Smoke subsection (Claude API live smoke + token redaction smoke). Persistent minor inconsistency — still needs fixing or is now an acceptable trade-off the task-creator chose to keep. Re-flagged below."
+    },
+    "minor_verify_task_18": {
+      "issue": "frontmatter verify: [smoke] but body had User subsection too",
+      "status": "resolved",
+      "evidence": "tasks/18.md frontmatter now has `verify: [smoke, user]` matching the Smoke + User sections in the body."
+    },
+    "minor_context_paths_task_19": {
+      "issue": "Context File paths used flat skill root instead of references/ subpath",
+      "status": "resolved",
+      "evidence": "tasks/19.md Context Files now use `~/.claude/skills/project-knowledge/references/<file>.md` paths consistent with tasks 16-18 and the template."
+    },
+    "minor_ac_tools_task_19": {
+      "issue": "AC item for tools list (bash, ssh, sqlite3, Telegram client) was missing",
+      "status": "not_resolved",
+      "note": "Task 19 still lists tools in Details (`bash`, `ssh`, `sqlite3`, Telegram client) without a corresponding AC line. Original R1 finding noted this as informational/minor and explicitly non-blocking — accepting as-is."
+    },
+    "minor_audit_report_path_task_16_17": {
+      "issue": "Task 16 wrote to logs/audit/test-audit.md while Task 17 referenced logs/working/task-{N}/...",
+      "status": "resolved",
+      "evidence": "Task 17 now references `logs/audit/code-audit.md`, `logs/audit/security-audit.md`, `logs/audit/test-audit.md` in both 'What to do' step 1 and Context Files. Convention is now consistent across tasks 14/15/16 (writers) and 17 (reader)."
+    },
+    "minor_verification_outputs_task_16": {
+      "issue": "Verification Steps Automated section lacked concrete pass/fail criteria",
+      "status": "partially_resolved",
+      "note": "Task 16 verification commands still describe purpose (e.g., 'собирает список всех тестов; используется для подсчёта') without explicit exit-code/grep-empty pass criteria. Re-flagged minor below."
+    },
+    "minor_audit_path_documentation_task_16": {
+      "issue": "Task 16 writes audit report to logs/audit/, deviating from template convention without explicit note",
+      "status": "partially_resolved",
+      "note": "Task 16 Reviewers section now explicitly states '(none — аудитор сам пишет отчёт; reviewers Task 14 / 15 / 16 объединены в Final Wave Task 17 pre-deploy QA, который читает все три отчёта.)' — this implicitly justifies the convention but does not document the path convention itself. Acceptable; not re-flagged."
+    }
+  },
+  "findings": [
+    {
+      "severity": "minor",
+      "category": "consistency",
+      "task": 17,
+      "section": "frontmatter / Verification Steps",
+      "issue": "Frontmatter `verify: []` but Verification Steps body still has a Smoke subsection containing three smoke checks (Claude API live smoke, token redaction smoke, AC traceability check). Persistent inconsistency from R1 — readers consulting frontmatter would conclude no smoke checks exist, but they do. R1 fix recommendation was to set `verify: [smoke]`; this remains unfixed in iteration 2.",
+      "fix": "Set `verify: [smoke]` in frontmatter to match the actual smoke checks in the body. (The 'AC traceability check' is more of a doc step than a smoke step; the Claude API live call and token redaction call are clearly smoke.)"
+    },
+    {
+      "severity": "minor",
+      "category": "content",
+      "task": 16,
+      "section": "Verification Steps",
+      "issue": "Automated commands describe what they do but still lack explicit pass/fail criteria. E.g., `pytest --collect-only tests/ -q -> собирает список всех тестов; используется для подсчёта test count и проверки отсутствия collection errors` — implies but doesn't state 'exit code 0'. The two grep commands say 'ожидается empty output' which is concrete; the pytest line is the weaker one.",
+      "fix": "Tighten pytest line to e.g. 'pytest --collect-only tests/ -q → exits 0 (no collection errors); test count delta vs base ≈ +30 / -28 per plan'. Already close — non-blocking."
+    },
+    {
+      "severity": "minor",
+      "category": "carry-forward",
+      "task": 19,
+      "section": "Acceptance Criteria",
+      "issue": "Tech-spec Task 19 explicitly lists 'Tools: bash, ssh to VPS, sqlite3 (or Python sqlite3 module), Telegram client.' — Task 19 mentions these in Details/Tools but has no AC asserting verification was performed via these tools. Carried over from R1 as informational/non-blocking; re-confirming as still applicable.",
+      "fix": "Optional: add an AC like 'Все проверки выполнены через ssh + sqlite3 + Telegram client (без MCP/Playwright)' for explicit traceability. Not required."
+    }
+  ],
+  "stats": {
+    "tasks_checked": 4,
+    "issues_found": 3,
+    "critical_resolved": 2,
+    "minors_resolved": 2,
+    "minors_partially_resolved": 2,
+    "minors_persisting": 3
+  },
+  "wave_chain_verification": {
+    "task_16": {"wave": 9, "depends_on": [13], "ok": true},
+    "task_17": {"wave": 10, "depends_on": [14, 15, 16], "ok": true, "note": "depends on Audit Wave (14/15/16 all wave 9), Task 17 in wave 10 — strictly later."},
+    "task_18": {"wave": 11, "depends_on": [17], "ok": true, "note": "depends on Task 17 (wave 10), Task 18 in wave 11 — strictly later. R1 critical resolved."},
+    "task_19": {"wave": 12, "depends_on": [18], "ok": true, "note": "depends on Task 18 (wave 11), Task 19 in wave 12 — strictly later. R1 critical resolved."},
+    "cycles": "none",
+    "monotonicity": "wave numbers strictly increase along the 16→17→18→19 chain (and 14/15/16→17 fan-in)"
+  },
+  "report_path_consistency_check": {
+    "task_16_writes": "logs/audit/test-audit.md",
+    "task_17_reads": ["logs/audit/code-audit.md", "logs/audit/security-audit.md", "logs/audit/test-audit.md"],
+    "consistent": true,
+    "note": "Task 17 now reads from logs/audit/ (matching tasks 14/15/16 writers). Both 'What to do' step 1 and Context Files block use this path. R1 minor finding #9 resolved."
+  },
+  "ac_carry_forward": {
+    "task_16": {
+      "tech_spec_ac_items": [
+        "test count delta matches plan (~28 deleted, ~30 added)",
+        "all user-spec ACs (AC1–AC31) traceable to at least one test",
+        "outage state machine tests cover each transition + edge case",
+        "crash-loop guard tested with MAX(published_at) < 40min",
+        "compute_publish_slots tests cover N=0, 1, 11, 12, 30 boundary conditions",
+        "claude_transcreation tests cover each anthropic SDK exception class branch",
+        "integration tests don't rely on real network/API calls",
+        "no test references deleted symbols",
+        "Write audit report"
+      ],
+      "all_present_in_task": true
+    },
+    "task_17": {
+      "tech_spec_ac_items": [
+        "run all tests, verify acceptance criteria",
+        "Run `pytest tests/ -q` and the targeted new test files",
+        "Run pre-deploy smoke: claude_transcreation against sample article",
+        "Verify result is valid RU dict in <30s",
+        "Verify _TokenRedactingFilter redacts a sample anthropic key",
+        "Write QA report",
+        "flag any deferred AC for post-deploy verification"
+      ],
+      "all_present_in_task": true
+    },
+    "task_18": {
+      "tech_spec_ac_items": [
+        "Run GitHub Actions deploy workflow OR manual bash deploy.sh",
+        "Verify deploy logs show successful copy of all FILES including ux-guidelines.md",
+        "successful pip install -r requirements.txt on server (anthropic + pytz pulled)",
+        ".env on server has all required new vars (ANTHROPIC_API_KEY, ANTHROPIC_MODEL, TZ)"
+      ],
+      "all_present_in_task": true,
+      "note": "Task 18 expands beyond tech-spec to also require explicit verification of three new runtime modules (claude_transcreation.py, compute_publish_slots.py, outage_state.py) in deploy bundle. This is an additive carry-forward (catches the 'Task 13 deploy bundle regression' edge case) — strictly stronger than tech-spec, no tech-spec AC dropped."
+    },
+    "task_19": {
+      "tech_spec_ac_items": [
+        "Wait until next 12:00 МСК cron tick",
+        "Verify admin ping arrives with day's schedule",
+        "Wait until 13:00 МСК first publication",
+        "Verify Telegraph URL: title with emoji, no boilerplate, ↳ автоперевод marker before source footer",
+        "Verify channel post is single-line #<source> #news",
+        "Check Telegram admin chat for absence of unexpected error messages",
+        "Verify pending_articles queue drains (next slot publishes ~40 min later)",
+        "24-hour observation: confirm no unexpected pings, queue size bounded",
+        "Tools: bash, ssh, sqlite3, Telegram client"
+      ],
+      "all_present_in_task": true,
+      "note": "Tools list mentioned in Details but not as AC line — carried over from R1 as minor/non-blocking."
+    }
+  }
+}

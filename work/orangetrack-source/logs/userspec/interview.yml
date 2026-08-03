@@ -1,0 +1,860 @@
+# Interview Plan for Feature Planning
+#
+# Tracks progress of adaptive discovery interview for a new feature/bug/refactoring.
+# Updated after EACH user response with scoring, values, and remaining gaps.
+#
+# Scoring: 0-100% (how well we understand this aspect)
+# Status: pending → partial → complete
+# Required: true = must reach threshold, false = cover if relevant
+
+# ============================================================================
+# Interview Metadata (Session Recovery)
+# ============================================================================
+interview_metadata:
+  started: "2026-05-05 09:55:00"
+  last_updated: "2026-05-05 11:15:00"
+  status: "completed"
+  can_resume: false
+  current_question_num: 3
+  feature_size: "M"  # hybrid parser ~270-300 LoC (feed-first + HTML scrape fallback, blocks path for video preservation) + tests + boilerplate filter additions + admin-ping aggregator with error codes. No per-source ux-guidelines block in this feature. Lamley video support deferred to separate future feature. Throttle/retry deferred (no Lamley-style 429 risk for orangetrack — operator-driven rationale per adequacy-review).
+
+# ============================================================================
+# Conversation History (for session recovery)
+# ============================================================================
+# Preserves complete Q&A. Update after EVERY user response.
+#
+conversation_history:
+  - question_num: 1
+    timestamp: "2026-05-05 10:05:00"
+    topic: "user_problem + arch decision + naming + acceptance criteria"
+    agent_question: |
+      Q1 (user_problem): зачем именно этот сайт сейчас? (a) канал хочет больше HW-контента —
+        backlog часто пустой, 3 источника = ~7 публикаций/день, 4-й увеличит частоту;
+        (b) качество — single-author HW-фокус, лучше Lamley/autoevolution; (c) случайная находка.
+      Q2 (architecture): парсер feed-only (A, ~150 LoC, парсим content:encoded напрямую) или
+        RSS+HTML scrape как Lamley (B, ~300 LoC) или гибрид (C, feed-first + scrape fallback)?
+        Предложение: A, поскольку content:encoded содержит полный HTML.
+      Q3 (naming): source_name='orangetrack' (короткая метка по образцу 'lamley'), emoji 🔵
+        (свободный из RGB), hashtag #orangetrackdiecast (от netloc, неизменяемо).
+      Q4 (success criteria + testing): 6 AC (RSS fetch + dedup, статья в pending_articles,
+        slot-публикация с #orangetrackdiecast хэштегом, Telegraph рендер, affiliate filter,
+        all 740 + new ~30-40 tests). M-size: unit для парсера и boilerplate, без нового
+        integration теста (общий путь покрыт test_distributed_schedule_integration.py).
+    user_answer: "q1 a q2 a q3 ok q4 ok"
+    summary: All 4 confirmed — (a) throughput driver, feed-only parser, naming/emoji/hashtag
+      scheme accepted, M-size testing strategy with 6 AC accepted as baseline.
+
+  - question_num: 3
+    timestamp: "2026-05-05 10:50:00"
+    topic: "video handling (blocks vs flat) + lamley video scope + admin-ping format"
+    agent_question: |
+      Q9 (video handling for orangetrack): Brad's posts often contain YouTube embeds.
+        On flat parser path ({title, subtitle, paragraphs, images}) iframes are silently
+        dropped. (A) keep flat path, accept video loss; (B) emit blocks-list (like
+        autoevolution) to preserve video position. Recommendation: B — Brad's videos
+        are integral to content; cost ~+50 LoC; size still M.
+      Q10 (Lamley video by extension): operator initially asked to also fix Lamley video
+        loss in same feature. Two scope options: (α) do both in this feature — wider
+        scope, regression risk on Lamley; (β) split — orangetrack now (additive, low
+        risk), Lamley video as a separate later feature. Recommendation: β.
+      Q11 (admin-ping format): aggregated single-ping per cron tick with error codes
+        and links. Codes: FEED_HTTP_<status> / FEED_TIMEOUT / FEED_XML_PARSE for
+        feed-level; ART_FALLBACK_HTTP_<status> / ART_FALLBACK_TIMEOUT /
+        ART_FALLBACK_PARSE_EMPTY / ART_PARSE_EXCEPTION for article-level. Format:
+        '[<INSTANCE>] orangetrack: N issues this tick\\n  • CODE (k×) — <link>...'.
+    user_answer: |
+      Q9 = B (blocks path; video preserved in order — implied by Q10 phrasing
+        "сделай, чтоб с lamley видео тоже парсилось").
+      Q10 = β (split). Lamley video stays as separate future feature.
+      Q11 = OK on the proposed format and code set.
+    summary: |
+      Architecture: orangetrack parser emits BOTH the flat path fields {title, subtitle,
+      paragraphs, images} AND the blocks list — same dual contract autoevolution uses,
+      so telegraph_publisher's existing block-or-flat renderer handles both gracefully
+      (blocks path takes priority when present). Size grows from ~250 → ~270-300 LoC
+      including blocks builder + tests; still M. Lamley parser stays untouched in this
+      feature; Lamley video preservation will be a separate ~150 LoC feature later.
+      Admin-ping wiring uses an aggregator helper that collects (code, link) tuples
+      across the tick and fires once at end-of-source-fetch.
+    agent_question: |
+      Q5 (affiliate inline sentences inside paragraphs — Brad's 'QUICK LINK! Buy from <store>'
+        ending real article paragraphs): (I) out of scope — accept the leak, fix later if observed;
+        (II) extend _strip_plugs in news_bot.py with affiliate-cue regex (variant B postprocessor);
+        (III) pre-LLM stripper in parser.
+      Q6 (edge cases): WP block-class drift mitigation = walk by tag not class; video-only post →
+        synthesize paragraphs=[entry.title]; carousel galleries → BS4 recursive find_all('img');
+        post without images → render without hero.
+      Q7 (error scenarios): HTTP 5xx/429/timeout on feed; malformed RSS XML; content:encoded
+        missing → fall back to RSS description excerpt; WP markup change → exception → admin
+        notify; affiliate-only post body → boilerplate strips → drop.
+      Q8 (verification + manual user actions + risks): pre-deploy pytest green; post-deploy on
+        dev → deploy_test.yml → test channel visual check → merge to main; no manual user
+        actions; risks = WP drift (mitigated by walk-by-tag), affiliate inline leak (out of
+        scope per Q5), FILES list invariant (manual checklist), test_sources_registry.py
+        set-assert breaks (update in same commit), feed rate-limit (cron daily, no risk).
+    user_answer: |
+      Q5 = I (out of scope).
+      Q6 = OK on all 4 sub-points.
+      Q7 = OK on retry semantics (RSS naturally carries 10-20 recent posts, dedup against
+        processed_news handles missed-fetch recovery automatically). NEW DECISION: when
+        content:encoded is missing, switch to HTML scrape of the article page (NOT to RSS
+        description excerpt). This shifts the architecture from option A (feed-only) to
+        option C (feed-first + HTML scrape fallback). NEW ADMIN-PING REQUIREMENT: when the
+        feed is unreachable (HTTP error / network / malformed XML) — admin-ping. When
+        content:encoded missing AND HTML scrape also fails — admin-ping. When content:encoded
+        missing but HTML scrape works — silent (fallback succeeded).
+      Q8 = OK.
+    summary: |
+      Architecture shifts feed-only → feed-first hybrid (~+100 LoC for HTML scrape fallback).
+      Admin-ping wiring added: feed unreachable OR full-fallback failure. 'Silent fallback when
+      it works' principle preserved (no ping floods on transient WP markup hiccups). Risk R6
+      added: HTTP scrape introduces 429/throttle risk if Brad's site rate-limits — mitigation
+      = same lamley_source.py pattern (Retry-After respect + module-level interval). Q5 affiliate
+      inline confirmed out of scope.
+# Format:
+# - question_num: 1
+#   timestamp: "2025-11-12 15:20:33"
+#   topic: "user_problem"
+#   agent_question: |
+#     [Full question text]
+#   user_answer: |
+#     [Full answer text]
+#   summary: "Brief summary"
+
+# ============================================================================
+# Phase 1: High-Level Feature Understanding
+# ============================================================================
+# Interview Cycle 1 scope
+phase1_feature_overview:
+
+  feature_name:
+    score: 95
+    status: "complete"
+    value: "orangetrack-source"
+    gaps: ""
+    required: true
+
+  feature_description:
+    score: 95
+    status: "complete"
+    value: |
+      Add orangetrackdiecast.com (Brad Bannach's solo Hot Wheels blog, WordPress.com hosted, EN, HW-only by
+      tagline 'A PLACE FOR ALL HOT WHEELS FANATICS') as a fourth news source. Architecture: HYBRID
+      feed-first parser (~270-300 LoC) emitting BOTH flat-path fields {title, subtitle, paragraphs, images}
+      AND a `blocks` list (like autoevolution) — preserves YouTube videos and image position in original
+      order. Telegraph_publisher's existing renderer takes blocks path when present, falls back to flat
+      path otherwise — already wired, no telegraph changes needed.
+      Primary path: parse RSS <content:encoded> in-memory. Fallback: when <content:encoded> is
+      missing/empty, fetch article URL via HTTP GET and parse its body (mirrors lamley_source.py pattern
+      but only for the rare missing-content case, NOT every fetch). Extracts: title (RSS <title>),
+      subtitle (first paragraph or empty), paragraphs (<p>), images (<figure>/<img> with ?w=1024 src,
+      dedup by URL), YouTube embeds (preserved in blocks list, src wrapped via
+      telegra.ph/embed/youtube?url=... — same wrapper as autoevolution_source._video_embed_url).
+      Walks DOM by tag (NOT Gutenberg class) to survive WordPress editor / theme drift.
+      No Cloudflare bypass needed (plain requests works on WordPress.com hosting).
+      Plugs into existing SOURCES registry via _fetch_rss_entries — just feeds.json + NETLOC_TO_SOURCE +
+      fetch_full_article dispatcher branch.
+      Boilerplate filter extended with 1-3 affiliate-line patterns (e.g. /^quick link[!:].*\b(buy|order|grab|shop)\b/i)
+      — standalone short paragraphs only (length-bound 120 chars). Inline affiliate sentences inside real
+      paragraphs are out of scope (Q5 = I, deferred to a future S-feature).
+      Per-source style notes block in ux-guidelines.md NOT added (let common prompt translate first;
+      separate future feature if drift observed).
+      Admin-ping: aggregated single ping per cron tick per source, with error codes and counts. Codes:
+      FEED_HTTP_<status> / FEED_TIMEOUT / FEED_XML_PARSE / ART_FALLBACK_HTTP_<status> /
+      ART_FALLBACK_TIMEOUT / ART_FALLBACK_PARSE_EMPTY / ART_PARSE_EXCEPTION. Format example:
+      '[prod] orangetrack: 3 issues this tick\\n  • FEED_HTTP_503 (1×) — <feed_url>\\n  •
+      ART_FALLBACK_HTTP_404 (2×) — <link1>, <link2>'. Silent on successful fallback (no ping if scrape
+      worked).
+      Lamley video support: separate future feature, NOT in this scope.
+    gaps: ""
+    required: true
+
+  work_type:
+    score: 100
+    status: "complete"
+    value: "feature"
+    gaps: ""
+    required: true
+
+  user_problem:
+    score: 88
+    status: "complete"
+    value: |
+      Channel throughput driver. Current SOURCES registry (autoevolution + lamley + mattel) yields ~7
+      publications/day max (compute_publish_slots N caps at min(N, 7) for the 10:00-20:00 МСК window with
+      90-min interval). In observation mode (since 2026-04-30) operator notices the backlog often empties
+      before window-end — there's room for more articles. Adding orangetrackdiecast (single-author HW-only
+      blog with daily-or-near-daily Case Reports + Pop Culture coverage) increases the inflow rate without
+      adding sibling-brand pollution risk (HW-only by site policy, unlike t-hunted which is 50/50 mixed).
+    gaps: ""
+    required: true
+
+  target_users:
+    score: 60
+    status: "complete"
+    value: |
+      Channel subscribers (@myhwchannel123, primary) — get more HW news per day without operator effort.
+      Operator (alexkoskov) — expanded source coverage without manual work; same observability as existing
+      sources (admin-ping, journalctl, channel feed).
+    gaps: ""
+    required: false
+
+  success_criteria:
+    score: 90
+    status: "complete"
+    value: |
+      1. Daily cron tick fetches https://orangetrackdiecast.com/feed/ alongside existing feeds via
+         _fetch_rss_entries; HTTP errors isolated per-feed (existing pattern).
+      2. New entries (titled, dated within last ~14 days for sanity) pass dedup against processed_news +
+         pending_articles, get inserted with source_name='orangetrack', feed_url set to feed URL.
+      3. Articles arrive in pending_articles with title (RSS <title>), subtitle (first paragraph extracted
+         from <content:encoded> or empty), paragraphs (HTML→text from <content:encoded>), images (figure
+         srcset entries for ?w=1024 variants), no `blocks` field (we use the flat paragraphs+images path
+         like Lamley, not the autoevolution block path).
+      4. On slot publication: LLM transcreation produces RU title (with emoji prefix), RU subtitle, RU
+         paragraphs; published to Telegra.ph; channel post: '#orangetrackdiecast #news' + IV preview card.
+      5. Affiliate-line patterns ('QUICK LINK! Buy ... from <store> now.', generic 'Buy ... from <store>'
+         shape) filtered before LLM call by extension to boilerplate_filter.
+      6. Negative: store-promo lines that ARE the entire post body still arrive but get filtered to empty
+         and dropped at the existing empty-paragraph downstream filter; no orphan store-only articles
+         reach the channel. (Brad's affiliate lines are inline within real articles, not standalone posts —
+         risk is low but defensive.)
+      7. All existing 740 tests still pass; new ~25-35 tests added in test_orangetrack_source.py +
+         ~3-5 new tests in test_boilerplate_filter.py for affiliate patterns.
+      8. After deploy + first publication: visual check on test channel @myhwchannel123 — preview card
+         renders with hero image, INSTANT VIEW button, Cyrillic body, source footer link to original article.
+    gaps: ""
+    required: true
+
+  constraints:
+    score: 92
+    status: "complete"
+    value: |
+      - Project in observation mode → conservative additive changes; existing parsers untouched.
+      - WordPress.com hosting, no Cloudflare/antibot — plain `requests` works for both feed and article
+        page (no curl_cffi needed).
+      - Hybrid architecture (Q2 = A → revised to C after Q7): primary path parses RSS <content:encoded>
+        in-memory (no HTTP). Fallback path makes ONE HTTP GET of the article URL when content:encoded is
+        missing/empty — applies the lamley_source pattern (module-level throttle, 429 Retry-After,
+        BROWSER_HEADERS, MAX_RESPONSE_SIZE = 5MB, IMAGE_LIMIT = 10).
+      - source_name='orangetrack' (admin-ping internal label); hashtag '#orangetrackdiecast' (from netloc
+        via _source_hashtag, NOT from source_name); SOURCE_EMOJI='🔵' (4th color, blue).
+      - Admin-ping wiring (NEW per Q7): pings on (a) HTTP error fetching /feed/ (5xx, timeout, network),
+        (b) feedparser raises on malformed XML, (c) HTML scrape fallback also fails after content:encoded
+        missing. Silent on successful fallback. Rate-limit: at most 1 ping per cron tick per failure
+        category (no per-entry flooding).
+      - Per-source style notes block in ux-guidelines.md NOT added in this feature.
+      - INVARIANT (from patterns.md): new orangetrack_source.py MUST be added to FILES list in BOTH
+        deploy.sh AND .github/workflows/deploy.yml. Otherwise next cron tick crashes with ImportError.
+      - Must stay within existing parser contract: returns {title, subtitle, paragraphs, images}. No
+        `blocks` field (autoevolution-only optimization, blocks=null is the expected case).
+      - DOM walking strategy: by HTML tag (<p>, <figure>, <img>, <iframe>), NOT by Gutenberg class
+        names ('wp-block-paragraph', etc.) — survives WordPress editor migrations and theme tweaks.
+      - Boilerplate filter additions: 1-3 affiliate patterns (e.g. /^quick link[!:].*\b(buy|order|grab|shop)\b/i)
+        compiled once at module import; length-bound preserved at 120 chars.
+
+  testing_strategy:
+    score: 90
+    status: "complete"
+    value: |
+      Feature size: M (mirrors mattel-news-source / lamley test scope, slightly smaller because no
+      complex Cloudflare bypass).
+      - Unit tests in tests/test_orangetrack_source.py (~30-40 tests):
+        * Primary path: parse <content:encoded> → paragraphs / images / subtitle extraction
+        * Edge cases: post without images; post without h5 headings; post with only YouTube iframe →
+          synthesize paragraphs=[entry.title]; carousel gallery (nested <figure>) flattening; affiliate
+          inline link inside paragraph (kept verbatim — out of scope per Q5); affiliate-only short post
+          (filtered → empty paragraphs → drop)
+        * Fallback path: content:encoded missing → HTML GET of article URL → parse body → succeed;
+          content:encoded missing → HTML GET → 429 → Retry-After honored → succeed; content:encoded
+          missing → HTML GET → 5xx → admin notifier called once → return None
+        * Throttle: two consecutive fetches respect MIN_REQUEST_INTERVAL_S (mocked time.sleep, asserts
+          call args)
+        * Admin-ping triggers: feed HTTP 503 → notifier called once with 'orangetrack feed unreachable';
+          malformed XML → notifier called once; full-fallback failure → notifier called once per
+          article (rare, expected ≤1 per week)
+        * Empty feed (no <item> entries) — empty list returned, NO admin-ping (clean state)
+      - Boilerplate filter additions in tests/test_boilerplate_filter.py (~3-5 tests):
+        * 'QUICK LINK! Buy <product> from <store> now.' filtered (positive)
+        * 'Buy now from 1 Stop Diecast' filtered (positive, generic shape)
+        * Negative: real-content sentence mentioning 'buy' (e.g. 'I'd buy that for $1') survives
+        * Negative: long content paragraph with 'buy' inside survives (length > 120)
+      - test_sources_registry.py: update set assertion to include 'orangetrack' (per code-research
+        finding — currently hardcoded set of 3 sources).
+      - NO new integration / E2E test — orangetrack passes through the same _fetch_rss_entries pipeline
+        as existing RSS sources; coverage is via test_distributed_schedule_integration.py (no source
+        identity hardcoding there).
+      - Pre-deploy: pytest tests/ all-green (740 baseline + new ~35-45 = ~775-785 total).
+      - Post-deploy on dev: push to dev → deploy_test.yml updates test instance → wait for first slot →
+        observe test channel @myhwchannel123 → spot-check Telegraph rendering, IV preview button, no
+        affiliate-line leak, RU translation reads naturally, hashtag '#orangetrackdiecast #news'.
+      - Merge to main only after visual ОК on test channel (per dev-first iteration cycle).
+    gaps: ""
+    required: true
+
+# ============================================================================
+# Phase 2: User Experience & Scenarios
+# ============================================================================
+# Interview Cycle 2 scope (together with Phase 3)
+phase2_user_experience:
+
+  user_stories:
+    score: 88
+    status: "complete"
+    value: |
+      Story 1 (channel subscriber): As a Hot Wheels enthusiast subscribed to @myhwchannel123,
+        I want orangetrackdiecast.com posts (Brad's Case Reports, Pop Culture coverage) to appear
+        in the channel translated to Russian, alongside the existing 3 sources, so I get more
+        HW news per day from a curated single-author HW-only blog.
+      Story 2 (operator): As the channel operator, I want orangetrackdiecast articles to flow
+        through the SAME publish pipeline as autoevolution / lamley / mattel — daily fetch,
+        dedup, slot-publish, IV preview, source hashtag — so I don't have to monitor a separate
+        path or learn new operational habits.
+      Story 3 (operator, observability): As the operator, I want to be admin-pinged when the
+        site is unreachable or its feed structure breaks, so I can investigate and decide
+        whether to disable the source or take other action — but I do NOT want pings for
+        successful fallbacks (content:encoded missing → HTML scrape worked) since those are
+        self-healing.
+    gaps: ""
+    required: true
+
+  acceptance_criteria:
+    score: 95
+    status: "complete"
+    value: |
+      AC1. Daily cron tick (10:00 МСК) fetches https://orangetrackdiecast.com/feed/ alongside
+        the existing 3 feeds via _fetch_rss_entries; HTTP errors isolated per-feed (one bad
+        feed doesn't block others — existing pattern).
+      AC2. New entries pass dedup against processed_news + pending_articles; deduplicated
+        rows are inserted with source_name='orangetrack' and feed_url set to the feed URL.
+      AC3. Articles arrive in pending_articles with title (from RSS <title>), subtitle
+        (first paragraph or empty), paragraphs (extracted text from <content:encoded>),
+        images (figure srcset entries, ?w=1024 preferred, dedup by URL pre-?, capped at
+        IMAGE_LIMIT=10), AND a `blocks` list (like autoevolution) preserving the original
+        ordering of paragraphs / images / YouTube videos. The blocks list contains entries
+        of types 'paragraph' / 'image' / 'video' / optionally 'heading' for h5 case-section
+        labels.
+      AC4. On slot publication (within the existing distributed-publish loop): LLM
+        transcreation produces RU title (with deterministic emoji prefix), RU subtitle,
+        RU paragraphs, AND ru_blocks (cloned blocks structure with text fields translated,
+        media blocks intact); published to Telegra.ph; channel post text is single-line
+        '#orangetrackdiecast #news' with IV preview card.
+      AC5. Telegraph page rendered from blocks (telegraph_publisher's existing block-or-flat
+        renderer auto-selects blocks when present): hero image first, italic subtitle, then
+        in-order body of paragraphs / images / video iframes (wrapped via
+        telegra.ph/embed/youtube?url=... like autoevolution videos). Source footer at end.
+      AC6. Admin-ping aggregator: collects (code, link) tuples across all orangetrack
+        fetch + parse activity in one cron tick. At end of orangetrack source processing,
+        if any issues were collected, fires ONE admin-ping with format:
+        '[<INSTANCE_LABEL>] orangetrack: N issues this tick' followed by bullet list
+        '  • <CODE> (<count>×) — <link or feed_url>[, <link2>...]' grouped by code.
+        Silent if no issues. Codes used:
+          - FEED_HTTP_<status> (e.g. FEED_HTTP_503) — feed fetch returned HTTP error
+          - FEED_TIMEOUT — feed fetch timed out
+          - FEED_XML_PARSE — feedparser raised on malformed XML
+          - ART_FALLBACK_HTTP_<status> — content:encoded missing AND article scrape returned HTTP error
+          - ART_FALLBACK_TIMEOUT — same but timed out
+          - ART_FALLBACK_PARSE_EMPTY — article scrape returned 200 but parser extracted nothing
+          - ART_PARSE_EXCEPTION — unexpected exception during parsing (catch-all defensive code)
+      AC7. Successful fallback (content:encoded missing → HTML scrape worked) is SILENT
+        (no admin-ping). Only failures surface to operator.
+      AC8. Affiliate-line patterns (standalone short paragraphs ≤120 chars matching
+        '^quick link[!:]' / '^buy ... from ... now' shapes) filtered before LLM call by
+        boilerplate_filter extension. Inline affiliate sentences inside real paragraphs
+        are out of scope (Q5 = I).
+      AC9. Negative: real-content sentences that mention the word 'buy' but don't match
+        the affiliate-line shape (e.g. 'I'd buy that for $1') survive the filter.
+      AC10. Negative: standalone affiliate-only post (entire body is a 'Buy now from
+        <store>' line) → boilerplate filter strips → empty paragraphs → existing
+        downstream filter drops the article (no orphan reaches the channel).
+      AC11. Existing 740 tests still pass; new ~30-40 tests added in
+        test_orangetrack_source.py + ~3-5 new tests in test_boilerplate_filter.py;
+        test_sources_registry.py updated to include 'orangetrack' in source set.
+      AC12. The new module orangetrack_source.py is added to BOTH deploy.sh FILES
+        list AND .github/workflows/deploy.yml FILES list (enforcing the project
+        invariant) — verified by manual diff in PR review.
+      AC13. Hashtag '#orangetrackdiecast #news' rendered correctly in test channel
+        @myhwchannel123 after first slot publication; manual visual check confirms
+        IV preview, Telegraph rendering with hero image, RU translation reads natural
+        (no obvious calque or канцелярит).
+      AC14. WordPress block-class drift mitigation: parser walks DOM by tag, not class —
+        verified by a unit test that feeds it a synthesized HTML body without any
+        'wp-block-*' classes and the parser still extracts paragraphs/images correctly.
+      AC15. Throttle: when fallback HTML fetch fires twice in one cron tick (rare, would
+        need 2 articles in same tick with both content:encoded missing), the second fetch
+        sleeps for MIN_REQUEST_INTERVAL_S between calls (mocked time.sleep, asserts call
+        order/args).
+      AC16. RSS naturally carries 10-20 recent posts; if site was down on day N, day N+1
+        cron tick re-fetches the same feed and dedup against processed_news ensures missed
+        articles are picked up automatically (no special retry state needed).
+    gaps: ""
+    required: true
+
+  edge_cases:
+    score: 92
+    status: "complete"
+    value: |
+      EC1. WordPress block-class drift (gutenberg → classic editor or theme update):
+        parser walks by tag (<p>, <figure>, <img>, <iframe>) not Gutenberg class names.
+      EC2. Video-only post (body is a single YouTube iframe, no text paragraphs):
+        blocks=[{'type': 'video', 'src': '<wrapped url>'}, optional]; synthesize
+        paragraphs=[entry.title] so the empty-paragraphs check at news_bot.py:1510 is
+        satisfied (the flat-path safety net is preserved even when blocks-path is the
+        primary render). Telegraph renders title + video naturally via blocks path.
+      EC3. Carousel galleries (<figure class="wp-block-gallery"> with nested <figure>):
+        BS4 recursive find_all('img') flattens correctly; dedup by URL pre-? handles
+        srcset duplicates (?w=150, ?w=300, ?w=1024 → keep ?w=1024).
+      EC4. Post without images at all (rare, more common in Brad's announcement posts):
+        images=[], Telegraph renders without hero — viable.
+      EC5. <content:encoded> missing or empty (rare, defensive): fall back to HTTP GET
+        of article URL, parse <article> or fallback to <body> content. If that also
+        fails, admin-ping + skip article.
+      EC6. Affiliate inline sentence inside real paragraph: kept verbatim (Q5 = I, out of
+        scope). Translated to RU as part of the paragraph; may leak into channel until a
+        future variant-B-style feature addresses it.
+      EC7. Sponsored standalone post (entire body is store-promo line ≤120 chars):
+        boilerplate strips → paragraphs=[] → drop (existing pipeline behavior).
+      EC8. Throttle: orangetrackdiecast.com WordPress.com is unlikely to rate-limit a
+        once-daily feed fetch + occasional fallback article fetch, but lamley pattern
+        applied defensively (MIN_REQUEST_INTERVAL_S=2-3s, 429 Retry-After honored once).
+      EC9. Feed has 10-20 entries but most are already processed (steady state): dedup
+        filters them all out, only 0-2 new entries enter pending. Performance OK.
+      EC10. Site down for 1-2 days then recovers: RSS naturally carries the missed posts
+        in the next successful fetch (10-20 post window), dedup against processed_news
+        picks them up. No retry state needed.
+    gaps: ""
+    required: true
+
+  error_scenarios:
+    score: 90
+    status: "complete"
+    value: |
+      ES1. /feed/ returns HTTP 5xx / 429 / connection refused → ping aggregator
+        receives (FEED_HTTP_<status>, feed_url) tuple → 0 entries returned → continue
+        to next feed. Subsequent cron ticks retry naturally.
+      ES2. /feed/ times out → ping aggregator receives (FEED_TIMEOUT, feed_url) → 0
+        entries → continue.
+      ES3. /feed/ returns 200 but body is malformed XML → feedparser raises → caught →
+        ping aggregator receives (FEED_XML_PARSE, feed_url) → 0 entries.
+      ES4. Feed is well-formed but has zero <item> entries (feed empty or all old) →
+        return [] silently → NO ping (expected steady state, not an error).
+      ES5. <content:encoded> missing for an entry → HTTP GET article URL → parse body:
+        - GET succeeds + parse extracts paragraphs → article enters pending normally
+          (SILENT — successful fallback).
+        - GET 5xx/429/non-2xx → ping aggregator receives (ART_FALLBACK_HTTP_<status>,
+          link) → skip this article.
+        - GET timeout → ping aggregator receives (ART_FALLBACK_TIMEOUT, link) → skip.
+        - GET 200 but parse extracts nothing → ping aggregator receives
+          (ART_FALLBACK_PARSE_EMPTY, link) → skip.
+      ES6. Unexpected exception during parse (any unforeseen branch): ping aggregator
+        receives (ART_PARSE_EXCEPTION, link) → catch-all defensive code; news_bot's
+        existing try/except in fetch_full_article also catches.
+      ES7. End of cron tick: aggregator counts collected tuples. If empty → silent.
+        Otherwise → format ONE admin-ping with summary + grouped bullet list per code,
+        ordered by category (FEED_* before ART_*) then by code alphabetically.
+      ES8. Throttle: rare given daily cadence, but if two same-tick HTML fallback
+        fetches fire, MIN_REQUEST_INTERVAL_S throttle sleeps; 429 with Retry-After
+        honored once before giving up (lamley pattern). 429 still gets a code in the
+        aggregator (ART_FALLBACK_HTTP_429).
+      ES9. Boilerplate filter regex compile failure (typo at module load): ImportError
+        on cron startup. Mitigation: pytest catches this pre-deploy.
+      ES10. Forgot to add orangetrack_source.py to BOTH FILES lists (deploy.sh AND
+        .github/workflows/deploy.yml): server hits ImportError on next cron restart.
+        Mitigation: explicit checklist item in tech-spec; manual diff of both files
+        in PR review.
+    gaps: ""
+    required: true
+
+  verification_strategy:
+    score: 92
+    status: "complete"
+    value: |
+      Pre-deploy:
+        1. Pre-commit hook passes (gitleaks + whitespace + EOF + merge conflicts).
+        2. pytest tests/ — 740 baseline + new ~35-45 → all green.
+        3. Manual smoke in Python REPL: fetch live /feed/, parse first item, print
+           extracted title/subtitle/paragraphs/images — sanity check.
+      Post-deploy on dev:
+        4. git push origin dev → ci.yml pytest passes → deploy_test.yml updates
+           news_bot_test.service on /home/hwbot/bot_test/.
+        5. journalctl -u news_bot_test.service -n 50 — bot starts without ImportError
+           (proves FILES list is correct), no admin-ping flood, orangetrack feed fetched
+           successfully on next cron tick.
+        6. Wait for next slot in 10:00-20:00 МСК window → if orangetrack article in queue,
+           it publishes to test channel @myhwchannel123 → operator visual checks:
+             a. Telegraph URL opens, page renders with title, subtitle, paragraphs, hero
+                image, source footer link.
+             b. Channel post is single-line '#orangetrackdiecast #news' + IV preview card
+                with hero image and INSTANT VIEW button.
+             c. RU translation is natural, not literal calque — operator can suggest
+                ux-guidelines.md per-source notes block as a follow-up if drift observed.
+             d. No affiliate-line leak as standalone paragraph; inline affiliate sentences
+                are expected to leak per Q5 (out of scope).
+        7. Spot-check 1-2 source articles for relevance — orangetrackdiecast is HW-only
+           by site policy; no _is_hot_wheels_relevant escalation expected.
+      Merge to main only after step 6 visual ОК.
+      Post-deploy on prod (after main merge):
+        8. CI on main → deploy.yml updates news_bot.service on /home/hwbot/bot/.
+        9. journalctl -u news_bot.service for first 24 h after deploy — confirm
+           orangetrackdiecast feed fetched daily, articles flow into channel as expected.
+       10. After 1 week: review channel — if drift in tone/quality observed against per-
+           source notes for similar single-author blogs (Lamley dial), open a follow-up
+           feature for ux-guidelines.md per-source block.
+    gaps: ""
+    required: true
+
+  ui_ux_requirements:
+    score: 0
+    status: "skipped"
+    value: "N/A — backend source addition. The visible UX surface is the Telegram channel post + Telegraph article page, which use existing rendering wiring (no new UI elements)."
+    gaps: ""
+    required: false
+
+  risks:
+    score: 92
+    status: "complete"
+    value: |
+      R1. WordPress block-class drift breaks parser → channel goes silent on orangetrack.
+        Mitigation: walk DOM by tag not class; integration QA on test channel before main
+        merge; admin-ping on parser exceptions (existing pattern).
+      R2. Affiliate inline sentences inside real paragraphs leak to channel translated
+        as 'купи в 1 Stop Diecast сейчас'. Mitigation: out of scope per Q5. Future fix
+        is an _strip_plugs-style variant B postprocessor with affiliate-cue regex.
+      R3. Forgot to add orangetrack_source.py to BOTH FILES lists → server hits
+        ImportError → bot down. Mitigation: explicit checklist item in tech-spec; manual
+        diff of both deploy files in PR review; pytest can't catch this (no integration
+        of FILES list in tests).
+      R4. test_sources_registry.py set assertion will break with new source. Mitigation:
+        update test in same commit.
+      R5. orangetrackdiecast WordPress.com rate-limit. Mitigation: cron daily, only ONE
+        feed fetch per day, fallback HTTP only fires when content:encoded missing (rare).
+        If 429 occurs, lamley pattern (Retry-After + module throttle) handles it.
+      R6. RSS-only fetch path can lose articles if site is down >5-7 days continuously
+        AND Brad publishes >10 posts in that window (would push earliest missed posts
+        out of the feed's recent-window). Probability tiny — Brad publishes ~1/day,
+        WP.com SLA is 99.9%+. Mitigation: not addressed in this feature; if it happens,
+        operator can hand-fetch missed articles via hw_review (archived path, but code
+        intact).
+      R7. Brad changes the feed URL or feed plugin. Detection: AC5/AC6 admin-ping
+        fires; operator investigates manually.
+    gaps: ""
+    required: true
+
+  technical_decisions:
+    score: 95
+    status: "complete"
+    value: |
+      TD1. Hybrid feed-first parser (~270-300 LoC). Primary: parse RSS <content:encoded>
+        in-memory. Fallback: HTTP GET article URL when content:encoded missing.
+        Rationale: cheaper than full Lamley-pattern HTTP-every-fetch; defense-in-depth
+        for rare missing-content case.
+      TD2. NO new fetcher in SOURCES registry — orangetrack arrives via existing
+        _fetch_rss_entries (just feeds.json + NETLOC_TO_SOURCE entries needed).
+        Rationale: minimum surface; matches autoevolution/lamley registry pattern.
+      TD3. fetch_full_article gets a new domain branch (dispatches to
+        orangetrack_source.fetch_orangetrack_article). Returns the dual contract
+        {title, subtitle, paragraphs, images, blocks} — same as autoevolution.
+      TD4. BLOCKS PATH (not flat). Parser emits `blocks` list preserving original order
+        of paragraphs / images / YouTube videos / optional headings. Telegraph renderer
+        auto-selects blocks when present. Rationale: Brad's videos are integral content;
+        flat path silently drops iframes; blocks path preserves them in position.
+      TD5. DOM walk by HTML tag (<p>, <figure>, <img>, <iframe>), not Gutenberg
+        class names. Rationale: WordPress.com may migrate editor mode or theme;
+        tags are stable across all WP variants.
+      TD6. Boilerplate filter additions: 1-3 affiliate patterns
+        (e.g. /^quick link[!:].*\b(buy|order|grab|shop)\b/i) compiled at module
+        import. Rationale: keep variant A scope (standalone short paragraphs);
+        defer inline affiliate to a future variant B feature per Q5.
+      TD7. Admin-ping aggregator pattern. Collect (code, link) tuples during fetch +
+        parse; emit ONE summary ping at end of orangetrack source processing. Format:
+        '[<INSTANCE>] orangetrack: N issues this tick\\n  • CODE (k×) — link...'.
+        Codes are stable strings (FEED_HTTP_<status>, ART_FALLBACK_*, etc.) so operator
+        can grep journalctl by code. Rationale: operator wants visibility without ping
+        flood; codes give quick triage.
+      TD8. Per-source style notes block in ux-guidelines.md — INTENTIONALLY NOT in
+        this feature. Rationale: scope discipline; let common LLM prompt translate
+        first; observe drift; add per-source dial only if needed.
+      TD9. SOURCE_EMOJI='🔵' (4th color, free). Rationale: completes the RGB+purple
+        palette unambiguously in admin-ping breakdown.
+      TD10. source_name='orangetrack' (short, matches 'lamley' / 'mattel' truncation
+        pattern); hashtag '#orangetrackdiecast' (from netloc, unchanged).
+      TD11. RSS recovery semantics: rely on natural feed window + processed_news
+        dedup; no special retry state. Rationale: simpler is more reliable;
+        SLA of WP.com + Brad's posting rate make >5-day outage with >10 posts
+        missed extremely unlikely.
+      TD12. Lamley video preservation — INTENTIONALLY NOT in this feature. Rationale:
+        operator-confirmed scope split (Q10 = β); orangetrack is additive (low risk),
+        Lamley would touch existing prod code (regression risk). Scheduled as a
+        separate later feature.
+      TD13. ux-guidelines.md is ALREADY in deploy FILES list (cron-side runtime dep
+        from llm-transcreation feature). NO CHANGE needed — it stays where it is. Spec
+        notes this for clarity so reviewer doesn't accidentally add it.
+    gaps: ""
+    required: false
+
+  deploy_approach:
+    score: 95
+    status: "complete"
+    value: |
+      Standard CI/CD via GitHub Actions, dev-first iteration cycle:
+        1. Implement on local dev branch (feature implementation lives directly on dev,
+           per project convention; no per-feature branch).
+        2. git push origin dev → ci.yml runs pytest → on green, deploy_test.yml
+           SCPs FILES list to /home/hwbot/bot_test/ on VPS, restarts
+           news_bot_test.service.
+        3. Operator visual QA on test channel @myhwchannel123 (single instance,
+           shared bot account, distinct INSTANCE_LABEL='test' in admin pings).
+        4. After QA: git checkout main && git merge dev && git push origin main →
+           ci.yml → deploy.yml → /home/hwbot/bot/ + news_bot.service.
+      No env / secrets / DB schema changes. New module orangetrack_source.py MUST
+      be added to FILES list in BOTH deploy.sh AND .github/workflows/deploy.yml
+      (project INVARIANT). Existing 740 tests unaffected (additive change), new
+      ~35-45 tests added.
+    gaps: ""
+    required: false
+
+  manual_user_actions:
+    score: 95
+    status: "complete"
+    value: |
+      None at install time — pure code change. No env vars, no API keys, no Telegram
+      bot setup, no DB migration.
+      Post-deploy operator activity (light):
+        - After first deploy, journalctl -u news_bot_test.service -n 50 — confirm
+          bot started without ImportError, orangetrack feed fetched.
+        - After first orangetrack publish to test channel, visual QA per
+          verification_strategy step 6.
+        - After 1 week on prod, optional review of channel for tone drift on
+          orangetrack posts; if drift, open follow-up feature for ux-guidelines.md
+          per-source block.
+    gaps: ""
+    required: false
+
+# ============================================================================
+# Phase 3: Integration & Technical Context
+# ============================================================================
+# Interview Cycle 2 scope (together with Phase 2)
+phase3_integration:
+
+  integration_points:
+    score: 95
+    status: "complete"
+    value: |
+      Files touched (per code-research.md):
+        New file:
+          - orangetrack_source.py (~250 LoC) — parser module exposing
+            fetch_orangetrack_article(entry, notifier=None).
+        Modified files:
+          - feeds.json — add 'https://orangetrackdiecast.com/feed/' as 4th URL (cap is 5
+            at news_bot.py:176).
+          - news_bot.py — 4 small edits:
+            * import statement (~line 36) — add orangetrack_source.
+            * NETLOC_TO_SOURCE map (~lines 745-751) — add 'orangetrackdiecast.com':
+              'orangetrack' and 'www.orangetrackdiecast.com': 'orangetrack'.
+            * SOURCE_EMOJI / SOURCE_LABEL maps (~lines 777-786) — add
+              'orangetrack': '🔵' and 'orangetrack': 'orangetrack'.
+            * fetch_full_article dispatcher (~lines 1265-1286) — add new branch
+              `if 'orangetrackdiecast.com' in domain: return
+              orangetrack_source.fetch_orangetrack_article(entry,
+              notifier=send_admin_notification)`.
+          - boilerplate_filter.py (~lines 51-65, _BOILERPLATE_PATTERNS list) — append 1-3
+            affiliate-line patterns (e.g. /^quick link[!:].*\b(buy|order|grab|shop)\b/i).
+            Length-bound stays at _MAX_BOILERPLATE_LEN=120 (no change).
+          - deploy.sh (~lines 37-57, FILES list) — add orangetrack_source.py.
+          - .github/workflows/deploy.yml (~lines 117-137, FILES list) — add
+            orangetrack_source.py. Must mirror deploy.sh byte-for-byte (project
+            INVARIANT).
+          - tests/test_sources_registry.py (~lines 41-55) — set assertions break;
+            update to include 'orangetrack' in expected source set.
+        New test file:
+          - tests/test_orangetrack_source.py (~30-40 tests) — unit coverage of parser
+            (primary content:encoded path + HTML scrape fallback path + edge cases +
+            admin-ping triggers + throttle).
+        Tests modified (additive):
+          - tests/test_boilerplate_filter.py — +3-5 tests for affiliate patterns.
+
+      No new pip dependencies. Reuses existing infrastructure: requests + feedparser +
+      bs4 + filter_boilerplate + send_admin_notification + _fetch_rss_entries +
+      processed_news dedup.
+
+      Where this slots into the runtime data flow (per architecture.md):
+        Step 1 (Fetch): _fetch_rss_entries iterates feeds.json → orangetrackdiecast feed
+          included automatically by URL match. Each entry stamped with
+          source_name='orangetrack' via NETLOC_TO_SOURCE.
+        Step 2 (Article body fetch): for each entry, fetch_full_article dispatches by
+          domain → calls orangetrack_source.fetch_orangetrack_article(entry).
+        Step 3 (Boilerplate filter): per-parser filter_boilerplate(...) applies to
+          paragraphs before return. Affiliate patterns kick in here.
+        Step 4 (Insert): pending_articles row created, source_name='orangetrack'.
+        Step 5+ (Slot publish, LLM transcreation, Telegraph, Telegram teaser):
+          unchanged, hashtag '#orangetrackdiecast' rendered via _source_hashtag.
+        Step 6 (Admin pings): orangetrack-specific pings hooked at parser level via
+          notifier callback (existing pattern — same as lamley_source / mattel_news_source).
+    gaps: ""
+    required: true
+
+  dependencies:
+    score: 95
+    status: "complete"
+    value: |
+      Stdlib + existing pip deps only:
+        - requests (already in requirements.txt) — feed fetch + fallback HTML scrape.
+        - feedparser (already in requirements.txt) — RSS parsing.
+        - beautifulsoup4 (already in requirements.txt) — content:encoded HTML parse +
+          fallback HTML scrape parse.
+        - re (stdlib) — affiliate-line patterns + YouTube embed wrapping.
+        - urllib.parse (stdlib) — URL parsing for image dedup + YouTube wrap.
+        - logging (stdlib) — module logger.
+        - threading (stdlib) — module-level lock for throttle (lamley pattern).
+      No new pip dependencies. No new env vars. No new SQLite columns.
+      No new external services. No new API keys.
+      Reuses existing infrastructure modules: boilerplate_filter, news_bot (notifier),
+      _fetch_rss_entries, _resolve_source_name, fetch_full_article dispatcher.
+    gaps: ""
+    required: false
+
+  technical_constraints:
+    score: 92
+    status: "complete"
+    value: |
+      Performance:
+        - Daily cron tick: ONE feed HTTP fetch to /feed/ (typical ~50-100 KB response).
+        - Fallback HTML fetch: only fires when content:encoded missing (rare, expected
+          ≤1 per cron tick on average); throttled at MIN_REQUEST_INTERVAL_S between
+          consecutive fetches.
+        - Per-article boilerplate filter: O(n) over patterns × paragraphs (~3
+          patterns × ~10-30 paragraphs); negligible vs LLM call latency.
+        - DOM parse: BS4 lxml backend, content:encoded body typically <100 KB.
+      Security:
+        - Plain HTTPS to orangetrackdiecast.com (WordPress.com TLS, HSTS).
+        - SSRF guard: domain match in fetch_full_article dispatcher rejects non-
+          orangetrackdiecast.com URLs (existing pattern matches Lamley/Autoevolution).
+        - No user input crosses the boundary; patterns operate on Brad's content.
+        - No regex catastrophic backtracking risk — affiliate patterns avoid (.+)+
+          form, anchored on '^' and short keyword boundaries.
+        - HTTP fetch uses BROWSER_HEADERS (Chrome 131 mimicry) consistent with
+          lamley_source.py; respects Retry-After on 429 (one retry maximum).
+      Backward compat:
+        - Additive: existing 3 sources unchanged. New domain dispatch in
+          fetch_full_article doesn't affect autoevolution/lamley/mattel branches.
+        - test_sources_registry.py set assertion breaks but is a one-line update.
+        - feeds.json grows from 3 to 4 URLs (cap 5 still respected).
+        - SOURCE_EMOJI / SOURCE_LABEL grow from 3 to 4 keys (no algorithmic limit).
+      Resource limits:
+        - MAX_RESPONSE_SIZE = 5 MB (feed) and 5 MB (fallback HTML page) matching
+          lamley_source defaults; protects against accidental massive HTML.
+        - IMAGE_LIMIT = 10 (matches Lamley); Telegraph caps at ~30 images per page
+          anyway.
+    gaps: ""
+    required: false
+
+  data_requirements:
+    score: 100
+    status: "complete"
+    value: |
+      No new data. No new SQLite tables, no new columns on existing tables.
+      pending_articles.source_name gains a new value 'orangetrack' (text column,
+      no schema change).
+      published_articles also stores source attribution implicitly via link
+      (no schema change).
+      processed_news handles dedup transparently via existing PRIMARY KEY on link.
+    gaps: ""
+    required: false
+
+  migration_needs:
+    score: 100
+    status: "complete"
+    value: |
+      None. No retroactive cleanup needed (we're adding a source, not changing
+      existing data shape). Existing pending_articles rows continue to flow with
+      their original source_name; only NEW rows after deploy will carry
+      source_name='orangetrack'.
+      No data migration script. No backfill. No deprecation cleanup.
+    gaps: ""
+    required: false
+
+# ============================================================================
+# Phase 4: Completion
+# ============================================================================
+phase4_completion:
+  userspec_file: "work/orangetrack-source/user-spec.md"
+  status: "approved"  # operator approved 2026-05-05 12:10 МСК
+
+# ============================================================================
+# Decision Rules
+# ============================================================================
+decision_rules:
+
+  required_threshold: 85
+  optional_threshold: 50
+
+  # Stop criteria (BOTH must be true to exit a cycle)
+  stop_criteria:
+    - "All required items in current cycle scope score >= 85%"
+    - "Structural: every required item has non-empty value, no TBD, gaps empty or conscious limitations"
+
+  priority_order:
+    - "Required items with score < 85% (lowest score first)"
+    - "Optional items mentioned by user in context"
+    - "Other optional items if user seems knowledgeable"
+
+  question_strategy:
+    - "3-4 questions per batch about different gaps"
+    - "Run as many batches as needed — batch size is NOT cycle limit"
+    - "Propose solutions based on PK, not just ask questions"
+    - "Challenge with substance: counterexamples, code references, unexplored scenarios"
+    - "After each response: update scores, values, gaps, conversation_history, save"
+
+# ============================================================================
+# Interview Progress
+# ============================================================================
+progress:
+  current_phase: "phase1_feature_overview"
+  questions_asked: 0
+  last_question: ""
+  total_required_score: 0
+  total_optional_score: 0
+  completion_estimate: "0%"
+  user_detail_level: "unknown"  # brief | moderate | detailed
+
+# ============================================================================
+# Notes
+# ============================================================================
+notes: |
+  Free-form notes:
+  - Important insights
+  - Areas of uncertainty
+  - Pivot points
+  - Scope changes
+
+# ============================================================================
+# USAGE INSTRUCTIONS
+# ============================================================================
+#
+# 1. INIT: Created by init-feature-folder.sh at work/{feature}/logs/userspec/interview.yml
+#    Set metadata.started, metadata.status: in_progress
+#
+# 2. INITIAL SCORING: After user's free-form description, score ALL items
+#    Detailed 80-95%, brief 50-70%, vague 20-40%, not mentioned 0%
+#
+# 3. INTERVIEW LOOP (save after EVERY response):
+#    a) Find required items with score < 85% in current cycle scope
+#    b) Ask 3-4 questions about different gaps
+#    c) Propose solutions based on PK
+#    d) User answers
+#    e) Update: conversation_history, scores, values, gaps, metadata
+#    f) Save immediately
+#    g) Check stop criteria (score >= 85% AND structural: value filled, no TBD, gaps resolved)
+#    h) Not done → repeat. Done → next cycle.
+#
+# 4. CYCLES:
+#    Cycle 1: phase1_feature_overview items
+#    Cycle 2: phase2_user_experience + phase3_integration items
+#    Cycle 3: ALL items still below threshold (cleanup pass)
+#
+# 5. RESUME: If metadata.status is "in_progress"
+#    Load, show conversation summary, resume from current state
+#
+# 6. COMPLETION: After user approves user-spec.md
+#    Set phase4_completion.status: approved
+#    Set metadata.status: completed

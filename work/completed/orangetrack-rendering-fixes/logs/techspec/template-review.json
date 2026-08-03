@@ -1,0 +1,60 @@
+{
+  "status": "changes_required",
+  "findings": [
+    {
+      "severity": "critical",
+      "category": "tasks",
+      "issue": "Wave 1 conflict: Tasks 1, 2, and 3 all modify `orangetrack_source.py` in the same wave. Task 1 (li/ol parsing in `_walk`), Task 2 (heading dispatch in `_emit_heading` and call sites at lines 511-520), and Task 3 (paragraphs_flat extraction at lines 575-577) will execute in parallel and produce merge conflicts on the same file.",
+      "fix": "Choose one of: (a) merge Tasks 1+2+3's orangetrack_source.py edits into a single combined task; or (b) serialize them — keep Task 1 in Wave 1, move Task 2 to Wave 2 (renumber others), move Task 3 to Wave 3. Option (a) is preferable since the three edits are tightly coupled (paragraphs_flat extension is meaningless without `list_item` block emission)."
+    },
+    {
+      "severity": "critical",
+      "category": "tasks",
+      "issue": "Wave 2 conflict: Tasks 5 and 7 both modify `tests/test_orangetrack_source.py` in the same wave. Task 5 adds parser unit tests, Task 7 adds the end-to-end integration test in the same file.",
+      "fix": "Either merge Task 7's integration test into Task 5 (single test-file edit per wave), or move Task 7 to a follow-up wave (Wave 3 testing) before audits. Alternatively, place the integration test in a new dedicated file `tests/test_orangetrack_rendering_integration.py` (the tech-spec already mentions this option) so Task 5 and Task 7 modify different files."
+    },
+    {
+      "severity": "critical",
+      "category": "tasks",
+      "issue": "Final Wave contains Tasks 11, 12, and 13 — all in the same wave. Task 12 (Deploy) cannot run in parallel with Task 11 (Pre-deploy QA) because deploy must wait for QA to pass. Task 13 (Post-deploy verification) cannot run in parallel with Task 12 (Deploy) because there is nothing to verify until deploy completes.",
+      "fix": "Split the Final Wave into three sequential waves: Wave N (Task 11 — Pre-deploy QA), Wave N+1 (Task 12 — Deploy), Wave N+2 (Task 13 — Post-deploy verification). Each wave depends on the previous. The user's request specified exactly this layout: Wave 4 (Task 11), Wave 5 (Task 12 + Task 13) — even that bundling of 12+13 is wrong; post-deploy must wait for deploy to finish."
+    },
+    {
+      "severity": "major",
+      "category": "tasks",
+      "issue": "Waves are labeled by name (`### Wave 1`, `### Wave 2`, `### Audit Wave`, `### Final Wave`) instead of being consistently numbered. The user's request expected Wave 3 (audits), Wave 4 (QA), Wave 5 (deploy + post-deploy). Mixed naming makes wave ordering ambiguous to downstream task-decomposition.",
+      "fix": "Rename `### Audit Wave` → `### Wave 3 (parallel — audits; depends on Wave 2)`, and replace `### Final Wave` with explicit numbered waves per the previous critical finding (Wave 4 QA / Wave 5 Deploy / Wave 6 Post-deploy)."
+    },
+    {
+      "severity": "major",
+      "category": "task_quality",
+      "issue": "Task descriptions reference specific line numbers (Task 2: `line 511-520`, Task 3: `line 106`, `orangetrack_source.py:575-577`). Line numbers belong in task files created during decomposition, not in tech-spec implementation tasks — they drift the moment any other commit touches the file.",
+      "fix": "Replace line-number references with semantic anchors: `_emit_heading` and its call sites in `orangetrack_source._walk`; `_PATCHED_TEXT_BLOCK_TYPES` constant in `_llm_common`; `paragraphs_flat` extraction inside `fetch_orangetrack_article`. The task files produced by decomposition can resolve exact lines from the live file."
+    },
+    {
+      "severity": "minor",
+      "category": "task_quality",
+      "issue": "Task 13 description contains step-by-step implementation detail (Step 1 with full ssh command, Step 2 visual checks, Step 3 escalation flow). Tech-spec tasks define scope; detailed verification steps belong in the Agent Verification Plan section (already partially populated) and in the task file produced during decomposition.",
+      "fix": "Compress Task 13 description to 2-3 sentences (e.g. \"Live verification on prod: journalctl scan for IntegrityError/idempotency-guard noise; visual scan of @myhwchannel123 over 1-2 days for bullets, distinct h3 typography, clickable orangetrack links\"). Move the concrete ssh command and step-numbered procedure into the Agent Verification Plan section, which already lists `ssh`/`journalctl` as required tools."
+    },
+    {
+      "severity": "minor",
+      "category": "task_quality",
+      "issue": "Task 1 description embeds dependency rationale (\"pairs with Task 4 (publisher) and Task 3 (LLM patching) to make bullet visible end-to-end\"). This couples the task description to the wave layout and duplicates information already implicit in wave ordering.",
+      "fix": "Remove the \"pairs with Task X\" sentence; wave structure already encodes dependencies. Same applies to Task 3's similar phrasing (\"Pairs with Task 1\")."
+    },
+    {
+      "severity": "minor",
+      "category": "tasks",
+      "issue": "Task 12 description mentions a one-time SQL DELETE (\"Operator runs one-time SQL DELETE FROM failed_articles for team-transport-k\") that belongs to the publish-idempotency-fix feature, not to orangetrack-rendering-fixes. Mixing two features' deploy steps in one task complicates rollback and ownership.",
+      "fix": "Remove the SQL DELETE line from Task 12. The publish-idempotency-fix feature owns its own data-migration step; this tech-spec should only be responsible for orangetrack-rendering-fixes deploy actions."
+    },
+    {
+      "severity": "minor",
+      "category": "verification",
+      "issue": "Tasks 5, 6, 7 (test tasks) declare `Verify-smoke: pytest tests/test_<file>.py -q passes`. The end-to-end integration test (Task 7) re-uses the parser test file — its smoke command depends on the same test discovery, but the description does not specify whether new tests are expected to fail before Wave 1 source code lands. Without an explicit dependency note, Wave 2 could run before Wave 1 is committed.",
+      "fix": "Either add an explicit `depends_on: Wave 1` field on each Wave 2 task, or state in the wave header that Wave 2 starts only after Wave 1 commits land (currently the header says `depends on Wave 1` parenthetically — that is acceptable, but make sure the executor honors it)."
+    }
+  ],
+  "summary": "Tech-spec is structurally complete (all template sections, frontmatter valid, decisions traceable to user-spec ACs, risks tabular, AVP populated, no time estimates, User-Spec Deviations: None). However, three critical wave-conflict / wave-ordering issues block approval: (1) Wave 1 has three tasks editing the same file `orangetrack_source.py`; (2) Wave 2 has two tasks editing the same file `tests/test_orangetrack_source.py`; (3) the Final Wave bundles Pre-deploy QA, Deploy, and Post-deploy into a single parallel wave despite each step strictly depending on the previous. Plus four major/minor findings on wave numbering consistency, line-number references in task descriptions, over-detailed Task 13 description, cross-feature SQL step in Task 12, and dependency-rationale duplication. Resolve the three critical findings before approval."
+}

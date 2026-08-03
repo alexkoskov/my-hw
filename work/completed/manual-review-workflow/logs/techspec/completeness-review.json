@@ -1,0 +1,86 @@
+{
+  "status": "pass",
+  "round": 3,
+  "sources": {
+    "user_spec": true,
+    "tech_spec": true,
+    "tasks": false
+  },
+  "requirements_total": 23,
+  "requirements_covered": 19,
+  "requirements_partial": 4,
+  "requirements_missing": 0,
+  "findings": [
+    {
+      "type": "partial",
+      "source": "user-spec",
+      "requirement": "US-5: hw_review list — numbered rows with source, title, paragraph count, age in hours",
+      "detail": "Architecture step 2 says 'numbered rows' but does not pin the output format string. User-spec step 3 requires '(источник, заголовок, число параграфов, возраст в часах)'. The exact format string '{i}. [{source_emoji}] {title} ({n_paragraphs}п, {age_hours}h)' lives only in code-research §9.3, which Task 7 references. The tech-spec does not make this contract first-class. Not a blocking defect given the code-research reference, but a format mismatch by an implementer would be undetectable at spec review.",
+      "severity": "minor"
+    },
+    {
+      "type": "partial",
+      "source": "user-spec",
+      "requirement": "US-9: hw_review publish N on vanished row — error must include Telegraph-URL when found in published_articles",
+      "detail": "AC line 371 and Task 8 description both say 'clean error with current state, exit 1'. User-spec AC L63 additionally requires that when the row is found in published_articles, the error references the existing Telegraph-URL. The tech-spec AC and Task 8 do not explicitly call out the 'include telegraph_url in the error message' sub-requirement. An agent reading only the tech-spec could implement the state lookup without surfacing the URL. The behavioral intent is clear but the URL-in-error detail is absent from the spec.",
+      "severity": "minor"
+    },
+    {
+      "type": "partial",
+      "source": "user-spec",
+      "requirement": "US-13: hw_review take N after auto-publish — exact error message 'N already auto-published'",
+      "detail": "Architecture step 7 says 'Refuses if row has already left pending'. Integration test at line 305 references 'the expected stderr message (AC L67)' without quoting it. The exact wording '{n} already auto-published' (exit 1) is pinned only in code-research §9.3. Since this is an operator-visible contractual output, its absence from the tech-spec Architecture or AC section means an implementation agent could choose different phrasing. Minor gap — behavior is correct but exact message is unspecified in the spec.",
+      "severity": "minor"
+    },
+    {
+      "type": "partial",
+      "source": "user-spec",
+      "requirement": "US-C6: Cron default daily; hourly bump deferred to tech-spec decision",
+      "detail": "User-spec says 'дефолт в этой фиче остаётся дневным'. Tech-spec Decision 5 bumps to hourly immediately, recorded in User-Spec Deviations as [PENDING USER APPROVAL]. Tech-spec status is 'draft', so the pending approval is appropriate at this stage. Retained as minor partial pending user approval before tech-spec is promoted to approved.",
+      "severity": "minor"
+    },
+    {
+      "type": "structural_gap",
+      "source": "tech-spec",
+      "requirement": "Decision 4: source_name vocabulary 'autoevolution'/'mattel'/'lamley' — code-research §9.5 and §9.1 still carry stale 'rss' value",
+      "detail": "Round-3 fixes resolved §9.4 (SOURCE_EMOJI/LABEL dict) and §9.10 (no 'rss' fallback in job() pseudocode). However, two stale references remain: (1) code-research §9.5 line 483 — _fetch_rss_entries still stamps item['source_name'] = 'rss' for all RSS entries, directly contradicting Decision 4's NETLOC_TO_SOURCE map approach that yields 'autoevolution' or 'lamley'. Task 5 lists 'code-research.md (§9.5)' as primary Files to read; an agent following §9.5 will stamp 'rss' on all autoevolution and lamley RSS entries, causing build_admin_ping to report zero autoevolution/lamley counts. (2) code-research §9.1 line 256 — pending_articles DDL comment still lists source_name valid values as 'one of rss, mattel, lamley'. Task 1 lists 'code-research.md (§9.1, §9.2)' as primary Files to read; an agent following §9.1 will use 'rss' as the valid vocabulary in DDL comments and validation. Both are implementation traps created by incomplete round-3 patching of the 'rss' key inconsistency.",
+      "severity": "major"
+    },
+    {
+      "type": "documented_deviation",
+      "source": "tech-spec",
+      "requirement": "Hourly cron vs user-spec default daily",
+      "detail": "User-Spec Deviations entry #1 documents the hourly cron with rationale (2h grace window is meaningless at daily cadence). [PENDING USER APPROVAL] is appropriate for a draft tech-spec against an approved user-spec. Retained as documented_deviation for user awareness before approval.",
+      "severity": "minor"
+    },
+    {
+      "type": "documented_deviation",
+      "source": "tech-spec",
+      "requirement": "source_name vocabulary promoted to 'autoevolution'/'mattel'/'lamley' as internal keys",
+      "detail": "User-Spec Deviations entry #2 documents this with rationale (lamley also arrives via RSS; bare 'rss' key collapses two outlets). Decision 4 pins the correct vocabulary via NETLOC_TO_SOURCE. [PENDING USER APPROVAL]. Retained as documented_deviation for user awareness.",
+      "severity": "minor"
+    },
+    {
+      "type": "documented_deviation",
+      "source": "tech-spec",
+      "requirement": "Public preview_nodes() wrapper in telegraph_publisher (not in user-spec)",
+      "detail": "User-Spec Deviations entry #3 documents this with rationale (preview_renderer needs the same node tree without re-implementing node building). [PENDING USER APPROVAL]. Retained as documented_deviation for user awareness.",
+      "severity": "minor"
+    },
+    {
+      "type": "documented_deviation",
+      "source": "tech-spec",
+      "requirement": "telegraph_path column on pending and published tables (user-spec mentions only telegraph_url)",
+      "detail": "User-Spec Deviations entry #4 documents this with rationale (editPage requires path; parsing from URL is brittle due to date-suffix slugs). [PENDING USER APPROVAL]. Retained as documented_deviation for user awareness.",
+      "severity": "minor"
+    }
+  ],
+  "round3_resolutions": {
+    "structural_gap_per_row_ping_loop_9_10": "RESOLVED — code-research §9.10 rewritten with ONE consolidated send_admin_notification call for all stale_rows before the mark_notified loop. Consistent with Decision 12.",
+    "structural_gap_rss_key_9_4": "RESOLVED — code-research §9.4 SOURCE_EMOJI/SOURCE_LABEL now keyed by 'autoevolution'/'mattel'/'lamley'. build_admin_ping iterates ('autoevolution', 'mattel', 'lamley'). Consistent with Decision 4.",
+    "structural_gap_yes_flag_9_3": "RESOLVED — code-research §9.3 hw_review skip entry updated with UPDATED note: '--yes bypass removed per tech-spec Decision — skip confirmation is always interactive.' Task 7 implementer will no longer encounter the removed flag.",
+    "structural_gap_uuid4_vs_md5": "RESOLVED (was minor) — Dependencies section has no hashlib entry; Risks section line 349 now describes uuid4-based new-file-per-call with cleanup-on-publish/skip, consistent with Decision 1.",
+    "structural_gap_rss_key_9_5_9_1": "REMAINING — §9.5 and §9.1 still carry 'rss' vocabulary. Demoted from same major finding in round 2 (which also covered §9.4 and §9.10) to a standalone major finding in round 3. Requires a follow-up patch to §9.5 (_fetch_rss_entries source_name stamp) and §9.1 (DDL comment valid values)."
+  },
+  "summary": "19/23 requirements covered, 4 partial (all minor). Zero critical findings. One major structural_gap remains: code-research §9.5 still stamps source_name='rss' for all RSS entries (contradicts Decision 4; Task 5 reads §9.5), and §9.1 DDL comment still lists 'rss' as a valid source_name value (Task 1 reads §9.1). Round-3 fixes fully resolved three of the four round-2 major findings (per-row ping loop, 'rss' key in §9.4 dict, --yes flag in §9.3) and one round-2 minor finding (hashlib/uuid4 inconsistency). Four documented deviations remain [PENDING USER APPROVAL], appropriate for draft tech-spec status. Status: PASS (no critical findings)."
+}

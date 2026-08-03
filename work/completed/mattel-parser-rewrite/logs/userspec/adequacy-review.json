@@ -1,0 +1,21 @@
+{
+  "status": "approved",
+  "findings": [
+    {
+      "category": "underengineering",
+      "severity": "minor",
+      "issue": "Round-2 added AC8 (body across chunks) and AC9 (empty/missing body) but did not add an explicit acceptance for the partial-stream failure mode: body row reference points at a row that is never declared OR advertised content length exceeds what was streamed. R3 risk text mentions this scenario (\"длинный заявленный размер при коротком фактическом\") and claims AC8/AC9 cover it, but AC8 is the happy path (multi-chunk concatenation succeeds) and AC9 is content-empty (declared empty), neither addresses an unresolvable / truncated reference.",
+      "why_matters": "These are realistic CDN-edge / proxy-mid-flight-disconnect failure modes. Without an explicit AC the implementation may silently emit empty paragraphs (looks like a slow news week) instead of treating it as a parse failure deserving a notifier ping. Same silent-failure shape that produced the current outage.",
+      "fix": "Either (a) add an AC: 'When body row reference cannot be resolved (row never declared, or advertised length exceeds available content), fetch_mattel_article returns None and notifier is called once.' Or (b) extend AC7 explicitly: '... entry с заданным handle/url не найден ИЛИ body row reference не разрешается ...'. Borderline acceptable to defer to tech-spec since the failure mode is mentioned in R3, but spelling it out as an AC removes ambiguity for the implementer."
+    },
+    {
+      "category": "underengineering",
+      "severity": "minor",
+      "issue": "Silent-zero detection (round-1 finding 3) not directly addressed in spec body. The 7-day operator observation under 'Пользователь проверяет' is the de-facto residual-risk acceptance, but Ограничения does not explicitly call out 'no recurring smoke is built; we rely on operator-side weekly observation' as the chosen trade-off.",
+      "why_matters": "The current outage was undetected because parser failed silently with [] and tests stayed green. After this rewrite, an empty article2.entries (Mattel CMS swap, listing UI redesign with renamed key) would still look identical to a slow news week. Future operator/agent reading this spec might assume Risk 2 has automated guard when actually it doesn't.",
+      "fix": "Add one line under Ограничения: 'Recurring silent-zero detection не строим — полагаемся на еженедельное наблюдение оператора (раздел «Пользователь проверяет»). Если HW не появляются > 30 дней при стабильном выходе autoevolution/lamley — оператор заводит mini-feature на проверку парсера.' This makes the residual-risk acceptance explicit. Alternatively, accept as-is — the user-verification step covers it operationally."
+    }
+  ],
+  "worst_category": "underengineering",
+  "summary": "Round-2 fixes resolve the round-1 major (scope leak): regex syntax, bracket-match algorithm, RSC text-row marker format, file:line refs, and internal helper names (_make_flight_listing/_make_flight_article) removed from main spec body; AC8 reframed to behavioral wording; semantic-anchor language preserved as legitimate risk-mitigation note. AC5 (5 MB guard), AC7 (url-fallback + entry-not-found), and AC10/AC11 merge are clean additions. R2 mitigation strengthened with live-snapshot baseline for fixture-builder helpers. Two minor underengineering gaps remain (partial-stream body resolution AC, silent-zero detection documentation) but neither is critical for an S-sized refactor with a 1:1 contract and existing operator-observation safety net. Approved for tech-spec phase."
+}

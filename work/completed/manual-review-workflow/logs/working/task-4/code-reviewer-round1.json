@@ -1,0 +1,35 @@
+{
+  "status": "approved",
+  "summary": "Task 4 cleanly extracts a public preview_nodes wrapper from publish_article. The refactor goes a step further than required — publish_article now delegates to preview_nodes, making the new helper the single source of truth for node-tree construction and eliminating any risk of preview/publish drift. All acceptance criteria met; 12 new tests cover parity, offline invariant, token-independence, and title-not-leaked contract.",
+  "criticalIssues": [],
+  "suggestions": [
+    {
+      "file": "telegraph_publisher.py",
+      "line": 232,
+      "severity": "minor",
+      "category": "maintainability",
+      "suggestion": "The `title` parameter is accepted but unused inside preview_nodes. This is explicitly by design (symmetry with publish_article, title is a separate Telegraph API field) and is documented in the docstring — noted for transparency, no action required.",
+      "benefit": "None — behaviour matches task spec item 4 and is verified by test_title_not_in_nodes.",
+      "optional": true
+    }
+  ],
+  "metrics": {
+    "filesReviewed": 2,
+    "criticalIssuesCount": 0,
+    "majorIssuesCount": 0,
+    "minorIssuesCount": 1,
+    "testCoverageAssessment": "excellent"
+  },
+  "dimensions_checked": {
+    "architecture": "clean single-responsibility public wrapper; publish_article delegation ensures parity",
+    "separation_of_concerns": "private _build_content* untouched; publish_article keeps auth+network; preview_nodes is pure",
+    "readability": "clear naming, thorough docstring explaining offline contract and title exclusion",
+    "error_handling": "not applicable — pure function; publish_article error path preserved",
+    "testing": "12 targeted tests covering all TDD anchors plus two parity tests against publish_article payload",
+    "cross_file_consistency": "signature matches tech-spec bullet and user-spec-deviation #3 verbatim",
+    "resource_management": "not applicable",
+    "dependencies": "no new packages",
+    "security": "pure function — no token lookup, no network, no env read",
+    "performance": "trivial; delegation adds one function-call frame"
+  }
+}
