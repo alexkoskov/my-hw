@@ -509,6 +509,42 @@ the tick with no clue to the cause.
 - **`main`** – what production runs. Only merge from `dev` after verification. Deployment is **manual**: the operator pulls and rebuilds on the server (procedure and the publishing-window restriction are in deployment.md). Both GitHub Actions deploy workflows are disarmed (`if: false`).
 - **`dev`** – active development, default branch. All feature branches are merged here. There is no staging environment to deploy to.
 
+### Promotion `dev` → `main` — always a PR (operator decision 2026-08-03)
+
+Until 2026-08-03 promotion alternated between GitHub PR merges and bare local
+`Merge branch 'dev'` commits with no description, so half the releases had no
+record of what went out. **One way now: open a PR from `dev` to `main`.**
+
+The reason is operational, not aesthetic: deployment is manual, so the PR page is
+the last place to read what you are about to put on production *before* you ssh in
+and rebuild. A bare local merge skips that read.
+
+- The PR body is the release note — what changed and what to watch after deploy.
+- Green CI on the PR is the gate. Watch the `check-skip` caveat above: a docs-only
+  PR shows a green check without having run the suite.
+- Merging the PR does **not** deploy anything (both deploy workflows are
+  disarmed), so the 10:00–20:00 МСК window does not restrict the merge — only the
+  rebuild on the host.
+
+### Release tags (operator decision 2026-08-03)
+
+Before 2026-08-03 the repository had **no tags at all** — 21+ merged PRs and a
+manually-deployed production bot with no reference points. Rollback Route A in
+deployment.md needs a "known-good commit" and had to find it by reading `git log`.
+
+**Tag every production deploy** on `main`, right after the rebuild succeeds:
+
+```
+git tag -a prod-YYYY-MM-DD -m "what went out" && git push origin prod-YYYY-MM-DD
+```
+
+Then a rollback target is `git tag -l 'prod-*' | tail -2 | head -1` rather than
+archaeology. Add a `-2` suffix if you deploy twice in one day.
+
+The tag records **what reached production**, not what was merged — so it is
+created after the host rebuild, not with the PR. A merge with no deploy gets no
+tag; that is correct and is the whole point.
+
 ### Testing Requirements
 
 *Rewritten 2026-08-03 — the previous text said there were no automated tests and
@@ -538,6 +574,28 @@ no secret scanning. Both have existed for a long time; that text predates them.*
   commit, fix the finding; bypassing must be explained in the commit message.
 - **Pre-push:** no automated code review — review is a human/agent step (see the
   `code-reviewing` skill).
+
+### Session logs — naming and coverage (convention pinned 2026-08-03)
+
+Every working session leaves `work/SESSION-YYYY-MM-DD.md`. Two rules, both learned
+the hard way during the 2026-08-03 hygiene audit:
+
+1. **The date in the filename is the session's LAST day.** A session spanning
+   several days gets one file, named by the day it ended.
+2. **Because of rule 1, the first line must state the actual coverage** when it is
+   more than one day — e.g. `# SESSION 2026-07-22 … 2026-07-25 — dedup-review-buttons`.
+
+Rule 2 exists because rule 1 makes multi-day work look like a gap. The audit
+counted 16 days with commits and no session file and initially reported all 16 as
+lost knowledge; 12 turned out to be covered — `SESSION-2026-07-25.md` alone covers
+four days. **Before writing a "missing" journal, open the neighbouring files and
+the feature's `decisions.md`** — the reasoning is usually already recorded
+somewhere, and a duplicate journal is worse than none.
+
+Where else work gets recorded, so a gap in `SESSION-*.md` is not automatically a
+gap in knowledge: `work/<feature>/decisions.md` (per-task rationale),
+`work/MIGRATION-*.md` and `work/AUDIT-*.md` (one-off operations), and the
+`## Provenance` section of `ux-guidelines.md` (prompt edits).
 
 ---
 
