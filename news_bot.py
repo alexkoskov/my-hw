@@ -3005,7 +3005,7 @@ def send_telegraph_teaser(telegraph_url, source_url):
         [Telegraph IV preview card with full-width image + INSTANT VIEW]
         #source #news
 
-    Spec: work/telegraph-pipeline/post-format.md.
+    Spec: work/completed/telegraph-pipeline/post-format.md.
     """
     if not TELEGRAM_BOT_TOKEN or not TELEGRAM_CHANNEL_ID:
         logger.error("Telegram credentials not set.")

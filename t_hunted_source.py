@@ -19,7 +19,7 @@ dispatcher in ``news_bot.fetch_full_article`` uses a permissive
 substring check (``'blogspot.com' in domain``) — this function is the
 hard gate closing that hole.
 
-See ``work/t-hunted-pt-source/`` tech-spec Task 1 and code-research §B
+See ``work/completed/t-hunted-pt-source/`` tech-spec Task 1 and code-research §B
 for the line-precise design.
 """
 

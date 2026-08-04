@@ -148,3 +148,11 @@ card button).
   Treasure Hunt. Subtitle `💬 «Прости меня, отец...»` + `<hr>` separator +
   full translated body + 2 inline images. Minimal channel body
   (`🔗 autoevolution.com`).
+
+---
+
+## Закрытие — 2026-08-04
+
+Фича выкачена и работает; папка перенесена в `work/completed/`.
+
+Первая работающая связка «статья → Telegra.ph → карточка в Telegram». Всё, что от неё осталось живого, давно перенесено в `telegraph_publisher.py` и описано в architecture.md § Data Flow; отдельного знания папка больше не несёт.

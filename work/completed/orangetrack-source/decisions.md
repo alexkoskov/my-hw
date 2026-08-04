@@ -47,3 +47,11 @@ Review details — in JSON files via links. QA report — in logs/working/.
 - `pytest tests/ -x -q` → 816 passed (was 810 baseline; +6 new tests: 4 dispatcher + 1 header-truncated + 1 multi-iframe).
 - Targeted: `pytest tests/test_orangetrack_source.py -v -k "TestDispatcherIntegration or test_total_event_cap_500 or test_multiple_iframes or test_format_summary or test_header_count or test_dedup or test_per_code_link_cap"` → 12 passed.
 - Manual: `format_summary` spot-check via 60-event same-code feed shows header "60 issues this tick" + bullet "(60×)" + "10 more truncated" tail (matches new spec).
+
+---
+
+## Закрытие — 2026-08-04
+
+Фича выкачена и работает; папка перенесена в `work/completed/`.
+
+Четвёртый источник, orangetrackdiecast.com. Полностью описан в PK: architecture.md (реестр источников, блочный рендер), patterns.md (контракт парсера). Пост-деплой проверка на живом проде — 2026-08-03.

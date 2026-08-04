@@ -36,10 +36,10 @@ Public API:
   two-level Jaccard per tech-spec Decision 4 (AC6 empty-fp guard,
   AC8 1-token / brand-count guards, AC10 two-level max).
 
-See ``work/cross-source-dedup/tech-spec.md`` Decisions 2-4 for the
+See ``work/completed/cross-source-dedup/tech-spec.md`` Decisions 2-4 for the
 authoritative specification of the brand lexicon (35 brands tiered by
 frequency), regex shape, and similarity formula; and
-``work/dedup-model-series/tech-spec.md`` Decisions 1-2 for the series/theme
+``work/completed/dedup-model-series/tech-spec.md`` Decisions 1-2 for the series/theme
 lexicon, pair-key format, and tier polarity.
 """
 

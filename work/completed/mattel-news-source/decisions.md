@@ -81,3 +81,11 @@ Agent reports on completed tasks. Each entry is written by the agent that execut
 **Verification:**
 - Live fetch: `python3 -c "from mattel_news_source import fetch_mattel_news; print(fetch_mattel_news())"` → 1 Hot Wheels entry.
 - `pytest tests/` → 71 passed, 4 pre-existing failures (unrelated).
+
+---
+
+## Закрытие — 2026-08-04
+
+Фича выкачена и работает; папка перенесена в `work/completed/`.
+
+Парсер corporate.mattel.com. **Источник отключён** — оставлен в реестре, но выключен (см. project.md § Key Features). Папка закрывается как есть: включать обратно — отдельная задача, а не восстановление этой.
