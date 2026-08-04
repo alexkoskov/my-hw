@@ -217,10 +217,20 @@ This is the single most important runtime dependency: no LLM, no posts.
   claude_transcreation.py's own module docstring still quotes the stale 8000.)
 - **Failure model** (identical whichever engine is selected — exception classes
   are shared from `_llm_common`): per-article failures (refusal, malformed JSON,
-  4xx) bump `attempt_count` and strike the article out after 3 →
-  `failed_articles`; API-level outages (auth, rate-limit, network, 5xx) trigger
-  the 2-ping protocol and HOLD the article in the queue (hold-and-wait,
+  and article-level 4xx) bump `attempt_count` and strike the article out after
+  3 → `failed_articles`; API-level outages (auth, rate-limit, network, 5xx)
+  trigger the 2-ping protocol and HOLD the article in the queue (hold-and-wait,
   2026-06-11) — nothing published, retried next slot/day until the LLM recovers.
+  The split is **account/transport-level vs article-level**, not 4xx vs 5xx —
+  see `_llm_common._ACCOUNT_LEVEL_STATUS_CODES` (402/407/408) and the § Auto-publish
+  path bullet in patterns.md for the full rule and why the unknown-code default
+  stays per-article. *"Identical whichever engine" is the intent, not a free
+  property: the three SDK-based engines get the split from their SDK's
+  exception classes, while google-genai raises one `ClientError` for every 4xx,
+  so `gemini_transcreation._CLIENT_OUTAGE_CODES` restates the same list by
+  number. Its unknown-code default was flipped from outage to per-article on
+  2026-08-04 to close that gap — before then a 413/451 there would have pinned
+  the row to the queue head.*
 - **Auth:** one env var per provider (see above). All five secret shapes the bot
   can hold — Telegram bot token, OpenRouter, Anthropic, OpenAI, Gemini — are
   scrubbed from logs by `_TokenRedactingFilter` and from admin pings by the

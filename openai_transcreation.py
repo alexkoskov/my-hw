@@ -35,6 +35,7 @@ from _llm_common import (
     _apply_emoji_safety_net,
     _build_system_prompt,
     _build_user_message,
+    _is_account_level_status,
     _is_mostly_russian,
     _parse_response as _parse_response_common,
     _patch_text_with_ru_paragraphs,
@@ -217,11 +218,12 @@ def _classify_exception(exc: BaseException) -> Exception:
     API-level (advance outage state machine):
         APIConnectionError, APITimeoutError, RateLimitError,
         AuthenticationError, PermissionDeniedError, NotFoundError,
-        InternalServerError, ConflictError.
+        InternalServerError, ConflictError, and a bare APIStatusError
+        carrying 402/407/408 (``_ACCOUNT_LEVEL_STATUS_CODES``).
 
     Per-article (single-article Google fallback, no state change):
         BadRequestError (400), UnprocessableEntityError (422),
-        APIStatusError (other 4xx — conservative).
+        APIStatusError (any other code — conservative).
     """
     if isinstance(exc, (ClaudeTranscreationError, ClaudeOutageError)):
         return exc
@@ -245,7 +247,13 @@ def _classify_exception(exc: BaseException) -> Exception:
         return ClaudeTranscreationError(f"{type(exc).__name__}: {exc}")
 
     if isinstance(exc, openai.APIStatusError):
-        # Conservative default for unrecognized status codes.
+        # Codes with no dedicated SDK class. 402/407/408 are account- or
+        # transport-level (see ``_ACCOUNT_LEVEL_STATUS_CODES``) — hold and
+        # retry. Everything else keeps the conservative per-article default:
+        # an outage pins the row to the queue head, so a novel article-specific
+        # code would stop the channel instead of costing one article.
+        if _is_account_level_status(exc):
+            return ClaudeOutageError(f"{type(exc).__name__}: {exc}")
         return ClaudeTranscreationError(f"{type(exc).__name__}: {exc}")
 
     if isinstance(exc, openai.APIError):

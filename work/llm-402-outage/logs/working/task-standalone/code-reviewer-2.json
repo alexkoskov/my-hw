@@ -1,0 +1,59 @@
+{
+  "status": "approved_with_suggestions",
+  "summary": "All six round-1 findings are genuinely resolved: the [hold] line now carries type(exc).__name__ + sanitize_error_message(exc) and is pinned by a mutation-verified test, both doc surfaces are updated and accurate, the bool-guard and constant placement are fixed, and the 'Adding a new engine' checklist now names the rule. The news_bot.py except-binding is correct (exc is referenced only inside the two except blocks; the bare raise re-raises the active exception before the implicit del exc, and no later code in _fallback_publish reads the name). Full suite green: 1643 passed, 456 subtests. One NEW regression came in with the round-3 gemini flip, in a module round 1 did not review: flipping the unknown-4xx default to per-article also flipped 499 (and 409), and 499 CANCELLED is one of only eight 4xx codes Google's own API-errors reference documents for this API — it is the transport twin of the 408 the same change just promoted to outage, so the flip strikes out an article for a class of failure the change exists to hold. Gemini is dormant in production (.env has only OPENROUTER_API_KEY, prod pins LLM_PROVIDER=openrouter), so this blocks nothing today, but it must be closed before gemini is ever enabled.",
+  "criticalIssues": [],
+  "suggestions": [
+    {
+      "file": "gemini_transcreation.py",
+      "line": 221,
+      "severity": "major",
+      "category": "error-handling",
+      "suggestion": "STATUS OF ROUND-1 FINDING 3 (gemini): addressed, but the flip overshot. `_CLIENT_OUTAGE_CODES = {401,403,404,429} | {402,407,408}` is right for every code google-genai actually produces EXCEPT 499. Verified against the installed SDK (`/home/vscode/.local/lib/python3.13/site-packages/google/genai/errors.py`): `APIError.raise_for_response` routes every 400<=status<500 to `ClientError` and `.code` is set from the HTTP status, so the classifier sees the raw code; Google's own API-errors reference documents exactly 400, 401, 403, 404, 429, 499, 500, 503 for this API, with 499 = `cancelled` — 'The client cancelled the request before it completed.' Empirically confirmed against real SDK objects: `ClientError(499, ...)` now returns ClaudeTranscreationError, where before the flip it returned ClaudeOutageError. 499 is a transport-level abort — the google-genai twin of `APITimeoutError` (outage on every engine) and of the 408 this very change promoted to outage — yet it now bumps attempt_count and, after 3 occurrences on the same row (attempt_count persists across days), moves the article to `failed_articles`. That is precisely the 2026-07-14 failure shape the change exists to prevent. 409 (ABORTED/ALREADY_EXISTS in Google's gRPC->HTTP mapping) flipped the same way and now diverges from the PRODUCTION engine, where `openai.ConflictError` (409) is classified as an outage — so for 409 the flip moved gemini further from openrouter, not closer. Secondary accuracy point: the flip's rationale, in the code comment and in the new tests, names 413/414/451 as the codes it protects, but none of those appears in Gemini's documented error set, while 499 — the one documented code the flip actually changes — is unaddressed. Fix: `_CLIENT_OUTAGE_CODES = frozenset({401, 403, 404, 429, 499}) | _ACCOUNT_LEVEL_STATUS_CODES` with a one-line comment ('499 is Google's non-standard client-cancelled code — transport, not article; keep it out of the shared set, which is standard-HTTP only'), add a gemini test for 499 -> outage, and either add 409 too or state in the comment why gemini deliberately differs from openrouter on it. Not a production blocker: gemini is dormant (no GEMINI_API_KEY in .env; prod pins LLM_PROVIDER=openrouter), so nothing is currently mis-struck — but this is the one thing that must be closed before gemini is ever selected.",
+      "benefit": "Keeps the flip's win (413-style article-specific codes no longer wedge the queue head) without re-opening the exact hold-vs-strike hole the feature was written to close, and makes the four-engine parity claim now printed in patterns.md true for every code google-genai documents.",
+      "optional": false
+    },
+    {
+      "file": "gemini_transcreation.py",
+      "line": 247,
+      "severity": "minor",
+      "category": "testing",
+      "suggestion": "ANSWER TO QUESTION 2 (`getattr(exc, \"code\", None) or getattr(exc, \"status_code\", None)`): the falsy-code fallthrough is not reachable, so the flip creates no new hazard there — `ClientError` is only ever constructed via `APIError.raise_error`, which requires `400 <= status_code < 500`, so `.code` is always a truthy int (0/None cannot produce a ClientError at all). But the `or` clause itself is dead in a way that is actively misleading: verified on real SDK objects, `google.genai.errors.ClientError` has NO `.status_code` attribute (only `.code`, `.status`, `.message`, `.details`, `.response`) — which the new comment two lines above correctly states, while the code below it still probes for the attribute. The trap is in the test fixture: `tests/test_gemini_transcreation.py::_make_client_error` builds the error via `__new__` and sets BOTH `err.code` and `err.status_code`. So if a future maintainer 'simplifies' this branch to the shared `_is_account_level_status(exc)` helper — exactly what the `_llm_common` checklist now tells engine authors to do — every gemini test still passes while production classifies every single 4xx as per-article, silently re-creating the 402 strike-out bug for that engine. Fix (two one-liners): drop `or getattr(exc, \"status_code\", None)` from the classifier, and drop `err.status_code = status_code` from `_make_client_error` so the fixture matches the SDK. Better still, build the fixture through the real constructor — `genai_errors.ClientError(code, {'error': {'code': code, 'message': msg}}, None)` works and populates `.code` the way the SDK does, mirroring the `__new__`->real-constructor upgrade this same diff made for the openai/openrouter fixtures.",
+      "benefit": "Removes a green-test path for a refactor that would break production, and finishes the fixture-realism upgrade the diff already applied to the other two SDK engines.",
+      "optional": false
+    },
+    {
+      "file": "news_bot.py",
+      "line": 3172,
+      "severity": "minor",
+      "category": "maintainability",
+      "suggestion": "STATUS OF ROUND-1 FINDING 1: resolved — the line now logs `type(exc).__name__` + `sanitize_error_message(exc)`, the binding and the bare `raise` are correct, and `tests/test_llm_outage_hold.py::test_hold_logs_the_cause` pins it. One factual slip in the new comment: the misdiagnosis it cites is dated 2026-07-31, but that date is the total prod-host outage (`work/SESSION-2026-07-31.md`: sshd died before greeting, no admin ping arrived at all, no publications) — the generic-ping wording played no part in it, and there was no [E010]/[E011] to misread. The real precedent is 2026-06-10, recorded in project memory `incident_e011_can_be_server_dns` ('Confirmed once: 2026-06-10, test instance ... external checks all green, root cause was server DNS'). Change the date to 2026-06-11 -> 2026-06-10 and, since the source is a memory file rather than a repo document, name it: `(2026-06-10, memory: incident_e011_can_be_server_dns)`. A comment that exists purely to carry institutional memory has to point at the right incident, or the next responder greps the wrong session log and finds nothing about ping wording.",
+      "benefit": "The one breadcrumb the whole finding is about actually leads somewhere; the correct incident (DNS misattributed to Claude) is also the stronger argument for keeping the cause in the line.",
+      "optional": false
+    },
+    {
+      "file": ".claude/skills/project-knowledge/references/patterns.md",
+      "line": 273,
+      "severity": "minor",
+      "category": "maintainability",
+      "suggestion": "STATUS OF ROUND-1 FINDING 2: resolved — both edits are accurate and land in the right files. Verified claim by claim: patterns.md's 'gemini tests it by `.code`, since google-genai raises one `ClientError` for every 4xx' matches errors.py:183-186; 'the outage pings go quiet after `ping_count >= 3`' matches `outage_state._compute_next_state` (outage_state.py:341-342, returns no pings in steady state); 'increment_attempt is not called ... recap_failures is populated only on the failed branch' matches `_publish_with_retries` returning `('held', None)` (news_bot.py:3675) and news_bot.py:4437-4440. architecture.md's reworded split is correct and correctly delegates the detail to patterns.md. Two gaps worth one sentence each. (1) Neither file records that gemini's unknown-4xx default was FLIPPED on 2026-08-04 — both describe only the end state, so a maintainer reading git-blame on gemini_transcreation.py finds a behaviour change with no entry in the knowledge base; this repo's own convention is an inline dated note (patterns.md already carries '*Corrected 2026-08-03: ...*' two bullets above). (2) architecture.md still opens the Failure model with '(identical whichever engine is selected)', and 409 is now a live counter-example: openai/openrouter hold it (`openai.ConflictError` is in their outage tuple), claude and — since this change — gemini strike it. Soften to 'identical for every code either SDK names; the remaining per-engine differences live in each `_classify_exception`' or fix 409.",
+      "benefit": "Closes the loop between the code change and the two documents that gate future edits to it, and stops the one word ('identical') that a future reader would otherwise trust over the code.",
+      "optional": true
+    },
+    {
+      "file": "_llm_common.py",
+      "line": 24,
+      "severity": "minor",
+      "category": "readability",
+      "suggestion": "STATUS OF ROUND-1 FINDINGS 4, 5, 6: all resolved (bool-guard and its false rationale deleted, helper is now plain frozenset membership; checklist updated; constant moved under the `# Constants #` banner). Residual nit in the checklist: step 2's import list names `_is_account_level_status`, but step 3's imperative names `_ACCOUNT_LEVEL_STATUS_CODES` — and gemini, the one engine that cannot use the helper (its SDK exposes `.code`, not `.status_code`), imports the constant instead. An author following step 2 literally imports the helper and then cannot satisfy step 3 if their SDK names the attribute differently. Add the constant to the step-2 list and one clause to step 3: 'use `_is_account_level_status` if the SDK exposes `.status_code`; otherwise test `_ACCOUNT_LEVEL_STATUS_CODES` against whatever attribute it does expose (see gemini_transcreation)'.",
+      "benefit": "Makes the checklist executable for the non-`.status_code` case that already exists in the repo, instead of only for the two SDKs that happen to agree.",
+      "optional": true
+    }
+  ],
+  "metrics": {
+    "filesReviewed": 14,
+    "criticalIssuesCount": 0,
+    "majorIssuesCount": 1,
+    "minorIssuesCount": 4,
+    "testCoverageAssessment": "adequate"
+  }
+}

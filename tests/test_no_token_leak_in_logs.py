@@ -503,6 +503,34 @@ class TestMultiLLMKeyRedaction:
         error strings (defence-in-depth even if regex misses a key shape)."""
         assert name in news_bot._SECRET_ENV_NAMES
 
+    def test_sanitize_error_message_truncates(self):
+        """An SDK error message is the upstream body VERBATIM when it isn't
+        JSON, so an intercepting proxy or captive portal answering 4xx with a
+        multi-KB HTML page would land whole in the journal — repeated every
+        slot on the hold path, against a 10 MB × 3 log cap."""
+        out = news_bot.sanitize_error_message(Exception("x" * 5000))
+        assert len(out) == news_bot._ERROR_MESSAGE_MAXLEN + 1  # + the ellipsis
+        assert out.endswith("…")
+
+    def test_sanitize_error_message_truncates_after_redacting(self, monkeypatch):
+        """Order is a contract: truncating FIRST could split a secret and leave
+        an unredacted prefix in the tail."""
+        secret = FAKE_OPENROUTER_KEY
+        monkeypatch.setenv("OPENROUTER_API_KEY", secret)
+        # Place the secret so it straddles the cut point.
+        offset = news_bot._ERROR_MESSAGE_MAXLEN - (len(secret) // 2)
+        out = news_bot.sanitize_error_message(
+            Exception("y" * offset + secret + "z" * 200)
+        )
+        assert secret not in out
+        assert secret[:20] not in out
+
+    def test_sanitize_error_message_leaves_short_text_alone(self):
+        """A real gateway error body (~220 chars) must survive intact — the cap
+        exists to stop floods, not to trim diagnostics."""
+        msg = "Error code: 402 - {'error': {'code': 402, 'message': 'Insufficient credits'}}"
+        assert news_bot.sanitize_error_message(Exception(msg)) == msg
+
     @pytest.mark.parametrize("logger_name", [
         "openai", "openai._base_client",
         "google_genai", "google_genai.models",

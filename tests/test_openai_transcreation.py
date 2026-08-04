@@ -12,6 +12,7 @@ from unittest.mock import MagicMock, patch
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
+import httpx  # noqa: E402 — transitive dep of openai, used to build real SDK errors
 import openai  # noqa: E402
 import openai_transcreation  # noqa: E402
 from _llm_common import ClaudeOutageError, ClaudeTranscreationError  # noqa: E402
@@ -72,6 +73,27 @@ def _make_openai_error(error_class, message: str = "test"):
     err.status_code = getattr(error_class, "status_code", None)
     err.response = None
     return err
+
+
+#: Client used only to reach the SDK's status-error dispatch. Never issues a
+#: request — ``_make_status_error_from_response`` is pure.
+_ERROR_CLIENT = openai.OpenAI(api_key="test-key-not-used")
+
+
+def _make_status_error(status_code: int, message: str = "status error"):
+    """Build the exception the SDK itself would raise for ``status_code``.
+
+    Goes through the SDK's own dispatch rather than a direct constructor call,
+    so both the class and the ``.status_code`` the classifier reads come from
+    the same code path production uses.
+    """
+    request = httpx.Request("POST", "https://api.openai.com/v1/chat/completions")
+    body = json.dumps({"error": {"code": status_code, "message": message}})
+    response = httpx.Response(
+        status_code, request=request, content=body.encode(),
+        headers={"content-type": "application/json"},
+    )
+    return _ERROR_CLIENT._make_status_error_from_response(response)
 
 
 class TestSuccessPath(unittest.TestCase):
@@ -135,6 +157,34 @@ class TestExceptionClassification(unittest.TestCase):
         original = ClaudeOutageError("already wrapped")
         result = openai_transcreation._classify_exception(original)
         self.assertIs(result, original)
+
+    def test_account_level_status_codes_are_outage(self):
+        """402 (payment required), 407 (proxy auth), 408 (server-side timeout).
+
+        The SDK has no dedicated class for any of them, so all three land in
+        the bare ``APIStatusError`` catch-all. None is about THIS article — see
+        the 2026-07-14 OpenRouter incident recorded in the sibling engine test.
+        """
+        for code in (402, 407, 408):
+            with self.subTest(status_code=code):
+                client = _make_client_returning(_make_status_error(code))
+                with patch.object(openai_transcreation, "_load_prompt", return_value="X"):
+                    with self.assertRaises(ClaudeOutageError):
+                        openai_transcreation.transcreate_via_claude(
+                            SAMPLE_ARTICLE, client=client
+                        )
+
+    def test_unknown_status_stays_per_article(self):
+        """Conservative default: 413/451 are article-specific, and an outage
+        would wedge the row at the queue head instead of striking it out."""
+        for code in (413, 451):
+            with self.subTest(status_code=code):
+                client = _make_client_returning(_make_status_error(code))
+                with patch.object(openai_transcreation, "_load_prompt", return_value="X"):
+                    with self.assertRaises(ClaudeTranscreationError):
+                        openai_transcreation.transcreate_via_claude(
+                            SAMPLE_ARTICLE, client=client
+                        )
 
 
 class TestResponseValidation(unittest.TestCase):

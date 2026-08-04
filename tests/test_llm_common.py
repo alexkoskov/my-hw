@@ -19,9 +19,33 @@ from _llm_common import (  # noqa: E402
     _build_user_message,
     _decode_format_markers,
     _encode_format_markers,
+    _is_account_level_status,
     _parse_response,
     _patch_text_with_ru_paragraphs,
 )
+
+
+class TestAccountLevelStatus(unittest.TestCase):
+    """The one rule every engine shares for status codes the SDKs have no
+    dedicated exception class for. See ``_ACCOUNT_LEVEL_STATUS_CODES``."""
+
+    class _Err(Exception):
+        def __init__(self, status_code):
+            self.status_code = status_code
+
+    def test_account_level_codes(self):
+        for code in (402, 407, 408):
+            self.assertTrue(_is_account_level_status(self._Err(code)), code)
+
+    def test_article_level_and_unknown_codes(self):
+        for code in (400, 413, 414, 415, 451, 499):
+            self.assertFalse(_is_account_level_status(self._Err(code)), code)
+
+    def test_missing_status_code(self):
+        """An exception with no ``.status_code`` must not be promoted to an
+        outage — the caller's conservative default handles it."""
+        self.assertFalse(_is_account_level_status(Exception("no attribute")))
+        self.assertFalse(_is_account_level_status(self._Err(None)))
 
 
 class TestEncodeFormatMarkers(unittest.TestCase):

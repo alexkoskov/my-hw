@@ -15,12 +15,18 @@ Adding a new engine
 1. Create ``<name>_transcreation.py`` mirroring an existing engine.
 2. ``from _llm_common import (ClaudeOutageError, ClaudeTranscreationError,
    _PROMPT_PATH_DEFAULT, _TITLE_EMOJIS, _PARAGRAPH_MAX_CHARS, _JSON_ENVELOPE,
-   _is_mostly_russian, _strip_json_fence, _apply_emoji_safety_net,
-   _truncate_paragraphs, _patch_text_with_ru_paragraphs, _build_user_message,
-   _build_system_prompt, _parse_response)``.
+   _is_account_level_status, _is_mostly_russian, _strip_json_fence,
+   _apply_emoji_safety_net, _truncate_paragraphs,
+   _patch_text_with_ru_paragraphs, _build_user_message, _build_system_prompt,
+   _parse_response)``.
 3. Implement engine-specific bits: ``_load_prompt`` (state cache),
    ``_classify_exception``, ``_get_default_client``, ``transcreate_via_claude``,
-   ``health_check``.
+   ``health_check``. **``_classify_exception`` must route
+   ``_ACCOUNT_LEVEL_STATUS_CODES`` to ``ClaudeOutageError``** — those codes have
+   no dedicated class in any SDK, and classifying them per-article silently
+   drops articles (2026-07-14 incident). Everything else the SDK does not name
+   stays per-article; see the constant's comment for why the default is not
+   flipped.
 4. Add a branch in ``llm_transcreation._select_engine``.
 """
 
@@ -59,6 +65,39 @@ class ClaudeOutageError(Exception):
 # --------------------------------------------------------------------------- #
 # Constants                                                                   #
 # --------------------------------------------------------------------------- #
+
+
+#: HTTP status codes that mean "the account or the transport is broken", not
+#: "this article is bad" — yet no SDK gives them a dedicated exception class,
+#: so every engine sees them as a bare ``APIStatusError`` (verified on
+#: ``openai 2.32.0`` and ``anthropic 0.45.2``: both map only
+#: 400/401/403/404/409/422/429/5xx to named classes).
+#:
+#:   402 Payment Required   — out of credits. THE 2026-07-14 incident: two
+#:                            articles were struck out 3× each and moved to
+#:                            ``failed_articles`` on «Insufficient credits»,
+#:                            while 401 (bad key) and 403 (no access) — the same
+#:                            class of global access problem — were already held.
+#:   407 Proxy Auth Required — the egress proxy, not the article.
+#:   408 Request Timeout     — server-side twin of ``APITimeoutError``, already
+#:                            classified as an outage.
+#:
+#: Deliberately NOT a blanket "unknown code → outage" rule. An outage HOLDS the
+#: row, and ``news_bot.job()`` re-reads ``list_pending()[0]`` every slot — so a
+#: genuinely article-specific code (413 payload too large on a long round-up,
+#: 451 legal) would pin that row to the queue head and stop the channel
+#: entirely. Losing one article after 3 strikes is the cheaper failure, so the
+#: catch-all default stays per-article and this set is opt-in.
+_ACCOUNT_LEVEL_STATUS_CODES = frozenset({402, 407, 408})
+
+
+def _is_account_level_status(exc: BaseException) -> bool:
+    """True iff ``exc`` carries a status code from ``_ACCOUNT_LEVEL_STATUS_CODES``.
+
+    An exception with no ``status_code`` (or ``None``) is not account-level —
+    the caller's conservative per-article default handles it.
+    """
+    return getattr(exc, "status_code", None) in _ACCOUNT_LEVEL_STATUS_CODES
 
 
 #: Default location of ``ux-guidelines.md`` inside the repo. Engines pass this

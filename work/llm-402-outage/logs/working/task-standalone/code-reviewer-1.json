@@ -1,0 +1,68 @@
+{
+  "status": "changes_required",
+  "summary": "The core classification fix is correct and well-tested: 402/407/408 genuinely fall into the bare APIStatusError catch-all on the installed SDKs (verified against openai 2.32.0 and anthropic 0.45.2 _make_status_error — both map only 400/401/403/404/409/422/429/5xx to named classes), the helper is safe, the deliberate decision to keep the catch-all per-article is sound given the list_pending()[0] queue-head pinning, and the full suite is green (1639 passed). Three gaps block approval: the fix silently removes the operator's only diagnostic breadcrumb for the exact incident it fixes (a 402 now surfaces as a generic «Claude API недоступна» with no status code anywhere), and two documentation surfaces (patterns.md, architecture.md) now state the old, false classification rule. Gemini being unchanged is correct on the merits, but the change writes a project-wide invariant into a shared module that gemini violates, with no note explaining why gemini was skipped.",
+  "criticalIssues": [],
+  "suggestions": [
+    {
+      "file": "news_bot.py",
+      "line": 3166,
+      "severity": "major",
+      "category": "error-handling",
+      "suggestion": "The [hold] branch logs no exception detail, so after this change a 402 leaves NO trace of its cause anywhere the operator can see. Before the fix, a 402 took the ClaudeTranscreationError path: news_bot.py:3149 logged `type(exc).__name__: sanitize_error_message(exc)` (i.e. 'APIStatusError: Error code: 402 - Insufficient credits'), the slot loop wrote that same string to pending_articles.last_error via increment_attempt, and it reached the operator's Telegram in the [E034] PUBLISH RECAP failure list. After the fix all three vanish: the hold branch's logger.warning is a fixed string with only {link}; held rows are counted in held_count but never added to recap_failures (news_bot.py:4413 — only the 'failed' branch populates it); and no last_error is written. The only operator-visible signal left is admin_alerts.alert_outage_first_ping / second_ping / still_down (admin_alerts.py:496-531), all of which are fully generic 'Claude API недоступна' with no reason. This matters concretely here: the outage pings' generic wording has already caused one wrong-diagnosis incident (recorded as incident_e011_can_be_server_dns), and 'top up OpenRouter' is an action only the operator can take. Fix: include the exception in the hold log line, e.g. `f\"[hold] LLM outage for {link}: {type(exc).__name__}: {sanitize_error_message(exc)} — holding article...\"` (bind the exception with `except ClaudeOutageError as exc:`), and consider carrying the sanitized reason into the [E034] recap for held rows the same way the failed branch does.",
+      "benefit": "Restores the 'Insufficient credits' breadcrumb the incident report depended on, so the next 402 is diagnosable in one log grep instead of an OpenRouter-console round trip, and prevents the generic outage ping from being mis-attributed to a Claude/DNS outage again.",
+      "optional": false
+    },
+    {
+      "file": ".claude/skills/project-knowledge/references/patterns.md",
+      "line": 273,
+      "severity": "major",
+      "category": "maintainability",
+      "suggestion": "Two knowledge-base statements are now false and neither was updated. (1) patterns.md:273 § Auto-publish path → 'Per-article vs API-level error classification' explicitly lists 'unrecognized `APIStatusError` codes' among the per-article errors — that is exactly the set this change splits. (2) architecture.md:218 § External Integrations → 'Failure model' says per-article covers '4xx' and API-level covers 'auth, rate-limit, network, 5xx'; 402/407/408 are now 4xx that HOLD, so the 4xx/5xx dividing line no longer describes the code. Both files are the documented source of truth a future maintainer will consult before touching _classify_exception, and patterns.md:273 even reasons about the misclassification trade-off — a reader would conclude the 402 fix was a regression. Update patterns.md:273 to name 402/407/408 as API-level and point at `_ACCOUNT_LEVEL_STATUS_CODES` as the single source of truth, and reword architecture.md:218 so the split is 'account/transport-level vs article-level', not '4xx vs 5xx'. Repo convention treats docs as a deliverable for any behavioural change.",
+      "benefit": "Keeps the two documents that gate future edits to the classifier from actively arguing against the fix, and gives the next incident responder one authoritative place (the frozenset) instead of three conflicting prose copies.",
+      "optional": false
+    },
+    {
+      "file": "gemini_transcreation.py",
+      "line": 215,
+      "severity": "major",
+      "category": "cross-file-consistency",
+      "suggestion": "Leaving gemini unchanged is the right call on the merits — genai_errors.ClientError exposes .code and gemini_transcreation.py:236 already routes everything except 400/422 to ClaudeOutageError, so 402/407/408 have always been held there. But the change writes an invariant into a module gemini also imports from: _llm_common.py states 'the catch-all default stays per-article and this set is opt-in', and architecture.md:218 claims the failure model is 'identical whichever engine is selected'. Gemini's catch-all is the opposite polarity: 413 (payload too large) and 451 — the two codes the new comment names as the reason NOT to blanket-promote — map to outage there, i.e. exactly the queue-head pinning the comment warns about. Two consequences: the shared-module comment overstates its scope, and the 'was gemini considered?' question has no recorded answer and will be re-asked. Minimum fix: add one line to gemini_transcreation._classify_exception's docstring — '402/407/408 need no special case here: this engine's default for unmapped ClientError codes is already outage (see _ACCOUNT_LEVEL_STATUS_CODES in _llm_common)' — and scope the _llm_common comment to the SDK-based engines. The 413/451 asymmetry itself is pre-existing and gemini is not the production engine (prod pins LLM_PROVIDER=openrouter), so fixing it is out of scope for this change; just record it.",
+      "benefit": "Makes the deliberate skip auditable instead of looking like an oversight, and stops the shared-module comment from asserting a project-wide rule that one of four engines contradicts.",
+      "optional": false
+    },
+    {
+      "file": "_llm_common.py",
+      "line": 87,
+      "severity": "minor",
+      "category": "readability",
+      "suggestion": "The bool-exclusion rationale in _is_account_level_status's docstring is factually wrong: '``True == 1`` would otherwise let a truthy non-code slip through ``in`` on a frozenset of ints' — but 1 is not in {402, 407, 408}, so `True in _ACCOUNT_LEVEL_STATUS_CODES` is already False and the isinstance(code, bool) guard cannot change any outcome for this set. The code is harmless; the comment describes a bug that cannot occur, which is the kind of confident-but-false note this codebase is otherwise careful to avoid. Either drop the bool branch and the sentence, or reword to state it as unconditional defensiveness ('a bool is never a status code; excluded so the guard stays correct if the set ever gains a small int').",
+      "benefit": "Removes a misleading justification from a helper that three engines now depend on, keeping comment accuracy at the level the rest of the module holds.",
+      "optional": true
+    },
+    {
+      "file": "_llm_common.py",
+      "line": 16,
+      "severity": "minor",
+      "category": "maintainability",
+      "suggestion": "The module docstring's 'Adding a new engine' checklist (step 2) enumerates the exact import list a new engine should copy, and step 3 lists `_classify_exception` as an engine-specific bit to implement. `_is_account_level_status` was added to neither. An author following that checklist literally will write a fourth SDK-based engine that reproduces the original 402 bug. Add `_is_account_level_status` to the step-2 import list and one clause to step 3 ('route `_ACCOUNT_LEVEL_STATUS_CODES` to ClaudeOutageError in the bare-APIStatusError branch').",
+      "benefit": "Closes the loop between the fix and the onboarding path that would otherwise regress it.",
+      "optional": true
+    },
+    {
+      "file": "_llm_common.py",
+      "line": 59,
+      "severity": "minor",
+      "category": "readability",
+      "suggestion": "`_ACCOUNT_LEVEL_STATUS_CODES` and `_is_account_level_status` are inserted under the `# Exceptions #` banner, immediately above the file's explicit `# Constants #` banner (_llm_common.py:92-95) where every other module constant lives. Move the frozenset into the Constants block; the helper is a predicate rather than an exception type, so it also reads better just below it or in a small helpers section.",
+      "benefit": "Keeps the banner-sectioned layout of the shared module meaningful — it is the file every engine author reads first.",
+      "optional": true
+    }
+  ],
+  "metrics": {
+    "filesReviewed": 8,
+    "criticalIssuesCount": 0,
+    "majorIssuesCount": 3,
+    "minorIssuesCount": 3,
+    "testCoverageAssessment": "adequate"
+  }
+}

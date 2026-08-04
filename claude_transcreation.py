@@ -59,6 +59,7 @@ from _llm_common import (
     _apply_emoji_safety_net,
     _build_system_prompt,
     _build_user_message,
+    _is_account_level_status,
     _is_mostly_russian,
     _parse_response as _parse_response_common,
     _patch_text_with_ru_paragraphs,
@@ -252,11 +253,12 @@ def _classify_exception(exc: BaseException) -> Exception:
     API-level (advance outage state machine):
         APIConnectionError, APITimeoutError, RateLimitError,
         InternalServerError, AuthenticationError, PermissionDeniedError,
-        NotFoundError.
+        NotFoundError, and a bare APIStatusError carrying 402/407/408
+        (``_ACCOUNT_LEVEL_STATUS_CODES``).
 
     Per-article (single-article Google fallback, no state change):
-        BadRequestError, UnprocessableEntityError, APIStatusError (other),
-        ClaudeTranscreationError (parse / schema).
+        BadRequestError, UnprocessableEntityError, APIStatusError (any
+        other code), ClaudeTranscreationError (parse / schema).
     """
     # APITimeoutError extends APIConnectionError — order matters but both
     # map to outage so the order is moot here.
@@ -278,8 +280,13 @@ def _classify_exception(exc: BaseException) -> Exception:
         return ClaudeTranscreationError(f"{type(exc).__name__}: {exc}")
 
     if isinstance(exc, anthropic.APIStatusError):
-        # Conservative default for unrecognized status codes — don't escalate
-        # to outage state machine on a novel code.
+        # Codes with no dedicated SDK class. 402/407/408 are account- or
+        # transport-level (see ``_ACCOUNT_LEVEL_STATUS_CODES``) — hold and
+        # retry. Everything else keeps the conservative per-article default:
+        # an outage pins the row to the queue head, so a novel article-specific
+        # code would stop the channel instead of costing one article.
+        if _is_account_level_status(exc):
+            return ClaudeOutageError(f"{type(exc).__name__}: {exc}")
         return ClaudeTranscreationError(f"{type(exc).__name__}: {exc}")
 
     if isinstance(exc, ClaudeTranscreationError):

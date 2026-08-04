@@ -13,6 +13,7 @@ from unittest.mock import MagicMock, patch
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
+import httpx  # noqa: E402 — transitive dep of openai, used to build real SDK errors
 import openai  # noqa: E402
 import openrouter_transcreation  # noqa: E402
 from _llm_common import ClaudeOutageError, ClaudeTranscreationError  # noqa: E402
@@ -59,6 +60,12 @@ def _make_client_returning(response_or_exc):
     return client
 
 
+#: Client used only to reach the SDK's status-error dispatch. Never issues a
+#: request — ``_make_status_error_from_response`` is pure.
+_ERROR_CLIENT = openai.OpenAI(api_key="test-key-not-used",
+                              base_url="https://openrouter.ai/api/v1")
+
+
 def _make_openai_error(error_class, message: str = "test"):
     err = error_class.__new__(error_class)
     err.message = message
@@ -67,6 +74,26 @@ def _make_openai_error(error_class, message: str = "test"):
     err.status_code = getattr(error_class, "status_code", None)
     err.response = None
     return err
+
+
+def _make_status_error(status_code: int, message: str = "status error"):
+    """Build the exception the SDK itself would raise for ``status_code``.
+
+    Goes through ``_make_status_error_from_response`` — the SDK's own dispatch —
+    rather than calling a constructor directly, so the test double matches
+    production in BOTH respects that matter here: the class (402/407/408/413/451
+    have no dedicated class and come back as a bare ``APIStatusError``, which is
+    why the classifier has to read ``.status_code``) and the message shape
+    (``"Error code: 402 - {...}"`` — the SDK prepends the code, the server body
+    does not contain it).
+    """
+    request = httpx.Request("POST", "https://openrouter.ai/api/v1/chat/completions")
+    body = json.dumps({"error": {"code": status_code, "message": message}})
+    response = httpx.Response(
+        status_code, request=request, content=body.encode(),
+        headers={"content-type": "application/json"},
+    )
+    return _ERROR_CLIENT._make_status_error_from_response(response)
 
 
 class TestSuccessPath(unittest.TestCase):
@@ -174,6 +201,56 @@ class TestExceptionClassification(unittest.TestCase):
         with patch.object(openrouter_transcreation, "_load_prompt", return_value="X"):
             with self.assertRaises(ClaudeTranscreationError):
                 openrouter_transcreation.transcreate_via_claude(SAMPLE_ARTICLE, client=client)
+
+    def test_payment_required_is_outage(self):
+        """402 «Insufficient credits» — an empty OpenRouter balance is an
+        account-level problem, not a problem with THIS article.
+
+        Incident 2026-07-14: two articles were struck out three times each and
+        moved to ``failed_articles`` because 402 fell into the bare
+        ``APIStatusError`` catch-all → per-article. Holding is the only outcome
+        that survives a top-up.
+        """
+        client = _make_client_returning(_make_status_error(402, "Insufficient credits"))
+        with patch.object(openrouter_transcreation, "_load_prompt", return_value="X"):
+            with self.assertRaises(ClaudeOutageError) as ctx:
+                openrouter_transcreation.transcreate_via_claude(SAMPLE_ARTICLE, client=client)
+
+        # The wrap must carry the cause forward: the `[hold]` log line in
+        # news_bot is the only record of WHY an article was held, and it can
+        # only print what this message contains.
+        self.assertIn("402", str(ctx.exception))
+        self.assertIn("Insufficient credits", str(ctx.exception))
+
+    def test_proxy_auth_and_server_timeout_are_outage(self):
+        """407 (proxy auth) and 408 (server-side timeout) are transport-level,
+        exactly like the 401/403/APITimeoutError cases already held."""
+        for code in (407, 408):
+            with self.subTest(status_code=code):
+                client = _make_client_returning(_make_status_error(code))
+                with patch.object(openrouter_transcreation, "_load_prompt", return_value="X"):
+                    with self.assertRaises(ClaudeOutageError):
+                        openrouter_transcreation.transcreate_via_claude(
+                            SAMPLE_ARTICLE, client=client
+                        )
+
+    def test_unknown_status_stays_per_article(self):
+        """Regression guard for the conservative default.
+
+        413 (payload too large) and 451 (legal) are genuinely about THIS
+        article. Classifying them as an outage would hold the row at the queue
+        head — and ``job()`` re-reads ``list_pending()[0]`` every slot, so the
+        same poisoned row would block every later publish forever. Losing one
+        article after 3 strikes is the cheaper failure.
+        """
+        for code in (413, 451):
+            with self.subTest(status_code=code):
+                client = _make_client_returning(_make_status_error(code))
+                with patch.object(openrouter_transcreation, "_load_prompt", return_value="X"):
+                    with self.assertRaises(ClaudeTranscreationError):
+                        openrouter_transcreation.transcreate_via_claude(
+                            SAMPLE_ARTICLE, client=client
+                        )
 
 
 class TestClientLifecycle(unittest.TestCase):

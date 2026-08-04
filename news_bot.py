@@ -239,9 +239,27 @@ _SECRET_ENV_NAMES = (
 )
 
 
+#: Hard cap on a sanitised error string. Sibling of ``admin_alerts``'
+#: ``_RECAP_REASON_MAXLEN`` / ``_PROMO_TITLE_MAXLEN`` (both 200) — larger
+#: because this text is the operator's primary diagnostic, not a chat line,
+#: and a full LLM-gateway error body measures ~220 chars.
+#:
+#: The bound is not cosmetic. An SDK error message is the upstream response
+#: body VERBATIM when it isn't JSON (``openai/_base_client.py``: ``err_msg =
+#: err_text or ...``), so a captive portal or an intercepting proxy answering
+#: 4xx with a multi-KB HTML page lands whole in the journal. On the hold path
+#: that repeats every slot for as long as the outage lasts, and the journal is
+#: capped at 10 MB × 3 (docker-compose.yml) — the flood would evict the very
+#: diagnostics it is made of. Relevant since the egress runs through a VPN
+#: gateway from an RU host.
+_ERROR_MESSAGE_MAXLEN = 500
+
+
 def sanitize_error_message(exc):
     """Return str(exc) with every known env-secret value replaced by
-    ``[REDACTED]``. Decision 11 of manual-review-workflow tech-spec:
+    ``[REDACTED]``, truncated to ``_ERROR_MESSAGE_MAXLEN``.
+
+    Decision 11 of manual-review-workflow tech-spec:
     protects ``pending_articles.last_error`` / ``failed_articles.last_error``
     and admin-chat messages from accidentally leaking ``TELEGRAM_BOT_TOKEN``
     / ``TELEGRAM_CHANNEL_ID`` / ``TELEGRAM_ADMIN_ID`` /
@@ -269,6 +287,11 @@ def sanitize_error_message(exc):
         except Exception:
             # Defensive: never let sanitisation break the caller.
             continue
+
+    # Truncate LAST, after redaction: cutting first could split a secret and
+    # leave a prefix of it in the tail that the replace loop would then miss.
+    if len(message) > _ERROR_MESSAGE_MAXLEN:
+        return message[:_ERROR_MESSAGE_MAXLEN] + '…'
     return message
 
 
@@ -3155,15 +3178,26 @@ def _fallback_publish(row, via_review=False):
             f"— slot strike (next slot retries this row)"
         )
         raise
-    except ClaudeOutageError:
-        # API-level outage (429 / 5xx / auth / network). Advance the
+    except ClaudeOutageError as exc:
+        # API-level outage (402 / 429 / 5xx / auth / network). Advance the
         # 2-ping/2h notification state machine so the operator is kept
         # informed, then HOLD: re-raise WITHOUT publishing. The row stays
         # in pending; the slot loop (``job()``) catches this, does NOT
         # strike, and the next slot retries the LLM. No Google fallback —
         # we wait for the LLM rather than ship a machine translation.
+        #
+        # The CAUSE is logged here on purpose. A held row never reaches
+        # ``increment_attempt`` (no ``last_error`` written) and never enters
+        # the [E034] recap — both are 'failed'-branch only — so the [E010]/
+        # [E011]/[E012] pings are the operator's ONLY other signal, and those
+        # are generic «LLM недоступна». Without this line an out-of-credits
+        # 402 and a dead network look identical in the journal — which has
+        # already cost one wrong diagnosis (2026-06-10: E011 fired, every
+        # external check was green, and the real cause was server-side DNS
+        # loss found only in the logs).
         logger.warning(
-            f"[hold] LLM outage for {link} — holding article, will retry "
+            f"[hold] LLM outage for {link}: {type(exc).__name__}: "
+            f"{sanitize_error_message(exc)} — holding article, will retry "
             f"when the LLM recovers (no Google fallback)."
         )
         try:

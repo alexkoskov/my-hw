@@ -32,6 +32,7 @@ from google.genai import types as genai_types
 from _llm_common import (
     ClaudeOutageError,
     ClaudeTranscreationError,
+    _ACCOUNT_LEVEL_STATUS_CODES,
     _JSON_ENVELOPE,
     _PARAGRAPH_MAX_CHARS,
     _TITLE_EMOJIS,
@@ -212,6 +213,25 @@ def _translate_block_strings(
 # --------------------------------------------------------------------------- #
 
 
+#: 4xx codes that mean "the API/account is unavailable", not "this article is
+#: bad". google-genai raises one ``ClientError`` for every 4xx, so the split
+#: that the other engines get for free from their SDK's exception classes has
+#: to be made here by code:
+#:
+#:   401/403/404/409/429 — the codes OpenAI/Anthropic give a dedicated class
+#:                         (Authentication/PermissionDenied/NotFound/Conflict/
+#:                         RateLimit), all already held by the other engines.
+#:   499 cancelled       — Gemini-only, documented at
+#:                         https://ai.google.dev/gemini-api/docs/api-errors as
+#:                         "client cancelled the request". Transport-level: the
+#:                         google-genai twin of ``APITimeoutError`` and of the
+#:                         408 in the shared set.
+#:   402/407/408         — the shared ``_ACCOUNT_LEVEL_STATUS_CODES``.
+_CLIENT_OUTAGE_CODES = (
+    frozenset({401, 403, 404, 409, 429, 499}) | _ACCOUNT_LEVEL_STATUS_CODES
+)
+
+
 def _classify_exception(exc: BaseException) -> Exception:
     """Map a Gemini SDK exception to ``ClaudeOutageError`` / ``ClaudeTranscreationError``.
 
@@ -221,22 +241,31 @@ def _classify_exception(exc: BaseException) -> Exception:
           └── ServerError  — 5xx responses
 
     Mapping:
-        ClientError (429 quota / rate limit, 401/403 auth) → outage
-        ClientError (400 invalid input, 422 unprocessable)  → per-article
-        ServerError (any 5xx)                               → outage
-        UnknownApiResponseError                             → outage
-        Generic APIError                                    → outage (conservative)
+        ClientError (401/403 auth, 404 model-not-found, 429 quota, and
+                     ``_ACCOUNT_LEVEL_STATUS_CODES``)        → outage
+        ClientError (any other 4xx — 400, 422, 413, 451, …)  → per-article
+        ServerError (any 5xx)                                → outage
+        UnknownApiResponseError                              → outage
+        Generic APIError                                     → outage (conservative)
     """
     if isinstance(exc, (ClaudeTranscreationError, ClaudeOutageError)):
         return exc
 
     if isinstance(exc, genai_errors.ClientError):
-        # ClientError exposes the status code as ``.code`` attribute.
-        code = getattr(exc, "code", None) or getattr(exc, "status_code", None)
-        if code in (400, 422):
-            return ClaudeTranscreationError(f"{type(exc).__name__}: {exc}")
-        # 401/403 auth, 404 model-not-found, 429 quota — all advance the state machine
-        return ClaudeOutageError(f"{type(exc).__name__}({code}): {exc}")
+        # ``ClientError`` exposes the status as ``.code`` and has NO
+        # ``.status_code`` (verified on google-genai 1.73.1) — which is exactly
+        # why this branch tests the shared set by hand rather than calling
+        # ``_is_account_level_status``, whose ``getattr(exc, "status_code")``
+        # would silently return False for every code here.
+        code = getattr(exc, "code", None)
+        if code in _CLIENT_OUTAGE_CODES:
+            return ClaudeOutageError(f"{type(exc).__name__}({code}): {exc}")
+        # Everything else 4xx is per-article. This default was flipped from
+        # outage on 2026-08-04 to match the three SDK-based engines: an outage
+        # HOLDS the row and ``news_bot.job()`` re-reads ``list_pending()[0]``
+        # every slot, so an article-specific code (413 payload too large, 451
+        # legal) used to pin that row to the queue head and stop the channel.
+        return ClaudeTranscreationError(f"{type(exc).__name__}({code}): {exc}")
 
     if isinstance(exc, genai_errors.ServerError):
         return ClaudeOutageError(f"{type(exc).__name__}: {exc}")

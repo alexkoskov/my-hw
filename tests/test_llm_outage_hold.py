@@ -136,6 +136,50 @@ class TestOutageHolds(_HoldCase):
         # Article is NOT lost — it stays in pending for the next slot/day.
         self.assertIsNotNone(repo.get_pending(entry['link']))
 
+    def test_hold_logs_the_cause(self):
+        """The ``[hold]`` log line is the ONLY place the cause of a hold is
+        recorded, so it is a contract, not a nicety.
+
+        A held row never reaches ``increment_attempt`` (no ``last_error``) and
+        never enters the ``[E034]`` recap — both are 'failed'-branch only. The
+        remaining operator signal, ``[E010]/[E011]/[E012]``, is generic
+        «LLM недоступна» and cannot distinguish an empty OpenRouter balance
+        (402) from a dead network. Drop the cause from this line and an
+        out-of-credits outage becomes invisible in the journal — which is what
+        made the 2026-07-14 loss hard to attribute in the first place.
+
+        The secret in the payload pins the second half of the contract: the
+        cause must reach the journal THROUGH ``sanitize_error_message``, not by
+        raw interpolation.
+        """
+        entry = self._insert(link='http://a/hold-cause')
+        row = repo.get_pending(entry['link'])
+
+        secret = 'sk-or-v1-hold-cause-canary'
+        mock_claude = MagicMock(side_effect=ClaudeOutageError(
+            f'APIStatusError: 402 Insufficient credits (key {secret})'
+        ))
+        with patch.dict(os.environ, {'OPENROUTER_API_KEY': secret}), \
+             patch('news_bot.transcreate_via_claude', mock_claude), \
+             patch('news_bot.transcreate_text', MagicMock()), \
+             patch('news_bot.outage_state.is_fallback_active', return_value=False), \
+             patch('news_bot.outage_state.record_outage_event',
+                   MagicMock(return_value={'pings_to_send': []})), \
+             patch('news_bot.send_admin_notification', MagicMock(return_value=True)), \
+             patch('news_bot.telegraph_publisher.publish_article', MagicMock()):
+            with self.assertLogs('news_bot', level='WARNING') as logs:
+                with self.assertRaises(ClaudeOutageError):
+                    news_bot._fallback_publish(row, via_review=False)
+
+        hold_lines = [ln for ln in logs.output if '[hold]' in ln]
+        self.assertEqual(len(hold_lines), 1, logs.output)
+        # The diagnostic itself — what an operator greps for.
+        self.assertIn('402', hold_lines[0])
+        self.assertIn('Insufficient credits', hold_lines[0])
+        # …and it went through the sanitiser on the way.
+        self.assertNotIn(secret, hold_lines[0])
+        self.assertIn('[REDACTED]', hold_lines[0])
+
     def test_fallback_active_does_not_route_to_google(self):
         """A previously-set ``is_fallback_active() == True`` must NOT
         short-circuit to Google. The LLM is still attempted so a recovery

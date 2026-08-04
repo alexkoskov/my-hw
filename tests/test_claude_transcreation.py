@@ -232,6 +232,47 @@ def test_unprocessable_entity_raises_per_article(sample_article, make_status_err
 
 
 # --------------------------------------------------------------------------- #
+# 11a-11b. Bare APIStatusError — routed by status code                         #
+# --------------------------------------------------------------------------- #
+
+
+@pytest.mark.parametrize("status_code", [402, 407, 408])
+def test_account_level_status_raises_outage(
+    sample_article, make_status_error, status_code
+):
+    """402 (payment required), 407 (proxy auth), 408 (server-side timeout).
+
+    The SDK has no dedicated class for any of these, so all three arrive as a
+    bare ``APIStatusError``. All are account/transport-level — holding and
+    retrying is the only outcome that survives the fix (a top-up, a proxy
+    coming back). Kept identical across engines; the incident that prompted it
+    is recorded in the OpenRouter test.
+    """
+    client = MagicMock()
+    client.messages.create.side_effect = make_status_error(
+        anthropic.APIStatusError, status_code=status_code, message="account-level"
+    )
+    with pytest.raises(claude_transcreation.ClaudeOutageError):
+        claude_transcreation.transcreate_via_claude(sample_article, client=client)
+
+
+@pytest.mark.parametrize("status_code", [413, 451])
+def test_unknown_status_stays_per_article(
+    sample_article, make_status_error, status_code
+):
+    """Conservative default preserved: 413 (payload too large) and 451 (legal)
+    are about THIS article, and an outage would hold the row at the queue head
+    where every later slot re-reads it — blocking the channel instead of
+    striking one article out."""
+    client = MagicMock()
+    client.messages.create.side_effect = make_status_error(
+        anthropic.APIStatusError, status_code=status_code, message="article-level"
+    )
+    with pytest.raises(claude_transcreation.ClaudeTranscreationError):
+        claude_transcreation.transcreate_via_claude(sample_article, client=client)
+
+
+# --------------------------------------------------------------------------- #
 # 12-13. Parse & schema-mismatch failures → ClaudeTranscreationError           #
 # --------------------------------------------------------------------------- #
 
