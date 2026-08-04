@@ -217,3 +217,50 @@ class TestOutageHolds(_HoldCase):
 
 if __name__ == '__main__':
     unittest.main()
+
+
+class TestHoldCountResetOnRecovery(_HoldCase):
+    """``hold_count`` must mean "holds IN A ROW", not "holds ever".
+
+    Nothing else resets it, so without this a row could bank holds during a
+    real outage in June, sit in the carry-over queue for weeks, and cross
+    ``HOLD_CAP`` on the first bad day in August — getting deferred plus an
+    [E038] that blames the article for someone else's outage. Same
+    wrong-attribution class as the 2026-06-10 E011 incident.
+
+    ``_maybe_record_recovery`` is the right home: it is exactly the "the LLM
+    answered" hook, called from every successful transcreation in
+    ``_fallback_publish`` and from the startup health probe.
+    """
+
+    def test_recovery_clears_incidental_counters_but_keeps_proven_ones(self):
+        incidental = self._insert(link='http://a/incidental')
+        proven = self._insert(link='http://a/proven')
+        for _ in range(3):
+            repo.increment_hold(incidental['link'])
+        for _ in range(news_bot.HOLD_CAP):
+            repo.increment_hold(proven['link'])
+
+        with patch('news_bot.send_admin_notification', MagicMock(return_value=True)):
+            news_bot._maybe_record_recovery()
+
+        self.assertEqual(
+            repo.get_pending('http://a/incidental')['hold_count'], 0,
+            "a working LLM proves those holds were global, not this article's")
+        self.assertEqual(
+            repo.get_pending('http://a/proven')['hold_count'], news_bot.HOLD_CAP,
+            "a row that already wedged the head keeps its marker")
+
+    def test_recovery_survives_a_counter_reset_failure(self):
+        """Bookkeeping must never break the recovery ping — that ping is how
+        the operator learns the outage ended."""
+        mock_notify = MagicMock(return_value=True)
+        with patch('news_bot.pending_repo.reset_hold_counts_below',
+                   side_effect=RuntimeError('db locked')), \
+             patch('news_bot.outage_state.record_recovery_event',
+                   MagicMock(return_value={'pings_to_send': ['[E013] ок']})), \
+             patch('news_bot.send_admin_notification', mock_notify):
+            news_bot._maybe_record_recovery()
+
+        self.assertEqual([c.args[0] for c in mock_notify.call_args_list if c.args],
+                         ['[E013] ок'])

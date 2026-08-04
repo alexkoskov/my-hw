@@ -907,3 +907,329 @@ class TestDrySpellAlert(_JobBase):
 
 if __name__ == '__main__':
     unittest.main()
+
+
+class TestHoldCap(_DistribLoopBase):
+    """A held row must not pin the queue head forever.
+
+    ``job()`` re-reads ``list_pending()[0]`` at every slot and an outage never
+    strikes, so before the cap a permanently-failing article blocked every
+    article behind it — silently, because ``outage_state`` stops pinging once
+    ``ping_count >= 3``. Made reachable by the 2026-08-04 change that routes
+    HTTP 402 to the outage path: OpenRouter's 402 can be per-REQUEST («needs
+    more credits, or fewer max_tokens»), so a long round-up can fail forever
+    while shorter articles behind it would have gone out.
+    """
+
+    # The base class freezes ``news_bot.datetime.now`` in the PAST, which is
+    # fine for slot arithmetic but not here: ``defer_publish`` writes
+    # ``frozen_now + HOLD_DEFER_HOURS`` while ``list_pending`` compares it
+    # against SQLite's ``CURRENT_TIMESTAMP`` — the real clock. A past frozen
+    # time yields an already-elapsed defer and the row never leaves the queue.
+    # Same 10:00 МСК wall time (so all three fixed slots are still eligible),
+    # far enough ahead that the computed defer is genuinely in the future.
+    FROZEN_NOW = MSK.localize(dt.datetime(2035, 4, 27, 10, 0, 0))
+
+    def _set_hold_count(self, link, n):
+        conn = sqlite3.connect(self.db_path)
+        try:
+            conn.execute(
+                "UPDATE pending_articles SET hold_count=? WHERE link=?",
+                (n, link),
+            )
+            conn.commit()
+        finally:
+            conn.close()
+
+    def _publish_or_outage(self, poisoned):
+        """Stand-in for ``_fallback_publish``: raises for ``poisoned``, and for
+        anything else simulates a real publish by removing the row — otherwise
+        the mock leaves it pending and the queue never advances."""
+        def _side_effect(row, via_review=False):
+            if row.get('link') == poisoned:
+                raise ClaudeOutageError(
+                    'APIStatusError: Error code: 402 - Insufficient credits')
+            conn = sqlite3.connect(self.db_path)
+            try:
+                conn.execute("DELETE FROM pending_articles WHERE link=?",
+                             (row.get('link'),))
+                conn.commit()
+            finally:
+                conn.close()
+        return _side_effect
+
+    @patch('news_bot.send_admin_notification')
+    @patch('news_bot.time.sleep')
+    @patch('news_bot._fallback_publish')
+    @patch('news_bot.fetch_full_article')
+    def test_below_the_cap_the_row_keeps_its_place(
+        self, mock_fetch_article, mock_publish, _mock_sleep, _mock_admin,
+    ):
+        """A full three-slot tick is still well under the cap. Nothing is
+        deferred; the row waits exactly as hold-and-wait intends.
+
+        All three slots hit the SAME row — that is the behaviour under test:
+        the head is re-read from ``list_pending()[0]`` and a hold never
+        removes it."""
+        mock_fetch_article.side_effect = lambda e: self._article_payload()
+        mock_publish.side_effect = ClaudeOutageError('429 overloaded')
+
+        with _patch_sources_returning([
+            self._entry('http://x/slow', 'T1'),
+            self._entry('http://x/b', 'T2'),
+            self._entry('http://x/c', 'T3'),
+        ]):
+            with patch('news_bot.outage_state.is_fallback_active',
+                       return_value=False):
+                news_bot.job()
+
+        row = pending_articles_repo.get_pending('http://x/slow')
+        self.assertEqual(row['hold_count'], 3)
+        self.assertIsNone(row['publish_after'],
+                          "a normal outage must not defer anything")
+        self.assertEqual(row['attempt_count'], 0, "a hold is never a strike")
+
+    @patch('news_bot.send_admin_notification')
+    @patch('news_bot.time.sleep')
+    @patch('news_bot._fallback_publish')
+    @patch('news_bot.fetch_full_article')
+    def test_at_the_cap_the_row_steps_aside_and_the_queue_moves(
+        self, mock_fetch_article, mock_publish, _mock_sleep, mock_admin,
+    ):
+        """The whole point: the stuck article yields the head and the article
+        behind it publishes in the SAME tick."""
+        mock_fetch_article.side_effect = lambda e: self._article_payload()
+        mock_publish.side_effect = self._publish_or_outage('http://x/stuck')
+
+        with _patch_sources_returning([
+            self._entry('http://x/stuck', 'Stuck'),
+            self._entry('http://x/next', 'Next'),
+        ]):
+            with patch('news_bot.outage_state.is_fallback_active',
+                       return_value=False):
+                # Already held 5 times over previous days — this tick's first
+                # slot is the one that crosses HOLD_CAP.
+                self._seed_and_run()
+
+        stuck = pending_articles_repo.get_pending('http://x/stuck')
+        # Exact value, not just "not None": with the frozen clock 9 years out,
+        # ANY timestamp the code can produce is in the future, so a bare
+        # assertIsNotNone passes for HOLD_DEFER_HOURS=0 or a negative offset —
+        # both of which make the whole feature a no-op in production
+        # (``publish_after <= CURRENT_TIMESTAMP`` ⇒ row instantly publishable).
+        # The window must be a POSITIVE duration measured against the same
+        # clock the code used. Deriving `expected` from HOLD_DEFER_HOURS would
+        # be self-referential — setting the constant to 0 changes both sides
+        # and the assertion still passes, while in production a defer of 0 (or
+        # a negative offset) leaves `publish_after <= CURRENT_TIMESTAMP`, i.e.
+        # the row is instantly publishable and the head is wedged as before.
+        # Lexicographic comparison is exact for '%Y-%m-%d %H:%M:%S'.
+        self.assertGreater(stuck['publish_after'],
+                           self.FROZEN_NOW.strftime('%Y-%m-%d %H:%M:%S'),
+                           "defer window is not in the future — feature is a no-op")
+        self.assertEqual(
+            stuck['publish_after'],
+            (self.FROZEN_NOW + dt.timedelta(hours=news_bot.HOLD_DEFER_HOURS)
+             ).strftime('%Y-%m-%d %H:%M:%S'))
+        self.assertGreaterEqual(stuck['hold_count'], news_bot.HOLD_CAP)
+        self.assertEqual(stuck['attempt_count'], 0,
+                         "stepping aside must not be a strike — nothing is lost")
+        # The article behind it went out.
+        self.assertIsNone(pending_articles_repo.get_pending('http://x/next'),
+                          "the queue did not move — the channel is still blocked")
+        # And the deferred row is out of the queue, not at the head.
+        self.assertEqual(pending_articles_repo.list_pending(), [])
+        # Operator was told, with the cause.
+        pings = [c.args[0] for c in mock_admin.call_args_list if c.args]
+        e038 = [p for p in pings if '[E038]' in p]
+        self.assertEqual(len(e038), 1, pings)
+        # Assert on the SDK class name, not on '402': the builder's static
+        # advice text mentions 402 itself, so matching that would pass even
+        # if the cause never reached the ping.
+        self.assertIn('APIStatusError', e038[0])
+        self.assertNotIn('причина не записана', e038[0])
+
+    def _seed_and_run(self):
+        """Stage the queue with one pass (every slot hits the stuck head and
+        holds), pre-age it to one hold below the cap, then run the tick that
+        crosses it."""
+        news_bot.job()
+        self._set_hold_count('http://x/stuck', news_bot.HOLD_CAP - 1)
+        news_bot.job()
+
+    @patch('news_bot.send_admin_notification')
+    @patch('news_bot.time.sleep')
+    @patch('news_bot._fallback_publish')
+    @patch('news_bot.fetch_full_article')
+    def test_counter_is_not_reset_so_it_yields_after_one_hold_next_time(
+        self, mock_fetch_article, mock_publish, _mock_sleep, _mock_admin,
+    ):
+        """A row that already proved it wedges the head gets ONE retry per defer
+        window from then on — not another full cap's worth of blocking."""
+        mock_fetch_article.side_effect = lambda e: self._article_payload()
+        mock_publish.side_effect = ClaudeOutageError('402 Insufficient credits')
+
+        with _patch_sources_returning([self._entry('http://x/stuck', 'T1')]):
+            with patch('news_bot.outage_state.is_fallback_active',
+                       return_value=False):
+                news_bot.job()
+                self._set_hold_count('http://x/stuck', news_bot.HOLD_CAP)
+                # Defer window elapsed → row is publishable again.
+                conn = sqlite3.connect(self.db_path)
+                conn.execute(
+                    "UPDATE pending_articles SET publish_after=NULL "
+                    "WHERE link=?", ('http://x/stuck',))
+                conn.commit()
+                conn.close()
+                news_bot.job()
+
+        row = pending_articles_repo.get_pending('http://x/stuck')
+        self.assertEqual(row['hold_count'], news_bot.HOLD_CAP + 1,
+                         "counter was reset — the row got a fresh full cap")
+        self.assertIsNotNone(row['publish_after'],
+                             "a proven-stuck row must yield on its first hold")
+
+
+class TestHoldCapFailurePaths(_DistribLoopBase):
+    """The bookkeeping around the cap is best-effort by design — but "best
+    effort" must be verified, because every one of these branches ends in the
+    silent-blocked-queue state the cap exists to prevent."""
+
+    FROZEN_NOW = MSK.localize(dt.datetime(2035, 4, 27, 10, 0, 0))
+
+    def _stuck_queue(self):
+        return _patch_sources_returning([self._entry('http://x/stuck', 'T1')])
+
+    @patch('news_bot.send_admin_notification')
+    @patch('news_bot.time.sleep')
+    @patch('news_bot._fallback_publish')
+    @patch('news_bot.fetch_full_article')
+    def test_counter_failure_does_not_break_the_slot(
+        self, mock_fetch_article, mock_publish, _mock_sleep, _mock_admin,
+    ):
+        """A DB hiccup in ``increment_hold`` must leave the article correctly
+        HELD — the outcome was already decided before the bookkeeping ran."""
+        mock_fetch_article.side_effect = lambda e: self._article_payload()
+        mock_publish.side_effect = ClaudeOutageError('402 Insufficient credits')
+
+        with self._stuck_queue():
+            with patch('news_bot.outage_state.is_fallback_active',
+                       return_value=False):
+                with patch('news_bot.pending_repo.increment_hold',
+                           side_effect=sqlite3.OperationalError('db locked')):
+                    news_bot.job()
+
+        row = pending_articles_repo.get_pending('http://x/stuck')
+        self.assertIsNotNone(row, "the article must still be queued")
+        self.assertEqual(row['attempt_count'], 0, "a hold is never a strike")
+        self.assertIsNone(row['publish_after'])
+
+    @patch('news_bot.send_admin_notification')
+    @patch('news_bot.time.sleep')
+    @patch('news_bot._fallback_publish')
+    @patch('news_bot.fetch_full_article')
+    def test_defer_failure_keeps_the_row_and_sends_no_false_ping(
+        self, mock_fetch_article, mock_publish, _mock_sleep, mock_admin,
+    ):
+        """If the defer write fails the row is still at the head, so [E038]'s
+        «отложена на 24 ч, вернётся сама» would be false. The next slot retries
+        the defer — the failure is transient by construction."""
+        mock_fetch_article.side_effect = lambda e: self._article_payload()
+        mock_publish.side_effect = ClaudeOutageError('402 Insufficient credits')
+
+        with self._stuck_queue():
+            with patch('news_bot.outage_state.is_fallback_active',
+                       return_value=False):
+                with patch('news_bot.pending_repo.increment_hold',
+                           return_value=news_bot.HOLD_CAP):
+                    with patch('news_bot.pending_repo.defer_publish',
+                               side_effect=sqlite3.OperationalError('db locked')):
+                        news_bot.job()
+
+        row = pending_articles_repo.get_pending('http://x/stuck')
+        self.assertIsNotNone(row)
+        self.assertIsNone(row['publish_after'])
+        pings = [c.args[0] for c in mock_admin.call_args_list if c.args]
+        self.assertEqual([p for p in pings if '[E038]' in p], [])
+
+    @patch('news_bot.send_admin_notification')
+    @patch('news_bot.time.sleep')
+    @patch('news_bot._fallback_publish')
+    @patch('news_bot.fetch_full_article')
+    def test_vanished_row_is_deferred_silently(
+        self, mock_fetch_article, mock_publish, _mock_sleep, mock_admin,
+    ):
+        """The review listener can delete the row between the slot loop reading
+        it and the defer. Telling the operator their cancelled article «вернётся
+        сама» would be a lie."""
+        mock_fetch_article.side_effect = lambda e: self._article_payload()
+        mock_publish.side_effect = ClaudeOutageError('402 Insufficient credits')
+
+        with self._stuck_queue():
+            with patch('news_bot.outage_state.is_fallback_active',
+                       return_value=False):
+                with patch('news_bot.pending_repo.increment_hold',
+                           return_value=news_bot.HOLD_CAP):
+                    with patch('news_bot.pending_repo.defer_publish',
+                               return_value=False):
+                        news_bot.job()
+
+        pings = [c.args[0] for c in mock_admin.call_args_list if c.args]
+        self.assertEqual([p for p in pings if '[E038]' in p], [])
+
+    @patch('news_bot.send_admin_notification')
+    @patch('news_bot.time.sleep')
+    @patch('news_bot._fallback_publish')
+    @patch('news_bot.fetch_full_article')
+    def test_ping_failure_does_not_undo_the_defer(
+        self, mock_fetch_article, mock_publish, _mock_sleep, mock_admin,
+    ):
+        """Telegram being down must not cost the queue its unblocking."""
+        mock_fetch_article.side_effect = lambda e: self._article_payload()
+        mock_publish.side_effect = ClaudeOutageError('402 Insufficient credits')
+        mock_admin.side_effect = RuntimeError('telegram unreachable')
+
+        with self._stuck_queue():
+            with patch('news_bot.outage_state.is_fallback_active',
+                       return_value=False):
+                with patch('news_bot.pending_repo.increment_hold',
+                           return_value=news_bot.HOLD_CAP):
+                    news_bot.job()
+
+        row = pending_articles_repo.get_pending('http://x/stuck')
+        self.assertIsNotNone(row['publish_after'],
+                             "the defer must survive a failed ping")
+
+    @patch('news_bot.send_admin_notification')
+    @patch('news_bot.time.sleep')
+    @patch('news_bot._fallback_publish')
+    @patch('news_bot.fetch_full_article')
+    def test_deferred_backlog_still_buys_the_day_its_slots(
+        self, mock_fetch_article, mock_publish, _mock_sleep, _mock_admin,
+    ):
+        """``slots`` is computed ONCE per tick from the publishable queue. With
+        every row deferred that number is 0 — so without counting the deferred
+        backlog the tick would allocate no slots and skip the whole day, even
+        after a defer window elapses hours later."""
+        mock_fetch_article.side_effect = lambda e: self._article_payload()
+        mock_publish.side_effect = ClaudeOutageError('boom')
+
+        with _patch_sources_returning([
+            self._entry('http://x/d1', 'T1'), self._entry('http://x/d2', 'T2'),
+        ]):
+            with patch('news_bot.outage_state.is_fallback_active',
+                       return_value=False):
+                news_bot.job()
+                # Park everything, as a sustained stuck state would.
+                until = (dt.datetime.now(dt.timezone.utc)
+                         + dt.timedelta(hours=24)).strftime('%Y-%m-%d %H:%M:%S')
+                for link in ('http://x/d1', 'http://x/d2'):
+                    pending_articles_repo.defer_publish(link, until)
+                self.assertEqual(pending_articles_repo.count_pending(), 0)
+
+                with patch('news_bot.compute_fixed_slots') as mock_slots:
+                    mock_slots.return_value = ([], 0)
+                    news_bot.job()
+
+        # The tick must have sized its slots on queue + deferred, not on 0.
+        self.assertEqual(mock_slots.call_args.args[0], 2)

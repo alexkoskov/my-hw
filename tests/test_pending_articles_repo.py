@@ -57,6 +57,7 @@ EXPECTED_PENDING = {
     'hold_reason':   {'type': 'TEXT',      'notnull': 0, 'dflt_value': None,                    'pk': 0},
     # dedup defer (2026-07-28) — timed sibling of hold_reason; NULL = publishable now.
     'publish_after': {'type': 'TIMESTAMP', 'notnull': 0, 'dflt_value': None,                    'pk': 0},
+    'hold_count':    {'type': 'INTEGER',   'notnull': 0, 'dflt_value': None,                    'pk': 0},
 }
 
 EXPECTED_PUBLISHED = {
@@ -2165,3 +2166,153 @@ class TestPublishAfterDefer(unittest.TestCase):
         })
         self.assertEqual(pending_articles_repo.count_pending(), 0,
                          "elapsed defer must not release a HELD row")
+
+
+class TestHoldCounter(unittest.TestCase):
+    """``hold_count`` — how many times in a row the slot loop HELD this row.
+
+    Separate from ``attempt_count`` on purpose. A strike moves the row toward
+    ``failed_articles``; a hold must never do that (hold-and-wait exists so an
+    LLM outage costs nothing). But an unbounded hold pins the row to the queue
+    head — ``news_bot.job()`` re-reads ``list_pending()[0]`` every slot — so it
+    needs its own bound, with its own counter.
+    """
+
+    def setUp(self):
+        self.tmp = tempfile.NamedTemporaryFile(suffix='.db', delete=False)
+        self.tmp.close()
+        self._orig_db = news_bot.DB_FILE
+        news_bot.DB_FILE = self.tmp.name
+        news_bot.init_db()
+
+    def tearDown(self):
+        news_bot.DB_FILE = self._orig_db
+        os.unlink(self.tmp.name)
+
+    def _stage(self, link='http://x/held'):
+        pending_articles_repo.insert_pending({
+            'link': link, 'source_name': 't-hunted', 'title': 'T',
+            'paragraphs': ['body'],
+        })
+        return link
+
+    def test_counts_up_from_a_legacy_null(self):
+        """The column is added by migration as nullable, so every row that
+        existed before it reads NULL — which must behave as 0, not blow up a
+        ``NULL + 1`` into NULL and silently disable the cap forever."""
+        link = self._stage()
+        self.assertIsNone(pending_articles_repo.get_pending(link)['hold_count'])
+        self.assertEqual(pending_articles_repo.increment_hold(link), 1)
+        self.assertEqual(pending_articles_repo.increment_hold(link), 2)
+        self.assertEqual(pending_articles_repo.get_pending(link)['hold_count'], 2)
+
+    def test_missing_row_returns_zero(self):
+        """A row can vanish between the slot loop reading it and the hold being
+        recorded (manual review publishes it). Returning 0 keeps the caller
+        below any cap instead of raising inside an error path."""
+        self.assertEqual(
+            pending_articles_repo.increment_hold('http://x/gone'), 0)
+
+    def test_hold_does_not_touch_attempt_count(self):
+        """The invariant the whole hold-and-wait design rests on: holding an
+        article must never move it toward ``failed_articles``."""
+        link = self._stage()
+        for _ in range(5):
+            pending_articles_repo.increment_hold(link)
+        self.assertEqual(
+            pending_articles_repo.get_pending(link)['attempt_count'], 0)
+
+    def test_defer_publish_takes_the_row_out_of_the_queue(self):
+        """What actually unblocks the channel: after the defer the row is gone
+        from ``list_pending``, so the next slot reads a DIFFERENT ``rows[0]``."""
+        stuck = self._stage('http://x/stuck')
+        nxt = self._stage('http://x/next')
+        until = (datetime.now(timezone.utc) + timedelta(hours=24)
+                 ).strftime('%Y-%m-%d %H:%M:%S')
+
+        pending_articles_repo.defer_publish(stuck, until)
+
+        self.assertEqual(
+            [r['link'] for r in pending_articles_repo.list_pending()], [nxt])
+        self.assertEqual(
+            pending_articles_repo.get_pending(stuck)['publish_after'], until)
+
+    def test_defer_publish_keeps_the_counter(self):
+        """Resetting on defer would give a known-bad row a fresh full cap every
+        time it came back — wedging the head for another N slots per cycle.
+        Keeping the count means it steps aside after ONE hold from then on.
+        """
+        link = self._stage()
+        for _ in range(6):
+            pending_articles_repo.increment_hold(link)
+        pending_articles_repo.defer_publish(
+            link, (datetime.now(timezone.utc) + timedelta(hours=24)
+                   ).strftime('%Y-%m-%d %H:%M:%S'))
+        self.assertEqual(pending_articles_repo.increment_hold(link), 7)
+
+    def test_defer_publish_reports_whether_a_row_was_touched(self):
+        """The caller pings [E038] «отложена, вернётся сама» on True. If the
+        review listener deleted the row a microsecond earlier, that sentence
+        would be a lie — so a miss must be distinguishable from a hit."""
+        link = self._stage()
+        self.assertTrue(
+            pending_articles_repo.defer_publish(link, '2030-01-01 00:00:00'))
+        self.assertFalse(
+            pending_articles_repo.defer_publish('http://x/gone',
+                                                '2030-01-01 00:00:00'))
+
+    def test_counter_is_per_row(self):
+        """Holding one article must not age any other — otherwise a single bad
+        row would push the whole queue over the cap with it."""
+        a = self._stage('http://x/a')
+        b = self._stage('http://x/b')
+        for _ in range(3):
+            pending_articles_repo.increment_hold(a)
+        self.assertEqual(pending_articles_repo.get_pending(a)['hold_count'], 3)
+        self.assertIsNone(pending_articles_repo.get_pending(b)['hold_count'])
+
+    # -- reset on recovery ------------------------------------------------
+
+    def test_reset_clears_rows_below_the_cap_only(self):
+        """What makes the counter mean "in a row". A working LLM proves the
+        holds were global — except for rows that already crossed the cap: they
+        keep the marker so they yield on their FIRST hold next window instead
+        of blocking for another full cap."""
+        incidental = self._stage('http://x/incidental')
+        proven = self._stage('http://x/proven')
+        for _ in range(3):
+            pending_articles_repo.increment_hold(incidental)
+        for _ in range(6):
+            pending_articles_repo.increment_hold(proven)
+
+        cleared = pending_articles_repo.reset_hold_counts_below(6)
+
+        self.assertEqual(cleared, 1)
+        self.assertEqual(
+            pending_articles_repo.get_pending(incidental)['hold_count'], 0)
+        self.assertEqual(
+            pending_articles_repo.get_pending(proven)['hold_count'], 6)
+
+    def test_reset_is_a_noop_when_nothing_is_counted(self):
+        self._stage()
+        self.assertEqual(pending_articles_repo.reset_hold_counts_below(6), 0)
+
+    # -- deferred backlog -------------------------------------------------
+
+    def test_count_deferred_counts_only_future_defers(self):
+        """``count_pending`` excludes deferred rows, and job() sizes the day's
+        slots ONCE from it — so this number is what stops a fully-deferred tick
+        from computing zero slots and skipping the day."""
+        self._stage('http://x/now')
+        future = self._stage('http://x/future')
+        past = self._stage('http://x/past')
+        pending_articles_repo.defer_publish(
+            future, (datetime.now(timezone.utc) + timedelta(hours=24)
+                     ).strftime('%Y-%m-%d %H:%M:%S'))
+        pending_articles_repo.defer_publish(
+            past, (datetime.now(timezone.utc) - timedelta(hours=1)
+                   ).strftime('%Y-%m-%d %H:%M:%S'))
+
+        self.assertEqual(pending_articles_repo.count_deferred(), 1)
+        # An elapsed defer is publishable again and counts as queue, not backlog.
+        self.assertEqual(pending_articles_repo.count_pending(), 2)

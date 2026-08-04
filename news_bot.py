@@ -188,6 +188,33 @@ MAX_DAILY_POSTS = 3
 PUBLISH_RETRY_ATTEMPTS = 4
 PUBLISH_RETRY_DELAY_SECONDS = 600  # 10 minutes
 
+#: Hold cap — how many CONSECUTIVE slot-loop holds a single row may cost the
+#: queue before it steps aside (``pending_repo.defer_publish``, i.e.
+#: ``publish_after``) and lets the article behind it publish.
+#:
+#: Why a cap is needed at all: a hold never strikes (that is the point of
+#: hold-and-wait) and ``job()`` re-reads ``list_pending()[0]`` at every slot, so
+#: a row that always fails blocks the whole channel — and does it QUIETLY,
+#: because ``outage_state`` stops pinging once ``ping_count >= 3``. The 402
+#: classification added 2026-08-04 made that reachable: OpenRouter's 402 can be
+#: per-REQUEST ("requires more credits, or fewer max_tokens"), so a long
+#: round-up can fail forever while shorter articles behind it would succeed.
+#:
+#: 6 = two full days of the three fixed slots. Chosen so a GENUINE LLM outage
+#: never trips it — the 2-ping protocol declares a sustained outage after 2 h
+#: (well inside one day), so anything reaching six holds across two days is
+#: article-specific, not global. Lower values start deferring healthy articles
+#: during ordinary outages and spread the queue across days for no reason.
+HOLD_CAP = 6
+
+#: How long a row that hit ``HOLD_CAP`` stays out of the queue. One day: long
+#: enough for the operator to top up a balance or for a gateway to recover,
+#: short enough that a false positive costs one day of that article's lead.
+#: The row returns to the head afterwards (carry-over is drained oldest-first),
+#: so it retries once per window — and yields again on its FIRST hold, because
+#: ``defer_publish`` deliberately does not reset the counter.
+HOLD_DEFER_HOURS = 24
+
 #: End-of-tick PUBLISH RECAP (companion to the E008/E009 intake funnel). Cap on
 #: distinct (link, reason) failure entries collected for the [E034] recap ping —
 #: keeps the ping compact; admin_alerts also re-caps defensively when rendering.
@@ -3065,7 +3092,27 @@ def _maybe_record_recovery():
     in ``main()``. Without it, a transient outage in the past leaves the
     outage state machine stuck active (stale ``outage_started_at`` /
     ``ping_count``), so recovery pings never fire on the next success.
+
+    It also clears the hold counters, which is what makes ``hold_count`` mean
+    "holds IN A ROW". A working LLM proves the holds those rows collected were
+    global; leaving them banked would let an innocent article cross ``HOLD_CAP``
+    weeks later, on the first bad day, and get an [E038] blaming it for someone
+    else's outage. Rows already at the cap keep their marker — see
+    ``pending_repo.reset_hold_counts_below``.
     """
+    try:
+        cleared = pending_repo.reset_hold_counts_below(HOLD_CAP)
+        if cleared:
+            logger.info(
+                f"[recovery] LLM answered — cleared hold_count on {cleared} "
+                f"row(s) below the cap."
+            )
+    except Exception as reset_err:  # noqa: BLE001 — bookkeeping, never raise
+        logger.error(
+            f"[recovery] reset_hold_counts_below failed: "
+            f"{sanitize_error_message(reset_err)}"
+        )
+
     try:
         event = outage_state.record_recovery_event(
             datetime.now(timezone.utc),
@@ -3697,8 +3744,12 @@ def _publish_with_retries(row, idx, n_slots):
         try:
             _fallback_publish(row, via_review=False)
             return 'published', None
-        except ClaudeOutageError:
-            return 'held', None
+        except ClaudeOutageError as exc:
+            # The exception is handed back, not dropped: the slot loop needs
+            # the cause for the [E038] ping when this row hits ``HOLD_CAP``.
+            # It is the only record of WHY — a held row writes no `last_error`
+            # and never enters the [E034] recap.
+            return 'held', exc
         except ClaudeTranscreationError as exc:
             # Per-article LLM problem (refusal / malformed JSON / schema
             # drift) — deterministic: an immediate retry re-translates to the
@@ -4316,7 +4367,26 @@ def job():
     # them: the held backlog goes into the plan ping as its own
     # «На утверждении: N» line (read below).
     queue_size = pending_repo.count_pending()
-    slots, carry_over = compute_fixed_slots(queue_size, now_msk)
+    # Rows deferred by the hold cap are NOT in ``queue_size`` — they are not
+    # publishable at this instant. But the slot list is computed ONCE for the
+    # whole day, so sizing it on ``queue_size`` alone would hand a tick that
+    # starts fully deferred zero slots and skip the day entirely — including
+    # the moment a 24 h window elapses a few hours in. Over-allocating is safe:
+    # the loop breaks as soon as ``list_pending()`` comes back empty.
+    # Deliberately NOT folded into ``count_pending``: everything else that
+    # reads it (the `> 50` backlog alarm, the plan ping's «В очереди») means
+    # "publishable right now", and a deferred row is not.
+    try:
+        deferred_backlog = pending_repo.count_deferred()
+    except Exception as exc:
+        logger.error(
+            f"count_deferred failed, sizing slots on the publishable queue "
+            f"only: {sanitize_error_message(exc)}"
+        )
+        deferred_backlog = 0
+    slots, carry_over = compute_fixed_slots(
+        queue_size + deferred_backlog, now_msk,
+    )
 
     # Held backlog for the plan ping. Never blocks the tick: with the
     # «нет ответа = не публикуем» rule nothing else surfaces a forgotten
@@ -4343,11 +4413,12 @@ def job():
     try:
         if queue_size == 0 and inserted == 0:
             plan_msg = admin_alerts.alert_quiet_day(
-                funnel=funnel, held_count=held_count)
+                funnel=funnel, held_count=held_count,
+                deferred_count=deferred_backlog)
         else:
             plan_msg = admin_alerts.alert_plan_of_day(
                 inserted, queue_size, slots, carry_over, funnel=funnel,
-                held_count=held_count,
+                held_count=held_count, deferred_count=deferred_backlog,
             )
     except Exception as build_err:
         logger.error(
@@ -4408,6 +4479,7 @@ def job():
     held_count = 0
     failed_count = 0
     moved_to_failed_count = 0
+    deferred_count = 0
     recap_failures = []
     for idx, slot in enumerate(slots, start=1):
         # Window-end insurance.
@@ -4451,6 +4523,68 @@ def job():
                 f"[slot {idx}/{len(slots)}] LLM outage — article held, "
                 f"will retry on the next slot/day."
             )
+            # Hold cap: a hold never strikes, and the next slot re-reads
+            # ``list_pending()[0]`` — so without a bound one permanently-failing
+            # row blocks every article behind it, quietly (outage pings stop at
+            # ping_count >= 3). Past HOLD_CAP the row steps aside for
+            # HOLD_DEFER_HOURS and the queue moves on. It is NOT struck:
+            # nothing is lost, it returns to the head when the window elapses.
+            # Wrapped: a bookkeeping failure must not change the outcome of the
+            # slot — the article is already correctly held either way.
+            try:
+                holds = pending_repo.increment_hold(link)
+            except Exception as repo_err:
+                logger.error(
+                    f"increment_hold failed for {link}: "
+                    f"{sanitize_error_message(repo_err)}"
+                )
+                holds = 0
+            if holds >= HOLD_CAP:
+                safe_hold = (
+                    sanitize_error_message(err) if err else 'причина не записана'
+                )
+                until = (
+                    datetime.now(timezone.utc)
+                    + timedelta(hours=HOLD_DEFER_HOURS)
+                ).strftime('%Y-%m-%d %H:%M:%S')
+                # Two separate try blocks on purpose. Nesting the ping inside
+                # the defer's would mean a repo failure produced NEITHER the
+                # defer NOR the ping — the silent block [E038] exists to end.
+                try:
+                    deferred = pending_repo.defer_publish(link, until)
+                except Exception as repo_err:
+                    deferred = False
+                    logger.error(
+                        f"defer_publish failed for {link}: "
+                        f"{sanitize_error_message(repo_err)} — row stays at "
+                        f"the head, the next slot retries the defer"
+                    )
+                if deferred:
+                    deferred_count += 1
+                    logger.warning(
+                        f"[slot {idx}/{len(slots)}] {link} held {holds}× in a "
+                        f"row — deferring {HOLD_DEFER_HOURS}h so the queue can "
+                        f"move. Cause: {safe_hold}"
+                    )
+                try:
+                    # Ping only on a real defer. ``deferred`` is False either
+                    # because the row vanished (the review listener deleted it
+                    # — nothing to report) or because the write raised (already
+                    # logged above; the row keeps the head and the next slot
+                    # retries). In both cases [E038]'s text — «отложена, вернётся
+                    # сама» — would be false.
+                    if deferred:
+                        send_admin_notification(
+                            admin_alerts.alert_hold_cap_reached(
+                                link, row.get('title') or '', holds,
+                                safe_hold, HOLD_DEFER_HOURS,
+                            )
+                        )
+                except Exception as notify_err:
+                    logger.error(
+                        f"[E038] send failed for {link}: "
+                        f"{sanitize_error_message(notify_err)}"
+                    )
         else:  # 'failed' — per-article problem, or transient error that
                # survived the in-slot retries (each retry logged above).
             safe = sanitize_error_message(err)

@@ -66,6 +66,9 @@ EXPECTED_PENDING_COLUMNS = {
     'hold_reason':   {'type': 'TEXT',      'notnull': 0, 'dflt_value': None,                'pk': 0},
     # dedup defer (2026-07-28): timed sibling of hold_reason.
     'publish_after': {'type': 'TIMESTAMP', 'notnull': 0, 'dflt_value': None, 'pk': 0},
+    # hold cap (2026-08-04): consecutive slot-loop holds. Nullable — legacy
+    # rows read NULL and increment_hold COALESCEs it to 0.
+    'hold_count':    {'type': 'INTEGER',   'notnull': 0, 'dflt_value': None, 'pk': 0},
 }
 
 

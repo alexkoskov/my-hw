@@ -313,6 +313,13 @@ _COLUMN_MIGRATIONS = (
     # Nullable + no default, so the ALTER is safe on the live prod DB.
     ('pending_articles', 'publish_after',
      "ALTER TABLE pending_articles ADD COLUMN publish_after TIMESTAMP"),
+    # 2026-08-04 (hold cap): how many times IN A ROW the slot loop held this
+    # row. Deliberately NOT ``attempt_count``: a strike walks the row toward
+    # failed_articles, a hold must never do that. Nullable with no default, so
+    # the ALTER is safe on the live prod DB — every pre-migration row reads
+    # NULL, which ``increment_hold`` treats as 0 via COALESCE.
+    ('pending_articles', 'hold_count',
+     "ALTER TABLE pending_articles ADD COLUMN hold_count INTEGER"),
 )
 
 
@@ -471,6 +478,124 @@ def increment_attempt(link: str, error: Optional[str]) -> int:
         ).fetchone()
         conn.commit()
         return int(row[0]) if row is not None else 0
+    finally:
+        conn.close()
+
+
+def increment_hold(link: str) -> int:
+    """Bump ``hold_count`` for ``link`` and return the new value.
+
+    The hold counter's whole reason to exist separately from ``attempt_count``:
+    an LLM outage must not walk an article toward ``failed_articles``, but it
+    must not pin it to the queue head forever either — ``news_bot.job()`` reads
+    ``list_pending()[0]`` at every slot, so a row that always fails blocks every
+    article behind it. The caller compares the returned count against
+    ``news_bot.HOLD_CAP`` and defers the row once it is exceeded.
+
+    ``COALESCE`` is load-bearing: the column arrived by migration as nullable,
+    so rows staged before it read NULL, and a plain ``hold_count + 1`` would
+    evaluate to NULL — leaving those rows permanently under any cap.
+
+    Returns 0 if the row is gone (manual review can publish it between the slot
+    loop reading it and this call), so the caller stays below the cap rather
+    than raising inside an error path.
+    """
+    conn = _connect()
+    try:
+        conn.execute(
+            "UPDATE pending_articles "
+            "SET hold_count = COALESCE(hold_count, 0) + 1 "
+            "WHERE link=?",
+            (link,),
+        )
+        row = conn.execute(
+            "SELECT hold_count FROM pending_articles WHERE link=?",
+            (link,),
+        ).fetchone()
+        conn.commit()
+        return int(row[0]) if row is not None else 0
+    finally:
+        conn.close()
+
+
+def defer_publish(link: str, until: str) -> bool:
+    """Withhold ``link`` from the queue until ``until`` (UTC
+    ``'YYYY-MM-DD HH:MM:SS'``), by setting the existing ``publish_after``.
+
+    Same column the dedup soft-flag uses at insert time — this is the only
+    place it is set on an ALREADY-STAGED row. ``list_pending`` / ``count_pending``
+    filter on it, so the effect is immediate: the next slot reads a different
+    ``rows[0]`` and the channel keeps publishing.
+
+    ``hold_count`` is deliberately NOT reset. A row that has already proven it
+    can wedge the head gets ONE retry per defer window from here on; resetting
+    would hand it a fresh full cap and let it block the head again for another
+    ``HOLD_CAP`` slots every cycle.
+
+    Returns ``True`` iff a row was actually updated — same convention as
+    ``clear_hold``. The caller uses it to stay quiet when the row vanished
+    between the slot loop reading it and this call (the review listener can
+    delete it): pinging «отложена, вернётся сама» about an article the operator
+    just cancelled would be a lie.
+    """
+    conn = _connect()
+    try:
+        cur = conn.execute(
+            "UPDATE pending_articles SET publish_after = ? WHERE link=?",
+            (until, link),
+        )
+        conn.commit()
+        return cur.rowcount > 0
+    finally:
+        conn.close()
+
+
+def count_deferred() -> int:
+    """Rows withheld ONLY by a future ``publish_after`` — publishable in every
+    other respect, just not yet.
+
+    ``count_pending`` deliberately excludes them, and ``news_bot.job()`` sizes
+    the day's slots ONCE from that number. Without this counter a tick that
+    starts with everything deferred computes zero slots and skips the whole
+    day — including the moment a defer window elapses mid-tick. Held rows
+    (``hold_reason``) are excluded because those wait for the operator and may
+    never become publishable at all.
+    """
+    conn = _connect()
+    try:
+        row = conn.execute(
+            "SELECT COUNT(*) FROM pending_articles "
+            "WHERE hold_reason IS NULL "
+            "AND publish_after IS NOT NULL AND publish_after > CURRENT_TIMESTAMP"
+        ).fetchone()
+        return int(row[0]) if row else 0
+    finally:
+        conn.close()
+
+
+def reset_hold_counts_below(cap: int) -> int:
+    """Zero ``hold_count`` on every row still under ``cap``. Returns how many.
+
+    This is what makes the counter mean "holds IN A ROW" rather than "holds
+    ever". Called when the LLM answers successfully: that proves the failures
+    those rows accumulated were GLOBAL, so charging them to the articles would
+    eventually defer an innocent row and ping the operator blaming it — the
+    same wrong-attribution the 2026-06-10 E011 incident cost a day to.
+
+    Rows at or above ``cap`` keep their count on purpose: they have already
+    proven they can wedge the head, and the marker is what makes them yield on
+    their FIRST hold in the next window instead of blocking for another ``cap``
+    slots.
+    """
+    conn = _connect()
+    try:
+        cur = conn.execute(
+            "UPDATE pending_articles SET hold_count = 0 "
+            "WHERE COALESCE(hold_count, 0) > 0 AND COALESCE(hold_count, 0) < ?",
+            (cap,),
+        )
+        conn.commit()
+        return cur.rowcount
     finally:
         conn.close()
 

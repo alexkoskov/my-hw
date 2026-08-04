@@ -327,11 +327,30 @@ def _held_backlog_line(held_count) -> str:
     return f"На утверждении: {n}"
 
 
+def _deferred_backlog_line(deferred_count) -> str:
+    """«Отложено (уступили очередь): N» — rows parked by the hold cap.
+
+    Like held rows they are outside ``count_pending()``, so they show up in
+    neither «Всего в очереди» nor the backlog alarm. Unlike held rows they
+    need no decision — they return by themselves — but without this line a day
+    where the whole queue is deferred renders as «новых статей нет», a false
+    all-clear. Returns "" for 0 / malformed input (never raises).
+    """
+    try:
+        n = max(0, int(deferred_count or 0))
+    except Exception:
+        return ""
+    if not n:
+        return ""
+    return f"Отложено (уступили очередь): {n}"
+
+
 def alert_plan_of_day(
     inserted: int, queue_size: int, slots: List, carry_over: int,
     funnel: Optional[dict] = None,
     *,
     held_count: int = 0,
+    deferred_count: int = 0,
 ) -> str:
     # Сохраняем подстроки 'План на сегодня', 'Принято свежих' —
     # на них висят test_distributed_schedule_integration / test_job_prep_phase.
@@ -353,6 +372,9 @@ def alert_plan_of_day(
     held_line = _held_backlog_line(held_count)
     if held_line:
         base = f"{base}\n{held_line}"
+    deferred_line = _deferred_backlog_line(deferred_count)
+    if deferred_line:
+        base = f"{base}\n{deferred_line}"
     try:
         line = _format_funnel_line(funnel) if funnel is not None else ""
     except Exception:
@@ -366,7 +388,8 @@ def alert_plan_of_day(
 # E009 — heartbeat: quiet day (новых статей нет)
 # ---------------------------------------------------------------------------
 def alert_quiet_day(funnel: Optional[dict] = None, *,
-                    held_count: int = 0) -> str:
+                    held_count: int = 0,
+                    deferred_count: int = 0) -> str:
     # Сохраняем подстроку 'Бот сработал' — на ней висит test_job_prep_phase.
     #
     # ``funnel`` (optional, backward-compatible): при наличии дописываем
@@ -382,6 +405,12 @@ def alert_quiet_day(funnel: Optional[dict] = None, *,
     held_line = _held_backlog_line(held_count)
     if held_line:
         base = f"{base}\n{held_line}"
+    # Hold cap (2026-08-04): with everything deferred the publishable queue is
+    # 0 and this ping fires — a false all-clear unless the parked rows are
+    # named. They need no decision, so the line is informational, not a todo.
+    deferred_line = _deferred_backlog_line(deferred_count)
+    if deferred_line:
+        base = f"{base}\n{deferred_line}"
     try:
         block = _format_funnel(funnel) if funnel is not None else ""
     except Exception:
@@ -1126,4 +1155,38 @@ def alert_genre_blocked(link: str, title: str, genre: str,
         f"Что сделать:\n"
         f"ничего. Но если это ошибка и статью стоило\n"
         f"опубликовать — скажи, поправим правила."
+    )
+
+
+# ---------------------------------------------------------------------------
+# E038 — статья уступила очередь после HOLD_CAP придержаний подряд
+# ---------------------------------------------------------------------------
+def alert_hold_cap_reached(link: str, title: str, hold_count: int,
+                           reason: str, defer_hours: int) -> str:
+    """[E038] one row hit ``news_bot.HOLD_CAP`` consecutive holds and was
+    deferred so the queue could move.
+
+    This ping exists because the situation is otherwise INVISIBLE: a held row
+    writes no ``last_error``, never enters the [E034] recap, and the outage
+    pings stop after ``ping_count >= 3`` — so before this the channel could sit
+    blocked by one article in complete silence.
+
+    ``reason`` must arrive already sanitised (``sanitize_error_message``) —
+    it is upstream text. ``title`` is untrusted source text and is capped.
+    """
+    return (
+        f"[E038] 🟡 Статья уступила очередь\n\n"
+        f"Заголовок:\n{_intake_alert_title(title)}\n\n"
+        f"Ссылка:\n{link}\n\n"
+        f"Придержана подряд: {hold_count} раз\n"
+        f"Причина:\n{_intake_alert_title(reason)}\n\n"
+        f"Что произошло:\n"
+        f"эта статья раз за разом не переводится и держала\n"
+        f"очередь — остальные из-за неё не выходили. Она\n"
+        f"отложена на {defer_hours} ч, очередь пошла дальше.\n"
+        f"Статья НЕ потеряна: вернётся к публикации сама.\n\n"
+        f"Что сделать:\n"
+        f"посмотри причину выше. Если это «402 / Insufficient\n"
+        f"credits» — пополни баланс OpenRouter, и статья\n"
+        f"выйдет со следующей попытки."
     )

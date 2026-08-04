@@ -640,6 +640,7 @@ class TestAdminAlerts(unittest.TestCase):
                 {'published': 1, 'held': 1, 'failed': 1, 'moved_to_failed': 0,
                  'failures': [('u', 'boom')]},
             ),
+            admin_alerts.alert_hold_cap_reached("u", "T", 6, "402", 24),
         ]
         codes = [m[:6] for m in all_messages]  # "[E0XX]"
         self.assertEqual(len(codes), len(set(codes)),
@@ -1612,3 +1613,60 @@ class TestOpenRouterLowBalanceAlert(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class TestHoldCapAlert(unittest.TestCase):
+    """[E038] — one article held ``HOLD_CAP`` times in a row and stepped aside.
+
+    This ping exists because the situation is otherwise invisible: a held row
+    writes no ``last_error``, never enters the [E034] recap, and the outage
+    pings stop after ``ping_count >= 3``.
+    """
+
+    def _msg(self, **kw):
+        args = dict(link="http://x/stuck", title="Hot Wheels Unboxing",
+                    hold_count=6,
+                    reason="APIStatusError: Error code: 402 - Insufficient credits",
+                    defer_hours=24)
+        args.update(kw)
+        return admin_alerts.alert_hold_cap_reached(**args)
+
+    def test_carries_code_link_count_and_cause(self):
+        # Sentinels, not realistic values. A cause that cannot appear in the
+        # static text (the builder's own advice mentions «402 / Insufficient
+        # credits», so matching that would pass for a builder that ignores its
+        # ``reason``), and two counts that are neither equal nor substrings of
+        # each other — with 6 and 24 a builder that SWAPPED the two
+        # placeholders still satisfied every assertion.
+        msg = self._msg(hold_count=71, reason="ZZTOPMARKER", defer_hours=93)
+        self.assertIn("[E038]", msg)
+        self.assertIn("http://x/stuck", msg)
+        self.assertIn("Hot Wheels Unboxing", msg)
+        self.assertIn("ZZTOPMARKER", msg)
+        self.assertIn("Придержана подряд: 71", msg)
+        self.assertIn("93", msg)
+        self.assertNotIn("отложена на 71", msg)
+
+    def test_renders_every_argument(self):
+        """Guard against a builder that quietly drops one: each field must
+        appear, and an empty title must not silently swallow the rest."""
+        msg = self._msg(link="LNKSENTINEL", title="TTLSENTINEL",
+                        hold_count=71, reason="RSNSENTINEL", defer_hours=93)
+        for sentinel in ("LNKSENTINEL", "TTLSENTINEL", "RSNSENTINEL", "71", "93"):
+            self.assertIn(sentinel, msg, sentinel)
+
+    def test_says_the_article_is_not_lost(self):
+        """The operator must not read this as «статья потеряна» — the whole
+        difference from a strike is that nothing is thrown away."""
+        msg = self._msg()
+        self.assertIn("НЕ потеряна", msg)
+        self.assertIn("Что сделать", msg)
+
+    def test_caps_a_pathological_title_and_cause(self):
+        """Title and cause are untrusted upstream text; the ping must stay
+        inside Telegram's 4096-char limit (same argument as SEC-PROMO-4)."""
+        msg = self._msg(title="Т" * 5000, reason="Ы" * 5000)
+        self.assertLess(len(msg), 4096)
+
+    def test_is_pure(self):
+        self.assertEqual(self._msg(), self._msg())
