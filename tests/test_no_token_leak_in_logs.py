@@ -689,3 +689,51 @@ class TestAdminNotifyRedaction:
             "'Admin notification sent:' line — still truncated:\n" + sent_log
         )
         assert "tail-marker-ZZZ" in sent_log
+
+
+class TestProxyCredentialRedaction:
+    """Proxy credentials are the one secret shape none of the five key regexes
+    match, and no ``*_PROXY`` name was in ``_SECRET_ENV_NAMES``.
+
+    Latent while nothing sets a proxy — but prod egress runs through a non-RU
+    VPN gateway, `_ACCOUNT_LEVEL_STATUS_CODES` now explicitly classifies 407
+    (proxy auth), and since 2026-08-04 an SDK error message reaches the journal
+    on the hold path. Two lines closes it before the topology changes.
+    """
+
+    PROXY_URL = "http://vpnuser:S3cretProxyPw@10.0.0.1:8080"
+
+    def test_redact_text_scrubs_inline_url_credentials(self):
+        out = news_bot._redact_text(f"proxy error for {self.PROXY_URL}: refused")
+        assert "S3cretProxyPw" not in out
+        assert "vpnuser" not in out
+        # The host survives — it is the diagnostic half of the string.
+        assert "10.0.0.1:8080" in out
+
+    @pytest.mark.parametrize("scheme", ["http", "https", "socks5", "socks5h"])
+    def test_every_proxy_scheme(self, scheme):
+        out = news_bot._redact_text(f"{scheme}://u:PWSENTINEL@host:1080")
+        assert "PWSENTINEL" not in out
+
+    def test_leaves_ordinary_urls_alone(self):
+        """No credentials means nothing to scrub — an article link with a port
+        or a colon in the path must survive verbatim."""
+        for url in (
+            "https://www.autoevolution.com/news/some-article-12345.html",
+            "https://telegra.ph/Hot-Wheels-08-04",
+            "http://example.com:8080/path?a=b:c",
+        ):
+            assert news_bot._redact_text(url) == url
+
+    @pytest.mark.parametrize("name", ["HTTP_PROXY", "HTTPS_PROXY", "ALL_PROXY",
+                                      "http_proxy", "https_proxy", "all_proxy"])
+    def test_proxy_env_var_in_secret_env_names(self, name):
+        """Defence in depth, same argument as the LLM keys: even if the regex
+        misses a shape, ``sanitize_error_message`` replaces the exact value."""
+        assert name in news_bot._SECRET_ENV_NAMES
+
+    def test_sanitize_error_message_redacts_the_proxy_value(self, monkeypatch):
+        monkeypatch.setenv("HTTPS_PROXY", self.PROXY_URL)
+        out = news_bot.sanitize_error_message(
+            Exception(f"cannot connect via {self.PROXY_URL}"))
+        assert "S3cretProxyPw" not in out

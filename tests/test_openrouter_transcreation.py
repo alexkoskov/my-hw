@@ -589,3 +589,66 @@ class TestGetRemainingCredits(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class TestErrorEnvelopeIn200(unittest.TestCase):
+    """OpenRouter can answer HTTP 200 with an error ENVELOPE in the body
+    instead of a status code — a gateway shape the SDK cannot classify,
+    because to the SDK it is a perfectly successful response.
+
+    Before this the envelope reached the ``response.choices[0]`` read, raised
+    ``ClaudeTranscreationError('response shape unexpected')`` — a per-article
+    strike — and an out-of-credits 402 delivered this way lost the article
+    after three of them. Exactly the 2026-07-14 failure, through a door the
+    status-code fix did not cover.
+    """
+
+    def setUp(self):
+        openrouter_transcreation._PROMPT_CACHE = {"mtime": None, "body": None, "path": None}
+
+    @staticmethod
+    def _envelope_response(code, message="Insufficient credits"):
+        """A 200 whose body carries ``error`` and no usable ``choices`` —
+        what the SDK hands back for a gateway-level error envelope."""
+        response = MagicMock()
+        response.choices = []
+        response.error = {"code": code, "message": message}
+        return response
+
+    def test_account_level_envelope_is_an_outage(self):
+        client = _make_client_returning(self._envelope_response(402))
+        with patch.object(openrouter_transcreation, "_load_prompt", return_value="X"):
+            with self.assertRaises(ClaudeOutageError) as ctx:
+                openrouter_transcreation.transcreate_via_claude(SAMPLE_ARTICLE, client=client)
+        # The cause must survive into the message — it is what the [hold] log
+        # line and [E038] print.
+        self.assertIn("402", str(ctx.exception))
+        self.assertIn("Insufficient credits", str(ctx.exception))
+
+    def test_article_level_envelope_stays_per_article(self):
+        """Same conservative default as the status-code path: an envelope code
+        that is about THIS article must not hold the queue head."""
+        client = _make_client_returning(self._envelope_response(413, "too large"))
+        with patch.object(openrouter_transcreation, "_load_prompt", return_value="X"):
+            with self.assertRaises(ClaudeTranscreationError):
+                openrouter_transcreation.transcreate_via_claude(SAMPLE_ARTICLE, client=client)
+
+    def test_envelope_without_a_code_stays_per_article(self):
+        response = MagicMock()
+        response.choices = []
+        response.error = {"message": "something went wrong"}
+        client = _make_client_returning(response)
+        with patch.object(openrouter_transcreation, "_load_prompt", return_value="X"):
+            with self.assertRaises(ClaudeTranscreationError) as ctx:
+                openrouter_transcreation.transcreate_via_claude(SAMPLE_ARTICLE, client=client)
+        self.assertIn("something went wrong", str(ctx.exception))
+
+    def test_a_healthy_response_is_untouched(self):
+        """Regression guard: the envelope check must not intercept a normal
+        response. ``MagicMock`` answers every attribute, so a naive
+        ``getattr(response, 'error')`` would swallow every success."""
+        client = _make_client_returning(_make_response(SAMPLE_VALID_JSON))
+        with patch.object(openrouter_transcreation, "_load_prompt", return_value="X"):
+            result = openrouter_transcreation.transcreate_via_claude(
+                SAMPLE_ARTICLE, client=client)
+        self.assertIn("title", result)

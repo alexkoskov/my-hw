@@ -51,6 +51,7 @@ _KEY_SOFTFLAG_PAIR_PREFIX = 'softflag_pair:'
 
 # Global degraded-mode rate-limit key (1-hour window).
 _KEY_DEDUP_DEGRADED = 'dedup_degraded_last_pinged_at'
+_KEY_HOLD_CAP_PINGED = 'hold_cap_last_pinged_at'
 
 # Review-token key prefix (dedup-review-buttons, tech-spec Decision 3).
 # Telegram callback_data is capped at 64 bytes while the queue PK is a full
@@ -569,6 +570,54 @@ def count_deferred() -> int:
             "AND publish_after IS NOT NULL AND publish_after > CURRENT_TIMESTAMP"
         ).fetchone()
         return int(row[0]) if row else 0
+    finally:
+        conn.close()
+
+
+def is_hold_cap_ping_rate_limited(window_hours: int = 6) -> bool:
+    """True iff an [E038] «статья уступила очередь» ping went out within the
+    last ``window_hours``. GLOBAL, not per link.
+
+    During a sustained stall rows cross ``HOLD_CAP`` one after another, and a
+    ping each would recreate the noise ``outage_state``'s ``ping_count >= 3``
+    cutoff exists to prevent. The operator needs to know THAT the queue is
+    stalling plus one representative cause; the running total already appears
+    in the daily [E008]/[E009] «Отложено (уступили очередь): N» line.
+
+    Fails OPEN — missing or corrupt value returns False. Silencing an alert
+    because its own bookkeeping broke is the worse failure: this ping is the
+    only thing that surfaces a stalling queue.
+
+    Opens its own connection (the ``outage_state`` contour, like the review
+    token store) because the caller — the slot loop's held branch — holds none.
+    """
+    conn = _connect()
+    try:
+        row = conn.execute(
+            "SELECT value FROM bot_state WHERE key=?",
+            (_KEY_HOLD_CAP_PINGED,),
+        ).fetchone()
+    finally:
+        conn.close()
+    if row is None:
+        return False
+    last = _parse_dt_tolerant(row[0], _KEY_HOLD_CAP_PINGED)
+    if last is None:
+        return False
+    if last.tzinfo is None:
+        last = last.replace(tzinfo=timezone.utc)
+    return (datetime.now(timezone.utc) - last) < timedelta(hours=window_hours)
+
+
+def mark_hold_cap_pinged() -> None:
+    """UPSERT the current UTC timestamp at the [E038] rate-limit key."""
+    conn = _connect()
+    try:
+        conn.execute(
+            "INSERT OR REPLACE INTO bot_state (key, value) VALUES (?, ?)",
+            (_KEY_HOLD_CAP_PINGED, datetime.now(timezone.utc).isoformat()),
+        )
+        conn.commit()
     finally:
         conn.close()
 

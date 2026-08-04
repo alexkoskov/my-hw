@@ -215,6 +215,14 @@ HOLD_CAP = 6
 #: ``defer_publish`` deliberately does not reset the counter.
 HOLD_DEFER_HOURS = 24
 
+#: Minimum gap between two [E038] pings, GLOBALLY (not per article). In a
+#: sustained stall rows cross ``HOLD_CAP`` one after another; a ping each would
+#: recreate the noise the outage machine's ``ping_count >= 3`` cutoff exists to
+#: prevent. 6 h bounds it to 4/day at worst. Nothing is hidden: the daily
+#: [E008]/[E009] «Отложено (уступили очередь): N» line carries the running
+#: total, so [E038] only has to deliver the first representative cause.
+HOLD_CAP_PING_WINDOW_HOURS = 6
+
 #: End-of-tick PUBLISH RECAP (companion to the E008/E009 intake funnel). Cap on
 #: distinct (link, reason) failure entries collected for the [E034] recap ping —
 #: keeps the ping compact; admin_alerts also re-caps defensively when rendering.
@@ -263,6 +271,14 @@ _SECRET_ENV_NAMES = (
     'OPENAI_API_KEY',
     'OPENROUTER_API_KEY',
     'OPEN_ROUTER_API_KEY',  # alias accepted by openrouter_transcreation
+    # Proxy URLs carry credentials inline (``scheme://user:pass@host``) and
+    # match none of the key regexes — the one secret shape the vocabulary
+    # missed. Both cases: libraries read the lowercase form, operators
+    # typically set the uppercase one. Defence in depth alongside
+    # ``_PROXY_CRED_RE``: this replaces the exact configured value, the regex
+    # catches any proxy URL including ones we never configured.
+    'HTTP_PROXY', 'HTTPS_PROXY', 'ALL_PROXY',
+    'http_proxy', 'https_proxy', 'all_proxy',
 )
 
 
@@ -415,6 +431,22 @@ _OPENAI_KEY_RE = re.compile(
 # scrubs cleanly without trimming the tail.
 _GEMINI_KEY_RE = re.compile(r"AIza[A-Za-z0-9_-]{35,}")
 
+# Proxy credentials embedded in a URL: ``scheme://user:pass@host``. The one
+# secret shape none of the five key patterns above can match, and the one the
+# prod topology makes plausible — egress runs through a non-RU VPN gateway, and
+# ``_llm_common._ACCOUNT_LEVEL_STATUS_CODES`` now classifies 407 (proxy auth)
+# explicitly, i.e. a proxy failure is on a path that reaches the journal.
+#
+# Only the userinfo is replaced; the host:port survives because that half is
+# the diagnostic. Requires BOTH a scheme and a ``user:pass@``, so an ordinary
+# article URL — including one with a port or a colon in the path — is untouched
+# (the ``[^/\s:@]`` classes cannot cross a ``/``, so a path colon never
+# qualifies). Order-independent of the key patterns: no ``sk-…``/``AIza…``
+# shape can sit inside a userinfo field without a ``/`` or ``@`` boundary.
+_PROXY_CRED_RE = re.compile(
+    r"([A-Za-z][A-Za-z0-9+.\-]*://)[^/\s:@]+:[^/\s:@]+@"
+)
+
 
 def _redact_text(text):
     """Scrub Telegram-bot-token, Anthropic, OpenAI, OpenRouter, and Gemini
@@ -443,6 +475,7 @@ def _redact_text(text):
     try:
         if not isinstance(text, str):
             text = str(text)
+        text = _PROXY_CRED_RE.sub(r"\1***:***@", text)
         text = _BOT_TOKEN_RE.sub("***", text)
         text = _OPENROUTER_KEY_RE.sub("***", text)
         text = _ANTHROPIC_KEY_RE.sub("***", text)
@@ -4573,13 +4606,23 @@ def job():
                     # logged above; the row keeps the head and the next slot
                     # retries). In both cases [E038]'s text — «отложена, вернётся
                     # сама» — would be false.
-                    if deferred:
+                    #
+                    # Rate-limited GLOBALLY: in a sustained stall many rows
+                    # cross the cap in sequence, and a ping each would recreate
+                    # the noise the outage machine's ping_count>=3 cutoff
+                    # exists to prevent. The daily [E008]/[E009] «Отложено: N»
+                    # line carries the running total, so suppressing the extra
+                    # pings loses no information the operator needs.
+                    if deferred and not pending_repo.is_hold_cap_ping_rate_limited(
+                        HOLD_CAP_PING_WINDOW_HOURS
+                    ):
                         send_admin_notification(
                             admin_alerts.alert_hold_cap_reached(
                                 link, row.get('title') or '', holds,
                                 safe_hold, HOLD_DEFER_HOURS,
                             )
                         )
+                        pending_repo.mark_hold_cap_pinged()
                 except Exception as notify_err:
                     logger.error(
                         f"[E038] send failed for {link}: "

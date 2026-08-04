@@ -35,6 +35,8 @@ from _llm_common import (
     _apply_emoji_safety_net,
     _build_system_prompt,
     _build_user_message,
+    _classify_error_envelope,
+    _error_envelope,
     _is_account_level_status,
     _is_mostly_russian,
     _parse_response as _parse_response_common,
@@ -346,6 +348,15 @@ def transcreate_via_claude(  # name kept for backward compat
         raise _classify_exception(exc) from exc
 
     latency_ms = int((time.monotonic() - started) * 1000)
+
+    # A 200 can still carry a gateway error ENVELOPE instead of a completion.
+    # Checked BEFORE reading ``choices``: otherwise it surfaces as "response
+    # shape unexpected", a per-article strike, and an out-of-credits 402
+    # delivered this way loses the article after three of them.
+    envelope = _error_envelope(response)
+    if envelope is not None:
+        code, message = envelope
+        raise _classify_error_envelope(code, message, "OpenAI")
 
     try:
         text = response.choices[0].message.content

@@ -91,6 +91,56 @@ class ClaudeOutageError(Exception):
 _ACCOUNT_LEVEL_STATUS_CODES = frozenset({402, 407, 408})
 
 
+def _error_envelope(response) -> Optional[tuple]:
+    """Return ``(code, message)`` if ``response`` carries a gateway error
+    ENVELOPE instead of a completion, else ``None``.
+
+    An OpenAI-compatible gateway can answer HTTP **200** with
+    ``{"error": {"code": 402, "message": "Insufficient credits"}}`` and no
+    usable ``choices``. The SDK cannot classify that — to it the request
+    succeeded — so without this check the envelope reaches
+    ``response.choices[0]``, raises "response shape unexpected", and is filed
+    as a per-article failure: three strikes and the article is gone. That is
+    the 2026-07-14 loss again, through a door the status-code fix does not
+    cover (that one only sees non-2xx).
+
+    Strictly requires a non-empty ``dict``. Both halves matter: the openai SDK
+    keeps unmodelled top-level fields as plain dicts, and — critically — a
+    ``MagicMock`` response answers EVERY attribute, so a looser duck-typed
+    check would classify every successful call in the test suite as an error.
+    """
+    err = getattr(response, "error", None)
+    if not isinstance(err, dict) or not err:
+        return None
+
+    code = err.get("code")
+    if isinstance(code, str) and code.strip().isdigit():
+        code = int(code.strip())
+    if isinstance(code, bool) or not isinstance(code, int):
+        code = None
+
+    message = err.get("message")
+    return code, str(message) if message is not None else ""
+
+
+def _classify_error_envelope(code, message: str, provider: str) -> Exception:
+    """Map an ``_error_envelope`` result onto the outage / per-article axis,
+    using the SAME code set as the status-code path so a 402 is a 402 however
+    the gateway chose to deliver it.
+
+    An envelope with no usable code stays per-article — same conservative
+    default, and for the same reason: an outage holds the row at the queue
+    head, so guessing wrong there costs the channel rather than one article.
+    """
+    text = (
+        f"{provider} returned an error envelope in a 200 response: "
+        f"code={code} {message}".strip()
+    )
+    if code in _ACCOUNT_LEVEL_STATUS_CODES:
+        return ClaudeOutageError(text)
+    return ClaudeTranscreationError(text)
+
+
 def _is_account_level_status(exc: BaseException) -> bool:
     """True iff ``exc`` carries a status code from ``_ACCOUNT_LEVEL_STATUS_CODES``.
 

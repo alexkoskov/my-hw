@@ -1233,3 +1233,37 @@ class TestHoldCapFailurePaths(_DistribLoopBase):
 
         # The tick must have sized its slots on queue + deferred, not on 0.
         self.assertEqual(mock_slots.call_args.args[0], 2)
+
+
+class TestHoldCapPingIsRateLimited(_DistribLoopBase):
+    """Two rows crossing the cap in the same tick must produce ONE ping."""
+
+    FROZEN_NOW = MSK.localize(dt.datetime(2035, 4, 27, 10, 0, 0))
+
+    @patch('news_bot.send_admin_notification')
+    @patch('news_bot.time.sleep')
+    @patch('news_bot._fallback_publish')
+    @patch('news_bot.fetch_full_article')
+    def test_only_one_e038_per_window(
+        self, mock_fetch_article, mock_publish, _mock_sleep, mock_admin,
+    ):
+        mock_fetch_article.side_effect = lambda e: self._article_payload()
+        mock_publish.side_effect = ClaudeOutageError('402 Insufficient credits')
+
+        with _patch_sources_returning([
+            self._entry('http://x/s1', 'T1'), self._entry('http://x/s2', 'T2'),
+        ]):
+            with patch('news_bot.outage_state.is_fallback_active',
+                       return_value=False):
+                # Every hold crosses the cap → both rows would ping unbounded.
+                with patch('news_bot.pending_repo.increment_hold',
+                           return_value=news_bot.HOLD_CAP):
+                    news_bot.job()
+
+        pings = [c.args[0] for c in mock_admin.call_args_list if c.args]
+        self.assertEqual(len([p for p in pings if '[E038]' in p]), 1, pings)
+        # Both rows were still parked — the rate limit gates the PING only,
+        # never the unblocking.
+        for link in ('http://x/s1', 'http://x/s2'):
+            self.assertIsNotNone(
+                pending_articles_repo.get_pending(link)['publish_after'], link)

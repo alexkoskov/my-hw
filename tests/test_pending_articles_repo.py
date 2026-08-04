@@ -2316,3 +2316,46 @@ class TestHoldCounter(unittest.TestCase):
         self.assertEqual(pending_articles_repo.count_deferred(), 1)
         # An elapsed defer is publishable again and counts as queue, not backlog.
         self.assertEqual(pending_articles_repo.count_pending(), 2)
+
+
+class TestHoldCapPingRateLimit(unittest.TestCase):
+    """[E038] is rate-limited GLOBALLY, not per link.
+
+    During a sustained stall many rows cross the cap one after another, and a
+    ping each would re-create exactly the noise ``outage_state``'s
+    ``ping_count >= 3`` cutoff exists to prevent. The operator needs to know
+    THAT the queue is stalling and one representative cause; the running total
+    is already in the daily [E008]/[E009] «Отложено: N» line.
+    """
+
+    def setUp(self):
+        self.tmp = tempfile.NamedTemporaryFile(suffix='.db', delete=False)
+        self.tmp.close()
+        self._orig_db = news_bot.DB_FILE
+        news_bot.DB_FILE = self.tmp.name
+        news_bot.init_db()
+
+    def tearDown(self):
+        news_bot.DB_FILE = self._orig_db
+        os.unlink(self.tmp.name)
+
+    def test_first_ping_is_not_limited(self):
+        self.assertFalse(pending_articles_repo.is_hold_cap_ping_rate_limited(6))
+
+    def test_second_ping_inside_the_window_is_limited(self):
+        pending_articles_repo.mark_hold_cap_pinged()
+        self.assertTrue(pending_articles_repo.is_hold_cap_ping_rate_limited(6))
+
+    def test_window_expiry_releases_it(self):
+        pending_articles_repo.mark_hold_cap_pinged()
+        self.assertFalse(pending_articles_repo.is_hold_cap_ping_rate_limited(0))
+
+    def test_corrupt_timestamp_does_not_suppress(self):
+        """Fail OPEN: a garbled value must not silence the alert forever —
+        parity with ``outage_state._parse_dt`` and the dedup helpers."""
+        conn = pending_articles_repo._connect()
+        conn.execute("INSERT OR REPLACE INTO bot_state (key, value) VALUES (?, ?)",
+                     ('hold_cap_last_pinged_at', 'not-a-timestamp'))
+        conn.commit()
+        conn.close()
+        self.assertFalse(pending_articles_repo.is_hold_cap_ping_rate_limited(6))
