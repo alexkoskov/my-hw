@@ -27,6 +27,11 @@ DEPLOY_PATH="${DEPLOY_PATH:-/home/user/bot}"
 #   - INVARIANT: any new first-party import added to news_bot.py MUST be
 #     mirrored into FILES here AND in .github/workflows/deploy.yml. Otherwise
 #     the server will hit ImportError on the next tick with no CI signal.
+#   - Ahead of its importer: feature_flags.py is listed although nothing in
+#     the runtime closure imports it YET — t_hunted_source picks it up in
+#     Task 7 of source-formatting-parity. Shipped with the module rather than
+#     "later" because this exact class of omission once cost 38 consecutive
+#     ModuleNotFoundError crashes (work/completed/t-hunted-pt-source).
 #   - Operator's Claude Code session only (NOT deployed): hw_review.py and
 #     preview_renderer.py — the manual-review-workflow CLI tools the operator
 #     runs locally to approve/publish queued articles. They don't run on the
@@ -58,6 +63,7 @@ FILES=(
     "outage_state.py"
     "admin_alerts.py"
     "boilerplate_filter.py"
+    "feature_flags.py"
     "model_extractor.py"
     "backfill_fingerprints.py"
     "watchdog.sh"

@@ -14,6 +14,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 import httpx  # noqa: E402 — transitive dep of openai, used to build real SDK errors
 import openai  # noqa: E402
+import _llm_common  # noqa: E402
 import openai_transcreation  # noqa: E402
 from _llm_common import ClaudeOutageError, ClaudeTranscreationError  # noqa: E402
 
@@ -254,6 +255,39 @@ class TestEmojiSafetyNet(unittest.TestCase):
     def test_missing_emoji_added_by_keyword(self):
         result = openai_transcreation._apply_emoji_safety_net("Гонки на скорости")
         self.assertTrue(result.startswith("🏎️"))
+
+
+class TestVariantBPlus(unittest.TestCase):
+    """Second-pass block-string translation. Duplicated per engine on
+    purpose: ``_translate_block_strings`` is physically copied into all
+    four modules, so a test against one proves nothing about the other
+    three — that is exactly how the gemini classifier bug survived."""
+
+    def test_list_item_text_skipped_by_second_pass(self):
+        """``list_item`` text is already RU (the SHARED tuple lists it, so
+        ``_patch_text_with_ru_paragraphs`` fills it), so the second pass
+        must skip it instead of re-translating RU→RU."""
+        blocks = [
+            {"type": "list_item", "text": "Уже переведённый пункт списка."},
+            {"type": "image", "src": "https://x/a.jpg", "caption": "EN cap"},
+        ]
+        translations_json = json.dumps({"translations": ["RU cap"]})
+        client = _make_client_returning(_make_response(translations_json))
+        out = openai_transcreation._translate_block_strings(blocks, client, "m")
+        self.assertEqual(out[0]["text"], "Уже переведённый пункт списка.")
+        self.assertEqual(out[1]["caption"], "RU cap")
+        called = client.chat.completions.create.call_args.kwargs
+        user_msg = called["messages"][1]["content"]
+        self.assertIn("EN cap", user_msg)
+        self.assertNotIn("Уже переведённый пункт списка.", user_msg)
+
+    def test_patched_types_include_list_item_and_match_shared(self):
+        """Anti-drift guard: compare the whole tuple with the shared one,
+        so a type added to ``_llm_common`` and forgotten here also fails."""
+        self.assertEqual(
+            openai_transcreation._PATCHED_TEXT_BLOCK_TYPES,
+            _llm_common._PATCHED_TEXT_BLOCK_TYPES,
+        )
 
 
 if __name__ == "__main__":

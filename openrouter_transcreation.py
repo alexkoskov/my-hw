@@ -213,11 +213,15 @@ _BLOCK_TRANSLATE_SYSTEM = (
 )
 
 #: Block types whose ``text`` field is filled in by
-#: ``_patch_text_with_ru_paragraphs`` from the main response. The
-#: second-pass translator skips the ``text`` of these types to avoid
-#: re-translating already-RU paragraphs (one wasted API call per long
-#: article).
-_PATCHED_TEXT_BLOCK_TYPES = ("lead", "paragraph", "heading")
+#: ``_patch_text_with_ru_paragraphs`` from the main response — ``lead``,
+#: ``paragraph``, ``heading`` and ``list_item``. The second-pass
+#: translator skips the ``text`` of these types to avoid re-translating
+#: already-RU paragraphs (one wasted API call per long article).
+#: Must stay EQUAL to ``_llm_common._PATCHED_TEXT_BLOCK_TYPES``: the patch
+#: helper works off the shared tuple, so a type present there and missing
+#: here is filled in RU and then sent out for translation again. Pinned by
+#: an anti-drift test in each of the four engines' test files.
+_PATCHED_TEXT_BLOCK_TYPES = ("lead", "paragraph", "heading", "list_item")
 
 
 def _translate_block_strings(
@@ -237,8 +241,8 @@ def _translate_block_strings(
     translations back, preserving block structure (``src`` URLs etc.).
 
     ``skip_patched_text=True`` (default in the variant-B+ flow) skips the
-    ``text`` field on ``lead`` / ``paragraph`` / ``heading`` blocks because
-    those are already filled in with RU strings by
+    ``text`` field on ``lead`` / ``paragraph`` / ``heading`` / ``list_item``
+    blocks because those are already filled in with RU strings by
     ``_patch_text_with_ru_paragraphs``; without the skip we'd ask the
     model to "translate" already-RU text, wasting tokens. Tests that
     call this helper directly (without a prior patch) should pass

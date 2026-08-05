@@ -130,7 +130,7 @@ _BLOCK_TRANSLATE_SYSTEM = (
     "count and order as the input."
 )
 
-_PATCHED_TEXT_BLOCK_TYPES = ("lead", "paragraph", "heading")
+_PATCHED_TEXT_BLOCK_TYPES = ("lead", "paragraph", "heading", "list_item")
 
 
 def _translate_block_strings(

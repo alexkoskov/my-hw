@@ -132,6 +132,29 @@ def test_every_runtime_module_is_in_every_manifest():
         )
 
 
+def test_feature_flags_is_in_every_manifest():
+    """Addressed check, on purpose — the derived test above does NOT cover
+    ``feature_flags.py`` yet.
+
+    Nothing in news_bot's import closure imports it until Task 7 of
+    source-formatting-parity wires it into ``t_hunted_source`` (which IS in
+    the closure, pinned by ``test_closure_covers_the_known_runtime_modules``).
+    Until then the entry rests solely on
+    ``test_all_three_manifests_are_identical`` — and that one catches only
+    DIVERGENCE between manifests: forgetting the module in all three at once
+    slips through.
+
+    After Task 7 this becomes a duplicate safety net. Leave it: an explicit
+    check costs nothing and survives the module being unwired again.
+    """
+    for name, path in DEPLOY_FILES.items():
+        entries = _parse_files_array(path)
+        assert "feature_flags.py" in entries, (
+            f"feature_flags.py missing from {name} FILES — the source-formatting "
+            "kill switch would not reach the server."
+        )
+
+
 def test_closure_covers_the_known_runtime_modules():
     """Guard the guard: if the AST walk silently stopped finding imports, the
     test above would pass vacuously. Pin a few modules that must always be in the

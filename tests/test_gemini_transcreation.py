@@ -13,6 +13,7 @@ from unittest.mock import MagicMock, patch
 # Add repo root to path
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
+import _llm_common  # noqa: E402
 import gemini_transcreation  # noqa: E402
 from _llm_common import ClaudeOutageError, ClaudeTranscreationError  # noqa: E402
 from google.genai import errors as genai_errors  # noqa: E402
@@ -384,6 +385,38 @@ class TestLLMTranscreationDispatcher(unittest.TestCase):
         self.assertIs(openai_transcreation.ClaudeOutageError, CommonOutage)
         self.assertIs(openrouter_transcreation.ClaudeOutageError, CommonOutage)
         self.assertIs(llm_transcreation.ClaudeOutageError, CommonOutage)
+
+
+class TestVariantBPlus(unittest.TestCase):
+    """Second-pass block-string translation. Duplicated per engine on
+    purpose: ``_translate_block_strings`` is physically copied into all
+    four modules, so a test against one proves nothing about the other
+    three — that is exactly how the gemini classifier bug survived."""
+
+    def test_list_item_text_skipped_by_second_pass(self):
+        """``list_item`` text is already RU (the SHARED tuple lists it, so
+        ``_patch_text_with_ru_paragraphs`` fills it), so the second pass
+        must skip it instead of re-translating RU→RU."""
+        blocks = [
+            {"type": "list_item", "text": "Уже переведённый пункт списка."},
+            {"type": "image", "src": "https://x/a.jpg", "caption": "EN cap"},
+        ]
+        translations_json = json.dumps({"translations": ["RU cap"]})
+        client = _make_client_returning(_make_response(translations_json))
+        out = gemini_transcreation._translate_block_strings(blocks, client, "m")
+        self.assertEqual(out[0]["text"], "Уже переведённый пункт списка.")
+        self.assertEqual(out[1]["caption"], "RU cap")
+        contents = client.models.generate_content.call_args.kwargs["contents"]
+        self.assertIn("EN cap", contents)
+        self.assertNotIn("Уже переведённый пункт списка.", contents)
+
+    def test_patched_types_include_list_item_and_match_shared(self):
+        """Anti-drift guard: compare the whole tuple with the shared one,
+        so a type added to ``_llm_common`` and forgotten here also fails."""
+        self.assertEqual(
+            gemini_transcreation._PATCHED_TEXT_BLOCK_TYPES,
+            _llm_common._PATCHED_TEXT_BLOCK_TYPES,
+        )
 
 
 if __name__ == "__main__":

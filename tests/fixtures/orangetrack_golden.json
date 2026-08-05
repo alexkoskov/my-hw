@@ -1,0 +1,1919 @@
+{
+  "__README__": "GOLDEN BASELINE — DO NOT EDIT BY HAND. Generated once on unmodified code (Task 1 of source-formatting-parity). Editing this file IS the gate failure. orangetrack output may change only as a separately reviewed diff under the operator's AC9/AC10 condition: FEWER images and nothing else.",
+  "fixtures": {
+    "affiliate-paragraph": {
+      "parsed": {
+        "blocks": [
+          {
+            "runs": [
+              {
+                "text": "The first lead paragraph."
+              }
+            ],
+            "text": "The first lead paragraph.",
+            "type": "paragraph"
+          },
+          {
+            "runs": [
+              {
+                "text": "The body paragraph mentions you might want to buy this on launch day."
+              }
+            ],
+            "text": "The body paragraph mentions you might want to buy this on launch day.",
+            "type": "paragraph"
+          }
+        ],
+        "images": [],
+        "paragraphs": [
+          "The first lead paragraph.",
+          "The body paragraph mentions you might want to buy this on launch day."
+        ],
+        "subtitle": "",
+        "title": ""
+      },
+      "preview_nodes": [
+        {
+          "children": [
+            "The first lead paragraph."
+          ],
+          "tag": "p"
+        },
+        {
+          "children": [
+            "The body paragraph mentions you might want to buy this on launch day."
+          ],
+          "tag": "p"
+        },
+        {
+          "children": [
+            "Источник: ",
+            {
+              "attrs": {
+                "href": "https://orangetrackdiecast.com/post-x"
+              },
+              "children": [
+                "https://orangetrackdiecast.com/post-x"
+              ],
+              "tag": "a"
+            }
+          ],
+          "tag": "p"
+        }
+      ],
+      "summary": {
+        "blocks_by_type": {
+          "paragraph": 2
+        },
+        "blocks_total": 2,
+        "images_flat": 0,
+        "paragraphs_flat": 2,
+        "preview_figure_nodes": 0,
+        "preview_img_nodes": 0
+      }
+    },
+    "bad-schemes": {
+      "parsed": {
+        "blocks": [
+          {
+            "runs": [
+              {
+                "text": "Click here for details."
+              }
+            ],
+            "text": "Click here for details.",
+            "type": "paragraph"
+          },
+          {
+            "runs": [
+              {
+                "text": "Or visit our site for more."
+              }
+            ],
+            "text": "Or visit our site for more.",
+            "type": "paragraph"
+          },
+          {
+            "src": "https://orangetrackdiecast.com/wp-content/uploads/safe.jpg",
+            "type": "image"
+          }
+        ],
+        "images": [
+          "https://orangetrackdiecast.com/wp-content/uploads/safe.jpg"
+        ],
+        "paragraphs": [
+          "Click here for details.",
+          "Or visit our site for more."
+        ],
+        "subtitle": "",
+        "title": ""
+      },
+      "preview_nodes": [
+        {
+          "children": [
+            {
+              "attrs": {
+                "src": "https://orangetrackdiecast.com/wp-content/uploads/safe.jpg"
+              },
+              "tag": "img"
+            }
+          ],
+          "tag": "figure"
+        },
+        {
+          "children": [
+            "Click here for details."
+          ],
+          "tag": "p"
+        },
+        {
+          "children": [
+            "Or visit our site for more."
+          ],
+          "tag": "p"
+        },
+        {
+          "children": [
+            "Источник: ",
+            {
+              "attrs": {
+                "href": "https://orangetrackdiecast.com/post-x"
+              },
+              "children": [
+                "https://orangetrackdiecast.com/post-x"
+              ],
+              "tag": "a"
+            }
+          ],
+          "tag": "p"
+        }
+      ],
+      "summary": {
+        "blocks_by_type": {
+          "image": 1,
+          "paragraph": 2
+        },
+        "blocks_total": 3,
+        "images_flat": 1,
+        "paragraphs_flat": 2,
+        "preview_figure_nodes": 1,
+        "preview_img_nodes": 1
+      }
+    },
+    "br-split": {
+      "parsed": {
+        "blocks": [
+          {
+            "runs": [
+              {
+                "text": "#151 – "
+              },
+              {
+                "formats": [
+                  "bold"
+                ],
+                "text": "’15 Toyota Alphard"
+              }
+            ],
+            "text": "#151 – ’15 Toyota Alphard",
+            "type": "paragraph"
+          },
+          {
+            "runs": [
+              {
+                "text": "#152 – "
+              },
+              {
+                "formats": [
+                  "bold"
+                ],
+                "text": "Koenigsegg CC850"
+              }
+            ],
+            "text": "#152 – Koenigsegg CC850",
+            "type": "paragraph"
+          },
+          {
+            "runs": [
+              {
+                "text": "#153 – "
+              },
+              {
+                "formats": [
+                  "bold"
+                ],
+                "text": "Datsun King Cab Baja Custom"
+              }
+            ],
+            "text": "#153 – Datsun King Cab Baja Custom",
+            "type": "paragraph"
+          }
+        ],
+        "images": [],
+        "paragraphs": [
+          "#151 – ’15 Toyota Alphard",
+          "#152 – Koenigsegg CC850",
+          "#153 – Datsun King Cab Baja Custom"
+        ],
+        "subtitle": "",
+        "title": ""
+      },
+      "preview_nodes": [
+        {
+          "children": [
+            "#151 – ",
+            {
+              "children": [
+                "’15 Toyota Alphard"
+              ],
+              "tag": "strong"
+            }
+          ],
+          "tag": "p"
+        },
+        {
+          "children": [
+            "#152 – ",
+            {
+              "children": [
+                "Koenigsegg CC850"
+              ],
+              "tag": "strong"
+            }
+          ],
+          "tag": "p"
+        },
+        {
+          "children": [
+            "#153 – ",
+            {
+              "children": [
+                "Datsun King Cab Baja Custom"
+              ],
+              "tag": "strong"
+            }
+          ],
+          "tag": "p"
+        },
+        {
+          "children": [
+            "Источник: ",
+            {
+              "attrs": {
+                "href": "https://orangetrackdiecast.com/post-x"
+              },
+              "children": [
+                "https://orangetrackdiecast.com/post-x"
+              ],
+              "tag": "a"
+            }
+          ],
+          "tag": "p"
+        }
+      ],
+      "summary": {
+        "blocks_by_type": {
+          "paragraph": 3
+        },
+        "blocks_total": 3,
+        "images_flat": 0,
+        "paragraphs_flat": 3,
+        "preview_figure_nodes": 0,
+        "preview_img_nodes": 0
+      }
+    },
+    "empty-body": {
+      "parsed": null,
+      "preview_nodes": null,
+      "summary": null
+    },
+    "gallery-20-images": {
+      "parsed": {
+        "blocks": [
+          {
+            "runs": [
+              {
+                "text": "Lead."
+              }
+            ],
+            "text": "Lead.",
+            "type": "paragraph"
+          },
+          {
+            "src": "https://orangetrackdiecast.com/wp-content/uploads/x0.jpg",
+            "type": "image"
+          },
+          {
+            "src": "https://orangetrackdiecast.com/wp-content/uploads/x1.jpg",
+            "type": "image"
+          },
+          {
+            "src": "https://orangetrackdiecast.com/wp-content/uploads/x2.jpg",
+            "type": "image"
+          },
+          {
+            "src": "https://orangetrackdiecast.com/wp-content/uploads/x3.jpg",
+            "type": "image"
+          },
+          {
+            "src": "https://orangetrackdiecast.com/wp-content/uploads/x4.jpg",
+            "type": "image"
+          },
+          {
+            "src": "https://orangetrackdiecast.com/wp-content/uploads/x5.jpg",
+            "type": "image"
+          },
+          {
+            "src": "https://orangetrackdiecast.com/wp-content/uploads/x6.jpg",
+            "type": "image"
+          },
+          {
+            "src": "https://orangetrackdiecast.com/wp-content/uploads/x7.jpg",
+            "type": "image"
+          },
+          {
+            "src": "https://orangetrackdiecast.com/wp-content/uploads/x8.jpg",
+            "type": "image"
+          },
+          {
+            "src": "https://orangetrackdiecast.com/wp-content/uploads/x9.jpg",
+            "type": "image"
+          },
+          {
+            "src": "https://orangetrackdiecast.com/wp-content/uploads/x10.jpg",
+            "type": "image"
+          },
+          {
+            "src": "https://orangetrackdiecast.com/wp-content/uploads/x11.jpg",
+            "type": "image"
+          },
+          {
+            "src": "https://orangetrackdiecast.com/wp-content/uploads/x12.jpg",
+            "type": "image"
+          },
+          {
+            "src": "https://orangetrackdiecast.com/wp-content/uploads/x13.jpg",
+            "type": "image"
+          },
+          {
+            "src": "https://orangetrackdiecast.com/wp-content/uploads/x14.jpg",
+            "type": "image"
+          },
+          {
+            "src": "https://orangetrackdiecast.com/wp-content/uploads/x15.jpg",
+            "type": "image"
+          },
+          {
+            "src": "https://orangetrackdiecast.com/wp-content/uploads/x16.jpg",
+            "type": "image"
+          },
+          {
+            "src": "https://orangetrackdiecast.com/wp-content/uploads/x17.jpg",
+            "type": "image"
+          },
+          {
+            "src": "https://orangetrackdiecast.com/wp-content/uploads/x18.jpg",
+            "type": "image"
+          },
+          {
+            "src": "https://orangetrackdiecast.com/wp-content/uploads/x19.jpg",
+            "type": "image"
+          }
+        ],
+        "images": [
+          "https://orangetrackdiecast.com/wp-content/uploads/x0.jpg",
+          "https://orangetrackdiecast.com/wp-content/uploads/x1.jpg",
+          "https://orangetrackdiecast.com/wp-content/uploads/x2.jpg",
+          "https://orangetrackdiecast.com/wp-content/uploads/x3.jpg",
+          "https://orangetrackdiecast.com/wp-content/uploads/x4.jpg",
+          "https://orangetrackdiecast.com/wp-content/uploads/x5.jpg",
+          "https://orangetrackdiecast.com/wp-content/uploads/x6.jpg",
+          "https://orangetrackdiecast.com/wp-content/uploads/x7.jpg",
+          "https://orangetrackdiecast.com/wp-content/uploads/x8.jpg",
+          "https://orangetrackdiecast.com/wp-content/uploads/x9.jpg"
+        ],
+        "paragraphs": [
+          "Lead."
+        ],
+        "subtitle": "",
+        "title": ""
+      },
+      "preview_nodes": [
+        {
+          "children": [
+            {
+              "attrs": {
+                "src": "https://orangetrackdiecast.com/wp-content/uploads/x0.jpg"
+              },
+              "tag": "img"
+            }
+          ],
+          "tag": "figure"
+        },
+        {
+          "children": [
+            "Lead."
+          ],
+          "tag": "p"
+        },
+        {
+          "children": [
+            {
+              "attrs": {
+                "src": "https://orangetrackdiecast.com/wp-content/uploads/x1.jpg"
+              },
+              "tag": "img"
+            }
+          ],
+          "tag": "figure"
+        },
+        {
+          "children": [
+            {
+              "attrs": {
+                "src": "https://orangetrackdiecast.com/wp-content/uploads/x2.jpg"
+              },
+              "tag": "img"
+            }
+          ],
+          "tag": "figure"
+        },
+        {
+          "children": [
+            {
+              "attrs": {
+                "src": "https://orangetrackdiecast.com/wp-content/uploads/x3.jpg"
+              },
+              "tag": "img"
+            }
+          ],
+          "tag": "figure"
+        },
+        {
+          "children": [
+            {
+              "attrs": {
+                "src": "https://orangetrackdiecast.com/wp-content/uploads/x4.jpg"
+              },
+              "tag": "img"
+            }
+          ],
+          "tag": "figure"
+        },
+        {
+          "children": [
+            {
+              "attrs": {
+                "src": "https://orangetrackdiecast.com/wp-content/uploads/x5.jpg"
+              },
+              "tag": "img"
+            }
+          ],
+          "tag": "figure"
+        },
+        {
+          "children": [
+            {
+              "attrs": {
+                "src": "https://orangetrackdiecast.com/wp-content/uploads/x6.jpg"
+              },
+              "tag": "img"
+            }
+          ],
+          "tag": "figure"
+        },
+        {
+          "children": [
+            {
+              "attrs": {
+                "src": "https://orangetrackdiecast.com/wp-content/uploads/x7.jpg"
+              },
+              "tag": "img"
+            }
+          ],
+          "tag": "figure"
+        },
+        {
+          "children": [
+            {
+              "attrs": {
+                "src": "https://orangetrackdiecast.com/wp-content/uploads/x8.jpg"
+              },
+              "tag": "img"
+            }
+          ],
+          "tag": "figure"
+        },
+        {
+          "children": [
+            {
+              "attrs": {
+                "src": "https://orangetrackdiecast.com/wp-content/uploads/x9.jpg"
+              },
+              "tag": "img"
+            }
+          ],
+          "tag": "figure"
+        },
+        {
+          "children": [
+            {
+              "attrs": {
+                "src": "https://orangetrackdiecast.com/wp-content/uploads/x10.jpg"
+              },
+              "tag": "img"
+            }
+          ],
+          "tag": "figure"
+        },
+        {
+          "children": [
+            {
+              "attrs": {
+                "src": "https://orangetrackdiecast.com/wp-content/uploads/x11.jpg"
+              },
+              "tag": "img"
+            }
+          ],
+          "tag": "figure"
+        },
+        {
+          "children": [
+            {
+              "attrs": {
+                "src": "https://orangetrackdiecast.com/wp-content/uploads/x12.jpg"
+              },
+              "tag": "img"
+            }
+          ],
+          "tag": "figure"
+        },
+        {
+          "children": [
+            {
+              "attrs": {
+                "src": "https://orangetrackdiecast.com/wp-content/uploads/x13.jpg"
+              },
+              "tag": "img"
+            }
+          ],
+          "tag": "figure"
+        },
+        {
+          "children": [
+            {
+              "attrs": {
+                "src": "https://orangetrackdiecast.com/wp-content/uploads/x14.jpg"
+              },
+              "tag": "img"
+            }
+          ],
+          "tag": "figure"
+        },
+        {
+          "children": [
+            {
+              "attrs": {
+                "src": "https://orangetrackdiecast.com/wp-content/uploads/x15.jpg"
+              },
+              "tag": "img"
+            }
+          ],
+          "tag": "figure"
+        },
+        {
+          "children": [
+            {
+              "attrs": {
+                "src": "https://orangetrackdiecast.com/wp-content/uploads/x16.jpg"
+              },
+              "tag": "img"
+            }
+          ],
+          "tag": "figure"
+        },
+        {
+          "children": [
+            {
+              "attrs": {
+                "src": "https://orangetrackdiecast.com/wp-content/uploads/x17.jpg"
+              },
+              "tag": "img"
+            }
+          ],
+          "tag": "figure"
+        },
+        {
+          "children": [
+            {
+              "attrs": {
+                "src": "https://orangetrackdiecast.com/wp-content/uploads/x18.jpg"
+              },
+              "tag": "img"
+            }
+          ],
+          "tag": "figure"
+        },
+        {
+          "children": [
+            {
+              "attrs": {
+                "src": "https://orangetrackdiecast.com/wp-content/uploads/x19.jpg"
+              },
+              "tag": "img"
+            }
+          ],
+          "tag": "figure"
+        },
+        {
+          "children": [
+            "Источник: ",
+            {
+              "attrs": {
+                "href": "https://orangetrackdiecast.com/post-x"
+              },
+              "children": [
+                "https://orangetrackdiecast.com/post-x"
+              ],
+              "tag": "a"
+            }
+          ],
+          "tag": "p"
+        }
+      ],
+      "summary": {
+        "blocks_by_type": {
+          "image": 20,
+          "paragraph": 1
+        },
+        "blocks_total": 21,
+        "images_flat": 10,
+        "paragraphs_flat": 1,
+        "preview_figure_nodes": 20,
+        "preview_img_nodes": 20
+      }
+    },
+    "gallery-dedup": {
+      "parsed": {
+        "blocks": [
+          {
+            "runs": [
+              {
+                "text": "Image gallery below."
+              }
+            ],
+            "text": "Image gallery below.",
+            "type": "paragraph"
+          },
+          {
+            "src": "https://orangetrackdiecast.com/wp-content/uploads/g1.jpg?w=300",
+            "type": "image"
+          },
+          {
+            "src": "https://orangetrackdiecast.com/wp-content/uploads/g2.jpg?w=600",
+            "type": "image"
+          },
+          {
+            "src": "https://orangetrackdiecast.com/wp-content/uploads/g3.jpg?w=1024",
+            "type": "image"
+          }
+        ],
+        "images": [
+          "https://orangetrackdiecast.com/wp-content/uploads/g1.jpg?w=300",
+          "https://orangetrackdiecast.com/wp-content/uploads/g2.jpg?w=600",
+          "https://orangetrackdiecast.com/wp-content/uploads/g3.jpg?w=1024"
+        ],
+        "paragraphs": [
+          "Image gallery below."
+        ],
+        "subtitle": "",
+        "title": ""
+      },
+      "preview_nodes": [
+        {
+          "children": [
+            {
+              "attrs": {
+                "src": "https://orangetrackdiecast.com/wp-content/uploads/g1.jpg?w=300"
+              },
+              "tag": "img"
+            }
+          ],
+          "tag": "figure"
+        },
+        {
+          "children": [
+            "Image gallery below."
+          ],
+          "tag": "p"
+        },
+        {
+          "children": [
+            {
+              "attrs": {
+                "src": "https://orangetrackdiecast.com/wp-content/uploads/g2.jpg?w=600"
+              },
+              "tag": "img"
+            }
+          ],
+          "tag": "figure"
+        },
+        {
+          "children": [
+            {
+              "attrs": {
+                "src": "https://orangetrackdiecast.com/wp-content/uploads/g3.jpg?w=1024"
+              },
+              "tag": "img"
+            }
+          ],
+          "tag": "figure"
+        },
+        {
+          "children": [
+            "Источник: ",
+            {
+              "attrs": {
+                "href": "https://orangetrackdiecast.com/post-x"
+              },
+              "children": [
+                "https://orangetrackdiecast.com/post-x"
+              ],
+              "tag": "a"
+            }
+          ],
+          "tag": "p"
+        }
+      ],
+      "summary": {
+        "blocks_by_type": {
+          "image": 3,
+          "paragraph": 1
+        },
+        "blocks_total": 4,
+        "images_flat": 3,
+        "paragraphs_flat": 1,
+        "preview_figure_nodes": 3,
+        "preview_img_nodes": 3
+      }
+    },
+    "heading-h1-h6-ignored": {
+      "parsed": {
+        "blocks": [
+          {
+            "runs": [
+              {
+                "text": "Body para."
+              }
+            ],
+            "text": "Body para.",
+            "type": "paragraph"
+          }
+        ],
+        "images": [],
+        "paragraphs": [
+          "Body para."
+        ],
+        "subtitle": "",
+        "title": "Title only"
+      },
+      "preview_nodes": [
+        {
+          "children": [
+            "Body para."
+          ],
+          "tag": "p"
+        },
+        {
+          "children": [
+            "Источник: ",
+            {
+              "attrs": {
+                "href": "https://orangetrackdiecast.com/post-x"
+              },
+              "children": [
+                "https://orangetrackdiecast.com/post-x"
+              ],
+              "tag": "a"
+            }
+          ],
+          "tag": "p"
+        }
+      ],
+      "summary": {
+        "blocks_by_type": {
+          "paragraph": 1
+        },
+        "blocks_total": 1,
+        "images_flat": 0,
+        "paragraphs_flat": 1,
+        "preview_figure_nodes": 0,
+        "preview_img_nodes": 0
+      }
+    },
+    "heading-h2": {
+      "parsed": {
+        "blocks": [
+          {
+            "level": 3,
+            "runs": [
+              {
+                "text": "Section title"
+              }
+            ],
+            "text": "Section title",
+            "type": "heading"
+          }
+        ],
+        "images": [],
+        "paragraphs": [
+          "Section title"
+        ],
+        "subtitle": "",
+        "title": ""
+      },
+      "preview_nodes": [
+        {
+          "children": [
+            "Section title"
+          ],
+          "tag": "h3"
+        },
+        {
+          "children": [
+            "Источник: ",
+            {
+              "attrs": {
+                "href": "https://orangetrackdiecast.com/post-x"
+              },
+              "children": [
+                "https://orangetrackdiecast.com/post-x"
+              ],
+              "tag": "a"
+            }
+          ],
+          "tag": "p"
+        }
+      ],
+      "summary": {
+        "blocks_by_type": {
+          "heading": 1
+        },
+        "blocks_total": 1,
+        "images_flat": 0,
+        "paragraphs_flat": 1,
+        "preview_figure_nodes": 0,
+        "preview_img_nodes": 0
+      }
+    },
+    "heading-h3": {
+      "parsed": {
+        "blocks": [
+          {
+            "level": 3,
+            "runs": [
+              {
+                "text": "Section title"
+              }
+            ],
+            "text": "Section title",
+            "type": "heading"
+          }
+        ],
+        "images": [],
+        "paragraphs": [
+          "Section title"
+        ],
+        "subtitle": "",
+        "title": ""
+      },
+      "preview_nodes": [
+        {
+          "children": [
+            "Section title"
+          ],
+          "tag": "h3"
+        },
+        {
+          "children": [
+            "Источник: ",
+            {
+              "attrs": {
+                "href": "https://orangetrackdiecast.com/post-x"
+              },
+              "children": [
+                "https://orangetrackdiecast.com/post-x"
+              ],
+              "tag": "a"
+            }
+          ],
+          "tag": "p"
+        }
+      ],
+      "summary": {
+        "blocks_by_type": {
+          "heading": 1
+        },
+        "blocks_total": 1,
+        "images_flat": 0,
+        "paragraphs_flat": 1,
+        "preview_figure_nodes": 0,
+        "preview_img_nodes": 0
+      }
+    },
+    "heading-h4": {
+      "parsed": {
+        "blocks": [
+          {
+            "level": 3,
+            "runs": [
+              {
+                "text": "Section title"
+              }
+            ],
+            "text": "Section title",
+            "type": "heading"
+          }
+        ],
+        "images": [],
+        "paragraphs": [
+          "Section title"
+        ],
+        "subtitle": "",
+        "title": ""
+      },
+      "preview_nodes": [
+        {
+          "children": [
+            "Section title"
+          ],
+          "tag": "h3"
+        },
+        {
+          "children": [
+            "Источник: ",
+            {
+              "attrs": {
+                "href": "https://orangetrackdiecast.com/post-x"
+              },
+              "children": [
+                "https://orangetrackdiecast.com/post-x"
+              ],
+              "tag": "a"
+            }
+          ],
+          "tag": "p"
+        }
+      ],
+      "summary": {
+        "blocks_by_type": {
+          "heading": 1
+        },
+        "blocks_total": 1,
+        "images_flat": 0,
+        "paragraphs_flat": 1,
+        "preview_figure_nodes": 0,
+        "preview_img_nodes": 0
+      }
+    },
+    "heading-h5-stays-paragraph": {
+      "parsed": {
+        "blocks": [
+          {
+            "runs": [
+              {
+                "text": "Section"
+              }
+            ],
+            "text": "Section",
+            "type": "paragraph"
+          }
+        ],
+        "images": [],
+        "paragraphs": [
+          "Section"
+        ],
+        "subtitle": "",
+        "title": ""
+      },
+      "preview_nodes": [
+        {
+          "children": [
+            "Section"
+          ],
+          "tag": "p"
+        },
+        {
+          "children": [
+            "Источник: ",
+            {
+              "attrs": {
+                "href": "https://orangetrackdiecast.com/post-x"
+              },
+              "children": [
+                "https://orangetrackdiecast.com/post-x"
+              ],
+              "tag": "a"
+            }
+          ],
+          "tag": "p"
+        }
+      ],
+      "summary": {
+        "blocks_by_type": {
+          "paragraph": 1
+        },
+        "blocks_total": 1,
+        "images_flat": 0,
+        "paragraphs_flat": 1,
+        "preview_figure_nodes": 0,
+        "preview_img_nodes": 0
+      }
+    },
+    "list-item-empty": {
+      "parsed": null,
+      "preview_nodes": null,
+      "summary": null
+    },
+    "list-item-with-link": {
+      "parsed": {
+        "blocks": [
+          {
+            "runs": [
+              {
+                "href": "https://orangetrackdiecast.com/x",
+                "text": "Mercedes"
+              }
+            ],
+            "text": "Mercedes",
+            "type": "list_item"
+          }
+        ],
+        "images": [],
+        "paragraphs": [
+          "Mercedes"
+        ],
+        "subtitle": "",
+        "title": ""
+      },
+      "preview_nodes": [
+        {
+          "children": [
+            "• ",
+            "Mercedes"
+          ],
+          "tag": "p"
+        },
+        {
+          "children": [
+            "Источник: ",
+            {
+              "attrs": {
+                "href": "https://orangetrackdiecast.com/post-x"
+              },
+              "children": [
+                "https://orangetrackdiecast.com/post-x"
+              ],
+              "tag": "a"
+            }
+          ],
+          "tag": "p"
+        }
+      ],
+      "summary": {
+        "blocks_by_type": {
+          "list_item": 1
+        },
+        "blocks_total": 1,
+        "images_flat": 0,
+        "paragraphs_flat": 1,
+        "preview_figure_nodes": 0,
+        "preview_img_nodes": 0
+      }
+    },
+    "list-item-with-strong": {
+      "parsed": {
+        "blocks": [
+          {
+            "runs": [
+              {
+                "formats": [
+                  "bold"
+                ],
+                "text": "X"
+              }
+            ],
+            "text": "X",
+            "type": "list_item"
+          }
+        ],
+        "images": [],
+        "paragraphs": [
+          "X"
+        ],
+        "subtitle": "",
+        "title": ""
+      },
+      "preview_nodes": [
+        {
+          "children": [
+            "• ",
+            {
+              "children": [
+                "X"
+              ],
+              "tag": "strong"
+            }
+          ],
+          "tag": "p"
+        },
+        {
+          "children": [
+            "Источник: ",
+            {
+              "attrs": {
+                "href": "https://orangetrackdiecast.com/post-x"
+              },
+              "children": [
+                "https://orangetrackdiecast.com/post-x"
+              ],
+              "tag": "a"
+            }
+          ],
+          "tag": "p"
+        }
+      ],
+      "summary": {
+        "blocks_by_type": {
+          "list_item": 1
+        },
+        "blocks_total": 1,
+        "images_flat": 0,
+        "paragraphs_flat": 1,
+        "preview_figure_nodes": 0,
+        "preview_img_nodes": 0
+      }
+    },
+    "list-mixed-with-paragraphs": {
+      "parsed": {
+        "blocks": [
+          {
+            "runs": [
+              {
+                "text": "Lead paragraph text."
+              }
+            ],
+            "text": "Lead paragraph text.",
+            "type": "paragraph"
+          },
+          {
+            "runs": [
+              {
+                "text": "First item"
+              }
+            ],
+            "text": "First item",
+            "type": "list_item"
+          },
+          {
+            "runs": [
+              {
+                "text": "Second item"
+              }
+            ],
+            "text": "Second item",
+            "type": "list_item"
+          },
+          {
+            "runs": [
+              {
+                "text": "Trailing paragraph."
+              }
+            ],
+            "text": "Trailing paragraph.",
+            "type": "paragraph"
+          }
+        ],
+        "images": [],
+        "paragraphs": [
+          "Lead paragraph text.",
+          "First item",
+          "Second item",
+          "Trailing paragraph."
+        ],
+        "subtitle": "",
+        "title": ""
+      },
+      "preview_nodes": [
+        {
+          "children": [
+            "Lead paragraph text."
+          ],
+          "tag": "p"
+        },
+        {
+          "children": [
+            "• ",
+            "First item"
+          ],
+          "tag": "p"
+        },
+        {
+          "children": [
+            "• ",
+            "Second item"
+          ],
+          "tag": "p"
+        },
+        {
+          "children": [
+            "Trailing paragraph."
+          ],
+          "tag": "p"
+        },
+        {
+          "children": [
+            "Источник: ",
+            {
+              "attrs": {
+                "href": "https://orangetrackdiecast.com/post-x"
+              },
+              "children": [
+                "https://orangetrackdiecast.com/post-x"
+              ],
+              "tag": "a"
+            }
+          ],
+          "tag": "p"
+        }
+      ],
+      "summary": {
+        "blocks_by_type": {
+          "list_item": 2,
+          "paragraph": 2
+        },
+        "blocks_total": 4,
+        "images_flat": 0,
+        "paragraphs_flat": 4,
+        "preview_figure_nodes": 0,
+        "preview_img_nodes": 0
+      }
+    },
+    "list-ol": {
+      "parsed": {
+        "blocks": [
+          {
+            "runs": [
+              {
+                "text": "Ferrari Testarossa"
+              }
+            ],
+            "text": "Ferrari Testarossa",
+            "type": "list_item"
+          }
+        ],
+        "images": [],
+        "paragraphs": [
+          "Ferrari Testarossa"
+        ],
+        "subtitle": "",
+        "title": ""
+      },
+      "preview_nodes": [
+        {
+          "children": [
+            "• ",
+            "Ferrari Testarossa"
+          ],
+          "tag": "p"
+        },
+        {
+          "children": [
+            "Источник: ",
+            {
+              "attrs": {
+                "href": "https://orangetrackdiecast.com/post-x"
+              },
+              "children": [
+                "https://orangetrackdiecast.com/post-x"
+              ],
+              "tag": "a"
+            }
+          ],
+          "tag": "p"
+        }
+      ],
+      "summary": {
+        "blocks_by_type": {
+          "list_item": 1
+        },
+        "blocks_total": 1,
+        "images_flat": 0,
+        "paragraphs_flat": 1,
+        "preview_figure_nodes": 0,
+        "preview_img_nodes": 0
+      }
+    },
+    "list-ul": {
+      "parsed": {
+        "blocks": [
+          {
+            "runs": [
+              {
+                "text": "Ferrari Testarossa"
+              }
+            ],
+            "text": "Ferrari Testarossa",
+            "type": "list_item"
+          }
+        ],
+        "images": [],
+        "paragraphs": [
+          "Ferrari Testarossa"
+        ],
+        "subtitle": "",
+        "title": ""
+      },
+      "preview_nodes": [
+        {
+          "children": [
+            "• ",
+            "Ferrari Testarossa"
+          ],
+          "tag": "p"
+        },
+        {
+          "children": [
+            "Источник: ",
+            {
+              "attrs": {
+                "href": "https://orangetrackdiecast.com/post-x"
+              },
+              "children": [
+                "https://orangetrackdiecast.com/post-x"
+              ],
+              "tag": "a"
+            }
+          ],
+          "tag": "p"
+        }
+      ],
+      "summary": {
+        "blocks_by_type": {
+          "list_item": 1
+        },
+        "blocks_total": 1,
+        "images_flat": 0,
+        "paragraphs_flat": 1,
+        "preview_figure_nodes": 0,
+        "preview_img_nodes": 0
+      }
+    },
+    "multiple-iframes": {
+      "parsed": {
+        "blocks": [
+          {
+            "runs": [
+              {
+                "text": "Watch:"
+              }
+            ],
+            "text": "Watch:",
+            "type": "paragraph"
+          },
+          {
+            "src": "https://telegra.ph/embed/youtube?url=https%3A%2F%2Fwww.youtube.com%2Fwatch%3Fv%3DA123abcXYZ",
+            "type": "video"
+          },
+          {
+            "src": "https://telegra.ph/embed/youtube?url=https%3A%2F%2Fwww.youtube.com%2Fwatch%3Fv%3DB456defABC",
+            "type": "video"
+          }
+        ],
+        "images": [],
+        "paragraphs": [
+          "Watch:"
+        ],
+        "subtitle": "",
+        "title": ""
+      },
+      "preview_nodes": [
+        {
+          "children": [
+            "Watch:"
+          ],
+          "tag": "p"
+        },
+        {
+          "attrs": {
+            "src": "https://telegra.ph/embed/youtube?url=https%3A%2F%2Fwww.youtube.com%2Fwatch%3Fv%3DA123abcXYZ"
+          },
+          "tag": "iframe"
+        },
+        {
+          "attrs": {
+            "src": "https://telegra.ph/embed/youtube?url=https%3A%2F%2Fwww.youtube.com%2Fwatch%3Fv%3DB456defABC"
+          },
+          "tag": "iframe"
+        },
+        {
+          "children": [
+            "Источник: ",
+            {
+              "attrs": {
+                "href": "https://orangetrackdiecast.com/post-x"
+              },
+              "children": [
+                "https://orangetrackdiecast.com/post-x"
+              ],
+              "tag": "a"
+            }
+          ],
+          "tag": "p"
+        }
+      ],
+      "summary": {
+        "blocks_by_type": {
+          "paragraph": 1,
+          "video": 2
+        },
+        "blocks_total": 3,
+        "images_flat": 0,
+        "paragraphs_flat": 1,
+        "preview_figure_nodes": 0,
+        "preview_img_nodes": 0
+      }
+    },
+    "non-ascii": {
+      "parsed": {
+        "blocks": [
+          {
+            "runs": [
+              {
+                "text": "Mañana — the new \"Honda NSX\" lands. It's a beauty."
+              }
+            ],
+            "text": "Mañana — the new \"Honda NSX\" lands. It's a beauty.",
+            "type": "paragraph"
+          }
+        ],
+        "images": [],
+        "paragraphs": [
+          "Mañana — the new \"Honda NSX\" lands. It's a beauty."
+        ],
+        "subtitle": "",
+        "title": ""
+      },
+      "preview_nodes": [
+        {
+          "children": [
+            "Mañana — the new \"Honda NSX\" lands. It's a beauty."
+          ],
+          "tag": "p"
+        },
+        {
+          "children": [
+            "Источник: ",
+            {
+              "attrs": {
+                "href": "https://orangetrackdiecast.com/post-x"
+              },
+              "children": [
+                "https://orangetrackdiecast.com/post-x"
+              ],
+              "tag": "a"
+            }
+          ],
+          "tag": "p"
+        }
+      ],
+      "summary": {
+        "blocks_by_type": {
+          "paragraph": 1
+        },
+        "blocks_total": 1,
+        "images_flat": 0,
+        "paragraphs_flat": 1,
+        "preview_figure_nodes": 0,
+        "preview_img_nodes": 0
+      }
+    },
+    "p-without-br": {
+      "parsed": {
+        "blocks": [
+          {
+            "runs": [
+              {
+                "text": "Just a regular paragraph with prose."
+              }
+            ],
+            "text": "Just a regular paragraph with prose.",
+            "type": "paragraph"
+          }
+        ],
+        "images": [],
+        "paragraphs": [
+          "Just a regular paragraph with prose."
+        ],
+        "subtitle": "",
+        "title": ""
+      },
+      "preview_nodes": [
+        {
+          "children": [
+            "Just a regular paragraph with prose."
+          ],
+          "tag": "p"
+        },
+        {
+          "children": [
+            "Источник: ",
+            {
+              "attrs": {
+                "href": "https://orangetrackdiecast.com/post-x"
+              },
+              "children": [
+                "https://orangetrackdiecast.com/post-x"
+              ],
+              "tag": "a"
+            }
+          ],
+          "tag": "p"
+        }
+      ],
+      "summary": {
+        "blocks_by_type": {
+          "paragraph": 1
+        },
+        "blocks_total": 1,
+        "images_flat": 0,
+        "paragraphs_flat": 1,
+        "preview_figure_nodes": 0,
+        "preview_img_nodes": 0
+      }
+    },
+    "standard-paragraphs-and-image": {
+      "parsed": {
+        "blocks": [
+          {
+            "runs": [
+              {
+                "text": "The first paragraph introduces the casting."
+              }
+            ],
+            "text": "The first paragraph introduces the casting.",
+            "type": "paragraph"
+          },
+          {
+            "runs": [
+              {
+                "text": "The second paragraph explains its rarity."
+              }
+            ],
+            "text": "The second paragraph explains its rarity.",
+            "type": "paragraph"
+          },
+          {
+            "caption": "An image caption",
+            "src": "https://orangetrackdiecast.com/wp-content/uploads/img1.jpg?w=1024",
+            "type": "image"
+          },
+          {
+            "runs": [
+              {
+                "text": "A third paragraph after the image. Read details at "
+              },
+              {
+                "href": "https://orangetrackdiecast.com/post-x",
+                "text": "this post"
+              },
+              {
+                "text": "."
+              }
+            ],
+            "text": "A third paragraph after the image. Read details at this post.",
+            "type": "paragraph"
+          }
+        ],
+        "images": [
+          "https://orangetrackdiecast.com/wp-content/uploads/img1.jpg?w=1024"
+        ],
+        "paragraphs": [
+          "The first paragraph introduces the casting.",
+          "The second paragraph explains its rarity.",
+          "A third paragraph after the image. Read details at this post."
+        ],
+        "subtitle": "",
+        "title": ""
+      },
+      "preview_nodes": [
+        {
+          "children": [
+            {
+              "attrs": {
+                "src": "https://orangetrackdiecast.com/wp-content/uploads/img1.jpg?w=1024"
+              },
+              "tag": "img"
+            },
+            {
+              "children": [
+                "An image caption"
+              ],
+              "tag": "figcaption"
+            }
+          ],
+          "tag": "figure"
+        },
+        {
+          "children": [
+            "The first paragraph introduces the casting."
+          ],
+          "tag": "p"
+        },
+        {
+          "children": [
+            "The second paragraph explains its rarity."
+          ],
+          "tag": "p"
+        },
+        {
+          "children": [
+            "A third paragraph after the image. Read details at this post."
+          ],
+          "tag": "p"
+        },
+        {
+          "children": [
+            "Источник: ",
+            {
+              "attrs": {
+                "href": "https://orangetrackdiecast.com/post-x"
+              },
+              "children": [
+                "https://orangetrackdiecast.com/post-x"
+              ],
+              "tag": "a"
+            }
+          ],
+          "tag": "p"
+        }
+      ],
+      "summary": {
+        "blocks_by_type": {
+          "image": 1,
+          "paragraph": 3
+        },
+        "blocks_total": 4,
+        "images_flat": 1,
+        "paragraphs_flat": 3,
+        "preview_figure_nodes": 1,
+        "preview_img_nodes": 1
+      }
+    },
+    "video-only": {
+      "parsed": {
+        "blocks": [
+          {
+            "src": "https://telegra.ph/embed/youtube?url=https%3A%2F%2Fwww.youtube.com%2Fwatch%3Fv%3Dabc123XYZ",
+            "type": "video"
+          }
+        ],
+        "images": [],
+        "paragraphs": [],
+        "subtitle": "",
+        "title": ""
+      },
+      "preview_nodes": [
+        {
+          "attrs": {
+            "src": "https://telegra.ph/embed/youtube?url=https%3A%2F%2Fwww.youtube.com%2Fwatch%3Fv%3Dabc123XYZ"
+          },
+          "tag": "iframe"
+        },
+        {
+          "children": [
+            "Источник: ",
+            {
+              "attrs": {
+                "href": "https://orangetrackdiecast.com/post-x"
+              },
+              "children": [
+                "https://orangetrackdiecast.com/post-x"
+              ],
+              "tag": "a"
+            }
+          ],
+          "tag": "p"
+        }
+      ],
+      "summary": {
+        "blocks_by_type": {
+          "video": 1
+        },
+        "blocks_total": 1,
+        "images_flat": 0,
+        "paragraphs_flat": 0,
+        "preview_figure_nodes": 0,
+        "preview_img_nodes": 0
+      }
+    },
+    "with-h5": {
+      "parsed": {
+        "blocks": [
+          {
+            "runs": [
+              {
+                "text": "The intro paragraph."
+              }
+            ],
+            "text": "The intro paragraph.",
+            "type": "paragraph"
+          },
+          {
+            "runs": [
+              {
+                "text": "Case A: 1995 Honda NSX"
+              }
+            ],
+            "text": "Case A: 1995 Honda NSX",
+            "type": "paragraph"
+          },
+          {
+            "runs": [
+              {
+                "text": "Details about the case A casting."
+              }
+            ],
+            "text": "Details about the case A casting.",
+            "type": "paragraph"
+          },
+          {
+            "runs": [
+              {
+                "text": "Case B: 1969 Dodge Charger"
+              }
+            ],
+            "text": "Case B: 1969 Dodge Charger",
+            "type": "paragraph"
+          },
+          {
+            "runs": [
+              {
+                "text": "Details about the case B casting."
+              }
+            ],
+            "text": "Details about the case B casting.",
+            "type": "paragraph"
+          }
+        ],
+        "images": [],
+        "paragraphs": [
+          "The intro paragraph.",
+          "Case A: 1995 Honda NSX",
+          "Details about the case A casting.",
+          "Case B: 1969 Dodge Charger",
+          "Details about the case B casting."
+        ],
+        "subtitle": "",
+        "title": ""
+      },
+      "preview_nodes": [
+        {
+          "children": [
+            "The intro paragraph."
+          ],
+          "tag": "p"
+        },
+        {
+          "children": [
+            "Case A: 1995 Honda NSX"
+          ],
+          "tag": "p"
+        },
+        {
+          "children": [
+            "Details about the case A casting."
+          ],
+          "tag": "p"
+        },
+        {
+          "children": [
+            "Case B: 1969 Dodge Charger"
+          ],
+          "tag": "p"
+        },
+        {
+          "children": [
+            "Details about the case B casting."
+          ],
+          "tag": "p"
+        },
+        {
+          "children": [
+            "Источник: ",
+            {
+              "attrs": {
+                "href": "https://orangetrackdiecast.com/post-x"
+              },
+              "children": [
+                "https://orangetrackdiecast.com/post-x"
+              ],
+              "tag": "a"
+            }
+          ],
+          "tag": "p"
+        }
+      ],
+      "summary": {
+        "blocks_by_type": {
+          "paragraph": 5
+        },
+        "blocks_total": 5,
+        "images_flat": 0,
+        "paragraphs_flat": 5,
+        "preview_figure_nodes": 0,
+        "preview_img_nodes": 0
+      }
+    },
+    "with-video": {
+      "parsed": {
+        "blocks": [
+          {
+            "runs": [
+              {
+                "text": "Watch the unboxing below."
+              }
+            ],
+            "text": "Watch the unboxing below.",
+            "type": "paragraph"
+          },
+          {
+            "src": "https://telegra.ph/embed/youtube?url=https%3A%2F%2Fwww.youtube.com%2Fwatch%3Fv%3Dabc123XYZ",
+            "type": "video"
+          },
+          {
+            "runs": [
+              {
+                "text": "Don't forget to subscribe."
+              }
+            ],
+            "text": "Don't forget to subscribe.",
+            "type": "paragraph"
+          }
+        ],
+        "images": [],
+        "paragraphs": [
+          "Watch the unboxing below.",
+          "Don't forget to subscribe."
+        ],
+        "subtitle": "",
+        "title": ""
+      },
+      "preview_nodes": [
+        {
+          "children": [
+            "Watch the unboxing below."
+          ],
+          "tag": "p"
+        },
+        {
+          "attrs": {
+            "src": "https://telegra.ph/embed/youtube?url=https%3A%2F%2Fwww.youtube.com%2Fwatch%3Fv%3Dabc123XYZ"
+          },
+          "tag": "iframe"
+        },
+        {
+          "children": [
+            "Don't forget to subscribe."
+          ],
+          "tag": "p"
+        },
+        {
+          "children": [
+            "Источник: ",
+            {
+              "attrs": {
+                "href": "https://orangetrackdiecast.com/post-x"
+              },
+              "children": [
+                "https://orangetrackdiecast.com/post-x"
+              ],
+              "tag": "a"
+            }
+          ],
+          "tag": "p"
+        }
+      ],
+      "summary": {
+        "blocks_by_type": {
+          "paragraph": 2,
+          "video": 1
+        },
+        "blocks_total": 3,
+        "images_flat": 0,
+        "paragraphs_flat": 2,
+        "preview_figure_nodes": 0,
+        "preview_img_nodes": 0
+      }
+    }
+  }
+}

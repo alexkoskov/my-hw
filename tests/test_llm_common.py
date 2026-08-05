@@ -8,9 +8,12 @@ lone marketing intro as boilerplate and returns paragraphs=[]).
 """
 
 import json
+import logging
 import os
 import sys
+import time
 import unittest
+from unittest import mock
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
@@ -99,6 +102,98 @@ class TestEncodeFormatMarkers(unittest.TestCase):
         # start lies within the first's span.
         result = _encode_format_markers(text, runs)
         self.assertEqual(result, "**Hot Wheels Premium** release")
+
+
+class TestEncodeFormatMarkersBounds(unittest.TestCase):
+    """Resource bounds on the REQUEST path (Decision 8).
+
+    ``_encode_format_markers`` runs one ``text.find`` per bold run with no
+    ceiling on either side. Mirrors the render-path guard in
+    ``telegraph_publisher._render_paragraph_with_runs`` — same constant
+    names, same values, same degradation contract: over the bound the
+    paragraph is sent to the LLM as PLAIN text (no ``**`` markers), never
+    truncated, never dropped, never raised.
+
+    This is a resource fuse, NOT an editorial "too much bold" threshold —
+    user-spec AC7 forbids the latter.
+    """
+
+    def test_run_count_over_bound_strips_runs(self):
+        text = " ".join(f"w{i:03d}" for i in range(101))
+        runs = [{"text": f"w{i:03d}", "formats": ["bold"]} for i in range(101)]
+        result = _encode_format_markers(text, runs)
+        self.assertEqual(result, text)
+        self.assertNotIn("**", result)
+
+    def test_run_count_at_bound_is_still_encoded(self):
+        """Positive control on the boundary: without it the limit could be
+        set too low and every other test here would stay green."""
+        text = " ".join(f"w{i:03d}" for i in range(100))
+        runs = [{"text": f"w{i:03d}", "formats": ["bold"]} for i in range(100)]
+        result = _encode_format_markers(text, runs)
+        # Zero-padded tokens on purpose: `w1` would be a prefix of `w10`
+        # and `str.find` would resolve it order-dependently.
+        self.assertEqual(result.count("**"), 200)
+
+    def test_text_length_over_bound_strips_runs(self):
+        text = "Hot Wheels" + "x" * (100_001 - len("Hot Wheels"))
+        runs = [{"text": "Hot Wheels", "formats": ["bold"]}]
+        result = _encode_format_markers(text, runs)
+        self.assertEqual(len(text), 100_001)
+        self.assertEqual(result, text)
+        self.assertNotIn("**", result)
+
+    def test_text_length_at_bound_is_still_encoded(self):
+        text = "Hot Wheels" + "x" * (100_000 - len("Hot Wheels"))
+        runs = [{"text": "Hot Wheels", "formats": ["bold"]}]
+        result = _encode_format_markers(text, runs)
+        self.assertEqual(len(text), 100_000)
+        self.assertTrue(result.startswith("**Hot Wheels**"))
+
+    def test_bound_logs_single_warning(self):
+        text = " ".join(f"w{i:03d}" for i in range(101))
+        runs = [{"text": f"w{i:03d}", "formats": ["bold"]} for i in range(101)]
+        with self.assertLogs("_llm_common", level="WARNING") as captured:
+            _encode_format_markers(text, runs)
+        self.assertEqual(len(captured.records), 1)
+        message = captured.records[0].getMessage()
+        self.assertIn(str(len(text)), message)
+        self.assertIn("101", message)
+
+    def test_empty_runs_do_not_log(self):
+        """The early ``not runs`` exit must stay silent — a WARNING per
+        paragraph without runs would drown the log."""
+        logger = logging.getLogger("_llm_common")
+        with mock.patch.object(logger, "warning") as warn:
+            self.assertEqual(_encode_format_markers("plain", []), "plain")
+            self.assertEqual(_encode_format_markers("plain", None), "plain")
+        warn.assert_not_called()
+
+    def test_non_dict_runs_count_toward_the_bound(self):
+        """The bound counts LIST LENGTH, not valid runs: 200k junk entries
+        cost the same memory and the same loop."""
+        text = "Hot Wheels news"
+        runs = ["junk"] * 101
+        with self.assertLogs("_llm_common", level="WARNING"):
+            result = _encode_format_markers(text, runs)
+        self.assertEqual(result, text)
+
+    def test_pathological_paragraph_completes_in_bounded_time(self):
+        """The security-review scenario verbatim: ~2 MB of text × 200k runs
+        whose text is NOT present, so every ``find`` scans the whole 2 MB.
+
+        Measured unbounded on this machine: ~160 s. Bounded: sub-millisecond.
+        Threshold is 5.0 s rather than 1.0 s — a loaded CI runner must not
+        flap, and at three orders of magnitude the slack costs no power.
+        """
+        text = "Hot Wheels news. " * 120_000
+        runs = [{"text": f"zz{i}", "formats": ["bold"]} for i in range(200_000)]
+        started = time.perf_counter()
+        result = _encode_format_markers(text, runs)
+        elapsed = time.perf_counter() - started
+        self.assertEqual(result, text)
+        self.assertNotIn("**", result)
+        self.assertLess(elapsed, 5.0, f"unbounded encode loop: {elapsed:.2f}s")
 
 
 class TestDecodeFormatMarkers(unittest.TestCase):
@@ -220,6 +315,36 @@ class TestBuildUserMessageInlineFormatting(unittest.TestCase):
             "**Hot Wheels** intro",
             "Closing line",
         ])
+
+    def test_over_bound_block_does_not_affect_other_blocks(self):
+        """The bound is PER BLOCK: one pathological paragraph loses its
+        markers, the article keeps every paragraph and the next block is
+        encoded as usual."""
+        wide_text = " ".join(f"w{i:03d}" for i in range(101))
+        article = {
+            "title": "T",
+            "subtitle": "S",
+            "paragraphs": [wide_text, "Closing Hot Wheels line"],
+            "blocks": [
+                {
+                    "type": "paragraph",
+                    "text": wide_text,
+                    "runs": [
+                        {"text": f"w{i:03d}", "formats": ["bold"]}
+                        for i in range(101)
+                    ],
+                },
+                {
+                    "type": "paragraph",
+                    "text": "Closing Hot Wheels line",
+                    "runs": [{"text": "Hot Wheels", "formats": ["bold"]}],
+                },
+            ],
+        }
+        payload = json.loads(_build_user_message(article))
+        self.assertEqual(len(payload["paragraphs"]), 2)
+        self.assertEqual(payload["paragraphs"][0], wide_text)
+        self.assertEqual(payload["paragraphs"][1], "Closing **Hot Wheels** line")
 
 
 class TestPatchTextDecodesBoldRuns(unittest.TestCase):

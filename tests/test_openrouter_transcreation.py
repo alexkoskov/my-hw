@@ -15,6 +15,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 import httpx  # noqa: E402 — transitive dep of openai, used to build real SDK errors
 import openai  # noqa: E402
+import _llm_common  # noqa: E402
 import openrouter_transcreation  # noqa: E402
 from _llm_common import ClaudeOutageError, ClaudeTranscreationError  # noqa: E402
 
@@ -486,6 +487,54 @@ class TestVariantBPlus(unittest.TestCase):
         user_msg = called["messages"][1]["content"]
         self.assertIn("EN cap", user_msg)
         self.assertNotIn("Already RU", user_msg)
+
+    def test_list_item_text_skipped_by_second_pass(self):
+        """``list_item`` text is filled in RU by
+        ``_patch_text_with_ru_paragraphs`` (the SHARED tuple already lists
+        it), so the second pass must skip it too. Before this fix the local
+        tuple omitted ``list_item`` and every bullet was re-translated
+        RU→RU — wasted tokens and style drift on every long block article.
+        """
+        blocks = [
+            {"type": "list_item", "text": "Уже переведённый пункт списка."},
+            {"type": "image", "src": "https://x/a.jpg", "caption": "EN cap"},
+        ]
+        translations_json = json.dumps({"translations": ["RU cap"]})
+        client = _make_client_returning(_make_response(translations_json))
+        out = openrouter_transcreation._translate_block_strings(blocks, client, "m")
+        self.assertEqual(out[0]["text"], "Уже переведённый пункт списка.")
+        self.assertEqual(out[1]["caption"], "RU cap")
+        called = client.chat.completions.create.call_args.kwargs
+        user_msg = called["messages"][1]["content"]
+        self.assertIn("EN cap", user_msg)
+        self.assertNotIn("Уже переведённый пункт списка.", user_msg)
+
+    def test_patched_types_include_list_item_and_match_shared(self):
+        """Anti-drift guard. The local copy that quietly diverged from the
+        shared tuple is exactly how the gemini classifier bug survived —
+        compare the whole tuple, not just membership, so a type added to
+        ``_llm_common`` and forgotten here also fails."""
+        self.assertEqual(
+            openrouter_transcreation._PATCHED_TEXT_BLOCK_TYPES,
+            _llm_common._PATCHED_TEXT_BLOCK_TYPES,
+        )
+
+    def test_list_item_translated_when_skip_patched_text_false(self):
+        """Negative control (the 2026-07-28 one-sided-invariant lesson):
+        with the skip off, ``list_item`` text DOES go out for translation.
+        Without this, the skip test above would also pass if ``list_item``
+        stopped reaching translation for any reason at all."""
+        blocks = [
+            {"type": "list_item", "text": "Bullet text."},
+            {"type": "image", "src": "https://x/a.jpg", "caption": "Cap"},
+        ]
+        translations_json = json.dumps({"translations": ["RU bullet", "RU cap"]})
+        client = _make_client_returning(_make_response(translations_json))
+        out = openrouter_transcreation._translate_block_strings(
+            blocks, client, "m", skip_patched_text=False,
+        )
+        self.assertEqual(out[0]["text"], "RU bullet")
+        self.assertEqual(out[1]["caption"], "RU cap")
 
     def test_skip_patched_text_false_translates_all_text_fields(self):
         """``skip_patched_text=False`` preserves the legacy contract —

@@ -163,6 +163,18 @@ _TITLE_EMOJIS = ("🏆", "🏎️", "🚀", "💎", "🤝", "📢", "🚗", "�
 #: Per-paragraph defensive truncation cap (Decision 13).
 _PARAGRAPH_MAX_CHARS = 4000
 
+#: Resource bounds for the REQUEST-path marker encoding (Decision 8).
+#: Deliberately EQUAL to ``telegraph_publisher._MAX_TEXT_FOR_RUNS`` /
+#: ``_MAX_RUNS_PER_BLOCK`` — a block whose runs the renderer would discard
+#: anyway is not worth encoding into the request, and a value drift would
+#: produce an article that goes to the LLM WITH markers and renders flat,
+#: i.e. markers turn into visible litter instead of formatting.
+#: Duplicated rather than imported, same convention as ``_BOLD_MARKER_RE``:
+#: neither layer may depend on the other. patterns.md calls this rule
+#: "Change one, change both" — if you move these, move the publisher's too.
+_MAX_TEXT_FOR_RUNS = 100_000
+_MAX_RUNS_PER_BLOCK = 100
+
 #: Static JSON envelope appended to ``ux-guidelines.md`` body (Decision 6).
 #: Operator's prompt edits land in the file; this envelope is the technical
 #: contract that turns prose-style guidance into a parseable response.
@@ -230,8 +242,32 @@ def _encode_format_markers(text: str, runs: list) -> str:
     telegraph_publisher._render_paragraph_with_runs at the rendering
     side, so the in-text positions agree with the eventual Telegraph
     render path.
+
+    Resource bounds (Decision 8): ``len(text) > _MAX_TEXT_FOR_RUNS`` or
+    ``len(runs) > _MAX_RUNS_PER_BLOCK`` → the runs are dropped and the
+    text is returned UNCHANGED with a single WARNING, before any
+    ``str.find`` runs. The paragraph still reaches the LLM in full — it
+    just travels without ``**`` markers and publishes without emphasis.
+    Never truncated, never raised, never lost.
+
+    This is a RESOURCE fuse, not the editorial "too much bold" threshold
+    that user-spec AC7 forbids: it fires only on pathological input and
+    says nothing about an article's content. Without it, one 2 MB
+    paragraph carrying ~200k bold runs costs ~4·10¹⁰ character
+    comparisons — minutes of a single-process bot, inside a publication
+    window where restarting it is forbidden.
     """
     if not runs:
+        return text
+    # Resource bounds (Decision 8) — mirror of the render-path guard in
+    # telegraph_publisher._render_paragraph_with_runs. Counts the LIST
+    # LENGTH, not the valid runs: 200k junk entries cost the same loop.
+    if len(text) > _MAX_TEXT_FOR_RUNS or len(runs) > _MAX_RUNS_PER_BLOCK:
+        logger.warning(
+            "[llm-request] DoS bound: text=%d runs=%d — sending paragraph without bold markers",
+            len(text),
+            len(runs),
+        )
         return text
     spans = []
     for run in runs:

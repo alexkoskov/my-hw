@@ -154,6 +154,12 @@ def _is_same_site(href, source_netloc):
     return _strip_www(u.netloc) == _strip_www(source_netloc)
 
 
+#: Render-path resource bounds. ``_llm_common`` holds its own copy of this
+#: pair for the REQUEST path (Decision 8) — deliberately duplicated, not
+#: imported, same reason as ``_BOLD_MARKER_RE`` below: neither layer may
+#: depend on the other. Change one, change both: if the values drift, a
+#: block can go to the LLM carrying markers the renderer then discards,
+#: and the markers surface as visible litter instead of formatting.
 _MAX_TEXT_FOR_RUNS = 100_000
 _MAX_RUNS_PER_BLOCK = 100
 

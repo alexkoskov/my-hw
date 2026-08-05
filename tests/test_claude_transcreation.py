@@ -25,6 +25,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 anthropic = pytest.importorskip("anthropic")
 import httpx  # noqa: E402 — transitive dep of anthropic
 
+import _llm_common  # noqa: E402
 import claude_transcreation  # noqa: E402
 
 
@@ -367,3 +368,36 @@ def test_load_prompt_subdir_then_flat_fallback(tmp_path, monkeypatch):
     )
     body = claude_transcreation._load_prompt(str(missing_subdir))
     assert "FLAT BODY" in body
+
+
+def test_list_item_text_skipped_by_second_pass():
+    """``list_item`` text is already RU by the time variant B+ runs — the
+    SHARED tuple in ``_llm_common`` lists it, so
+    ``_patch_text_with_ru_paragraphs`` fills it from the main response.
+    The second pass must skip it rather than re-translate RU→RU.
+
+    Written per engine on purpose: ``_translate_block_strings`` is copied
+    into all four modules, so a test against openrouter executes not one
+    line of claude's copy — that is how the gemini classifier bug survived.
+    """
+    blocks = [
+        {"type": "list_item", "text": "Уже переведённый пункт списка."},
+        {"type": "image", "src": "https://x/a.jpg", "caption": "EN cap"},
+    ]
+    # Exactly one translation — the image caption. A count mismatch would
+    # send the function down its "keep EN" branch and the assertions below
+    # would pass vacuously, "proving" the skip for the wrong reason.
+    client = _make_mock_client(json.dumps({"translations": ["RU cap"]}))
+    out = claude_transcreation._translate_block_strings(blocks, client, "m")
+    assert out[0]["text"] == "Уже переведённый пункт списка."
+    assert out[1]["caption"] == "RU cap"
+    user_msg = client.messages.create.call_args.kwargs["messages"][0]["content"]
+    assert "EN cap" in user_msg
+    assert "Уже переведённый пункт списка." not in user_msg
+
+
+def test_patched_types_include_list_item_and_match_shared():
+    """Anti-drift guard: compare the whole tuple against the shared one, so
+    a type added to ``_llm_common`` and forgotten here also fails."""
+    assert (claude_transcreation._PATCHED_TEXT_BLOCK_TYPES
+            == _llm_common._PATCHED_TEXT_BLOCK_TYPES)
