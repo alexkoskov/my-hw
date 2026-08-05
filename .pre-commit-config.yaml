@@ -23,8 +23,17 @@ repos:
   - repo: https://github.com/pre-commit/pre-commit-hooks
     rev: v5.0.0
     hooks:
+      # Both whitespace hooks skip captured HTML pages. Those files are
+      # EVIDENCE, not source: the source-formatting-parity measurements are
+      # reproducible only if the bytes match what the site actually served,
+      # and both hooks rewrite them on sight (verified 2026-08-05 — 14 of the
+      # 18 corpus pages were modified on the first commit attempt). They are
+      # also not re-fetchable: lamley costs a 24 h blacklist and autoevolution
+      # answers 403, so a silent rewrite is unrecoverable.
       - id: trailing-whitespace
+        exclude: '(^work/.*/corpus-raw/|^tests/fixtures/.*\.html$)'
       - id: end-of-file-fixer
+        exclude: '(^work/.*/corpus-raw/|^tests/fixtures/.*\.html$)'
       - id: check-merge-conflict
       - id: check-added-large-files
         args: ["--maxkb=1000"]
