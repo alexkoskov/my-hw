@@ -589,8 +589,24 @@ no secret scanning. Both have existed for a long time; that text predates them.*
   - `detect-private-key`, `check-added-large-files` (`--maxkb=1000`),
     `check-merge-conflict`, `check-yaml`, `trailing-whitespace`,
     `end-of-file-fixer`.
+- **Two hooks REWRITE files, and that is destructive for captured evidence.**
+  `trailing-whitespace` and `end-of-file-fixer` therefore exclude
+  `work/*/corpus-raw/` and `tests/fixtures/*.html` (2026-08-05). Captured HTML
+  pages are evidence, not source: a measurement is only reproducible if the bytes
+  match what the site actually served, and these pages are **not re-fetchable** —
+  lamley blacklists for 24 h on a pause violation and autoevolution answers 403.
+  On the first attempt to commit the source-formatting-parity corpus the two hooks
+  silently modified 14 of 18 pages. Adding fixtures under a new directory means
+  extending that exclusion first; verify with `sha256sum` after the hooks run, not
+  before. Note `check-yaml` already carries its own `^work/.*/logs/` exclusion for
+  a related reason — agent-produced artifacts are records, not configuration.
 - **`git commit --no-verify` is not a normal workflow step.** If a hook blocks a
   commit, fix the finding; bypassing must be explained in the commit message.
+- **`pre-commit run --all-files` rewrites unrelated files.** It reformats archived
+  `work/` documents and `.claude/` skill files that no one is editing, and those
+  edits land unstaged in the working tree. Run it scoped —
+  `pre-commit run --files <changed files>` — or `git checkout -- .` afterwards to
+  drop the collateral before committing.
 - **Pre-push:** no automated code review — review is a human/agent step (see the
   `code-reviewing` skill).
 
