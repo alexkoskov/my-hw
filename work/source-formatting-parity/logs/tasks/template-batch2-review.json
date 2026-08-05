@@ -1,0 +1,35 @@
+{
+  "validator": "task-validator",
+  "batch": [6, 7, 8, 9, 10],
+  "status": "approved",
+  "findings": [
+    {
+      "severity": "minor",
+      "category": "decomposition",
+      "task": 6,
+      "section": "Context Files / Details",
+      "issue": "Task 6's 'Код — правим' file list includes tests/test_orangetrack_golden.py, tests/fixtures/orangetrack_golden.json and tests/test_fallback_publish_paths.py, none of which appear in tech-spec's Implementation Tasks -> Task 6 'Files to modify' (telegraph_publisher.py, news_bot.py, preview_renderer.py, tests/test_telegraph_publisher.py, tests/test_preview_renderer.py).",
+      "fix": "No action required. The task already self-flags this exact extension under 'Отклонение по объёму (зафиксировать в отчёте)' in Details/Implementation hints and in Post-completion, with sound justification (golden must be re-baselined on the code that actually changed the cap, and cap-threading in news_bot needs its own test file). Recorded here for traceability; the refinement is legitimate."
+    },
+    {
+      "severity": "minor",
+      "category": "consistency",
+      "task": 9,
+      "section": "Reviewers / frontmatter",
+      "issue": "skills: [code-writing] but reviewers is only [test-reviewer], omitting code-reviewer — deviates from the general code-writing -> {code-reviewer, test-reviewer} mapping.",
+      "fix": "No action required. Task 9 is explicitly test-only ('Задача ТОЛЬКО тестовая', single file tests/test_integration.py, git status asserted to show no prod changes) and the Reviewers section states the rationale directly ('code-reviewer и security-auditor здесь нечего смотреть'). Frontmatter and body reviewers lists match each other, so there is no frontmatter<->body mismatch — only a deviation from the generic skill/reviewer heuristic, which is justified in-task."
+    },
+    {
+      "severity": "minor",
+      "category": "structure",
+      "task": 9,
+      "section": "Details",
+      "issue": "Details has Files, Dependencies, 'Ловушки' (pitfalls) and 'Мутационная проверка' subsections but no subsection literally labeled 'Edge cases', unlike sibling tasks 6/7/8 which use that exact heading.",
+      "fix": "Cosmetic only. Content-equivalent material exists under 'Ловушки' (concrete failure scenarios for the tests being written). Optionally rename or add a short 'Edge cases' heading for structural consistency with the template and sibling tasks; no substantive gap."
+    }
+  ],
+  "stats": {
+    "tasks_checked": 5,
+    "issues_found": 3
+  }
+}

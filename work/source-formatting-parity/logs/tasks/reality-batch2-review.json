@@ -1,0 +1,20 @@
+{
+  "validator": "reality-checker",
+  "batch": [4, 5, 6],
+  "status": "changes_required",
+  "findings": [
+    {
+      "severity": "critical",
+      "category": "cross-task-integration",
+      "task": 6,
+      "issue": "Task 6's frontmatter declares depends_on: [1] only, but Task 6's own Dependencies/Details sections state the golden-file regeneration must happen on code where Task 5's dom_blocks migration is ALREADY merged: 'Пересъёмку делай на коде, где Task 5 уже влит, иначе рискуешь смешать в одном diff'е два изменения — и условие «меньше картинок и ничего больше» станет непроверяемым.' Task 5 and Task 6 are both Wave 2 tasks with no edge between them, and grouping into a wave is precisely the signal an orchestrator uses to parallelize independent tasks. If Task 6 runs before or concurrently with Task 5, it regenerates tests/fixtures/orangetrack_golden.json (and edits tests/test_orangetrack_golden.py to thread the image-limit parameter) against pre-refactor code. The clean, single-purpose golden diff is the sole artifact backing the operator's two-condition approval of the AC9/AC10 deviation (tech-spec User-Spec Deviations, approved 2026-08-03) — if that diff mixes Task 5's refactor with Task 6's cap, the approval condition is silently violated and nobody would know, since Task 6's own decisions.md diff entry would already have been written against the wrong baseline.",
+      "fix": "Add 5 to Task 6's depends_on (i.e. depends_on: [1, 5]) so the orchestrator sequences Task 5 before Task 6 instead of relying on a prose note inside Task 6's Details section that a parallel-wave executor is unlikely to read as a hard gate."
+    }
+  ],
+  "stats": {
+    "tasks_checked": 3,
+    "claims_verified": 58,
+    "issues_found": 1
+  },
+  "notes": "Every file/function/class/constant/line-number claim checked in this batch matched the codebase precisely, including many exact line-number citations across telegraph_publisher.py, _llm_common.py, orangetrack_source.py, preview_renderer.py, news_bot.py, and the four parser image-cap constants (t_hunted_source._IMAGE_LIMIT=30, lamley_source.IMAGE_LIMIT=10, orangetrack_source.IMAGE_LIMIT=10, autoevolution_source.MAX_IMAGES=10, all confirmed at the cited lines). Task 4's specific performance claims were independently re-measured on this machine: 998-char text x 200k runs completed in 0.046s (task claims 0.077s, same order of magnitude and same conclusion — unbounded loop is 'free' on short text); 2.04MB text x 2000 runs completed in 1.636s (task claims 1.62s), extrapolating to ~163.6s for 200k runs (task claims ~160s) — both essentially exact matches. _build_content_from_blocks signature confirmed as (subtitle, blocks, source_url, auto_marker=False) with no images/cap parameter and no cap logic in its body. tests/test_orangetrack_source.py confirmed to import _video_embed_url and call it with one positional argument in exactly six tests, including test_vimeo_not_wrapped asserting None. No hallucinated APIs, no invented signatures, no stale line numbers found. Task 4 (depends_on: []) and Task 5 (depends_on: [1, 2]) dependency declarations are both correct and match what each task actually reads/modifies."
+}

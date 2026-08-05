@@ -1,0 +1,40 @@
+{
+  "validator": "reality-checker",
+  "batch": [1, 2, 3],
+  "status": "approved",
+  "findings": [
+    {
+      "severity": "major",
+      "category": "hallucination",
+      "task": 1,
+      "issue": "Task 1's Acceptance Criteria and Verification Steps state the full-suite regression baseline as '1626 passed, 441 subtests'. Running `python3 -m pytest -q` on the actual current tree (HEAD 0f3457d) gives '1693 passed, 462 subtests passed in 83.28s'. The commit that created these task files (0f3457d, same commit) already self-acknowledges this: its message states \"The suite baseline in the spec (1626) is stale — measured 1693 at the branch point 3362f26\" — but task 1's body was not updated to match. An executor checking 'no regressions vs 1626' will trivially pass without noticing the real baseline moved, and the exact subtest count (441) is also wrong (actual 462).",
+      "fix": "Update task 1's baseline references (What to do/TDD Anchor/Acceptance Criteria/Verification Steps) from '1626 passed, 441 subtests' to the measured '1693 passed, 462 subtests', or instruct the executor to capture a fresh baseline via `git stash && python3 -m pytest -q && git stash pop` rather than trusting a hardcoded number."
+    },
+    {
+      "severity": "major",
+      "category": "hallucination",
+      "task": 2,
+      "issue": "Same stale baseline as task 1: task 2's Acceptance Criteria ('без регрессий относительно базовой линии 1626 passed') and Verification Steps repeat '1626 passed'. Actual measured baseline on the current tree is 1693 passed, 462 subtests (verified by running the full suite). Self-acknowledged as stale in the commit (0f3457d) that shipped this task file alongside the others.",
+      "fix": "Replace '1626 passed' with the measured 1693 (or instruct the executor to record a fresh baseline before starting, rather than hardcoding a number that is already known-wrong at task-creation time)."
+    },
+    {
+      "severity": "major",
+      "category": "hallucination",
+      "task": 3,
+      "issue": "Same stale baseline propagated into task 3: Acceptance Criteria says 'без регрессий относительно базовой линии 1626 passed; число выросло ровно на количество добавленных тестов' and Verification Steps says '≥ 1626 passed'. Actual current baseline is 1693 passed (measured by running `python3 -m pytest -q` on HEAD). If an executor/reviewer literally checks 'final count == 1626 + N added tests', the check will fail even though the change is correct, because the true baseline is 1693, not 1626.",
+      "fix": "Correct the baseline to 1693 in task 3's Acceptance Criteria and Verification Steps, or explicitly instruct measuring the baseline fresh (e.g. `git stash` the task's changes, run the suite, note the count, restore) instead of trusting the spec's hardcoded '1626'."
+    },
+    {
+      "severity": "major",
+      "category": "feasibility",
+      "task": 1,
+      "issue": "Task 1's 'Где лежит корпус' section instructs the executor to first verify a 'previous session's' ephemeral /tmp scratchpad path (/tmp/claude-1000/.../45eede25-.../scratchpad/{th,lam}/), and — if that's gone — to attempt risky manual re-fetches (lamley: sequential requests with a ≥20s pause and a real risk of a 24h blacklist on any mistake; t-hunted: freely refetchable; autoevolution: not fetchable, 403). In the actual current repo state, this is unnecessary: the 14-page corpus (10 t-hunted + 4 lamley, byte-identical to the /tmp files, verified by size) plus 4 additional captured Cloudflare-403 challenge pages for autoevolution (18 files total, 3.3MB) are ALREADY committed to git at work/source-formatting-parity/corpus-raw/, in the very same commit (0f3457d) that created task 1 itself. That commit's own message says explicitly: 'Task 1 curates and git-mv's them into tests/fixtures/ under proper names, so the duplication is temporary' — i.e. the intended source for task 1 is corpus-raw/, not the /tmp scratchpad. Task 1's body never mentions corpus-raw/ anywhere. .pre-commit-config.yaml already has the exact excludes task 1 asks the executor to add ('tests/fixtures/*.html' and 'work/*/corpus-raw/' are excluded from trailing-whitespace/end-of-file-fixer, added in the same commit) — another sign the task text wasn't refreshed after the corpus was staged.",
+      "fix": "Update task 1's 'Где лежит корпус' / step 1 of 'What to do' to check work/source-formatting-parity/corpus-raw/ FIRST (git-mv the 14 real-article files into tests/fixtures/articles/{t_hunted,lamley}/ under proper slugged names) and only fall back to the /tmp scratchpad / re-fetch procedures if corpus-raw/ is missing or incomplete. This removes any incentive to run the risky lamley re-fetch when a safe copy already exists in git history."
+    }
+  ],
+  "stats": {
+    "tasks_checked": 3,
+    "claims_verified": 46,
+    "issues_found": 4
+  }
+}
