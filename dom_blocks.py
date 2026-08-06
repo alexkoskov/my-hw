@@ -83,6 +83,21 @@ _INLINE_FORMAT_TAGS = {
 MAX_TEXT_FOR_RUNS = 100_000
 MAX_RUNS_PER_BLOCK = 100
 
+#: Canonical host allowlists, published so consumers opt IN explicitly rather
+#: than keeping a private copy each. Passing them stays the source's decision —
+#: nothing here is a default — but a source that wants YouTube should not have
+#: to retype the tuple, since a drifted copy is the exact failure mode this
+#: module exists to end.
+YOUTUBE_HOSTS = (
+    "youtube.com",
+    "www.youtube.com",
+    "m.youtube.com",
+    "music.youtube.com",
+    "youtube-nocookie.com",
+    "www.youtube-nocookie.com",
+    "youtu.be",
+)
+
 #: Video-provider table. A source supplies only a host allowlist and a
 #: provider NAME; the shapes below stay here so no source can inject a
 #: wrapper that skips the hostname gate (Decision 1).

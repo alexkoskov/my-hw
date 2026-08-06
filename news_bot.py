@@ -74,6 +74,7 @@ import pending_articles_repo as pending_repo
 # the LLM only and HOLDS articles on an outage (no Google fallback since the
 # 2026-06-11 hold-and-wait change). Tests patch the bound name
 # ``news_bot.transcreate_via_claude`` on the module surface.
+import _llm_common  # noqa: F401 — _blocks_if_aligned reads its patched-type tuple
 import llm_transcreation as claude_transcreation  # alias preserves bound name
 from llm_transcreation import (
     transcreate_via_claude,
@@ -2933,6 +2934,114 @@ NETLOC_TO_SOURCE = {
 }
 
 
+# Per-source image cap, keyed by the same `source_name` values as
+# NETLOC_TO_SOURCE. Built FROM THE PARSER MODULES' OWN CONSTANTS on purpose —
+# numbers retyped here would drift from the parsers silently, and nothing
+# would catch it.
+#
+# Why the map exists at all: the per-source limits only ever sliced the flat
+# `images` list, and `telegraph_publisher` ignores that list entirely once
+# `blocks` is non-empty. Measured on 14 real articles, all four lamley posts
+# exceed their limit of 10 (14, 41, 48, 50 images); t-hunted peaks at 27
+# against a limit of 30.
+#
+# `t_hunted_source._IMAGE_LIMIT` is private. Referencing it is the lesser
+# evil: the alternative is retyping 30 here, and adding a public alias would
+# mean editing a file that Task 7 of source-formatting-parity owns in the
+# same wave. If a public name is wanted, that is a request to that task.
+SOURCE_IMAGE_LIMITS = {
+    't-hunted':      t_hunted_source._IMAGE_LIMIT,
+    'lamley':        lamley_source.IMAGE_LIMIT,
+    'orangetrack':   orangetrack_source.IMAGE_LIMIT,
+    'autoevolution': autoevolution_source.MAX_IMAGES,
+}
+
+
+def _blocks_if_aligned(link, blocks, paragraphs):
+    """Return `blocks` when it lines up with `paragraphs`, else None.
+
+    `_llm_common` pairs the two lists POSITIONALLY: `_build_user_message`
+    walks the blocks and takes the next entry from `paragraphs` for each
+    patchable one, and `_patch_text_with_ru_paragraphs` does the same with the
+    Russian paragraphs coming back. Off by one and the translations splice
+    shifted, so the tail block reaches the channel in the source language —
+    the 2026-05-06 outage. Both sides swallow the shortfall SILENTLY
+    (`except StopIteration: pass` and a bare `break`), which is why a runtime
+    guard exists at all: a test only covers the articles somebody wrote an
+    example for.
+
+    Dropping the blocks costs the article its formatting. That is the
+    deliberate trade (Decision 4): it publishes as plain text rather than
+    published half-translated.
+
+    THE COUNT COMES FROM `_llm_common._PATCHED_TEXT_BLOCK_TYPES` — the tuple
+    both sides of the pairing actually read. A literal retyped here would be
+    exactly the kind of drifted copy this guard is meant to catch. The
+    same-named tuples in the four engine modules are a DIFFERENT thing: they
+    gate the caption-translation pass, not the paragraph pairing.
+
+    ZERO patchable blocks is not a mismatch. With none, no positional pairing
+    happens at all — and firing here would drop the blocks of an orangetrack
+    video-only post, which synthesizes `paragraphs = [title]`, and take the
+    video off the page (an AC10 violation on a working source).
+
+    Fail-open on internal error, same contract as the promo filter, the
+    content gate and the dedup gate: a broken check must not cost the article.
+
+    No operator ping (Decision 3b). The WARNING below is the ONLY trace — the
+    drop writes no `last_error` and appears in no recap — so it names the
+    article AND both counts. A line like "mismatch, dropping blocks" would
+    leave the operator with nothing to act on.
+    """
+    if not blocks:
+        return blocks
+    try:
+        patchable = sum(
+            1 for b in blocks
+            if isinstance(b, dict)
+            and b.get("type") in _llm_common._PATCHED_TEXT_BLOCK_TYPES
+        )
+        if patchable == 0:
+            return blocks
+        n_paragraphs = len(paragraphs or [])
+        if patchable != n_paragraphs:
+            logger.warning(
+                "[align] blocks/paragraphs mismatch for %s: "
+                "patchable_blocks=%d paragraphs=%d — dropping blocks, "
+                "the article publishes as plain text",
+                link, patchable, n_paragraphs,
+            )
+            return None
+        return blocks
+    except Exception:
+        logger.exception(
+            "[align] alignment check failed for %s — keeping blocks", link,
+        )
+        return blocks
+
+
+def _image_limit_for_source(source_name):
+    """Resolve the image cap for `source_name`; None means no cap.
+
+    Fail-open, like the promo filter, the content gate and the dedup gate: an
+    unknown or missing source publishes UNCAPPED rather than not at all. It
+    does log a WARNING, because blocks arriving from a source we cannot name
+    means something is wrong further upstream.
+    """
+    if not source_name:
+        logger.warning(
+            "[fallback] no source_name on the row — publishing without an image cap"
+        )
+        return None
+    limit = SOURCE_IMAGE_LIMITS.get(source_name)
+    if limit is None:
+        logger.warning(
+            f"[fallback] unknown source_name={source_name!r} — "
+            "publishing without an image cap"
+        )
+    return limit
+
+
 # Override map for the channel-post hashtag (Decision 2 of t-hunted-pt-source
 # tech-spec). Default in ``_source_hashtag`` lifts the TLD-stripped second-
 # level label from the netloc (e.g. ``corporate.mattel.com`` → ``#mattel``),
@@ -3393,6 +3502,7 @@ def _fallback_publish(row, via_review=False):
             subtitle=ru_subtitle,
             blocks=ru_blocks,
             auto_marker=False,
+            image_limit=_image_limit_for_source(row.get('source_name')),
         )
         telegraph_path = urlparse(telegraph_url).path.lstrip('/')
         if not telegraph_path:
@@ -4296,7 +4406,12 @@ def job():
             'subtitle': article.get('subtitle') or '',
             'paragraphs': article.get('paragraphs') or [],
             'images': article.get('images') or [],
-            'blocks': article.get('blocks'),
+            # Runtime alignment guard (Decision 4). Last point where both
+            # final lists sit side by side before the row hits the DB, and
+            # compared against the SAME paragraph list that goes into it.
+            'blocks': _blocks_if_aligned(
+                link, article.get('blocks'), article.get('paragraphs') or [],
+            ),
             'pub_date': entry.get('published') or entry.get('pub_date') or '',
             'model_fingerprint': fp,
             # Cross-source dedup soft flag: staged now, invisible to

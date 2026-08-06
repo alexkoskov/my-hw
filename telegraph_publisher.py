@@ -203,6 +203,38 @@ _BOLD_MARKER_RE = re.compile(r"\*\*([^*\n]+?)\*\*")
 #: Any leftover asterisk pair after paired decoding (i.e. an UNBALANCED marker).
 _STRAY_MARKER_RE = re.compile(r"\*\*")
 
+#: Scheme allowlist for media URLs (``img src`` / ``iframe src``). The ``^``
+#: anchor rejects leading whitespace (``  javascript:…``) and IGNORECASE
+#: accepts ``HTTPS://`` without letting ``JavaScript:`` through — that scheme
+#: simply is not in the allowlist. Bounded, no free quantifiers (ReDoS
+#: contract).
+#:
+#: MIRRORS ``preview_renderer._SAFE_URL_RE`` — deliberately duplicated rather
+#: than imported, the same convention as ``_BOLD_MARKER_RE`` above: the
+#: preview renderer is an operator-side CLI layer and the publisher is the
+#: production runtime path, so the dependency would point the wrong way.
+#: Change one, change both; a test pins that both verdicts agree on a shared
+#: URL set.
+#:
+#: The publisher is where this check belongs because every source and every
+#: path funnels through it. The per-source pickers trust
+#: ``startswith("http")`` (t_hunted, lamley, autoevolution), which lets
+#: ``httpx://evil/x.jpg`` through, and autoevolution's gallery branch checks
+#: no scheme at all.
+_SAFE_MEDIA_URL_RE = re.compile(r"^https?://", re.IGNORECASE)
+
+
+def _is_safe_media_url(src) -> bool:
+    """True iff ``src`` is an http(s) URL fit to emit into a Telegraph node.
+
+    Rejects non-strings, blanks, unsafe schemes (``javascript:``, ``data:``,
+    ``file:``), look-alike schemes (``httpx://``), protocol-relative
+    ``//cdn/x.jpg`` and relative paths.
+    """
+    if not isinstance(src, str):
+        return False
+    return bool(_SAFE_MEDIA_URL_RE.match(src.strip()))
+
 
 def _decode_bold_markers(text, runs=None):
     """Turn ``**bold**`` markers in *text* into real formatting.
@@ -366,6 +398,7 @@ def _build_content_from_blocks(
     blocks: List[dict],
     source_url: Optional[str],
     auto_marker: bool = False,
+    image_limit: Optional[int] = None,
 ) -> list:
     """Render ordered content blocks into Telegra.ph nodes, preserving
     image/video positions from the source article.
@@ -386,6 +419,25 @@ def _build_content_from_blocks(
     ``block["runs"]`` are rendered inline. List_item blocks have their
     leading bullet/whitespace stripped before the publisher prepends
     ``"• "`` (Decision 10 bullet-doubling guard).
+
+    ``image_limit`` caps how many ``image`` blocks are emitted. ``None``
+    (the default) means no cap, which keeps every existing caller working
+    unchanged. The HERO COUNTS toward the limit, extra images are dropped
+    FROM THE TAIL, and ``video`` blocks are not counted — the cap is about
+    images. ``0`` and ``1`` are honoured literally (no images / hero only);
+    ``0`` must never be read as "unlimited", that would silently discard the
+    setting.
+
+    Why the cap lives here at all: the per-source limits only ever sliced the
+    derived flat ``images`` list, which this function ignores entirely — the
+    moment ``blocks`` is non-empty the flat list is unused. Measured on 14
+    real articles, ALL FOUR lamley posts exceed their limit of 10 (14, 41, 48
+    and 50 images).
+
+    Images whose ``src`` fails :func:`_is_safe_media_url` are dropped BEFORE
+    the cap is applied, so discarded junk cannot eat a live image's slot; if
+    the hero was the invalid one, the next valid image takes its place. A
+    block with no ``src`` at all is skipped rather than raising.
     """
     def p(*children): return {"tag": "p", "children": list(children)}
 
@@ -403,10 +455,35 @@ def _build_content_from_blocks(
         lvl = level if level in (3, 4) else 3
         return {"tag": f"h{lvl}", "children": list(children)}
 
-    first_image_idx = next(
-        (i for i, b in enumerate(blocks) if b.get("type") == "image"),
-        None,
-    )
+    # Order matters: drop unusable src FIRST, then apply the cap. The other
+    # way round, a junk image would consume a slot and a good one would fall
+    # off the tail.
+    all_image_idx = [
+        i for i, b in enumerate(blocks) if b.get("type") == "image"
+    ]
+    valid_image_idx = [
+        i for i in all_image_idx if _is_safe_media_url(blocks[i].get("src"))
+    ]
+    for i in all_image_idx:
+        if i not in valid_image_idx:
+            logger.warning(
+                "[telegraph] dropping image block with unusable src=%.100r",
+                blocks[i].get("src"),
+            )
+
+    if image_limit is None:
+        kept_image_idx = list(valid_image_idx)
+    else:
+        kept_image_idx = valid_image_idx[:image_limit]
+        if len(valid_image_idx) > len(kept_image_idx):
+            logger.info(
+                "[telegraph] image cap applied: had=%d kept=%d limit=%d",
+                len(valid_image_idx),
+                len(kept_image_idx),
+                image_limit,
+            )
+    kept_image_set = set(kept_image_idx)
+    first_image_idx = kept_image_idx[0] if kept_image_idx else None
 
     nodes: list = []
     if first_image_idx is not None:
@@ -448,10 +525,20 @@ def _build_content_from_blocks(
                 text, runs, source_url,
             )))
         elif t == "image":
+            # Dropped by scheme or by the cap — the caption goes with it: a
+            # caption without its image is litter in the text.
+            if i not in kept_image_set:
+                continue
             nodes.append(figure_img(
                 block["src"], _decode_bold_markers(block.get("caption", ""))[0],
             ))
         elif t == "video":
+            if not _is_safe_media_url(block.get("src")):
+                logger.warning(
+                    "[telegraph] dropping video block with unusable src=%.100r",
+                    block.get("src"),
+                )
+                continue
             nodes.append(iframe(block["src"]))
 
     if auto_marker:
@@ -502,7 +589,19 @@ def _build_content(
         return {"tag": "i", "children": [text]}
 
     nodes: list = []
-    remaining = list(images or [])
+    # Same scheme policy as the block path. No CAP here on purpose: the flat
+    # list was already sliced by the parser (orangetrack, lamley, t-hunted,
+    # autoevolution each apply their own limit), so a second slice would only
+    # confuse. The VALIDATION is still needed — the flat lists are built with
+    # the same trusting ``startswith("http")`` checks.
+    remaining = []
+    for src in (images or []):
+        if _is_safe_media_url(src):
+            remaining.append(src)
+        else:
+            logger.warning(
+                "[telegraph] dropping flat image with unusable src=%.100r", src
+            )
     if remaining:
         nodes.append(figure_img(remaining.pop(0)))
 
@@ -538,6 +637,7 @@ def preview_nodes(
     subtitle: str = "",
     blocks: Optional[List[dict]] = None,
     auto_marker: bool = False,
+    image_limit: Optional[int] = None,
 ) -> list:
     """Return the Telegra.ph node tree that ``publish_article`` would upload,
     without making any network call.
@@ -568,6 +668,7 @@ def preview_nodes(
     if blocks:
         return _build_content_from_blocks(
             subtitle, blocks, source_url, auto_marker=auto_marker,
+            image_limit=image_limit,
         )
     return _build_content(
         subtitle, paragraphs or [], images or [], source_url,
@@ -586,6 +687,7 @@ def publish_article(
     author_name: str = DEFAULT_AUTHOR_NAME,
     session: Optional[requests.Session] = None,
     auto_marker: bool = False,
+    image_limit: Optional[int] = None,
 ) -> str:
     """Publish a Russian translated article to Telegra.ph; return the page URL.
 
@@ -625,6 +727,7 @@ def publish_article(
         subtitle=subtitle,
         blocks=blocks,
         auto_marker=auto_marker,
+        image_limit=image_limit,
     )
     result = _api_call(
         "createPage",

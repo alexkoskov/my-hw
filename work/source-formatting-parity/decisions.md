@@ -244,3 +244,209 @@ outstanding — same as Wave 1.
   orangetrack's import closure
 - Hooks pass on all 13 changed files
 - Full suite: **1797 passed, 481 subtests** (was 1750 / 481), no regressions
+
+---
+
+## Operator decision 2026-08-06: safety net only for MEASURED failure
+
+Applies to tasks 6-15. The operator questioned the size of the safety net —
+the bot has run a long time and rarely crashes. Half right, and the split
+matters:
+
+**Earned its place.** The golden gate: orangetrack works today and the feature
+rebuilt its internals, while the only other check — "the orangetrack tests
+pass" — is structurally blind to what this feature changes (`grep` for
+`strong|<b>|<em>` across the three parser test files returns ZERO). It caught a
+wrong assertion in Task 5's own tests. And the `list_item` fix, which is a
+found bug, not insurance: every bullet was being translated twice, at cost.
+
+**Over-built.** The request-path marker bound defends against a 2 MB paragraph
+carrying 200k bold spans; the measured corpus of 14 real articles peaks at
+THREE runs per block. And the feature flag, which the security review already
+argued cannot deliver its mitigation — it applies only on restart, and restarts
+are forbidden in exactly the hours it would be needed.
+
+**Rule for the remaining tasks:** add a protective layer only where the failure
+is MEASURED on real data, not derived by reasoning. A derived risk goes into
+the report as an observation, not into the code. Already-written code is not
+removed retroactively — the two over-built pieces total ~60 lines and are
+cheaper left alone than touched.
+
+The project's risk model is SILENT damage, not crashes. A crash is loud — the
+channel goes quiet and an alert fires. What actually cost: two articles lost
+silently on a 402 (2026-07-14), bold leaking across whole paragraphs into the
+channel (2026-07-28), 38 consecutive ModuleNotFoundError from a module missing
+from a manifest. Restarts being forbidden 10:00-20:00 МСК is what makes a bad
+publish ride the whole day.
+
+---
+
+## Task 6: render surface — per-source image cap, `src` validation, preview parity
+
+**Status:** Done
+**Commit:** (wave 3)
+**Agent:** main agent
+**Summary:** The image cap became a parameter of the block render path and is
+resolved per source in `news_bot` from the parser modules' own constants;
+media `src` is now scheme-checked in the publisher, the one point every source
+and every path funnels through; and AC12 is closed by end-to-end tests that
+run real `preview_nodes` output through `render_html`.
+**Deviations:** Scope covered three files beyond the tech-spec's list for this
+task — `tests/test_orangetrack_golden.py` and `tests/fixtures/orangetrack_golden.json`
+(without them the baseline stops reflecting production and the diff promised to
+the operator would not exist) and `tests/test_fallback_publish_paths.py`
+(otherwise the `news_bot` wiring has no unit coverage). Not a licence to widen
+further.
+
+### GOLDEN DIFF — the operator's AC9/AC10 condition
+
+Re-shot on code with Task 5 already merged, AFTER all other work was green, by
+a one-off script kept out of the repo. Task 1's ban on a regeneration mode
+still stands.
+
+**Exactly one fixture changed: `gallery-20-images`.** The other 23 are
+byte-identical.
+
+| Counter | Before | After |
+|---|---|---|
+| parser `image` blocks | 20 | **20** (unchanged — the cap is in the renderer) |
+| flat `images` list | 10 | **10** (unchanged — the parser already sliced it) |
+| `figure` nodes in preview | 20 | **10** ← the sanctioned change |
+| `img` nodes in preview | 20 | **10** ← same nodes |
+
+**There are no other differences, and that is verified, not asserted.** Three
+programmatic checks, not eyeballing:
+
+1. The `parsed` contract (`title`, `subtitle`, `paragraphs`, `blocks`,
+   `images`) of the changed fixture compares EQUAL before vs after.
+2. With every `figure` node stripped from both trees, all 24 fixtures compare
+   equal — so nothing outside the image nodes moved anywhere in the corpus.
+3. The surviving 10 `figure` nodes are a PREFIX of the previous 20 — the drop
+   came off the tail, the hero is unchanged, and the order of the rest held.
+
+Independent corroboration from before the re-shoot: with the cap wired in and
+the old baseline still in place, exactly ONE of the 27 golden cases failed —
+`test_golden_matches[gallery-20-images]`. Isolation was demonstrated before
+anything was rewritten.
+
+**Reviews:**
+
+*Not run this session.* code-reviewer / security-auditor / test-reviewer
+outstanding, as for waves 1-2.
+
+**Verification:**
+- `tests/test_telegraph_publisher.py` → 108 passed (was 82). The 21 bare
+  filename fixtures (`"hero.jpg"` …) were made into real `https://` URLs —
+  the correct fix; weakening the check to admit them would have defeated it
+- `tests/test_preview_renderer.py` → 74 passed (was 70); the four new ones run
+  real publisher nodes through the renderer, which none of the previous 48 did
+- `tests/test_fallback_publish_paths.py` → 13 passed, 8 subtests
+- `pytest -k image_limit` → 19 passed
+- `git diff --stat tests/test_orangetrack_source.py` → empty
+- No regeneration mode added (the only `--update`/`REGEN` matches in `tests/`
+  are the prose in the golden file's docstring saying there is none)
+
+**Notes for later, not fixed here:**
+- `hw_review.cmd_preview`/`cmd_publish` do not pass `image_limit`, so the
+  archived CLI would show ALL images. The "preview equals publication"
+  invariant holds only when both are handed the SAME arguments, and that CLI
+  now no longer does. Path is archived by user-spec decision; file untouched.
+- `t_hunted_source._IMAGE_LIMIT` is private and `news_bot` now reads it. The
+  alternative was retyping 30, which drifts silently. A public alias would
+  mean editing a file Task 7 owns in this same wave — that is a request to
+  Task 7, not an edit from here.
+
+---
+
+## Task 7: t-hunted emits blocks
+
+**Status:** Done
+**Commit:** (wave 3)
+**Agent:** main agent
+**Summary:** `fetch_t_hunted_article` now walks the body with `BlockBuilder`
+and keeps ONE list — the blocks — deriving `paragraphs` and `images` from it
+after every removal, so the subtitle lift and the title-dedup predicate can no
+longer desync the two lists. The heading heuristic is switched on here because
+t-hunted has zero real heading tags in its body.
+**Deviations:** One addition beyond the task's plan, and it is measured rather
+than speculative: the corpus carries TWO YouTube embeds inside `div.post-body`
+(`o-penultimo-lote-de-2026`), which the flat-text parser dropped entirely. The
+video seam was therefore wired (`dom_blocks.YOUTUBE_HOSTS`, provider
+`youtube`). Per the operator's 2026-08-06 rule this qualifies — the need is in
+the data, not in an argument. `YOUTUBE_HOSTS` was published from `dom_blocks`
+rather than retyped in the parser; orangetrack keeps its private copy for now
+because touching it risks the golden gate for no benefit.
+
+**Corpus measurements (all 10 fixtures):**
+- Zero `<h2>/<h3>/<h4>` inside `div.post-body` — confirms the heuristic is the
+  only possible source of headings. Zero `<blockquote>`, so the text-loss edge
+  case the task flagged does not arise. 59 `<b>` tags to work with.
+- The heuristic found **12 headings** in `o-que-faz-um-hot-wheels-aumentar-de`
+  (45 paragraphs) — matching the user-spec's own measurement of the article
+  the feature was written for: "12 subheadings, 44 paragraphs".
+
+**Reviews:**
+
+*Not run this session.* code-reviewer / security-auditor / test-reviewer
+outstanding.
+
+**Verification:**
+- **ALIGNED on all 10 corpus fixtures** — patchable blocks == len(paragraphs)
+  on every one. This is the check that stands between the reader and a
+  Portuguese paragraph in the channel
+- Paragraph COUNTS identical to the pre-change baseline on all 10; image lists
+  identical on all 10. Text differs on 10 paragraphs out of ~150, all >0.98
+  similarity, and only in the two predicted forms (collapsed `\xa0`, dropped
+  space before punctuation) — the −0.10 % drift the tech-spec predicted
+- Kill switch: `SOURCE_FORMATTING_ENABLED=0` → `blocks is None`, paragraphs,
+  images and subtitle unchanged
+- 49 tests in the file pass, including the seven pre-existing regression tests
+  WITHOUT edits
+- Task 5 not disturbed: dom_blocks + orangetrack + golden + boilerplate +
+  deploy invariant → 352 passed
+
+**Note for later:** the lift takes the first PATCHABLE block, so an article
+opening with a whole-bold line would send that heading into the decorative
+`💬 «…»` lead. Spec-conformant and not seen in the corpus, but worth a look
+when the operator reviews real t-hunted output.
+
+---
+
+## Task 8: Runtime alignment guard
+
+**Status:** Done
+**Commit:** (wave 3)
+**Agent:** main agent
+**Summary:** `news_bot._blocks_if_aligned` drops `blocks` to `None` when the
+count of patchable blocks disagrees with `len(paragraphs)`, logs a WARNING
+naming the article and both numbers, and is wired at the single point where
+both final lists sit together before the row is written. Counting goes through
+`_llm_common._PATCHED_TEXT_BLOCK_TYPES` — the tuple both sides of the pairing
+actually read — rather than a literal retyped in `news_bot`.
+**Deviations:** None.
+
+**The guard's real failure mode is the false positive,** and half the tests
+exist for it. A guard that always fires would drop blocks on 100 % of
+publications and switch the feature off silently while every positive test
+stayed green. Three distinct false-positive classes are covered: an ordinary
+aligned article (proven on REAL `fetch_orangetrack_article` output, not a
+hand-built dict), an article with no blocks at all, and orangetrack's
+video-only post, which synthesizes `paragraphs = [title]` against zero
+patchable blocks — a naive `len(patchable) != len(paragraphs)` fires there and
+takes the video off the page.
+
+**Reviews:**
+
+*Not run this session.* code-reviewer / test-reviewer outstanding.
+
+**Verification:**
+- `tests/test_news_bot_alignment.py` → 16 passed; all 16 were red before the
+  helper existed
+- Both mismatch directions covered (more blocks, more paragraphs) — the
+  one-sided-invariant lesson of 2026-07-28
+- Storage contract pinned at the SQL level: the dropped value lands as SQL
+  NULL, not the string `'[]'`, verified by reading the raw column
+- No admin ping (Decision 3b), pinned by test; fail-open on internal error,
+  pinned by test
+- Adjacent suites (`test_job_prep_phase`, `test_pending_articles_repo`,
+  `test_job_distributed_publish`, `test_t_hunted_source`) → 219 passed

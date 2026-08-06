@@ -10,11 +10,17 @@ returns ZERO, so those tests are structurally blind to what this feature
 changes. Output can drift while every one of them stays green. A byte-level
 comparison is the only gate that actually holds.
 
-THE ONE SANCTIONED CHANGE. Task 6 applies the image limit on the block path,
-so the ``gallery-20-images`` fixture will lose ``figure`` nodes in the
-preview tree (20 → 10). The operator agreed to that on two conditions: the
-diff is shown BEFORE the deploy, and it shows FEWER IMAGES AND NOTHING ELSE.
-Any other difference is a regression, not part of the agreed deviation.
+THE ONE SANCTIONED CHANGE — TAKEN 2026-08-06. Task 6 applies the image limit
+on the block path, so the ``gallery-20-images`` fixture lost ``figure`` nodes
+in the preview tree (20 → 10). The operator agreed to that on two conditions:
+the diff is shown BEFORE the deploy, and it shows FEWER IMAGES AND NOTHING
+ELSE. Both were met — the recorded diff is in the feature's ``decisions.md``.
+Any FURTHER difference is a regression, not part of the agreed deviation.
+
+The baseline is rendered with orangetrack's own ``IMAGE_LIMIT``, the same
+value ``news_bot`` resolves for it in production. Without that the baseline
+would stop reflecting what actually ships, and the diff promised to the
+operator would not exist.
 
 THERE IS DELIBERATELY NO REGENERATION MODE — no ``--update`` flag, no
 ``REGEN`` env var, no helper script in the repo. If re-shooting the baseline
@@ -80,6 +86,7 @@ def _render(name: str) -> dict:
             LINK,
             parsed.get("subtitle", ""),
             parsed.get("blocks"),
+            image_limit=IMAGE_LIMIT,
         ),
     }
 
@@ -144,11 +151,17 @@ def test_gallery_fixture_exceeds_image_limit():
 
 
 def test_golden_records_todays_gallery_render_counts():
-    """Pin the three numbers that make the Task 6 diff readable: 20 image
-    blocks / 10 flat images (``IMAGE_LIMIT`` already cuts there) / 20 figure
-    nodes in the preview. After Task 6 the last one becomes 10, and that is
-    the ONLY number in this file that may move."""
+    """Pin the three numbers that made the Task 6 diff readable.
+
+    Before Task 6: 20 image blocks / 10 flat images / 20 figure nodes.
+    After Task 6:  20 image blocks / 10 flat images / **10** figure nodes.
+
+    The parser side did not move and must not — the cap lives in the renderer.
+    The third number was the ONLY one allowed to change, it changed by exactly
+    the sanctioned amount, and it is now pinned at its new value: a cap that
+    silently stops applying fails here.
+    """
     summary = _GOLDEN["gallery-20-images"]["summary"]
     assert summary["blocks_by_type"]["image"] == 20
     assert summary["images_flat"] == 10
-    assert summary["preview_figure_nodes"] == 20
+    assert summary["preview_figure_nodes"] == IMAGE_LIMIT == 10

@@ -587,3 +587,82 @@ def test_output_parses_as_html_without_error():
     walker.feed(out)
     walker.close()
     assert walker.saw_h1 is True
+
+
+# --------------------------------------------------------------------------- #
+# AC12 — end-to-end: real publisher nodes must survive the preview renderer   #
+# --------------------------------------------------------------------------- #
+#
+# The 48 tests above render HAND-WRITTEN node trees. None of them referenced
+# `blocks`, `runs` or `preview_nodes`, so they could all stay green while the
+# preview silently ate what the publisher actually emits — which is exactly
+# what happened on 2026-07-28: `<strong>` was missing from `_ALLOWED_TAGS`, an
+# unknown tag is dropped TOGETHER WITH ITS CHILDREN, and the word vanished from
+# the preview. These tests close the loop: blocks → preview_nodes → render_html.
+
+import telegraph_publisher as _tp  # noqa: E402
+
+
+_AC12_BLOCKS = [
+    {"type": "heading", "level": 3, "text": "Case A breakdown",
+     "runs": [{"text": "Case A breakdown"}]},
+    {"type": "paragraph",
+     "text": "The Alphard is the standout casting here.",
+     "runs": [
+         {"text": "The "},
+         {"text": "Alphard", "formats": ["bold"]},
+         {"text": " is the standout casting here."},
+     ]},
+    {"type": "list_item", "text": "Ferrari Testarossa",
+     "runs": [{"text": "Ferrari Testarossa"}]},
+    {"type": "list_item", "text": "Koenigsegg CC850",
+     "runs": [{"text": "Koenigsegg CC850"}]},
+    {"type": "image", "src": "https://cdn.example.com/hero.jpg"},
+]
+
+
+def _render(blocks, **kwargs):
+    nodes = _tp.preview_nodes("T", blocks=blocks, **kwargs)
+    return nodes, pr.render_html(nodes, "T")
+
+
+def test_publisher_blocks_render_headings_bold_and_list_items():
+    _, out = _render(_AC12_BLOCKS)
+    assert "<h3>Case A breakdown</h3>" in out
+    assert "<strong>Alphard</strong>" in out
+    assert out.count("• ") == 2
+    assert "Ferrari Testarossa" in out
+    assert "Koenigsegg CC850" in out
+
+
+def test_preview_does_not_swallow_words_around_bold():
+    """The exact shape of the 2026-07-28 incident: a dropped tag takes its
+    children with it, so a word disappears. Assert the WHOLE sentence."""
+    _, out = _render(_AC12_BLOCKS)
+    for word in ("The", "Alphard", "is", "the", "standout", "casting", "here."):
+        assert word in out, f"{word!r} vanished from the preview"
+
+
+def test_preview_image_limit_matches_published_nodes():
+    """Preview and publication must agree, and they agree only because they
+    are handed the SAME arguments — including the cap."""
+    blocks = [
+        {"type": "image", "src": f"https://cdn.example.com/x{i}.jpg"}
+        for i in range(20)
+    ]
+    nodes, out = _render(blocks, image_limit=10)
+    figures = [n for n in nodes if isinstance(n, dict) and n.get("tag") == "figure"]
+    assert len(figures) == 10
+    assert out.count("<img") == 10
+
+
+def test_preview_drops_unsafe_img_src_end_to_end():
+    """Defence in depth — the publisher drops it, and the renderer would too."""
+    blocks = [
+        {"type": "image", "src": "javascript:alert(1)"},
+        {"type": "paragraph", "text": "Body.", "runs": [{"text": "Body."}]},
+    ]
+    _, out = _render(blocks)
+    assert "javascript" not in out
+    assert "<img" not in out
+    assert "Body." in out

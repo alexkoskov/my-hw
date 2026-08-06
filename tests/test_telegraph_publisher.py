@@ -87,9 +87,9 @@ class TestEnsureAccessToken:
 
 class TestBuildContent:
     def test_hero_image_first(self):
-        nodes = tp._build_content("", ["para one"], ["img1.jpg"], None)
+        nodes = tp._build_content("", ["para one"], ["https://cdn.example.com/img1.jpg"], None)
         assert nodes[0]["tag"] == "figure"
-        assert nodes[0]["children"][0]["attrs"]["src"] == "img1.jpg"
+        assert nodes[0]["children"][0]["attrs"]["src"] == "https://cdn.example.com/img1.jpg"
         assert nodes[1]["tag"] == "p"
 
     def test_source_link_at_end(self):
@@ -103,7 +103,7 @@ class TestBuildContent:
 
     def test_images_interleaved_every_third_paragraph(self):
         paragraphs = [f"p{i}" for i in range(6)]
-        images = ["hero.jpg", "mid.jpg", "extra.jpg"]
+        images = ["https://cdn.example.com/hero.jpg", "https://cdn.example.com/mid.jpg", "https://cdn.example.com/extra.jpg"]
         nodes = tp._build_content("", paragraphs, images, None)
         # [figure(hero), p0, p1, p2, figure(mid), p3, p4, p5, figure(extra)]
         tags = [n["tag"] for n in nodes]
@@ -117,7 +117,7 @@ class TestBuildContent:
         nodes = tp._build_content(
             "Forgive me father",
             ["body para"],
-            ["hero.jpg"],
+            ["https://cdn.example.com/hero.jpg"],
             "http://src",
         )
         # [figure(hero), p(italic "💬 «subtitle»"), hr, p(body), p(footer)]
@@ -129,7 +129,7 @@ class TestBuildContent:
         assert italic_child["children"] == ["💬 «Forgive me father»"]
 
     def test_empty_subtitle_skips_lead_and_hr(self):
-        nodes = tp._build_content("", ["body"], ["hero.jpg"], None)
+        nodes = tp._build_content("", ["body"], ["https://cdn.example.com/hero.jpg"], None)
         # No hr when subtitle is empty
         assert all(n["tag"] != "hr" for n in nodes)
 
@@ -137,23 +137,23 @@ class TestBuildContent:
 class TestBuildContentFromBlocks:
     def test_image_caption_becomes_figcaption(self):
         blocks = [
-            {"type": "image", "src": "hero.jpg", "caption": "Photo: Mattel"},
+            {"type": "image", "src": "https://cdn.example.com/hero.jpg", "caption": "Photo: Mattel"},
             {"type": "paragraph", "text": "Body."},
-            {"type": "image", "src": "inline.jpg", "caption": "Photo: Lamley Group"},
+            {"type": "image", "src": "https://cdn.example.com/inline.jpg", "caption": "Photo: Lamley Group"},
         ]
         nodes = tp._build_content_from_blocks("", blocks, None)
         hero_children = nodes[0]["children"]
         assert hero_children[0]["tag"] == "img"
-        assert hero_children[0]["attrs"]["src"] == "hero.jpg"
+        assert hero_children[0]["attrs"]["src"] == "https://cdn.example.com/hero.jpg"
         assert hero_children[1] == {"tag": "figcaption", "children": ["Photo: Mattel"]}
         inline_figure = nodes[2]
         assert inline_figure["tag"] == "figure"
         assert inline_figure["children"][1] == {"tag": "figcaption", "children": ["Photo: Lamley Group"]}
 
     def test_image_without_caption_has_no_figcaption(self):
-        blocks = [{"type": "image", "src": "hero.jpg"}]
+        blocks = [{"type": "image", "src": "https://cdn.example.com/hero.jpg"}]
         nodes = tp._build_content_from_blocks("", blocks, None)
-        assert nodes[0]["children"] == [{"tag": "img", "attrs": {"src": "hero.jpg"}}]
+        assert nodes[0]["children"] == [{"tag": "img", "attrs": {"src": "https://cdn.example.com/hero.jpg"}}]
 
     def test_video_block_becomes_iframe(self):
         blocks = [
@@ -186,9 +186,9 @@ class TestBuildContentFromBlocks:
     def test_block_order_preserved_except_hero_promotion(self):
         blocks = [
             {"type": "paragraph", "text": "p1"},
-            {"type": "image", "src": "img1.jpg"},
+            {"type": "image", "src": "https://cdn.example.com/img1.jpg"},
             {"type": "paragraph", "text": "p2"},
-            {"type": "image", "src": "img2.jpg"},
+            {"type": "image", "src": "https://cdn.example.com/img2.jpg"},
         ]
         nodes = tp._build_content_from_blocks("", blocks, None)
         # First image promoted to hero; remaining blocks in original order
@@ -211,7 +211,7 @@ class TestPublishArticle:
         url = tp.publish_article(
             title="Заголовок",
             paragraphs=["Абзац 1.", "Абзац 2."],
-            images=["img1.jpg"],
+            images=["https://cdn.example.com/img1.jpg"],
             source_url="http://source",
             session=session,
         )
@@ -281,7 +281,7 @@ class TestAutoMarkerInArticleBody:
             monkeypatch,
             title="T",
             paragraphs=["body para 1", "body para 2"],
-            images=["hero.jpg"],
+            images=["https://cdn.example.com/hero.jpg"],
             source_url="https://example.com/src",
             subtitle="Лид",
             auto_marker=True,
@@ -303,7 +303,7 @@ class TestAutoMarkerInArticleBody:
             monkeypatch,
             title="T",
             paragraphs=["body"],
-            images=["hero.jpg"],
+            images=["https://cdn.example.com/hero.jpg"],
             source_url="https://example.com/src",
             subtitle="Лид",
         )
@@ -392,7 +392,7 @@ class TestAutoMarkerInArticleBody:
             images=None,
             source_url="https://example.com/src",
             blocks=[
-                {"type": "image", "src": "hero.jpg"},
+                {"type": "image", "src": "https://cdn.example.com/hero.jpg"},
                 {"type": "paragraph", "text": "body"},
             ],
             auto_marker=True,
@@ -454,7 +454,7 @@ class TestPreviewNodes:
 
     def test_blocks_path_matches_build_content_from_blocks(self):
         blocks = [
-            {"type": "image", "src": "hero.jpg", "caption": "cap"},
+            {"type": "image", "src": "https://cdn.example.com/hero.jpg", "caption": "cap"},
             {"type": "paragraph", "text": "body"},
         ]
         subtitle = "sub"
@@ -462,7 +462,7 @@ class TestPreviewNodes:
         preview = tp.preview_nodes(
             title="t",
             paragraphs=["ignored"],
-            images=["ignored.jpg"],
+            images=["https://cdn.example.com/ignored.jpg"],
             source_url=source_url,
             subtitle=subtitle,
             blocks=blocks,
@@ -587,7 +587,7 @@ class TestPreviewNodes:
             source_url="https://src",
             subtitle="Sub",
             blocks=[
-                {"type": "image", "src": "hero.jpg", "caption": "cap"},
+                {"type": "image", "src": "https://cdn.example.com/hero.jpg", "caption": "cap"},
                 {"type": "paragraph", "text": "body"},
                 {"type": "heading", "text": "Header", "level": 3},
             ],
@@ -1126,3 +1126,220 @@ class TestBoldMarkerDecoding:
         )
         body = [n for n in nodes if n.get("tag") == "p"]
         assert any(n["children"] == ["Просто текст."] for n in body)
+
+
+# --------------------------------------------------------------------------- #
+# Task 6 — per-source image cap on the block path (AC9)                       #
+# --------------------------------------------------------------------------- #
+
+
+def _figures(nodes):
+    return [n for n in nodes if isinstance(n, dict) and n.get("tag") == "figure"]
+
+
+def _iframes(nodes):
+    return [n for n in nodes if isinstance(n, dict) and n.get("tag") == "iframe"]
+
+
+def _img_srcs(nodes):
+    out = []
+    for fig in _figures(nodes):
+        for child in fig.get("children", []):
+            if isinstance(child, dict) and child.get("tag") == "img":
+                out.append(child["attrs"]["src"])
+    return out
+
+
+def _image_blocks(count, start=0):
+    return [
+        {"type": "image", "src": f"https://cdn.example.com/x{i}.jpg"}
+        for i in range(start, start + count)
+    ]
+
+
+class TestImageLimitOnBlocksPath:
+    """The per-source caps only ever sliced the flat ``images`` list, which
+    this path ignores entirely. Measured on 14 real articles: all four lamley
+    posts blow past their limit of 10 (14, 41, 48, 50)."""
+
+    def test_image_limit_caps_total_figures_including_hero(self):
+        nodes = tp._build_content_from_blocks(
+            "", _image_blocks(20), None, image_limit=10,
+        )
+        assert len(_figures(nodes)) == 10
+        # The hero is the first image and counts toward the limit.
+        assert _img_srcs(nodes)[0] == "https://cdn.example.com/x0.jpg"
+
+    def test_image_limit_drops_from_the_tail(self):
+        nodes = tp._build_content_from_blocks(
+            "", _image_blocks(20), None, image_limit=3,
+        )
+        assert _img_srcs(nodes) == [
+            "https://cdn.example.com/x0.jpg",
+            "https://cdn.example.com/x1.jpg",
+            "https://cdn.example.com/x2.jpg",
+        ]
+
+    def test_image_limit_none_means_unlimited(self):
+        """Protects hw_review and any third-party caller that does not pass
+        the argument — their behaviour must not change."""
+        nodes = tp._build_content_from_blocks("", _image_blocks(20), None)
+        assert len(_figures(nodes)) == 20
+
+    @pytest.mark.parametrize("limit, expected", [(0, 0), (1, 1), (5, 5)])
+    def test_image_limit_boundaries_are_literal(self, limit, expected):
+        """0 must never be read as "unlimited" — that silently discards the
+        setting."""
+        nodes = tp._build_content_from_blocks(
+            "", _image_blocks(20), None, image_limit=limit,
+        )
+        assert len(_figures(nodes)) == expected
+
+    def test_image_limit_ignores_video_blocks(self):
+        blocks = _image_blocks(10) + [
+            {"type": "video", "src": f"https://telegra.ph/embed/youtube?url=v{i}"}
+            for i in range(3)
+        ]
+        nodes = tp._build_content_from_blocks("", blocks, None, image_limit=10)
+        assert len(_figures(nodes)) == 10
+        assert len(_iframes(nodes)) == 3
+
+    def test_image_limit_is_threaded_through_preview_nodes(self):
+        nodes = tp.preview_nodes(
+            "T", blocks=_image_blocks(20), image_limit=4,
+        )
+        assert len(_figures(nodes)) == 4
+
+    def test_image_limit_is_threaded_through_publish_article(self):
+        captured = {}
+
+        def fake_api_call(method, data, session=None):
+            captured["content"] = json.loads(data["content"])
+            return {"url": "https://telegra.ph/x"}
+
+        with patch.object(tp, "_api_call", side_effect=fake_api_call), \
+                patch.object(tp, "ensure_access_token", return_value="tok"):
+            tp.publish_article(
+                "T", blocks=_image_blocks(20), image_limit=6,
+            )
+        assert len(_figures(captured["content"])) == 6
+
+    @pytest.mark.parametrize(
+        "source_limit, expected", [(30, 30), (10, 10)],
+        ids=["t-hunted-30", "lamley-10"],
+    )
+    def test_image_limit_per_source_30_and_10(self, source_limit, expected):
+        """A single hardcoded 10 anywhere in the chain MUST fail this: the
+        same 35-image article renders differently per source."""
+        nodes = tp._build_content_from_blocks(
+            "", _image_blocks(35), None, image_limit=source_limit,
+        )
+        assert len(_figures(nodes)) == expected
+
+
+class TestImageSrcValidation:
+    """The publisher is the one point every source and every path funnels
+    through. The per-source pickers trust ``startswith("http")`` — which lets
+    ``httpx://evil/x.jpg`` past — and autoevolution's gallery branch checks no
+    scheme at all."""
+
+    @pytest.mark.parametrize(
+        "src",
+        ["javascript:alert(1)", "data:image/svg+xml;base64,AAA",
+         "file:///etc/passwd", "httpx://evil.example/x.jpg",
+         "//cdn.example.com/x.jpg", "images/x.jpg", "", "   "],
+        ids=["javascript", "data", "file", "httpx-lookalike",
+             "protocol-relative", "relative", "empty", "blank"],
+    )
+    def test_unsafe_scheme_image_block_dropped(self, src):
+        blocks = [
+            {"type": "image", "src": src},
+            {"type": "paragraph", "text": "Body.", "runs": []},
+        ]
+        nodes = tp._build_content_from_blocks("", blocks, None)
+        assert _figures(nodes) == []
+
+    def test_https_http_and_uppercase_scheme_preserved(self):
+        """Negative control for the one-sided-invariant lesson of 2026-07-28:
+        without it, a policy that dropped EVERYTHING would pass above."""
+        for src in ("https://a.example/x.jpg", "http://a.example/x.jpg",
+                    "HTTPS://a.example/x.jpg",
+                    "https://a.example/x.jpg?w=1024",
+                    "https://a.example/фото.jpg"):
+            nodes = tp._build_content_from_blocks(
+                "", [{"type": "image", "src": src}], None,
+            )
+            assert _img_srcs(nodes) == [src], src
+
+    def test_unsafe_hero_promotes_next_valid_image(self):
+        blocks = [
+            {"type": "image", "src": "javascript:alert(1)"},
+            {"type": "image", "src": "https://cdn.example.com/real.jpg"},
+            {"type": "image", "src": "https://cdn.example.com/second.jpg"},
+        ]
+        nodes = tp._build_content_from_blocks("", blocks, None)
+        assert _img_srcs(nodes) == [
+            "https://cdn.example.com/real.jpg",
+            "https://cdn.example.com/second.jpg",
+        ]
+
+    def test_invalid_images_do_not_consume_limit_slots(self):
+        """Order of operations: drop by scheme FIRST, cap SECOND. Otherwise
+        junk eats a live image's slot."""
+        blocks = (
+            [{"type": "image", "src": "javascript:alert(1)"}] * 3
+            + _image_blocks(5)
+        )
+        nodes = tp._build_content_from_blocks("", blocks, None, image_limit=3)
+        assert _img_srcs(nodes) == [
+            "https://cdn.example.com/x0.jpg",
+            "https://cdn.example.com/x1.jpg",
+            "https://cdn.example.com/x2.jpg",
+        ]
+
+    def test_image_block_without_src_is_skipped_not_raised(self):
+        blocks = [
+            {"type": "image", "caption": "orphan"},
+            {"type": "paragraph", "text": "Body.", "runs": []},
+        ]
+        nodes = tp._build_content_from_blocks("", blocks, None)  # must not raise
+        assert _figures(nodes) == []
+
+    def test_flat_path_drops_unsafe_src(self):
+        nodes = tp._build_content(
+            "", ["para"],
+            ["javascript:alert(1)", "https://cdn.example.com/ok.jpg"],
+            None,
+        )
+        assert _img_srcs(nodes) == ["https://cdn.example.com/ok.jpg"]
+
+    def test_video_iframe_src_validated(self):
+        blocks = [
+            {"type": "video", "src": "javascript:alert(1)"},
+            {"type": "video",
+             "src": "https://telegra.ph/embed/youtube?url=https%3A%2F%2Fx"},
+        ]
+        nodes = tp._build_content_from_blocks("", blocks, None)
+        assert [n["attrs"]["src"] for n in _iframes(nodes)] == [
+            "https://telegra.ph/embed/youtube?url=https%3A%2F%2Fx"
+        ]
+
+    def test_publisher_policy_matches_preview_renderer(self):
+        """Guard against a SECOND, diverging policy. The publisher keeps its
+        own copy rather than importing preview_renderer (the CLI layer must
+        not be a dependency of the production path) — so the copies have to be
+        proven equal, not assumed equal."""
+        import preview_renderer
+
+        urls = [
+            "https://a.example/x.jpg", "http://a.example/x.jpg",
+            "HTTPS://a.example/x.jpg", "  https://a.example/x.jpg",
+            "javascript:alert(1)", "data:image/png;base64,AAA",
+            "file:///etc/passwd", "httpx://evil/x.jpg",
+            "//cdn/x.jpg", "images/x.jpg", "", "   ",
+            "https://a.example/x.jpg?w=1024&h=2",
+        ]
+        for url in urls:
+            mine = tp._is_safe_media_url(url)
+            theirs = bool(preview_renderer._SAFE_URL_RE.match(url.strip()))
+            assert mine == theirs, f"policies disagree on {url!r}"

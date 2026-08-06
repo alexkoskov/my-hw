@@ -516,116 +516,6 @@
         },
         {
           "children": [
-            {
-              "attrs": {
-                "src": "https://orangetrackdiecast.com/wp-content/uploads/x10.jpg"
-              },
-              "tag": "img"
-            }
-          ],
-          "tag": "figure"
-        },
-        {
-          "children": [
-            {
-              "attrs": {
-                "src": "https://orangetrackdiecast.com/wp-content/uploads/x11.jpg"
-              },
-              "tag": "img"
-            }
-          ],
-          "tag": "figure"
-        },
-        {
-          "children": [
-            {
-              "attrs": {
-                "src": "https://orangetrackdiecast.com/wp-content/uploads/x12.jpg"
-              },
-              "tag": "img"
-            }
-          ],
-          "tag": "figure"
-        },
-        {
-          "children": [
-            {
-              "attrs": {
-                "src": "https://orangetrackdiecast.com/wp-content/uploads/x13.jpg"
-              },
-              "tag": "img"
-            }
-          ],
-          "tag": "figure"
-        },
-        {
-          "children": [
-            {
-              "attrs": {
-                "src": "https://orangetrackdiecast.com/wp-content/uploads/x14.jpg"
-              },
-              "tag": "img"
-            }
-          ],
-          "tag": "figure"
-        },
-        {
-          "children": [
-            {
-              "attrs": {
-                "src": "https://orangetrackdiecast.com/wp-content/uploads/x15.jpg"
-              },
-              "tag": "img"
-            }
-          ],
-          "tag": "figure"
-        },
-        {
-          "children": [
-            {
-              "attrs": {
-                "src": "https://orangetrackdiecast.com/wp-content/uploads/x16.jpg"
-              },
-              "tag": "img"
-            }
-          ],
-          "tag": "figure"
-        },
-        {
-          "children": [
-            {
-              "attrs": {
-                "src": "https://orangetrackdiecast.com/wp-content/uploads/x17.jpg"
-              },
-              "tag": "img"
-            }
-          ],
-          "tag": "figure"
-        },
-        {
-          "children": [
-            {
-              "attrs": {
-                "src": "https://orangetrackdiecast.com/wp-content/uploads/x18.jpg"
-              },
-              "tag": "img"
-            }
-          ],
-          "tag": "figure"
-        },
-        {
-          "children": [
-            {
-              "attrs": {
-                "src": "https://orangetrackdiecast.com/wp-content/uploads/x19.jpg"
-              },
-              "tag": "img"
-            }
-          ],
-          "tag": "figure"
-        },
-        {
-          "children": [
             "Источник: ",
             {
               "attrs": {
@@ -648,8 +538,8 @@
         "blocks_total": 21,
         "images_flat": 10,
         "paragraphs_flat": 1,
-        "preview_figure_nodes": 20,
-        "preview_img_nodes": 20
+        "preview_figure_nodes": 10,
+        "preview_img_nodes": 10
       }
     },
     "gallery-dedup": {
