@@ -40,7 +40,9 @@ and ``outage_state``.
 from __future__ import annotations
 
 import datetime as dt
+import json
 import os
+import re
 import sqlite3
 import sys
 import tempfile
@@ -52,9 +54,12 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 import pytz
 
+import _llm_common
+import dom_blocks
 import news_bot
 import outage_state
 import pending_articles_repo
+import telegraph_publisher
 from claude_transcreation import ClaudeOutageError, ClaudeTranscreationError
 
 
@@ -5267,6 +5272,863 @@ class TestContentGateIntake(_PrepPhaseBase):
             [r['link'] for r in pending_articles_repo.list_held()],
             [self.POSTER_LINK])
         self.assertEqual(pending_articles_repo.count_pending(), 0)
+
+
+# ---------------------------------------------------------------------------
+# source-formatting-parity Task 9 — end-to-end formatting chain (Phase 1,
+# t-hunted only).
+#
+# Every link of the chain is already covered on its own (Task 5 the module,
+# Task 7 the parser, Task 8 the guard, Task 6 the render surface). NOTHING
+# ran them in sequence, and every wound this feature paid for lived on a
+# SEAM: runs surviving the parser but lost in the SQLite JSON round-trip;
+# alignment breaking between two lists rather than inside either one; the
+# image cap not applying because the block renderer never knew about it.
+#
+# Harness rules for everything below, each one bought by an incident:
+#
+#   * ``telegraph_publisher._api_call`` is the mock point, NOT
+#     ``publish_article``. Patching ``publish_article`` (as most of the
+#     older classes in this file do) means the renderer never runs, no
+#     node tree exists, and every assertion about ``strong`` / ``h3`` /
+#     ``figure`` would be checking the test's own fixture.
+#   * The LLM stand-in calls the REAL ``_llm_common._build_user_message``
+#     (request encoding) and the REAL
+#     ``_llm_common._patch_text_with_ru_paragraphs`` (response decoding), so
+#     the ``**marker**`` round-trip under test is the production one. It
+#     does NOT replace only the network hop: standing in for
+#     ``transcreate_via_claude`` also skips ``_parse_response``,
+#     ``_truncate_paragraphs`` and the caption second pass. That matters
+#     once — the paragraph-divergence WARNING lives in ``_parse_response``,
+#     so the log-silence test below covers the publish leg, not the whole
+#     translation call. ``_parse_response``'s own floors are pinned by
+#     ``tests/test_llm_common.py::TestSanityFloorRelaxation``.
+#   * The parser is the real ``fetch_t_hunted_article``, reached through
+#     the real ``news_bot.fetch_full_article`` domain routing; only the
+#     ``requests`` session is replaced. Fixture URLs must therefore stay on
+#     ``t-hunted.blogspot.com`` or the parser's SSRF allowlist returns
+#     ``None`` and the test "passes" on emptiness.
+# ---------------------------------------------------------------------------
+
+
+T_HUNTED_FIXTURE_DIR = os.path.join(
+    os.path.dirname(os.path.abspath(__file__)),
+    'fixtures', 'articles', 't_hunted',
+)
+
+
+def _iter_nodes(nodes):
+    """Depth-first walk over a Telegra.ph node tree, yielding dict nodes."""
+    for node in nodes:
+        if isinstance(node, dict):
+            yield node
+            yield from _iter_nodes(node.get('children') or [])
+
+
+def _nodes_with_tag(nodes, tag):
+    return [n for n in _iter_nodes(nodes) if n.get('tag') == tag]
+
+
+def _count_tag(nodes, tag):
+    return len(_nodes_with_tag(nodes, tag))
+
+
+def _node_text(node):
+    """Concatenate every string descendant of ``node`` in document order."""
+    parts = []
+
+    def walk(children):
+        for child in children:
+            if isinstance(child, str):
+                parts.append(child)
+            elif isinstance(child, dict):
+                walk(child.get('children') or [])
+
+    walk(node.get('children') or [])
+    return ''.join(parts)
+
+
+def _texts_of_tag(nodes, tag):
+    return [_node_text(n) for n in _nodes_with_tag(nodes, tag)]
+
+
+def _bold_runs(block):
+    return [r for r in (block.get('runs') or [])
+            if 'bold' in (r.get('formats') or [])]
+
+
+class _FormattingChainBase(_IntegrationBase):
+    """Runs a t-hunted article through parser → queue → LLM → Telegraph.
+
+    ``_stage`` drives the REAL ``news_bot.job()`` with only the RSS feed and
+    the parser's HTTP session replaced, so the row in ``pending_articles``
+    is produced by production code including ``_blocks_if_aligned``.
+    ``_publish`` then calls the real ``_fallback_publish`` on that row and
+    captures the node tree handed to ``createPage``.
+
+    ``news_bot._fallback_publish`` is patched for the duration of the
+    staging call only — ``job()`` would otherwise run its publish loop
+    inside the staging step and the two legs could not be asserted apart.
+    """
+
+    LINK = 'https://t-hunted.blogspot.com/2026/01/post.html'
+    #: Kept Hot-Wheels-relevant on purpose: ``_is_hot_wheels_relevant``
+    #: drops sibling-brand titles before ``fetch_full_article`` is ever
+    #: reached, and the article then never enters the chain at all.
+    FEED_TITLE = 'Hot Wheels — novidades da semana'
+
+    def setUp(self):
+        super().setUp()
+        self._start_patch(patch('news_bot.time.sleep'))
+        # publish_article raises without a token before it renders anything.
+        self._start_patch(
+            patch.dict(os.environ, {'TELEGRAPH_ACCESS_TOKEN': 'test-token'}))
+        self.published_trees = []   # node trees captured at createPage
+        self.llm_payloads = []      # decoded _build_user_message output
+        self.ru_results = []        # what the LLM stand-in handed back
+
+    # -- fixtures ----------------------------------------------------------
+
+    @staticmethod
+    def fixture_html(name):
+        path = os.path.join(T_HUNTED_FIXTURE_DIR, name)
+        with open(path, encoding='utf-8') as fh:
+            return fh.read()
+
+    @staticmethod
+    def build_html(inner, title='Novidades Hot Wheels'):
+        """Minimal Blogger page in the shape the parser expects."""
+        return (
+            f'<html><body><h3 class="post-title">{title}</h3>'
+            f'<div class="post-body">{inner}</div></body></html>'
+        )
+
+    @staticmethod
+    def _http_response(html):
+        response = MagicMock()
+        response.text = html
+        response.content = html.encode('utf-8')
+        response.raise_for_status.return_value = None
+        return response
+
+    # -- chain legs --------------------------------------------------------
+
+    def _stage(self, html, link=None, feed_title=None):
+        """Run the prep phase over one t-hunted entry; return the staged row."""
+        link = link or self.LINK
+        session = MagicMock()
+        session.get.return_value = self._http_response(html)
+        entry = {
+            'link': link,
+            'title': feed_title or self.FEED_TITLE,
+            'published': '2026-01-01',
+            'summary': 'Summary',
+        }
+        with patch('t_hunted_source.requests.Session', return_value=session), \
+                patch('news_bot.load_feeds',
+                      return_value=['https://feed.example/rss']), \
+                patch('news_bot.fetch_rss', return_value=[entry]), \
+                patch('news_bot._fallback_publish'):
+            news_bot.job()
+        return pending_articles_repo.get_pending(link)
+
+    def _translator(self, drop_markers=False, ru_prefix='РУ '):
+        """LLM stand-in wired through the REAL request/response helpers.
+
+        ``drop_markers=True`` models the AC6 failure: the model returns
+        prose with every ``**`` gone. Everything else about the call is
+        identical, which is what makes the two paths comparable.
+        """
+        def translate(row, **_kwargs):
+            payload = json.loads(_llm_common._build_user_message(row))
+            self.llm_payloads.append(payload)
+            ru_paragraphs = []
+            for paragraph in payload['paragraphs']:
+                text = paragraph.replace('**', '') if drop_markers else paragraph
+                # A hand-authored leading bullet stays leading: a translator
+                # renders the line, it does not push punctuation inward.
+                # This matters — Decision 10's doubling guard strips the
+                # bullet off the TRANSLATED text, so a stand-in that buried
+                # it mid-string would exercise a case no model produces.
+                bullet = ''
+                if text.lstrip().startswith('•'):
+                    bullet = '• '
+                    text = text.lstrip().lstrip('•').lstrip()
+                ru_paragraphs.append(bullet + ru_prefix + text)
+            result = {
+                'title': ru_prefix + (row.get('title') or ''),
+                'alts': ['Вариант один', 'Вариант два'],
+                'subtitle': ru_prefix + (row.get('subtitle') or ''),
+                'paragraphs': ru_paragraphs,
+                'blocks': _llm_common._patch_text_with_ru_paragraphs(
+                    row.get('blocks'), ru_paragraphs),
+            }
+            self.ru_results.append(result)
+            return result
+        return translate
+
+    def _capture_api(self, method, data, session=None):
+        if method == 'createPage':
+            self.published_trees.append(json.loads(data['content']))
+        return {'url': 'https://telegra.ph/test-page', 'path': 'test-page'}
+
+    def _publish(self, row, translate=None):
+        """Publish ``row`` for real; the node tree lands in published_trees."""
+        with patch('news_bot.transcreate_via_claude',
+                   side_effect=translate or self._translator()), \
+                patch('news_bot.send_telegraph_teaser', return_value=True), \
+                patch('telegraph_publisher._api_call',
+                      side_effect=self._capture_api):
+            return news_bot._fallback_publish(row)
+
+    def _run_chain(self, html, link=None, translate=None, feed_title=None):
+        """Whole chain; returns ``(row, node_tree)``."""
+        row = self._stage(html, link=link, feed_title=feed_title)
+        self.assertIsNotNone(
+            row, 'the article never reached pending_articles — the chain '
+                 'under test did not run at all')
+        self._publish(row, translate=translate)
+        self.assertTrue(
+            self.published_trees,
+            'createPage was never called — nothing was rendered')
+        return row, self.published_trees[-1]
+
+    #: Wipes the tables that make a second run of the same article a no-op
+    #: (already processed / already published / already pending). REUSED from
+    #: TestCrossSourceDedup by plain-function assignment rather than
+    #: subclassing — the same idiom (and the same reason) as
+    #: TestDedupReviewButtons above: inheriting would re-register that class's
+    #: tests under this one.
+    _reset_tables = TestCrossSourceDedup._reset_tables
+
+
+class TestFormattingChainTHunted(_FormattingChainBase):
+    """Scenario 1 — formatting survives parser → queue → LLM → Telegraph.
+
+    Fixtures are real corpus articles, picked by measurement:
+    ``johnny-lightning-american-graffiti`` carries 20 PARTIAL bold spans
+    inside ordinary paragraphs (the interesting case — a whole-bold
+    paragraph would be reclassified as a heading), and
+    ``o-que-faz-um-hot-wheels-aumentar-de`` is the 45-paragraph article the
+    user-spec was written against, whose 12 subheadings exist ONLY through
+    the whole-bold heuristic (t-hunted has zero real ``<h2>/<h3>`` tags).
+    """
+
+    BOLD_FIXTURE = 'johnny-lightning-american-graffiti.html'
+    HEADING_FIXTURE = 'o-que-faz-um-hot-wheels-aumentar-de.html'
+
+    #: Measured on the frozen corpus fixtures (the same counts Task 7 recorded
+    #: in decisions.md). These are PINNED NUMBERS, not derived ones, and that
+    #: is the point: a test that reads its expectation out of the very row it
+    #: is checking cannot tell "the bold survived" from "the source arrived
+    #: with no bold at all" — both come out as ``0 == 0``. That exact hole let
+    #: a runs-stripping mutation through on the first pass.
+    EXPECTED_BOLD_SPANS = 20
+    EXPECTED_HEADINGS = 12
+
+    def _assert_fixture_still_carries_bold(self, row):
+        self.assertEqual(
+            len([r for b in row['blocks'] for r in _bold_runs(b)]),
+            self.EXPECTED_BOLD_SPANS,
+            'the staged row no longer carries the bold this fixture was '
+            'chosen for — every count below would compare zero against zero')
+
+    def test_bold_run_survives_parser_queue_translation_and_telegraph(self):
+        """Asserted at BOTH levels, because the node tree alone is not proof.
+
+        ``_decode_bold_markers`` in the publisher also makes bold out of bare
+        ``**`` left sitting in the text, so a page full of ``<strong>`` can
+        coexist with a completely dead runs path — the trap the task's own
+        list names. The runs on the RU blocks and the tags on the page are
+        one behaviour and are checked in one place.
+        """
+        row, nodes = self._run_chain(self.fixture_html(self.BOLD_FIXTURE))
+
+        self._assert_fixture_still_carries_bold(row)
+        source_bold = [r['text'] for b in row['blocks'] for r in _bold_runs(b)]
+
+        # Level 1 — the runs on the blocks handed to the publisher.
+        ru_blocks = self.ru_results[-1]['blocks']
+        self.assertEqual(
+            len([b for b in ru_blocks if _bold_runs(b)]),
+            len([b for b in row['blocks'] if _bold_runs(b)]),
+            'the RU blocks handed to the publisher lost their bold runs')
+        for block in ru_blocks:
+            self.assertNotIn(
+                '**', block.get('text') or '',
+                'a raw marker survived into the block text — the renderer '
+                'would bold it by accident and the runs path is untested')
+
+        # Level 2 — the nodes that actually went to createPage.
+        strong_texts = _texts_of_tag(nodes, 'strong')
+        self.assertEqual(
+            len(strong_texts), len(source_bold),
+            'every bold span of the source must reach the page as <strong>')
+        self.assertEqual(strong_texts, source_bold)
+
+    def test_blocks_round_trip_through_sqlite_with_runs_intact(self):
+        """SQLite stores ``blocks`` as JSON text. The round-trip is where
+        runs would silently vanish, and ``None`` vs ``[]`` is a live
+        distinction downstream (Task 8 drops to NULL, not to an empty list).
+        """
+        row = self._stage(self.fixture_html(self.BOLD_FIXTURE))
+
+        self.assertIsInstance(row['blocks'], list)
+        self.assertNotEqual(
+            row['blocks'], [],
+            'blocks came back as an empty list — assertFalse would not tell '
+            'this apart from None, and the two mean different things here')
+        runs = [r for b in row['blocks'] for r in _bold_runs(b)]
+        self.assertTrue(runs, 'bold runs did not survive the JSON round-trip')
+        for run in runs:
+            self.assertIsInstance(run['text'], str)
+            self.assertEqual(run['formats'], ['bold'])
+
+    def test_runs_are_encoded_as_bold_markers_in_the_llm_request(self):
+        """``_build_user_message`` → ``_encode_format_markers`` is the leg
+        that turns runs into something the model can preserve."""
+        row, _nodes = self._run_chain(self.fixture_html(self.BOLD_FIXTURE))
+
+        self._assert_fixture_still_carries_bold(row)
+        sent = self.llm_payloads[-1]['paragraphs']
+        source_bold = [r['text'] for b in row['blocks'] for r in _bold_runs(b)]
+        marked = [p for p in sent if '**' in p]
+        self.assertEqual(
+            len(marked), len([b for b in row['blocks'] if _bold_runs(b)]),
+            'the request lost its markers — the model never sees the emphasis')
+        for span in source_bold:
+            self.assertTrue(
+                any(f'**{span}**' in p for p in sent),
+                f'bold span {span!r} reached the LLM without its markers')
+
+    def test_heading_block_reaches_telegraph_as_h3(self):
+        """t-hunted has no real heading tags; every ``h3`` on the page comes
+        from the whole-bold heuristic (Decision 2). 12 of them on this
+        article — the user-spec's own measurement.
+        """
+        row, nodes = self._run_chain(self.fixture_html(self.HEADING_FIXTURE))
+
+        headings = [b for b in row['blocks'] if b.get('type') == 'heading']
+        self.assertEqual(
+            len(headings), self.EXPECTED_HEADINGS,
+            'the heuristic stopped finding the subheadings this article was '
+            'measured to have — the h3 count below would then compare zero '
+            'against zero')
+        self.assertEqual(_count_tag(nodes, 'h3'), len(headings))
+
+    def test_list_item_reaches_telegraph_with_exactly_one_bullet(self):
+        """No corpus article carries a list, so the input is synthetic — and
+        kept next to the assertion so its shape is readable from here.
+
+        ONE of the two items authors its bullet by hand. That is what makes
+        this a test of Decision 10's doubling guard rather than a test that
+        the publisher can prepend a character: with a clean source only, the
+        guard could be deleted and the count would still be 1.
+        """
+        row, nodes = self._run_chain(self.build_html(
+            '<p>Primeiro parágrafo do post com bastante texto editorial.</p>'
+            '<p>Segundo parágrafo do post com bastante texto editorial.</p>'
+            '<ul><li>• Primeiro item da lista</li>'
+            '<li>Segundo item da lista</li></ul>'
+        ))
+
+        list_items = [b for b in row['blocks'] if b.get('type') == 'list_item']
+        self.assertEqual(len(list_items), 2)
+        self.assertTrue(
+            (list_items[0].get('text') or '').startswith('•'),
+            'the hand-authored bullet vanished before the publisher saw it, '
+            'so the doubling guard is not being exercised')
+        bullets = [t for t in _texts_of_tag(nodes, 'p') if '•' in t]
+        self.assertEqual(len(bullets), 2)
+        for text in bullets:
+            self.assertEqual(
+                text.count('•'), 1,
+                f'bullet doubled in {text!r} — the source bullet was not '
+                f'stripped before the publisher prepended its own')
+
+    def test_alignment_guard_does_not_fire_on_a_real_t_hunted_article(self):
+        """End-to-end false-positive control for Task 8. A guard that fires
+        on ordinary articles switches the whole feature off silently while
+        every positive test above stays green.
+        """
+        with self.assertLogs('news_bot', level='INFO') as logs:
+            row, nodes = self._run_chain(self.fixture_html(self.BOLD_FIXTURE))
+
+        self.assertIsNotNone(
+            row['blocks'], 'the alignment guard dropped the blocks of a '
+                           'normal article — the feature is off in production')
+        self.assertEqual(
+            [line for line in logs.output if '[align]' in line], [])
+        self.assertGreater(_count_tag(nodes, 'strong'), 0)
+
+
+class TestMarkersLostDegradeSilently(_FormattingChainBase):
+    """Scenario 2 — AC6 / Decision 3b: when the model returns no markers the
+    article publishes as plain text and the operator hears NOTHING.
+
+    Silence is the requirement, not an omission. The project's alert
+    vocabulary already runs E001–E038; a ping per article with no bold
+    would train the operator to swipe pings away, and the next real E011 or
+    E015 would drown in that noise. An absence assertion is the most
+    fragile kind of test there is, so the class also proves the ping path
+    is reachable in this very harness.
+    """
+
+    FIXTURE = 'johnny-lightning-american-graffiti.html'
+
+    def _assert_the_publish_actually_ran(self, row):
+        """Both assertions in this class are assertions of ABSENCE, and an
+        absence is trivially true when the code never executed. Verified the
+        hard way: stubbing ``_fallback_publish`` out entirely left both of
+        them green until this check existed.
+        """
+        self.assertTrue(
+            self.published_trees,
+            'createPage was never reached — "no ping" and "no WARNING" are '
+            'then statements about code that did not run')
+        self.assertIsNotNone(
+            pending_articles_repo.get_published(row['link']),
+            'the article never reached published_articles — the degraded '
+            'publish under test did not complete')
+
+    def test_markers_lost_publishes_plain_text(self):
+        """Run the SAME article twice — markers kept, markers lost — and
+        compare the two pages.
+
+        The two arms alone are not enough, though, and the gap is specific:
+        whole-node loss is INVISIBLE to them, because both arms lose the
+        same nodes. So the arms are paired with a containment check over
+        ``p`` AND ``h3`` — the ``h3`` half matters, since the whole-bold
+        heading heuristic sends some paragraphs there and a ``p``-only check
+        reports them as missing. Measured on this fixture: 88 RU paragraphs
+        against 90 rendered nodes, nothing dropped.
+        """
+        lost_row, lost_nodes = self._run_chain(
+            self.fixture_html(self.FIXTURE),
+            translate=self._translator(drop_markers=True))
+        self._reset_tables()
+        self.published_trees.clear()
+        kept_row, kept_nodes = self._run_chain(self.fixture_html(self.FIXTURE))
+
+        self.assertTrue(
+            [b for b in lost_row['blocks'] if _bold_runs(b)],
+            'the source had no bold, so losing it proves nothing')
+        self.assertEqual(
+            _count_tag(lost_nodes, 'strong'), 0,
+            'markers were dropped by the model but bold appeared anyway')
+        self.assertGreater(_count_tag(kept_nodes, 'strong'), 0)
+        for tag in ('p', 'h3'):
+            with self.subTest(tag=tag):
+                self.assertEqual(
+                    _texts_of_tag(lost_nodes, tag),
+                    _texts_of_tag(kept_nodes, tag),
+                    'the degraded page carries different TEXT than the '
+                    'formatted one — degradation is supposed to cost only '
+                    'the emphasis')
+        self.assertEqual(lost_row['paragraphs'], kept_row['paragraphs'])
+
+        # Whole-node loss slips past the two arms — they would truncate
+        # identically. Assert every staged paragraph is actually ON the page.
+        rendered = (_texts_of_tag(lost_nodes, 'p')
+                    + _texts_of_tag(lost_nodes, 'h3'))
+        missing = [p for p in lost_row['paragraphs']
+                   if not any(p in text for text in rendered)]
+        self.assertEqual(
+            missing, [],
+            f'{len(missing)} staged paragraph(s) never reached the page')
+
+        self.assertIsNotNone(
+            pending_articles_repo.get_published(lost_row['link']))
+
+    def test_markers_lost_send_no_admin_notification(self):
+        row = self._stage(self.fixture_html(self.FIXTURE))
+        # Staging pings (E0xx funnel alerts) must not be counted as if they
+        # came from the publish under test.
+        self.mock_notify.reset_mock()
+
+        self._publish(row, translate=self._translator(drop_markers=True))
+
+        self._assert_the_publish_actually_ran(row)
+        self.assertEqual(
+            self.mock_notify.call_args_list, [],
+            'losing the markers pinged the operator — Decision 3b requires '
+            'silence, and a per-article ping buries the real alerts')
+
+    def test_markers_lost_positive_control_a_real_alert_still_pings(self):
+        """Positive control. Without it, the assertion above is green even
+        when the notification code is simply never reached.
+
+        The event is a zombie pending row: the link is already in
+        ``published_articles``, so ``_fallback_publish`` short-circuits on
+        its idempotency guard and pings. That guard sits at the TOP of the
+        function, so this proves the ping path is wired in this harness —
+        not that a ping could be raised from inside the translated region.
+        The check above is what covers the region itself.
+        """
+        row = self._stage(self.fixture_html(self.FIXTURE))
+        self._publish(row, translate=self._translator(drop_markers=True))
+        self.assertIsNotNone(pending_articles_repo.get_published(row['link']))
+
+        pending_articles_repo.insert_pending(row)   # the zombie
+        zombie = pending_articles_repo.get_pending(row['link'])
+        self.mock_notify.reset_mock()
+
+        self._publish(zombie, translate=self._translator(drop_markers=True))
+
+        self.assertEqual(
+            self.mock_notify.call_count, 1,
+            'the same harness cannot deliver a ping at all — the silence '
+            'asserted by the test above means nothing')
+
+    def test_markers_lost_leave_no_warning_or_error_in_the_log(self):
+        """Decision 4 makes the asymmetry deliberate: a desync WARNs, a lost
+        marker does not. WARNING stays a signal worth reading."""
+        row = self._stage(self.fixture_html(self.FIXTURE))
+
+        with self.assertNoLogs(level='WARNING'):
+            self._publish(row, translate=self._translator(drop_markers=True))
+
+        self._assert_the_publish_actually_ran(row)
+
+
+class TestBoldHeavyArticle(_FormattingChainBase):
+    """Scenario 3 — AC7: there is no "too much bold" threshold, and adding
+    one later must fail loudly here.
+
+    The fixture is synthetic because no corpus article is bold-heavy. Two
+    DISTINCT bold spans per paragraph on purpose: ``_encode_format_markers``
+    locates runs with ``str.find``, so two identical spans would collapse
+    into one marker and the count assertion would quietly weaken.
+    """
+
+    PARAGRAPHS = 12
+    #: Two bold spans per paragraph, minus the first paragraph — the subtitle
+    #: lift moves it out of ``blocks`` before anything downstream sees it, so
+    #: 24 authored ``<b>`` tags arrive as 22 spans. Pinned rather than counted
+    #: off the row for the same reason as TestFormattingChainTHunted: an
+    #: expectation read out of the object under test cannot tell "every span
+    #: survived" from "the spans were merged or lost on the way in". Verified
+    #: — coalescing each block's runs into one keeps the ≥0.9 ratio guard
+    #: happy and left all three tests green until this constant existed.
+    EXPECTED_BOLD_SPANS = 2 * (PARAGRAPHS - 1)
+
+    def _paragraph_source(self, index, bold=True):
+        first = f'Lançamento {index} da série Boulevard em escala 1:64'
+        second = f'edição limitada número {index} com rodas Real Riders'
+        if bold:
+            return f'<p><b>{first}</b> e <b>{second}</b>.</p>'
+        return f'<p>{first} e {second}.</p>'
+
+    def _html(self, bold=True):
+        return self.build_html(''.join(
+            self._paragraph_source(i, bold=bold)
+            for i in range(self.PARAGRAPHS)))
+
+    def test_bold_heavy_every_span_reaches_telegraph_nodes(self):
+        row, nodes = self._run_chain(self._html())
+
+        source_bold = [r['text'] for b in row['blocks'] for r in _bold_runs(b)]
+        self.assertEqual(
+            len(source_bold), self.EXPECTED_BOLD_SPANS,
+            'the staged row does not carry the spans the fixture authors — '
+            'the equality below would then compare two equally wrong lists')
+        bold_chars = sum(len(s) for s in source_bold)
+        total_chars = sum(len(b.get('text') or '') for b in row['blocks'])
+        self.assertGreaterEqual(
+            bold_chars / total_chars, 0.9,
+            'the fixture is not bold-heavy, so it does not exercise AC7')
+
+        self.assertEqual(_texts_of_tag(nodes, 'strong'), source_bold)
+
+    def test_bold_heavy_article_is_not_truncated_or_dropped(self):
+        """Same article twice — with and without the ``<b>`` tags. Bold must
+        change the markup and nothing else."""
+        bold_row, bold_nodes = self._run_chain(self._html())
+        self._reset_tables()
+        self.published_trees.clear()
+        plain_row, plain_nodes = self._run_chain(self._html(bold=False))
+
+        self.assertEqual(
+            len([r for b in bold_row['blocks'] for r in _bold_runs(b)]),
+            self.EXPECTED_BOLD_SPANS,
+            'the bold arm lost or merged spans on the way in — the text '
+            'comparison below is blind to that')
+        self.assertEqual(len(bold_row['paragraphs']),
+                         len(plain_row['paragraphs']))
+        self.assertEqual(bold_row['paragraphs'], plain_row['paragraphs'])
+        self.assertEqual(
+            [t for t in _texts_of_tag(bold_nodes, 'p')],
+            [t for t in _texts_of_tag(plain_nodes, 'p')],
+            'the bold-heavy article rendered different text than its plain '
+            'twin — something dropped or truncated it')
+        self.assertEqual(_count_tag(plain_nodes, 'strong'), 0)
+        self.assertGreater(_count_tag(bold_nodes, 'strong'), 0)
+
+    def test_bold_heavy_fixture_stays_within_resource_bounds(self):
+        """Self-check on the fixture. Past the Decision 8 bounds the runs are
+        dropped ON PURPOSE, and the two tests above would then be measuring
+        the resource fuse instead of AC7 — passing or failing for a reason
+        that has nothing to do with formatting.
+        """
+        row = self._stage(self._html())
+
+        self.assertEqual(
+            len([r for b in row['blocks'] for r in _bold_runs(b)]),
+            self.EXPECTED_BOLD_SPANS,
+            'checking bounds against a row that lost its spans proves nothing')
+        for block in row['blocks']:
+            with self.subTest(text=(block.get('text') or '')[:40]):
+                text_len = len(block.get('text') or '')
+                run_count = len(block.get('runs') or [])
+                self.assertLess(text_len, dom_blocks.MAX_TEXT_FOR_RUNS)
+                self.assertLess(run_count, dom_blocks.MAX_RUNS_PER_BLOCK)
+                # Task 4's request-path bound and the render-path bound are
+                # separate constants; the fixture has to clear both.
+                self.assertLess(text_len, _llm_common._MAX_TEXT_FOR_RUNS)
+                self.assertLess(run_count, _llm_common._MAX_RUNS_PER_BLOCK)
+                self.assertLess(
+                    text_len, telegraph_publisher._MAX_TEXT_FOR_RUNS)
+                self.assertLess(
+                    run_count, telegraph_publisher._MAX_RUNS_PER_BLOCK)
+
+
+class TestPerSourceImageCap(_FormattingChainBase):
+    """Scenario 4 — AC9 / Decision 5: the cap is a VALUE carried from
+    ``news_bot.SOURCE_IMAGE_LIMITS`` into the block renderer.
+
+    Checking the default alone would also pass against a constant hard-wired
+    in the renderer — precisely the defect Decision 5 forbids ("a single
+    hard-coded default would violate AC9 for somebody"). Only a second run
+    of the same article under a different cap tells the two apart.
+    """
+
+    IMAGE_COUNT = 35   # above t-hunted's cap of 30 — no corpus article is
+    CONTROL_CAP = 5
+
+    def _html(self, image_count=None):
+        count = self.IMAGE_COUNT if image_count is None else image_count
+        images = ''.join(
+            f'<img src="https://blogger.googleusercontent.com/img/a/'
+            f'pic{i}=s1600/photo{i}.jpg" />'
+            for i in range(count))
+        return self.build_html(
+            '<p>Primeiro parágrafo do post com bastante texto editorial.</p>'
+            '<p>Segundo parágrafo do post com bastante texto editorial.</p>'
+            + images)
+
+    def _publish_with_cap(self, cap, link, image_count=None):
+        """Run the whole chain once and return the rendered figure nodes.
+
+        ``cap`` is injected by replacing the per-source table, NOT by
+        calling the renderer directly — the point is to prove the value
+        travels row → ``_image_limit_for_source`` → ``publish_article``.
+        """
+        self._reset_tables()
+        self.published_trees.clear()
+        limits = dict(news_bot.SOURCE_IMAGE_LIMITS)
+        limits['t-hunted'] = cap
+        with patch('news_bot.SOURCE_IMAGE_LIMITS', limits):
+            _row, nodes = self._run_chain(
+                self._html(image_count=image_count), link=link)
+        return _nodes_with_tag(nodes, 'figure')
+
+    def test_image_limit_is_honoured_by_value_and_a_lower_cap_yields_fewer(self):
+        default_cap = news_bot.SOURCE_IMAGE_LIMITS['t-hunted']
+        self.assertLess(
+            default_cap, self.IMAGE_COUNT,
+            'the fixture no longer exceeds the cap, so nothing is capped')
+
+        at_default = self._publish_with_cap(
+            default_cap, 'https://t-hunted.blogspot.com/2026/01/cap-default.html')
+        at_control = self._publish_with_cap(
+            self.CONTROL_CAP,
+            'https://t-hunted.blogspot.com/2026/01/cap-control.html')
+
+        self.assertEqual(len(at_default), default_cap)
+        self.assertEqual(len(at_control), self.CONTROL_CAP)
+        self.assertLess(
+            len(at_control), len(at_default),
+            'both runs rendered the same number of images — the configured '
+            'value is not reaching the renderer, it is hard-coded there')
+
+    def test_image_limit_keeps_the_hero_and_drops_from_the_tail(self):
+        """The first figure is what Telegram lifts for the link preview, so
+        the cap has to eat the tail, never the head.
+
+        The whole kept SEQUENCE is pinned, not just its first element: a cap
+        that kept the hero and then shuffled the rest would satisfy a
+        first-element check while reordering the article's photos.
+        """
+        figures = self._publish_with_cap(
+            self.CONTROL_CAP,
+            'https://t-hunted.blogspot.com/2026/01/cap-hero.html')
+
+        srcs = [_nodes_with_tag([f], 'img')[0]['attrs']['src'] for f in figures]
+        self.assertEqual(len(srcs), self.CONTROL_CAP)
+        for position, src in enumerate(srcs):
+            self.assertIn(
+                f'pic{position}=', src,
+                f'figure {position} is not the {position}-th source image — '
+                f'the cap reordered or re-anchored the gallery')
+
+    def test_image_limit_that_does_not_bite_truncates_nothing(self):
+        """Negative control: a cap that does not bite must not remove
+        anything. Without it, "few images" reads as "cap works"."""
+        under = self.CONTROL_CAP - 2
+        figures = self._publish_with_cap(
+            self.CONTROL_CAP,
+            'https://t-hunted.blogspot.com/2026/01/cap-under.html',
+            image_count=under)
+
+        self.assertEqual(len(figures), under)
+
+
+class TestChecklistFloorNotNewlyDropped(_FormattingChainBase):
+    """Scenario 5 — the two independent floors this feature can disturb.
+
+    Block extraction re-derives the flat ``paragraphs`` list, and both the
+    paragraph COUNT and the total text LENGTH feed thresholds:
+
+      * ``news_bot._CHECKLIST_BODY_TEXT_FLOOR`` (500) — intake reject,
+        measured on the summed paragraph lengths;
+      * the sanity floor in ``_llm_common._parse_response`` — translation
+        reject, switched on by ``expected_paragraph_count >= 2``.
+
+    The second one is the 2026-05-31 outage verbatim: all four t-hunted
+    slots failed with "paragraphs total content too short" on
+    single-paragraph photo-gallery posts. A gallery post that came out of
+    block extraction with TWO paragraphs would arm that floor again.
+    """
+
+    #: "checklist" in the title arms trigger B. The URL must NOT contain
+    #: ``case-contents-checklist`` — that slug is an unconditional trigger
+    #: and the test would then be measuring the wrong branch.
+    CHECKLIST_TITLE = 'Hot Wheels checklist do mês'
+    BORDERLINE_LINK = 'https://t-hunted.blogspot.com/2026/01/checklist-post.html'
+
+    def _borderline_html(self):
+        """Title says "checklist", body sits just ABOVE the 500-char floor.
+
+        Seven paragraphs, because the subtitle lift takes the first one out
+        of ``paragraphs`` before the floor is measured — six survive and sum
+        to ~588 characters. Six paragraphs would leave 490 and the article
+        would be dropped for being genuinely short, not for anything this
+        feature did.
+        """
+        return self.build_html(''.join(
+            f'<p>Parágrafo {i} com texto editorial suficiente sobre as '
+            f'miniaturas e os lançamentos recentes da marca.</p>'
+            for i in range(7)
+        ), title=self.CHECKLIST_TITLE)
+
+    def _bare_checklist_html(self):
+        """A real bare checklist: a one-line intro and model names.
+
+        Deliberately sized so the surviving body lands BETWEEN 50 and 500
+        characters. Anything shorter would still be rejected by a floor
+        lowered to 50, and the negative control below would stay green while
+        the floor it guards had been gutted.
+        """
+        return self.build_html(
+            '<p>Confira a lista completa do case.</p>'
+            '<p>Nissan Skyline, Toyota Supra, Honda Civic.</p>'
+            '<p>Mazda RX-7, Subaru Impreza, Ford Escort.</p>',
+            title=self.CHECKLIST_TITLE)
+
+    def _funnel_checklist_count(self, logs):
+        """Read ``checklist=N`` out of the job's ``[funnel]`` summary line.
+
+        The counter sits inside ``dropped(no_article=0,checklist=0,...)``,
+        so it is a comma-separated field, not a whitespace-separated token.
+        """
+        for line in logs.output:
+            if '[funnel]' not in line:
+                continue
+            match = re.search(r'checklist=(\d+)', line)
+            self.assertIsNotNone(
+                match, f'the [funnel] line lost its checklist counter: {line!r}')
+            return int(match.group(1))
+        self.fail(f'no [funnel] line in the job log: {logs.output!r}')
+
+    def test_borderline_checklist_article_is_still_staged(self):
+        with self.assertLogs('news_bot', level='INFO') as logs:
+            row = self._stage(self._borderline_html(),
+                              link=self.BORDERLINE_LINK,
+                              feed_title=self.CHECKLIST_TITLE)
+
+        self.assertIsNotNone(
+            row, 'the borderline checklist article stopped being staged — '
+                 'block extraction moved it under the intake floor')
+        self.assertEqual(self._funnel_checklist_count(logs), 0)
+        self.assertGreater(
+            sum(len(p) for p in row['paragraphs']),
+            news_bot._CHECKLIST_BODY_TEXT_FLOOR,
+            'the fixture drifted below the floor it is supposed to sit above')
+
+    def test_flag_on_and_flag_off_agree_on_the_checklist_verdict(self):
+        """Extracting blocks must not change an intake DECISION. The flat
+        text is the same in both flag states; only ``blocks`` differs.
+
+        BOTH directions of the verdict are checked. A one-sided invariant is
+        what cost this project on 2026-07-28: "stays staged" alone is
+        satisfied by an intake that has stopped rejecting anything at all.
+        """
+        for label, html, expect_staged in (
+            ('borderline — stays in', self._borderline_html(), True),
+            ('bare — stays out', self._bare_checklist_html(), False),
+        ):
+            with self.subTest(article=label):
+                self._reset_tables()
+                on = self._stage(html, link=self.BORDERLINE_LINK,
+                                 feed_title=self.CHECKLIST_TITLE)
+                self._reset_tables()
+                with patch('feature_flags.SOURCE_FORMATTING_ENABLED', False):
+                    off = self._stage(html, link=self.BORDERLINE_LINK,
+                                      feed_title=self.CHECKLIST_TITLE)
+
+                self.assertEqual(on is not None, expect_staged)
+                self.assertEqual(
+                    off is not None, expect_staged,
+                    'the kill switch changed the intake verdict — turning '
+                    'the feature off is supposed to cost formatting, not '
+                    'change which articles get published')
+                if expect_staged:
+                    self.assertEqual(on['paragraphs'], off['paragraphs'])
+                    self.assertIsInstance(on['blocks'], list)
+                    self.assertIsNone(
+                        off['blocks'],
+                        'the kill switch did not reach the parser — '
+                        'flipping it in an incident would change nothing')
+
+    def test_single_paragraph_gallery_post_stays_single_paragraph(self):
+        """The dominant t-hunted format, and the shape of the 2026-05-31
+        outage. One paragraph keeps the sanity floor disarmed; two arms it,
+        and a thin translation of a photo post strikes the slot."""
+        row = self._stage(self.fixture_html(
+            'novidades-muito-interessantes-da-m2.html'))
+
+        self.assertEqual(
+            len(row['paragraphs']), 1,
+            'block extraction changed the paragraph count of a gallery post')
+        patchable = [b for b in row['blocks']
+                     if b.get('type') in _llm_common._PATCHED_TEXT_BLOCK_TYPES]
+        self.assertEqual(len(patchable), 1)
+        # The count asserted above IS the input to ``_parse_response``'s
+        # sanity floor, which arms at ``expected_paragraph_count >= 2``.
+        # What the floor then does at each count is pinned by
+        # tests/test_llm_common.py::TestSanityFloorRelaxation — re-asserting
+        # it here would pass with this whole chain deleted.
+
+    def test_true_bare_checklist_is_still_dropped(self):
+        """Negative control: without it the staging test above is green
+        simply because the reject path is broken."""
+        with self.assertLogs('news_bot', level='INFO') as logs:
+            row = self._stage(self._bare_checklist_html(),
+                              link=self.BORDERLINE_LINK,
+                              feed_title=self.CHECKLIST_TITLE)
+
+        self.assertIsNone(row)
+        self.assertEqual(self._funnel_checklist_count(logs), 1)
 
 
 if __name__ == '__main__':

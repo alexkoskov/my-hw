@@ -450,3 +450,121 @@ takes the video off the page.
   pinned by test
 - Adjacent suites (`test_job_prep_phase`, `test_pending_articles_repo`,
   `test_job_distributed_publish`, `test_t_hunted_source`) → 219 passed
+
+---
+
+## Task 9: End-to-end formatting chain (Phase 1, t-hunted)
+
+**Status:** Done
+**Commit:** (wave 4)
+**Agent:** main agent
+**Summary:** Twenty tests in `tests/test_integration.py` now run a t-hunted
+article through the REAL parser, the REAL `job()` staging path, the SQLite
+JSON round-trip, the real request/response marker helpers and the real
+Telegraph renderer, catching the node tree at `telegraph_publisher._api_call`
+rather than at `publish_article` — the older classes in that file patch the
+publisher whole, which means no renderer runs and every assertion about
+`strong` / `h3` / `figure` checks the test's own fixture. Not one line of
+production code was changed.
+**Deviations:** Three, all in test naming or shape, none in scope.
+
+1. **Tests renamed to satisfy the tech-spec's own `-k` selectors.** The AVP
+   names `markers_lost` and `bold_heavy`; the first collected ZERO tests
+   against the names the task file suggested. Since `pytest -k` collecting
+   nothing exits 0, Task 13 would have read an unwritten test as a passing
+   one — the exact failure this task made an acceptance criterion. Fixed in
+   the test file; the spec was not edited.
+2. **Two named tests merged into one.** Runs-level and node-level bold are
+   one behaviour and one trap; keeping them apart cost a second full chain
+   run and bought nothing. Proven by mutation: killing the runs path while
+   leaving bare `**` in the text still turns the merged test red.
+3. **The unit-level `_parse_response` assertions were dropped.** They
+   duplicated `tests/test_llm_common.py::TestSanityFloorRelaxation` verbatim
+   and would have passed with this entire chain deleted. What stays here is
+   the integration fact — the gallery post comes out of block extraction with
+   ONE paragraph, which is the input that leaves the floor disarmed.
+
+### Mutation results — the only evidence that matters here
+
+The code was written before the tests, so green-on-first-run proves nothing.
+Fifteen mutations were applied one at a time to production code and reverted:
+runs stripped before `insert_pending`; `_encode_format_markers` made a no-op;
+a well-meaning admin ping added to the lost-markers path; the image cap
+hard-coded in the renderer; the checklist floor lowered to 50; the subtitle
+lift made unconditional; the bullet-doubling guard removed; the heading
+heuristic disabled; the alignment guard made to always fire; the cap made to
+eat the head instead of the tail; a "too much bold" threshold reintroduced;
+`_fallback_publish` stubbed to a no-op; bold runs coalesced per block; the
+publisher made to drop all but two text nodes; the kill switch made to change
+the intake verdict. **All fifteen turned the intended test red.**
+
+Three of those came from the reviewer, not from me, and two of them found
+tests that were green for the wrong reason: the absence assertions in
+`TestMarkersLostDegradeSilently` passed with `_fallback_publish` stubbed out
+entirely, and `TestBoldHeavyArticle` read its expectation out of the very row
+it was checking, so merging every block's spans into one left all three green.
+Both are now pinned by measured constants and an explicit
+"the publish actually ran" check.
+
+**Reviews:**
+
+*Round 1:*
+- test-reviewer: 3 major, 8 minor → [logs/working/task-9/test-reviewer-1.json]
+
+*Round 2 (after fixes):*
+- test-reviewer: 0 critical, 0 major, 3 minor → [logs/working/task-9/test-reviewer-2.json]
+
+Round 2 re-proved each major closed by re-running its own mutation. Its one
+substantive remaining point was accepted and fixed: the two-arm comparison in
+`test_markers_lost_publishes_plain_text` is blind to whole-node loss, because
+both arms lose the same nodes. A containment check over `p` AND `h3` now sits
+beside it — the `h3` half is what the first attempt got wrong, since the
+whole-bold heading heuristic sends some paragraphs there. The one-sided
+flag-parity check was widened to both verdict directions at the same time
+(2026-07-28 lesson), and both additions were mutation-checked afterwards.
+
+**Verification:**
+- `-k` selectors and what they COLLECT (Task 13 checks counts, not exit
+  codes): task-file selectors `FormattingChain` 6, `MarkersLost` 4,
+  `BoldHeavy` 3, `ImageCap` 3, `ChecklistFloor` 4 — 20 total. Tech-spec AVP
+  selectors, repo-wide: `markers_lost` 4, `bold_heavy` 3, `image_limit` 22
+  (3 of them new here, the rest from Task 6)
+- `pytest tests/test_integration.py` → 136 passed
+- `pytest tests/test_llm_common.py tests/test_telegraph_publisher.py
+  tests/test_t_hunted_source.py tests/test_news_bot_alignment.py` → 206 passed
+- Full suite → **1899 passed / 504 subtests**, against a MEASURED pre-task
+  baseline of 1879 / 489 taken by checking the test file out at HEAD and
+  re-running. Delta is exactly this task's tests; no regressions
+- `git status --short` → `tests/test_integration.py` only (plus the task
+  file's status flip and the reviewer JSONs). No production file touched
+- Pre-commit hooks on the changed file → all pass
+- Corpus measurements the fixtures rest on: `johnny-lightning` carries 20
+  PARTIAL bold spans inside ordinary paragraphs, `o-que-faz-um-hot-wheels`
+  carries the 12 heuristic headings the user-spec measured, and
+  `novidades-muito-interessantes-da-m2` is the single-paragraph gallery post.
+  No corpus article exceeds the t-hunted cap of 30 (peak 27), so the cap
+  fixture is synthetic at 35 images
+
+**Left for the audit wave — wanted production changes, not made here:**
+- **No corpus article carries a `list_item`.** The bullet path is covered
+  only by synthetic HTML. Either the corpus is unrepresentative of t-hunted
+  or lists genuinely do not occur there; Task 12 should decide which, because
+  Decision 10's doubling guard currently rests on a fixture nobody has seen
+  in the wild.
+- **The bullet-doubling guard strips the TRANSLATED text, not the parsed
+  text.** It therefore assumes the model returns a hand-authored bullet still
+  in leading position. The test stand-in models that, and says so. A model
+  that moved the bullet inward would double it in the channel. Derived risk,
+  not measured — per the operator's 2026-08-06 rule it goes here, not into
+  the code.
+- **`_llm_common._parse_response` never runs on this path.** Standing in for
+  `transcreate_via_claude` also skips `_truncate_paragraphs` and the caption
+  second pass. The log-silence test therefore covers the publish leg, not the
+  whole translation call; the paragraph-divergence WARNING lives in
+  `_parse_response` and is out of its reach.
+- **The positive control for the "no ping" assertion fires from the
+  idempotency guard at the TOP of `_fallback_publish`,** upstream of
+  translation. It certifies the ping path is wired in this harness, not that
+  a ping could be raised from inside the silent region. The task itself
+  proposed this event; the "publish actually ran" check added in round 2 is
+  what covers the region.
