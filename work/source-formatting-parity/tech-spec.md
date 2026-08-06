@@ -484,7 +484,7 @@ reading of the channel.
 - [ ] Flag off ⇒ the three new parsers emit no `blocks`; orangetrack still does
 - [ ] New modules registered in ALL THREE deploy manifests
 - [ ] No new package dependencies; no DB migration
-- [ ] Full suite green, no regressions. The baseline has moved twice and BOTH figures below are stale for Task 13 — measure against the CURRENT one: **1899 passed, 504 subtests** at `4ad4592` (end of Phase 1). Chain: 1626/441 when this spec was written → 1693/462 at the branch point `3362f26` → 1899/504 after Tasks 5-9 added their tests. (The older 1628 figure is not a regression either: the 2026-08-03 rewrite of `test_deploy_files_invariant.py` replaced 6 shallow assertions with 4 real ones.)
+- [ ] Full suite green, no regressions. Current measured figure: **1901 passed, 504 subtests** at `eddff7e` (end of Phase 1, re-measured by Task 13 on 2026-08-06). Chain, every earlier figure now historical: 1626/441 when this spec was written → **1693/462 at the branch point** (measured at `3362f26` and re-measured by Task 13 at `7b12fbb`, the parent of the first feature commit `ccdc1a7` — the five commits between the two touch only `work/` and `.claude/` documents, so the suite is identical) → 1899/504 after Tasks 5-9 added their tests → 1901/504 after the wave-5 fixer added the two orangetrack kill-switch controls. Task 13 verified no regression by NAME as well as by counter: 0 tests removed or renamed, 208 added. (The older 1628 figure is not a regression either: the 2026-08-03 rewrite of `test_deploy_files_invariant.py` replaced 6 shallow assertions with 4 real ones.)
 
 ## Implementation Tasks
 
@@ -608,7 +608,7 @@ reading of the channel.
 ### Final Wave
 
 #### Task 13: Pre-deploy QA
-- **Description:** Acceptance testing: run all tests, verify every acceptance criterion from user-spec and this tech-spec. Confirm the orangetrack golden file and test files are unedited, that every named `-k` selector collects tests — reporting the COUNT per selector, since `pytest -k` collecting zero exits 0 — and that the suite has no regressions against the **1899 passed / 504 subtests** baseline measured at `4ad4592` (see the corrected chain in the Verification Plan above; the 1626 and 1628 figures quoted earlier in this document are historical).
+- **Description:** Acceptance testing: run all tests, verify every acceptance criterion from user-spec and this tech-spec. Confirm the orangetrack golden file and test files are unedited, that every named `-k` selector collects tests — reporting the COUNT per selector, since `pytest -k` collecting zero exits 0 — and that the suite has no regressions against the **1901 passed / 504 subtests** figure re-measured at `eddff7e` (see the corrected chain in the Verification Plan above; the 1626, 1628 and 1899 figures quoted earlier in this document are historical).
 - **Skill:** pre-deploy-qa
 - **Reviewers:** none
 

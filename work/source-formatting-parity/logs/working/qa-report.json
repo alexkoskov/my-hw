@@ -1,0 +1,435 @@
+{
+  "_meta": {
+    "task": "Task 13 — Pre-deploy QA, source-formatting-parity (Phase 1: t-hunted only)",
+    "date": "2026-08-06",
+    "commit": "eddff7e",
+    "branch": "dev",
+    "agent": "qa-runner",
+    "state": "final",
+    "scope": "Phase 1 ships the shared module, all safety work and t-hunted. lamley and autoevolution are Phase 2 (tech-spec § Testing Strategy, § Phase 2) and are marked phase_2 here — neither passed (nothing to check) nor failed (nobody promised them in this delivery).",
+    "approvedDeviationsHonoured": [
+      "AC2 — the ≤80-character length condition is removed entirely (operator 2026-07-30). Measured on 286 real paragraph blocks: zero whole-bold non-headings exist, so length discriminated nothing and only clipped genuine headings.",
+      "AC2 — '…' and '….' additionally count as heading-compatible (operator 2026-07-30).",
+      "AC2 — the heuristic is opt-in per source and OFF for orangetrack (Decision 2b, implied by AC10).",
+      "AC9 vs AC10 — a genuine collision, resolved in favour of AC9 (operator 2026-08-03). orangetrack's gallery output changes to FEWER images; that is the sanctioned bug fix, not a regression.",
+      "AC11 — kill switch means 'no formatting, flat text', not byte-identity; measured drift −0.10 % (t-hunted)."
+    ]
+  },
+  "status": "passed",
+  "summary": {
+    "totalChecks": 31,
+    "passed": 25,
+    "failed": 0,
+    "notVerifiable": 4,
+    "phase2": 2,
+    "criticals": 0,
+    "majors": 1,
+    "minors": 3
+  },
+  "testSuite": {
+    "status": "passed",
+    "details": "Current tree @ eddff7e: 1901 passed, 504 subtests, 0 failed, 85.67s. Baseline @ 7b12fbb (parent of first feature commit ccdc1a7): 1693 passed, 462 subtests, 33.82s, measured in an isolated git worktree. Zero tests removed or renamed; 208 added.",
+    "baseline": {
+      "commit": "7b12fbb",
+      "commitRationale": "7b12fbb is the parent of ccdc1a7, the first feature commit (wave 1) — the branch point the task demands. The tech-spec's other measurement point, 3362f26, is 5 commits earlier; the 5 intervening commits (0f3457d, 2bbcc30, dc6dcbd, 765bd2d, 7b12fbb) touch only work/ and .claude/ documents, no .py file, so both points yield the SAME suite. Measured 1693 passed / 462 subtests at 7b12fbb — identical to the 1693/462 the tech-spec records at 3362f26. The two points are reconciled, not in conflict; 7b12fbb was used because it is the true parent of the first feature commit.",
+      "passed": 1693,
+      "subtests": 462,
+      "seconds": 33.82,
+      "method": "git worktree add <scratchpad>/sfp-baseline 7b12fbb; python3 -m pytest -q. No tracked file in the working tree was touched, nothing was checked out in place. Worktree removed at the end of this task."
+    },
+    "current": {
+      "commit": "eddff7e",
+      "passed": 1901,
+      "subtests": 504,
+      "failed": 0,
+      "seconds": 85.67
+    },
+    "nameLevelDiff": {
+      "method": "python3 -m pytest -q --collect-only in both trees, node ids grepped for '::', sorted, diffed",
+      "baselineCollected": 1693,
+      "currentCollected": 1901,
+      "removedOrRenamed": 0,
+      "added": 208,
+      "verdict": "No test that passed at the branch point is missing or failing. Additions only. Counter and name-level check agree (1693 + 208 = 1901), so the 'same total, different composition' trap is ruled out."
+    },
+    "staleSpecFigures": "tech-spec's original '1626 passed / 441 subtests' is STALE and is marked so here, as the task requires. The in-document correction to '1899/504 at 4ad4592' was itself one commit stale: eddff7e added two orangetrack kill-switch controls, so the true current figure is 1901/504. tech-spec § Acceptance Criteria was corrected by this task so it does not lie to the next feature."
+  },
+  "selectorCensus": {
+    "why": "pytest -k matching nothing exits 0, so an unwritten test is indistinguishable from a passing one. Counts collected are reported, never exit codes. -k is case-insensitive but underscore-sensitive — that is exactly how heading_heuristic missed TestHeadingHeuristic.",
+    "method": "python3 -m pytest --collect-only -q <scope> -k '<selector>' | grep -c '::'",
+    "sources": "tech-spec (§ Testing Strategy, § Implementation Tasks), user-spec (§ Как проверить), and task files 1-12, harvested by grep rather than transcribed by hand.",
+    "repoWide": {
+      "list_item": 21,
+      "heading_heuristic": 0,
+      "HeadingHeuristic": 20,
+      "heading": 38,
+      "mismatch": 21,
+      "aligned": 5,
+      "markers_lost": 4,
+      "bold_heavy": 3,
+      "image_limit": 22,
+      "flag_off": 7,
+      "bound": 31,
+      "mismatch or aligned": 26,
+      "align or corpus": 35,
+      "image_limit or mismatch or aligned": 48,
+      "FormattingChain or MarkersLost or BoldHeavy or ImageCap or ChecklistFloor": 20
+    },
+    "fileScoped": {
+      "tests/test_claude_transcreation.py -k list_item": 2,
+      "tests/test_gemini_transcreation.py -k list_item": 2,
+      "tests/test_openai_transcreation.py -k list_item": 2,
+      "tests/test_openrouter_transcreation.py -k list_item": 3,
+      "tests/test_news_bot_alignment.py -k 'mismatch or aligned'": 16,
+      "tests/test_news_bot_alignment.py -k aligned": 3,
+      "tests/test_llm_common.py -k bound": 9,
+      "tests/test_t_hunted_source.py -k 'align or corpus'": 18,
+      "tests/test_t_hunted_source.py -k heading": 7,
+      "tests/test_dom_blocks.py tests/test_t_hunted_source.py -k heading": 23,
+      "tests/test_integration.py -k FormattingChain": 6,
+      "tests/test_integration.py -k MarkersLost": 4,
+      "tests/test_integration.py -k BoldHeavy": 3,
+      "tests/test_integration.py -k ImageCap": 3,
+      "tests/test_integration.py -k ChecklistFloor": 4
+    },
+    "vacuous": [
+      "heading_heuristic — 0 collected. This is the selector the wave-5 fixer already replaced in user-spec with HeadingHeuristic (20 collected); it survives only in Task 13's own Details list, written before that fix. The BEHAVIOUR is covered (20 tests repo-wide, 23 file-scoped via -k heading), so this is a stale string in one task document, not a coverage gap. Recorded as minor-1."
+    ],
+    "verdict": "Every spec-level selector collects ≥1; the file-scoped 'mismatch or aligned' collects 16 (≥2 required). Each of the five integration sub-selectors collects individually, not merely as a union. One vacuous selector found and it is the already-known one — no NEW vacuous selector exists.",
+    "boundaryCheck": "grep for a re-added 80/81-character heading boundary in tests/test_dom_blocks.py → no hits. The removal of the length limit is pinned positively by tests/test_dom_blocks.py::TestHeadingHeuristic::test_length_does_not_disqualify_a_heading, so a re-added cap fails loudly. Per the task's Details a test ON the 80/81 boundary would itself have been a finding; there is none."
+  },
+  "goldenGate": {
+    "task1Commit": "ccdc1a7 (wave 1 — the commit that added tests/fixtures/orangetrack_golden.json; found via git log on the file, not guessed)",
+    "verdict1_testFileUnedited": {
+      "check": "git diff ccdc1a7 -- tests/test_orangetrack_source.py",
+      "result": "0 lines. Also 0 lines against 7b12fbb, i.e. against the pre-feature tree. The file has not been touched since a509722, the pre-feature hotfix.",
+      "status": "passed"
+    },
+    "verdict2_goldenHasExactlyOneDifference": {
+      "check": "git diff ccdc1a7 -- tests/fixtures/orangetrack_golden.json",
+      "result": "2 insertions, 112 deletions, in 2 hunks, both inside the single fixture 'gallery-20-images' (that fixture spans lines 289-544; hunks at 514 and 648). The 112 deletions are 10 figure/img node groups of 11 lines each (110) plus the 2 old summary counters. The 2 insertions are the replacement counters: preview_figure_nodes 20→10, preview_img_nodes 20→10. The dropped image srcs are x10.jpg…x19.jpg — the TAIL of the gallery; hero and order untouched.",
+      "programmaticCheck": "Every removed line was matched against the shape of a figure/img node or a summary counter; the set of removed lines that are neither is EMPTY. No text, caption, ordering, hero or other fixture moved. The other 23 fixtures are byte-identical.",
+      "status": "passed"
+    },
+    "verdict3_diffRecordedBeforeDeploy": {
+      "check": "grep for the golden diff in work/source-formatting-parity/decisions.md",
+      "result": "Present — Task 6 entry, section 'GOLDEN DIFF — the operator's AC9/AC10 condition', with the before/after counter table (figure nodes 20→10, img nodes 20→10, parser image blocks 20→20 unchanged, flat images 10→10 unchanged) and three programmatic isolation checks. Written before this QA and before any deploy.",
+      "status": "passed",
+      "note": "This is the operator's approval condition #1 from 2026-08-03. Its absence would have been a critical blocking deploy. It is present, and independently re-derived here from the git diff rather than taken on the record's word."
+    },
+    "noRegenerationMode": {
+      "check": "grep -rniE 'update|--regen|overwrite|regenerate' tests/test_orangetrack_golden.py",
+      "result": "Only prose in the module docstring stating there is deliberately no regeneration mode ('THERE IS DELIBERATELY NO REGENERATION MODE — no --update flag'). Task 1's ban holds.",
+      "status": "passed"
+    }
+  },
+  "perimeterCoverage": {
+    "rule": "Every file in the 'Files to modify' lists of tasks 1-9 must have a test that executes its behaviour, not an import stub.",
+    "files": {
+      "dom_blocks.py": "tests/test_dom_blocks.py — 47 collected (TestRuns, TestHeadingHeuristic, TestStructuralDefaults, TestSiteSeams, TestResourceBounds, TestIsolation)",
+      "feature_flags.py": "tests/test_feature_flags.py — 13 collected, incl. TestOrangetrackIsNotGatedByTheFlag",
+      "orangetrack_source.py": "tests/test_orangetrack_source.py — 100 collected (unedited) + tests/test_orangetrack_golden.py golden gate",
+      "t_hunted_source.py": "tests/test_t_hunted_source.py — 49 collected, incl. corpus-parametrised alignment over all 10 fixtures",
+      "telegraph_publisher.py": "tests/test_telegraph_publisher.py — 108 collected",
+      "preview_renderer.py": "tests/test_preview_renderer.py — 74 collected",
+      "_llm_common.py": "tests/test_llm_common.py — 33 collected (9 of them the request-path bound)",
+      "news_bot.py": "tests/test_news_bot_alignment.py 16 + tests/test_fallback_publish_paths.py 13 + tests/test_integration.py 136; _blocks_if_aligned, _image_limit_for_source and SOURCE_IMAGE_LIMITS are each referenced by name in test files",
+      "claude/gemini/openai/openrouter_transcreation.py": "22 / 37 / 19 / 44 collected; -k list_item collects 2/2/2/3 per engine — each engine tested separately because _translate_block_strings is physically duplicated four times",
+      "deploy.sh + .github/workflows/deploy.yml + deploy_test.yml": "tests/test_deploy_files_invariant.py — 5 passed"
+    },
+    "verdict": "No feature file is without a behavioural test. No coverage tooling threshold is configured in this project (patterns.md § Testing Requirements specifies `python3 -m pytest -q` as the gate), so no coverage-percentage check applies."
+  },
+  "acceptanceCriteria": [
+    {
+      "id": "US-AC1 (t-hunted)",
+      "criterion": "Bold text inside a paragraph from the original is visible as bold in Telegraph — for t-hunted",
+      "status": "passed",
+      "evidence": "tests/test_integration.py::TestFormattingChainTHunted::test_bold_run_survives_parser_queue_translation_and_telegraph, ::test_heading_block_reaches_telegraph_as_h3, ::test_list_item_reaches_telegraph_with_exactly_one_bullet, ::test_blocks_round_trip_through_sqlite_with_runs_intact, ::test_runs_are_encoded_as_bold_markers_in_the_llm_request, ::test_alignment_guard_does_not_fire_on_a_real_t_hunted_article — 6 collected. These run the REAL parser, the REAL job() staging path, the SQLite JSON round-trip, the real marker helpers and the real Telegraph renderer, catching the node tree at telegraph_publisher._api_call rather than patching the publisher whole."
+    },
+    {
+      "id": "US-AC1 (lamley, autoevolution)",
+      "criterion": "Same, for lamley and autoevolution",
+      "status": "phase_2",
+      "evidence": "Out of scope for this delivery by operator decision 2026-07-30 (tech-spec § Testing Strategy, § Phase 2). lamley_source.py and autoevolution_source.py are confirmed untouched by this feature (Task 10 audit re-verified). Neither passed nor failed."
+    },
+    {
+      "id": "US-AC2",
+      "criterion": "A paragraph becomes a real Telegraph heading iff it is entirely bold, ≤80 chars, and does not end in a period",
+      "status": "passed",
+      "evidence": "Passed AS AMENDED by three approved deviations (tech-spec § User-Spec Deviations): the length condition is removed entirely, '…'/'….' count as heading-compatible, and the heuristic is opt-in per source. tests/test_dom_blocks.py::TestHeadingHeuristic — 20 collected: test_whole_bold_paragraph_is_a_heading; test_final_punctuation_decides[period|none|ellipsis|ellipsis-period|question|bang]; test_partial_bold_coverage_is_not_a_heading[partial-coverage|two-separate-spans|repeated-substring-must-not-fake-coverage]; test_length_does_not_disqualify_a_heading (pins the removal so a re-added cap fails loudly); test_real_heading_tag_still_emits_heading_block (real <h2>/<h3>/<h4> remain the primary mechanism). The 80/81 boundary test the user-spec once demanded is correctly ABSENT — its presence would have been the finding."
+    },
+    {
+      "id": "US-AC3",
+      "criterion": "Lists come out as lists, and list items are NOT re-translated by a second LLM request",
+      "status": "passed",
+      "evidence": "Executed check: _llm_common._PATCHED_TEXT_BLOCK_TYPES == {heading, lead, list_item, paragraph} and all four engine tuples now compare EQUAL to it (claude, gemini, openai, openrouter) — measured by importing the four modules, not by reading the diff. -k list_item collects 2/2/2/3 per engine file and 21 repo-wide. Rendering half: tests/test_integration.py::TestFormattingChainTHunted::test_list_item_reaches_telegraph_with_exactly_one_bullet."
+    },
+    {
+      "id": "US-AC4",
+      "criterion": "Bold added by the translator where the original had none is rendered as bold, not stripped",
+      "status": "passed",
+      "evidence": "tests/test_llm_common.py::TestPatchTextDecodesBoldRuns::test_non_text_block_passes_through — the input block carries runs: [] (source had no bold) and the RU paragraph carries '**Жирный** текст'; the output runs are [{'text': 'Жирный', 'formats': ['bold']}]. Decoding reads the RU text and does not intersect with the source runs. Also ::test_ru_with_marker_splices_runs. See minor-2: this assertion lives in a test named for a different behaviour."
+    },
+    {
+      "id": "US-AC5",
+      "criterion": "Markup-parse failure (site changed its layout, broken HTML) → the article publishes as plain text, the tick does not fall, the article is not lost",
+      "status": "passed",
+      "evidence": "tests/test_t_hunted_source.py::TestDegradation::test_broken_markup_still_returns_flat_text — unclosed tags and stray blocks still return an article with non-empty paragraphs. Both triggers the criterion names (changed layout, broken HTML) are handled by BeautifulSoup without raising. Tick safety additionally guaranteed at news_bot.py:3646 (except Exception → log → return None) and by _blocks_if_aligned's own fail-open. See minor-3 for the exception path, which is a defence-in-depth gap beyond what this criterion names."
+    },
+    {
+      "id": "US-AC6",
+      "criterion": "Markers lost by the LLM on one paragraph → that paragraph publishes as plain text silently, with no operator ping",
+      "status": "passed",
+      "evidence": "tests/test_integration.py::TestMarkersLostDegradeSilently — 4 collected: test_markers_lost_publishes_plain_text, test_markers_lost_send_no_admin_notification, test_markers_lost_leave_no_warning_or_error_in_the_log, and the positive control test_markers_lost_positive_control_a_real_alert_still_pings, which proves the ping path is actually wired in this harness so the absence assertions mean something. Round 2 of the test review added a containment check over p AND h3 nodes, because the two-arm comparison was blind to whole-node loss."
+    },
+    {
+      "id": "US-AC7",
+      "criterion": "An article where nearly everything is bold carries over as is; there is no 'too much bold' threshold",
+      "status": "passed",
+      "evidence": "tests/test_integration.py::TestBoldHeavyArticle — 3 collected: test_bold_heavy_every_span_reaches_telegraph_nodes, test_bold_heavy_article_is_not_truncated_or_dropped, test_bold_heavy_fixture_stays_within_resource_bounds (the last one keeps the AC7 test honest against the Decision 8 resource bound, which is a resource guard and not the editorial threshold AC7 forbids). Task 9 mutation-checked this: reintroducing a 'too much bold' threshold turns the intended test red."
+    },
+    {
+      "id": "US-AC8",
+      "criterion": "Runtime guard: if the count of translatable blocks disagrees with the paragraph count, the article publishes WITHOUT blocks and the fact is logged at WARNING",
+      "status": "passed",
+      "evidence": "news_bot._blocks_if_aligned (news_bot.py:2960), wired at news_bot.py:4412 where both final lists sit together before the row is written. It counts through _llm_common._PATCHED_TEXT_BLOCK_TYPES — the tuple both sides of the pairing actually read — logs '[align] blocks/paragraphs mismatch for %s: patchable_blocks=%d paragraphs=%d — dropping blocks, the article publishes as plain text', returns None, pings nobody (Decision 3b), and fails OPEN on internal error. Zero patchable blocks is deliberately not a mismatch (it would take the video off an orangetrack video-only post). tests/test_news_bot_alignment.py — 16 collected, both mismatch directions plus three false-positive classes. Task 12 measured this as the decisive mutation: an always-firing guard kills 19 tests."
+    },
+    {
+      "id": "US-AC9 (t-hunted, cap 30)",
+      "criterion": "The number of images on the page does not exceed today's limits on the blocks path either",
+      "status": "passed",
+      "evidence": "news_bot.SOURCE_IMAGE_LIMITS (news_bot.py:2952) is built from the parser modules' own constants (t_hunted_source._IMAGE_LIMIT = 30, lamley_source.IMAGE_LIMIT = 10, orangetrack_source.IMAGE_LIMIT = 10) rather than retyped, and is threaded into the renderer at news_bot.py:3505 via _image_limit_for_source. tests/test_integration.py::TestPerSourceImageCap — 3 collected: test_image_limit_is_honoured_by_value_and_a_lower_cap_yields_fewer (the anti-hardcode control), test_image_limit_keeps_the_hero_and_drops_from_the_tail, test_image_limit_that_does_not_bite_truncates_nothing. -k image_limit collects 22 repo-wide."
+    },
+    {
+      "id": "US-AC9 (lamley, cap 10)",
+      "criterion": "Same, for lamley",
+      "status": "phase_2",
+      "evidence": "The lamley VALUE is already threaded and covered (lamley_source.IMAGE_LIMIT = 10 is in SOURCE_IMAGE_LIMITS and the renderer honours whatever value it is handed), but lamley_source itself emits no blocks in Phase 1, so there is no blocks path to cap yet. Neither passed nor failed."
+    },
+    {
+      "id": "US-AC10",
+      "criterion": "orangetrack publishes exactly as before the feature — byte-identical output, confirmed by its own existing tests",
+      "status": "passed",
+      "evidence": "Passed AS AMENDED by the AC9/AC10 collision deviation approved by the operator 2026-08-03. See goldenGate above, all three verdicts green: (1) tests/test_orangetrack_source.py has a zero-line diff against ccdc1a7 AND against the pre-feature tree — the file was not edited to make anything go green, and its 100 tests pass; (2) orangetrack_golden.json carries exactly ONE difference, in exactly one fixture, consisting only of 10 tail figure/img node groups and their two counters — FEWER images and nothing else, which is the sanctioned change; (3) the diff was recorded in decisions.md before deploy, satisfying the operator's condition #1. Additionally, orangetrack's blocks are NOT gated by the kill switch (tests/test_feature_flags.py::TestOrangetrackIsNotGatedByTheFlag), so AC10 also holds in the flag-off state."
+    },
+    {
+      "id": "US-AC11",
+      "criterion": "There is a kill switch: an environment variable returns the old behaviour (flat text) without a code rollback and without deploying inside the publishing window",
+      "status": "passed",
+      "evidence": "Passed AS AMENDED (approved deviation: 'no formatting, flat text', not byte-identity; measured drift −0.10 % for t-hunted). Executed: `python3 -c \"import feature_flags; print(feature_flags.source_formatting_enabled())\"` → True; `SOURCE_FORMATTING_ENABLED=0 …` → False. tests/test_t_hunted_source.py::TestFeatureFlag::test_flag_off_returns_no_blocks and ::test_flag_off_keeps_paragraphs_and_images (paragraphs, images and subtitle unchanged with the flag off). Documented at .env.example:67. -k flag_off collects 7."
+    },
+    {
+      "id": "US-AC12",
+      "criterion": "The article preview shows formatting instead of eating the highlighted words",
+      "status": "passed",
+      "evidence": "tests/test_preview_renderer.py::test_publisher_blocks_render_headings_bold_and_list_items — runs REAL telegraph_publisher.preview_nodes output through preview_renderer.render_html and asserts '<h3>Case A breakdown</h3>', '<strong>Alphard</strong>' and two bullets. ::test_preview_does_not_swallow_words_around_bold asserts every word of the sentence survives — the exact shape of the 2026-07-28 incident where a dropped tag took its children with it. Also ::test_allowlist_covers_every_tag_the_publisher_can_emit (the preview allowlist covers everything the publisher can emit) and ::test_preview_image_limit_matches_published_nodes."
+    },
+
+    {
+      "id": "TS-1",
+      "criterion": "orangetrack golden file matches byte-for-byte, and the golden file itself is unedited (the image-cap diff reviewed and accepted separately)",
+      "status": "passed",
+      "evidence": "See goldenGate. tests/test_orangetrack_golden.py is green inside the full run; the only edit to the golden file is Task 6's sanctioned re-shoot, isolated to one fixture and to image nodes only; no regeneration mode exists in the repo."
+    },
+    {
+      "id": "TS-2",
+      "criterion": "grep -c \"strong\\|<b>\\|<em>\" > 0 in the parser test files that previously returned 0",
+      "status": "passed",
+      "evidence": "tests/test_t_hunted_source.py → 9 (was 0). This is the blindness tech-spec § Risks names: the parser tests were structurally unable to see this feature, so 'the tests pass' proved nothing. tests/test_lamley_source.py → 0 and tests/test_autoevolution_source.py → 0, correctly, because those parsers are Phase 2 and untouched."
+    },
+    {
+      "id": "TS-3",
+      "criterion": "Every -k selector in the verification plan collects ≥1 test",
+      "status": "passed",
+      "evidence": "See selectorCensus — 15 repo-wide and 15 file-scoped selectors measured by COUNT COLLECTED. All spec-level selectors collect ≥1; the file-scoped 'mismatch or aligned' collects 16 against a ≥2 requirement. The single zero is heading_heuristic, a string the wave-5 fixer already replaced in user-spec and which survives only in Task 13's own Details list — minor-1, not a coverage gap."
+    },
+    {
+      "id": "TS-4",
+      "criterion": "All parser regex uses bounded quantifiers; the heading-punctuation test uses str.endswith, not a regex",
+      "status": "passed",
+      "evidence": "Executed regex inventory over dom_blocks.py, t_hunted_source.py, orangetrack_source.py, telegraph_publisher.py, _llm_common.py, feature_flags.py, preview_renderer.py: no nested quantifier in any compiled pattern. The only open-ended quantifier is (\\d{6,}) in the Vimeo id pattern — a single character class, linear. tests/test_dom_blocks.py::TestHeadingHeuristic::test_punctuation_check_uses_endswith_not_a_regex enforces the contract by parsing looks_like_heading's AST rather than by convention. Corroborated by Task 11's measured linearity probe under input doubling to 2 MB."
+    },
+    {
+      "id": "TS-5",
+      "criterion": "Request-path marker encoding is bounded; over-bound input yields plain text and an intact article",
+      "status": "passed",
+      "evidence": "tests/test_llm_common.py -k bound → 9 collected: test_pathological_paragraph_completes_in_bounded_time, test_text_length_over_bound_strips_runs, test_run_count_over_bound_strips_runs, test_text_length_at_bound_is_still_encoded, test_run_count_at_bound_is_still_encoded (both boundary positives, so the bound cannot be satisfied by disabling encoding altogether), test_over_bound_block_does_not_affect_other_blocks, test_bound_logs_single_warning, test_empty_runs_do_not_log, test_non_dict_runs_count_toward_the_bound. The article is never truncated — only its runs are stripped."
+    },
+    {
+      "id": "TS-6",
+      "criterion": "Video wrapping gates on host BEFORE the ID regex, for every source",
+      "status": "passed",
+      "evidence": "dom_blocks.video_embed_url (dom_blocks.py:169) performs the urlparse hostname allowlist check before the id regex, and the seam is DATA (hosts tuple + provider name), not an injectable wrapper — so no source can reintroduce the regex-only path. orangetrack_source._video_embed_url (:122) is a thin adapter over it; t_hunted passes dom_blocks.YOUTUBE_HOSTS (t_hunted_source.py:277 region). tests/test_dom_blocks.py::TestSiteSeams::test_video_host_gate_runs_before_the_id_regex and ::test_video_provider_data_selects_the_wrapper. Task 11 ran 16 attack strings through both call paths, all → None, holding with the flag off. autoevolution's own path is Phase 2. Task 10 minor-1 (orangetrack keeps a verbatim private copy of the host tuple) remains open by operator decision and does not affect gate ORDER."
+    },
+    {
+      "id": "TS-7",
+      "criterion": "Image src scheme is validated in the publisher, not only in the source picker",
+      "status": "passed",
+      "evidence": "telegraph_publisher._is_safe_media_url (telegraph_publisher.py:224, ^https?:// case-insensitive) is applied in the publisher — the single choke point every source and both paths funnel through. tests/test_telegraph_publisher.py::test_unsafe_scheme_image_block_dropped (parametrised), ::test_https_http_and_uppercase_scheme_preserved, ::test_flat_path_drops_unsafe_src, ::test_video_iframe_src_validated, plus ::test_mailto_scheme_dropped and ::test_javascript_scheme_dropped on the link path. Task 11 pushed 17 hostile src values through _build_content_from_blocks with no leak and no raise, including cap-accounting and image_limit=0 controls."
+    },
+    {
+      "id": "TS-8",
+      "criterion": "Per-source image caps are threaded (t-hunted 30, lamley 10) — a single hard-coded value fails a test",
+      "status": "passed",
+      "evidence": "As US-AC9. The anti-hardcode control is tests/test_integration.py::TestPerSourceImageCap::test_image_limit_is_honoured_by_value_and_a_lower_cap_yields_fewer, and Task 9 mutation-proved it: hard-coding the cap in the renderer turns that test red. The values are read from the parser modules' constants, not retyped, so a change to a source's limit cannot silently diverge from the renderer."
+    },
+    {
+      "id": "TS-9",
+      "criterion": "Heading heuristic OFF for orangetrack, ON for the sources in scope",
+      "status": "passed",
+      "evidence": "Met in code and verified by reading it: dom_blocks.BlockBuilder defaults headings_from_bold=False (dom_blocks.py:502); orangetrack_source.py:340 passes False explicitly with a comment stating why; t_hunted_source.py:277 passes True. The ON half is pinned by tests (7 file-scoped heading tests in test_t_hunted_source.py, 23 together with dom_blocks; the corpus yields the 12 headings the user-spec measured on the motivating article). The OFF half is NOT pinned by any test — see major-1, measured, matching what tech-spec § Risks already records."
+    },
+    {
+      "id": "TS-10",
+      "criterion": "Flag off ⇒ the three new parsers emit no blocks; orangetrack still does",
+      "status": "passed",
+      "evidence": "For the Phase-1 parser: tests/test_t_hunted_source.py::TestFeatureFlag::test_flag_off_returns_no_blocks and ::test_flag_off_keeps_paragraphs_and_images. For the must-not-be-gated half: tests/test_feature_flags.py::TestOrangetrackIsNotGatedByTheFlag — two tests, one asserting blocks stay non-empty with the switch off and one asserting the two flag states produce IDENTICAL blocks, paragraphs and images ('non-empty' alone would tolerate the switch quietly reshaping them). These are the controls the wave-5 fixer added after the test audit measured that gating orangetrack on the flag failed ZERO tests; they were mutation-checked on the way in. lamley and autoevolution are Phase 2."
+    },
+    {
+      "id": "TS-11",
+      "criterion": "New modules registered in ALL THREE deploy manifests",
+      "status": "passed",
+      "evidence": "feature_flags.py and dom_blocks.py each appear once in each manifest: deploy.sh:69-70, .github/workflows/deploy.yml:142-143, .github/workflows/deploy_test.yml:113-114 (deploy.sh's second grep hit is an explanatory comment at :30/:33, not a second entry). tests/test_deploy_files_invariant.py → 5 passed. This is the invariant behind the 38-consecutive-ModuleNotFoundError incident, so it is checked against all three files, not just deploy.sh."
+    },
+    {
+      "id": "TS-12",
+      "criterion": "No new package dependencies; no DB migration",
+      "status": "passed",
+      "evidence": "git diff 7b12fbb -- requirements.txt requirements-dev.txt → 0 lines. No schema change: the blocks column already exists on pending_articles, is in _PENDING_JSON_COLS and is NULL-preserving in insert_pending (tech-spec § Data Models); Task 8 additionally pinned at SQL level that a dropped value lands as SQL NULL, not the string '[]'."
+    },
+    {
+      "id": "TS-13",
+      "criterion": "Full suite green, no regressions against the measured baseline",
+      "status": "passed",
+      "evidence": "1901 passed / 504 subtests / 0 failed at eddff7e against a re-measured 1693 / 462 at the branch point 7b12fbb. Compared by NAME, not only by counter: 0 removed or renamed, 208 added. The spec figures 1626/441 (stale) and 1899/504 (one commit stale) are both marked as such and the spec line has been corrected."
+    },
+
+    {
+      "id": "US-AC1 (live half)",
+      "criterion": "The subscriber opens the article and sees the same structure as in the original",
+      "status": "not_verifiable",
+      "evidence": "Offline the chain is proven up to the Telegraph node tree. 'The reader sees what the original had' is a judgement on a live publication and belongs to Task 15."
+    },
+    {
+      "id": "US-AC9 (live half)",
+      "criterion": "Image count on a real gallery publication stays within the cap — for t-hunted AND orangetrack",
+      "status": "not_verifiable",
+      "evidence": "The cap is proven in the renderer offline; the count on a real published page needs a live post. orangetrack matters specifically here because its output changed deliberately."
+    },
+    {
+      "id": "US-AC8 (live half)",
+      "criterion": "No blocks/paragraphs mismatch WARNING appears in production logs on real articles",
+      "status": "not_verifiable",
+      "evidence": "Tests prove the guard fires correctly and does not false-positive on the fixtures available. Whether it stays quiet on the real feed is only visible in prod logs."
+    },
+    {
+      "id": "US Ограничения (live half)",
+      "criterion": "The decorative lead «💬 …» is in place and the last paragraph is not in the source language",
+      "status": "not_verifiable",
+      "evidence": "This is the direct read-out of what Task 7's aligned subtitle lift fixes — the 2026-05-06 shift incident. Offline, all 10 corpus fixtures are aligned; the live confirmation is a channel read."
+    }
+  ],
+  "findings": [
+    {
+      "id": "major-1",
+      "severity": "major",
+      "title": "The 'heuristic OFF for orangetrack' half of TS-9 is pinned by no test — flipping it fails nothing",
+      "expected": "tech-spec § Testing Strategy: 'Heuristic off for orangetrack, on for the others — asserted per source.' Switching orangetrack's headings_from_bold to True should turn a test red.",
+      "actual": "Measured, not derived: across all 24 golden fixtures orangetrack has 26 paragraph blocks and ZERO of them satisfy dom_blocks.looks_like_heading, so enabling the heuristic for orangetrack changes no fixture and therefore fails no test — including the golden gate, which is otherwise this feature's hard gate. The ON half is properly pinned for t-hunted.",
+      "reproduction": "python3 -c \"import json, dom_blocks; g=json.load(open('tests/fixtures/orangetrack_golden.json')); print(sum(1 for e in g['fixtures'].values() for b in ((e.get('parsed') or {}).get('blocks') or []) if b.get('type')=='paragraph' and dom_blocks.looks_like_heading(b.get('text',''), b.get('runs') or [])))\" → 0 flips out of 26 paragraph blocks. Then note that orangetrack_source.py:340 (headings_from_bold=False) is the only thing enforcing Decision 2b.",
+      "blocksDeploy": false,
+      "assessment": "Behaviour is CORRECT today; this is a missing regression guard, exactly the same class as the test audit's H-3 (the flag not gating orangetrack, which killed zero tests and was fixed in the wave-5 pass). tech-spec § Risks already records the same measurement ('0 of 49 orangetrack paragraph blocks in its 37 fixtures would flip'), so the state is known rather than newly discovered. Under the operator's 2026-08-06 rule the trigger is unmeasured, so this belongs in the report rather than in code — but it is the single strongest candidate for a follow-up test, because the thing it fails to protect is orangetrack's live output."
+    },
+    {
+      "id": "minor-1",
+      "severity": "minor",
+      "title": "The selector `heading_heuristic` still collects 0 — stale string in Task 13's Details list",
+      "expected": "Every -k selector named in the verification documents collects ≥1 test.",
+      "actual": "`pytest -k heading_heuristic` collects 0. The classes are named TestHeadingHeuristic and -k is case-insensitive but underscore-sensitive. The wave-5 fixer already repaired this in user-spec § Как проверить step 3 (now `HeadingHeuristic`, 20 collected); the old string survives only in Task 13's own Details/Smoke list.",
+      "reproduction": "python3 -m pytest --collect-only -q -k heading_heuristic | grep -c '::' → 0; the same with HeadingHeuristic → 20.",
+      "blocksDeploy": false,
+      "assessment": "Documentation staleness, not a coverage gap: the behaviour carries 20 tests repo-wide and 23 file-scoped. Nothing to fix in code or tests."
+    },
+    {
+      "id": "minor-2",
+      "severity": "minor",
+      "title": "AC4's only covering assertion lives in a test named for a different behaviour",
+      "expected": "A criterion has a test whose name states what it protects, so a refactor cannot delete the protection by accident.",
+      "actual": "The assertion that proves AC4 — a block with runs: [] plus a RU paragraph carrying **markers** yields a bold run — sits inside tests/test_llm_common.py::TestPatchTextDecodesBoldRuns::test_non_text_block_passes_through, whose stated subject is image blocks passing through untouched. test_ru_with_marker_splices_runs covers only the case where the source ALREADY had the run.",
+      "reproduction": "Read tests/test_llm_common.py:389-401. The AC4 evidence is the last three assertions; the test name mentions none of it.",
+      "blocksDeploy": false,
+      "assessment": "AC4 is met (and was already true in production since the 2026-07-28 fix; this feature does not regress it). The risk is only that a future rename or split of that test drops the assertion silently."
+    },
+    {
+      "id": "minor-3",
+      "severity": "minor",
+      "title": "An exception inside the shared walker skips the article for that tick instead of degrading to flat text",
+      "expected": "AC5's spirit — a markup failure degrades to plain text; the tick survives; the article is not lost.",
+      "actual": "Measured: with dom_blocks.BlockBuilder.walk patched to raise, t_hunted_source.fetch_t_hunted_article PROPAGATES the exception. It is caught by news_bot.fetch_full_article (news_bot.py:3646) which logs and returns None, so job() counts dropped_no_article and continues. The tick survives, and the link is not mark_processed'ed (that happens later, news_bot.py:4100), so the entry is retried on the next tick — but it does not publish as flat text. This became reachable when paragraphs started being DERIVED from blocks (t_hunted_source.py:255 onward), which is also what makes the two lists impossible to desync.",
+      "reproduction": "Patch dom_blocks.BlockBuilder.walk with side_effect=RuntimeError, call t_hunted_source.fetch_t_hunted_article with a mocked session over any corpus fixture → RuntimeError propagates. Without the patch the same call returns 2 paragraphs / 12 blocks.",
+      "blocksDeploy": false,
+      "assessment": "AC5's two NAMED triggers (site changed layout, broken HTML) are handled and tested — BeautifulSoup does not raise on either, and test_broken_markup_still_returns_flat_text proves flat text comes out. The uncovered case is a code defect inside dom_blocks, which is a DERIVED risk with zero occurrences across the 10 t-hunted and 24 orangetrack fixtures. Per the operator's 2026-08-06 rule this is recorded as an observation, not built into the code."
+    }
+  ],
+  "knownOpenFromAuditWave": {
+    "note": "Four findings were deliberately left open by operator decision in the wave-5 fixer pass (decisions.md § 'Fixer pass after wave 5'). They were re-checked against the tree at eddff7e and are all still open, as recorded. NONE of them changes the deploy verdict, and the reasoning is given per item.",
+    "items": [
+      {
+        "id": "Task 10 major-1",
+        "state": "still open — confirmed at news_bot.py:1409: the drop condition reads ('paragraph', 'lead', 'heading') with no list_item, while the sibling list at news_bot.py:3454 does include list_item.",
+        "consequence": "A bullet emptied by the plug filter publishes as '<p>• </p>'.",
+        "verdictImpact": "None. Cosmetic, one word to fix, trigger unmeasured on the corpus — and Phase 1 ships t-hunted, whose corpus carries no list_item at all (Task 9 recorded this). It cannot fire on a Phase-1 t-hunted article that has no bullets."
+      },
+      {
+        "id": "Task 10 major-2",
+        "state": "still open — t_hunted_source.py:97 retypes ('lead', 'paragraph', 'heading', 'list_item') against _llm_common's tuple.",
+        "consequence": "If dom_blocks ever emits a type the copies do not list, _blocks_if_aligned could fire on 100 % of publications and silently switch the feature off.",
+        "verdictImpact": "None today. I verified by import that all four engine tuples and _llm_common now compare EQUAL, and the runtime guard itself correctly reads _llm_common's tuple rather than a copy — so the load-bearing counter is not the drifted one. The risk is latent, not live."
+      },
+      {
+        "id": "Task 12 medium M-2",
+        "state": "still open — tests/test_dom_blocks.py:378 compares only the first 40 characters while the test claims text survives in full.",
+        "consequence": "Truncating a long over-bound paragraph to 50 chars kills no test.",
+        "verdictImpact": "None. A weak assertion in one test, in a behaviour that is otherwise covered by the 9 request-path bound tests and the render-path bounds."
+      },
+      {
+        "id": "Task 11 — three derived minors",
+        "state": "still open — whitespace-prefixed src policy divergence between publisher and preview (unreachable today because dom_blocks.safe_img_src strips), video_embed_url not coercing a str hosts argument (both callers pass tuples and BlockBuilder fails closed), and a quadratic index scan in _build_content_from_blocks (~5 s ceiling at the 2 MB fetch cap; corpus peak is 27 images).",
+        "consequence": "All three are unreachable or bounded on current call paths.",
+        "verdictImpact": "None. Task 11's verdict was PASS-WITH-NOTES with 0 critical and 0 major and explicitly 'nothing to fix before deploy'."
+      }
+    ]
+  },
+  "deferredToPostDeploy": [
+    {
+      "criterion": "US-AC1 — bold, subheadings and lists from the original are visible to the reader in the published Telegraph page (t-hunted)",
+      "reason": "Offline the chain is proven only as far as the Telegraph node tree. Whether the reader sees the same structure as the original page is a visual judgement on a live publication, and the whole feature exists because the operator noticed the problem by reading the channel.",
+      "verificationCondition": "The first t-hunted publication after the deploy.",
+      "verificationSteps": "Open the published Telegra.ph page and the source article side by side. Confirm: bold spans inside paragraphs are bold (not literal ** and not flattened); paragraphs that are subheadings in the original render as headings, not as bold paragraphs; lists render as list items with exactly ONE bullet each (a doubled '• •' means the bullet guard mis-fired). Do this for 3-5 fresh articles per the user-spec — t-hunted is the only source that can be re-fetched freely; lamley is throttled 20 s + 24 h blacklist and autoevolution returns 403."
+    },
+    {
+      "criterion": "US-AC9 — the number of images on a gallery publication does not exceed the cap, for t-hunted AND orangetrack",
+      "reason": "The cap is enforced and tested inside the renderer, but the count on a real published page cannot be observed offline. orangetrack needs checking specifically because its output changed DELIBERATELY in this release — the golden diff shows gallery posts dropping from 20 rendered figures to 10.",
+      "verificationCondition": "A gallery-format publication from t-hunted, and separately one from orangetrack, after the deploy.",
+      "verificationSteps": "Count <figure>/<img> nodes on the published page. Expect ≤30 for t-hunted and ≤10 for orangetrack. For orangetrack also confirm the drop came off the TAIL: the hero image and the order of the surviving images must be unchanged versus previous publications. Fewer images on an orangetrack gallery is the APPROVED change (operator 2026-08-03), not a defect — but any other orangetrack difference is a regression and must be reported."
+    },
+    {
+      "criterion": "US-AC8 — no blocks/paragraphs mismatch WARNING on real articles",
+      "reason": "The tests prove the guard fires on a genuine mismatch and does not false-positive on the shapes covered by fixtures. Whether it stays quiet on the real feed can only be seen in production logs — and a guard that fires on every article would silently disable the whole feature while every positive test stayed green.",
+      "verificationCondition": "At least one full publishing day after the deploy (slots 10:00 / 15:00 / 19:30 МСК).",
+      "verificationSteps": "ssh root@45.90.216.165 \"docker logs hw-news-bot 2>&1 | grep -c '\\[align\\]'\" — expect 0. If non-zero, capture the full lines: each names the article link and both counts (patchable_blocks=N paragraphs=M). Any hit means those articles published as plain text; report the link and the two numbers rather than just the count."
+    },
+    {
+      "criterion": "Decorative lead «💬 …» present and the last paragraph not left in the source language",
+      "reason": "This is the direct read-out of what Task 7's aligned subtitle lift fixes — the 2026-05-06 shift incident, where a one-off desynchronisation published the tail paragraph in the source language. Offline all 10 corpus fixtures are aligned, but the corpus is 10 articles and the feed is not.",
+      "verificationCondition": "The first t-hunted publication after the deploy.",
+      "verificationSteps": "In the channel post, confirm the decorative lead «💬 «…»» is present and is the first paragraph of the article, and that it is not duplicated inside the body. Then read the LAST paragraph of the Telegra.ph page and confirm it is Russian, not Portuguese. A Portuguese tail paragraph is the shift incident and is grounds for setting SOURCE_FORMATTING_ENABLED=0 — noting that this takes effect only on restart, which is barred 10:00-20:00 МСК, so the log line above is the faster same-day signal."
+    },
+    {
+      "criterion": "Observation, not a criterion: an article opening with a whole-bold line sends that heading into the decorative lead",
+      "reason": "Recorded by Task 7 as spec-conformant and unseen in the corpus: the lift takes the first PATCHABLE block, and with the heuristic on, a whole-bold opening line is a heading. Worth an eye during the operator's first reads.",
+      "verificationCondition": "Any t-hunted publication whose source article opens with a bold line.",
+      "verificationSteps": "Check whether the «💬 «…»» lead ever contains what was clearly a section heading in the original. Cosmetic and reversible if it happens; report rather than act."
+    }
+  ]
+}
