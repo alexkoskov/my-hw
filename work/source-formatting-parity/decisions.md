@@ -568,3 +568,167 @@ flag-parity check was widened to both verdict directions at the same time
   a ping could be raised from inside the silent region. The task itself
   proposed this event; the "publish actually ran" check added in round 2 is
   what covers the region.
+
+---
+
+## Task 10: Code Audit
+
+**Status:** Done
+**Commit:** (wave 5, analysis only — no source file changed)
+**Agent:** main agent
+**Summary:** The extraction REMOVED duplication rather than relocating it, and the
+claim is measured, not asserted: the donor lost 290 lines of code and every extracted
+symbol greps to ZERO in it, `dom_blocks.py` contains zero site-specific strings in
+executable code (all 8 name hits are docstrings), and the second consumer got the whole
+walker for **+26 lines of code**. Four seams, video seam is DATA, host gate before the
+ID regex, `BlockBuilder` state ownership clean on every point, all of Decisions 1–9
+confirmed against code, both new modules in all three manifests, golden diff verified
+independently as exactly the 10 tail gallery figures the operator approved and nothing
+else. Findings: **0 blocker, 2 major, 6 minor, 3 nit** — both majors are the same class
+of residue, the alignment contract («which block types map to one flat paragraph»)
+still spelled by four independent literals across the two parsers.
+**Deviations:** None. Analysis only; `lamley_source.py` / `autoevolution_source.py`
+confirmed untouched.
+
+**Report:** [logs/working/task-10/code-audit.md](logs/working/task-10/code-audit.md)
+
+**A FIXER IS REQUIRED** — this task does not apply fixes. Ordered:
+1. **major-1** `news_bot.py:1409` — `_strip_plugs_in_blocks` omits `list_item`, so a
+   bullet emptied by the plug filter publishes as `<p>• </p>`. Demonstrated
+   empirically. Pre-existing (not a Task 1–9 regression); one word. Trigger is NOT
+   measured on the corpus, so the operator may downgrade it to an observation under the
+   2026-08-06 rule — it is a consistency repair, not a new safety net.
+2. **major-2** `t_hunted_source.py:97,329` + `orangetrack_source.py:365` — the
+   patchable-type tuple is retyped three times against `_llm_common.py:216`, and two of
+   the copies already diverge (no `lead`). Harmless only because `dom_blocks` never
+   emits `lead`; the day it does, `_blocks_if_aligned` fires on 100 % of publications
+   and silently switches the feature off. `news_bot._blocks_if_aligned` did it right and
+   its own docstring forbids exactly this.
+3. minor-1 orangetrack's `_YOUTUBE_HOSTS` is a verbatim copy of `dom_blocks.YOUTUBE_HOSTS`
+   (recorded deviation whose stated justification does not hold); minor-2 the Vimeo host
+   allowlist exists only in a TEST file, close before Phase 2; minor-3/4/5 + nit-1 are
+   cosmetic.
+
+**Verification:**
+- Full suite (reference only, this task gates on nothing) → **1899 passed, 504
+  subtests**, no red
+- `git status --short` → only the task-file status flips and this report; this audit
+  touched no source file. NOTE: `telegraph_publisher.py:474` picked up a stray
+  `image_limit = 10` at 12:48 UTC from a CONCURRENT task (11/12 both `in_progress`;
+  the line matches Task 9's "image cap hard-coded in the renderer" mutation verbatim).
+  Deliberately left alone so as not to break the neighbouring agent — **verify
+  `git diff telegraph_publisher.py` is empty before committing this wave.** The suite
+  figure above was taken before it appeared.
+- Donor shrink measured with a tokeniser, not by eye: 685 → 395 lines of code
+- All cited `file:line` references re-checked against the working tree
+
+---
+
+## Task 11: Security Audit
+
+**Status:** Done
+**Commit:** (wave 5 — audit, no code change)
+**Agent:** main agent
+**Summary:** Full-feature OWASP audit of the Phase-1 chain at `4ad4592` —
+verdict **PASS-WITH-NOTES**, **0 Critical, 0 Major, 3 Minor, 5 Informational**,
+so there is **nothing to fix before deploy** and no fixer is required. All four
+named threats are CLOSED with executed probes: bounded quantifiers (full regex
+inventory, every pattern linear to 2 MB, heading punctuation confirmed
+`str.endswith` not regex), the video host gate running before the ID regex for
+every source (16 attack strings → `None` on both call paths, holds with the flag
+off), central `src` scheme validation in the publisher covering hero + body
+images + `iframe src` with correct cap accounting, and the request-path bound
+firing before the `text.find` loop with the article intact and no ping. Report:
+[logs/working/task-11/security-audit.md](logs/working/task-11/security-audit.md).
+**Deviations:** None — analysis only, no source file touched.
+
+**Fix-before-deploy:** none. Every finding is DERIVED, not measured, and is
+recorded as an observation per the operator's 2026-08-06 rule. The three Minor
+ones, for the record: publisher/preview scheme policies diverge on a
+whitespace-prefixed `src` and the parity test hides it with its own `.strip()`
+(`tests/test_telegraph_publisher.py:1344`) — unreachable today because
+`dom_blocks.safe_img_src` strips; `dom_blocks.video_embed_url` does not coerce
+`hosts`, so a `str` argument would turn exact matching into substring matching
+(both current callers pass tuples, and `BlockBuilder` fails closed); and a
+quadratic index scan in `_build_content_from_blocks:467` (measured O(n²),
+~5 s ceiling at the 2 MB fetch cap, corpus peak is 27 images).
+
+**Default ON re-check:** the risk calculation has **NOT changed** — the
+operator's decision stands and is not reopened. Observability improved (Task 8's
+alignment WARNING, Task 6's dropped-`src` and cap logs) and the blast radius
+narrowed to t-hunted, but the switch still needs a restart barred 10:00-20:00
+МСК, so it still cannot deliver same-day mitigation; those log lines, not the
+flag, are the real same-day signal, which makes Task 15's first log read
+load-bearing.
+
+**Verification:**
+- Probes, all inline in the report: regex linearity under doubling to 2 MB;
+  16-string host-gate attack list on both call paths; 17 hostile `src` values
+  through `_build_content_from_blocks` (no leak, no raise) plus cap-accounting
+  and `image_limit=0` controls; 200k-run request-path bound (0.00005 s,
+  `out == text`); end-to-end hostile-HTML trace to the `file://` preview
+  (no `<script>`, no handler, no unsafe scheme, CSP present); log-injection
+  probe (`%.100r` holds); flag-off probe (all four gates still active)
+- Corpus: 0 secret/cookie/token/PII hits; three token-shaped matches
+  investigated and all three false positives (Jetpack og:image token, a Blogger
+  CDN path substring, a WordPress CSS class); `.dockerignore` line 3 `tests`
+  intact; gitleaks unexcluded; largest fixture 384 KB vs the 1000 KB cap
+- A05/A06: both new modules in all three manifests; `requirements*.txt`
+  unchanged; no new outbound call; SQL still static with `?` placeholders
+- Suite at the audited commit, from a pristine `git archive 4ad4592` export:
+  **1899 passed, 504 subtests, 0 failed**
+
+**Working-tree note:** a concurrent agent was running mutation tests against the
+shared tree during this audit (`dom_blocks.py` `headings_from_bold` flipped
+`False`→`True`, then reverted; later `news_bot.py`). A full-suite run that
+landed inside that window showed 2 failures; both are mutation artifacts, not
+regressions — the pristine export is green. Another agent's in-flight edits were
+deliberately left alone.
+
+---
+
+## Task 12: Test Audit
+
+**Report:** [logs/working/task-12/test-audit.md](logs/working/task-12/test-audit.md)
+
+**Summary:** Verdict **pass-with-findings** — 0 critical, 3 high, 3 medium, 3 low,
+3 informational; **1 of 13 `-k` selectors is vacuous** (`heading_heuristic`, 0 collected —
+its user-spec expectation was cancelled by the approved length-limit deviation and the row
+was never repaired). The set does go red when the feature breaks, and that is measured, not
+asserted: seven mutations were run, five with large kill sets — including the decisive one,
+an always-firing alignment guard (19 kills, every false-positive control among them).
+
+**Fixer required.** Three high findings, all defects in the verification gate rather than in
+the feature. Tests that must exist before Task 13:
+
+1. **H-3 — the only new test this audit asks for.** `tests/test_feature_flags.py`: with
+   `SOURCE_FORMATTING_ENABLED=False`, `orangetrack_source.fetch_orangetrack_article` must
+   still return non-empty `blocks`. tech-spec:357-358 names this control by hand and nobody
+   wrote it. **Measured:** gating orangetrack's `blocks` on the flag fails **zero** tests
+   across six files. Must not go in `tests/test_orangetrack_source.py` — AC10 requires that
+   file to stay unedited.
+2. **H-1** — repair user-spec step 3 so its selector collects tests
+   (`tests/test_dom_blocks.py tests/test_t_hunted_source.py -k heading` → 23).
+3. **H-2** — narrow `tech-spec.md:580` to the file-scoped form Task 8 already proved
+   (`-k "mismatch or aligned"` alone collected 8 foreign tests before the feature existed).
+
+Medium: **M-2** `tests/test_dom_blocks.py:378` compares only a 40-char prefix while claiming
+"text survives in full" — truncating a 100k-char paragraph to 50 chars kills nothing
+(measured); **M-3** `tests/test_t_hunted_source.py:453` retypes the patchable-type tuple
+instead of importing it (test-side half of Task 10's major-2; the reachable drift is caught
+behaviourally); **M-1** tech-spec:367-369 requires the mismatch to be produced by the real
+parser via title-dedup divergence — **unbuildable against the shipped design**, which derives
+`paragraphs` from `blocks` precisely so they cannot desync. Spec bullet needs rewording; the
+cause is pinned better than the spec asked. Everything except H-3 is an edit to an existing
+assertion or to a spec document — total new tests recommended: **1**.
+
+**Baseline for Task 13:** tech-spec still says **1626 passed**; the tree at `4ad4592` reports
+**1899 passed + 504 subtests**. Update the tech-spec baseline or Task 13 will read the delta
+as a regression.
+
+**Working tree:** mutations were run and all reverted — `git diff HEAD -- '*.py' tests/` is
+empty and every `.py` and `tests/` file is identical to `4ad4592`. The only Task 12 artifact
+is `logs/working/task-12/`. AC10 gates verified intact: `tests/test_orangetrack_source.py`
+byte-identical to the pre-feature base `ccdc1a7`, and `orangetrack_golden.json` moved by
+exactly the sanctioned Task 6 delta (10 figure/img node groups + 2 summary counters, nothing
+else).
