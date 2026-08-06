@@ -106,6 +106,21 @@ Tests to write BEFORE implementation. Format: `tests/path::test_name` — what i
 Derive from acceptance criteria and tech-spec.
 Conditional: fill for code tasks. For non-code tasks (user instructions, deploy, config) — delete this section.
 
+**List BEHAVIOURS, not inputs.** A set of same-shaped values is ONE
+parametrised test, not five functions — same coverage, a quarter of the lines,
+and a failing case still names its input. Write it as
+`test_x_rejected` — parametrised over `[a, b, c, d]`, not as four entries.
+
+A separate function is warranted when the behaviour itself differs (a boundary
+and its opposite, an error path vs a success path), when setup differs
+materially, or when the code under test is physically duplicated so a test
+against one copy executes no line of the others.
+
+This section is the main source of test fragmentation in the repo: whatever it
+lists, the implementer writes verbatim, one function per line. Measured
+2026-08-05: 1544 test functions and 31 807 lines of test code against 17 214
+lines of production code. Keep the list to distinct behaviours.
+
 ### 6. Acceptance Criteria
 Checklist of what must work.
 

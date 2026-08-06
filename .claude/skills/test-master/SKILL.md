@@ -163,6 +163,52 @@ Tests that duplicate coverage waste time and create maintenance burden.
 
 ---
 
+## Fragmentation Anti-pattern (the mirror image)
+
+Redundancy is one failure mode. The opposite one is writing a separate test
+function for every input of the same behaviour. Coverage looks identical; what
+grows is the number of lines a human has to read on every future change.
+
+Measured on this repo 2026-08-05: **1544 test functions, 31 807 lines of test
+code against 17 214 lines of production code** — 1.85:1. The suite runs in 99
+seconds, so speed was never the problem; the maintenance surface is.
+
+**Signs of fragmentation:**
+- Five test functions differing only in a literal (`"0"`, `"false"`, `"no"`, `"off"`)
+- Test names that read like a list of inputs rather than a list of behaviours
+- Copy-pasted setup blocks with one changed value
+- A new test function added for each new enum member / status code / flag word
+
+**Rule: one test function per BEHAVIOUR, one parametrised case per INPUT.**
+
+```python
+# NO — four functions, one behaviour
+def test_off_word_zero(): ...
+def test_off_word_false(): ...
+def test_off_word_no(): ...
+def test_off_word_off(): ...
+
+# YES — one function, four cases; identical coverage, a quarter of the lines
+@pytest.mark.parametrize("raw", ["0", "false", "no", "off"])
+def test_off_words_disable(raw): ...
+```
+
+A failing parametrised case names the input it failed on, so the diagnostic
+value is the same. `unittest` has the same tool — `subTest`.
+
+**When a separate function IS right:** the behaviours genuinely differ (a
+boundary and its opposite, an error path vs a success path), or the setup
+differs materially, or the failure would need a different explanation. The test
+that guards `list_item` skipping in FOUR duplicated engine modules is four
+functions on purpose: a test against one engine executes no line of the other
+three. That is a behaviour difference, not an input difference.
+
+**Before adding the Nth test to a file, ask:** does this catch a failure the
+others miss, or is it the same check with a different literal? If the latter,
+it is a `parametrize` entry, not a function.
+
+---
+
 ## Test Quality Requirements
 
 ### What Makes a BAD Test
@@ -238,4 +284,3 @@ For some project types, E2E tests are MORE valuable than unit tests:
 ## Test Quality Review
 
 **When reviewing existing tests**, read [test-quality-review.md](references/test-quality-review.md) — categories of bad tests, severity levels, decision criteria.
-

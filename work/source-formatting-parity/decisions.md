@@ -178,3 +178,69 @@ Reviewer passes (code-reviewer, security-auditor, test-reviewer per each task's
 Reviewers section) have **not** been run for any of the four tasks. The code, tests
 and verification above are complete; the review round is what remains before the
 wave can be called closed.
+
+---
+
+## Task 5: Extract `dom_blocks.py` and migrate orangetrack onto it
+
+**Status:** Done
+**Commit:** (wave 2)
+**Agent:** main agent
+**Summary:** The inline-markup walker, the runs flattener, the URL-safety
+filters and the five emitters now live once in `dom_blocks.py`; `BlockBuilder`
+owns the state that used to be captured by `_parse_content_encoded`'s frame,
+and orangetrack became its first consumer — 509 lines deleted there against 49
+added. The golden gate matched on the FIRST run: bodies were carried over
+verbatim rather than rewritten, which was the whole point of the approach.
+**Deviations:** Three, all recorded rather than smoothed over.
+
+1. **`BlockBuilder` takes five site inputs, not four.** The AC counts four
+   seams (junk class, `src` picker, dedup key, video-provider data). The fifth,
+   `has_color_class`, is the `runs_from_tag` hook threaded through the builder —
+   the builder has to produce runs, so it must carry it. No new decision was
+   made; calling it "four" would just have been a word game. Documented in the
+   module docstring so a reviewer does not count it as scope creep.
+2. **Resource bounds are checked AFTER the walk, not before.** The walk itself
+   is linear in the DOM; what needs bounding is the runs list handed
+   downstream, where locating each run costs a scan of the text. Verified the
+   golden is untouched by this: the largest orangetrack fixture has 3 runs and
+   69 characters against bounds of 100 / 100 000.
+3. **A test assertion was corrected, not the code.** The first draft of
+   `test_empty_and_whitespace_only_runs_are_dropped` asserted whitespace-only
+   runs disappear. They do not — they survive as a single space run and vanish
+   only in the flattened text. Confirmed the pre-extraction code behaves
+   identically before touching anything, then renamed the test to state the
+   real contract. Asserting the tidier version would have been a behaviour
+   change, and the golden gate would have caught it a step later.
+
+**Out-of-scope observations (not fixed here):**
+- `pre-commit run --all-files` rewrites ~33 unrelated files under
+  `work/archived/`, `work/completed/` and `.claude/` on every invocation, so
+  the repo-wide hook run cannot pass without an unrelated 33-file diff. Already
+  noted in patterns.md; it bit twice in this session. Worth one cleanup commit.
+- `orangetrack_source` still imports `Callable`/`Tuple` from `typing`; harmless,
+  but a tidy-up candidate once Task 7 settles the file.
+
+**Reviews:**
+
+*Not run this session.* code-reviewer / security-auditor / test-reviewer
+outstanding — same as Wave 1.
+
+**Verification:**
+- `tests/test_dom_blocks.py` → **47 passed**; all were red before the module
+  existed (collection error), and the two that failed against the finished
+  module were both wrong ASSERTIONS, corrected after checking the old code
+- **Golden gate passed on the first run**, and passed HONESTLY:
+  `git diff --stat tests/test_orangetrack_source.py tests/fixtures/orangetrack_golden.json`
+  is empty — the baseline was not edited to make anything go green
+- `tests/test_orangetrack_source.py` + `tests/test_orangetrack_golden.py` →
+  127 passed, orangetrack test file untouched
+- `orangetrack_source._video_embed_url` still imports and takes one argument;
+  YouTube wraps, Vimeo returns `None` (Vimeo hosts stay another provider's data)
+- Module isolation: importing `dom_blocks` pulls in no parser, no publisher, no
+  `news_bot`, no `feature_flags` → `[]`
+- `dom_blocks.py` registered in all three manifests; added to the
+  guard-of-the-guard tuple, where the derived invariant now covers it through
+  orangetrack's import closure
+- Hooks pass on all 13 changed files
+- Full suite: **1797 passed, 481 subtests** (was 1750 / 481), no regressions

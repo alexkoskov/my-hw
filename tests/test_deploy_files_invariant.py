@@ -161,7 +161,7 @@ def test_closure_covers_the_known_runtime_modules():
     closure — the LLM dispatcher, a source parser and the publisher."""
     closure = _runtime_closure()
     for module in ("llm_transcreation", "_llm_common", "telegraph_publisher",
-                   "t_hunted_source", "pending_articles_repo"):
+                   "t_hunted_source", "pending_articles_repo", "dom_blocks"):
         assert module in closure, (
             f"{module} vanished from news_bot's import closure — either it was "
             "genuinely removed, or the import parser stopped working and this "

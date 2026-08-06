@@ -140,6 +140,7 @@ jobs:
             "admin_alerts.py"
             "boilerplate_filter.py"
             "feature_flags.py"
+            "dom_blocks.py"
             "model_extractor.py"
             "backfill_fingerprints.py"
             "watchdog.sh"
