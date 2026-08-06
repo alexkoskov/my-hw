@@ -732,3 +732,67 @@ is `logs/working/task-12/`. AC10 gates verified intact: `tests/test_orangetrack_
 byte-identical to the pre-feature base `ccdc1a7`, and `orangetrack_golden.json` moved by
 exactly the sanctioned Task 6 delta (10 figure/img node groups + 2 summary counters, nothing
 else).
+
+---
+
+## Fixer pass after wave 5 — the minimum that unblocks Task 13
+
+**Status:** Done
+**Commit:** (after wave 5)
+**Agent:** main agent
+**Summary:** Closed the three audit findings that break the PRE-DEPLOY GATE
+itself, and nothing else: the missing orangetrack kill-switch control, two
+`-k` selectors that pass without testing anything, and a test baseline three
+revisions out of date. Operator decision of 2026-08-06: minimum scope, no
+production code touched.
+
+**Deliberately NOT done in this pass** (operator's call, recorded so the
+audit wave's findings are not quietly lost):
+- Task 10 major-2 — the patchable-block-type tuple retyped in three parsers
+  against `_llm_common.py:216`, two copies already diverged. Still open.
+- Task 10 major-1 — `list_item` missing from `_strip_plugs_in_blocks`, so a
+  bullet emptied by the plug filter publishes as `<p>• </p>`. Unmeasured on
+  the corpus; still open.
+- Task 12 medium — `tests/test_dom_blocks.py:378` claims "text survives in
+  full" while comparing a 40-character prefix; truncating a 100k-char
+  over-bound paragraph to 50 chars kills zero tests. Still open.
+- Task 11's three derived minors. Still open.
+
+**What changed:**
+
+1. **`tests/test_feature_flags.py` — the flag-OFF control for orangetrack.**
+   The tech-spec requires "flag off ⇒ the three new parsers emit no
+   `blocks`; orangetrack STILL does (it must not be gated)", and the audit
+   measured that gating orangetrack's blocks on the flag failed ZERO tests
+   across six files. Two tests now cover it: blocks still non-empty with the
+   switch off, and the two flag states produce IDENTICAL blocks, paragraphs
+   and images — "non-empty" alone would tolerate the switch quietly
+   reshaping them. Placed here, not in `tests/test_orangetrack_source.py`,
+   which AC10 requires to pass unedited.
+2. **`user-spec.md` step 3 — selector AND expected result.** `-k
+   heading_heuristic` collected zero while the behaviour it names carries
+   the best coverage in the feature; the classes are `TestHeadingHeuristic`
+   and `-k` ignores case but not underscores. Now collects 20. The stated
+   expectation was stale too — the 80-character boundary was removed by
+   operator decision, so a correct selector against a wrong expectation
+   would just have moved the defect.
+3. **`tech-spec.md` Task 8 Verify-smoke — scoped to the file.** Repo-wide,
+   `-k "mismatch or aligned"` collects 26 tests, 10 of them foreign and
+   green before this feature existed: the unscoped form passes whether or
+   not Task 8 was ever built. Task 8 narrowed it in its own task file; the
+   AVP reads the tech-spec.
+4. **`tech-spec.md` baseline — 1626 → 1899 / 504,** in both places Task 13
+   reads, with the full chain (1626/441 → 1693/462 at `3362f26` → 1899/504
+   at `4ad4592`) so the correction is auditable rather than a bare
+   overwrite. Task 13 now also has to report the COUNT per selector.
+
+**Verification:**
+- The new control was mutation-checked: gating orangetrack's `blocks` on
+  `feature_flags.source_formatting_enabled()` turns BOTH new tests red. That
+  is the exact mutation that killed nothing before this pass
+- `pytest tests/test_feature_flags.py` → 13 passed, 19 subtests
+- Selector counts after the fix: `HeadingHeuristic` 20 (was 0),
+  `markers_lost` 4, `bold_heavy` 3, `image_limit` 22, Task 8 scoped 16
+- Full suite → **1901 passed / 504 subtests** (1899 + the two new tests)
+- `git diff` over `*.py` outside `tests/` → empty. No production code
+  touched, per the operator's minimum-scope decision

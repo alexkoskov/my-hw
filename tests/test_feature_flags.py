@@ -150,5 +150,75 @@ class TestEnvExampleDocumentsTheFlag(unittest.TestCase):
         self.assertIn("restart", block.lower())
 
 
+class TestOrangetrackIsNotGatedByTheFlag(_ReloadIsolation):
+    """The kill switch must NOT reach orangetrack (tech-spec Decision 6, AC10).
+
+    orangetrack emitted `blocks` before this feature existed — it is the
+    reference source the whole thing was extracted FROM. The switch gates
+    block emission inside the three new parsers, never inside `dom_blocks`,
+    which orangetrack also consumes and where a gate would strip its blocks
+    too: an operator reaching for the switch during a t-hunted incident
+    would silently take formatting off a source that was working fine.
+
+    This control was measured to be missing: gating orangetrack's blocks on
+    the flag failed ZERO tests across six files (Task 12 audit). It lives
+    here rather than in `tests/test_orangetrack_source.py`, which AC10
+    requires to pass unedited.
+    """
+
+    #: Same shape as the primary-path fixture in test_orangetrack_source.py.
+    #: Two paragraphs and an image is enough — the claim is about whether
+    #: blocks are emitted at all, not about what is in them.
+    CONTENT_HTML = (
+        "<p>The first paragraph introduces the casting.</p>"
+        '<figure class="wp-block-image">'
+        '<img src="https://orangetrackdiecast.com/wp-content/uploads/i.jpg?w=1024" />'
+        "</figure>"
+        "<p>The second paragraph explains its rarity.</p>"
+    )
+
+    def _fetch(self):
+        import orangetrack_source
+        return orangetrack_source.fetch_orangetrack_article({
+            "link": "https://orangetrackdiecast.com/post-x",
+            "title": "Sample Title",
+            "content": [{"value": self.CONTENT_HTML}],
+            "summary": "",
+            "published": "Mon, 01 Jan 2025 00:00:00 +0000",
+        })
+
+    def test_orangetrack_still_emits_blocks_with_the_flag_off(self):
+        os.environ["SOURCE_FORMATTING_ENABLED"] = "0"
+        _reload_with(os.environ)
+        self.assertFalse(
+            feature_flags.source_formatting_enabled(),
+            "the flag did not actually turn off — the assertion below would "
+            "then be measuring the ON state twice")
+
+        article = self._fetch()
+
+        self.assertIsNotNone(article)
+        self.assertTrue(
+            article.get("blocks"),
+            "turning the kill switch off stripped orangetrack's blocks — the "
+            "switch reached a source it must never touch (AC10)")
+
+    def test_orangetrack_blocks_are_identical_in_both_flag_states(self):
+        """Not merely "non-empty": the switch must be a no-op here, so the
+        two block lists have to match element for element."""
+        os.environ["SOURCE_FORMATTING_ENABLED"] = "0"
+        _reload_with(os.environ)
+        off = self._fetch()
+
+        os.environ.pop("SOURCE_FORMATTING_ENABLED", None)
+        _reload_with(os.environ)
+        self.assertTrue(feature_flags.source_formatting_enabled())
+        on = self._fetch()
+
+        self.assertEqual(off["blocks"], on["blocks"])
+        self.assertEqual(off["paragraphs"], on["paragraphs"])
+        self.assertEqual(off["images"], on["images"])
+
+
 if __name__ == "__main__":
     unittest.main()

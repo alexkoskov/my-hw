@@ -484,7 +484,7 @@ reading of the channel.
 - [ ] Flag off ⇒ the three new parsers emit no `blocks`; orangetrack still does
 - [ ] New modules registered in ALL THREE deploy manifests
 - [ ] No new package dependencies; no DB migration
-- [ ] Full suite green, no regressions (baseline: **1626** passed, 441 subtests — the 2026-08-03 rewrite of `test_deploy_files_invariant.py` replaced 6 shallow assertions with 4 real ones, so the old 1628 figure is not a regression)
+- [ ] Full suite green, no regressions. The baseline has moved twice and BOTH figures below are stale for Task 13 — measure against the CURRENT one: **1899 passed, 504 subtests** at `4ad4592` (end of Phase 1). Chain: 1626/441 when this spec was written → 1693/462 at the branch point `3362f26` → 1899/504 after Tasks 5-9 added their tests. (The older 1628 figure is not a regression either: the 2026-08-03 rewrite of `test_deploy_files_invariant.py` replaced 6 shallow assertions with 4 real ones.)
 
 ## Implementation Tasks
 
@@ -577,7 +577,7 @@ reading of the channel.
 - **Description:** Drop `blocks` and log a WARNING when the patchable-block count disagrees with the paragraph count, at the site where the row is assembled. Serves AC8; see Decision 4. Needs a false-positive control — an always-firing guard would silently disable the feature.
 - **Skill:** code-writing
 - **Reviewers:** code-reviewer, test-reviewer
-- **Verify-smoke:** `python3 -m pytest -q -k "mismatch or aligned"` collects ≥2 tests and passes
+- **Verify-smoke:** `python3 -m pytest -q tests/test_news_bot_alignment.py -k "mismatch or aligned"` collects ≥2 tests and passes. **Scoped to the file on purpose** (test audit, 2026-08-06): repo-wide the same selector collects 26 tests, 10 of them foreign and green before this feature existed, so the unscoped form passes whether or not Task 8 was ever built. Task 8 narrowed it in its own task file; this line is the one the AVP and Task 13 actually read.
 - **Files to modify:** `news_bot.py`, `tests/test_news_bot_alignment.py` (new)
 - **Files to read:** `_llm_common.py`, `pending_articles_repo.py`, `dom_blocks.py`
 
@@ -608,7 +608,7 @@ reading of the channel.
 ### Final Wave
 
 #### Task 13: Pre-deploy QA
-- **Description:** Acceptance testing: run all tests, verify every acceptance criterion from user-spec and this tech-spec. Confirm the orangetrack golden file and test files are unedited, that every named `-k` selector collects tests, and that the suite has no regressions against the 1626-passed baseline (1628 before 2026-08-03).
+- **Description:** Acceptance testing: run all tests, verify every acceptance criterion from user-spec and this tech-spec. Confirm the orangetrack golden file and test files are unedited, that every named `-k` selector collects tests — reporting the COUNT per selector, since `pytest -k` collecting zero exits 0 — and that the suite has no regressions against the **1899 passed / 504 subtests** baseline measured at `4ad4592` (see the corrected chain in the Verification Plan above; the 1626 and 1628 figures quoted earlier in this document are historical).
 - **Skill:** pre-deploy-qa
 - **Reviewers:** none
 
