@@ -867,3 +867,132 @@ M-2, три derived minor из Task 11) пере-проверены на `eddff7
 - `requirements.txt` / `requirements-dev.txt` против точки ветвления → пустой diff
 - Флаг: по умолчанию `True`, `SOURCE_FORMATTING_ENABLED=0` → `False` (исполнено)
 - `grep -c "strong\|<b>\|<em>" tests/test_t_hunted_source.py` → **9** (было 0)
+
+---
+
+## Task 14: Deploy
+
+**Status:** Done
+**Commit:** merge `f51ffac`, tag `prod-2026-08-07`
+**Agent:** main agent
+**Summary:** `dev` was merged into `main` and the operator rebuilt the Moscow
+container onto `f51ffac`; the boot was verified clean from `docker logs` —
+both new modules imported, no tracebacks, singleton lock taken, review
+listener up, `[E008]` plan sent, no `[E018]`. Phase 1 is live.
+**Deviations:** Three, all worth stating plainly.
+
+1. **No pull request.** The task requires a PR `dev` → `main` for the CI gate
+   and the written record; `gh` is not authenticated in this environment, so
+   the merge was made directly. What the PR buys was preserved rather than
+   skipped: the FULL SUITE was run on the MERGE RESULT (1902 passed / 504
+   subtests, identical to `dev`, so the merge introduced nothing) before the
+   push, and the release note went into the merge commit message, which
+   outlives any PR page. What was genuinely lost: CI running before the code
+   landed on `main` rather than after, and a review page for the operator.
+2. **Deployed INSIDE the publication window.** The task recommends after
+   20:00 МСК and forbids 10:00–20:00; the container booted at 12:08 by its
+   own log clock. The consequence is not cosmetic and was stated to the
+   operator at the time: the kill switch needs a restart, restarts are barred
+   in the same window, so `SOURCE_FORMATTING_ENABLED=0` is NOT available as a
+   remedy until the window closes. The day's remaining slot (15:00) therefore
+   runs on the new code with no fast way back.
+3. **The pre-deploy prod SHA was not captured.** Step 1 of the operator block
+   exists precisely to record it. Best known substitute: `cbee325`, the head
+   of `main` before this merge — but the server may have been further behind,
+   so the rollback target is approximate rather than measured.
+
+**What the first live publication actually exercises.** The tick after the
+deploy staged NOTHING: 75 entries, 17 off-topic, 3 new and all three dropped
+as bare checklists (the orangetrack `case-contents-checklist` slug, working as
+designed). The 15:00 slot therefore publishes a CARRY-OVER row staged before
+the deploy — an orangetrack case report that already carries `blocks`, because
+orangetrack emitted blocks before this feature existed. So the first live
+change is not the t-hunted formatting at all: it is the image cap, which until
+today never applied on the blocks path. `orangetrack_source.IMAGE_LIMIT` is 10
+and case reports carry 20-30 photos by the parser's own comment, so this
+article loses images. That is the sanctioned AC9/AC10 deviation landing on a
+worst-case article on day one.
+
+**Also riding along:** production had not pulled since `cbee325`, so this
+deploy additionally carried the chat-slang carve-out revocation in the
+translation prompt. Task 15 has to watch both changes, not just this feature.
+
+**Verification:**
+- Server HEAD confirmed by the operator: `f51ffac` — the merge commit, not an
+  earlier state
+- Queue confirmed by the operator: one row, `orangetrack`, `blocks` present
+- Boot log clean: no `ModuleNotFoundError` (the failure mode that cost 38
+  consecutive crashes once), no tracebacks, no `[align]` WARNING, no `[E018]`
+- Full suite on the merge result → 1902 passed / 504 subtests
+- Merge parents `cbee325` + `e8490d1`; `git merge-base --is-ancestor
+  origin/dev origin/main` → all of `dev` is in `main`
+- Tag `prod-2026-08-07` → `f51ffac`, pushed. First `prod-*` tag in the repo,
+  so there is no previous tag to roll back to — the rollback target is a SHA
+
+**Rollback, in the order it should be reached for:**
+1. Outside the window: `SOURCE_FORMATTING_ENABLED=0` in `/root/hw-news/.env`
+   + restart. Unavailable until 20:00 МСК today.
+2. Server back to the pre-pull SHA (approximate — see deviation 3).
+3. `git revert -m 1 f51ffac` on `main`. Plain `git revert` refuses on a merge
+   commit, and after reverting, re-merging `dev` will NOT restore the work.
+
+---
+
+## Task 15: Post-deploy verification
+
+**Status:** Done (partial — the t-hunted half is blocked, not skipped)
+**Commit:** (post-deploy)
+**Agent:** main agent
+**Report:** [logs/working/post-deploy-report.json](logs/working/post-deploy-report.json)
+**Summary:** Nothing found on the live environment is attributable to this
+feature. Every check that the one available publication could support passed;
+the t-hunted checks — the feature's own headline capability — are BLOCKED,
+because no t-hunted article was staged on deploy day and the 15:00 slot
+published a carry-over orangetrack row instead.
+**Deviations:** None. Task 15 step 3 explicitly requires marking checks
+`blocked` with a plan rather than inventing a result, and that is what was
+done for three of them.
+
+**Verdict on check 4 (the one the task asks to name separately):** the last
+content paragraph is Russian — «Смотрите ниже предыдущие видео распаковки Car
+Culture 2026 года.» — with the body 77.8 % Cyrillic and the residual Latin
+being model names. No foreign-language tail. The decorative lead «💬 …» is
+absent, which is CORRECT here: orangetrack hardcodes an empty subtitle by
+design since 2026-05-06. The lead half of the check applies to t-hunted and
+is blocked.
+
+**Measured, not eyeballed.** The published page was pulled through
+`api.telegra.ph/getPage?return_content=true` and its node tree counted:
+6 `figure` against orangetrack's cap of 10 (so the cap did NOT bite and
+nothing was dropped — the pre-publication worry that a case report would lose
+twenty photos did not materialise), 7 `strong` (bold reached a reader), and
+ZERO `h3` (the heading heuristic is correctly off for orangetrack, AC10).
+`grep -i mismatch` over the container log returned empty — the guard that
+stands between the reader and a source-language paragraph never fired.
+
+**One quality issue found, and it is NOT ours.** The page carries
+«• Custom ’70 Chevy NovaЧЕЙЗ! LB-ER34 Super Silhouette Nissan Skyline» — the
+chase car's entry glued onto the previous one. Rather than argue about it, the
+pre-feature parser was run at `7b12fbb` in a detached worktree against the
+SAME source HTML: block type counts, paragraph count and every `list_item`
+string come out IDENTICAL, glue included. Pre-existing orangetrack behaviour,
+neither caused nor fixed here. Worth its own defect, not a rollback.
+
+**Worth knowing for the next feature that touches this path.** The first live
+publication took the variant-B FALLBACK, not the main path: the model returned
+`blocks: null` (`expected 36, got NoneType`) and `_patch_text_with_ru_paragraphs`
+spliced the RU text into the EN block structure, decoding `**` markers into
+runs. That fallback is what actually delivered the bold on day one, so it is
+load-bearing rather than an edge case. The call also ran through OpenRouter,
+not Claude — same shared `_llm_common` code, but that is the engine the
+feature was first exercised on in production.
+
+**Blocked, with the trigger named:** t-hunted formatting versus the source
+page, t-hunted's image cap of 30, and t-hunted's lead-and-tail check. All three
+unblock on the first t-hunted publication. The last one is the highest-value
+check in the whole feature — t-hunted is the source whose subtitle lift caused
+the 2026-05-06 outage, and a leak there would be PORTUGUESE, not English.
+
+**Also verified because it shipped in the same deploy:** the chat-slang
+carve-out revocation. No occurrence of «так машинки зовут», «машонка» or
+«в чате» in the published body — the orphaned gloss is gone.

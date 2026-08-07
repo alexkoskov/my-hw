@@ -1,0 +1,121 @@
+{
+  "task": "15 — Post-deploy verification",
+  "feature": "source-formatting-parity",
+  "date": "2026-08-07",
+  "status": "partial",
+  "verdict": "No defect attributable to this feature was found on the live environment. Every check that could be run against the one available publication passed. The t-hunted half of the verification is BLOCKED — no t-hunted article was staged on deploy day, so the formatting the feature exists for has not yet reached a reader.",
+  "build": {
+    "prodSha": "f51ffac",
+    "tag": "prod-2026-08-07",
+    "confirmedBy": "operator ran `git log --oneline -1` on the host",
+    "bootClean": true,
+    "bootEvidence": "docker logs: singleton lock acquired, DB initialized, review listener up, [E008] plan sent; no ModuleNotFoundError, no tracebacks, no [E018]",
+    "deployedInsideWindow": true,
+    "deployWindowNote": "Container booted at 12:08 by its own log clock, inside the 10:00-20:00 МСК ban. Consequence carried all day: the kill switch needs a restart, restarts are barred in the same window, so SOURCE_FORMATTING_ENABLED=0 was not available as a remedy."
+  },
+  "publicationUnderTest": {
+    "url": "https://telegra.ph/Hot-Wheels-Car-Culture-Aero-Styles--Otchyot-po-kejsu-U-2026-goda-08-07",
+    "source": "https://orangetrackdiecast.com/2026/08/06/hot-wheels-2026-car-culture-aero-styles-u-case-report/",
+    "sourceName": "orangetrack",
+    "slot": "15:00 МСК",
+    "note": "A carry-over row staged BEFORE the deploy. The tick that ran at deploy time staged nothing: 75 entries, 17 off-topic, 3 new and all three dropped as bare checklists (the orangetrack case-contents-checklist slug, working as designed).",
+    "nodeCounts": {"figure": 6, "img": 6, "p": 25, "strong": 7, "iframe": 6, "a": 1, "h3": 0}
+  },
+  "checks": [
+    {
+      "id": "check-3-logs-mismatch",
+      "title": "No blocks/paragraphs mismatch WARNING on real articles (AC8, Task 8 guard)",
+      "status": "passed",
+      "evidence": "`docker logs hw-news-bot 2>&1 | grep -i 'mismatch'` returned EMPTY. This is the check that stands between the reader and a paragraph published in the source language — the 2026-05-06 outage."
+    },
+    {
+      "id": "check-3-logs-tracebacks",
+      "title": "No tracebacks from parser / publisher / dom_blocks",
+      "status": "passed",
+      "evidence": "WARNING/ERROR grep over the last 400 lines returned exactly two lines, neither from this feature: a pre-existing autoevolution RSS parse warning, and the LLM blocks-divergence warning recorded separately below."
+    },
+    {
+      "id": "check-2-images-orangetrack",
+      "title": "Image count on a gallery publication within the per-source cap (AC9)",
+      "status": "passed",
+      "evidence": "Counted programmatically from the Telegra.ph API node tree, not by eye: 6 figure nodes against orangetrack's cap of 10. The cap did NOT bite on this article, so nothing was dropped. The pre-publication worry that a case report would lose 20 photos did not materialise here.",
+      "caveat": "Because the cap did not bite, this publication does NOT exercise the capping path. AC9's cap-actually-trimming behaviour remains verified only offline."
+    },
+    {
+      "id": "check-1-formatting-live",
+      "title": "Formatting survives to a real published page",
+      "status": "passed-partial",
+      "evidence": "7 <strong> nodes on the live page, carrying model names and 'ЧЕЙЗ!'. Bold reached a reader through parser -> queue -> LLM -> Telegraph.",
+      "caveat": "orangetrack emitted runs before this feature, so this proves NO REGRESSION rather than new capability. The new capability is t-hunted's, and it is blocked below."
+    },
+    {
+      "id": "check-ac10-orangetrack-unchanged",
+      "title": "orangetrack publishes as before (AC10)",
+      "status": "passed",
+      "evidence": "Zero h3 nodes — the whole-bold heading heuristic is correctly OFF for orangetrack. Additionally the pre-feature parser was run against the SAME source HTML in a detached worktree at 7b12fbb: block type counts, paragraph count and every list_item text are IDENTICAL to the current code."
+    },
+    {
+      "id": "check-4-tail-language",
+      "title": "Last paragraph is Russian, no foreign-language leak",
+      "status": "passed",
+      "evidence": "Whole body 77.8% Cyrillic. Final content paragraph — 'Смотрите ниже предыдущие видео распаковки Car Culture 2026 года.' — is Russian; the node after it is the 'Источник:' footer. Residual Latin is proper nouns (model names), which is expected."
+    },
+    {
+      "id": "check-4-decorative-lead",
+      "title": "Decorative lead «💬 …» present",
+      "status": "not_applicable",
+      "evidence": "orangetrack hardcodes subtitle = '' by design since the 2026-05-06 incident, so it has no decorative lead. Its absence here is correct, not a defect. The check applies to t-hunted and is blocked."
+    },
+    {
+      "id": "extra-prompt-orphaned-gloss",
+      "title": "No orphaned gloss from the chat-slang revocation that rode along",
+      "status": "passed",
+      "evidence": "No occurrence of «так машинки зовут», «машонка» or «в чате» anywhere in the published body. Not part of this feature, but it shipped in the same deploy and had to be watched."
+    },
+    {
+      "id": "check-1-t-hunted-formatting",
+      "title": "t-hunted: bold, subheadings and lists verified against the source page",
+      "status": "blocked",
+      "plan": "Requires a published t-hunted article. None was staged on deploy day. Watch the next ticks; when a t-hunted publication appears, fetch its Telegra.ph node tree via https://api.telegra.ph/getPage/<path>?return_content=true and compare strong/h3/bullet nodes against the source page at t-hunted.blogspot.com."
+    },
+    {
+      "id": "check-2-t-hunted-images",
+      "title": "t-hunted image cap (30) honoured on a live publication",
+      "status": "blocked",
+      "plan": "Same trigger. Count figure nodes on the first t-hunted publication; expect <= 30. The corpus peaks at 27, so the cap may well not bite — in that case record it as not-exercised rather than passed."
+    },
+    {
+      "id": "check-4-t-hunted-lead-tail",
+      "title": "t-hunted: decorative lead present and no Portuguese in the tail",
+      "status": "blocked",
+      "plan": "Same trigger, and this is the highest-value blocked check: t-hunted is the source whose subtitle lift caused the 2026-05-06 outage, and a leak here would be PORTUGUESE, not English."
+    }
+  ],
+  "findings": [
+    {
+      "severity": "minor",
+      "attributedToThisFeature": false,
+      "title": "Two source entries are glued into one bullet on the published page",
+      "detail": "Node #24 reads '• Custom ’70 Chevy NovaЧЕЙЗ! LB-ER34 Super Silhouette Nissan Skyline' — the chase car's entry runs straight into the previous one with no separator.",
+      "proofOfNonRegression": "The pre-feature parser at 7b12fbb, run on the SAME source HTML, produces the identical string 'Custom ’70 Chevy NovaCHASE! LB-ER34 Super Silhouette Nissan Skyline'. Block counts and every other list_item match exactly. This is pre-existing orangetrack behaviour that the feature neither caused nor fixed.",
+      "recommendation": "Log as a separate defect against orangetrack parsing. Not a blocker for this feature and not a reason to roll back."
+    },
+    {
+      "severity": "informational",
+      "attributedToThisFeature": false,
+      "title": "The LLM returned blocks: null on the first live publication, and the variant-B fallback carried the formatting",
+      "detail": "openrouter_transcreation WARNING: \"response 'blocks' length diverges: expected 36, got NoneType; caller will fall back to original EN blocks for structure\". The code then spliced RU paragraphs into the EN block structure via _llm_common._patch_text_with_ru_paragraphs, decoding ** markers into runs.",
+      "why_it_matters": "That fallback is now load-bearing for this feature — it is the path that turns markers back into bold — and it fired on the very first live publication rather than as a rare edge case. It worked: 7 strong nodes reached the page. Worth knowing that the common path in production is the fallback, not the model returning blocks.",
+      "alsoNote": "The translation ran through OpenRouter, not Claude. Both engines share _llm_common, so the marker round-trip is the same code, but the first live exercise of this feature was on the OpenRouter path."
+    }
+  ],
+  "deferredToPostDeployStatus": [
+    {"criterion": "US-AC1 — bold, subheadings and lists visible on a real publication", "status": "partial", "note": "Bold confirmed live (orangetrack). Subheadings and lists for t-hunted still blocked."},
+    {"criterion": "US-AC9 — image count on a real gallery publication", "status": "passed", "note": "6 of a possible 10 on orangetrack; cap not exercised."},
+    {"criterion": "US-AC8 — no blocks/paragraphs mismatch WARNING on real articles", "status": "passed", "note": "grep empty."},
+    {"criterion": "Decorative lead present and last paragraph not left in the source language", "status": "partial", "note": "Tail language confirmed Russian. Lead is not applicable to orangetrack; blocked for t-hunted."},
+    {"criterion": "Observation — an article opening with a whole-bold line would send that heading into the decorative lead", "status": "not_exercised", "note": "Applies to t-hunted only; no t-hunted publication yet."}
+  ],
+  "rollbackRecommendation": "None. Nothing found on the live environment is attributable to this feature, and the one real quality issue is proven pre-existing.",
+  "nextTrigger": "The first t-hunted publication. Until then this report stays partial and the feature's own headline capability is unverified in production."
+}
