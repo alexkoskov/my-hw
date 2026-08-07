@@ -17,10 +17,11 @@ refactor cannot silently revert them. All assertions are **content-anchored**
 (string / heading lookups) — no line-number coupling, so they survive future
 prompt-text drift in other features.
 
-A second group (2026-07-28) pins the «машинка» object canon and the single
-sanctioned slang carve-out «машонка» — including the caption-pass guard, which
-reaches into the four engine modules because ``_BLOCK_TRANSLATE_SYSTEM`` never
-loads this file.
+A second group (2026-07-28) pins the «машинка» object canon — including the
+caption-pass guard, which reaches into the four engine modules because
+``_BLOCK_TRANSLATE_SYSTEM`` never loads this file. That group also carried a
+sanctioned slang carve-out, revoked by the operator on 2026-08-07; the
+assertions that pinned it are now inverted and guard against its return.
 """
 
 import re
@@ -128,15 +129,15 @@ def test_input_language_prompt_widened():
 
 
 # ---------------------------------------------------------------------------
-# «Машинка» canon + the single sanctioned slang carve-out (2026-07-28).
+# «Машинка» canon (2026-07-28); slang carve-out revoked (2026-08-07).
 #
 # Channel feedback: readers do not say «миниатюра» / «фигурка» — the calque
-# reads as unnatural. «Машинка» is the canon for the object itself, and the
-# chat's own slang «машонка» is allowed in strictly bounded doses.
+# reads as unnatural. «Машинка» is the canon for the object itself, and now the
+# ONLY word for it: the chat-slang carve-out that stood here was removed after
+# it shipped a self-referential gloss to the channel (see below).
 #
-# These assertions pin a PROMPT-BEHAVIOUR contract, not prose: the object canon,
-# the carve-out, its four limits, and — critically — that the carve-out did not
-# dissolve the general ban on invented words it is an exception to.
+# These assertions pin a PROMPT-BEHAVIOUR contract, not prose: the object canon
+# and the unconditional ban on invented words that the carve-out used to dent.
 # ---------------------------------------------------------------------------
 
 
@@ -212,50 +213,63 @@ def test_figurine_exception_is_scoped_to_actual_figurines():
     )
 
 
-def test_mashonka_slang_carveout_is_bounded():
-    content = _read()
-    lowered = content.lower()
-    assert "машонка" in lowered, (
-        "The sanctioned slang «машонка» must be named in the prompt — it is "
-        "otherwise forbidden by the invented-words rule."
-    )
-    section = _section(content, "## Glossary — PT/EN/RU").lower()
-    # All limits live together with the carve-out, so the LLM cannot read the
-    # permission without the constraints.
-    # Dosage, as the operator finally set it (2026-07-28): every article, at
-    # most once. Deliberately a PER-ARTICLE rule — the earlier «one article in
-    # five» draft was unimplementable, since each article is translated by an
-    # independent call with no memory of the previous ones, so the model cannot
-    # ration across articles and falls back to using the word whenever allowed.
-    # Counting inside one article it can do.
-    assert "ровно один раз в статье" in section, (
-        "Carve-out must state the per-article dosage the operator chose."
-    )
-    assert "не больше" in section, "Missing the once-per-article ceiling."
-    assert "заголов" in section, "Carve-out must forbid the slang in titles."
-    assert "сноск" in section or "первом упоминании" in section, (
-        "Carve-out must require the first-mention gloss for readers who are "
-        "not in the chat."
+def test_slang_carveout_stays_revoked():
+    """The chat-slang carve-out must not come back — in ANY section.
+
+    Revoked by the operator 2026-08-07 after a published article read
+    «эксклюзивную машинку (так машинки зовут у нас в чате)»: the permission and
+    its mandatory parenthetical gloss lived in SEPARATE bullets, so the model
+    satisfied the gloss bullet while resolving the word itself in favour of the
+    «машинка» canon that four other rules reinforce. A gloss with no word to
+    gloss is not a schema violation, so nothing downstream caught it.
+
+    Scoped to the whole file on purpose, changelog included: the entire body is
+    the system prompt (``_llm_common._build_system_prompt`` appends only the
+    JSON envelope), so a permission quoted in the Provenance log reaches the
+    model exactly like a live rule. The revocation entry describes the old rule
+    without restating it.
+    """
+    lowered = _read().lower()
+    assert "машонк" not in lowered, (
+        "The revoked chat-slang carve-out reappeared in ux-guidelines.md. The "
+        "whole file ships as the system prompt, so even a changelog line "
+        "quoting the old permission re-licenses the word."
     )
 
 
-def test_invented_words_ban_survives_the_carveout():
-    """Regression guard: the carve-out is ONE named exception, not an opening.
-
-    The blockquote ban and the red-flag self-check are what keep «коллективка»
-    /«эксклюзивка» out. A future edit that widens «машонка is allowed» into
-    «slang is allowed» must fail here.
+def test_invented_words_ban_is_unconditional():
+    """The blockquote ban and the red-flag self-check keep «коллективка» /
+    «эксклюзивка» out. With the carve-out gone the ban carries no exception,
+    and nothing may reintroduce one.
     """
     content = _read()
     assert "Запрещены выдуманные слова и сленговые неологизмы" in content, (
         "The system-prompt ban on invented words / slang neologisms was "
-        "removed or reworded — the «машонка» carve-out depends on it still "
-        "standing as the default."
+        "removed or reworded."
     )
     red_flags = _section(content, "## Red flags to self-check before stage")
     assert red_flags, "## Red flags section missing."
     assert "коллективка" in red_flags, (
         "The red-flag self-check against non-dictionary words must survive."
+    )
+    assert "исключение только одно" not in red_flags.lower(), (
+        "The non-dictionary-word red flag must not carry a slang exception "
+        "again — the carve-out was revoked 2026-08-07."
+    )
+
+
+def test_orphaned_chat_gloss_is_a_red_flag():
+    """The exact defect that killed the carve-out must be self-checkable.
+
+    The failure was not the slang — it was the gloss surviving without it,
+    leaving «машинка (так машинки зовут у нас в чате)», which explains a word
+    by itself. Pin the gloss shape so the model can spot it in its own output.
+    """
+    red_flags = _section(_read(), "## Red flags to self-check before stage").lower()
+    assert red_flags, "## Red flags section missing."
+    assert "зовут у нас в чате" in red_flags, (
+        "The red flags must name the orphaned parenthetical gloss verbatim — "
+        "that exact string is what reached the channel on 2026-08-07."
     )
 
 
@@ -267,8 +281,11 @@ def test_caption_pass_carries_the_object_canon():
     captions unless it is stated there too. Without this guard the body would
     say «машинка» while the picture caption under it said «миниатюра».
 
-    Slang is deliberately NOT propagated: a caption is one line, too short to
-    carry the required first-mention gloss.
+    Slang must not appear here either. It was already excluded while the
+    carve-out existed (a caption is one line, too short to carry the mandatory
+    gloss); since the carve-out was revoked 2026-08-07 the assertion below
+    guards the engine prompts against re-adding what the guidelines no longer
+    permit anywhere.
     """
     engines = [
         "claude_transcreation.py",
