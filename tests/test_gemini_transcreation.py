@@ -13,6 +13,7 @@ from unittest.mock import MagicMock, patch
 # Add repo root to path
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
+import _llm_common  # noqa: E402
 import gemini_transcreation  # noqa: E402
 from _llm_common import ClaudeOutageError, ClaudeTranscreationError  # noqa: E402
 from google.genai import errors as genai_errors  # noqa: E402
@@ -63,14 +64,18 @@ def _make_client_returning(response_or_exc):
 
 
 def _make_client_error(status_code: int, message: str = "test error"):
-    """Build a google-genai ClientError with the given status code."""
-    # ClientError accepts (code, response_json, response) per signature; minimum:
-    # use a mock with the .code attribute that _classify_exception reads.
-    err = genai_errors.ClientError.__new__(genai_errors.ClientError)
-    err.code = status_code
-    err.status_code = status_code
-    err.args = (message,)
-    return err
+    """Build a real google-genai ``ClientError`` with the given status code.
+
+    Uses the actual constructor ``(code, response_json, response=None)`` — no
+    HTTP layer needed. It must NOT be faked with ``__new__`` + hand-set
+    attributes: a real ``ClientError`` exposes ``.code`` and has **no**
+    ``.status_code`` (google-genai 1.73.1), so a double that invents
+    ``.status_code`` would keep these tests green while production sent every
+    4xx down the wrong branch.
+    """
+    return genai_errors.ClientError(
+        status_code, {"error": {"code": status_code, "message": message}}, None
+    )
 
 
 def _make_server_error(status_code: int = 500, message: str = "server error"):
@@ -123,6 +128,50 @@ class TestExceptionClassification(unittest.TestCase):
         with patch.object(gemini_transcreation, "_load_prompt", return_value="X"):
             with self.assertRaises(ClaudeOutageError):
                 gemini_transcreation.transcreate_via_claude(SAMPLE_ARTICLE, client=client)
+
+    def test_account_level_codes_are_outage(self):
+        """402/407/408 — same shared set the SDK-based engines use. google-genai
+        raises one ``ClientError`` for every 4xx, so the split is by code."""
+        for code in (402, 407, 408):
+            with self.subTest(code=code):
+                client = _make_client_returning(_make_client_error(code, "account-level"))
+                with patch.object(gemini_transcreation, "_load_prompt", return_value="X"):
+                    with self.assertRaises(ClaudeOutageError):
+                        gemini_transcreation.transcreate_via_claude(
+                            SAMPLE_ARTICLE, client=client
+                        )
+
+    def test_other_client_codes_are_per_article(self):
+        """Default flipped 2026-08-04: unlisted 4xx are per-article, matching the
+        other three engines. 413/451 are about THIS article — as an outage they
+        would pin the row to the queue head and stop the channel."""
+        for code in (413, 414, 451):
+            with self.subTest(code=code):
+                client = _make_client_returning(_make_client_error(code, "article-level"))
+                with patch.object(gemini_transcreation, "_load_prompt", return_value="X"):
+                    with self.assertRaises(ClaudeTranscreationError):
+                        gemini_transcreation.transcreate_via_claude(
+                            SAMPLE_ARTICLE, client=client
+                        )
+
+    def test_named_class_codes_stay_outage(self):
+        """Guard for the flipped default. Every code the OpenAI/Anthropic SDKs
+        give a dedicated class to must stay on the outage side here too, or the
+        engines stop agreeing: 404 bad model name, 409 conflict (their
+        ``ConflictError``), 403 no access.
+
+        499 is Gemini-only — «client cancelled the request», the google-genai
+        twin of ``APITimeoutError``. It was an outage before the default flip
+        and must not be swept into per-article by it.
+        """
+        for code in (403, 404, 409, 499):
+            with self.subTest(code=code):
+                client = _make_client_returning(_make_client_error(code, "api-level"))
+                with patch.object(gemini_transcreation, "_load_prompt", return_value="X"):
+                    with self.assertRaises(ClaudeOutageError):
+                        gemini_transcreation.transcreate_via_claude(
+                            SAMPLE_ARTICLE, client=client
+                        )
 
     def test_classifier_handles_already_wrapped(self):
         """If the SDK somehow returns our own exception type, do not re-wrap."""
@@ -336,6 +385,38 @@ class TestLLMTranscreationDispatcher(unittest.TestCase):
         self.assertIs(openai_transcreation.ClaudeOutageError, CommonOutage)
         self.assertIs(openrouter_transcreation.ClaudeOutageError, CommonOutage)
         self.assertIs(llm_transcreation.ClaudeOutageError, CommonOutage)
+
+
+class TestVariantBPlus(unittest.TestCase):
+    """Second-pass block-string translation. Duplicated per engine on
+    purpose: ``_translate_block_strings`` is physically copied into all
+    four modules, so a test against one proves nothing about the other
+    three — that is exactly how the gemini classifier bug survived."""
+
+    def test_list_item_text_skipped_by_second_pass(self):
+        """``list_item`` text is already RU (the SHARED tuple lists it, so
+        ``_patch_text_with_ru_paragraphs`` fills it), so the second pass
+        must skip it instead of re-translating RU→RU."""
+        blocks = [
+            {"type": "list_item", "text": "Уже переведённый пункт списка."},
+            {"type": "image", "src": "https://x/a.jpg", "caption": "EN cap"},
+        ]
+        translations_json = json.dumps({"translations": ["RU cap"]})
+        client = _make_client_returning(_make_response(translations_json))
+        out = gemini_transcreation._translate_block_strings(blocks, client, "m")
+        self.assertEqual(out[0]["text"], "Уже переведённый пункт списка.")
+        self.assertEqual(out[1]["caption"], "RU cap")
+        contents = client.models.generate_content.call_args.kwargs["contents"]
+        self.assertIn("EN cap", contents)
+        self.assertNotIn("Уже переведённый пункт списка.", contents)
+
+    def test_patched_types_include_list_item_and_match_shared(self):
+        """Anti-drift guard: compare the whole tuple with the shared one,
+        so a type added to ``_llm_common`` and forgotten here also fails."""
+        self.assertEqual(
+            gemini_transcreation._PATCHED_TEXT_BLOCK_TYPES,
+            _llm_common._PATCHED_TEXT_BLOCK_TYPES,
+        )
 
 
 if __name__ == "__main__":

@@ -1,0 +1,88 @@
+{
+  "validator": "task-validator",
+  "batch": [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15],
+  "batch_number": 4,
+  "iteration": 2,
+  "status": "changes_required",
+  "partA_reverification": {
+    "wave_renumbering": {
+      "verdict": "confirmed",
+      "detail": "All 15 tasks now carry wave = 1->[1,2,3,4], 2->[5], 3->[6,7,8], 4->[9], 5->[10,11,12], 6->[13], 7->[14], 8->[15]. Checked every task's wave against every dependency's wave: 5>{1,1}, 6>{1,2}, 7>{2}, 8>{2}, 9>{3,3,3}, 10/11/12>{2,3,3,3,4}, 13>{5,5,5}, 14>{6}, 15>{7}. No violations; the strict-greater invariant holds for all 15 tasks."
+    },
+    "task6_depends_on_1_5": {
+      "verdict": "confirmed",
+      "detail": "Task 6 frontmatter now reads depends_on: [1, 5] with inline comment explaining the golden-file re-baseline rationale; wave bumped from 2 to 3 accordingly."
+    },
+    "task15_wave_7_to_8": {
+      "verdict": "confirmed",
+      "detail": "Task 15 wave is 8 (not the literally-suggested 7 from the round-1 finding), because the fix was applied as a full renumbering rather than a minimal patch. Task 14 is now wave 7, so Task 15 at wave 8 still satisfies depends_on:[14] with strict wave > wave. Consistent with the tech-spec addendum's final layout, so this is a correct outcome, not a regression."
+    },
+    "baseline_1693_462_in_tasks_1_2_3": {
+      "verdict": "confirmed",
+      "detail": "Task 1 (AC + Verification Steps), Task 2 (AC + Verification Steps), and Task 3 (AC + Verification Steps) all now read '1693 passed / 462 subtests (замерено на 3362f26, 2026-08-05)' or '>= 1693 passed'. No remaining occurrence of the stale '1626 passed / 441 subtests' string in these three files."
+    },
+    "task1_corpus_section": {
+      "verdict": "confirmed",
+      "detail": "Task 1's '### Где лежит корпус' section now states the corpus is committed at work/source-formatting-parity/corpus-raw/ (18 files, 3.3MB, committed in 0f3457d), describes the git mv into tests/fixtures/articles/{source}/ to preserve history, the pre-commit exclusion needed for trailing-whitespace/end-of-file-fixer on tests/fixtures/articles/ (with the measured fact that 14/18 pages were rewritten on first commit attempt without it), and a mandatory sha256 verification of each file in tests/fixtures/ against corpus-raw/ before deleting the latter. No more /tmp scratchpad reference as the source of truth."
+    },
+    "task11_12_files_subsection": {
+      "verdict": "confirmed",
+      "detail": "Both Task 11 and Task 12 Details sections now open with an explicit '**Files:** задача не меняет код. Читает ...' line before Dependencies/Edge cases/Implementation hints, closing the round-1 template-structure gap."
+    },
+    "task14_15_qa_report_links": {
+      "verdict": "confirmed",
+      "detail": "Task 14 Context Files now has '[qa-report.json](../logs/working/qa-report.json) — входной гейт: статус и criticals Task 13' and Task 15 has '[qa-report.json](../logs/working/qa-report.json) — отчёт Task 13; секция deferredToPostDeploy это прямой вход задачи'. Both are markdown links with the correct ../ prefix that resolves from tasks/14.md and tasks/15.md respectively to work/source-formatting-parity/logs/working/qa-report.json."
+    }
+  },
+  "findings": [
+    {
+      "severity": "critical",
+      "category": "resource-sharing",
+      "task": "6, 8",
+      "section": "Details / Dependencies",
+      "issue": "news_bot.py is written by two tasks in the same wave (Wave 3: Task 6 and Task 8) with no depends_on between them and no acknowledgment in either task's Dependencies section of the other's edits to the same file. Task 6 modifies news_bot.py near NETLOC_TO_SOURCE/SOURCE_LABEL (~:2924-2995, new per-source image-cap map + resolver) and the _fallback_publish -> publish_article call site (~:3388-3396, threads the cap value). Task 8 modifies news_bot.py at the pending-row assembly site (~:4291-4311, wires in the alignment-guard helper) and adds a brand-new top-of-file import of _llm_common. Task 6's Dependencies section mentions only Task 1 (hard) and Task 5 (soft); Task 8's Dependencies section explicitly discusses parallelism with Task 7 (different file, no conflict) but never mentions Task 6 despite both being wave-3 siblings writing the same file. This is exactly the same class of race that round 1 already found and fixed for Task 5/Task 6 sharing the golden file (Task 6's own frontmatter comment says 'той же волне = гонка за golden-файл') and for Task 2/Task 5 sharing the three deploy manifests (sequenced via depends_on) -- but the analogous news_bot.py collision between Task 6 and Task 8 was not caught in round 1.",
+      "failure_scenario": "If Wave 3 is executed as three parallel agents starting from the same wave-3 base commit (as the feature-execution model does), Task 6's and Task 8's independent diffs to news_bot.py must be merged/reconciled by the wave lead before commit. The edit regions are far apart (~2924-3396 vs ~4291-4311) so a clean 3-way merge is likely, but Task 8 also inserts a new import statement near the top of the file, which is a classic hot spot for merge friction if either agent also touches nearby lines during unrelated cleanup (e.g. reading/editing surrounding context). Because neither task's Dependencies section flags the shared file, nobody is prompted to schedule the merge deliberately -- the collision could be discovered only at integration time, exactly what this checklist item exists to catch before execution.",
+      "fix": "Either (a) declare an explicit sequencing dependency between Task 6 and Task 8 for the shared file (e.g. Task 8 depends_on: [5, 6] or vice versa, which would need to bump one task's wave number and re-verify the wave-invariant), or (b) keep them parallel in Wave 3 but add an explicit note to both tasks' Dependencies sections naming the other task, the exact line ranges each touches in news_bot.py, and an instruction for the Wave 3 lead to reconcile/rebase the two diffs against each other before committing the wave (this is the cheaper fix since the edit regions genuinely don't overlap semantically)."
+    },
+    {
+      "severity": "minor",
+      "category": "consistency",
+      "task": "4, 5, 7, 8, 9",
+      "section": "Acceptance Criteria / Verification Steps",
+      "issue": "The round-1 fix that replaced the stale '1626 passed / 441 subtests' baseline with the re-measured '1693 passed / 462 subtests (3362f26, 2026-08-05)' was applied only to Tasks 1, 2 and 3 (per the PART A instructions). The same stale '1626 passed' (or '1626 passed / 441 subtests') string is still present verbatim in Task 4's Verification Steps ('база 1626 passed / 441 subtests'), Task 5's Acceptance Criteria and Verification Steps ('не ниже базовой линии 1626 passed'), Task 7's Acceptance Criteria and Verification Steps ('базовой линии 1626 passed'), Task 8's Verification Steps ('не ниже базовой линии 1626 passed'), and Task 9's Acceptance Criteria and Verification Steps ('базовой линии 1626 passed'). Task 6 and Task 12 handle this correctly by explicitly caveating the number ('сравнивать надо со своим прогоном, а не с числом' / 'на 2026-08-05 набор собирает 1693 теста'); Task 13 independently re-measures the true baseline on the branch point regardless of what any task file says.",
+      "failure_scenario": "Not execution-blocking on its own -- since the feature only ever adds tests, 'no regression vs. 1626' is a strictly weaker (easier-to-pass) check than the true 1693 baseline, so an agent executing Task 4/5/7/8/9 literally against the written number would not be misled into accepting a real regression. The risk is purely one of stale/inconsistent documentation: a reader (or an agent doing a quick sanity check) comparing task files side by side sees three different 'baseline' numbers (1626, 1693, and Task 6/12's explicit 'don't trust this number') for what should be one fact, and Task 13's own AC explicitly frames re-measuring the baseline as necessary specifically because task/tech-spec text cannot be trusted -- these five leftover references are exactly the kind of stale text that motivated that AC.",
+      "fix": "For consistency with Tasks 1/2/3 (and to match the pattern Task 6/Task 12 already use), update the baseline references in Tasks 4, 5, 7, 8 and 9 to '1693 passed / 462 subtests (замерено на 3362f26, 2026-08-05)', or adopt Task 6's phrasing style ('сравнивать со своим прогоном, а не с числом из спека') if a literal number is undesirable this late in the task set."
+    }
+  ],
+  "confirmed_no_finding": [
+    {
+      "check": "Shared resource ownership: deploy.sh / deploy.yml / deploy_test.yml / tests/test_deploy_files_invariant.py",
+      "detail": "Written by Task 2 (adds feature_flags.py entry) and Task 5 (adds dom_blocks.py entry). Task 5 depends_on [1, 2], which sequences it strictly after Task 2 and wave 2 > wave 1. Single consistent owner-then-extender chain, correctly declared."
+    },
+    {
+      "check": "Shared resource ownership: tests/fixtures/orangetrack_golden.json and tests/test_orangetrack_golden.py",
+      "detail": "Task 1 creates both on unmodified code. Task 5 must leave them byte-identical (enforced by its own smoke check: git diff --stat must be empty) -- verified, not written. Task 6 performs the one legitimate re-snapshot/extension, and correctly declares depends_on: [1, 5] so it runs after both the creator and the task whose code the new golden must reflect. No other task touches these files. Single clean ownership chain."
+    },
+    {
+      "check": "Shared resource ownership: _llm_common.py",
+      "detail": "Only Task 4 writes to it. Task 3 explicitly reads it only and defers an out-of-scope docstring fix specifically to avoid a same-wave merge conflict with Task 4 ('Конфликт с Task 4 по _llm_common.py... эта задача его только читает'). Tasks 8 and 9 read it (import _PATCHED_TEXT_BLOCK_TYPES) but do not modify it. Single writer, correctly reasoned in-task."
+    },
+    {
+      "check": "No competing instances in the same wave -- full file x wave audit",
+      "detail": "Built the file-to-task write map for all 15 tasks grouped by wave. Wave 1 (Tasks 1-4): no file overlaps. Wave 2 (Task 5 only): n/a. Wave 3 (Tasks 6, 7, 8): news_bot.py collision between 6 and 8 -- see critical finding above; no other overlaps (Task 7 touches only t_hunted_source.py + its test). Wave 4 (Task 9 only): n/a. Wave 5 (Tasks 10, 11, 12): all analysis-only, each writes a distinct report path (logs/working/task-{10,11,12}/*.md), no collision. Waves 6-8 (Tasks 13, 14, 15): single task each."
+    },
+    {
+      "check": "AC-depends-on-undeclared-work",
+      "detail": "No task's Acceptance Criteria were found to rely on another task's output without either an explicit depends_on entry or correct coverage via wave-sequential execution (e.g. Tasks 3 and 4 are wave 1 and not listed in the depends_on chains of Tasks 5-13, but since all of wave 1 completes before wave 2 starts and so on through wave 6, their code is always available by the time later waves run regardless of the omission -- this is standard and not a defect). Task 8 explicitly and correctly reasons that it must NOT rely on Task 7's t-hunted output since they are wave-3 siblings without a dependency edge, and builds its false-positive control against orangetrack (available via the Task 5 dependency) instead."
+    }
+  ],
+  "stats": {
+    "tasks_checked": 15,
+    "part_a_items_reverified": 6,
+    "part_a_items_confirmed": 6,
+    "part_b_findings": 2,
+    "critical": 1,
+    "major": 0,
+    "minor": 1
+  }
+}

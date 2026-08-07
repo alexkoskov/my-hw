@@ -1,0 +1,42 @@
+{
+  "status": "needs_improvement",
+  "summary": "All three Round-1 majors are CLOSED, each re-proven by re-running my own mutation, not by reading the changelog. M12 (news_bot._fallback_publish replaced with `def f(row, via_review=False): return True`) now turns BOTH absence tests red — test_markers_lost_send_no_admin_notification and test_markers_lost_leave_no_warning_or_error_in_the_log — where before it left both green; 14 of the 20 go red under it. M13 (dom_blocks.runs_from_tag wrapped to coalesce each block's bold runs into one spanning run) now turns ALL THREE TestBoldHeavyArticle tests red at 12 != 22, where before all three stayed green. Every selector collects: markers_lost 4, bold_heavy 3, image_limit 3 (tech-spec AVP), FormattingChain 6, MarkersLost 4, BoldHeavy 3, ImageCap 3, ChecklistFloor 4 = 20 (task file). No production file was touched — `git status --short` shows only tests/test_integration.py and tasks/9.md (status: approved -> in_progress). Full suite reproduces the claim exactly: 1899 passed / 502 subtests in 72.8s. I then attacked the FIXES themselves with four more mutations. Three came back clean: M17 (the runs path killed but bare `**` left in the block text, so _decode_bold_markers still produces <strong>) turns the MERGED test red, so the merge lost nothing — it is exactly the trap the merge was supposed to keep guarding; M16 (kept figures reversed) turns the sequence-pinned hero assertion red, so the ordering really is pinned and `pic{n}=` cannot cross-match; M18 (_reset_tables no-oped) turns three two-arm tests red, so the reused helper is load-bearing and a silently broken reset would be caught. One mutation survived, and it is the two-arm comparison the author asked me to challenge — see finding 1. Two other minors remain, both one-liners. Nothing here blocks: zero critical, zero major, and the status reflects three cosmetic items, not a defect.",
+  "findings": [
+    {
+      "severity": "minor",
+      "category": "anti_pattern",
+      "location": "tests/test_integration.py:5694 (TestMarkersLostDegradeSilently::test_markers_lost_publishes_plain_text)",
+      "issue": "The two-arm comparison is a correct statement of AC6 but is structurally blind to damage applied EQUALLY to both arms, and the docstring's stated reason for preferring it over a direct assertion does not hold. PROVEN both ways. (a) Blindness: mutating telegraph_publisher.preview_nodes to drop every rendered <p> after the second — 88 RU paragraphs reduced to 2 on the page — leaves this test fully GREEN including both subTests, because lost_nodes and kept_nodes are truncated identically; three siblings in other classes (test_bold_run_survives..., test_list_item_reaches..., test_bold_heavy_every_span_reaches...) do catch that mutation, so it is not a coverage hole for the feature, but this test does not assert what its name and docstring imply. Note the finer-grained variant IS caught: clipping every rendered string to 25 chars produces SUBFAILED(tag='p') here, because the two arms differ in node shape. Only whole-node loss slips through. (b) The stated justification is wrong: the docstring says a direct assertion would mean 'reimplementing the publisher's rules in the test' because 'Referencias:' renders as h3 rather than p, and because _strip_plugs/is_boilerplate drop others. I measured it — a containment check over the UNION of the two tags this test already iterates over gives ru_paragraphs=88, rendered p+h3=90, MISSING=0. No publisher rule needs reimplementing; the union of p and h3 is sufficient on this fixture, and _strip_plugs drops nothing that the RU list contains.",
+      "recommendation": "Keep the two-arm comparison verbatim — it is the right expression of 'degradation costs emphasis and nothing else'. Add one absolute anchor beside it so the test also states 'and the text is actually there', immediately after the subTest loop: `rendered = _texts_of_tag(lost_nodes, 'p') + _texts_of_tag(lost_nodes, 'h3')` then `for ru in self.ru_results[-1]['paragraphs']: self.assertTrue(any(ru in t for t in rendered), f'RU paragraph {ru[:40]!r} never reached the page — the two-arm comparison is blind to loss that hits both arms')`. Verified to pass unmodified against the current code (0 of 88 missing) and to fail against the drop-tail mutation. Then correct the docstring: the reason the row's own `paragraphs` list cannot be used directly is the h3 reclassification alone, and taking p+h3 answers it."
+    },
+    {
+      "severity": "minor",
+      "category": "empty_test",
+      "location": "tests/test_integration.py:6097 (TestChecklistFloorNotNewlyDropped::test_single_paragraph_gallery_post_stays_single_paragraph)",
+      "issue": "`self.assertLess(len(row['paragraphs']), 2)` is strictly implied by `self.assertEqual(len(row['paragraphs']), 1)` eleven lines above it (:6086). It cannot fail unless the assertEqual has already failed, so it can never independently detect anything — it is an assertion that verifies nothing beyond what the previous line verified. This is the residue of the Round-1 fix: the two direct `_llm_common._parse_response` calls were correctly deleted, but instead of being replaced by the comment alone they were replaced by a comment PLUS a restatement of an existing assertion. The comment at :6092-6096 already does the whole job — it explains the >= 2 arming threshold and names tests/test_llm_common.py::TestSanityFloorRelaxation as the owner of the floor. An assertion that can never fire is worse than no line at all: it reads to a future maintainer as coverage of the floor boundary that is not there.",
+      "recommendation": "Delete line 6097 and keep the comment. If the intent was to make the LINK to the arming threshold executable rather than prose, express it as the threshold instead of as a weaker copy of the count: `self.assertLess(len(row['paragraphs']), _llm_common._SANITY_FLOOR_MIN_PARAGRAPHS)` (or whatever the module names that constant) — that version fails if the production threshold ever moves, which is a real regression this file is positioned to catch and the current line is not."
+    },
+    {
+      "severity": "minor",
+      "category": "missing_coverage",
+      "location": "tests/test_integration.py:6058 (TestChecklistFloorNotNewlyDropped::test_flag_on_and_flag_off_agree_on_the_checklist_verdict)",
+      "issue": "Carried from Round 1 and re-verified as still open — the test body is unchanged. Both flag states are compared for the BORDERLINE (staged) article only; the DROP verdict is exercised in one flag state, since test_true_bare_checklist_is_still_dropped runs flag-on by default. Decision 2's killswitch promise is that block extraction never changes an intake decision in EITHER direction. The direction covered is the one that costs the operator an article, so this is a completeness gap rather than a risk gap, and it is the reason I am leaving it at minor for a second round rather than escalating. The test is otherwise strong: assertIsNone(without_blocks['blocks']) is a genuine proof the killswitch reached t_hunted_source.",
+      "recommendation": "Parametrize rather than add a test function, per the project's anti-fragmentation rule (feedback_no_test_fragmentation): wrap the existing body in `for name, html, expect_staged in (('borderline', self._borderline_html(), True), ('bare', self._bare_checklist_html(), False)):` with `with self.subTest(fixture=name):`, calling self._reset_tables() between flag states, and assert `(row is not None) == expect_staged` in both states — keeping the existing paragraphs-equality and blocks-is-None assertions for the staged case only. Cost is one extra job() run; the class already runs six."
+    }
+  ],
+  "metrics": {
+    "filesReviewed": 8,
+    "litmusTest": {
+      "checked": 20,
+      "passed": 20,
+      "failed": 0
+    },
+    "coverageAssessment": "adequate",
+    "pyramidBalance": {
+      "unit": 0,
+      "integration": 20,
+      "e2e": 0,
+      "assessment": "healthy"
+    }
+  }
+}

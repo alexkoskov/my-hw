@@ -1,0 +1,77 @@
+{
+  "status": "failed",
+  "summary": "The hold-cap happy path is genuinely covered (the author's own mutations are all killed, and I re-killed the cap boundary, the counter-reset-on-defer, the hold-must-not-strike invariant, ping-on-every-hold and ping-suppression). But I ran 20 further mutations and 9 SURVIVED the FULL 1659-test suite. The worst: setting HOLD_DEFER_HOURS = 0 — which turns the entire feature into a no-op, the row is re-deferred to 'now' and keeps blocking the head — passes 1659/1659. So does deferring into the PAST. The 2035 FROZEN_NOW override is what makes that invisible: with a 9-year gap between the mocked Python clock and SQLite's real CURRENT_TIMESTAMP, every timestamp the code can possibly write is 'in the future', so `assertIsNotNone(publish_after)` is the only thing left and the deferral's magnitude, sign and format are unobservable. Also surviving: increment_hold reading/updating the WRONG row (no test has two rows and increments), all three error paths (increment_hold raises, defer_publish raises, [E038] send raises), and a full transposition of the two numbers in the [E038] ping — both inside the builder and at the call site — which is the same class of defect as the '402' assertion the author already fixed, just one level up. Fixes are cheap: about six sharpened assertions plus three small tests. The [E034] recap's `deferred_count` is dead (incremented, never read).",
+  "findings": [
+    {
+      "severity": "major",
+      "category": "missing_coverage",
+      "location": "tests/test_job_distributed_publish.py:1015 (assertIsNotNone) + :931 (FROZEN_NOW = 2035)",
+      "issue": "The FROZEN_NOW=2035 override is a legitimate workaround for a TEST-ONLY clock split (the base class mocks news_bot.datetime while list_pending compares against SQLite's real CURRENT_TIMESTAMP; in production both are the same UTC source, so no production bug is being hidden by the override itself) — but it costs all resolution on the value written. With a 9-year gap, ANY timestamp job() writes reads as future, so the only surviving assertion is `assertIsNotNone(stuck['publish_after'])`. VERIFIED by mutation against the FULL suite: `HOLD_DEFER_HOURS = 0` -> 1659 passed; `until = now - timedelta(hours=HOLD_DEFER_HOURS)` (defer into the past) -> 1659 passed. Both make the feature a complete no-op in production: publish_after <= CURRENT_TIMESTAMP means the row is immediately publishable again and stays wedged at the head. Worse, the base class sets `mock_datetime.now.return_value = FROZEN_NOW`, which IGNORES the tz argument — so `datetime.now(timezone.utc)` in the new job() code returns an MSK-labelled instant and the value actually stored under test is '2035-04-28 10:00:00', i.e. MSK wall time in a column compared against SQLite UTC. Production stores real UTC. The one value the test exercises is off by the UTC offset from the production one, and nothing notices. Secondary: hard-coded 2035 is a (distant) time bomb.",
+      "recommendation": "Keep the future freeze, but make the mock tz-aware and pin the exact stored value. In TestHoldCap.setUp, after super().setUp(): `self._dt_patcher.target.datetime.now.side_effect = lambda tz=None: self.FROZEN_NOW.astimezone(tz) if tz else self.FROZEN_NOW` (or re-patch news_bot.datetime locally with that side_effect). Then in test_at_the_cap replace the assertIsNotNone with: `expected = (self.FROZEN_NOW.astimezone(dt.timezone.utc) + dt.timedelta(hours=news_bot.HOLD_DEFER_HOURS)).strftime('%Y-%m-%d %H:%M:%S')` / `self.assertEqual(stuck['publish_after'], expected, 'defer window / format / UTC-ness regressed')`. That single assertEqual kills all three surviving mutations (hours=0, negative offset, isoformat instead of the SQLite-comparable '%Y-%m-%d %H:%M:%S'). Do NOT add a repo-level 'row returns after the window' test — tests/test_pending_articles_repo.py::TestPublishAfterDefer::test_elapsed_timestamp_returns_the_row_to_the_queue already covers the release side."
+    },
+    {
+      "severity": "major",
+      "category": "missing_coverage",
+      "location": "tests/test_pending_articles_repo.py:2171 (TestHoldCounter)",
+      "issue": "Nothing pins increment_hold to the row it was asked about. Every test that increments has exactly ONE row staged, and the only two-row test (test_defer_publish_takes_the_row_out_of_the_queue) never increments. VERIFIED against the FULL suite: (a) `UPDATE ... WHERE link=? OR 1=1` (bump every pending row's counter) -> 1659 passed; (b) `SELECT hold_count FROM pending_articles ORDER BY rowid LIMIT 1` (return some other row's counter) -> 1659 passed. Either bug is severe in production: the counter becomes queue-wide, so six holds on one poisoned article defer perfectly healthy articles behind it — the exact opposite of the feature's purpose — and the job-level test cannot catch it either, because its second row publishes before its inflated counter matters.",
+      "recommendation": "Add to TestHoldCounter: `def test_hold_counts_are_per_row(self):` stage 'http://x/a' and 'http://x/b'; `for _ in range(3): pending_articles_repo.increment_hold('http://x/a')`; assert `pending_articles_repo.get_pending('http://x/a')['hold_count'] == 3` AND `self.assertIsNone(pending_articles_repo.get_pending('http://x/b')['hold_count'], 'increment_hold bumped a row it was not asked about')`; then `self.assertEqual(pending_articles_repo.increment_hold('http://x/b'), 1, 'increment_hold returned another row-s counter')`. Also strengthen test_below_the_cap_the_row_keeps_its_place (which already stages three rows) with `self.assertIsNone(pending_articles_repo.get_pending('http://x/b')['hold_count'])` — one line, kills mutation (a) at job level too."
+    },
+    {
+      "severity": "major",
+      "category": "missing_coverage",
+      "location": "news_bot.py:4494-4532 (the three try/except guards) — no test in tests/",
+      "issue": "All three error paths the implementation deliberately guards are untested; each guard can be deleted or neutered with the full suite green. VERIFIED: (a) replacing `holds = 0` in the increment_hold except-branch with `raise` -> 1659 passed (nothing proves a repo failure does not abort the tick, which is the guard's whole purpose); (b) making the defer_publish except-branch `pass` -> 1659 passed; (c) narrowing the [E038] send guard to `except ZeroDivisionError` -> 1659 passed. (b) also hides a behavioural hole rather than just a coverage hole: the send_admin_notification call is nested INSIDE the try that defer_publish is in, so if defer_publish raises, the row is neither deferred nor reported — the queue stays blocked and the operator is told nothing, which is precisely the silent-block failure mode [E038] exists to eliminate.",
+      "recommendation": "Three job-level tests in TestHoldCap, each patching one collaborator: (1) `@patch('news_bot.pending_repo.increment_hold', side_effect=sqlite3.OperationalError('database is locked'))` — assert `news_bot.job()` returns normally, the row is still pending and NOT deferred (`assertIsNone(row['publish_after'])`), and `attempt_count == 0`. (2) `@patch('news_bot.pending_repo.defer_publish', side_effect=sqlite3.OperationalError('database is locked'))` with the row pre-aged to HOLD_CAP-1 — assert job() completes and the row survives; then decide the intended behaviour and assert it: either move the send_admin_notification call OUT of the defer try-block so the operator is pinged even when the defer fails (recommended — assert an [E038] or a distinct failure ping is present), or assert explicitly that no ping is sent so the silence is a documented choice. (3) `mock_admin.side_effect = telegram.error.TelegramError('boom')` at the capping tick — assert the row IS still deferred (`assertIsNotNone(publish_after)`) and job() does not raise, i.e. a dead Telegram never costs the queue-unblock."
+    },
+    {
+      "severity": "major",
+      "category": "anti_pattern",
+      "location": "tests/test_admin_alerts.py:1642-1644 + tests/test_job_distributed_publish.py:1025-1037",
+      "issue": "Same defect class as the '402' assertion already fixed, one level up: the ping's two numbers are asserted as bare digits (`assertIn(\"6\", msg)`, `assertIn(\"24\", msg)`) with no anchoring to their sentences, so they are mutually satisfiable. VERIFIED against the FULL suite: swapping BOTH placeholders in the builder ('Придержана подряд: {defer_hours} раз' + 'отложена на {hold_count} ч') -> 1659 passed; swapping them at the CALL SITE in job() (`alert_hold_cap_reached(link, title, HOLD_DEFER_HOURS, safe_hold, holds)`) -> 1659 passed. The operator would read «Придержана подряд: 24 раз … отложена на 6 ч» and no test objects. Separately, the job->builder argument plumbing is unasserted apart from the cause: passing `''` instead of `row.get('title')` -> 1659 passed; passing `0` instead of `holds` -> 1659 passed. The job-level test only checks '[E038]', 'APIStatusError' and the absence of the fallback phrase.",
+      "recommendation": "In test_carries_code_link_count_and_cause, replace the bare-digit checks with anchored ones: `self.assertIn('Придержана подряд: 6 раз', msg)` and `self.assertIn('отложена на 24 ч', msg)`; make the two arguments distinguishable at the call (`hold_count=6, defer_hours=24` is already distinguishable — the anchoring is what matters). In test_at_the_cap_the_row_steps_aside_and_the_queue_moves, extend the ping assertions past the cause: `self.assertIn('Stuck', e038[0])` (the title job() passed from the row) and `self.assertIn(f'Придержана подряд: {news_bot.HOLD_CAP} раз', e038[0])` and `self.assertIn(f'отложена на {news_bot.HOLD_DEFER_HOURS} ч', e038[0])`. Those three lines kill all four surviving mutations."
+    },
+    {
+      "severity": "minor",
+      "category": "anti_pattern",
+      "location": "tests/test_admin_alerts.py:1646 (test_says_the_article_is_not_lost), :1659 (test_is_pure), :1653 (test_caps_a_pathological_title_and_cause)",
+      "issue": "test_says_the_article_is_not_lost asserts ONLY the builder's own static literals ('НЕ потеряна', 'Что сделать') — it passes against a builder that ignores every one of its five arguments, which is exactly the property that made the '402' assertion worthless. test_is_pure compares two calls with identical arguments and so passes against a builder that returns a constant. test_caps_a_pathological_title_and_cause asserts only `len(msg) < 4096`, which also passes if the title and reason are dropped from the message entirely, or capped so aggressively the operator cannot identify the article.",
+      "recommendation": "Keep the wording guard but make it carry an argument: in test_says_the_article_is_not_lost assert the reassurance and the concrete window together — `self.assertIn('отложена на 24 ч', msg)` alongside `assertIn('НЕ потеряна', msg)`. In test_caps_a_pathological_title_and_cause add a lower bound so truncation cannot degenerate into deletion: `msg = self._msg(title='Т' * 5000, reason='Ы' * 5000)`; `self.assertLess(len(msg), 4096)`; `self.assertIn('Т' * 40, msg, 'title truncated past usefulness')`; `self.assertIn('Ы' * 40, msg)`. test_is_pure is cheap enough to keep as-is (it does catch a datetime.now() sneaking into the builder) — no change needed."
+    },
+    {
+      "severity": "minor",
+      "category": "empty_test",
+      "location": "tests/test_job_distributed_publish.py:1016",
+      "issue": "`assertGreaterEqual(stuck['hold_count'], news_bot.HOLD_CAP)` is looser than the behaviour under test. The scenario is deterministic: seed to HOLD_CAP-1, one hold crosses the cap, so the value is exactly HOLD_CAP. The inequality tolerates 7, 8, ... — i.e. it would still pass if the deferred row were somehow re-held in slots 2 and 3 of the same tick, which is a regression the test is nominally there to catch.",
+      "recommendation": "Replace with `self.assertEqual(stuck['hold_count'], news_bot.HOLD_CAP, 'the row was held again after it stepped aside')`."
+    },
+    {
+      "severity": "minor",
+      "category": "missing_coverage",
+      "location": "news_bot.py:4442 / 4510 (deferred_count) and the [E034] recap at news_bot.py:4591",
+      "issue": "`deferred_count` is initialised and incremented but never read anywhere in the file (verified by grep: only those two occurrences), so it is dead code shipped by this diff, and no test covers the recap in a tick where a deferral happened. I confirmed empirically what the operator sees in that tick: '[E008] План на сегодня', '[E038] Статья уступила очередь', '[E034] Публикация: опубликовано 1/2' — the recap reports the deferred row as a plain 'held' and never mentions that the article stepped aside for 24h.",
+      "recommendation": "Either delete `deferred_count` (one-line cleanup, no test needed), or surface it: pass `'deferred': deferred_count` into `admin_alerts.alert_publish_recap`, render a «уступила очередь: N» line, and assert it in TestHoldCap.test_at_the_cap — `recap = [p for p in pings if '[E034]' in p][-1]; self.assertIn('уступила очередь: 1', recap)`. Do not leave it incremented-and-unread; a future reader will assume the recap already reports deferrals."
+    },
+    {
+      "severity": "minor",
+      "category": "excessive_mocking",
+      "location": "tests/test_job_distributed_publish.py:949-978 (_publish_or_outage)",
+      "issue": "I read the real _fallback_publish (news_bot.py:3116-3437). On success its last repo step is `pending_repo.move_to_published(...)`, which inserts into published_articles AND deletes the pending row, so the fake's DELETE is faithful in the one respect the test depends on — the row leaves list_pending and the queue advances. Two omissions matter for what these tests can ever assert. (1) The fake never inserts into published_articles, so `get_max_published_at()` stays NULL and the tick's tail (crash-loop guard, [E017] dry-spell) is never production-shaped here. I probed this by making the fake faithful: the dry-spell check then fails inside job() with `'>=' not supported between instances of 'MagicMock' and 'int'` — because the base class mocks the whole news_bot.datetime module, `datetime.strptime` in `_parse_published_at_utc` returns a MagicMock. That is pre-existing _DistribLoopBase debt, not introduced here, but it now sits under a class that runs job() end-to-end twice per test. (2) The fake skips `_maybe_record_recovery()`, so in production the tick under test emits [E038] AND an outage-recovery ping when 'next' publishes; the test's ping list is not the production ping mix.",
+      "recommendation": "No change needed to the fake's delete semantics — it is the right minimal stand-in. Add one assertion that makes the queue-advance claim explicit rather than inferred from a mock side effect: `self.assertEqual([c.args[0].get('link') for c in mock_publish.call_args_list], ['http://x/stuck', 'http://x/next'], 'job() did not move to the article behind the deferred one')`. Separately, log a follow-up (not this task) to give _DistribLoopBase a tz-aware datetime mock that leaves `strptime` on the real class, so this test family can grow assertions about the tick tail instead of silently swallowing MagicMock errors."
+    }
+  ],
+  "metrics": {
+    "filesReviewed": 7,
+    "litmusTest": {
+      "checked": 13,
+      "passed": 9,
+      "failed": 4
+    },
+    "coverageAssessment": "insufficient",
+    "pyramidBalance": {
+      "unit": 6,
+      "integration": 9,
+      "e2e": 0,
+      "assessment": "healthy"
+    }
+  }
+}

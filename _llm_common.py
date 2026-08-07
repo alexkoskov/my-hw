@@ -15,12 +15,18 @@ Adding a new engine
 1. Create ``<name>_transcreation.py`` mirroring an existing engine.
 2. ``from _llm_common import (ClaudeOutageError, ClaudeTranscreationError,
    _PROMPT_PATH_DEFAULT, _TITLE_EMOJIS, _PARAGRAPH_MAX_CHARS, _JSON_ENVELOPE,
-   _is_mostly_russian, _strip_json_fence, _apply_emoji_safety_net,
-   _truncate_paragraphs, _patch_text_with_ru_paragraphs, _build_user_message,
-   _build_system_prompt, _parse_response)``.
+   _is_account_level_status, _is_mostly_russian, _strip_json_fence,
+   _apply_emoji_safety_net, _truncate_paragraphs,
+   _patch_text_with_ru_paragraphs, _build_user_message, _build_system_prompt,
+   _parse_response)``.
 3. Implement engine-specific bits: ``_load_prompt`` (state cache),
    ``_classify_exception``, ``_get_default_client``, ``transcreate_via_claude``,
-   ``health_check``.
+   ``health_check``. **``_classify_exception`` must route
+   ``_ACCOUNT_LEVEL_STATUS_CODES`` to ``ClaudeOutageError``** — those codes have
+   no dedicated class in any SDK, and classifying them per-article silently
+   drops articles (2026-07-14 incident). Everything else the SDK does not name
+   stays per-article; see the constant's comment for why the default is not
+   flipped.
 4. Add a branch in ``llm_transcreation._select_engine``.
 """
 
@@ -61,6 +67,89 @@ class ClaudeOutageError(Exception):
 # --------------------------------------------------------------------------- #
 
 
+#: HTTP status codes that mean "the account or the transport is broken", not
+#: "this article is bad" — yet no SDK gives them a dedicated exception class,
+#: so every engine sees them as a bare ``APIStatusError`` (verified on
+#: ``openai 2.32.0`` and ``anthropic 0.45.2``: both map only
+#: 400/401/403/404/409/422/429/5xx to named classes).
+#:
+#:   402 Payment Required   — out of credits. THE 2026-07-14 incident: two
+#:                            articles were struck out 3× each and moved to
+#:                            ``failed_articles`` on «Insufficient credits»,
+#:                            while 401 (bad key) and 403 (no access) — the same
+#:                            class of global access problem — were already held.
+#:   407 Proxy Auth Required — the egress proxy, not the article.
+#:   408 Request Timeout     — server-side twin of ``APITimeoutError``, already
+#:                            classified as an outage.
+#:
+#: Deliberately NOT a blanket "unknown code → outage" rule. An outage HOLDS the
+#: row, and ``news_bot.job()`` re-reads ``list_pending()[0]`` every slot — so a
+#: genuinely article-specific code (413 payload too large on a long round-up,
+#: 451 legal) would pin that row to the queue head and stop the channel
+#: entirely. Losing one article after 3 strikes is the cheaper failure, so the
+#: catch-all default stays per-article and this set is opt-in.
+_ACCOUNT_LEVEL_STATUS_CODES = frozenset({402, 407, 408})
+
+
+def _error_envelope(response) -> Optional[tuple]:
+    """Return ``(code, message)`` if ``response`` carries a gateway error
+    ENVELOPE instead of a completion, else ``None``.
+
+    An OpenAI-compatible gateway can answer HTTP **200** with
+    ``{"error": {"code": 402, "message": "Insufficient credits"}}`` and no
+    usable ``choices``. The SDK cannot classify that — to it the request
+    succeeded — so without this check the envelope reaches
+    ``response.choices[0]``, raises "response shape unexpected", and is filed
+    as a per-article failure: three strikes and the article is gone. That is
+    the 2026-07-14 loss again, through a door the status-code fix does not
+    cover (that one only sees non-2xx).
+
+    Strictly requires a non-empty ``dict``. Both halves matter: the openai SDK
+    keeps unmodelled top-level fields as plain dicts, and — critically — a
+    ``MagicMock`` response answers EVERY attribute, so a looser duck-typed
+    check would classify every successful call in the test suite as an error.
+    """
+    err = getattr(response, "error", None)
+    if not isinstance(err, dict) or not err:
+        return None
+
+    code = err.get("code")
+    if isinstance(code, str) and code.strip().isdigit():
+        code = int(code.strip())
+    if isinstance(code, bool) or not isinstance(code, int):
+        code = None
+
+    message = err.get("message")
+    return code, str(message) if message is not None else ""
+
+
+def _classify_error_envelope(code, message: str, provider: str) -> Exception:
+    """Map an ``_error_envelope`` result onto the outage / per-article axis,
+    using the SAME code set as the status-code path so a 402 is a 402 however
+    the gateway chose to deliver it.
+
+    An envelope with no usable code stays per-article — same conservative
+    default, and for the same reason: an outage holds the row at the queue
+    head, so guessing wrong there costs the channel rather than one article.
+    """
+    text = (
+        f"{provider} returned an error envelope in a 200 response: "
+        f"code={code} {message}".strip()
+    )
+    if code in _ACCOUNT_LEVEL_STATUS_CODES:
+        return ClaudeOutageError(text)
+    return ClaudeTranscreationError(text)
+
+
+def _is_account_level_status(exc: BaseException) -> bool:
+    """True iff ``exc`` carries a status code from ``_ACCOUNT_LEVEL_STATUS_CODES``.
+
+    An exception with no ``status_code`` (or ``None``) is not account-level —
+    the caller's conservative per-article default handles it.
+    """
+    return getattr(exc, "status_code", None) in _ACCOUNT_LEVEL_STATUS_CODES
+
+
 #: Default location of ``ux-guidelines.md`` inside the repo. Engines pass this
 #: as the default to ``_load_prompt``; see Decision 8 (flat-path fallback) in
 #: each engine's own ``_load_prompt`` for the deploy-time layout.
@@ -73,6 +162,18 @@ _TITLE_EMOJIS = ("🏆", "🏎️", "🚀", "💎", "🤝", "📢", "🚗", "�
 
 #: Per-paragraph defensive truncation cap (Decision 13).
 _PARAGRAPH_MAX_CHARS = 4000
+
+#: Resource bounds for the REQUEST-path marker encoding (Decision 8).
+#: Deliberately EQUAL to ``telegraph_publisher._MAX_TEXT_FOR_RUNS`` /
+#: ``_MAX_RUNS_PER_BLOCK`` — a block whose runs the renderer would discard
+#: anyway is not worth encoding into the request, and a value drift would
+#: produce an article that goes to the LLM WITH markers and renders flat,
+#: i.e. markers turn into visible litter instead of formatting.
+#: Duplicated rather than imported, same convention as ``_BOLD_MARKER_RE``:
+#: neither layer may depend on the other. patterns.md calls this rule
+#: "Change one, change both" — if you move these, move the publisher's too.
+_MAX_TEXT_FOR_RUNS = 100_000
+_MAX_RUNS_PER_BLOCK = 100
 
 #: Static JSON envelope appended to ``ux-guidelines.md`` body (Decision 6).
 #: Operator's prompt edits land in the file; this envelope is the technical
@@ -141,8 +242,32 @@ def _encode_format_markers(text: str, runs: list) -> str:
     telegraph_publisher._render_paragraph_with_runs at the rendering
     side, so the in-text positions agree with the eventual Telegraph
     render path.
+
+    Resource bounds (Decision 8): ``len(text) > _MAX_TEXT_FOR_RUNS`` or
+    ``len(runs) > _MAX_RUNS_PER_BLOCK`` → the runs are dropped and the
+    text is returned UNCHANGED with a single WARNING, before any
+    ``str.find`` runs. The paragraph still reaches the LLM in full — it
+    just travels without ``**`` markers and publishes without emphasis.
+    Never truncated, never raised, never lost.
+
+    This is a RESOURCE fuse, not the editorial "too much bold" threshold
+    that user-spec AC7 forbids: it fires only on pathological input and
+    says nothing about an article's content. Without it, one 2 MB
+    paragraph carrying ~200k bold runs costs ~4·10¹⁰ character
+    comparisons — minutes of a single-process bot, inside a publication
+    window where restarting it is forbidden.
     """
     if not runs:
+        return text
+    # Resource bounds (Decision 8) — mirror of the render-path guard in
+    # telegraph_publisher._render_paragraph_with_runs. Counts the LIST
+    # LENGTH, not the valid runs: 200k junk entries cost the same loop.
+    if len(text) > _MAX_TEXT_FOR_RUNS or len(runs) > _MAX_RUNS_PER_BLOCK:
+        logger.warning(
+            "[llm-request] DoS bound: text=%d runs=%d — sending paragraph without bold markers",
+            len(text),
+            len(runs),
+        )
         return text
     spans = []
     for run in runs:

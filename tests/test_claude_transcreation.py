@@ -25,6 +25,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 anthropic = pytest.importorskip("anthropic")
 import httpx  # noqa: E402 — transitive dep of anthropic
 
+import _llm_common  # noqa: E402
 import claude_transcreation  # noqa: E402
 
 
@@ -232,6 +233,47 @@ def test_unprocessable_entity_raises_per_article(sample_article, make_status_err
 
 
 # --------------------------------------------------------------------------- #
+# 11a-11b. Bare APIStatusError — routed by status code                         #
+# --------------------------------------------------------------------------- #
+
+
+@pytest.mark.parametrize("status_code", [402, 407, 408])
+def test_account_level_status_raises_outage(
+    sample_article, make_status_error, status_code
+):
+    """402 (payment required), 407 (proxy auth), 408 (server-side timeout).
+
+    The SDK has no dedicated class for any of these, so all three arrive as a
+    bare ``APIStatusError``. All are account/transport-level — holding and
+    retrying is the only outcome that survives the fix (a top-up, a proxy
+    coming back). Kept identical across engines; the incident that prompted it
+    is recorded in the OpenRouter test.
+    """
+    client = MagicMock()
+    client.messages.create.side_effect = make_status_error(
+        anthropic.APIStatusError, status_code=status_code, message="account-level"
+    )
+    with pytest.raises(claude_transcreation.ClaudeOutageError):
+        claude_transcreation.transcreate_via_claude(sample_article, client=client)
+
+
+@pytest.mark.parametrize("status_code", [413, 451])
+def test_unknown_status_stays_per_article(
+    sample_article, make_status_error, status_code
+):
+    """Conservative default preserved: 413 (payload too large) and 451 (legal)
+    are about THIS article, and an outage would hold the row at the queue head
+    where every later slot re-reads it — blocking the channel instead of
+    striking one article out."""
+    client = MagicMock()
+    client.messages.create.side_effect = make_status_error(
+        anthropic.APIStatusError, status_code=status_code, message="article-level"
+    )
+    with pytest.raises(claude_transcreation.ClaudeTranscreationError):
+        claude_transcreation.transcreate_via_claude(sample_article, client=client)
+
+
+# --------------------------------------------------------------------------- #
 # 12-13. Parse & schema-mismatch failures → ClaudeTranscreationError           #
 # --------------------------------------------------------------------------- #
 
@@ -326,3 +368,36 @@ def test_load_prompt_subdir_then_flat_fallback(tmp_path, monkeypatch):
     )
     body = claude_transcreation._load_prompt(str(missing_subdir))
     assert "FLAT BODY" in body
+
+
+def test_list_item_text_skipped_by_second_pass():
+    """``list_item`` text is already RU by the time variant B+ runs — the
+    SHARED tuple in ``_llm_common`` lists it, so
+    ``_patch_text_with_ru_paragraphs`` fills it from the main response.
+    The second pass must skip it rather than re-translate RU→RU.
+
+    Written per engine on purpose: ``_translate_block_strings`` is copied
+    into all four modules, so a test against openrouter executes not one
+    line of claude's copy — that is how the gemini classifier bug survived.
+    """
+    blocks = [
+        {"type": "list_item", "text": "Уже переведённый пункт списка."},
+        {"type": "image", "src": "https://x/a.jpg", "caption": "EN cap"},
+    ]
+    # Exactly one translation — the image caption. A count mismatch would
+    # send the function down its "keep EN" branch and the assertions below
+    # would pass vacuously, "proving" the skip for the wrong reason.
+    client = _make_mock_client(json.dumps({"translations": ["RU cap"]}))
+    out = claude_transcreation._translate_block_strings(blocks, client, "m")
+    assert out[0]["text"] == "Уже переведённый пункт списка."
+    assert out[1]["caption"] == "RU cap"
+    user_msg = client.messages.create.call_args.kwargs["messages"][0]["content"]
+    assert "EN cap" in user_msg
+    assert "Уже переведённый пункт списка." not in user_msg
+
+
+def test_patched_types_include_list_item_and_match_shared():
+    """Anti-drift guard: compare the whole tuple against the shared one, so
+    a type added to ``_llm_common`` and forgotten here also fails."""
+    assert (claude_transcreation._PATCHED_TEXT_BLOCK_TYPES
+            == _llm_common._PATCHED_TEXT_BLOCK_TYPES)

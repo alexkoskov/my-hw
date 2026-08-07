@@ -47,6 +47,9 @@ from _llm_common import (
     _apply_emoji_safety_net,
     _build_system_prompt,
     _build_user_message,
+    _classify_error_envelope,
+    _error_envelope,
+    _is_account_level_status,
     _is_mostly_russian,
     _parse_response as _parse_response_common,
     _patch_text_with_ru_paragraphs,
@@ -210,11 +213,15 @@ _BLOCK_TRANSLATE_SYSTEM = (
 )
 
 #: Block types whose ``text`` field is filled in by
-#: ``_patch_text_with_ru_paragraphs`` from the main response. The
-#: second-pass translator skips the ``text`` of these types to avoid
-#: re-translating already-RU paragraphs (one wasted API call per long
-#: article).
-_PATCHED_TEXT_BLOCK_TYPES = ("lead", "paragraph", "heading")
+#: ``_patch_text_with_ru_paragraphs`` from the main response — ``lead``,
+#: ``paragraph``, ``heading`` and ``list_item``. The second-pass
+#: translator skips the ``text`` of these types to avoid re-translating
+#: already-RU paragraphs (one wasted API call per long article).
+#: Must stay EQUAL to ``_llm_common._PATCHED_TEXT_BLOCK_TYPES``: the patch
+#: helper works off the shared tuple, so a type present there and missing
+#: here is filled in RU and then sent out for translation again. Pinned by
+#: an anti-drift test in each of the four engines' test files.
+_PATCHED_TEXT_BLOCK_TYPES = ("lead", "paragraph", "heading", "list_item")
 
 
 def _translate_block_strings(
@@ -234,8 +241,8 @@ def _translate_block_strings(
     translations back, preserving block structure (``src`` URLs etc.).
 
     ``skip_patched_text=True`` (default in the variant-B+ flow) skips the
-    ``text`` field on ``lead`` / ``paragraph`` / ``heading`` blocks because
-    those are already filled in with RU strings by
+    ``text`` field on ``lead`` / ``paragraph`` / ``heading`` / ``list_item``
+    blocks because those are already filled in with RU strings by
     ``_patch_text_with_ru_paragraphs``; without the skip we'd ask the
     model to "translate" already-RU text, wasting tokens. Tests that
     call this helper directly (without a prior patch) should pass
@@ -338,6 +345,13 @@ def _classify_exception(exc: BaseException) -> Exception:
         return ClaudeTranscreationError(f"{type(exc).__name__}: {exc}")
 
     if isinstance(exc, openai.APIStatusError):
+        # Codes with no dedicated SDK class. 402/407/408 are account- or
+        # transport-level (see ``_ACCOUNT_LEVEL_STATUS_CODES``) — hold and
+        # retry. Everything else keeps the conservative per-article default:
+        # an outage pins the row to the queue head, so a novel article-specific
+        # code would stop the channel instead of costing one article.
+        if _is_account_level_status(exc):
+            return ClaudeOutageError(f"{type(exc).__name__}: {exc}")
         return ClaudeTranscreationError(f"{type(exc).__name__}: {exc}")
 
     if isinstance(exc, openai.APIError):
@@ -438,6 +452,15 @@ def transcreate_via_claude(  # name kept for backward compat
         raise _classify_exception(exc) from exc
 
     latency_ms = int((time.monotonic() - started) * 1000)
+
+    # A 200 can still carry a gateway error ENVELOPE instead of a completion.
+    # Checked BEFORE reading ``choices``: otherwise it surfaces as "response
+    # shape unexpected", a per-article strike, and an out-of-credits 402
+    # delivered this way loses the article after three of them.
+    envelope = _error_envelope(response)
+    if envelope is not None:
+        code, message = envelope
+        raise _classify_error_envelope(code, message, "OpenRouter")
 
     try:
         text = response.choices[0].message.content

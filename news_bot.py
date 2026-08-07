@@ -74,6 +74,7 @@ import pending_articles_repo as pending_repo
 # the LLM only and HOLDS articles on an outage (no Google fallback since the
 # 2026-06-11 hold-and-wait change). Tests patch the bound name
 # ``news_bot.transcreate_via_claude`` on the module surface.
+import _llm_common  # noqa: F401 — _blocks_if_aligned reads its patched-type tuple
 import llm_transcreation as claude_transcreation  # alias preserves bound name
 from llm_transcreation import (
     transcreate_via_claude,
@@ -188,6 +189,41 @@ MAX_DAILY_POSTS = 3
 PUBLISH_RETRY_ATTEMPTS = 4
 PUBLISH_RETRY_DELAY_SECONDS = 600  # 10 minutes
 
+#: Hold cap — how many CONSECUTIVE slot-loop holds a single row may cost the
+#: queue before it steps aside (``pending_repo.defer_publish``, i.e.
+#: ``publish_after``) and lets the article behind it publish.
+#:
+#: Why a cap is needed at all: a hold never strikes (that is the point of
+#: hold-and-wait) and ``job()`` re-reads ``list_pending()[0]`` at every slot, so
+#: a row that always fails blocks the whole channel — and does it QUIETLY,
+#: because ``outage_state`` stops pinging once ``ping_count >= 3``. The 402
+#: classification added 2026-08-04 made that reachable: OpenRouter's 402 can be
+#: per-REQUEST ("requires more credits, or fewer max_tokens"), so a long
+#: round-up can fail forever while shorter articles behind it would succeed.
+#:
+#: 6 = two full days of the three fixed slots. Chosen so a GENUINE LLM outage
+#: never trips it — the 2-ping protocol declares a sustained outage after 2 h
+#: (well inside one day), so anything reaching six holds across two days is
+#: article-specific, not global. Lower values start deferring healthy articles
+#: during ordinary outages and spread the queue across days for no reason.
+HOLD_CAP = 6
+
+#: How long a row that hit ``HOLD_CAP`` stays out of the queue. One day: long
+#: enough for the operator to top up a balance or for a gateway to recover,
+#: short enough that a false positive costs one day of that article's lead.
+#: The row returns to the head afterwards (carry-over is drained oldest-first),
+#: so it retries once per window — and yields again on its FIRST hold, because
+#: ``defer_publish`` deliberately does not reset the counter.
+HOLD_DEFER_HOURS = 24
+
+#: Minimum gap between two [E038] pings, GLOBALLY (not per article). In a
+#: sustained stall rows cross ``HOLD_CAP`` one after another; a ping each would
+#: recreate the noise the outage machine's ``ping_count >= 3`` cutoff exists to
+#: prevent. 6 h bounds it to 4/day at worst. Nothing is hidden: the daily
+#: [E008]/[E009] «Отложено (уступили очередь): N» line carries the running
+#: total, so [E038] only has to deliver the first representative cause.
+HOLD_CAP_PING_WINDOW_HOURS = 6
+
 #: End-of-tick PUBLISH RECAP (companion to the E008/E009 intake funnel). Cap on
 #: distinct (link, reason) failure entries collected for the [E034] recap ping —
 #: keeps the ping compact; admin_alerts also re-caps defensively when rendering.
@@ -236,12 +272,38 @@ _SECRET_ENV_NAMES = (
     'OPENAI_API_KEY',
     'OPENROUTER_API_KEY',
     'OPEN_ROUTER_API_KEY',  # alias accepted by openrouter_transcreation
+    # Proxy URLs carry credentials inline (``scheme://user:pass@host``) and
+    # match none of the key regexes — the one secret shape the vocabulary
+    # missed. Both cases: libraries read the lowercase form, operators
+    # typically set the uppercase one. Defence in depth alongside
+    # ``_PROXY_CRED_RE``: this replaces the exact configured value, the regex
+    # catches any proxy URL including ones we never configured.
+    'HTTP_PROXY', 'HTTPS_PROXY', 'ALL_PROXY',
+    'http_proxy', 'https_proxy', 'all_proxy',
 )
+
+
+#: Hard cap on a sanitised error string. Sibling of ``admin_alerts``'
+#: ``_RECAP_REASON_MAXLEN`` / ``_PROMO_TITLE_MAXLEN`` (both 200) — larger
+#: because this text is the operator's primary diagnostic, not a chat line,
+#: and a full LLM-gateway error body measures ~220 chars.
+#:
+#: The bound is not cosmetic. An SDK error message is the upstream response
+#: body VERBATIM when it isn't JSON (``openai/_base_client.py``: ``err_msg =
+#: err_text or ...``), so a captive portal or an intercepting proxy answering
+#: 4xx with a multi-KB HTML page lands whole in the journal. On the hold path
+#: that repeats every slot for as long as the outage lasts, and the journal is
+#: capped at 10 MB × 3 (docker-compose.yml) — the flood would evict the very
+#: diagnostics it is made of. Relevant since the egress runs through a VPN
+#: gateway from an RU host.
+_ERROR_MESSAGE_MAXLEN = 500
 
 
 def sanitize_error_message(exc):
     """Return str(exc) with every known env-secret value replaced by
-    ``[REDACTED]``. Decision 11 of manual-review-workflow tech-spec:
+    ``[REDACTED]``, truncated to ``_ERROR_MESSAGE_MAXLEN``.
+
+    Decision 11 of manual-review-workflow tech-spec:
     protects ``pending_articles.last_error`` / ``failed_articles.last_error``
     and admin-chat messages from accidentally leaking ``TELEGRAM_BOT_TOKEN``
     / ``TELEGRAM_CHANNEL_ID`` / ``TELEGRAM_ADMIN_ID`` /
@@ -269,6 +331,11 @@ def sanitize_error_message(exc):
         except Exception:
             # Defensive: never let sanitisation break the caller.
             continue
+
+    # Truncate LAST, after redaction: cutting first could split a secret and
+    # leave a prefix of it in the tail that the replace loop would then miss.
+    if len(message) > _ERROR_MESSAGE_MAXLEN:
+        return message[:_ERROR_MESSAGE_MAXLEN] + '…'
     return message
 
 
@@ -365,6 +432,22 @@ _OPENAI_KEY_RE = re.compile(
 # scrubs cleanly without trimming the tail.
 _GEMINI_KEY_RE = re.compile(r"AIza[A-Za-z0-9_-]{35,}")
 
+# Proxy credentials embedded in a URL: ``scheme://user:pass@host``. The one
+# secret shape none of the five key patterns above can match, and the one the
+# prod topology makes plausible — egress runs through a non-RU VPN gateway, and
+# ``_llm_common._ACCOUNT_LEVEL_STATUS_CODES`` now classifies 407 (proxy auth)
+# explicitly, i.e. a proxy failure is on a path that reaches the journal.
+#
+# Only the userinfo is replaced; the host:port survives because that half is
+# the diagnostic. Requires BOTH a scheme and a ``user:pass@``, so an ordinary
+# article URL — including one with a port or a colon in the path — is untouched
+# (the ``[^/\s:@]`` classes cannot cross a ``/``, so a path colon never
+# qualifies). Order-independent of the key patterns: no ``sk-…``/``AIza…``
+# shape can sit inside a userinfo field without a ``/`` or ``@`` boundary.
+_PROXY_CRED_RE = re.compile(
+    r"([A-Za-z][A-Za-z0-9+.\-]*://)[^/\s:@]+:[^/\s:@]+@"
+)
+
 
 def _redact_text(text):
     """Scrub Telegram-bot-token, Anthropic, OpenAI, OpenRouter, and Gemini
@@ -393,6 +476,7 @@ def _redact_text(text):
     try:
         if not isinstance(text, str):
             text = str(text)
+        text = _PROXY_CRED_RE.sub(r"\1***:***@", text)
         text = _BOT_TOKEN_RE.sub("***", text)
         text = _OPENROUTER_KEY_RE.sub("***", text)
         text = _ANTHROPIC_KEY_RE.sub("***", text)
@@ -2850,6 +2934,114 @@ NETLOC_TO_SOURCE = {
 }
 
 
+# Per-source image cap, keyed by the same `source_name` values as
+# NETLOC_TO_SOURCE. Built FROM THE PARSER MODULES' OWN CONSTANTS on purpose —
+# numbers retyped here would drift from the parsers silently, and nothing
+# would catch it.
+#
+# Why the map exists at all: the per-source limits only ever sliced the flat
+# `images` list, and `telegraph_publisher` ignores that list entirely once
+# `blocks` is non-empty. Measured on 14 real articles, all four lamley posts
+# exceed their limit of 10 (14, 41, 48, 50 images); t-hunted peaks at 27
+# against a limit of 30.
+#
+# `t_hunted_source._IMAGE_LIMIT` is private. Referencing it is the lesser
+# evil: the alternative is retyping 30 here, and adding a public alias would
+# mean editing a file that Task 7 of source-formatting-parity owns in the
+# same wave. If a public name is wanted, that is a request to that task.
+SOURCE_IMAGE_LIMITS = {
+    't-hunted':      t_hunted_source._IMAGE_LIMIT,
+    'lamley':        lamley_source.IMAGE_LIMIT,
+    'orangetrack':   orangetrack_source.IMAGE_LIMIT,
+    'autoevolution': autoevolution_source.MAX_IMAGES,
+}
+
+
+def _blocks_if_aligned(link, blocks, paragraphs):
+    """Return `blocks` when it lines up with `paragraphs`, else None.
+
+    `_llm_common` pairs the two lists POSITIONALLY: `_build_user_message`
+    walks the blocks and takes the next entry from `paragraphs` for each
+    patchable one, and `_patch_text_with_ru_paragraphs` does the same with the
+    Russian paragraphs coming back. Off by one and the translations splice
+    shifted, so the tail block reaches the channel in the source language —
+    the 2026-05-06 outage. Both sides swallow the shortfall SILENTLY
+    (`except StopIteration: pass` and a bare `break`), which is why a runtime
+    guard exists at all: a test only covers the articles somebody wrote an
+    example for.
+
+    Dropping the blocks costs the article its formatting. That is the
+    deliberate trade (Decision 4): it publishes as plain text rather than
+    published half-translated.
+
+    THE COUNT COMES FROM `_llm_common._PATCHED_TEXT_BLOCK_TYPES` — the tuple
+    both sides of the pairing actually read. A literal retyped here would be
+    exactly the kind of drifted copy this guard is meant to catch. The
+    same-named tuples in the four engine modules are a DIFFERENT thing: they
+    gate the caption-translation pass, not the paragraph pairing.
+
+    ZERO patchable blocks is not a mismatch. With none, no positional pairing
+    happens at all — and firing here would drop the blocks of an orangetrack
+    video-only post, which synthesizes `paragraphs = [title]`, and take the
+    video off the page (an AC10 violation on a working source).
+
+    Fail-open on internal error, same contract as the promo filter, the
+    content gate and the dedup gate: a broken check must not cost the article.
+
+    No operator ping (Decision 3b). The WARNING below is the ONLY trace — the
+    drop writes no `last_error` and appears in no recap — so it names the
+    article AND both counts. A line like "mismatch, dropping blocks" would
+    leave the operator with nothing to act on.
+    """
+    if not blocks:
+        return blocks
+    try:
+        patchable = sum(
+            1 for b in blocks
+            if isinstance(b, dict)
+            and b.get("type") in _llm_common._PATCHED_TEXT_BLOCK_TYPES
+        )
+        if patchable == 0:
+            return blocks
+        n_paragraphs = len(paragraphs or [])
+        if patchable != n_paragraphs:
+            logger.warning(
+                "[align] blocks/paragraphs mismatch for %s: "
+                "patchable_blocks=%d paragraphs=%d — dropping blocks, "
+                "the article publishes as plain text",
+                link, patchable, n_paragraphs,
+            )
+            return None
+        return blocks
+    except Exception:
+        logger.exception(
+            "[align] alignment check failed for %s — keeping blocks", link,
+        )
+        return blocks
+
+
+def _image_limit_for_source(source_name):
+    """Resolve the image cap for `source_name`; None means no cap.
+
+    Fail-open, like the promo filter, the content gate and the dedup gate: an
+    unknown or missing source publishes UNCAPPED rather than not at all. It
+    does log a WARNING, because blocks arriving from a source we cannot name
+    means something is wrong further upstream.
+    """
+    if not source_name:
+        logger.warning(
+            "[fallback] no source_name on the row — publishing without an image cap"
+        )
+        return None
+    limit = SOURCE_IMAGE_LIMITS.get(source_name)
+    if limit is None:
+        logger.warning(
+            f"[fallback] unknown source_name={source_name!r} — "
+            "publishing without an image cap"
+        )
+    return limit
+
+
 # Override map for the channel-post hashtag (Decision 2 of t-hunted-pt-source
 # tech-spec). Default in ``_source_hashtag`` lifts the TLD-stripped second-
 # level label from the netloc (e.g. ``corporate.mattel.com`` → ``#mattel``),
@@ -2922,7 +3114,7 @@ def send_telegraph_teaser(telegraph_url, source_url):
         [Telegraph IV preview card with full-width image + INSTANT VIEW]
         #source #news
 
-    Spec: work/telegraph-pipeline/post-format.md.
+    Spec: work/completed/telegraph-pipeline/post-format.md.
     """
     if not TELEGRAM_BOT_TOKEN or not TELEGRAM_CHANNEL_ID:
         logger.error("Telegram credentials not set.")
@@ -3042,7 +3234,27 @@ def _maybe_record_recovery():
     in ``main()``. Without it, a transient outage in the past leaves the
     outage state machine stuck active (stale ``outage_started_at`` /
     ``ping_count``), so recovery pings never fire on the next success.
+
+    It also clears the hold counters, which is what makes ``hold_count`` mean
+    "holds IN A ROW". A working LLM proves the holds those rows collected were
+    global; leaving them banked would let an innocent article cross ``HOLD_CAP``
+    weeks later, on the first bad day, and get an [E038] blaming it for someone
+    else's outage. Rows already at the cap keep their marker — see
+    ``pending_repo.reset_hold_counts_below``.
     """
+    try:
+        cleared = pending_repo.reset_hold_counts_below(HOLD_CAP)
+        if cleared:
+            logger.info(
+                f"[recovery] LLM answered — cleared hold_count on {cleared} "
+                f"row(s) below the cap."
+            )
+    except Exception as reset_err:  # noqa: BLE001 — bookkeeping, never raise
+        logger.error(
+            f"[recovery] reset_hold_counts_below failed: "
+            f"{sanitize_error_message(reset_err)}"
+        )
+
     try:
         event = outage_state.record_recovery_event(
             datetime.now(timezone.utc),
@@ -3155,15 +3367,26 @@ def _fallback_publish(row, via_review=False):
             f"— slot strike (next slot retries this row)"
         )
         raise
-    except ClaudeOutageError:
-        # API-level outage (429 / 5xx / auth / network). Advance the
+    except ClaudeOutageError as exc:
+        # API-level outage (402 / 429 / 5xx / auth / network). Advance the
         # 2-ping/2h notification state machine so the operator is kept
         # informed, then HOLD: re-raise WITHOUT publishing. The row stays
         # in pending; the slot loop (``job()``) catches this, does NOT
         # strike, and the next slot retries the LLM. No Google fallback —
         # we wait for the LLM rather than ship a machine translation.
+        #
+        # The CAUSE is logged here on purpose. A held row never reaches
+        # ``increment_attempt`` (no ``last_error`` written) and never enters
+        # the [E034] recap — both are 'failed'-branch only — so the [E010]/
+        # [E011]/[E012] pings are the operator's ONLY other signal, and those
+        # are generic «LLM недоступна». Without this line an out-of-credits
+        # 402 and a dead network look identical in the journal — which has
+        # already cost one wrong diagnosis (2026-06-10: E011 fired, every
+        # external check was green, and the real cause was server-side DNS
+        # loss found only in the logs).
         logger.warning(
-            f"[hold] LLM outage for {link} — holding article, will retry "
+            f"[hold] LLM outage for {link}: {type(exc).__name__}: "
+            f"{sanitize_error_message(exc)} — holding article, will retry "
             f"when the LLM recovers (no Google fallback)."
         )
         try:
@@ -3279,6 +3502,7 @@ def _fallback_publish(row, via_review=False):
             subtitle=ru_subtitle,
             blocks=ru_blocks,
             auto_marker=False,
+            image_limit=_image_limit_for_source(row.get('source_name')),
         )
         telegraph_path = urlparse(telegraph_url).path.lstrip('/')
         if not telegraph_path:
@@ -3663,8 +3887,12 @@ def _publish_with_retries(row, idx, n_slots):
         try:
             _fallback_publish(row, via_review=False)
             return 'published', None
-        except ClaudeOutageError:
-            return 'held', None
+        except ClaudeOutageError as exc:
+            # The exception is handed back, not dropped: the slot loop needs
+            # the cause for the [E038] ping when this row hits ``HOLD_CAP``.
+            # It is the only record of WHY — a held row writes no `last_error`
+            # and never enters the [E034] recap.
+            return 'held', exc
         except ClaudeTranscreationError as exc:
             # Per-article LLM problem (refusal / malformed JSON / schema
             # drift) — deterministic: an immediate retry re-translates to the
@@ -4178,7 +4406,12 @@ def job():
             'subtitle': article.get('subtitle') or '',
             'paragraphs': article.get('paragraphs') or [],
             'images': article.get('images') or [],
-            'blocks': article.get('blocks'),
+            # Runtime alignment guard (Decision 4). Last point where both
+            # final lists sit side by side before the row hits the DB, and
+            # compared against the SAME paragraph list that goes into it.
+            'blocks': _blocks_if_aligned(
+                link, article.get('blocks'), article.get('paragraphs') or [],
+            ),
             'pub_date': entry.get('published') or entry.get('pub_date') or '',
             'model_fingerprint': fp,
             # Cross-source dedup soft flag: staged now, invisible to
@@ -4282,7 +4515,26 @@ def job():
     # them: the held backlog goes into the plan ping as its own
     # «На утверждении: N» line (read below).
     queue_size = pending_repo.count_pending()
-    slots, carry_over = compute_fixed_slots(queue_size, now_msk)
+    # Rows deferred by the hold cap are NOT in ``queue_size`` — they are not
+    # publishable at this instant. But the slot list is computed ONCE for the
+    # whole day, so sizing it on ``queue_size`` alone would hand a tick that
+    # starts fully deferred zero slots and skip the day entirely — including
+    # the moment a 24 h window elapses a few hours in. Over-allocating is safe:
+    # the loop breaks as soon as ``list_pending()`` comes back empty.
+    # Deliberately NOT folded into ``count_pending``: everything else that
+    # reads it (the `> 50` backlog alarm, the plan ping's «В очереди») means
+    # "publishable right now", and a deferred row is not.
+    try:
+        deferred_backlog = pending_repo.count_deferred()
+    except Exception as exc:
+        logger.error(
+            f"count_deferred failed, sizing slots on the publishable queue "
+            f"only: {sanitize_error_message(exc)}"
+        )
+        deferred_backlog = 0
+    slots, carry_over = compute_fixed_slots(
+        queue_size + deferred_backlog, now_msk,
+    )
 
     # Held backlog for the plan ping. Never blocks the tick: with the
     # «нет ответа = не публикуем» rule nothing else surfaces a forgotten
@@ -4309,11 +4561,12 @@ def job():
     try:
         if queue_size == 0 and inserted == 0:
             plan_msg = admin_alerts.alert_quiet_day(
-                funnel=funnel, held_count=held_count)
+                funnel=funnel, held_count=held_count,
+                deferred_count=deferred_backlog)
         else:
             plan_msg = admin_alerts.alert_plan_of_day(
                 inserted, queue_size, slots, carry_over, funnel=funnel,
-                held_count=held_count,
+                held_count=held_count, deferred_count=deferred_backlog,
             )
     except Exception as build_err:
         logger.error(
@@ -4374,6 +4627,7 @@ def job():
     held_count = 0
     failed_count = 0
     moved_to_failed_count = 0
+    deferred_count = 0
     recap_failures = []
     for idx, slot in enumerate(slots, start=1):
         # Window-end insurance.
@@ -4417,6 +4671,78 @@ def job():
                 f"[slot {idx}/{len(slots)}] LLM outage — article held, "
                 f"will retry on the next slot/day."
             )
+            # Hold cap: a hold never strikes, and the next slot re-reads
+            # ``list_pending()[0]`` — so without a bound one permanently-failing
+            # row blocks every article behind it, quietly (outage pings stop at
+            # ping_count >= 3). Past HOLD_CAP the row steps aside for
+            # HOLD_DEFER_HOURS and the queue moves on. It is NOT struck:
+            # nothing is lost, it returns to the head when the window elapses.
+            # Wrapped: a bookkeeping failure must not change the outcome of the
+            # slot — the article is already correctly held either way.
+            try:
+                holds = pending_repo.increment_hold(link)
+            except Exception as repo_err:
+                logger.error(
+                    f"increment_hold failed for {link}: "
+                    f"{sanitize_error_message(repo_err)}"
+                )
+                holds = 0
+            if holds >= HOLD_CAP:
+                safe_hold = (
+                    sanitize_error_message(err) if err else 'причина не записана'
+                )
+                until = (
+                    datetime.now(timezone.utc)
+                    + timedelta(hours=HOLD_DEFER_HOURS)
+                ).strftime('%Y-%m-%d %H:%M:%S')
+                # Two separate try blocks on purpose. Nesting the ping inside
+                # the defer's would mean a repo failure produced NEITHER the
+                # defer NOR the ping — the silent block [E038] exists to end.
+                try:
+                    deferred = pending_repo.defer_publish(link, until)
+                except Exception as repo_err:
+                    deferred = False
+                    logger.error(
+                        f"defer_publish failed for {link}: "
+                        f"{sanitize_error_message(repo_err)} — row stays at "
+                        f"the head, the next slot retries the defer"
+                    )
+                if deferred:
+                    deferred_count += 1
+                    logger.warning(
+                        f"[slot {idx}/{len(slots)}] {link} held {holds}× in a "
+                        f"row — deferring {HOLD_DEFER_HOURS}h so the queue can "
+                        f"move. Cause: {safe_hold}"
+                    )
+                try:
+                    # Ping only on a real defer. ``deferred`` is False either
+                    # because the row vanished (the review listener deleted it
+                    # — nothing to report) or because the write raised (already
+                    # logged above; the row keeps the head and the next slot
+                    # retries). In both cases [E038]'s text — «отложена, вернётся
+                    # сама» — would be false.
+                    #
+                    # Rate-limited GLOBALLY: in a sustained stall many rows
+                    # cross the cap in sequence, and a ping each would recreate
+                    # the noise the outage machine's ping_count>=3 cutoff
+                    # exists to prevent. The daily [E008]/[E009] «Отложено: N»
+                    # line carries the running total, so suppressing the extra
+                    # pings loses no information the operator needs.
+                    if deferred and not pending_repo.is_hold_cap_ping_rate_limited(
+                        HOLD_CAP_PING_WINDOW_HOURS
+                    ):
+                        send_admin_notification(
+                            admin_alerts.alert_hold_cap_reached(
+                                link, row.get('title') or '', holds,
+                                safe_hold, HOLD_DEFER_HOURS,
+                            )
+                        )
+                        pending_repo.mark_hold_cap_pinged()
+                except Exception as notify_err:
+                    logger.error(
+                        f"[E038] send failed for {link}: "
+                        f"{sanitize_error_message(notify_err)}"
+                    )
         else:  # 'failed' — per-article problem, or transient error that
                # survived the in-slot retries (each retry logged above).
             safe = sanitize_error_message(err)

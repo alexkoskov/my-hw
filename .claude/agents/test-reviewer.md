@@ -44,6 +44,7 @@ When reviewing TDD anchors in tech-spec tasks or task files:
 - Anchors that only test string/substring presence (e.g., `assert "keyword" in prompt_text`, `assert "section_name" in output`) → category `empty_test`, severity `major`. These verify structure, not behavior.
 - Prompt-related test strategies that only check substring presence should be flagged as insufficient. Meaningful prompt tests verify behavior: output format, handling of edge inputs, correct routing — not whether a keyword appears in the prompt string.
 - Each TDD anchor should describe a behavioral assertion. "Test that function returns X when given Y" is good. "Test that prompt contains word Z" is not.
+- Anchors that differ only by an input value → category `fragmentation`, severity `minor`, fix: collapse into one parametrised anchor. Same coverage, a fraction of the lines, and a failing case still names its input. Do NOT flag when the behaviours genuinely differ, or when the code under test is duplicated across modules so one copy's test proves nothing about the others.
 
 ## Output
 

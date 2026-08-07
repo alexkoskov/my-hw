@@ -92,6 +92,7 @@ Additional:
 - [ ] Each test has path, test name, AND description
 - [ ] Tests are specific (not "test it works")
 - [ ] Tests verify behavior, not string presence. Anchors like `assert "keyword" in text` or `assert "section" in output` are insufficient — they test structure, not logic. Severity: `minor`
+- [ ] No fragmentation: entries that differ only by an input value (one per enum member, status code, flag word, boundary literal) must be ONE parametrised anchor, not N. Whatever this section lists, the implementer writes verbatim as N functions. Severity: `minor`. NOT a finding when the behaviours genuinely differ (boundary vs its opposite, error vs success path) or when the code under test is physically duplicated across modules, so a test against one copy executes no line of the others.
 
 **TDD Anchor (absence check for non-code tasks):**
 - [ ] Non-code tasks (user instructions, deploy, config, prompt-authoring) should not have TDD Anchor section. If present for a non-code task → severity `minor` (unless the task genuinely produces testable code)

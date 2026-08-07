@@ -35,6 +35,9 @@ from _llm_common import (
     _apply_emoji_safety_net,
     _build_system_prompt,
     _build_user_message,
+    _classify_error_envelope,
+    _error_envelope,
+    _is_account_level_status,
     _is_mostly_russian,
     _parse_response as _parse_response_common,
     _patch_text_with_ru_paragraphs,
@@ -126,7 +129,7 @@ _BLOCK_TRANSLATE_SYSTEM = (
     "count and order as the input."
 )
 
-_PATCHED_TEXT_BLOCK_TYPES = ("lead", "paragraph", "heading")
+_PATCHED_TEXT_BLOCK_TYPES = ("lead", "paragraph", "heading", "list_item")
 
 
 def _translate_block_strings(
@@ -217,11 +220,12 @@ def _classify_exception(exc: BaseException) -> Exception:
     API-level (advance outage state machine):
         APIConnectionError, APITimeoutError, RateLimitError,
         AuthenticationError, PermissionDeniedError, NotFoundError,
-        InternalServerError, ConflictError.
+        InternalServerError, ConflictError, and a bare APIStatusError
+        carrying 402/407/408 (``_ACCOUNT_LEVEL_STATUS_CODES``).
 
     Per-article (single-article Google fallback, no state change):
         BadRequestError (400), UnprocessableEntityError (422),
-        APIStatusError (other 4xx — conservative).
+        APIStatusError (any other code — conservative).
     """
     if isinstance(exc, (ClaudeTranscreationError, ClaudeOutageError)):
         return exc
@@ -245,7 +249,13 @@ def _classify_exception(exc: BaseException) -> Exception:
         return ClaudeTranscreationError(f"{type(exc).__name__}: {exc}")
 
     if isinstance(exc, openai.APIStatusError):
-        # Conservative default for unrecognized status codes.
+        # Codes with no dedicated SDK class. 402/407/408 are account- or
+        # transport-level (see ``_ACCOUNT_LEVEL_STATUS_CODES``) — hold and
+        # retry. Everything else keeps the conservative per-article default:
+        # an outage pins the row to the queue head, so a novel article-specific
+        # code would stop the channel instead of costing one article.
+        if _is_account_level_status(exc):
+            return ClaudeOutageError(f"{type(exc).__name__}: {exc}")
         return ClaudeTranscreationError(f"{type(exc).__name__}: {exc}")
 
     if isinstance(exc, openai.APIError):
@@ -338,6 +348,15 @@ def transcreate_via_claude(  # name kept for backward compat
         raise _classify_exception(exc) from exc
 
     latency_ms = int((time.monotonic() - started) * 1000)
+
+    # A 200 can still carry a gateway error ENVELOPE instead of a completion.
+    # Checked BEFORE reading ``choices``: otherwise it surfaces as "response
+    # shape unexpected", a per-article strike, and an out-of-credits 402
+    # delivered this way loses the article after three of them.
+    envelope = _error_envelope(response)
+    if envelope is not None:
+        code, message = envelope
+        raise _classify_error_envelope(code, message, "OpenAI")
 
     try:
         text = response.choices[0].message.content

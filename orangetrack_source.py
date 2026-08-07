@@ -32,6 +32,7 @@ from bs4 import BeautifulSoup
 
 from boilerplate_filter import filter_blocks, filter_boilerplate
 import admin_alerts
+import dom_blocks
 
 logger = logging.getLogger(__name__)
 
@@ -72,23 +73,6 @@ REQUEST_TIMEOUT = 30
 MAX_RESPONSE_SIZE = 5 * 1024 * 1024  # 5 MB
 IMAGE_LIMIT = 10
 _CHUNK_SIZE = 8 * 1024  # 8 KB chunks for iter_content
-
-#: Schemes that survive the href filter. Anything else (``javascript:``,
-#: ``data:``, ``file:``, scheme-relative ``//evil/x``) drops the href and
-#: the anchor degenerates to plain text.
-_ALLOWED_HREF_SCHEMES = frozenset(("http", "https", "mailto"))
-
-#: Schemes accepted on ``<img src>``. ``data:`` SVGs and ``file:`` paths
-#: are dropped (defense-in-depth — Telegraph filters too, but the parser
-#: must not emit them in the first place).
-_ALLOWED_IMG_SCHEMES = frozenset(("http", "https"))
-
-#: YouTube video ID regex (after the hostname allowlist gate has accepted
-#: the iframe src). Captures the 11-char ID from common URL shapes.
-_YOUTUBE_ID_RE = re.compile(
-    r"(?:youtu\.be/|/embed/|/watch\?v=|/v/|/shorts/)"
-    r"([A-Za-z0-9_-]{6,})"
-)
 
 #: Per-aggregator caps. 50 links/code keeps the per-bullet line readable;
 #: 500 total events caps memory in the pathological case of a feed bug
@@ -138,34 +122,17 @@ def _is_allowed_orangetrack_url(link: str) -> bool:
 def _video_embed_url(youtube_url: str) -> Optional[str]:
     """Wrap a YouTube URL into Telegra.ph's iframe-embed proxy form.
 
-    The hostname allowlist gate runs BEFORE the ID regex — without it,
-    a non-YouTube URL containing the substring ``youtube.com/embed/abc``
-    would be falsely wrapped (autoevolution's regex-only path has this
-    gap; we close it here per Decision 8).
+    Thin adapter over :func:`dom_blocks.video_embed_url` with orangetrack's
+    provider DATA applied. The name and the single-argument signature are
+    part of the module's surface — ``tests/test_orangetrack_source.py``
+    imports and calls it directly in six tests.
 
-    Returns ``None`` when the URL is not a YouTube link or has no
-    extractable video ID. Telegra.ph validates ``iframe.src`` at
-    create-page time and accepts ONLY ``/embed/<provider>?url=…`` proxy
-    URLs, so raw YouTube URLs would be silently stripped to an empty
-    ``/embed/`` (breaking Instant View).
+    Vimeo stays unwrapped here on purpose (``test_vimeo_not_wrapped``):
+    Vimeo hosts exist in ``dom_blocks`` as ANOTHER provider's data and must
+    not reach orangetrack through a default or a "all known hosts" list.
     """
-    if not isinstance(youtube_url, str) or not youtube_url:
-        return None
-    try:
-        parsed = urlparse(youtube_url)
-    except (ValueError, AttributeError):
-        return None
-    host = (parsed.hostname or "").lower()
-    if host not in _YOUTUBE_HOSTS:
-        return None
-    m = _YOUTUBE_ID_RE.search(youtube_url)
-    if not m:
-        return None
-    video_id = m.group(1)
-    watch = f"https://www.youtube.com/watch?v={video_id}"
-    return (
-        "https://telegra.ph/embed/youtube?url="
-        + urllib.parse.quote(watch, safe="")
+    return dom_blocks.video_embed_url(
+        youtube_url, hosts=_YOUTUBE_HOSTS, provider="youtube"
     )
 
 
@@ -201,86 +168,17 @@ def _safe_for_ping(s: str) -> str:
 
 
 # ---------------------------------------------------------------------------
-# Helper: anchor href filter
+# Internal: orangetrack's colour-class policy
 # ---------------------------------------------------------------------------
 
 
-def _safe_href(href: Optional[str]) -> Optional[str]:
-    """Return ``href`` iff it's a safe scheme; else None.
+#: WordPress chrome classes whose subtree is skipped entirely. orangetrack's
+#: per-site junk-class policy, injected into ``dom_blocks.BlockBuilder``.
+_CHROME_CLASS_MARKERS = (
+    "sharedaddy", "sd-", "taxonomies", "jp-related",
+    "post-comments", "comment-form",
+)
 
-    Allowed: http, https, mailto (for editorial mailto links).
-    Dropped: javascript:, data:, file:, scheme-relative ``//evil/x``,
-    relative paths, malformed strings.
-    """
-    if not href or not isinstance(href, str):
-        return None
-    href = href.strip()
-    if not href:
-        return None
-    # Scheme-relative URLs (``//evil/x``) have no parsed scheme; reject.
-    if href.startswith("//"):
-        return None
-    try:
-        parsed = urlparse(href)
-    except (ValueError, AttributeError):
-        return None
-    scheme = (parsed.scheme or "").lower()
-    if scheme in _ALLOWED_HREF_SCHEMES:
-        return href
-    return None
-
-
-def _safe_img_src(src: Optional[str]) -> Optional[str]:
-    """Return ``src`` iff it's an http(s) URL; else None."""
-    if not src or not isinstance(src, str):
-        return None
-    src = src.strip()
-    if not src:
-        return None
-    if src.startswith("//"):
-        return None
-    try:
-        parsed = urlparse(src)
-    except (ValueError, AttributeError):
-        return None
-    if (parsed.scheme or "").lower() not in _ALLOWED_IMG_SCHEMES:
-        return None
-    return src
-
-
-# ---------------------------------------------------------------------------
-# Internal: text-runs walker (paragraph children → ordered text+href runs)
-# ---------------------------------------------------------------------------
-
-
-#: Inline-formatting tags that map to Telegraph-supported nodes. Order in
-#: each value is ALSO the nesting order when multiple formats apply to the
-#: same span (outer → inner): bold > italic > underline > strikethrough.
-_INLINE_FORMAT_TAGS = {
-    "strong": "bold",
-    "b": "bold",
-    "em": "italic",
-    "i": "italic",
-    "u": "underline",
-    "s": "strikethrough",
-    "del": "strikethrough",
-}
-
-
-def _text_from_runs(runs: List[Dict]) -> str:
-    """Flatten ``runs`` into the block's ``text`` field.
-
-    Joined with NO separator: each run already carries its own surrounding
-    whitespace from the source HTML, so a `" ".join` inserted a SECOND space at
-    every format boundary (`<p>Plain <strong>bold</strong> tail.</p>` flattened
-    to ``'Plain  bold  tail.'``). Fixed 2026-07-28 — four call sites had drifted
-    into three different spellings of this join, only one of which collapsed.
-
-    Runs are preserved verbatim by the caller; only this flattened `text` field
-    is normalised, so ``text.find(run_text)`` in
-    ``telegraph_publisher._render_paragraph_with_runs`` still locates every run.
-    """
-    return re.sub(r"\s+", " ", "".join(r["text"] for r in runs)).strip()
 
 
 def _has_color_class(node) -> bool:
@@ -292,155 +190,12 @@ def _has_color_class(node) -> bool:
     substring ``-color`` (e.g. ``has-vivid-red-color``,
     ``has-vivid-cyan-blue-color``, ``has-text-color``) as a signal of
     "this span is visually emphasised".
+
+    This is the ONE genuine per-site hook of ``dom_blocks.runs_from_tag``;
+    the walker itself is shared.
     """
     classes = node.get("class") or []
     return any("-color" in (c or "") for c in classes)
-
-
-def _runs_from_tag(tag) -> List[Dict]:
-    """Walk a tag's contents and return ordered runs.
-
-    Run shape: ``{'text': str, ['href': str], ['formats': list[str]]}``.
-
-    * Anchors (``<a>``) with safe schemes preserve the ``href``;
-      anchors with dropped/unsafe href degenerate to plain text.
-    * Inline formatting tags (``<strong>``, ``<b>``, ``<em>``, ``<i>``,
-      ``<u>``, ``<s>``, ``<del>``) and any element with a WordPress
-      ``has-*-color`` class accumulate format markers in the ``formats``
-      list (cumulative across nested elements). Color classes are mapped
-      to ``"bold"`` since Telegraph rejects color attributes.
-    * Sibling runs with the same ``href``/``formats`` are NOT merged —
-      they stay separate (downstream renderer picks first occurrence per
-      run, so adjacent identical runs are harmless).
-    """
-    runs: List[Dict] = []
-    buf: List[str] = []
-    fmt_stack: List[str] = []
-
-    def current_formats():
-        # Preserve order of accumulation, dedup while keeping first-seen order.
-        seen: List[str] = []
-        for f in fmt_stack:
-            if f not in seen:
-                seen.append(f)
-        return seen
-
-    def flush(href=None):
-        if not buf:
-            return
-        combined = "".join(buf)
-        if combined:
-            run: Dict = {"text": combined}
-            if href:
-                run["href"] = href
-            fmts = current_formats()
-            if fmts:
-                run["formats"] = list(fmts)
-            runs.append(run)
-        buf.clear()
-
-    def walk(element):
-        for child in element.children:
-            if isinstance(child, str):
-                buf.append(str(child))
-                continue
-            name = getattr(child, "name", None)
-            if name == "a":
-                href = _safe_href(child.get("href"))
-                # Recurse into anchor children to capture nested <strong>/etc.
-                # and emit a single run per anchor; if an inner format applies,
-                # we attach it to the run alongside the href.
-                inner_buf: List[str] = []
-                inner_fmts: List[str] = []
-
-                def collect(el):
-                    inner_name = getattr(el, "name", None)
-                    if isinstance(el, str):
-                        inner_buf.append(str(el))
-                        return
-                    fmt = _INLINE_FORMAT_TAGS.get(inner_name)
-                    color_fmt = "bold" if _has_color_class(el) else None
-                    pushed = []
-                    if fmt:
-                        inner_fmts.append(fmt)
-                        pushed.append(fmt)
-                    if color_fmt and color_fmt not in inner_fmts:
-                        inner_fmts.append(color_fmt)
-                        pushed.append(color_fmt)
-                    for sub in getattr(el, "children", []):
-                        collect(sub)
-                    for _ in pushed:
-                        inner_fmts.pop()
-
-                for sub in child.children:
-                    collect(sub)
-                link_text = "".join(inner_buf).strip()
-                # Re-derive a deduped format list (collect could push the same
-                # format twice across siblings — keep first occurrence order).
-                seen_inner: List[str] = []
-                for f in current_formats():
-                    seen_inner.append(f)
-                # Note: anchor inner formats only matter if anchor itself or
-                # ancestors are formatted. We use the OUTER fmt_stack to attach
-                # ambient formatting to anchors (e.g., paragraph-wide <strong>).
-                if href and link_text:
-                    flush()
-                    run: Dict = {"text": link_text, "href": href}
-                    fmts = current_formats()
-                    if fmts:
-                        run["formats"] = list(fmts)
-                    runs.append(run)
-                elif link_text:
-                    # Drop unsafe href, keep plain text inline.
-                    buf.append(link_text)
-                continue
-            # Inline-format tag handling: push format marker(s) onto stack,
-            # walk children, pop. Color class is treated as "bold" emphasis.
-            fmt = _INLINE_FORMAT_TAGS.get(name)
-            color_fmt = "bold" if _has_color_class(child) else None
-            pushed: List[str] = []
-            # Decide whether a format actually OPENS here before touching the
-            # stack. A color class whose format is already on the stack pushes
-            # nothing, and must not trigger the pre-flush below (it would split
-            # one run into two adjacent runs carrying identical formats).
-            opens_format = bool(fmt) or bool(
-                color_fmt and color_fmt not in fmt_stack
-            )
-            if opens_format:
-                # Flush the pending plain-text buffer BEFORE the new format goes
-                # onto the stack — `flush()` stamps the CURRENT stack onto the
-                # buffered text, so flushing afterwards back-dates this format
-                # onto the prefix that precedes the span.
-                # Fixed 2026-07-28: the flush used to sit inside `if pushed:`,
-                # below the pushes, so `<p>Plain <strong>bold</strong> tail.</p>`
-                # published as `<strong>Plain </strong><strong>bold</strong>` —
-                # everything before the first bold span in a paragraph came out
-                # bold. The comment already described the correct order; only
-                # the code disagreed.
-                flush()
-            if fmt:
-                fmt_stack.append(fmt)
-                pushed.append(fmt)
-            if color_fmt and color_fmt not in fmt_stack:
-                fmt_stack.append(color_fmt)
-                pushed.append(color_fmt)
-            if pushed:
-                walk(child)
-                flush()
-                for _ in pushed:
-                    fmt_stack.pop()
-            else:
-                walk(child)
-
-    walk(tag)
-    flush()
-    # Normalize whitespace inside each run; trim leading/trailing on edges.
-    for r in runs:
-        r["text"] = re.sub(r"\s+", " ", r["text"])
-    if runs:
-        runs[0]["text"] = runs[0]["text"].lstrip()
-        runs[-1]["text"] = runs[-1]["text"].rstrip()
-    return [r for r in runs if r["text"]]
 
 
 # ---------------------------------------------------------------------------
@@ -478,10 +233,10 @@ def _best_img_src(img) -> Optional[str]:
             preferred = [c for c in candidates if c[1] and c[1] <= 1024]
             picks = preferred if preferred else candidates
             picks.sort(key=lambda c: c[1] or 0, reverse=True)
-            url = _safe_img_src(picks[0][0])
+            url = dom_blocks.safe_img_src(picks[0][0])
             if url:
                 return url
-    src = _safe_img_src(img.get("src"))
+    src = dom_blocks.safe_img_src(img.get("src"))
     if src:
         return src
     return None
@@ -550,148 +305,13 @@ def _parse_content_encoded(html_str: str, link: str) -> Optional[Dict]:
     title_tag = soup.find("h1")
     title = title_tag.get_text(" ", strip=True) if title_tag else ""
 
-    blocks: List[Dict] = []
-    seen_image_bases = set()
-
-    # Walk top-level descendants. We use ``find_all(recursive=True)`` for
-    # primary tag types, then traverse them in document order via
-    # ``soup.descendants`` filter — but to stay simple and predictable,
-    # iterate over the direct children of the root and recurse manually
-    # when we hit a wrapper (<div>, <article>, <section>).
-    def _emit_paragraph(p_tag):
-        # Detect <br>-separated list-style content inside one <p>.
-        # orangetrack's WordPress editor authors series/case checklists as a
-        # single <p> with <br> between items (e.g. the "Below you'll find
-        # the series/case list" footer of the Boulevard mix posts):
-        #   `<p>#151 – <strong>'15 Toyota Alphard</strong><br>#152 – ...<br>...</p>`
-        # BeautifulSoup's get_text collapses <br> into a single space, so the
-        # whole list otherwise lands in one paragraph block and the LLM splice
-        # cannot un-collapse it. Splitting the <p> at <br> boundaries here
-        # emits one paragraph block per item, which Telegra.ph then renders on
-        # separate lines (verified live 2026-05-14 on the mix-3-H case-report
-        # article — both prod and test had the 5-item list collapsed).
-        if not p_tag.find("br"):
-            runs = _runs_from_tag(p_tag)
-            if not runs:
-                return
-            text = _text_from_runs(runs)
-            if not text:
-                return
-            blocks.append({"type": "paragraph", "text": text, "runs": runs})
-            return
-
-        segments: List[List] = [[]]
-        for child in p_tag.children:
-            if getattr(child, "name", None) == "br":
-                segments.append([])
-            else:
-                segments[-1].append(child)
-
-        for seg_children in segments:
-            if not seg_children:
-                continue
-            seg_html = "".join(str(c) for c in seg_children)
-            wrapper = BeautifulSoup(f"<p>{seg_html}</p>", "html.parser").p
-            if wrapper is None:
-                continue
-            runs = _runs_from_tag(wrapper)
-            if not runs:
-                continue
-            # Collapse whitespace: text-node trailing spaces + " ".join separator
-            # can double up when a text node ends in space and the next run is a
-            # tag (e.g. "#151 – " + " " + "Alphard"). Preserve runs verbatim —
-            # only the flattened `text` field is normalised; `text.find(run_text)`
-            # in the renderer still works since each run substring is intact.
-            text = _text_from_runs(runs)
-            if not text:
-                continue
-            blocks.append({"type": "paragraph", "text": text, "runs": runs})
-
-    def _emit_heading(h_tag, level):
-        # Emit h-tags with level-aware dispatch (Decisions 2 + 3 of
-        # orangetrack-rendering-fixes):
-        #   - h2 / h3 / h4 → ``type: "heading", level: 3``. orangetrack uses
-        #     these as full section headers (model name = section), so a
-        #     prominent Telegraph heading conveys the right hierarchy.
-        #     All three are normalised to ``level=3`` (single visual
-        #     treatment) — orangetrack typically has one section level.
-        #   - h5 → ``type: "paragraph"`` (carve-out preserves commit
-        #     ``babc67c`` from SESSION-2026-05-06.md break 3). On
-        #     orangetrack ``<h5>`` is used as in-paragraph section marker
-        #     with long descriptive text; rendering it as a Telegraph
-        #     heading looked uneven. Keep paragraph typography here.
-        #   - h1 / h6 are dropped earlier in ``_walk`` and never reach
-        #     this helper.
-        runs = _runs_from_tag(h_tag)
-        if not runs:
-            return
-        text = _text_from_runs(runs)
-        if not text:
-            return
-        if level in (2, 3, 4):
-            blocks.append({
-                "type": "heading",
-                "level": 3,
-                "text": text,
-                "runs": runs,
-            })
-            return
-        # level == 5 (and any other unexpected level): paragraph.
-        blocks.append({
-            "type": "paragraph",
-            "text": text,
-            "runs": runs,
-        })
-
-    def _emit_image(img_tag, caption: str = ""):
-        src = _best_img_src(img_tag)
-        if not src:
-            return
-        base = src.split("?", 1)[0]
-        if base in seen_image_bases:
-            return
-        seen_image_bases.add(base)
-        block: Dict = {"type": "image", "src": src}
-        if caption:
-            block["caption"] = caption
-        blocks.append(block)
-
-    def _emit_iframe(iframe_tag):
-        raw_src = iframe_tag.get("src") or ""
-        embed = _video_embed_url(raw_src)
-        if not embed:
-            return
-        blocks.append({"type": "video", "src": embed})
-
-    # Walk: BS4's ``descendants`` yields ALL nodes in DOM order, which
-    # would double-count <p> nested under <figure>. Instead, walk top
-    # children and recurse selectively — known content tags get emitted
-    # once. We process by tag name (Decision 3 — no Gutenberg classes).
-    handled_tags = {
-        "p", "h1", "h2", "h3", "h4", "h5", "h6",
-        "figure", "img", "iframe",
-        # ``ul`` / ``ol`` stay out of ``handled_tags`` so the wrapper
-        # fallback recurses into them and reaches their ``<li>`` children
-        # — the explicit ``li`` branch below handles emission. Including
-        # ``"li"`` here is documentation: it pins that ``<li>`` is
-        # processed by its own branch and does NOT fall through to
-        # generic recursion.
-        "li",
-    }
-
-    # WordPress chrome class markers — when we encounter a div/section
-    # with one of these classes, skip it entirely (don't recurse into
-    # it). These are the "Share this:" buttons (sharedaddy), the
-    # tag/category list (taxonomies), JetPack related posts (jp-related),
-    # comment forms, etc. Discovered 2026-05-06 on the Porsche Targa
-    # Turbo republish — test channel showed these blocks bleeding into
-    # the Telegraph article. Genuine content like the "Original listing
-    # on Mattel Creations: …" paragraph stays (operator wants it).
-    _CHROME_CLASS_MARKERS = (
-        "sharedaddy", "sd-", "taxonomies", "jp-related",
-        "post-comments", "comment-form",
-    )
-
+    #: WordPress chrome class markers — a div/section carrying one of these
+    #: is skipped entirely (no recursion into it). These are the "Share this:"
+    #: buttons (sharedaddy), the tag/category list (taxonomies), JetPack
+    #: related posts (jp-related), comment forms. Discovered 2026-05-06 on the
+    #: Porsche Targa Turbo republish, where they bled into the Telegraph
+    #: article. Genuine content like the "Original listing on Mattel
+    #: Creations: …" paragraph stays — the operator wants it.
     def _has_chrome_class(child) -> bool:
         classes = child.get("class") or []
         for c in classes:
@@ -701,106 +321,26 @@ def _parse_content_encoded(html_str: str, link: str) -> Optional[Dict]:
                     return True
         return False
 
-    def _walk(node):
-        for child in list(node.children):
-            name = getattr(child, "name", None)
-            if not name:
-                continue  # NavigableString — skip; <p> walker handles text.
-            if _has_chrome_class(child):
-                continue  # WordPress footer chrome — drop.
-            if name == "p":
-                # Check if the paragraph wraps an iframe / img only — those
-                # take precedence so we don't get a run with an empty
-                # ``text`` from BS4's get_text on the iframe.
-                inner_iframes = child.find_all("iframe")
-                inner_imgs = child.find_all("img")
-                if inner_iframes and not child.get_text(strip=True):
-                    for iframe in inner_iframes:
-                        _emit_iframe(iframe)
-                    continue
-                # Mixed paragraph: emit text first, then nested media.
-                _emit_paragraph(child)
-                for iframe in inner_iframes:
-                    _emit_iframe(iframe)
-                for img in inner_imgs:
-                    if img.find_parent("figure"):
-                        # Will be picked up by the figure walker.
-                        continue
-                    _emit_image(img)
-                continue
-            if name in ("h2", "h3", "h4"):
-                _emit_heading(child, int(name[1]))
-                continue
-            if name == "h5":
-                # h5 keeps `type: paragraph` (babc67c carve-out from SESSION-2026-05-06.md
-                # break 3 — h5 used as in-paragraph markers, big-bold styling looked uneven).
-                # Now also flows into paragraphs_flat alongside paragraph/heading/list_item
-                # (orangetrack-rendering-fixes Decision 2 keeps h5 as paragraph-typed block).
-                _emit_heading(child, 5)
-                continue
-            if name in ("h1", "h6"):
-                # h1 already used for title; h6 is rare/decorative.
-                continue
-            if name == "figure":
-                img = child.find("img")
-                if img:
-                    cap_tag = child.find("figcaption")
-                    caption = cap_tag.get_text(" ", strip=True) if cap_tag else ""
-                    _emit_image(img, caption=caption)
-                # Video embed wrapped in <figure> (typical WP output:
-                # <figure class="wp-block-embed"><div><iframe>...). Pick up
-                # iframes nested anywhere inside the figure — the figure
-                # handler runs ONCE per figure, so we look for iframe
-                # children that the top-level walk wouldn't reach
-                # (figure isn't a wrapper-tag in the recurse-list).
-                for inner_iframe in child.find_all("iframe"):
-                    _emit_iframe(inner_iframe)
-                # Nested figures (carousel / gallery) — recurse to grab
-                # additional <img> inside.
-                for nested in child.find_all("figure"):
-                    if nested is child:
-                        continue
-                    nested_img = nested.find("img")
-                    if not nested_img:
-                        continue
-                    cap = nested.find("figcaption")
-                    cap_text = cap.get_text(" ", strip=True) if cap else ""
-                    _emit_image(nested_img, caption=cap_text)
-                continue
-            if name == "img":
-                _emit_image(child)
-                continue
-            if name == "iframe":
-                _emit_iframe(child)
-                continue
-            if name == "li":
-                # <li> children of <ul>/<ol> emit a dedicated
-                # ``list_item`` block (Decisions 1, 8 of
-                # orangetrack-rendering-fixes). Bullet "• " is NOT
-                # inserted here — it is prepended in
-                # ``telegraph_publisher`` after LLM translation, so the
-                # bullet survives any LLM stripping/translation (AC2).
-                # ``<ul>`` and ``<ol>`` are treated identically per
-                # Decision 8. Empty / whitespace-only ``<li>`` is
-                # dropped (no block emitted).
-                li_runs = _runs_from_tag(child)
-                if not li_runs:
-                    continue
-                li_text = _text_from_runs(li_runs)
-                if not li_text:
-                    continue
-                blocks.append({
-                    "type": "list_item",
-                    "text": li_text,
-                    "runs": li_runs,
-                })
-                continue
-            # Wrapper tag (div / section / article / ul / ol / etc.):
-            # recurse so the inner <p>/<figure>/<iframe>/<li> get walked.
-            if name not in handled_tags:
-                _walk(child)
-
-    _walk(soup)
+    # One builder per article — never a module-level singleton, or blocks and
+    # the image-dedup set would leak between articles. The four per-site seams
+    # below are orangetrack's entire configuration of the shared walker; the
+    # structural policy (h2/h3/h4 → level 3, h5 → paragraph, h1/h6 dropped,
+    # <p> split at <br>, <li> without a bullet) is the shared default.
+    #
+    # ``headings_from_bold`` stays FALSE: orangetrack authors real <h2>/<h3>
+    # section headers, and inferring extra headings from whole-bold paragraphs
+    # would change its published output — an AC10 violation.
+    builder = dom_blocks.BlockBuilder(
+        has_color_class=_has_color_class,
+        is_chrome_class=_has_chrome_class,
+        pick_img_src=_best_img_src,
+        image_dedup_key=lambda src: src.split("?", 1)[0],
+        video_hosts=_YOUTUBE_HOSTS,
+        video_provider="youtube",
+        headings_from_bold=False,
+    )
+    builder.walk(soup)
+    blocks = builder.blocks
 
     # ----------------------------------------------------------------
     # Post-process: filter, dedup, derive flat fields, synthesize

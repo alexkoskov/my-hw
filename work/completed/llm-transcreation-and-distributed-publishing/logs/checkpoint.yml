@@ -1,0 +1,33 @@
+# ВОЗОБНОВЛЯТЬ НЕЧЕГО — правка 2026-08-03.
+# фича на проде и является основным путём публикации; 17 из 19 задач выполнены, задачи 18-19 помечены SUPERSEDED.
+# Значения ниже НЕ отражали действительность и могли заставить
+# feature-execution «продолжить» давно законченную работу: этот файл
+# читается именно для определения сценария возобновления.
+# Оставлен как история; для планирования не использовать.
+resume: false
+
+feature: llm-transcreation-and-distributed-publishing
+total_waves: 10
+last_completed_wave: 10
+next_wave: null  # waves 11-12 deferred to operator
+scope_note: "Stopping after Wave 10 (pre-deploy QA). Wave 11 (deploy) and Wave 12 (post-deploy verification) deferred to operator."
+tasks:
+  "01": done
+  "02": done
+  "03": done
+  "04": done
+  "05": done
+  "06": done
+  "07": done
+  "08": done
+  "09": done
+  "10": done
+  "11": done
+  "12": done
+  "13": done
+  "14": done
+  "15": done
+  "16": done
+  "17": done
+  "18": deferred
+  "19": deferred

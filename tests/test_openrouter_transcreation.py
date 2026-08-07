@@ -13,7 +13,9 @@ from unittest.mock import MagicMock, patch
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
+import httpx  # noqa: E402 — transitive dep of openai, used to build real SDK errors
 import openai  # noqa: E402
+import _llm_common  # noqa: E402
 import openrouter_transcreation  # noqa: E402
 from _llm_common import ClaudeOutageError, ClaudeTranscreationError  # noqa: E402
 
@@ -59,6 +61,12 @@ def _make_client_returning(response_or_exc):
     return client
 
 
+#: Client used only to reach the SDK's status-error dispatch. Never issues a
+#: request — ``_make_status_error_from_response`` is pure.
+_ERROR_CLIENT = openai.OpenAI(api_key="test-key-not-used",
+                              base_url="https://openrouter.ai/api/v1")
+
+
 def _make_openai_error(error_class, message: str = "test"):
     err = error_class.__new__(error_class)
     err.message = message
@@ -67,6 +75,26 @@ def _make_openai_error(error_class, message: str = "test"):
     err.status_code = getattr(error_class, "status_code", None)
     err.response = None
     return err
+
+
+def _make_status_error(status_code: int, message: str = "status error"):
+    """Build the exception the SDK itself would raise for ``status_code``.
+
+    Goes through ``_make_status_error_from_response`` — the SDK's own dispatch —
+    rather than calling a constructor directly, so the test double matches
+    production in BOTH respects that matter here: the class (402/407/408/413/451
+    have no dedicated class and come back as a bare ``APIStatusError``, which is
+    why the classifier has to read ``.status_code``) and the message shape
+    (``"Error code: 402 - {...}"`` — the SDK prepends the code, the server body
+    does not contain it).
+    """
+    request = httpx.Request("POST", "https://openrouter.ai/api/v1/chat/completions")
+    body = json.dumps({"error": {"code": status_code, "message": message}})
+    response = httpx.Response(
+        status_code, request=request, content=body.encode(),
+        headers={"content-type": "application/json"},
+    )
+    return _ERROR_CLIENT._make_status_error_from_response(response)
 
 
 class TestSuccessPath(unittest.TestCase):
@@ -174,6 +202,56 @@ class TestExceptionClassification(unittest.TestCase):
         with patch.object(openrouter_transcreation, "_load_prompt", return_value="X"):
             with self.assertRaises(ClaudeTranscreationError):
                 openrouter_transcreation.transcreate_via_claude(SAMPLE_ARTICLE, client=client)
+
+    def test_payment_required_is_outage(self):
+        """402 «Insufficient credits» — an empty OpenRouter balance is an
+        account-level problem, not a problem with THIS article.
+
+        Incident 2026-07-14: two articles were struck out three times each and
+        moved to ``failed_articles`` because 402 fell into the bare
+        ``APIStatusError`` catch-all → per-article. Holding is the only outcome
+        that survives a top-up.
+        """
+        client = _make_client_returning(_make_status_error(402, "Insufficient credits"))
+        with patch.object(openrouter_transcreation, "_load_prompt", return_value="X"):
+            with self.assertRaises(ClaudeOutageError) as ctx:
+                openrouter_transcreation.transcreate_via_claude(SAMPLE_ARTICLE, client=client)
+
+        # The wrap must carry the cause forward: the `[hold]` log line in
+        # news_bot is the only record of WHY an article was held, and it can
+        # only print what this message contains.
+        self.assertIn("402", str(ctx.exception))
+        self.assertIn("Insufficient credits", str(ctx.exception))
+
+    def test_proxy_auth_and_server_timeout_are_outage(self):
+        """407 (proxy auth) and 408 (server-side timeout) are transport-level,
+        exactly like the 401/403/APITimeoutError cases already held."""
+        for code in (407, 408):
+            with self.subTest(status_code=code):
+                client = _make_client_returning(_make_status_error(code))
+                with patch.object(openrouter_transcreation, "_load_prompt", return_value="X"):
+                    with self.assertRaises(ClaudeOutageError):
+                        openrouter_transcreation.transcreate_via_claude(
+                            SAMPLE_ARTICLE, client=client
+                        )
+
+    def test_unknown_status_stays_per_article(self):
+        """Regression guard for the conservative default.
+
+        413 (payload too large) and 451 (legal) are genuinely about THIS
+        article. Classifying them as an outage would hold the row at the queue
+        head — and ``job()`` re-reads ``list_pending()[0]`` every slot, so the
+        same poisoned row would block every later publish forever. Losing one
+        article after 3 strikes is the cheaper failure.
+        """
+        for code in (413, 451):
+            with self.subTest(status_code=code):
+                client = _make_client_returning(_make_status_error(code))
+                with patch.object(openrouter_transcreation, "_load_prompt", return_value="X"):
+                    with self.assertRaises(ClaudeTranscreationError):
+                        openrouter_transcreation.transcreate_via_claude(
+                            SAMPLE_ARTICLE, client=client
+                        )
 
 
 class TestClientLifecycle(unittest.TestCase):
@@ -410,6 +488,54 @@ class TestVariantBPlus(unittest.TestCase):
         self.assertIn("EN cap", user_msg)
         self.assertNotIn("Already RU", user_msg)
 
+    def test_list_item_text_skipped_by_second_pass(self):
+        """``list_item`` text is filled in RU by
+        ``_patch_text_with_ru_paragraphs`` (the SHARED tuple already lists
+        it), so the second pass must skip it too. Before this fix the local
+        tuple omitted ``list_item`` and every bullet was re-translated
+        RU→RU — wasted tokens and style drift on every long block article.
+        """
+        blocks = [
+            {"type": "list_item", "text": "Уже переведённый пункт списка."},
+            {"type": "image", "src": "https://x/a.jpg", "caption": "EN cap"},
+        ]
+        translations_json = json.dumps({"translations": ["RU cap"]})
+        client = _make_client_returning(_make_response(translations_json))
+        out = openrouter_transcreation._translate_block_strings(blocks, client, "m")
+        self.assertEqual(out[0]["text"], "Уже переведённый пункт списка.")
+        self.assertEqual(out[1]["caption"], "RU cap")
+        called = client.chat.completions.create.call_args.kwargs
+        user_msg = called["messages"][1]["content"]
+        self.assertIn("EN cap", user_msg)
+        self.assertNotIn("Уже переведённый пункт списка.", user_msg)
+
+    def test_patched_types_include_list_item_and_match_shared(self):
+        """Anti-drift guard. The local copy that quietly diverged from the
+        shared tuple is exactly how the gemini classifier bug survived —
+        compare the whole tuple, not just membership, so a type added to
+        ``_llm_common`` and forgotten here also fails."""
+        self.assertEqual(
+            openrouter_transcreation._PATCHED_TEXT_BLOCK_TYPES,
+            _llm_common._PATCHED_TEXT_BLOCK_TYPES,
+        )
+
+    def test_list_item_translated_when_skip_patched_text_false(self):
+        """Negative control (the 2026-07-28 one-sided-invariant lesson):
+        with the skip off, ``list_item`` text DOES go out for translation.
+        Without this, the skip test above would also pass if ``list_item``
+        stopped reaching translation for any reason at all."""
+        blocks = [
+            {"type": "list_item", "text": "Bullet text."},
+            {"type": "image", "src": "https://x/a.jpg", "caption": "Cap"},
+        ]
+        translations_json = json.dumps({"translations": ["RU bullet", "RU cap"]})
+        client = _make_client_returning(_make_response(translations_json))
+        out = openrouter_transcreation._translate_block_strings(
+            blocks, client, "m", skip_patched_text=False,
+        )
+        self.assertEqual(out[0]["text"], "RU bullet")
+        self.assertEqual(out[1]["caption"], "RU cap")
+
     def test_skip_patched_text_false_translates_all_text_fields(self):
         """``skip_patched_text=False`` preserves the legacy contract —
         all text/caption fields are sent for translation regardless of
@@ -512,3 +638,66 @@ class TestGetRemainingCredits(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class TestErrorEnvelopeIn200(unittest.TestCase):
+    """OpenRouter can answer HTTP 200 with an error ENVELOPE in the body
+    instead of a status code — a gateway shape the SDK cannot classify,
+    because to the SDK it is a perfectly successful response.
+
+    Before this the envelope reached the ``response.choices[0]`` read, raised
+    ``ClaudeTranscreationError('response shape unexpected')`` — a per-article
+    strike — and an out-of-credits 402 delivered this way lost the article
+    after three of them. Exactly the 2026-07-14 failure, through a door the
+    status-code fix did not cover.
+    """
+
+    def setUp(self):
+        openrouter_transcreation._PROMPT_CACHE = {"mtime": None, "body": None, "path": None}
+
+    @staticmethod
+    def _envelope_response(code, message="Insufficient credits"):
+        """A 200 whose body carries ``error`` and no usable ``choices`` —
+        what the SDK hands back for a gateway-level error envelope."""
+        response = MagicMock()
+        response.choices = []
+        response.error = {"code": code, "message": message}
+        return response
+
+    def test_account_level_envelope_is_an_outage(self):
+        client = _make_client_returning(self._envelope_response(402))
+        with patch.object(openrouter_transcreation, "_load_prompt", return_value="X"):
+            with self.assertRaises(ClaudeOutageError) as ctx:
+                openrouter_transcreation.transcreate_via_claude(SAMPLE_ARTICLE, client=client)
+        # The cause must survive into the message — it is what the [hold] log
+        # line and [E038] print.
+        self.assertIn("402", str(ctx.exception))
+        self.assertIn("Insufficient credits", str(ctx.exception))
+
+    def test_article_level_envelope_stays_per_article(self):
+        """Same conservative default as the status-code path: an envelope code
+        that is about THIS article must not hold the queue head."""
+        client = _make_client_returning(self._envelope_response(413, "too large"))
+        with patch.object(openrouter_transcreation, "_load_prompt", return_value="X"):
+            with self.assertRaises(ClaudeTranscreationError):
+                openrouter_transcreation.transcreate_via_claude(SAMPLE_ARTICLE, client=client)
+
+    def test_envelope_without_a_code_stays_per_article(self):
+        response = MagicMock()
+        response.choices = []
+        response.error = {"message": "something went wrong"}
+        client = _make_client_returning(response)
+        with patch.object(openrouter_transcreation, "_load_prompt", return_value="X"):
+            with self.assertRaises(ClaudeTranscreationError) as ctx:
+                openrouter_transcreation.transcreate_via_claude(SAMPLE_ARTICLE, client=client)
+        self.assertIn("something went wrong", str(ctx.exception))
+
+    def test_a_healthy_response_is_untouched(self):
+        """Regression guard: the envelope check must not intercept a normal
+        response. ``MagicMock`` answers every attribute, so a naive
+        ``getattr(response, 'error')`` would swallow every success."""
+        client = _make_client_returning(_make_response(SAMPLE_VALID_JSON))
+        with patch.object(openrouter_transcreation, "_load_prompt", return_value="X"):
+            result = openrouter_transcreation.transcreate_via_claude(
+                SAMPLE_ARTICLE, client=client)
+        self.assertIn("title", result)

@@ -19,7 +19,7 @@ dispatcher in ``news_bot.fetch_full_article`` uses a permissive
 substring check (``'blogspot.com' in domain``) — this function is the
 hard gate closing that hole.
 
-See ``work/t-hunted-pt-source/`` tech-spec Task 1 and code-research §B
+See ``work/completed/t-hunted-pt-source/`` tech-spec Task 1 and code-research §B
 for the line-precise design.
 """
 
@@ -32,7 +32,9 @@ import requests
 from bs4 import BeautifulSoup
 
 import admin_alerts
-from boilerplate_filter import filter_boilerplate
+import dom_blocks
+import feature_flags
+from boilerplate_filter import filter_blocks
 
 logger = logging.getLogger(__name__)
 
@@ -86,6 +88,64 @@ def _is_blogger_image_url(url: str) -> bool:
     except (ValueError, AttributeError):
         return False
     return any(host == h or host.endswith('.' + h) for h in _BLOGGER_IMAGE_HOSTS)
+
+
+#: Block types whose ``text`` the LLM layer patches positionally
+#: (``_llm_common._PATCHED_TEXT_BLOCK_TYPES``). The flat ``paragraphs`` list
+#: MUST have exactly one entry per block of these types — see the alignment
+#: note in ``fetch_t_hunted_article``.
+_PATCHABLE_BLOCK_TYPES = ("lead", "paragraph", "heading", "list_item")
+
+
+def _pick_img_src(img) -> Optional[str]:
+    """t-hunted's image-src policy — the Blogger lightbox sandwich.
+
+    ``<a href="…/s1200/photo.jpg"><img src="…/w200-h200/photo.jpg"></a>``:
+    ``img.src`` is the grid THUMBNAIL and the full-resolution variant lives in
+    the wrapping anchor. Telegraph embeds the URL verbatim, so without this
+    lift subscribers get 200×200 minis instead of photographs.
+
+    The anchor is only trusted when it points at a sibling Blogger image
+    variant, never at an off-site click-tracker that merely mentions
+    ``blogger`` somewhere. Scheme checking goes through the shared
+    ``safe_img_src`` rather than ``startswith("http")``, which used to let
+    ``httpx://evil/x.jpg`` through.
+    """
+    src = dom_blocks.safe_img_src(img.get("src"))
+    parent = img.parent
+    if parent is not None and getattr(parent, "name", None) == "a":
+        href = parent.get("href") or ""
+        if _is_blogger_image_url(href):
+            full = dom_blocks.safe_img_src(href)
+            if full:
+                return full
+    return src
+
+
+def _image_dedup_key(src: str) -> str:
+    """t-hunted's image-dedup policy.
+
+    lamley's ``split("?")`` assumes the size sits in the query string; Blogger
+    puts it in the PATH (``=s1600`` / ``=s640`` / ``=s320-c``), so two URLs for
+    the same photo differ by a path segment. Strip the query AND the size
+    suffix; first-seen URL wins.
+    """
+    return _BLOGGER_SIZE_SUFFIX_RE.sub('', src.split("?", 1)[0])
+
+
+def _norm_for_title_compare(text: str) -> str:
+    """Normalise for the title-dedup predicate by dropping ALL whitespace.
+
+    The two sides come from DIFFERENT flatteners and must be made comparable
+    before they are compared. ``title`` is built with
+    ``get_text(" ", strip=True)`` — ``<p>a<b>b</b>c</p>`` becomes ``'a b c'``
+    — while a block's text comes from ``dom_blocks.text_from_runs``, which
+    joins runs with no separator and yields ``'abc'``. Comparing them raw
+    would make the predicate quietly stop matching, and a paragraph repeating
+    the title would survive in ``blocks`` while never having been in
+    ``paragraphs``: the SECOND source of list desync (code-research § II-3.2).
+    """
+    return "".join((text or "").split())
 
 
 def _notify(notifier: Optional[Callable[[str], None]], message: str) -> None:
@@ -192,66 +252,98 @@ def fetch_t_hunted_article(
         _notify(notifier, admin_alerts.alert_t_hunted_no_body(link))
         return None
 
-    paragraphs: List[str] = []
-    for tag in body.find_all(["p", "li", "h2", "h3", "h4", "blockquote"]):
-        text = tag.get_text(" ", strip=True)
-        if text and text != title:
-            paragraphs.append(text)
+    # ONE list is the source of truth — the blocks. The flat `paragraphs` is
+    # DERIVED from it after every removal, never maintained in parallel.
+    #
+    # Why that matters more than it looks: the subtitle lift moves one entry
+    # out, and if the two lists were filtered separately they would end up
+    # differing by one. `_llm_common` pairs them POSITIONALLY when encoding
+    # and consumes them sequentially when decoding, and both sides swallow a
+    # shortfall silently (`except StopIteration`, no log) — so the tail block
+    # would ship to the channel IN PORTUGUESE. That is the 2026-05-06 outage,
+    # after which orangetrack answered by hardcoding `subtitle = ""`. The
+    # operator wants the lead, so the lift has to be a single operation over a
+    # single list. Measured: the lift desyncs 9 of these 10 articles if done
+    # the naive way (code-research § II-3.2).
+    #
+    # The heading heuristic is switched ON here because t-hunted has ZERO real
+    # <h2>/<h3>/<h4> inside `div.post-body` across all 10 corpus articles — a
+    # whole-bold paragraph is its only section marker (§ II-2.2).
+    builder = dom_blocks.BlockBuilder(
+        pick_img_src=_pick_img_src,
+        image_dedup_key=_image_dedup_key,
+        video_hosts=dom_blocks.YOUTUBE_HOSTS,
+        video_provider="youtube",
+        headings_from_bold=True,
+    )
+    builder.walk(body)
+    blocks = builder.blocks
+
+    # Title-dedup. Blogger themes repeat the post title as the first
+    # paragraph of the body; dropping it is parser-local policy the shared
+    # walker has no business knowing about. Applied to the BLOCKS, so it
+    # cannot desync the two lists.
+    title_key = _norm_for_title_compare(title)
+    if title_key:
+        blocks = [
+            b for b in blocks
+            if not (
+                b.get("type") in _PATCHABLE_BLOCK_TYPES
+                and _norm_for_title_compare(b.get("text")) == title_key
+            )
+        ]
 
     # CRITICAL ORDER: boilerplate filter BEFORE subtitle lift, otherwise
     # a Blogger footer ("Marcadores: ...") at the top of a title-only
-    # post would float into ``subtitle``. PT patterns arrive in Task 4
-    # without touching this call site; today only EN labels strip.
-    paragraphs = filter_boilerplate(paragraphs)
+    # post would float into ``subtitle``.
+    blocks = filter_blocks(blocks)
 
-    # Lift first surviving paragraph as subtitle (editorial lead on the
-    # Telegraph page); drop it from body so it doesn't repeat below.
-    # Photo-gallery posts (single intro paragraph + many product images)
-    # are the dominant t-hunted format for new-arrival announcements — for
-    # those we keep the one paragraph in body and ship an empty subtitle,
-    # so news_bot.fetch_full_article does NOT drop the post on its
-    # ``not article.get('paragraphs')`` guard. Lamley keeps the
-    # unconditional lift because lamley posts are review-style and always
-    # carry 2+ paragraphs.
-    if len(paragraphs) >= 2:
-        subtitle = paragraphs[0]
-        paragraphs = paragraphs[1:]
+    # Lift the first surviving text block as subtitle (the editorial lead on
+    # the Telegraph page) and REMOVE it from blocks in the same operation, so
+    # it neither publishes twice nor unbalances the lists.
+    #
+    # Photo-gallery posts (single intro paragraph + many product images) are
+    # the dominant t-hunted format for new-arrival announcements. For those we
+    # keep the one paragraph in the body and ship an empty subtitle, so
+    # news_bot.fetch_full_article does NOT drop the post on its
+    # ``not article.get('paragraphs')`` guard — that is Hotfix 1 of
+    # work/completed/t-hunted-pt-source. The >= 2 count is taken over the SAME
+    # list the lift removes from; counting one list and lifting from another
+    # is exactly the desync this function is built to avoid.
+    patchable_idx = [
+        i for i, b in enumerate(blocks)
+        if b.get("type") in _PATCHABLE_BLOCK_TYPES
+    ]
+    if len(patchable_idx) >= 2:
+        lead = blocks.pop(patchable_idx[0])
+        subtitle = lead.get("text") or ""
     else:
         subtitle = ""
 
-    # Blogger-aware image dedup: lamley's ``split("?")`` assumes size
-    # in query params; Blogger encodes size in the path. Strip query +
-    # trailing ``=sNNN(-c)?`` segment. First-seen URL wins.
-    images: List[str] = []
-    seen_bases = set()
-    for img in body.find_all("img"):
-        src = img.get("src") or ""
-        if not src.startswith("http"):
-            continue
-        # Blogger lightbox sandwich:
-        #   <a href="https://.../s1200/photo.jpg">      ← FULL-SIZE
-        #     <img src="https://.../w200-h200/photo.jpg" />  ← 200×200 thumb
-        #   </a>
-        # ``img.src`` is the grid thumbnail; the full-resolution variant
-        # lives in the wrapping ``<a href>``. Telegraph embeds the src URL
-        # verbatim (no re-hosting), so without this lift subscribers see
-        # 200×200 minis instead of full photos.
-        parent = img.parent
-        if parent is not None and parent.name == "a":
-            href = parent.get("href") or ""
-            if href.startswith("http") and _is_blogger_image_url(href):
-                src = href
-        base = _BLOGGER_SIZE_SUFFIX_RE.sub('', src.split("?", 1)[0])
-        if base in seen_bases:
-            continue
-        seen_bases.add(base)
-        images.append(src)
-        if len(images) >= _IMAGE_LIMIT:
-            break
+    # Flat lists DERIVED from the surviving blocks. `heading` and `list_item`
+    # belong here alongside `paragraph`: they are in
+    # `_llm_common._PATCHED_TEXT_BLOCK_TYPES`, and leaving them out would
+    # shift the pairing by one at every heading.
+    paragraphs: List[str] = [
+        b["text"] for b in blocks
+        if b.get("type") in ("paragraph", "heading", "list_item")
+    ]
+    images: List[str] = [
+        b["src"] for b in blocks if b.get("type") == "image"
+    ][:_IMAGE_LIMIT]
 
-    return {
+    article = {
         "title": title,
         "subtitle": subtitle,
         "paragraphs": paragraphs,
         "images": images,
     }
+    # Decision 6: the kill switch gates block EMISSION here, in the parser —
+    # never inside `dom_blocks`, which orangetrack also consumes and where a
+    # gate would strip ITS blocks too. The walk runs either way, so the flat
+    # text is identical in both flag states; "off" means plain text, NOT a
+    # byte-for-byte return to the pre-feature output (measured drift for
+    # t-hunted: −0.10 %, only collapsed \xa0 and a space before punctuation).
+    if feature_flags.source_formatting_enabled():
+        article["blocks"] = blocks
+    return article

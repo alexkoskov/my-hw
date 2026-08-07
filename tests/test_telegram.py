@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Unit tests for the minimal Telegram channel-post format (send_telegraph_teaser).
 
-Covers the locked format documented in work/telegraph-pipeline/post-format.md —
+Covers the locked format documented in work/completed/telegraph-pipeline/post-format.md —
 a single `🔗 [{domain}]({url})` line + `LinkPreviewOptions(show_above_text=True)`
 for the Telegraph preview card.
 """

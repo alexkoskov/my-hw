@@ -503,6 +503,34 @@ class TestMultiLLMKeyRedaction:
         error strings (defence-in-depth even if regex misses a key shape)."""
         assert name in news_bot._SECRET_ENV_NAMES
 
+    def test_sanitize_error_message_truncates(self):
+        """An SDK error message is the upstream body VERBATIM when it isn't
+        JSON, so an intercepting proxy or captive portal answering 4xx with a
+        multi-KB HTML page would land whole in the journal — repeated every
+        slot on the hold path, against a 10 MB × 3 log cap."""
+        out = news_bot.sanitize_error_message(Exception("x" * 5000))
+        assert len(out) == news_bot._ERROR_MESSAGE_MAXLEN + 1  # + the ellipsis
+        assert out.endswith("…")
+
+    def test_sanitize_error_message_truncates_after_redacting(self, monkeypatch):
+        """Order is a contract: truncating FIRST could split a secret and leave
+        an unredacted prefix in the tail."""
+        secret = FAKE_OPENROUTER_KEY
+        monkeypatch.setenv("OPENROUTER_API_KEY", secret)
+        # Place the secret so it straddles the cut point.
+        offset = news_bot._ERROR_MESSAGE_MAXLEN - (len(secret) // 2)
+        out = news_bot.sanitize_error_message(
+            Exception("y" * offset + secret + "z" * 200)
+        )
+        assert secret not in out
+        assert secret[:20] not in out
+
+    def test_sanitize_error_message_leaves_short_text_alone(self):
+        """A real gateway error body (~220 chars) must survive intact — the cap
+        exists to stop floods, not to trim diagnostics."""
+        msg = "Error code: 402 - {'error': {'code': 402, 'message': 'Insufficient credits'}}"
+        assert news_bot.sanitize_error_message(Exception(msg)) == msg
+
     @pytest.mark.parametrize("logger_name", [
         "openai", "openai._base_client",
         "google_genai", "google_genai.models",
@@ -661,3 +689,51 @@ class TestAdminNotifyRedaction:
             "'Admin notification sent:' line — still truncated:\n" + sent_log
         )
         assert "tail-marker-ZZZ" in sent_log
+
+
+class TestProxyCredentialRedaction:
+    """Proxy credentials are the one secret shape none of the five key regexes
+    match, and no ``*_PROXY`` name was in ``_SECRET_ENV_NAMES``.
+
+    Latent while nothing sets a proxy — but prod egress runs through a non-RU
+    VPN gateway, `_ACCOUNT_LEVEL_STATUS_CODES` now explicitly classifies 407
+    (proxy auth), and since 2026-08-04 an SDK error message reaches the journal
+    on the hold path. Two lines closes it before the topology changes.
+    """
+
+    PROXY_URL = "http://vpnuser:S3cretProxyPw@10.0.0.1:8080"
+
+    def test_redact_text_scrubs_inline_url_credentials(self):
+        out = news_bot._redact_text(f"proxy error for {self.PROXY_URL}: refused")
+        assert "S3cretProxyPw" not in out
+        assert "vpnuser" not in out
+        # The host survives — it is the diagnostic half of the string.
+        assert "10.0.0.1:8080" in out
+
+    @pytest.mark.parametrize("scheme", ["http", "https", "socks5", "socks5h"])
+    def test_every_proxy_scheme(self, scheme):
+        out = news_bot._redact_text(f"{scheme}://u:PWSENTINEL@host:1080")
+        assert "PWSENTINEL" not in out
+
+    def test_leaves_ordinary_urls_alone(self):
+        """No credentials means nothing to scrub — an article link with a port
+        or a colon in the path must survive verbatim."""
+        for url in (
+            "https://www.autoevolution.com/news/some-article-12345.html",
+            "https://telegra.ph/Hot-Wheels-08-04",
+            "http://example.com:8080/path?a=b:c",
+        ):
+            assert news_bot._redact_text(url) == url
+
+    @pytest.mark.parametrize("name", ["HTTP_PROXY", "HTTPS_PROXY", "ALL_PROXY",
+                                      "http_proxy", "https_proxy", "all_proxy"])
+    def test_proxy_env_var_in_secret_env_names(self, name):
+        """Defence in depth, same argument as the LLM keys: even if the regex
+        misses a shape, ``sanitize_error_message`` replaces the exact value."""
+        assert name in news_bot._SECRET_ENV_NAMES
+
+    def test_sanitize_error_message_redacts_the_proxy_value(self, monkeypatch):
+        monkeypatch.setenv("HTTPS_PROXY", self.PROXY_URL)
+        out = news_bot.sanitize_error_message(
+            Exception(f"cannot connect via {self.PROXY_URL}"))
+        assert "S3cretProxyPw" not in out

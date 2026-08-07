@@ -99,7 +99,8 @@ my-hw/
 ├── .github/workflows/       # ci.yml (pytest on push/PR to main+dev); uptime.yml (external
 │                              watchdog, every 30 min, live since 2026-07-31);
 │                              deploy.yml + deploy_test.yml — both DISARMED (`if: false`)
-├── tests/                   # pytest suite — 1628 tests across 47 files (counted 2026-08-03)
+├── tests/                   # pytest suite — 1626 tests across 47 files (2026-08-03; 1628 before
+│                            # test_deploy_files_invariant.py was rewritten 6 shallow → 4 real tests)
 ├── scripts/ archive/ logs/  # Helper scripts, retired code, local run logs
 ├── work/
 │   ├── completed/           # Finalized features (manual-review-workflow lands here)
@@ -216,10 +217,20 @@ This is the single most important runtime dependency: no LLM, no posts.
   claude_transcreation.py's own module docstring still quotes the stale 8000.)
 - **Failure model** (identical whichever engine is selected — exception classes
   are shared from `_llm_common`): per-article failures (refusal, malformed JSON,
-  4xx) bump `attempt_count` and strike the article out after 3 →
-  `failed_articles`; API-level outages (auth, rate-limit, network, 5xx) trigger
-  the 2-ping protocol and HOLD the article in the queue (hold-and-wait,
+  and article-level 4xx) bump `attempt_count` and strike the article out after
+  3 → `failed_articles`; API-level outages (auth, rate-limit, network, 5xx)
+  trigger the 2-ping protocol and HOLD the article in the queue (hold-and-wait,
   2026-06-11) — nothing published, retried next slot/day until the LLM recovers.
+  The split is **account/transport-level vs article-level**, not 4xx vs 5xx —
+  see `_llm_common._ACCOUNT_LEVEL_STATUS_CODES` (402/407/408) and the § Auto-publish
+  path bullet in patterns.md for the full rule and why the unknown-code default
+  stays per-article. *"Identical whichever engine" is the intent, not a free
+  property: the three SDK-based engines get the split from their SDK's
+  exception classes, while google-genai raises one `ClientError` for every 4xx,
+  so `gemini_transcreation._CLIENT_OUTAGE_CODES` restates the same list by
+  number. Its unknown-code default was flipped from outage to per-article on
+  2026-08-04 to close that gap — before then a 413/451 there would have pinned
+  the row to the queue head.*
 - **Auth:** one env var per provider (see above). All five secret shapes the bot
   can hold — Telegram bot token, OpenRouter, Anthropic, OpenAI, Gemini — are
   scrubbed from logs by `_TokenRedactingFilter` and from admin pings by the
@@ -293,7 +304,7 @@ for historical rows. Do not debug "no Mattel posts" as a parser bug.
 
 ## Data Flow
 
-The pipeline is the **cron prep + distributed-publish phase** (no operator, daily at 10:00 МСК) — auto-LLM transcreation → Telegra.ph → Telegram. The LLM is the sole translator — which engine, see § External Integrations. On an API-level LLM outage the article is held in the queue (hold-and-wait, 2026-06-11); per-article LLM failures strike out after 3.
+The pipeline is the **cron prep + distributed-publish phase** (no operator, daily at 10:00 МСК) — auto-LLM transcreation → Telegra.ph → Telegram. The LLM is the sole translator — which engine, see § External Integrations. On an API-level LLM outage the article is held in the queue (hold-and-wait, 2026-06-11) — but **not indefinitely**: after `news_bot.HOLD_CAP` consecutive holds it yields the queue head for `HOLD_DEFER_HOURS` so the articles behind it publish (hold cap, 2026-08-04 — see patterns.md § Auto-publish path). Per-article LLM failures strike out after 3.
 
 A second loop — the **manual review loop** (`hw_review.py` CLI in the operator's Claude Code session) — is **archived as of 2026-04-30**: the auto path produces 100 % of channel posts in production. See § Manual review loop below.
 
@@ -383,6 +394,8 @@ Below, each stage says what it does, what it emits into the intake funnel, which
 - RU content (NULL until staged): `ru_title`, `ru_subtitle`, `ru_paragraphs`, `ru_blocks`
 - Publish state: `telegraph_url`, `telegraph_path`, `preview_html_path`
 - Bookkeeping: `fetched_at`, `notified_at`, `attempt_count`, `last_error`, `pub_date`
+- **DEFERRED state** (`publish_after` TIMESTAMP NULL, UTC `'YYYY-MM-DD HH:MM:SS'`): a future value hides the row from `list_pending`/`count_pending` exactly like `hold_reason`, but expires by itself — «нет ответа = публикуем». Written in two places only: at INSERT by the dedup soft-flag (`_DEDUP_DEFER_HOURS`, see Data Flow), and on an already-staged row by `pending_repo.defer_publish` — the hold cap's parking mechanism, and the ONLY writer that touches an existing row. `count_deferred()` is the complement, needed because `job()` sizes the day's slots once from `count_pending()`.
+- **HOLD counter** (`hold_count` INTEGER NULL, hold cap 2026-08-04): consecutive slot-loop holds. Nullable with no default (same safe migration shape as `hold_reason`), so every pre-migration row reads NULL — `increment_hold` COALESCEs it to 0, which is load-bearing: a plain `hold_count + 1` on NULL evaluates to NULL and would leave legacy rows permanently under the cap. Deliberately NOT `attempt_count`: a strike walks the row toward `failed_articles`, a hold must never do that. `reset_hold_counts_below(cap)` is what makes it "consecutive" — called from `_maybe_record_recovery`, it clears every row under the cap when the LLM answers, while rows already at the cap keep their marker. See patterns.md § Auto-publish path for the full rule.
 - **HELD state** (`hold_reason` TEXT NULL, content-gate 2026-07-25): NULL = publishable; a non-NULL value is the human-readable matched-marker list (e.g. `poster, url:poster`) that parked the row awaiting the operator's «✅ Опубликовать». Added by the shared column-migration path in `init_schema` — nullable with no default, so it is safe on the live prod DB and every pre-migration row reads back as publishable. **The exclusion is enforced in SQL, not in application logic:** `list_pending`, `count_pending`, `list_pending_stale`, `list_pending_for_eviction` and `list_notified_overdue` all carry `WHERE hold_reason IS NULL`. Since the slot loop's row source IS `list_pending`, that predicate is the whole guarantee behind the operator's rule «нет ответа = не публикуем» — there is no timer anywhere in the path. `get_pending` deliberately does NOT filter (by-PK accessor: the b2 intake filter must keep seeing held rows or the article would be re-staged and re-alerted daily, and both button resolvers look rows up by link). `list_held()` is the exact complement; `clear_hold(link)` releases a hold and returns `True` only if a row was actually held, so a double press cannot report a second approval. Approving is not publishing — `clear_hold` touches neither `processed_news` nor `published_articles`. Rejecting reuses `skip_pending` (DELETE + `processed_news` pin). The archived `hw_review list` CLI does not show held rows (it reads `list_pending`) — accepted, the CLI is not deployed.
 - **Block types** (in `blocks` / `ru_blocks` JSON): `paragraph`, `lead`, `heading` (with `level: 3` or `4`), `image`, `video`, and `list_item` (added 2026-05-08 by orangetrack-rendering-fixes — children of `<ul>`/`<ol>` from orangetrack content). Text-bearing types (`paragraph`/`lead`/`heading`/`list_item`) all carry an optional `runs` field with inline metadata: `[{text, [href], [formats]}]` where `formats` is a list of `bold`/`italic`/`underline`/`strikethrough` markers. `_PATCHED_TEXT_BLOCK_TYPES` in `_llm_common.py` lists the 4 patchable types — `_patch_text_with_ru_paragraphs` rewrites their `text` from LLM output and preserves `type`, `runs`, `level`. Since 2026-07-28 `runs` bold survives translation as a literal `**bold**` marker in the text; the encode/decode round-trip and the "markers must never reach Telegra.ph" invariant are in Data Flow step 7.
 

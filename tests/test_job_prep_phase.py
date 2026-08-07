@@ -17,7 +17,7 @@ llm-transcreation-and-distributed-publishing, ``job()`` must:
 The cron contract is now the distributed-schedule one (Wave 4 Decisions 2 + 4):
 ``schedule.every().day.at("12:00", tz=pytz.timezone("Europe/Moscow"))``.
 See the contract in
-[tech-spec](../work/llm-transcreation-and-distributed-publishing/tech-spec.md).
+[tech-spec](../work/completed/llm-transcreation-and-distributed-publishing/tech-spec.md).
 The legacy env-overridable knobs from manual-review-workflow were removed in
 Wave 5 — those names are not asserted here anymore.
 """

@@ -718,3 +718,52 @@ class TestInSlotRetryIdempotency(_FallbackPublishPathsCase):
 
 if __name__ == '__main__':
     unittest.main()
+
+
+class TestImageLimitWiring(unittest.TestCase):
+    """The per-source cap resolved from `row['source_name']` and handed to the
+    publisher. Values come from the parser modules' own constants — numbers
+    retyped in news_bot would drift silently and nothing would catch it."""
+
+    def test_image_limit_resolved_per_source_name(self):
+        for source, expected in (
+            ("t-hunted", 30),
+            ("lamley", 10),
+            ("orangetrack", 10),
+            ("autoevolution", 10),
+        ):
+            with self.subTest(source=source):
+                self.assertEqual(
+                    news_bot._image_limit_for_source(source), expected
+                )
+
+    def test_image_limit_unknown_source_publishes_without_cap_and_warns(self):
+        """Fail-open, like the promo filter, the content gate and the dedup
+        gate: an unnameable source publishes UNCAPPED rather than not at all."""
+        for source in ("other", "mattel", "", None):
+            with self.subTest(source=source):
+                with self.assertLogs("news_bot", level="WARNING") as captured:
+                    self.assertIsNone(news_bot._image_limit_for_source(source))
+                self.assertTrue(
+                    any("image cap" in r.getMessage() for r in captured.records)
+                )
+
+    def test_image_limit_map_matches_source_module_constants(self):
+        """Catches a limit changed in a parser but not here."""
+        import autoevolution_source
+        import lamley_source
+        import orangetrack_source
+        import t_hunted_source
+
+        self.assertEqual(news_bot.SOURCE_IMAGE_LIMITS, {
+            "t-hunted": t_hunted_source._IMAGE_LIMIT,
+            "lamley": lamley_source.IMAGE_LIMIT,
+            "orangetrack": orangetrack_source.IMAGE_LIMIT,
+            "autoevolution": autoevolution_source.MAX_IMAGES,
+        })
+
+    def test_limit_keys_cover_every_known_source_name(self):
+        """Negative control: if NETLOC_TO_SOURCE gains a source, this fails
+        rather than silently publishing it uncapped."""
+        known = set(news_bot.NETLOC_TO_SOURCE.values()) - {"mattel"}
+        self.assertEqual(known - set(news_bot.SOURCE_IMAGE_LIMITS), set())

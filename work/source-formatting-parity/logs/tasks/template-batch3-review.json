@@ -1,0 +1,59 @@
+{
+  "validator": "task-validator",
+  "batch": [11, 12, 13, 14, 15],
+  "status": "changes_required",
+  "findings": [
+    {
+      "severity": "critical",
+      "category": "decomposition",
+      "task": 15,
+      "section": "frontmatter (wave / depends_on)",
+      "issue": "Task 15 has `depends_on: [14]` but `wave: 6` — the same wave as Task 14. Confirmed by grepping all task frontmatter: Task 14 is wave 6 and Task 15 is also wave 6. Per validation rule F (Dependency correctness), a task depending on another must have a strictly greater wave number; equal waves imply parallel/concurrent eligibility, which breaks the required sequencing here — Task 15 (post-deploy verification) can only start after the operator has confirmed Task 14's production deploy completed, exactly as Task 15's own body says ('только после подтверждённого оператором выката'). The tech-spec groups both under one 'Final Wave' heading, which is likely why task-creator assigned them the same wave number, but the task-creator rule (wave = 'Wave number for parallel execution') and this validator's explicit rule both require strict ordering here.",
+      "fix": "Bump Task 15's `wave` to 7 (or otherwise ensure Task 15's wave is strictly greater than Task 14's). Task 14 and Task 15 should not be labeled the same execution wave despite both falling under tech-spec's single 'Final Wave' heading, since the second is a hard sequential dependent of the first (confirmed by an operator action in between)."
+    },
+    {
+      "severity": "minor",
+      "category": "content",
+      "task": 11,
+      "section": "Details",
+      "issue": "The Details section has subsections for Dependencies (inline bold line), Edge cases (### Edge cases для проверки) and Implementation hints (### Implementation hints), but no explicit **Files:** subsection as required by the template ('Files: путь/к/файлу.ts — что сделать'). For an analysis-only task this is a lower-stakes gap (the code perimeter is already exhaustively listed in Context Files), but the template's four Details subsections (Files / Dependencies / Edge cases / Implementation hints) are not all present verbatim.",
+      "fix": "Add a short **Files:** line to Details, e.g. clarifying that this task modifies zero files and produces exactly one artifact (the audit report at the stated path), to make the subsection explicit rather than implied."
+    },
+    {
+      "severity": "minor",
+      "category": "content",
+      "task": 12,
+      "section": "Details",
+      "issue": "Same gap as Task 11: Details has Dependencies, Edge cases and Implementation hints subsections but no explicit **Files:** subsection.",
+      "fix": "Add a short **Files:** line noting this task modifies zero files (any mutation testing must be reverted, per its own Verification Steps) and produces one artifact (the test-audit report)."
+    },
+    {
+      "severity": "minor",
+      "category": "content",
+      "task": 13,
+      "section": "Context Files",
+      "issue": "Context Files bullet 'Аудиты Wave 4: `logs/working/task-10/` (код), `logs/working/task-11/` (безопасность), `logs/working/task-12/` (тесты)' uses plain backtick paths, not markdown links `[name](path)`, violating the template rule that all files in Context Files be markdown links.",
+      "fix": "Convert to markdown links, e.g. `[task-10 audit](../logs/working/task-10/)`, `[task-11 audit](../logs/working/task-11/)`, `[task-12 audit](../logs/working/task-12/)` (paths relative to `work/source-formatting-parity/tasks/13.md` need a `../` prefix to resolve, which the current plain-text form does not have)."
+    },
+    {
+      "severity": "minor",
+      "category": "content",
+      "task": 14,
+      "section": "Context Files",
+      "issue": "Context Files bullet '`logs/working/qa-report.json` — входной гейт: статус и criticals Task 13' is plain backtick text, not a markdown link. Additionally, as written the path is missing the `../` prefix needed to resolve from `work/source-formatting-parity/tasks/14.md` (the correct relative path would be `../logs/working/qa-report.json`).",
+      "fix": "Change to `[qa-report.json](../logs/working/qa-report.json)` — входной гейт: статус и criticals Task 13."
+    },
+    {
+      "severity": "minor",
+      "category": "content",
+      "task": 15,
+      "section": "Context Files",
+      "issue": "Context Files bullet '`logs/working/qa-report.json` — отчёт Task 13; секция `deferredToPostDeploy` это прямой вход задачи' is plain backtick text, not a markdown link, and is missing the `../` prefix needed to resolve from `work/source-formatting-parity/tasks/15.md`.",
+      "fix": "Change to `[qa-report.json](../logs/working/qa-report.json)` — отчёт Task 13; секция `deferredToPostDeploy` это прямой вход задачи."
+    }
+  ],
+  "stats": {
+    "tasks_checked": 5,
+    "issues_found": 6
+  }
+}

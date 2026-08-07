@@ -1,0 +1,27 @@
+{
+  "validator": "task-validator",
+  "batch": [1, 2, 3, 4, 5],
+  "status": "approved",
+  "findings": [
+    {
+      "severity": "minor",
+      "category": "consistency",
+      "task": 1,
+      "section": "frontmatter / Reviewers",
+      "issue": "frontmatter.skills = [code-writing] but frontmatter.reviewers = [test-reviewer] only — no code-reviewer. The general skills↔reviewers mapping rule expects code-writing tasks to include both code-reviewer and test-reviewer.",
+      "fix": "Verified against tech-spec: Task 1's Implementation Tasks entry explicitly states 'Reviewers: test-reviewer' (tech-spec.md line 498), and the task's actual file scope is fixtures + a golden-comparison test with no application/production code touched. This looks like an intentional, spec-driven exception rather than an oversight — no change required, but flagging per the checklist's mapping rule so it is a reviewed decision rather than a silent gap."
+    },
+    {
+      "severity": "minor",
+      "category": "atomicity",
+      "task": 1,
+      "section": "Details / Files",
+      "issue": "Task creates roughly 26+ new files (10 t-hunted HTML fixtures, 4 lamley HTML fixtures, ~12 orangetrack HTML fixtures, orangetrack_golden.json, test_orangetrack_golden.py), well past the '1-3 files' atomicity guideline.",
+      "fix": "The file count is inherent to the deliverable — committing a reproducible HTML corpus plus one golden snapshot plus one comparison test is a single logical unit of work (Decision 9's gate), and the task's own 'Details' section explains the layout choice. No split is recommended; flagging only because the raw file count trips the numeric heuristic."
+    }
+  ],
+  "stats": {
+    "tasks_checked": 5,
+    "issues_found": 2
+  }
+}

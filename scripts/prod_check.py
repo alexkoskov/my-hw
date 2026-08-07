@@ -99,31 +99,54 @@ def check_publications(conn: sqlite3.Connection, rep: Report, days: int) -> None
         rep.add(BAD, "таблицы published_articles нет — база не та или не создана")
         return
 
+    # Per-source: count inside the window AND the all-time last publication.
+    # The second column is what makes silence readable — see below.
     rows = conn.execute(
-        "SELECT source_name, COUNT(*) AS n, MAX(published_at) AS last "
-        "FROM published_articles "
-        f"WHERE published_at > datetime('now', '-{days} days') "
-        "GROUP BY source_name ORDER BY n DESC"
+        "SELECT source_name,"
+        f"       SUM(CASE WHEN published_at > datetime('now','-{days} days') THEN 1 ELSE 0 END) AS n,"
+        "        MAX(published_at) AS last,"
+        "        CAST(julianday('now') - julianday(MAX(published_at)) AS INTEGER) AS age "
+        "FROM published_articles GROUP BY source_name ORDER BY n DESC, age ASC"
     ).fetchall()
     total = sum(r["n"] for r in rows)
 
     if total == 0:
         rep.add(BAD, f"за {days} дней НИ ОДНОЙ публикации — бот не публикует")
     else:
-        rep.add(OK, f"опубликовано {total} статей")
+        rep.add(OK, f"опубликовано {total} статей за {days} дней")
 
-    seen = {r["source_name"]: r for r in rows}
     for r in rows:
-        rep.note(f"{r['source_name']:<16} {r['n']:>3}   последняя: {r['last']}")
+        rep.note(f"{r['source_name']:<16} {r['n']:>3} за окно   последняя: "
+                 f"{str(r['last'])[:16]} ({r['age']} дн. назад)")
 
+    by_name = {r["source_name"]: r for r in rows}
     for src in EXPECTED_SOURCES:
-        # source_name is stored TLD-stripped; match loosely so a rename does not
-        # produce a false alarm about a silent source.
-        if not any(src in name for name in seen):
-            rep.add(WARN, f"источник '{src}' молчит {days} дней — проверить, не сломался ли парсер")
+        # Loose match: source_name is stored TLD-stripped, so a rename should not
+        # masquerade as a dead source.
+        row = next((r for name, r in by_name.items() if src in name), None)
+        if row is None:
+            rep.add(WARN, f"источник '{src}' НИ РАЗУ ничего не публиковал — парсер подключён?")
+        elif row["n"] == 0:
+            # Silence alone is not a defect. A source that stopped months ago has
+            # simply gone quiet; a source that was active last week and then went
+            # silent is the anomaly. Distinguishing the two is the whole point —
+            # on 2026-08-03 both lamley and orangetrack tripped the old
+            # unconditional warning, and both turned out to be correct behaviour
+            # (lamley's site has not posted since April; orangetrack published
+            # only bare case-contents checklists, which `_is_text_only_checklist`
+            # rejects on purpose since the 2026-05-12 translation incident).
+            if row["age"] is not None and row["age"] > 45:
+                rep.add(INFO, f"источник '{src}' молчит {days} дн., но и в целом заглох "
+                              f"{row['age']} дн. назад — похоже, сайт сам не публикует")
+            else:
+                rep.add(WARN, f"источник '{src}' молчит {days} дн., хотя ещё "
+                              f"{row['age']} дн. назад публиковался — проверить парсер "
+                              "и не режет ли его контентный фильтр")
 
     all_time = conn.execute("SELECT COUNT(*) FROM published_articles").fetchone()[0]
     rep.note(f"всего в базе за всё время: {all_time}")
+    rep.note("молчание источника ≠ поломка: голые чек-листы orangetrack "
+             "отбрасываются намеренно (news_bot.py:1594)")
 
 
 def check_queue(conn: sqlite3.Connection, rep: Report) -> None:
@@ -168,11 +191,32 @@ def check_outage_state(conn: sqlite3.Connection, rep: Report) -> None:
     if not rows:
         rep.add(OK, "пусто — аварий не зафиксировано")
         return
+
+    # `bot_state` is a general-purpose k/v store, not just the outage machine:
+    # dedup parks `softflag_pair:<link>\n<link>` rows and `review_token:<tok>`
+    # rows there too. Printing every key drowned the actual answer in ~20 lines
+    # of URLs on 2026-08-03, so group the noise and detail only what matters.
+    outage = [r for r in rows if r["key"].startswith("outage") or r["key"] == "fallback_active"]
+    buckets: dict[str, int] = {}
     for r in rows:
-        stuck = r["key"] == "outage_state" and r["value"] not in (None, "", "no_outage")
-        rep.add(WARN if stuck else INFO, f"{r['key']} = {r['value']}")
-    if any(r["key"] == "outage_state" and r["value"] not in (None, "", "no_outage") for r in rows):
-        rep.note("залипшее состояние: статьи придерживаются, публикаций не будет")
+        if r in outage:
+            continue
+        prefix = r["key"].split(":", 1)[0] if ":" in r["key"] else r["key"]
+        buckets[prefix] = buckets.get(prefix, 0) + 1
+
+    if not outage:
+        rep.add(OK, "записи об аварии нет — машина состояний в норме")
+    for r in outage:
+        stuck = r["value"] not in (None, "", "no_outage")
+        rep.add(WARN if stuck else OK, f"{r['key']} = {r['value']}")
+        if stuck:
+            rep.note("залипшее состояние: статьи придерживаются, публикаций не будет")
+
+    if buckets:
+        rep.note("прочие ключи (служебные, не про аварию): "
+                 + ", ".join(f"{k}×{n}" for k, n in sorted(buckets.items())))
+        rep.note("softflag_pair — отложенные на 24 ч мягкие срабатывания дедупа; "
+                 "review_token — выданные кнопки ревью. Норма.")
 
 
 def check_dedup(conn: sqlite3.Connection, rep: Report) -> None:
@@ -223,7 +267,19 @@ def check_heartbeat(rep: Report, path: str | None) -> None:
     """The watchdog's own signal — stale means the tick stopped without crashing."""
     rep.section("Пульс")
     if not path:
-        rep.note("HEARTBEAT_FILE не задан — пропуск (в контейнере это /data/last_tick.ts)")
+        # HEARTBEAT_FILE is set inside the container (docker-compose.yml:34), not
+        # in the host shell this usually runs from, so falling back to the known
+        # bind-mount paths is what makes this check work at all — it printed a
+        # useless "пропуск" on the first real run (2026-08-03).
+        for candidate in ("data/last_tick.ts", "/data/last_tick.ts",
+                          "/root/hw-news/data/last_tick.ts"):
+            if os.path.exists(candidate):
+                path = candidate
+                rep.note(f"HEARTBEAT_FILE не задан — взят примонтированный {candidate}")
+                break
+    if not path:
+        rep.note("файл пульса не найден ни по одному известному пути — "
+                 "проверить `docker exec hw-news-bot ls -l /data/last_tick.ts`")
         return
     if not os.path.exists(path):
         rep.add(WARN, f"файла пульса нет: {path} — тик ещё ни разу не отмечался")

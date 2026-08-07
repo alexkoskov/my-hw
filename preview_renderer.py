@@ -13,7 +13,7 @@ with three independent layers (tech-spec Decision 1):
      h3 / h4 / hr / i / b / a`). Any other tag — including `<script>`,
      `<style>`, `<object>`, `<svg>` — is silently dropped together with its
      children. This mirrors the Telegra.ph validator's behaviour for unknown
-     tags (see `work/telegraph-pipeline/post-format.md`).
+     tags (see `work/completed/telegraph-pipeline/post-format.md`).
 
   2. **URL-scheme allowlist.** `img src`, `iframe src`, `a href` must match
      `^https?://` (IGNORECASE). Any other scheme or a relative path causes the

@@ -1,0 +1,104 @@
+{
+  "status": "changes_required",
+  "summary": "The core mechanism is correct and prod-safe: the hold_count migration follows _ensure_column/_COLUMN_MIGRATIONS exactly (verified empirically against a legacy-shaped DB with rows — column added nullable, legacy rows read NULL, COALESCE treats them as 0, list_pending/count_pending unaffected, re-run idempotent), the defer reuses publish_after with the same UTC format as the dedup defer, no strike is issued, and the whole suite is green (1659 passed). Three major issues remain, none of them prod-unsafe: (1) hold_count is lifetime-cumulative, not consecutive — nothing ever resets it while the row stays pending, so a genuine outage CAN trip the cap and produce a wrong-cause [E038]; (2) the change creates a third row state (deferred) that no operator-facing counter reports, which can make [E009] say «новых статей нет» while N articles wait and can cost a full publishing day because slots are sized once from count_pending at 10:00; (3) patterns.md/architecture.md/project.md now contain statements this change makes false. deferred_count is genuinely dead and should become the fix vehicle for (2).",
+  "criticalIssues": [],
+  "suggestions": [
+    {
+      "file": "news_bot.py",
+      "line": 208,
+      "severity": "major",
+      "category": "maintainability",
+      "suggestion": "hold_count is LIFETIME-cumulative, not consecutive: nothing resets it while the row stays in pending_articles, so the constant's stated rationale («6 = two full days … a GENUINE LLM outage never trips it») does not hold, and the effective cap shrinks over a row's lifetime. Concrete path: day 1 of a real outage — list_pending puts today's batch (tier 0) at the head, so today's first-fetched row is the head for all three slots and reaches hold_count=3. The outage ends; that row does not publish, because the next day's fresh batch sorts ahead of it (tier 0 before carry-over), so it sits in the queue carrying 3 holds indefinitely. Weeks later ANY single-day global outage in which it happens to be the head adds 3 more holds → cap tripped → 24h defer + an [E038] saying «эта статья раз за разом не переводится и держала очередь», which is a wrong diagnosis of a global outage — the same wrong-attribution failure class as the 2026-06-10 E011 incident recorded in project memory. From then on the row also yields on its FIRST hold forever (defer_publish keeps the counter), so one historical outage permanently demotes a healthy article. Fix that preserves both design properties: on LLM recovery clear only the incidental holds — add a repo helper doing `UPDATE pending_articles SET hold_count = 0 WHERE COALESCE(hold_count, 0) < ?` (bound to HOLD_CAP) and call it from the recovery path next to outage_state.record_recovery_event (news_bot.py:3097). Rows already at/past the cap keep their proven-stuck marker, everything else starts the next incident from zero. Alternative: add a last_hold_at stamp and reset the streak when the previous hold is older than ~48h. Either way, correct the two docstrings (news_bot.py:191-207 and pending_articles_repo.py:486-501) that describe the counter as CONSECUTIVE.",
+      "benefit": "The cap then actually means what its comment says — article-specific failure, not «this row was unlucky during two unrelated outages» — and the operator stops receiving article-blaming pings during global incidents.",
+      "optional": false
+    },
+    {
+      "file": "news_bot.py",
+      "line": 4349,
+      "severity": "major",
+      "category": "best-practices",
+      "suggestion": "The change introduces a third row state — deferred — that NO operator-facing counter reports. count_pending()/list_pending() exclude it (publish_after filter), list_held() only covers hold_reason, so «Всего в очереди» in [E008], the «На утверждении» line, the [E003] backlog alarm at queue_size > BACKLOG_WARNING_THRESHOLD and the [E034] recap are all blind to it; the one-shot [E038] is the only trace. Two concrete consequences during a multi-day genuine outage, which is exactly the walkthrough asked for: (a) once every publishable row has been deferred and intake stages nothing that day, job() takes the `queue_size == 0 and inserted == 0` branch (news_bot.py:4375) and sends [E009] «🟢 Бот сработал, новых статей нет» while N articles are sitting in the DB — a false all-clear; (b) `slots` is computed ONCE from count_pending at the ~10:00 tick (news_bot.py:4349-4350), so with everything deferred slots == [] and the entire day is skipped, including slots after a defer elapses and including the first day after the LLM recovers. Defers written at the 19:30 slot elapse at 19:30 the NEXT day — after that day's tick — so the worst case is roughly two days of silence per defer cycle even with a healthy LLM. Note the steady state after several outage days: each returning row yields on its first hold, so up to three defers and three [E038] pings per day, which re-introduces exactly the ping noise that outage_state suppresses at ping_count >= 3. Fix: add `count_deferred()` to the repo (`hold_reason IS NULL AND publish_after > CURRENT_TIMESTAMP`), render it as an «Отложено: N» line in the plan-of-day and quiet-day pings the same way held_count is rendered, and size the slot computation from `count_pending() + count_deferred()` — over-allocating slots is safe because the loop already breaks on an empty list_pending().",
+      "benefit": "Removes a false all-clear and a self-inflicted publishing outage; deferred articles stay visible instead of silently rotting in a state nothing reports.",
+      "optional": false
+    },
+    {
+      "file": ".claude/skills/project-knowledge/references/patterns.md",
+      "line": 277,
+      "severity": "major",
+      "category": "maintainability",
+      "suggestion": "Documentation now contains statements this change makes false, and project rules treat docs as deliverables. (1) patterns.md:277 — «Why the unknown-code default was NOT flipped to outage … would pin that row to the queue head and stop the channel entirely» — the premise is no longer true; that decision should be re-stated as «pins the head for up to HOLD_CAP slots, then the row steps aside», otherwise a future reader re-litigates the 402 decision on stale grounds. (2) patterns.md:281 — «Held rows leave no per-row trace … The cause of a hold exists ONLY in the [hold] log line» — now false in both halves: pending_articles.hold_count is a per-row trace, and the cause reaches Telegram via [E038] because _publish_with_retries returns the exception. (3) architecture.md § Data Model (~390-397) lists every pending_articles column and the hold_reason/publish_after semantics — hold_count and the fact that publish_after is now also written on an ALREADY-STAGED row (defer_publish, the only such writer) belong there. (4) architecture.md:307/322 and project.md:12 both say a held article is «retried on the next slot/day until the LLM recovers» — it is now bounded by HOLD_CAP. (5) [E038] appears in no doc; the hold-cap contract (cap value, defer window, counter-not-reset, not-a-strike) has no home outside the source comments.",
+      "benefit": "Keeps the knowledge base usable as the decision record it is — the 402 rationale in particular is a live decision that this change moves.",
+      "optional": false
+    },
+    {
+      "file": "news_bot.py",
+      "line": 4442,
+      "severity": "minor",
+      "category": "maintainability",
+      "suggestion": "deferred_count is written (4442) and incremented (4510) but never read — no linter catches it because `+=` counts as a use. Either wire it into the [E034] recap payload or delete it. Wiring is cheap and correct: alert_publish_recap reads its fields through _funnel_int, so adding 'deferred': deferred_count to the dict at news_bot.py:4592 is harmless on its own, but the renderer must also learn a line (e.g. «отложено N (уступили очередь)») or the key stays invisible. Note the tally stays consistent either way — a deferred slot is already counted in `held`, and total = published + held + failed.",
+      "benefit": "Either the recap gains the one outcome it cannot currently express, or the code stops carrying a variable that implies a feature that is not there.",
+      "optional": false
+    },
+    {
+      "file": "pending_articles_repo.py",
+      "line": 521,
+      "severity": "minor",
+      "category": "best-practices",
+      "suggestion": "Answering the interleaving question directly: increment_hold and defer_publish in separate transactions are safe against the review-listener thread — SQLite serialises the writes and the 5s busy timeout absorbs contention; if defer_publish loses the row (listener skip_pending in between) it no-ops and the next slot simply re-increments and re-defers, and if defer_publish fails outright the row stays head and self-heals next slot. The one visible artefact is cosmetic: defer_publish returns None, so the [E038] ping is sent unconditionally at news_bot.py:4516 even when the row was deleted a millisecond earlier by «🚫 Не публиковать» — the operator then gets «Статья НЕ потеряна: вернётся к публикации сама» about an article they just cancelled. Make defer_publish return `cur.rowcount > 0` (exactly the convention clear_hold already uses at pending_articles_repo.py:1101 and for the same reason) and gate the ping and deferred_count on it.",
+      "benefit": "Removes the only operator-visible artefact of the two-transaction split, using a convention already established in the module.",
+      "optional": true
+    },
+    {
+      "file": "pending_articles_repo.py",
+      "line": 516,
+      "severity": "minor",
+      "category": "best-practices",
+      "suggestion": "`return int(row[0]) if row is not None else 0` guards a missing ROW but not a NULL VALUE. The UPDATE-then-SELECT pair makes NULL unreachable in the normal path, but the guard is asymmetric with the module's stated tolerance and the one interleaving that could produce it (row deleted, then the same link re-inserted by another writer between the UPDATE and the SELECT) raises TypeError inside an error path. `if row is not None and row[0] is not None else 0` costs nothing. (increment_attempt at line 480 has the same shape, but there the column is NOT NULL DEFAULT 0, so only the new function is exposed.)",
+      "benefit": "Keeps the fail-soft contract the docstring promises under every interleaving, not just the expected one.",
+      "optional": true
+    },
+    {
+      "file": "news_bot.py",
+      "line": 208,
+      "severity": "minor",
+      "category": "best-practices",
+      "suggestion": "HOLD_CAP / HOLD_DEFER_HOURS are code-only constants with no env override, unlike the two most recent behaviour-changing features (DEDUP_SERIES_ENABLED, REVIEW_BUTTONS_ENABLED at news_bot.py:134/149). This one can delay a real article by 24h on prod, and disabling it therefore requires a redeploy — which project rules forbid inside the 10:00-20:00 MSK publish window, so the operator has no same-day escape hatch. Consider `HOLD_CAP = int(os.getenv('HOLD_CAP', '6'))` with 0 (or a sentinel) meaning «never defer», following the same const↔env name contract documented for the two existing flags.",
+      "benefit": "Gives the operator a same-day rollback for a behaviour that touches publishing, matching the convention the last two risky features established.",
+      "optional": true
+    },
+    {
+      "file": "admin_alerts.py",
+      "line": 1154,
+      "severity": "minor",
+      "category": "readability",
+      "suggestion": "The [E038] «Что произошло» text asserts an article-specific cause («эта статья раз за разом не переводится и держала очередь — остальные из-за неё не выходили»). During a genuine multi-day outage every row holds, so the statement is false in exactly the case where the ping fires repeatedly — see the major finding on the counter. Since the builder already receives `reason`, prefer wording that states the fact without the diagnosis (e.g. «статья N раз подряд не смогла перевестись — причина ниже; она уступила очередь на N ч»), leaving the «пополни баланс OpenRouter» advice conditional as it already is.",
+      "benefit": "The ping stays truthful in both the per-request-402 case it was written for and the global-outage case it will also fire in.",
+      "optional": true
+    },
+    {
+      "file": "news_bot.py",
+      "line": 4502,
+      "severity": "minor",
+      "category": "performance",
+      "suggestion": "The slot in which the cap trips is still spent: the row is deferred, then the loop advances to the NEXT slot, so the queue only moves hours later (visible in test_at_the_cap_the_row_steps_aside_and_the_queue_moves — the next article goes out in a later slot, not the same one). Re-reading list_pending() once and publishing the new head in the same slot would recover that slot without breaking the ≤1-publish-per-slot pacing (a defer publishes nothing). Only worth doing with a hard bound of one retry per slot, so a run of defers cannot turn one slot into a burst.",
+      "benefit": "The day the cap trips loses no publish; without it the stuck article still costs the channel one slot.",
+      "optional": true
+    },
+    {
+      "file": "tests/test_job_distributed_publish.py",
+      "line": 907,
+      "severity": "minor",
+      "category": "best-practices",
+      "suggestion": "The new tests are strong — the anti-tautology choices (asserting on ZZTOPMARKER and on 'APIStatusError' rather than on '402', which the static advice text also contains) and the FROZEN_NOW-in-2035 note about the frozen-clock vs SQLite CURRENT_TIMESTAMP mismatch are exactly right. Two paths remain uncovered: the fail-open branch where increment_hold raises (holds = 0, cap silently skipped for that slot, news_bot.py:4496-4500) and the branch where defer_publish raises (row stays head, no ping, news_bot.py:4528-4532). Both are deliberate fail-soft decisions, so a test each would pin them against a future refactor that turns them into a crash inside an error path.",
+      "benefit": "Locks the two deliberate fail-open decisions that keep a bookkeeping fault from changing the outcome of a slot.",
+      "optional": true
+    }
+  ],
+  "metrics": {
+    "filesReviewed": 7,
+    "criticalIssuesCount": 0,
+    "majorIssuesCount": 3,
+    "minorIssuesCount": 7,
+    "testCoverageAssessment": "adequate"
+  }
+}
