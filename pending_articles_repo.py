@@ -551,6 +551,41 @@ def defer_publish(link: str, until: str) -> bool:
         conn.close()
 
 
+def clear_deferral(link: str) -> bool:
+    """Release a timed deferral: ``publish_after = NULL`` for ``link``.
+
+    The «👍 Оставить» half of the [E014] keyboard, and the mirror image of
+    ``defer_publish``. The row is already staged, so releasing it is a single
+    UPDATE — from the next slot on it is an ordinary queue member.
+
+    Returns ``True`` when a DEFERRED row was actually released, ``False`` when
+    there was nothing to release (row gone, or never deferred). Same
+    convention as ``clear_hold``, and it makes a double press a no-op rather
+    than a second "released" report.
+
+    Deliberately does NOT touch ``hold_reason``: a row can be frozen for a
+    content-gate reason as well, and lifting a *timed* deferral must not
+    smuggle a held article into the queue. Nor does it reset ``hold_count`` —
+    if the hold cap was what parked this row, the operator's press gets it one
+    more turn at the head, not a fresh full cap (same reasoning as
+    ``defer_publish``).
+    """
+    conn = _connect()
+    try:
+        cur = conn.execute(
+            "UPDATE pending_articles SET publish_after=NULL "
+            "WHERE link=? AND publish_after IS NOT NULL",
+            (link,),
+        )
+        conn.commit()
+        return cur.rowcount > 0
+    except Exception:
+        conn.rollback()
+        raise
+    finally:
+        conn.close()
+
+
 def count_deferred() -> int:
     """Rows withheld ONLY by a future ``publish_after`` — publishable in every
     other respect, just not yet.

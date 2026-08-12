@@ -193,6 +193,80 @@ class TestIsBoilerplateNegative:
 # ---------------------------------------------------------------------------
 
 
+class TestForwardingServicePlug:
+    """The 2026-08-12 leak: an affiliate plug for a package-forwarding company.
+
+    Fourth incident of the promo-tail class, and the one that showed WHY the
+    class keeps recurring — the nine patterns that existed each transcribed
+    the opening words of an earlier leak, so a new wording met no filter at
+    all. Five layers (the [E035] article gate, the PT and RU paragraph passes,
+    ``_strip_plugs``, and the long-pattern list) let this through untouched.
+
+    These patterns therefore key on a signature rather than a phrase, and the
+    negative controls below are the load-bearing half of the test: a rule this
+    general earns its place only if ordinary prose survives it.
+    """
+
+    PT_PLUG = (
+        "Infelizmente o site não está entregando para o Brasil, então sua "
+        "opção é utilizar um redirecionador de encomendas. Sugerimos os "
+        "serviços dessa empresa: www.instagram.com/minidelass/"
+    )
+    # As published on 2026-08-12 — note the model localised "Brasil" to
+    # "Россию", inventing a shipping claim about a country the source never
+    # mentioned. Dropping the paragraph removes that too.
+    RU_PLUG = (
+        "К сожалению, сайт не осуществляет доставку в Россию, поэтому ваша "
+        "единственная возможность — воспользоваться услугами перенаправления "
+        "посылок. Рекомендуем эту компанию: www.instagram.com/minidelass/"
+    )
+
+    @pytest.mark.parametrize("label", ["PT_PLUG", "RU_PLUG"])
+    def test_drops_the_forwarding_plug_in_both_languages(self, label):
+        text = getattr(self, label)
+        # Both sail past the short-form cap — only the long list can see them.
+        assert len(text) > _MAX_BOILERPLATE_LEN
+        assert is_boilerplate(text) is True
+
+    def test_a_paragraph_of_facts_is_never_dropped_for_a_trailing_plug(self):
+        # The rule that sends the general signature to sentence scope instead.
+        # This paragraph is mostly prices and model names with an ad bolted on
+        # the end; an unanchored PARAGRAPH rule deleted all of it, which is the
+        # one thing this file's filters must never do. `_strip_plugs` handles
+        # the tail — see TestForwardingPlugSentence in tests/test_translation.py.
+        mixed = (
+            "Новая серия Car Culture выйдет в сентябре и включит пять моделей, "
+            "среди них Nissan Skyline GT-R и Porsche 911 Carrera RS. Цена в "
+            "рознице составит 6.99 доллара за штуку, а полный кейс обойдётся "
+            "примерно в 84 доллара. Рекомендуем эту компанию для доставки: "
+            "www.instagram.com/minidelass/"
+        )
+        assert is_boilerplate(mixed) is False
+
+    @pytest.mark.parametrize(
+        "text",
+        [
+            # A platform link with no recommendation — ordinary reporting.
+            "Дизайнер показал прототип в своём Instagram: www.instagram.com/designer/",
+            "O designer mostrou o protótipo no Instagram: www.instagram.com/mattel/",
+            # A recommendation with no outside link — editorial opinion, and
+            # exactly the kind of sentence the channel exists to publish.
+            "Рекомендуем эту модель всем коллекционерам серии Car Culture.",
+            "Recomendamos esta série para quem começou a colecionar este ano.",
+            # The affiliated shop reported on as news — the carve-out the
+            # 2026-07-29 patterns were deliberately written to preserve.
+            "A Universo Hot Wheels anunciou uma parceria com a Mattel nesta semana.",
+            # Sibling-brand domain: `_PLUG_PLATFORMS` carries the bare token
+            # `x`, so an unbounded platform alternation matches `matchbo|x|.com`.
+            # Matchbox is the likeliest real domain in this channel's copy.
+            "Recomendamos o novo lançamento: www.matchbox.com/collectors/2026/",
+            "Рекомендуем документальный фильм: www.netflix.com/title/8001",
+        ],
+    )
+    def test_leaves_real_prose_alone(self, text):
+        assert is_boilerplate(text) is False
+
+
 class TestLongFormOutroFilter:
     """t-hunted publishes a multi-sentence promotional outro on every
     article (~274 chars). It exceeds ``_MAX_BOILERPLATE_LEN`` (120) so the

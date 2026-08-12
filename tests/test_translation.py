@@ -118,6 +118,75 @@ class TestStripPlugs(unittest.TestCase):
     """Variant B of the author-plug-filter feature: post-translation
     inline plug removal."""
 
+    def test_forwarding_plug_sentence_removed_facts_kept(self):
+        # Incident 2026-08-12: t-hunted recommends a package-forwarding company
+        # whenever a drop does not ship internationally. Sentence scope is the
+        # whole point — the plug sits at the END of a paragraph carrying prices
+        # and model names, so dropping the paragraph (the first attempt) cost
+        # the facts.
+        text = (
+            "Цена в рознице составит 6.99 доллара за штуку, а полный кейс "
+            "обойдётся примерно в 84 доллара. Рекомендуем эту компанию для "
+            "доставки: www.instagram.com/minidelass/"
+        )
+        result = _strip_plugs(text)
+        self.assertNotIn('instagram.com', result)
+        self.assertNotIn('Рекомендуем', result)
+        self.assertIn('6.99 доллара', result)
+        self.assertIn('84 доллара', result)
+
+    def test_forwarding_plug_removed_in_source_language(self):
+        # The RU pass is defence in depth; the PT form reaches `_strip_plugs`
+        # too when a rewording slips past the paragraph filter before translation.
+        text = (
+            "O carro custa 38 dólares. Sugerimos os serviços dessa empresa: "
+            "www.instagram.com/minidelass/"
+        )
+        result = _strip_plugs(text)
+        self.assertNotIn('instagram.com', result)
+        self.assertIn('38 dólares', result)
+
+    def test_reworded_plug_is_still_caught(self):
+        # The load-bearing test of the whole approach: t-hunted rewrites this
+        # tail every few weeks, and a rewrite must not need a code change.
+        # It is also the test that exposed the first attempt — the signature
+        # patterns silently never fired there and the phrase rules did all the
+        # work, which the CAPTURED sample could never have revealed.
+        text = (
+            "A loja não envia pedidos para fora dos Estados Unidos nesta "
+            "campanha. Recomendamos o serviço de quem já resolve isso há anos: "
+            "www.instagram.com/outra-empresa/"
+        )
+        result = _strip_plugs(text)
+        self.assertNotIn('instagram.com', result)
+        self.assertNotIn('Recomendamos', result)
+        self.assertIn('não envia pedidos', result)
+
+    def test_recommendation_and_link_in_different_sentences_survive(self):
+        # The bound is per-sentence on purpose. If it ever widens, this cuts a
+        # sentence carrying a price — the exact loss the filters must not cause.
+        text = ("Мы рекомендуем присмотреться к этой серии внимательнее, цена "
+                "всего 6.99 доллара. Полная галерея опубликована здесь: "
+                "www.instagram.com/collector/")
+        self.assertEqual(_strip_plugs(text), text)
+
+    def test_recommendation_without_outside_link_survives(self):
+        # One signal is not enough — this is ordinary editorial copy, and the
+        # channel exists to publish it.
+        text = "Рекомендуем эту модель всем коллекционерам серии Car Culture."
+        self.assertEqual(_strip_plugs(text), text)
+
+    def test_outside_link_without_recommendation_survives(self):
+        text = "Дизайнер показал прототип в своём Instagram: www.instagram.com/designer/"
+        self.assertEqual(_strip_plugs(text), text)
+
+    def test_sibling_brand_domain_is_not_mistaken_for_a_platform(self):
+        # `_PLUG_PLATFORMS` contains the bare token `x`, so an unbounded
+        # alternation matches the tail of `matchbo|x|.com`. Matchbox is
+        # Mattel's sibling brand — the likeliest real domain in this copy.
+        text = "Рекомендуем новинку: www.matchbox.com/collectors/2026/"
+        self.assertEqual(_strip_plugs(text), text)
+
     def test_canonical_leak_phrase_removed(self):
         # The 2026-05-02 14:40 production leak — must be cut.
         text = "Привет всем коллекционерам. (подписывайтесь на меня в Instagram @diecast215). Конец статьи."

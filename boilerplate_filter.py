@@ -51,6 +51,17 @@ _MAX_BOILERPLATE_LEN = 120
 #    no nosso canal no YouTube!"
 # (~274 chars). Without long-form filtering this entire CTA was reaching
 # Telegraph after the LLM translated it to Russian (incident 2026-06-02).
+# Platforms covered by the author-plug patterns AND by the affiliate-link
+# signal below. Single tuple keeps the alternation in sync across patterns.
+# Threads / OnlyFans intentionally out of scope (rare in HW articles).
+# (Declared here rather than further down because ``_LONG_BOILERPLATE_PATTERNS``
+# now references it too.)
+_PLUG_PLATFORMS = (
+    'instagram', 'twitter', 'x', 'tiktok', 'youtube',
+    'facebook', 'reddit', 'patreon', 'discord', 'linktree',
+)
+_PLATFORMS_RE = '|'.join(_PLUG_PLATFORMS)
+
 _LONG_BOILERPLATE_PATTERNS = [
     # PT — "Saiba mais sobre ..." opener. Distinctive: legitimate news
     # prose rarely opens a paragraph with this phrase. ``\b`` ensures we
@@ -117,17 +128,53 @@ _LONG_BOILERPLATE_PATTERNS = [
         r'^\*{0,2}universo\s+hot\s+wheels\*{0,2}\s*[—–-]\s*крупнейш',
         re.I,
     ),
-]
 
-# Platforms covered by author-plug patterns (variant A and B of the
-# author-plug-filter feature). Single tuple keeps the alternation in sync
-# across patterns. Threads / OnlyFans intentionally out of scope (rare in HW
-# articles).
-_PLUG_PLATFORMS = (
-    'instagram', 'twitter', 'x', 'tiktok', 'youtube',
-    'facebook', 'reddit', 'patreon', 'discord', 'linktree',
-)
-_PLATFORMS_RE = '|'.join(_PLUG_PLATFORMS)
+    # --- Package-forwarding affiliate plug (incident 2026-08-12) ----------
+    # t-hunted inserts this whenever a drop does not ship internationally —
+    # i.e. on every Mattel Creations / RLC story — so it recurs by design:
+    #   "Infelizmente o site não está entregando para o Brasil, então sua
+    #    opção é utilizar um redirecionador de encomendas. Sugerimos os
+    #    serviços dessa empresa: www.instagram.com/minidelass/"   (181 chars)
+    # It reached subscribers on 2026-08-12, and the LLM had localised
+    # "Brasil" to "Россию" on the way, so the channel carried a shipping
+    # claim about Russia that no source ever made.
+    #
+    # Unlike every pattern above, the first two here are NOT ^-anchored on a
+    # remembered opening phrase — anchoring that way is precisely what let
+    # this through. All nine patterns above transcribe the first words of a
+    # past incident, so every fresh wording is a fresh hole; this was the
+    # FOURTH leak of the promo-tail class (2026-06-02, 06-13, 07-29, 08-12)
+    # and the first that opened with sympathy for the reader rather than a
+    # CTA. Narrowness comes from requiring TWO signals in one paragraph
+    # instead: a recommending verb AND an outside profile link. Prose that
+    # merely mentions Instagram survives, and so does an honest
+    # recommendation carrying no link — both are pinned as negative controls
+    # in tests/test_boilerplate_filter.py.
+    # The gap must stay inside ONE sentence — a recommendation here and an
+    # unrelated link two sentences later is not a plug. A bare ``[^.]`` cannot
+    # express that, because the dots in ``www.instagram.com`` are dots too:
+    # written that way both patterns silently never fired and the phrase rules
+    # below did all the work (caught by the reworded-plug test). So a dot is
+    # allowed only when glued to what follows, as inside a URL, and a real
+    # sentence break — dot then space — still ends the reach.
+    # These two stay at PARAGRAPH scope because they identify the ad itself,
+    # not a sentence inside it: neither "redirecionador de encomendas" nor
+    # «перенаправление посылок» is a phrase Hot Wheels news uses for anything
+    # else, so a paragraph containing one IS the plug, top to bottom.
+    #
+    # The general "recommendation + outside link" signature deliberately does
+    # NOT live here — it lives in `news_bot._PLUG_PATTERNS`, at sentence scope.
+    # Written as a paragraph rule it was unanchored (the plug sits at the end,
+    # not the start), and an unanchored paragraph rule deletes everything
+    # around its match: a 284-char paragraph carrying prices and model names
+    # with an ad bolted on the end vanished whole. That breaks this file's own
+    # standing rule — a sentence that carries a fact is never the filter's to
+    # drop. Paragraph scope for what IS an ad, sentence scope for an ad inside
+    # prose; the RU pass runs `_strip_plugs` first and then these patterns, so
+    # the leftover setup sentence still takes the paragraph with it.
+    re.compile(r'\bredirecionador(?:es)?\s+de\s+encomendas\b', re.I),
+    re.compile(r'\bперенаправлени\w{0,3}\s+посылок\b', re.I),
+]
 
 # Each pattern is matched against the WHOLE stripped paragraph,
 # case-insensitive. Match → drop the paragraph.

@@ -237,6 +237,53 @@ the filter. Negative controls are mandatory and live in the tests: a news story
 about the shop, ordinary prose containing "ссылка", an honest mention of a video
 that does exist.
 
+**Phrase rules do not generalise — the 2026-08-12 lesson.** A package-forwarding
+affiliate plug reached subscribers, and all **five** layers missed it: `[E035]`
+(correctly — the article was genuine), the PT and RU paragraph passes,
+`_strip_plugs`, and every one of the nine long patterns. The reason was
+structural, not a missing line: **all nine transcribed the opening words of an
+earlier incident** (`^saiba mais sobre`, `^clique aqui`, `^Universo Hot
+Wheels…`). t-hunted rewrites this tail every few weeks, so each new wording met
+no filter at all — the fourth leak of one class (2026-06-02, 06-13, 07-29,
+08-12). The filter did not detect advertising; it remembered sentences.
+
+So the fix keys on a **signature** instead: a recommending verb
+(`рекомендуем|советуем|recomendamos|sugerimos|indicamos|we recommend`) **plus**
+a link to an outside profile, in the same sentence. Four rules follow, each
+paid for during that fix:
+
+- **Prefer a signature to a phrase.** A phrase rule is worth adding only as
+  belt-and-braces beside one. Here `redirecionador de encomendas` /
+  «перенаправление посылок» plays that role and stays at PARAGRAPH scope,
+  because a paragraph containing either phrase *is* the ad, end to end.
+- **A signature rule belongs at SENTENCE scope** (`news_bot._PLUG_PATTERNS`),
+  not in `_LONG_BOILERPLATE_PATTERNS`. The plug sits at the END of a paragraph,
+  so a paragraph rule for it cannot be `^`-anchored — and an unanchored
+  paragraph rule deletes everything around its match. Measured: a 284-char
+  paragraph of prices and model names with the ad bolted on vanished whole.
+  That is the one thing these filters must never do. On the RU pass
+  `_strip_plugs` runs *before* the paragraph patterns, so a real ad still loses
+  its plug sentence first and its leftover setup sentence takes the paragraph
+  with it.
+- **`[^.]` is not a sentence bound when URLs are in play.** The gap was first
+  written `[^.]{0,80}` — which cannot cross the dots in `www.instagram.com`, so
+  both signature patterns silently never fired and the phrase rules did all the
+  work. It reads as passing. The working form allows a dot only when glued to
+  what follows: `(?:[^.]|\.(?=\S)){0,120}?`. A test that feeds a **reworded**
+  plug (not the captured one) is what exposes this — the captured sample passes
+  either way.
+- **`_PLUG_PLATFORMS` contains the bare token `x`**, so any alternation built
+  from it needs a left boundary — `(?<![\w-])`. Without it `matchbo|x|.com/`
+  matches, and Matchbox is Mattel's sibling brand, i.e. the likeliest real
+  domain in this channel's copy; `netflix.com` and `roblox.com` collide the
+  same way. The older author-plug patterns escape this only because they sit
+  behind `\s+on\s+` or `^`.
+
+Also recorded from that incident, unfixed: the LLM localised «não está
+entregando para o **Brasil**» to «доставку в **Россию**», i.e. it rewrote a
+geographic fact rather than translating it. Dropping the paragraph removed this
+instance; the tendency is not measured beyond the single case.
+
 Also required of any new pattern: `^`-anchored where it is paragraph-scoped,
 bounded quantifiers only (ReDoS-safe on uncapped input — no nested greedy
 quantifiers), and tolerance of `**` markers, since these filters run BEFORE the
@@ -413,11 +460,41 @@ survive here:
   captures must be taken live.
 
 ### Cloudflare bypass
-- `autoevolution_source` uses `curl_cffi` with `impersonate="chrome"` for
-  article-page fetches. Plain `requests` returns HTTP 403.
+
+*Rewritten 2026-08-12: this section said `impersonate="chrome"`. That profile
+has been challenged by autoevolution since 2026-08-09 and is now the one value
+guaranteed NOT to work.*
+
+- `autoevolution_source` uses `curl_cffi` for article-page fetches; plain
+  `requests` returns HTTP 403. **Two things are load-bearing, and the 2026-08-09
+  outage proved it by taking the source down for three days with no alert:**
+  the browser profile (`_IMPERSONATE_PROFILE`) and a **session warmed on the
+  home page** before the first article.
+- **Profile.** Measured live 2026-08-11 against a blocked article: 403 on
+  `chrome`, `chrome136`, `chrome142`, `chrome146` and `safari260`; 200 on
+  `firefox147` and `safari184_ios`. Cloudflare targets the Chrome fingerprint
+  here, so when the block returns, try another *family* — not a newer Chrome.
+  This constant is the cheapest lever in the module; pull it first.
+- **Warm-up.** A cold session hitting article URLs directly is challenged about
+  half the time even on a good profile (3 of 6 articles); after one home-page
+  request, 6 of 6, and a repeat run 4 of 4. Cloudflare issues its clearance on
+  that first hit, the way a reader's browser earns it by arriving from
+  somewhere on the site. `_session` is module-level because
+  `news_bot.fetch_full_article` dispatches per article and has nowhere to hold
+  a per-tick object; `reset_session()` drops it.
+- **One retry, and only on 403.** The process outlives the daily tick, so by
+  the next one the clearance cookie is ~24 h old and the tick's FIRST article
+  is the one that gets challenged. `_fetch_through_session` rebuilds the
+  session and retries once — a source that challenges a freshly warmed session
+  is blocking for a reason retrying will not fix. Responses also carry
+  `cf-mitigated: challenge`, but that header is not guaranteed, so the retry
+  keys on the status.
 - If `curl_cffi` isn't installed or the scrape fails for any reason, the
   pipeline falls back to `enrich_entry` (RSS-only path) so we still post
-  something — truncated is better than silent.
+  something — truncated is better than silent. **The RSS feed is NOT behind the
+  same gate**: throughout the outage it kept returning 200, which is why the
+  funnel showed 75 entries a day and nothing looked broken from the counters
+  alone.
 
 ### Autoevolution quirks
 - **Invalid HTML — `<h2>` nested inside `<p>`.** Section titles (e.g. "BMW M1 Procar") are emitted as `<p><h2 class="bold dispblock">…</h2>…body…</p>`. `_scrape_article_page` detects this in the `<p>` branch via `child.find_all([h2,h3,h4])` and emits each nested heading as its own `heading` block before reading the paragraph's residual runs. Without the detach the heading text leaked into the paragraph prefix on Telegraph and the structural `<h3>` was lost (verified live 2026-05-13, article 269773). Regression test: `tests/test_autoevolution_source.py::test_extracts_heading_nested_inside_paragraph`.
@@ -474,6 +551,18 @@ hold for anything added here:
 - **Three exception layers** (per update / per poll cycle / outer) with backoff;
   a `Conflict` (409) means a second poller exists on the shared token. Nothing in
   the listener may ever reach the publish loop.
+- **A button must do what its alert says it does.** `[E014]`'s «👍 Оставить»
+  promised «выпустит её в ближайший слот» but, until 2026-08-12, only returned a
+  status string — the soft flag's `publish_after` stayed put, so the press was
+  indistinguishable from ignoring the alert, and the operator had no way to see
+  that. It now calls `pending_repo.clear_deferral(link)` (the mirror of
+  `defer_publish`, `NULL`-ing the same column) and answers «Оставлено — выйдет в
+  ближайший слот». Both `keep` and `cancel` re-check queue state first: the row
+  can be published or cancelled between alert and press, and claiming a release
+  that did not happen is the whole bug. `clear_deferral` deliberately leaves
+  `hold_reason` and `hold_count` alone — a timed deferral is not a content hold,
+  and a row parked by the hold cap gets one more turn at the head, not a fresh
+  cap.
 
 ### Content gates on intake
 

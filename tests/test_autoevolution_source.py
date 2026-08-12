@@ -5,6 +5,7 @@ from unittest.mock import MagicMock
 
 import pytest
 
+import autoevolution_source
 from autoevolution_source import (
     _is_allowed_autoevolution_url,
     _scrape_article_page,
@@ -360,6 +361,218 @@ class TestFetchAutoevolutionArticle:
         }
         out = fetch_autoevolution_article(entry, fetcher=failing)
         assert out is None
+
+
+# ---------------------------------------------------------------------------
+# Cloudflare session (2026-08-11). Autoevolution turned on a JS challenge for
+# article pages: the old per-article `curl_requests.get(..., impersonate=
+# "chrome")` answered 403 + `cf-mitigated: challenge` on every request for
+# three days straight. Two things fixed it, measured live — a browser profile
+# Cloudflare does not challenge, and ONE session that visits the home page
+# first, the way a reader's browser does. These tests pin both, plus the
+# retry that re-warms a session whose clearance has gone stale.
+# ---------------------------------------------------------------------------
+
+ARTICLE_URL = (
+    "https://www.autoevolution.com/news/hot-wheels-chase-car-to-hunt-for-"
+    "is-a-rare-porsche-268757.html"
+)
+
+
+def _challenge_response():
+    """What Cloudflare actually returned on prod: 403 + the interstitial."""
+    resp = _fake_response("<html><head><title>Just a moment...</title></head></html>",
+                          status=403)
+    resp.headers = {"cf-mitigated": "challenge", "server": "cloudflare"}
+    return resp
+
+
+class _RecordingSession:
+    """Stand-in for ``curl_cffi.requests.Session`` — records every GET."""
+
+    def __init__(self, handler, **kwargs):
+        self.init_kwargs = kwargs
+        self.urls = []
+        self.get_kwargs = []
+        self.closed = False
+        self._handler = handler
+
+    def get(self, url, **kwargs):
+        self.urls.append(url)
+        # Recorded, not discarded: `allow_redirects=False` is a security
+        # control here, and a stub that swallows kwargs cannot notice it going
+        # missing.
+        self.get_kwargs.append(kwargs)
+        return self._handler(url, self)
+
+    def close(self):
+        self.closed = True
+
+
+class _CurlHarness:
+    """Replaces the ``curl_requests`` module: hands out recording sessions."""
+
+    def __init__(self):
+        self.sessions = []
+        self.handler = lambda url, session: _fake_response(SAMPLE_ARTICLE_HTML)
+
+    def Session(self, **kwargs):  # noqa: N802 — mirrors curl_cffi's own API
+        session = _RecordingSession(lambda u, s: self.handler(u, s), **kwargs)
+        self.sessions.append(session)
+        return session
+
+    @property
+    def article_gets(self):
+        """Every article URL fetched, warm-up hits excluded."""
+        return [u for s in self.sessions for u in s.urls
+                if u != autoevolution_source._WARMUP_URL]
+
+
+@pytest.fixture
+def curl(monkeypatch):
+    """Swap curl_cffi for the harness and clear the module-level session.
+
+    The reset matters both ways: a session left over from another test would
+    hide a missing warm-up, and one left behind by these tests would leak a
+    fake into whatever runs next.
+    """
+    monkeypatch.setattr(autoevolution_source, "_CURL_CFFI_AVAILABLE", True)
+    monkeypatch.setattr(autoevolution_source, "_session", None)
+    harness = _CurlHarness()
+    monkeypatch.setattr(autoevolution_source, "curl_requests", harness)
+    yield harness
+    autoevolution_source.reset_session()
+
+
+class TestCloudflareSession:
+    def test_visits_home_page_before_the_first_article(self, curl):
+        out = _scrape_article_page(ARTICLE_URL)
+
+        assert out["title"] == "Hot Wheels Chase Car"
+        # Order is the whole point — clearance must be earned before the article.
+        assert curl.sessions[0].urls == [autoevolution_source._WARMUP_URL, ARTICLE_URL]
+
+    def test_warms_up_once_and_reuses_the_session_across_articles(self, curl):
+        for n in (1, 2, 3):
+            _scrape_article_page(f"https://www.autoevolution.com/news/story-{n}-2687{n}.html")
+
+        assert len(curl.sessions) == 1, "a fresh session per article throws the clearance away"
+        assert curl.sessions[0].urls.count(autoevolution_source._WARMUP_URL) == 1
+        assert len(curl.article_gets) == 3
+
+    #: Profiles measured against a live blocked article on 2026-08-11 — every
+    #: one of these was answered with 403 + `cf-mitigated: challenge`.
+    CHALLENGED_PROFILES = (
+        "chrome", "chrome136", "chrome142", "chrome146", "safari260",
+    )
+
+    def test_impersonates_a_profile_this_site_does_not_challenge(self, curl):
+        _scrape_article_page(ARTICLE_URL)
+
+        # The session must actually carry the constant...
+        assert curl.sessions[0].init_kwargs["impersonate"] == \
+            autoevolution_source._IMPERSONATE_PROFILE
+        # ...and the constant must not be one of the profiles that caused the
+        # three-day outage. Asserting `!= "chrome"` was not enough: `chrome146`
+        # is a different string and was 403 for those same three days.
+        assert autoevolution_source._IMPERSONATE_PROFILE not in self.CHALLENGED_PROFILES
+
+    def test_never_follows_redirects(self, curl):
+        # `allow_redirects=False` is an SSRF control, not tuning: the allowlist
+        # validates ONE url, so a followed 30x would reach an arbitrary host
+        # through a guard that already passed. Covers the warm-up too — it is a
+        # request the old per-article code never made.
+        _scrape_article_page(ARTICLE_URL)
+
+        assert curl.sessions[0].urls == [autoevolution_source._WARMUP_URL, ARTICLE_URL]
+        assert all(kw.get("allow_redirects") is False
+                   for kw in curl.sessions[0].get_kwargs)
+
+    def test_rebuilds_the_session_and_retries_once_when_challenged(self, curl):
+        # A clearance cookie expires between daily ticks, so the first article
+        # of a tick can be challenged even though the profile is fine.
+        seen = {"challenged": False}
+
+        def handler(url, session):
+            if url == ARTICLE_URL and not seen["challenged"]:
+                seen["challenged"] = True
+                return _challenge_response()
+            return _fake_response(SAMPLE_ARTICLE_HTML)
+
+        curl.handler = handler
+        out = _scrape_article_page(ARTICLE_URL)
+
+        assert out["title"] == "Hot Wheels Chase Car"
+        assert len(curl.sessions) == 2, "the stale session must be thrown away, not reused"
+        assert curl.sessions[1].urls == [autoevolution_source._WARMUP_URL, ARTICLE_URL]
+
+    def test_gives_up_after_the_retry_is_challenged_too(self, curl):
+        # A bare 403 with no cf-mitigated header: the code keys on the status
+        # alone, because that header is not guaranteed. Must not loop — the
+        # caller falls back to the RSS-only path.
+        curl.handler = lambda url, session: _fake_response("", status=403)
+
+        assert _scrape_article_page(ARTICLE_URL) is None
+        assert len(curl.sessions) == 2
+        assert len(curl.article_gets) == 2
+
+    @pytest.mark.parametrize("status", [404, 500, 503])
+    def test_does_not_burn_a_second_request_on_a_non_challenge_error(self, curl, status):
+        # Only 403 means "re-warm and try again". A missing page or a dead
+        # backend must cost one request, not two — doubling every failure
+        # against a source that is already unhappy is how a soft problem
+        # becomes a hard one.
+        curl.handler = lambda url, session: _fake_response("", status=status)
+
+        assert _scrape_article_page(ARTICLE_URL) is None
+        assert len(curl.sessions) == 1
+        assert len(curl.article_gets) == 1
+
+    def test_a_dead_home_page_does_not_stop_the_article_fetch(self, curl):
+        # Warm-up is an optimisation, not a precondition. Before the retry
+        # existed a raising warm-up would have cost the whole tick.
+        def handler(url, session):
+            if url == autoevolution_source._WARMUP_URL:
+                raise ConnectionError("home page down")
+            return _fake_response(SAMPLE_ARTICLE_HTML)
+
+        curl.handler = handler
+        out = _scrape_article_page(ARTICLE_URL)
+
+        assert out["title"] == "Hot Wheels Chase Car"
+
+    def test_a_broken_connection_does_not_poison_the_rest_of_the_tick(self, curl):
+        # One shared session means one shared failure mode: a dead socket on
+        # article 1 must not be inherited by articles 2..N. The per-request
+        # code this replaced could not have that problem.
+        second = "https://www.autoevolution.com/news/story-two-268758.html"
+        boom = {"done": False}
+
+        def handler(url, session):
+            if url == ARTICLE_URL and not boom["done"]:
+                boom["done"] = True
+                raise ConnectionError("connection reset by peer")
+            return _fake_response(SAMPLE_ARTICLE_HTML)
+
+        curl.handler = handler
+
+        assert _scrape_article_page(ARTICLE_URL) is None
+        assert _scrape_article_page(second)["title"] == "Hot Wheels Chase Car"
+        # Rebuilt rather than reused, and the new one is warmed like any other.
+        assert len(curl.sessions) == 2
+        assert curl.sessions[1].urls == [autoevolution_source._WARMUP_URL, second]
+
+    def test_ssrf_guard_still_runs_before_any_session_is_built(self, curl):
+        # The allowlist must reject BEFORE egress — including the warm-up hit,
+        # which is a request the guard never saw in the old per-article design.
+        assert _scrape_article_page("https://www.autoevolution.com.attacker.example/news/x-1.html") is None
+        assert curl.sessions == []
+
+    def test_missing_curl_cffi_returns_none_without_touching_the_network(self, curl, monkeypatch):
+        monkeypatch.setattr(autoevolution_source, "_CURL_CFFI_AVAILABLE", False)
+
+        assert _scrape_article_page(ARTICLE_URL) is None
+        assert curl.sessions == []
 
 
 if __name__ == "__main__":

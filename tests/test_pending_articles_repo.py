@@ -2261,6 +2261,66 @@ class TestHoldCounter(unittest.TestCase):
             pending_articles_repo.defer_publish('http://x/gone',
                                                 '2030-01-01 00:00:00'))
 
+    def test_clear_deferral_puts_the_row_back_in_the_queue(self):
+        """The «👍 Оставить» half of [E014]: the row rejoins ``list_pending``
+        immediately, which is the whole observable effect of the button."""
+        link = self._stage()
+        pending_articles_repo.defer_publish(link, '2099-01-01 00:00:00')
+        self.assertEqual(pending_articles_repo.list_pending(), [])
+
+        self.assertTrue(pending_articles_repo.clear_deferral(link))
+
+        self.assertEqual(
+            [r['link'] for r in pending_articles_repo.list_pending()], [link])
+        self.assertIsNone(
+            pending_articles_repo.get_pending(link)['publish_after'])
+
+    def test_clear_deferral_keeps_the_hold_counter(self):
+        """Mirror of ``test_defer_publish_keeps_the_counter``. Resetting here
+        would hand a row that already proved it can wedge the head a fresh full
+        cap — it would block the channel for another HOLD_CAP slots on the
+        operator's say-so, which is not what the operator asked for."""
+        link = self._stage()
+        for _ in range(6):
+            pending_articles_repo.increment_hold(link)
+        pending_articles_repo.defer_publish(link, '2099-01-01 00:00:00')
+
+        pending_articles_repo.clear_deferral(link)
+
+        self.assertEqual(pending_articles_repo.increment_hold(link), 7)
+
+    def test_clear_deferral_never_unparks_a_held_row(self):
+        """A row can carry BOTH marks — the dedup soft flag writes
+        ``publish_after`` while a content gate writes ``hold_reason``, in the
+        same insert. Lifting the timed deferral must not smuggle an article
+        past the operator's [E036] approval."""
+        link = self._stage()
+        pending_articles_repo.defer_publish(link, '2099-01-01 00:00:00')
+        conn = sqlite3.connect(self.tmp.name)
+        try:
+            conn.execute("UPDATE pending_articles SET hold_reason=? WHERE link=?",
+                         ('постер', link))
+            conn.commit()
+        finally:
+            conn.close()
+
+        pending_articles_repo.clear_deferral(link)
+
+        self.assertEqual(pending_articles_repo.list_pending(), [])
+        self.assertEqual(
+            pending_articles_repo.get_pending(link)['hold_reason'], 'постер')
+
+    def test_clear_deferral_reports_whether_a_row_was_touched(self):
+        """Same convention as ``clear_hold``: the caller tells «released» from
+        «there was nothing to release» without a second round-trip, and a
+        double press resolves to False instead of a fresh success report."""
+        link = self._stage()
+        pending_articles_repo.defer_publish(link, '2099-01-01 00:00:00')
+
+        self.assertTrue(pending_articles_repo.clear_deferral(link))
+        self.assertFalse(pending_articles_repo.clear_deferral(link))
+        self.assertFalse(pending_articles_repo.clear_deferral('http://x/gone'))
+
     def test_counter_is_per_row(self):
         """Holding one article must not age any other — otherwise a single bad
         row would push the whole queue over the cap with it."""

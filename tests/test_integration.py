@@ -3241,20 +3241,92 @@ class TestResolveDedupCallback(_IntegrationBase):
 
     # -- keep / stale -----------------------------------------------------
 
-    def test_keep_returns_kept_no_state_change(self):
+    def test_keep_lifts_the_soft_flag_deferral(self):
+        # The [E014] alert promises «выпустит её в ближайший слот». Until
+        # 2026-08-11 'keep' only answered «Оставлено» and left publish_after
+        # alone, so the press changed nothing an operator could observe: the
+        # article still waited out the full 24 h. Verified on prod — a press
+        # at 10:02 on 11 Aug, and the article published 12 Aug at 15:00 MSK,
+        # exactly when the window elapsed.
         link = 'https://example.com/dedup-keep'
+        _seed_pending_row(link)
+        pending_articles_repo.defer_publish(link, '2099-01-01 00:00:00')
+        token = self._stage_token(link)
+
+        status, answer = news_bot.resolve_dedup_callback(
+            'keep', token, self.ADMIN_ID)
+
+        self.assertEqual(status, "👍 Оставлено — выйдет в ближайший слот")
+        self.assertEqual(answer, status)
+        # The deferral is gone, so the next slot can pick the row up...
+        self.assertIsNone(pending_articles_repo.get_pending(link)['publish_after'])
+        self.assertEqual(pending_articles_repo.count_deferred(), 0)
+        self.assertIn(link, [r['link'] for r in pending_articles_repo.list_pending()])
+        # ...and nothing else moved: keeping is not publishing.
+        self.assertFalse(self._in_processed_news(link))
+        self.assertIsNone(pending_articles_repo.get_review_token_link(token))
+
+    def test_keep_on_an_undeferred_row_is_a_harmless_no_op(self):
+        # Not every [E014] row is deferred — the soft flag only defers when the
+        # overlap is below the auto-block threshold. Keep must still answer
+        # cleanly instead of reporting a release that never happened.
+        link = 'https://example.com/dedup-keep-plain'
         _seed_pending_row(link)
         token = self._stage_token(link)
 
         status, answer = news_bot.resolve_dedup_callback(
             'keep', token, self.ADMIN_ID)
 
-        self.assertEqual(status, "👍 Оставлено")
-        self.assertEqual(answer, "👍 Оставлено")
-        # Queue untouched — the article publishes in its slot as usual.
+        self.assertEqual(status, "👍 Оставлено — выйдет в ближайший слот")
         self.assertIsNotNone(pending_articles_repo.get_pending(link))
         self.assertFalse(self._in_processed_news(link))
-        self.assertIsNone(pending_articles_repo.get_review_token_link(token))
+
+    def test_keep_does_not_promise_a_slot_to_a_held_article(self):
+        # Both marks land in the SAME insert — the dedup soft flag writes
+        # publish_after while a content gate writes hold_reason, and the flag
+        # branch never consults hold_markers. Clearing the deferral leaves the
+        # row parked (list_pending demands hold_reason IS NULL), so answering
+        # «выйдет в ближайший слот» would be exactly the lie this fix removes.
+        link = 'https://example.com/dedup-keep-held'
+        _seed_pending_row(link)
+        pending_articles_repo.defer_publish(link, '2099-01-01 00:00:00')
+        conn = sqlite3.connect(self.db_path)
+        try:
+            conn.execute("UPDATE pending_articles SET hold_reason=? WHERE link=?",
+                         ('постер', link))
+            conn.commit()
+        finally:
+            conn.close()
+        token = self._stage_token(link)
+
+        status, answer = news_bot.resolve_dedup_callback(
+            'keep', token, self.ADMIN_ID)
+
+        self.assertEqual(status, "👍 Оставлено — но статья ещё на утверждении [E036]")
+        self.assertEqual(answer, status)
+        # The deferral IS lifted — approving the hold later must publish it
+        # without a second wait — but the row is still not publishable now.
+        self.assertIsNone(pending_articles_repo.get_pending(link)['publish_after'])
+        self.assertNotIn(link, [r['link'] for r in pending_articles_repo.list_pending()])
+
+    def test_keep_never_resurrects_a_row_that_left_the_queue(self):
+        # Mirror of the 'cancel' branch: the row can be published or cancelled
+        # between the alert and the press. Answer honestly, write nothing.
+        for label, published in (('published', True), ('gone', False)):
+            with self.subTest(label):
+                link = f'https://example.com/dedup-keep-{label}'
+                token = self._stage_token(link)
+                if published:
+                    self._insert_published(link)
+
+                status, answer = news_bot.resolve_dedup_callback(
+                    'keep', token, self.ADMIN_ID)
+
+                expected = ("⚠️ Уже опубликовано" if published
+                            else "⚠️ Статья уже недоступна")
+                self.assertEqual(status, expected)
+                self.assertEqual(answer, expected)
+                self.assertIsNone(pending_articles_repo.get_pending(link))
 
     def test_stale_token_returns_expired(self):
         link = 'https://example.com/dedup-stale'
