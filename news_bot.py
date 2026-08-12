@@ -696,7 +696,13 @@ def resolve_dedup_callback(action, token, from_user_id):
     Terminal outcomes (Decisions 2/9/10):
         * unknown token → «⚠️ Кнопка устарела» (bot restarted / token
           already consumed) — nothing to delete, no DB writes;
-        * ``keep`` → «👍 Оставлено», queue untouched;
+        * ``keep`` + link still pending → ``clear_deferral(link)`` lifts the
+          soft flag's timed deferral → «👍 Оставлено — выйдет в ближайший
+          слот». (Before 2026-08-11 this branch wrote nothing and the
+          article sat out the full 24 h regardless — the alert text has
+          always promised otherwise.)
+        * ``keep`` + link already published / gone → «⚠️ Уже опубликовано»
+          / «⚠️ Статья уже недоступна», no writes;
         * ``cancel`` + link still pending → ``skip_pending(link)`` (the
           only DB write; idempotent, never touches published_articles) →
           «✅ Отменено оператором»;
@@ -727,7 +733,36 @@ def resolve_dedup_callback(action, token, from_user_id):
 
     # 3/4. Action branches.
     if action == 'keep':
-        status = "👍 Оставлено"
+        # The alert promises «выпустит её в ближайший слот», so the press has
+        # to LIFT the soft flag's 24 h deferral. Until 2026-08-11 this branch
+        # only set a status string: the button was indistinguishable from not
+        # pressing it at all, and the operator had no way to see that. Same
+        # queue-state checks as 'cancel' below — the row can leave between the
+        # alert and the press, and reporting a release that did not happen is
+        # the failure this whole fix is about.
+        released = pending_repo.clear_deferral(link)
+        row = pending_repo.get_pending(link)
+        if row is not None and row.get('hold_reason'):
+            # A row can carry BOTH marks: `publish_after` from the dedup soft
+            # flag and `hold_reason` from a content gate are written side by
+            # side in the same insert (see the row dict in `job()`), and the
+            # flag branch does not consult `hold_markers`. Lifting the
+            # deferral does not unpark it — `list_pending` still demands
+            # `hold_reason IS NULL` — so promising the nearest slot here would
+            # be this fix's own bug, one release later.
+            status = "👍 Оставлено — но статья ещё на утверждении [E036]"
+        elif released or row is not None:
+            # Either the deferral was lifted, or the row is queued and was
+            # never deferred (the soft flag defers only below the auto-block
+            # threshold). Both mean the same thing to the operator. Writing
+            # first and reading after also closes the gap a check-then-write
+            # would leave: `clear_deferral` is an UPDATE, so a row that left
+            # the queue meanwhile is a no-op, never a resurrection.
+            status = "👍 Оставлено — выйдет в ближайший слот"
+        elif pending_repo.get_published(link) is not None:
+            status = "⚠️ Уже опубликовано"
+        else:
+            status = "⚠️ Статья уже недоступна"
     elif action == 'cancel':
         if pending_repo.get_pending(link) is not None:
             pending_repo.skip_pending(link)
@@ -1324,6 +1359,35 @@ _PLUG_PATTERNS = [
         r'(?:в|на)\s+\*{0,2}(?:видео|фото|картинке|изображении)\*{0,2}\s+'
         r'(?:ниже|выше)'
         r'[^\.\!\?]*?(?:[\.\!\?]+|$)\s*',
+        re.I,
+    ),
+    # --- Affiliate recommendation with an outside link (incident 2026-08-12) -
+    # t-hunted recommends a package-forwarding company whenever a drop does not
+    # ship internationally:
+    #   "Рекомендуем эту компанию: www.instagram.com/minidelass/"
+    # Two signals in ONE sentence — a recommending verb AND a link to an
+    # outside profile — because either alone is ordinary prose: "рекомендуем
+    # эту модель коллекционерам" carries no link, and "показал прототип в
+    # своём Instagram: …" carries no recommendation. Both survive; the
+    # negative controls in tests/test_boilerplate_filter.py pin that.
+    #
+    # Sentence scope is the point. The first attempt put this in
+    # `boilerplate_filter._LONG_BOILERPLATE_PATTERNS`, where a match drops the
+    # whole paragraph — and since the plug sits at the END, the rule could not
+    # be `^`-anchored, so a paragraph of prices and model names with an ad
+    # bolted on vanished entirely. Here only the plug sentence goes.
+    #
+    # `(?<![\w-])` before the platform list is load-bearing: `_PLUG_PLATFORMS`
+    # includes the bare token `x`, so without it `matchbo|x|.com` matched —
+    # and Matchbox is Mattel's sibling brand, the likeliest domain in a real
+    # paragraph here. `netflix.com` and `roblox.com` collided the same way.
+    re.compile(
+        r'(?:(?<=[\.\!\?])\s*|^)'
+        r'[^\.\!\?]{0,120}?'
+        r'(?:рекомендуем|советуем|recomendamos|sugerimos|indicamos|we\s+recommend)'
+        r'(?:[^.]|\.(?=\S)){0,120}?'
+        r'(?<![\w-])(?:' + _PLUG_PLATFORMS_NB + r')\.com/'
+        r'[^\s]*\s*',
         re.I,
     ),
     # Parenthesised plug with mandatory @handle, regardless of verb.

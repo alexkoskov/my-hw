@@ -2,11 +2,16 @@
 """Autoevolution news source.
 
 Autoevolution article pages are behind Cloudflare, which blocks stock
-``requests``. We use ``curl_cffi`` to impersonate a Chrome TLS fingerprint
-and scrape the full article body (`div.newstext`) plus article-specific
-gallery images. If the scrape fails (network error, layout change, or a
-future CF update), the RSS-only ``enrich_entry`` path is used as fallback
-— better truncated text than nothing.
+``requests``. We use ``curl_cffi`` to impersonate a browser TLS fingerprint
+(``_IMPERSONATE_PROFILE``) on a session warmed by a home-page hit, and scrape
+the full article body (`div.newstext`) plus article-specific gallery images.
+If the scrape fails (network error, layout change, or a future CF update),
+the RSS-only ``enrich_entry`` path is used as fallback — better truncated
+text than nothing.
+
+The profile and the warm-up are BOTH load-bearing; 2026-08-11 proved it the
+expensive way, with the source silently down for three days and the channel
+publishing nothing. Read the constants' comments before changing either.
 """
 
 import html
@@ -37,6 +42,30 @@ YOUTUBE_ID_RE = re.compile(
 VIMEO_ID_RE = re.compile(r"vimeo\.com/(\d+)")
 REQUEST_TIMEOUT = 20
 MAX_IMAGES = 10
+
+#: Browser profile ``curl_cffi`` impersonates. Autoevolution's Cloudflare rules
+#: challenge every Chrome fingerprint — measured live 2026-08-11 against a
+#: blocked article: 403 on ``chrome`` / ``chrome136`` / ``chrome142`` /
+#: ``chrome146`` / ``safari260``, 200 on ``firefox147`` and ``safari184_ios``.
+#: This constant is the lever to pull when the block comes back; changing it is
+#: cheaper than anything else in this module, so try it first.
+_IMPERSONATE_PROFILE = "firefox147"
+
+#: Warm-up target. A reader reaches an article from somewhere on the site, and
+#: Cloudflare hands out its clearance on that first hit. Going straight at
+#: article URLs with a cold session is challenged roughly half the time even on
+#: a good profile (measured: 3 of 6 articles); after a home-page hit, 6 of 6.
+_WARMUP_URL = "https://www.autoevolution.com/"
+
+#: Status Cloudflare answers a challenged request with. Such responses also
+#: carry ``cf-mitigated: challenge``, but that header is not guaranteed, so the
+#: retry keys on the status alone.
+_CHALLENGE_STATUS = 403
+
+#: Shared by every article of one tick — see ``_get_session``. Module-level
+#: because ``news_bot.fetch_full_article`` dispatches per article and has no
+#: place to hold a per-tick object.
+_session = None
 
 #: SSRF guard (CWE-918). The upstream news_bot dispatcher routes here on a
 #: host match, and this fetcher — unlike lamley/t_hunted/orangetrack/mattel —
@@ -138,6 +167,115 @@ def _clean_summary(summary: str) -> str:
     return text.strip()
 
 
+def _get_session(refresh: bool = False):
+    """Return the shared warmed ``curl_cffi`` session, building it if needed.
+
+    ``refresh=True`` throws the current one away first — used by the retry in
+    ``_fetch_through_session`` when Cloudflare challenges a request, which
+    means the clearance cookie this session carries is no longer good.
+    """
+    global _session
+    if _session is None or refresh:
+        if _session is not None:
+            # The process runs for weeks and this is now the second place a
+            # session gets discarded; dropping the reference alone would leak
+            # the socket until GC felt like it.
+            try:
+                _session.close()
+            except Exception:
+                pass
+        _session = curl_requests.Session(impersonate=_IMPERSONATE_PROFILE)
+        try:
+            _session.get(_WARMUP_URL, timeout=REQUEST_TIMEOUT,
+                         allow_redirects=False)
+        except Exception as exc:
+            # Warm-up is an optimisation, not a precondition. An unreachable
+            # home page must not cost the tick its articles — the session is
+            # still usable, it just starts without clearance.
+            logger.warning("Autoevolution warm-up failed: %s", exc)
+    return _session
+
+
+def reset_session() -> None:
+    """Drop the shared session so the next fetch builds and warms a new one."""
+    global _session
+    if _session is not None:
+        try:
+            _session.close()
+        except Exception:
+            pass
+    _session = None
+
+
+def _fetch_through_session(link: str):
+    """GET ``link`` on the shared session, re-warming once if challenged.
+
+    Returns the 200 response, or ``None`` so the caller falls back to RSS.
+
+    The retry is not belt-and-braces: the process outlives the daily tick, so
+    by the next one the clearance cookie is ~24 h old and the first article of
+    that tick is the one that gets challenged. Re-warming costs a single extra
+    request and puts the rest of the tick back on the fast path. It is capped
+    at one retry — a source that challenges a freshly warmed session is
+    blocking us for a reason no amount of retrying will fix.
+    """
+    if not _CURL_CFFI_AVAILABLE:
+        return None
+    for attempt in (1, 2):
+        session = _get_session(refresh=(attempt == 2))
+        try:
+            # `allow_redirects=False` is mandatory, not tuning: the allowlist
+            # above validates ONE url, so following a 30x would let a hostile
+            # link reach an arbitrary host through a guard that already passed
+            # (CWE-918). orangetrack and mattel already set it; this fetcher
+            # was the last one that did not. Verified 2026-08-12 that neither
+            # the home page nor article pages redirect, so nothing is lost.
+            response = session.get(link, timeout=REQUEST_TIMEOUT,
+                                   allow_redirects=False)
+        except Exception as exc:
+            # Drop the session before giving up. Sharing one connection across
+            # a tick means a transport-level failure (reset peer, dead socket)
+            # would otherwise be inherited by every remaining article — the old
+            # per-request code could not have this problem, so the sharing must
+            # not introduce it. The next article rebuilds and re-warms.
+            logger.warning("Autoevolution scrape failed for %r: %s", link, exc)
+            reset_session()
+            return None
+        if response.status_code == 200:
+            return response
+        if attempt == 1 and response.status_code == _CHALLENGE_STATUS:
+            logger.info(
+                "Autoevolution challenged %r — re-warming the session and retrying",
+                link,
+            )
+            continue
+        logger.warning(
+            "Autoevolution scrape got HTTP %s for %r", response.status_code, link,
+        )
+        return None
+    return None
+
+
+def _fetch_through(fetcher, link: str):
+    """Run an injected ``fetcher`` and apply the same success contract.
+
+    Kept separate from the session path so tests exercise parsing without
+    curl_cffi, sessions or network — the contract they rely on is unchanged:
+    any exception or non-200 yields ``None``.
+    """
+    try:
+        response = fetcher(link)
+    except Exception as exc:
+        logger.warning("Autoevolution scrape failed for %r: %s", link, exc)
+        return None
+    if response.status_code != 200:
+        logger.warning(
+            "Autoevolution scrape got HTTP %s for %r", response.status_code, link,
+        )
+        return None
+    return response
+
+
 def _scrape_article_page(link: str, fetcher=None) -> Optional[Dict]:
     """Fetch the article page via curl_cffi (Cloudflare bypass) and parse it.
 
@@ -152,19 +290,10 @@ def _scrape_article_page(link: str, fetcher=None) -> Optional[Dict]:
         return None
 
     if fetcher is None:
-        if not _CURL_CFFI_AVAILABLE:
-            return None
-        fetcher = lambda url: curl_requests.get(
-            url, impersonate="chrome", timeout=REQUEST_TIMEOUT
-        )
-
-    try:
-        response = fetcher(link)
-    except Exception as exc:
-        logger.warning("Autoevolution scrape failed for %s: %s", link, exc)
-        return None
-    if response.status_code != 200:
-        logger.warning("Autoevolution scrape got HTTP %s for %s", response.status_code, link)
+        response = _fetch_through_session(link)
+    else:
+        response = _fetch_through(fetcher, link)
+    if response is None:
         return None
 
     soup = BeautifulSoup(response.text, "html.parser")
