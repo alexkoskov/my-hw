@@ -167,7 +167,7 @@ def _clean_summary(summary: str) -> str:
     return text.strip()
 
 
-def _get_session(refresh: bool = False):
+def _get_session(refresh: bool = False) -> "curl_requests.Session":
     """Return the shared warmed ``curl_cffi`` session, building it if needed.
 
     ``refresh=True`` throws the current one away first — used by the retry in
@@ -207,7 +207,17 @@ def reset_session() -> None:
     _session = None
 
 
-def _fetch_through_session(link: str):
+def _log_bad_status(link: str, status) -> None:
+    """One place for the non-200 line, shared by both fetch paths.
+
+    They are separate functions on purpose (session vs injected fetcher), but
+    the operator-facing wording is a single fact about the source and drifting
+    copies of it are how a grep for "got HTTP" starts missing half the cases.
+    """
+    logger.warning("Autoevolution scrape got HTTP %s for %r", status, link)
+
+
+def _fetch_through_session(link: str) -> Optional[object]:
     """GET ``link`` on the shared session, re-warming once if challenged.
 
     Returns the 200 response, or ``None`` so the caller falls back to RSS.
@@ -249,14 +259,12 @@ def _fetch_through_session(link: str):
                 link,
             )
             continue
-        logger.warning(
-            "Autoevolution scrape got HTTP %s for %r", response.status_code, link,
-        )
+        _log_bad_status(link, response.status_code)
         return None
     return None
 
 
-def _fetch_through(fetcher, link: str):
+def _fetch_through(fetcher, link: str) -> Optional[object]:
     """Run an injected ``fetcher`` and apply the same success contract.
 
     Kept separate from the session path so tests exercise parsing without
@@ -269,9 +277,7 @@ def _fetch_through(fetcher, link: str):
         logger.warning("Autoevolution scrape failed for %r: %s", link, exc)
         return None
     if response.status_code != 200:
-        logger.warning(
-            "Autoevolution scrape got HTTP %s for %r", response.status_code, link,
-        )
+        _log_bad_status(link, response.status_code)
         return None
     return response
 

@@ -893,6 +893,50 @@ class TestDrySpellAlert(_JobBase):
 
     @patch('news_bot.time.sleep')
     @patch('news_bot.send_admin_notification')
+    def test_pings_on_the_gap_that_the_august_outage_slipped_through(
+            self, mock_admin, _mock_sleep):
+        # Regression for 9–12 August 2026. The channel was silent for three
+        # days and [E017] never fired: the threshold was 3, and the only tick
+        # that could have reached it saw a gap of exactly 2 before a deferred
+        # article published the next morning and reset the count. Two days is
+        # the largest gap this alert will ever observe before a recovery hides
+        # it, so it has to be the threshold.
+        two_days = (dt.datetime.now(dt.timezone.utc).replace(tzinfo=None)
+                    - dt.timedelta(days=2, hours=1))
+        self._seed_published('https://example.com/two-days-ago',
+                             two_days.strftime('%Y-%m-%d %H:%M:%S'))
+
+        with _patch_sources_empty():
+            with patch('news_bot.outage_state.is_fallback_active',
+                       return_value=False):
+                news_bot.job()
+
+        msgs = self._admin_msgs(mock_admin)
+        self.assertTrue(any('[E017]' in m for m in msgs),
+                        f"a two-day silence must ping, got {msgs!r}")
+
+    @patch('news_bot.time.sleep')
+    @patch('news_bot.send_admin_notification')
+    def test_no_ping_on_a_single_quiet_day(self, mock_admin, _mock_sleep):
+        # The floor under the threshold: one quiet day is ordinary (the queue
+        # empties, a source posts nothing), and alarming on it would train the
+        # operator to ignore this channel.
+        one_day = (dt.datetime.now(dt.timezone.utc).replace(tzinfo=None)
+                   - dt.timedelta(days=1, hours=1))
+        self._seed_published('https://example.com/yesterday',
+                             one_day.strftime('%Y-%m-%d %H:%M:%S'))
+
+        with _patch_sources_empty():
+            with patch('news_bot.outage_state.is_fallback_active',
+                       return_value=False):
+                news_bot.job()
+
+        msgs = self._admin_msgs(mock_admin)
+        self.assertFalse(any('[E017]' in m for m in msgs),
+                         f"one quiet day must stay silent, got {msgs!r}")
+
+    @patch('news_bot.time.sleep')
+    @patch('news_bot.send_admin_notification')
     def test_no_ping_when_never_published(self, mock_admin, _mock_sleep):
         # Fresh DB — published_articles empty → no false alarm.
         with _patch_sources_empty():

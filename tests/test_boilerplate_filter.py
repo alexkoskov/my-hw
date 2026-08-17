@@ -538,6 +538,75 @@ class TestRegexSafety:
         )
 
 
+class TestLongPatternRegexSafety:
+    """The short-form family above is bounded by ``_MAX_BOILERPLATE_LEN`` (120).
+
+    ``_LONG_BOILERPLATE_PATTERNS`` is not — it bypasses the cap by design, so
+    its inputs are article paragraphs of arbitrary length arriving from an
+    external source. That makes it the only family where a backtracking blowup
+    is reachable from the network, and the family that grew two new patterns on
+    2026-08-12. The bounded quantifiers those patterns use
+    (``(?:[^.]|\\.(?=\\S)){0,80}?``) are what keeps this linear; the test is the
+    guard rail that notices if someone relaxes one to ``+`` or ``*``.
+    """
+
+    # (id, unit, repetitions) — built inside the test so pytest ids stay short.
+    # A parametrize carrying the 150 KB strings themselves puts all of it into
+    # every test id and failure line.
+    CASES = [
+        # Pumps the recommending-verb branch: every repetition is a fresh start
+        # position for the gap, and none of them ever reaches a link.
+        ("verb-without-link", "Recomendamos ", 12000),
+        # Dots glued to non-space are the one character the gap accepts, so this
+        # is the worst case for the `\.(?=\S)` alternative.
+        ("glued-dots", "рекомендуем a.b.c.d.e.", 12000),
+        # Near-miss links: the platform alternation is entered and rejected at
+        # the last character, over and over.
+        ("almost-links", "sugerimos www.instagram.como/", 8000),
+        # The phrase patterns' worst case — never completes the anchor phrase.
+        ("phrase-near-miss", "redirecionador de encomenda ", 8000),
+    ]
+
+    @pytest.mark.parametrize("case_id,unit,reps", CASES,
+                             ids=[c[0] for c in CASES])
+    def test_long_patterns_stay_linear_on_uncapped_input(self, case_id, unit, reps):
+        import time
+        text = unit * reps
+        assert len(text) > 50_000, "the point is an input the cap does not bound"
+        t0 = time.monotonic()
+        is_boilerplate(text)
+        elapsed = time.monotonic() - t0
+        assert elapsed < 1.0, (
+            f"long-pattern family too slow on {case_id} "
+            f"({len(text)} chars, {elapsed:.3f}s)"
+        )
+
+    @pytest.mark.parametrize("case_id,unit,reps", CASES,
+                             ids=[c[0] for c in CASES])
+    def test_long_patterns_scale_linearly(self, case_id, unit, reps):
+        """Doubling the input must not more than triple the time.
+
+        The timing bound above catches a catastrophic blowup; this catches the
+        quieter regression where someone relaxes a bounded quantifier to `+`
+        and the family goes quadratic while still finishing inside a second on
+        the fixture size.
+        """
+        import time
+
+        def elapsed_for(n):
+            text = unit * n
+            t0 = time.monotonic()
+            is_boilerplate(text)
+            return time.monotonic() - t0
+
+        small = max(elapsed_for(reps // 4), 1e-4)
+        large = elapsed_for(reps)
+        assert large / small < 12, (
+            f"{case_id}: 4x the input took {large / small:.1f}x the time — "
+            f"looks super-linear ({small:.4f}s → {large:.4f}s)"
+        )
+
+
 class TestQuickLinkVerbGateRemoved:
     """Aff1 dropped its (buy|order|grab|shop) verb gate 2026-05-08 after
     «*QUICK LINK!* Find the 2026 Fast & Furious ... case on eBay» slipped

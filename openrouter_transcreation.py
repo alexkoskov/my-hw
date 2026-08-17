@@ -103,48 +103,89 @@ _DEFAULT_BASE_URL = "https://openrouter.ai/api/v1"
 #: ``/auth/key`` which is the key's own limit). Confirm live:
 #:   curl -H "Authorization: Bearer $OPENROUTER_API_KEY" https://openrouter.ai/api/v1/credits
 _CREDITS_PATH = "/credits"
+
+#: The KEY's own spending cap, which is a different number from the account
+#: balance and can stop the bot while the account is still flush. Returns
+#: ``{"data": {"limit": float|null, "usage": float, "limit_remaining": …}}``;
+#: ``limit`` null means the key is uncapped and only the account matters.
+_KEY_INFO_PATH = "/auth/key"
+
 _BALANCE_TIMEOUT_S = 15
 
 
-def get_remaining_credits() -> Optional[float]:
-    """Best-effort probe of the remaining OpenRouter balance in USD.
+def _probe_data(url: str, key: str) -> Optional[dict]:
+    """GET ``url`` with the Bearer key in the header; return its ``data`` dict.
 
-    Returns ``total_credits - total_usage``, or ``None`` when it can't be
-    determined — no API key, network/HTTP/JSON error, or an uncapped account
-    (``total_credits`` null). NEVER raises: this backs a monitoring ping
-    (``news_bot._maybe_alert_openrouter_balance``) that must not break the tick.
-    The key travels in the ``Authorization`` header, never in the URL/logs.
+    ``None`` on any non-200 or unexpected shape. Raises nothing the caller has
+    to catch beyond the transport errors it already wraps.
+    """
+    resp = requests.get(
+        url,
+        headers={"Authorization": f"Bearer {key}"},
+        timeout=_BALANCE_TIMEOUT_S,
+    )
+    if resp.status_code != 200:
+        # The path is safe to log — the key rides in the header, never the URL.
+        logger.warning("OpenRouter probe %s: HTTP %s", url.rsplit("/", 1)[-1],
+                       resp.status_code)
+        return None
+    return (resp.json() or {}).get("data") or {}
+
+
+def get_remaining_credits() -> Optional[float]:
+    """Best-effort probe of how much spending the bot has left, in USD.
+
+    Returns the SMALLER of two independent ceilings, because either one stops
+    translation on its own:
+
+    * the account balance (``total_credits - total_usage`` from ``/credits``);
+    * this key's own remaining limit (``limit_remaining`` from ``/auth/key``).
+
+    Watching only the account is a trap, and prod was one top-up away from it
+    (measured 2026-08-13: account $4.29 left, key limit $10 with $4.30 left —
+    the two agreed by coincidence). Add $50 to the account and the account
+    figure jumps to $54 while the key still dies after the same $4.30; the
+    balance alert would have gone quiet exactly when it was needed, and the
+    operator would have been told everything was fine while the channel stopped.
+
+    ``None`` when nothing can be determined — no API key, network/HTTP/JSON
+    error, an uncapped account AND an uncapped key. NEVER raises: this backs a
+    monitoring ping (``news_bot._maybe_alert_openrouter_balance``) that must not
+    break the tick. The key travels in the ``Authorization`` header, never in
+    the URL or the logs.
     """
     key = _resolve_api_key()
     if not key:
         return None
-    base = os.getenv("OPENROUTER_BASE_URL", "").strip() or _DEFAULT_BASE_URL
-    url = base.rstrip("/") + _CREDITS_PATH
-    if not url.lower().startswith("https://"):
+    base = (os.getenv("OPENROUTER_BASE_URL", "").strip() or _DEFAULT_BASE_URL).rstrip("/")
+    if not base.lower().startswith("https://"):
         # Refuse to send the Bearer key over cleartext if OPENROUTER_BASE_URL is
         # misconfigured to http:// — skip the probe rather than leak the key.
         logger.warning("OpenRouter credits check skipped: non-https base URL")
         return None
+
+    ceilings = []
     try:
-        resp = requests.get(
-            url,
-            headers={"Authorization": f"Bearer {key}"},
-            timeout=_BALANCE_TIMEOUT_S,
-        )
-        if resp.status_code != 200:
-            logger.warning("OpenRouter credits check: HTTP %s", resp.status_code)
-            return None
-        data = (resp.json() or {}).get("data") or {}
-        total = data.get("total_credits")
-        used = data.get("total_usage")
-        if total is None or used is None:
-            return None  # uncapped account or unexpected shape → no signal
-        return float(total) - float(used)
+        account = _probe_data(base + _CREDITS_PATH, key)
+        if account:
+            total, used = account.get("total_credits"), account.get("total_usage")
+            if total is not None and used is not None:
+                ceilings.append(float(total) - float(used))
+
+        key_info = _probe_data(base + _KEY_INFO_PATH, key)
+        if key_info:
+            # `limit_remaining` is null exactly when `limit` is — an uncapped
+            # key contributes no ceiling rather than a zero.
+            remaining = key_info.get("limit_remaining")
+            if remaining is not None:
+                ceilings.append(float(remaining))
     except Exception as exc:
         # Terse, type-only log — never surface the token or a stack that might
         # embed the header. The caller treats None as "unknown, skip".
         logger.warning("OpenRouter credits check failed: %s", type(exc).__name__)
         return None
+
+    return min(ceilings) if ceilings else None
 
 #: Lazily-instantiated singleton client.
 _DEFAULT_CLIENT: Optional["openai.OpenAI"] = None

@@ -236,7 +236,36 @@ PUBLISH_RECAP_MAX_FAILURES = admin_alerts.RECAP_MAX_FAILURES
 #: — a stronger signal than the daily [E009] "нет новостей" — to catch a
 #: prolonged dry spell (over-strict filter dropping everything, a dead source,
 #: or server-network trouble). One ping per tick while the dry spell persists.
-DRY_SPELL_ALERT_DAYS = 3
+#:
+#: Lowered 3 → 2 on 2026-08-13. At 3 this alert sat out the whole 9–12 August
+#: outage and the operator found out by asking. The arithmetic is unforgiving,
+#: because the tick runs once a day and the gap only ever reaches the threshold
+#: on the day AFTER it is crossed:
+#:     9 авг  publication            gap 0
+#:     10 авг silence                gap 1  — under 3
+#:     11 авг silence                gap 2  — under 3, and this is the last
+#:                                          tick before the queue recovered
+#:     12 авг one deferred article   gap 0  — reset, three days never reported
+#: At 2 the 11 August tick fires, which is the whole point.
+#:
+#: Considered and rejected: counting "consecutive days that published nothing"
+#: in bot_state instead. It is the same number — a publication resets the
+#: streak exactly as it resets the gap — so it would have added state and a
+#: restart-safety problem (job() re-runs on every container restart) while
+#: catching nothing new. The genuinely different signal, "the feed had fresh
+#: entries and none of them reached the queue", is per-SOURCE and belongs with
+#: the source-silence alert, not here.
+DRY_SPELL_ALERT_DAYS = 2
+
+#: Consecutive failed fetches after which a link is retired (2026-08-13).
+#: The tick runs once a day, so three attempts ≈ three days of the source
+#: refusing that article. Chosen to be forgiving: a single 403 or a network
+#: blip costs nothing (the next tick retries), and a source that is genuinely
+#: down for three days is not going to hand over that particular article on
+#: day four either. Retiring writes the link to ``processed_news``, so the
+#: article is given up on — that is the price of not hammering a source that
+#: has already said no ~20 times.
+FETCH_RETRY_CAP = 3
 
 #: Seconds to sleep between Telegra.ph page creation and the Telegram
 #: teaser send. Lets Telegra.ph's edge cache populate OG tags before the
@@ -4118,8 +4147,57 @@ def job():
         article = fetch_full_article(entry)
         if not article or not article.get('paragraphs'):
             funnel['dropped_no_article'] += 1
-            logger.warning(f"No article data for {link}, skipping")
+            # Retry, but not forever. A failed fetch is deliberately NOT marked
+            # processed so the next tick can succeed — an autoevolution 403 is
+            # normally a single-tick transient. Under a real block that becomes
+            # escalating hammering: 9-12 August the same articles failed every
+            # tick and the per-tick count climbed 2 → 5 → 6 as more piled up.
+            # After FETCH_RETRY_CAP ticks in a row the link is retired.
+            try:
+                attempts = pending_repo.record_fetch_failure(link)
+            except Exception as exc:
+                # Bookkeeping must never cost an article: fall back to the old
+                # forever-retry behaviour rather than dropping the entry.
+                logger.error(
+                    f"[fetch-cap] could not record failure for {link}: "
+                    f"{sanitize_error_message(exc)}"
+                )
+                logger.warning(f"No article data for {link}, skipping")
+                continue
+            if attempts >= FETCH_RETRY_CAP:
+                logger.warning(
+                    f"[fetch-cap] giving up on {link} after {attempts} "
+                    f"consecutive failed fetches — retiring it so the source "
+                    f"stops being hit for it every tick"
+                )
+                try:
+                    mark_processed(
+                        link,
+                        entry.get('title') or '',
+                        entry.get('published') or entry.get('pub_date') or '',
+                    )
+                    pending_repo.clear_fetch_failure(link)
+                except Exception as exc:
+                    logger.error(
+                        f"[fetch-cap] could not retire {link}: "
+                        f"{sanitize_error_message(exc)}"
+                    )
+            else:
+                logger.warning(
+                    f"No article data for {link}, skipping "
+                    f"(attempt {attempts}/{FETCH_RETRY_CAP})"
+                )
             continue
+
+        # Fetched fine — the streak, if any, was transient. Clearing here is
+        # what makes `attempts` mean "in a row".
+        try:
+            pending_repo.clear_fetch_failure(link)
+        except Exception as exc:
+            logger.warning(
+                f"[fetch-cap] could not clear failure streak for {link}: "
+                f"{sanitize_error_message(exc)}"
+            )
 
         # Reject bare "checklist" posts (title says checklist + body is
         # near-empty). Orangetrack publishes these often; subscribers

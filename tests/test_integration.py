@@ -2327,6 +2327,112 @@ class TestCrossSourceDedup(_PrepPhaseBase):
         # Second article still published (degraded mode never blocks).
         self.assertEqual(pending_articles_repo.count_pending(), 2)
 
+    def _age_fetch_failure(self, link):
+        """Backdate a fetch-failure marker so the next tick counts a new day."""
+        conn = sqlite3.connect(self.db_path)
+        try:
+            conn.execute("UPDATE fetch_failures "
+                         "SET last_failed_at = datetime('now', '-1 day') "
+                         "WHERE link=?", (link,))
+            conn.commit()
+        finally:
+            conn.close()
+
+    @patch('news_bot.fetch_full_article')
+    @patch('news_bot.fetch_rss')
+    @patch('news_bot.load_feeds')
+    @patch('news_bot.send_admin_notification')
+    def test_restarts_within_one_day_do_not_burn_the_retry_cap(
+        self, mock_admin, mock_load_feeds, mock_fetch_rss, mock_fetch_article,
+    ):
+        """The cap must survive a restart storm.
+
+        `job()` runs on every container start, and prod restarted four times on
+        2026-08-13. Counting calls instead of days would have retired six live
+        autoevolution articles inside an hour — articles that were fetchable
+        the next morning once the Cloudflare fix landed.
+        """
+        link = 'http://autoevolution.example/restart-storm'
+        mock_load_feeds.return_value = ['http://example.com/feed1.xml']
+        mock_fetch_rss.return_value = [self._make_entry(link)]
+        mock_fetch_article.return_value = None
+
+        for _ in range(news_bot.FETCH_RETRY_CAP + 2):
+            news_bot.job()
+
+        self.assertFalse(
+            news_bot.is_processed(link),
+            "same-day restarts must not retire a link")
+
+    @patch('news_bot.fetch_full_article')
+    @patch('news_bot.fetch_rss')
+    @patch('news_bot.load_feeds')
+    @patch('news_bot.send_admin_notification')
+    def test_unfetchable_link_is_retried_then_retired(
+        self, mock_admin, mock_load_feeds, mock_fetch_rss, mock_fetch_article,
+    ):
+        """A link that never fetches must stop being asked for.
+
+        Regression for 9-12 August 2026: a failed fetch is deliberately not
+        marked processed, so under autoevolution's Cloudflare block the same
+        articles were re-requested every tick and the per-tick failure count
+        climbed 2 → 5 → 6 — the bot knocking harder each day on a door that had
+        been shut. Both halves matter and are asserted together: the early
+        ticks MUST still retry (a single 403 is usually transient), and the
+        cap MUST eventually stop them.
+        """
+        link = 'http://autoevolution.example/blocked'
+        mock_load_feeds.return_value = ['http://example.com/feed1.xml']
+        mock_fetch_rss.return_value = [self._make_entry(link)]
+        mock_fetch_article.return_value = None      # the block: no article data
+
+        for tick in range(1, news_bot.FETCH_RETRY_CAP + 1):
+            news_bot.job()
+            self.assertEqual(
+                mock_fetch_article.call_count, tick,
+                f"tick {tick} must still have attempted the fetch")
+            # The cap counts DAYS, not calls — a restart storm inside one day
+            # must not burn it (prod restarted four times on 2026-08-13). Age
+            # the marker so each loop iteration reads as the next morning.
+            self._age_fetch_failure(link)
+
+        # Cap reached: the link is retired, so the next tick does not ask again.
+        self.assertTrue(news_bot.is_processed(link))
+        news_bot.job()
+        self.assertEqual(
+            mock_fetch_article.call_count, news_bot.FETCH_RETRY_CAP,
+            "a retired link must not be fetched again")
+        # Retiring is not publishing — nothing reached the channel or the queue.
+        self.assertIsNone(pending_articles_repo.get_pending(link))
+        self.assertIsNone(pending_articles_repo.get_published(link))
+
+    @patch('news_bot.fetch_full_article')
+    @patch('news_bot.fetch_rss')
+    @patch('news_bot.load_feeds')
+    @patch('news_bot.send_admin_notification')
+    def test_a_recovered_link_starts_its_streak_over(
+        self, mock_admin, mock_load_feeds, mock_fetch_rss, mock_fetch_article,
+    ):
+        """A success clears the streak — otherwise the count is lifetime and a
+        link that fails once a week is retired on an innocent day."""
+        link = 'http://autoevolution.example/flaky'
+        mock_load_feeds.return_value = ['http://example.com/feed1.xml']
+        mock_fetch_rss.return_value = [self._make_entry(link)]
+
+        mock_fetch_article.return_value = None
+        news_bot.job()
+        news_bot.job()
+
+        mock_fetch_article.return_value = {
+            'title': 'Recovered article', 'subtitle': '',
+            'paragraphs': ['The source answered again.', 'Second paragraph.'],
+            'images': [],
+        }
+        news_bot.job()
+
+        # It staged rather than being retired, and the streak is gone.
+        self.assertEqual(pending_articles_repo.record_fetch_failure(link), 1)
+
     @patch('news_bot.fetch_full_article')
     @patch('news_bot.fetch_rss')
     @patch('news_bot.load_feeds')
