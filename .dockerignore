@@ -9,6 +9,14 @@ __pycache__
 .pytest_cache
 *.db
 news.db
+# `*.db` matches only at the top level, so the live database sitting in the
+# bind-mount source (`/root/hw-news/data/news.db` on prod — INSIDE the build
+# context) was copied into every image: 1.2 MB of stale production data at
+# /app/data/news.db, dated whenever the image was last built. Harmless today
+# because DB_FILE is the absolute /data/news.db from the mounted volume, but it
+# is a loaded gun — anything that ever resolved the DB relatively would read a
+# week-old copy and the channel would be reposted from it.
+data/
 .env
 .env.*
 # keep .claude/ — it holds ux-guidelines.md (the LLM system prompt loaded at runtime)

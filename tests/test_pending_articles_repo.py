@@ -2261,6 +2261,74 @@ class TestHoldCounter(unittest.TestCase):
             pending_articles_repo.defer_publish('http://x/gone',
                                                 '2030-01-01 00:00:00'))
 
+    def test_fetch_failures_count_consecutively_and_reset_on_success(self):
+        """The counter must mean «in a row», not «ever».
+
+        Lifetime-cumulative counting would retire a link that fails once a
+        month on some innocent day — the wrong-attribution trap
+        ``reset_hold_counts_below`` exists to avoid. A success is what makes
+        the difference, so both halves are pinned in one place.
+        """
+        link = 'https://example.com/flaky'
+        self.assertEqual(pending_articles_repo.record_fetch_failure(link), 1)
+        self._age_failure_by_a_day(link)
+        self.assertEqual(pending_articles_repo.record_fetch_failure(link), 2)
+
+        self.assertTrue(pending_articles_repo.clear_fetch_failure(link))
+
+        # After a success the next failure starts from one, not three.
+        self._age_failure_by_a_day(link)
+        self.assertEqual(pending_articles_repo.record_fetch_failure(link), 1)
+
+    def _age_failure_by_a_day(self, link):
+        """Backdate the streak marker so the next record counts as a new day."""
+        conn = sqlite3.connect(self.tmp.name)
+        try:
+            conn.execute("UPDATE fetch_failures "
+                         "SET last_failed_at = datetime('now', '-1 day') "
+                         "WHERE link=?", (link,))
+            conn.commit()
+        finally:
+            conn.close()
+
+    def test_repeated_failures_within_one_day_count_once(self):
+        """`attempts` must read as DAYS, not as calls.
+
+        `job()` runs once a day — and again on every container restart. Prod
+        restarted four times on 2026-08-13; a plain increment would have burned
+        a three-day cap inside an hour and retired six live articles that were
+        fetchable the next morning.
+        """
+        link = 'https://example.com/restart-storm'
+        counts = [pending_articles_repo.record_fetch_failure(link)
+                  for _ in range(5)]
+        self.assertEqual(counts, [1, 1, 1, 1, 1])
+
+        # Backdate the marker: the next call is "tomorrow" and must advance.
+        conn = sqlite3.connect(self.tmp.name)
+        try:
+            conn.execute("UPDATE fetch_failures "
+                         "SET last_failed_at = datetime('now', '-1 day') "
+                         "WHERE link=?", (link,))
+            conn.commit()
+        finally:
+            conn.close()
+
+        self.assertEqual(pending_articles_repo.record_fetch_failure(link), 2)
+
+    def test_fetch_failures_are_per_link(self):
+        """One blocked article must not retire its neighbours."""
+        a, b = 'https://example.com/a', 'https://example.com/b'
+        for _ in range(3):
+            pending_articles_repo.record_fetch_failure(a)
+        self.assertEqual(pending_articles_repo.record_fetch_failure(b), 1)
+
+    def test_clearing_an_unknown_link_is_a_no_op(self):
+        """Called on EVERY successful fetch, so the overwhelmingly common case
+        is «nothing to clear» — it must be quiet and false, never an error."""
+        self.assertFalse(
+            pending_articles_repo.clear_fetch_failure('https://example.com/never-failed'))
+
     def test_clear_deferral_puts_the_row_back_in_the_queue(self):
         """The «👍 Оставить» half of [E014]: the row rejoins ``list_pending``
         immediately, which is the whole observable effect of the button."""

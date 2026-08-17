@@ -593,16 +593,78 @@ class TestGetRemainingCredits(unittest.TestCase):
         r.json.return_value = payload if payload is not None else {}
         return r
 
+    @staticmethod
+    def _router(credits=None, key_info=None, status=200):
+        """Serve a different payload per endpoint, the way OpenRouter does."""
+        def _get(url, **kwargs):
+            payload = key_info if url.endswith("/auth/key") else credits
+            r = MagicMock()
+            r.status_code = status
+            r.json.return_value = {"data": payload} if payload is not None else {}
+            return r
+        return _get
+
     def test_remaining_is_credits_minus_usage(self):
         with patch.dict(os.environ, {"OPENROUTER_API_KEY": "sk-or-test"}, clear=False), \
              patch("openrouter_transcreation.requests.get",
-                   return_value=self._resp(200, {"data": {"total_credits": 10.0, "total_usage": 7.5}})) as g:
+                   side_effect=self._router(
+                       credits={"total_credits": 10.0, "total_usage": 7.5})) as g:
             out = openrouter_transcreation.get_remaining_credits()
         self.assertAlmostEqual(out, 2.5)
-        args, kwargs = g.call_args
-        self.assertTrue(args[0].endswith("/credits"))
-        self.assertIn("Authorization", kwargs["headers"])
-        self.assertNotIn("sk-or-test", args[0])  # key is in the header, not the URL
+        urls = [c.args[0] for c in g.call_args_list]
+        self.assertTrue(any(u.endswith("/credits") for u in urls))
+        for call in g.call_args_list:
+            self.assertIn("Authorization", call.kwargs["headers"])
+            # key is in the header, not the URL — on EVERY endpoint, not just
+            # whichever one happened to be called last.
+            self.assertNotIn("sk-or-test", call.args[0])
+
+    def test_key_limit_wins_when_it_is_the_tighter_ceiling(self):
+        # The trap this exists for: a topped-up account hides a key that is
+        # about to hit its own cap. Measured on prod 2026-08-13 with the two
+        # numbers a coincidence apart; this is the same shape after a $50 top-up.
+        with patch.dict(os.environ, {"OPENROUTER_API_KEY": "sk-or-test"}, clear=False), \
+             patch("openrouter_transcreation.requests.get",
+                   side_effect=self._router(
+                       credits={"total_credits": 80.0, "total_usage": 25.71},
+                       key_info={"limit": 10.0, "usage": 5.70,
+                                 "limit_remaining": 4.30})):
+            self.assertAlmostEqual(
+                openrouter_transcreation.get_remaining_credits(), 4.30)
+
+    def test_account_wins_when_it_is_the_tighter_ceiling(self):
+        with patch.dict(os.environ, {"OPENROUTER_API_KEY": "sk-or-test"}, clear=False), \
+             patch("openrouter_transcreation.requests.get",
+                   side_effect=self._router(
+                       credits={"total_credits": 30.0, "total_usage": 29.0},
+                       key_info={"limit": 100.0, "usage": 5.0,
+                                 "limit_remaining": 95.0})):
+            self.assertAlmostEqual(
+                openrouter_transcreation.get_remaining_credits(), 1.0)
+
+    def test_an_uncapped_key_contributes_no_ceiling(self):
+        # `limit: null` means unlimited, NOT zero — reading it as a ceiling
+        # would alarm on every tick of a perfectly healthy account.
+        with patch.dict(os.environ, {"OPENROUTER_API_KEY": "sk-or-test"}, clear=False), \
+             patch("openrouter_transcreation.requests.get",
+                   side_effect=self._router(
+                       credits={"total_credits": 30.0, "total_usage": 25.0},
+                       key_info={"limit": None, "usage": 5.0,
+                                 "limit_remaining": None})):
+            self.assertAlmostEqual(
+                openrouter_transcreation.get_remaining_credits(), 5.0)
+
+    def test_uncapped_account_still_reports_the_key_ceiling(self):
+        # Mirror image: pay-as-you-go accounts report no total_credits, and the
+        # key limit is then the only thing standing between the bot and a stop.
+        with patch.dict(os.environ, {"OPENROUTER_API_KEY": "sk-or-test"}, clear=False), \
+             patch("openrouter_transcreation.requests.get",
+                   side_effect=self._router(
+                       credits={"total_credits": None, "total_usage": 12.0},
+                       key_info={"limit": 10.0, "usage": 9.4,
+                                 "limit_remaining": 0.6})):
+            self.assertAlmostEqual(
+                openrouter_transcreation.get_remaining_credits(), 0.6)
 
     def test_no_key_returns_none_without_request(self):
         with patch.dict(os.environ, {"OPENROUTER_API_KEY": "", "OPEN_ROUTER_API_KEY": ""}, clear=False), \

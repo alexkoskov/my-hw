@@ -136,6 +136,25 @@ CREATE TABLE IF NOT EXISTS bot_state (
 )
 """
 
+# Consecutive fetch failures per link (2026-08-13). A link that cannot be
+# fetched is deliberately NOT marked processed — an autoevolution 403 is
+# usually a single-tick transient and the next tick gets the article. During
+# the 9-12 August block that turned into escalating hammering: the same
+# articles failed every tick and the per-tick attempt count climbed 2 → 5 → 6
+# as more of them piled up, i.e. the bot knocked harder every day on a door
+# that had been shut. This table bounds that.
+#
+# Separate from `processed_news` on purpose: a row there means "handled,
+# never look again", which on a FIRST failure would silently lose the article.
+_FETCH_FAILURES_DDL = """
+CREATE TABLE IF NOT EXISTS fetch_failures (
+    link            TEXT PRIMARY KEY,
+    attempts        INTEGER NOT NULL DEFAULT 0,
+    first_failed_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    last_failed_at  TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
+)
+"""
+
 # JSON-serialised columns per table. Used by the row→dict converters to
 # deserialise list/dict fields, distinguishing NULL (absence) from "[]"
 # (empty-but-present). See tech-spec §9.13.
@@ -338,6 +357,7 @@ def init_schema(conn: sqlite3.Connection) -> None:
     conn.execute(_PUBLISHED_DDL)
     conn.execute(_FAILED_DDL)
     conn.execute(_BOT_STATE_DDL)
+    conn.execute(_FETCH_FAILURES_DDL)
 
     # Column migrations (see ``_COLUMN_MIGRATIONS`` for what and why).
     # Each one is check → ALTER-if-missing → verify (``_ensure_column``);
@@ -582,6 +602,60 @@ def clear_deferral(link: str) -> bool:
     except Exception:
         conn.rollback()
         raise
+    finally:
+        conn.close()
+
+
+def record_fetch_failure(link: str) -> int:
+    """Count one more consecutive failed fetch for ``link``; return the total.
+
+    The counter is CONSECUTIVE — ``clear_fetch_failure`` wipes it the moment
+    the article is fetched successfully — so a link that fails once and works
+    the next tick never accumulates. Only a link that keeps failing climbs, and
+    that is exactly the shape the cap is meant to stop.
+    """
+    conn = _connect()
+    try:
+        # AT MOST ONE per calendar day. `job()` runs once daily, but it also
+        # runs on every container restart — prod restarted four times on
+        # 2026-08-13 alone — and a plain +1 would have retired six live
+        # articles within the hour instead of after three days. Same-day
+        # repeats refresh the timestamp and leave the count alone, which is
+        # what keeps `attempts` readable as "days".
+        conn.execute(
+            "INSERT INTO fetch_failures (link, attempts) VALUES (?, 1) "
+            "ON CONFLICT(link) DO UPDATE SET "
+            "  attempts = attempts + ("
+            "    CASE WHEN date(last_failed_at) < date('now') THEN 1 ELSE 0 END"
+            "  ), "
+            "  last_failed_at = CURRENT_TIMESTAMP",
+            (link,),
+        )
+        row = conn.execute(
+            "SELECT attempts FROM fetch_failures WHERE link=?", (link,)
+        ).fetchone()
+        conn.commit()
+        return int(row[0]) if row else 1
+    except Exception:
+        conn.rollback()
+        raise
+    finally:
+        conn.close()
+
+
+def clear_fetch_failure(link: str) -> bool:
+    """Forget ``link``'s failure streak. Returns whether a row was removed.
+
+    Called on every successful fetch, which is what makes the counter mean
+    "in a row". Without it the count is lifetime-cumulative and a link that
+    fails once a month eventually trips the cap on an innocent day — the same
+    wrong-attribution trap ``reset_hold_counts_below`` exists to avoid.
+    """
+    conn = _connect()
+    try:
+        cur = conn.execute("DELETE FROM fetch_failures WHERE link=?", (link,))
+        conn.commit()
+        return cur.rowcount > 0
     finally:
         conn.close()
 

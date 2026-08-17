@@ -183,7 +183,7 @@ this is the whole lesson of 2026-07-29.**
 | Filter | Scope | Catches |
 |---|---|---|
 | `_is_promo_article` `[E035]` | whole article | the article IS an ad → dropped at intake, before translation |
-| `boilerplate_filter.is_boilerplate` / `filter_boilerplate` / `filter_blocks` | whole paragraph, `^`-anchored | standalone UI labels and promo outros |
+| `boilerplate_filter.is_boilerplate` / `filter_boilerplate` / `filter_blocks` | whole paragraph; mostly `^`-anchored | standalone UI labels and promo outros |
 | `news_bot._strip_plugs` / `_strip_plugs_in_blocks` | one sentence | a plug or pointer sitting inside real prose |
 
 **Why it matters** (`work/SESSION-2026-07-29.md`): the operator reported the same
@@ -284,10 +284,22 @@ entregando para o **Brasil**» to «доставку в **Россию**», i.e.
 geographic fact rather than translating it. Dropping the paragraph removed this
 instance; the tendency is not measured beyond the single case.
 
-Also required of any new pattern: `^`-anchored where it is paragraph-scoped,
-bounded quantifiers only (ReDoS-safe on uncapped input — no nested greedy
-quantifiers), and tolerance of `**` markers, since these filters run BEFORE the
-renderer decodes them.
+Also required of any new pattern: bounded quantifiers only (ReDoS-safe on
+uncapped input — no nested greedy quantifiers) and tolerance of `**` markers,
+since these filters run BEFORE the renderer decodes them.
+
+**`^`-anchoring is the rule for paragraph-scoped patterns, not a law.** Most of
+them identify an ad by how the paragraph OPENS, and the anchor is what keeps
+them off ordinary prose. The two forwarding-service phrase patterns added
+2026-08-12 are deliberately unanchored: they name a thing
+(`redirecionador de encomendas` / «перенаправление посылок») that no Hot Wheels
+news paragraph mentions for any other reason, so the phrase itself carries the
+narrowness the anchor usually provides. If a new pattern cannot be `^`-anchored,
+it needs an equivalent guarantee — a distinctive phrase, or two signals — plus a
+ReDoS bound, because an unanchored paragraph rule deletes everything around its
+match. `TestLongPatternRegexSafety` pins the timing AND the linear scaling of
+this family on uncapped input; the short-form family is bounded by
+`_MAX_BOILERPLATE_LEN` and cannot blow up the same way.
 
 ### Admin-ping format (multi-line columnar Russian, 2026-05-08)
 
@@ -345,6 +357,29 @@ The auto-publish path is the cron-side route that lands articles in the channel 
   2. `_SECRET_ENV_NAMES` (news_bot.py:229) — every provider key name (`ANTHROPIC_API_KEY`, `GEMINI_API_KEY`, `OPENAI_API_KEY`, `OPENROUTER_API_KEY` + alias) plus the Telegram/Telegraph ones, so any env-var-value verbatim replace path strips them.
   3. `_redact_text(text)` pure helper — used by both the logging filter AND `send_admin_notification` so admin-ping payloads (which travel OUTSIDE Python's logging machinery) are also redacted. The admin-ping template uses `type(exc).__name__` not `str(exc)` for user-visible messages on outage paths; full exception text only goes to redacted logs.
 
+### Balance monitoring — two ceilings, not one (2026-08-13)
+
+`openrouter_transcreation.get_remaining_credits()` returns the **smaller** of
+the account balance (`/credits`) and the key's own remaining limit
+(`/auth/key` → `limit_remaining`), because either one stops translation on its
+own. `news_bot._maybe_alert_openrouter_balance` pings `[E019]` below
+`OPENROUTER_MIN_BALANCE_USD` (prod: 1).
+
+Watching only the account is a trap prod was one top-up away from. Measured
+2026-08-13: account $4.29 left, key limit $10 with $4.30 left — the two agreed
+by coincidence, so the alert worked by accident. Add $50 to the account and the
+account figure jumps to $54 while the key still dies after the same $4.30: the
+alert goes quiet exactly when it is needed, and the operator is told everything
+is fine while the channel stops. A null `limit` means the key is uncapped and
+contributes no ceiling — reading it as zero would alarm every tick.
+
+Cost context, so nobody re-derives it from the account total: prod runs
+`google/gemini-2.5-flash` and a published article costs **~$0.0056** (measured
+over two consecutive publications). The account's lifetime `total_usage`
+($25.71 on 2026-08-13) is NOT the bot's spend — the bot's key had used $5.70.
+Per-model breakdown needs a provisioning key; the ordinary key gets 403 on
+`/activity`.
+
 ### Sibling-brand relevance filter
 
 `_is_hot_wheels_relevant(entry)` (news_bot.py:1530) runs at fetch time, before
@@ -380,6 +415,31 @@ policy for HW-focused sources (over-publishing beats dropping a real
 cross-over story); default-reject applies only inside
 `_BROAD_DIECAST_NETLOCS`. Adding a netloc there is the change with the largest
 false-negative risk. Regression tests: `tests/test_relevance_filter.py`.
+
+### Fetch-retry cap (2026-08-13)
+
+A link whose article cannot be fetched is deliberately **not** marked
+processed — an autoevolution 403 is normally a single-tick transient and the
+next tick gets the article. Under a real block that turns into escalating
+hammering: during 9–12 August the same articles failed every tick and the
+per-tick failure count climbed 2 → 5 → 6 as more of them piled up, i.e. the bot
+knocked harder every day on a door that had been shut.
+
+`fetch_failures` (link, attempts, first/last_failed_at) counts **consecutive**
+failures; `news_bot.FETCH_RETRY_CAP` (3 ≈ three days) retires the link by
+writing it to `processed_news`. Three things worth knowing before touching it:
+
+- **The counter is consecutive, and `clear_fetch_failure` on every successful
+  fetch is what makes it so.** Lifetime counting would retire a link that fails
+  once a month on some unrelated day — the wrong-attribution trap that
+  `reset_hold_counts_below` exists to avoid for holds.
+- **Retiring gives the article up.** That is the deliberate price of not
+  hammering a source that has refused ~20 times. The cap is set forgiving on
+  purpose: a single 403 or network blip costs nothing.
+- **Bookkeeping failure must never cost an article.** If the counter write
+  raises, the code logs and falls back to the old forever-retry behaviour
+  rather than dropping the entry — losing a story to a SQLite hiccup would be a
+  worse bug than the one the cap fixes.
 
 ### Bare-checklist filter
 - `_is_text_only_checklist(entry, article)` rejects articles whose
