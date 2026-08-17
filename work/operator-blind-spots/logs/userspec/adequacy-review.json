@@ -1,0 +1,84 @@
+{
+  "status": "changes_required",
+  "findings": [
+    {
+      "category": "feasibility",
+      "severity": "critical",
+      "issue": "The one-message summary collides with how the review listener applies a press. `_review_edit_message` (news_bot.py:1007-1024) calls `edit_message_text(..., reply_markup=None)` — it strips the ENTIRE keyboard from the message on any terminal outcome — and `_handle_review_update` (news_bot.py:1105-1112) appends one status line to the whole message text (`original_text + \"\\n\\n\" + status_text`). Applied to a multi-article summary: the first press deletes every other article's buttons, and the appended «✅ Одобрено — выйдет в ближайший слот» names no article, so in a 5-row summary the operator cannot tell what it refers to.",
+      "why_matters": "The spec's AC «В сводке у каждой статьи есть заголовок, ссылка и две рабочие кнопки» and «Нажатие кнопки в сводке даёт тот же результат, что нажатие в исходном [E036]» cannot both hold. With N held articles the operator can resolve exactly ONE per day and must wait for tomorrow's summary for the next — a feature whose stated purpose is to unstick stranded articles unsticks them at one per day. This is the single-keyboard-per-message assumption baked into the listener since dedup-review-buttons; it was correct for [E036] (one article, one keyboard) and is wrong for a summary.",
+      "fix": "Decide the observable behaviour in the user-spec, since it changes what the operator sees: either (a) after each press the bot re-renders the summary with the remaining rows and their buttons — and state that the status line must name the article it applied to; or (b) the summary carries no buttons and the operator asks for a specific article; or (c) accept one message per held article and drop the one-summary constraint. Option (a) is the only one preserving the interview's intent, and it requires new listener capability (rebuild a multi-row keyboard on edit) that the spec currently does not acknowledge."
+    },
+    {
+      "category": "underengineering",
+      "severity": "critical",
+      "issue": "The decision «сводка переиспользует уже выписанный пропуск, а не выдаёт новый» defines no behaviour for a held row that has NO live hold token. That state is reachable: the row was staged while `_review_listener_enabled()` was False (buttons off, bad admin id, empty token) so no token was ever minted; or `put_review_token` raised inside the best-effort try at news_bot.py:4585-4620, which logs «Failed to send E036 notification» and leaves the row held with no token. Nothing later mints one — architecture.md:420 records exactly this as «no re-mint path».",
+      "why_matters": "Token-less held rows are the population the feature exists to rescue — an article with no live button and no re-mint path is the one that today needs a DB edit. A strict reuse-only rule renders them in the summary with no buttons, i.e. the feature reproduces the very blind spot it was written to close, silently.",
+      "fix": "State the rule as a two-branch decision: reuse the live hold token when one exists (so the original [E036] buttons keep working), and mint a fresh one when there is none. Minting for a token-less row creates no orphan and kills no live button, so it is safe. Add an acceptance criterion for the token-less row, and one for the buttons-disabled instance (no token minted either way — the existing fail-closed rule still governs)."
+    },
+    {
+      "category": "underengineering",
+      "severity": "critical",
+      "issue": "The summary has no size bound, and AC «ровно одно сводное сообщение — сколько бы статей ни висело» actively forbids one. `list_held()` (pending_articles_repo.py:1000-1020) has no LIMIT; held rows are never evicted (`list_pending_for_eviction` carries `WHERE hold_reason IS NULL`, repo:976-990) and leave only by an operator press. `send_admin_notification` (news_bot.py:601-665) has no length guard: a plain-text message past Telegram's 4096-char cap raises `TelegramError`, is retried 3 times, returns False and is logged only.",
+      "why_matters": "A terse row (title + link) is ~140-150 chars, so ~25-28 held articles kill the message outright; the inline keyboard grows two buttons per row alongside it. Backlog only grows. A content-gate regression that holds everything would reach that in days — and that is precisely when the summary is needed. The failure is total and silent: no summary, one ERROR line in a log nobody is reading, and the operator sees nothing at all.",
+      "fix": "Decide at user-spec level what the operator sees when the backlog is large: e.g. the N oldest held articles with buttons plus «и ещё M — покажу завтра», with N stated explicitly. Replace the «сколько бы статей ни висело» criterion with «не более N статей в одном сообщении, остальные считаются отдельной строкой», and add an acceptance criterion for a backlog above N."
+    },
+    {
+      "category": "better_alternative",
+      "severity": "major",
+      "issue": "The «Зачем» rests the whole per-source alarm on the 9-12 August outage, but that incident is already covered by shipped work plus item 3 of this same spec. SESSION-2026-08-13.md §2 lowered `DRY_SPELL_ALERT_DAYS` 3 -> 2 (news_bot.py:258) specifically so the 11 Aug tick would fire, and item 3 here removes [E017]'s per-restart repetition. With both in place an August-shaped blackout pings on day 2 — the same day the new per-source alarm would.",
+      "why_matters": "Half the feature's value case is stale. The genuinely uncovered gap is the PARTIAL outage: one source dies while the others keep the channel publishing, so [E017] never fires — visible in the same session's own table, where the 12 Aug deferred article reset the gap to 0 while autoevolution was still blocked. That case is real but has never been measured, and the spec never names it. Justifying the expensive half with an incident that is now covered means nobody can judge whether it is worth building.",
+      "fix": "Rewrite «Зачем» for sub-feature 1: name the partial-outage case as the gap being closed, state why [E017] at 2 days does not cover it (a single publication from any source resets the gap), and keep the August incident only as the illustration of aggregate counters hiding a dead source. If the partial case cannot be evidenced, consider deferring sub-feature 1 and shipping items 2+3 first."
+    },
+    {
+      "category": "feasibility",
+      "severity": "major",
+      "issue": "Token reuse assumes a lookup the code does not have. Every accessor in the review-token store is keyed BY TOKEN — `put_review_token`, `get_review_token`, `get_review_token_link`, `delete_review_token` (pending_articles_repo.py:1633-1723) — and the link lives in the VALUE as `<kind>|<link>`. There is no way to answer «the live hold token for this link».",
+      "why_matters": "The spec presents reuse as the cheap, obviously-correct option against re-minting. It is the right choice, but it is not free: it needs a new repo accessor scanning `bot_state WHERE key LIKE 'review_token:%'`, and that scan must filter on kind — a `dedup` token for the same link can legitimately coexist (architecture.md:418-419), and redeeming the wrong kind is the exact SEC-CG-2 bug the kind field was added to prevent. A tech-spec that takes the decision at face value can skip the accessor and discover the gap during implementation.",
+      "fix": "State in the spec that finding the existing pass requires a new lookup by link (exact match on `hold|<link>`, kind-filtered), and say what happens if more than one candidate is found (use the newest, or treat as no token and mint). Keep the wording out of implementation detail — «нужен новый способ найти уже выписанный пропуск по ссылке» is enough."
+    },
+    {
+      "category": "underengineering",
+      "severity": "major",
+      "issue": "«Ограничения» claims the rule «нет ответа — не публикуем» is unchanged, but the feature changes its cost. Today doing nothing is an explicitly supported terminal answer — `resolve_hold_callback`'s contract says so in as many words (news_bot.py:849-852: «Doing NOTHING is a supported outcome and needs no branch here»), and held rows are never evicted. After this feature, silence costs a daily ping forever.",
+      "why_matters": "An operator who declines an article by not answering — the documented way to decline — now gets that article listed back at them every single day for the life of the database. Over months the summary becomes a permanent standing nag about decisions already made by silence. That is the same noise dynamic that got reminders rejected in the first place (architecture.md:420), reintroduced through the back door, and it is not covered by the «одно сообщение в сутки» ceiling.",
+      "fix": "State the intended end state in the spec. Either: (a) the operator is now expected to press «🚫 Не публиковать» to clear the nag — say so out loud, because it changes what silence means; or (b) a held row drops out of the summary after N days while staying held, so «нет ответа» remains a free answer and the summary stays a rescue tool rather than a nag. Add the matching acceptance criterion."
+    },
+    {
+      "category": "underengineering",
+      "severity": "major",
+      "issue": "«Не дошла до очереди публикации» (Scenario 1 step 2, AC1) is ambiguous about held articles. In the code an article the content gate HOLDS is inserted and counted as staged (`inserted += 1`, funnel `held_for_review`, news_bot.py:4570-4580) but is invisible to `list_pending`/`count_pending` — it never reaches the PUBLISHABLE queue. The spec does not say which of the two the alarm counts.",
+      "why_matters": "The two readings diverge on a plausible incident. If held counts as «дошла», a content-gate regression that holds every article from a source looks perfectly healthy to the alarm — a silent source with a healthy-looking counter, exactly the failure class this feature exists to catch. If held does NOT count, then one held article no longer silences the alarm, which is the safer reading but produces a ping the spec never describes. Left unstated, the tech-spec will pick whichever `funnel` key is nearest to hand (`staged`), which is the unsafe one.",
+      "fix": "Say explicitly whether a held article counts as «дошла до очереди». Recommend: it does NOT — «дошла» means the article became publishable — and add an acceptance criterion for a source whose every article was held for review."
+    },
+    {
+      "category": "sizing",
+      "severity": "major",
+      "issue": "Declared size M covers three independent items, and the split is both obvious and useful. Items 2 and 3 (summary, [E017] marker) reuse existing pieces; item 1 adds a per-source breakdown across eight increment sites in the b3 loop (news_bot.py:4143-4628), per-source cross-tick state, a new alert, and job()-level integration tests that reproduce a two-day outage. That is the bulk of the work and it ships independently of the other two.",
+      "why_matters": "Item 3 ([E017] restart marker) is a few lines and shipping it FIRST is what makes finding 4 answerable — it closes the total-blackout case, so whatever remains uncovered afterwards is the honest justification for item 1. Bundling means the cheap, certain fix waits for the half that carries three unresolved design questions (findings 1, 2, 3).",
+      "fix": "Record a split in the spec: increment 1 = [E017] marker + [E036] daily summary; increment 2 = per-source silence alarm. Or state explicitly why they must ship together (nothing in the code forces it — the only shared piece is the once-per-day send-marker idiom, which increment 1 establishes and increment 2 reuses)."
+    },
+    {
+      "category": "feasibility",
+      "severity": "minor",
+      "issue": "Risk 3 overstates the coupling between the day-2 alarm and the day-3 fetch-retry cap. Verified in code: `record_fetch_failure` increments AT MOST ONCE PER CALENDAR DAY (pending_articles_repo.py:609-643), so retirement lands on the third distinct failing day; and retirement happens inside the b3 loop AFTER `new_entries` was computed at news_bot.py:4121-4132, so a link still counts as fresh on the very tick that retires it.",
+      "why_matters": "The ordering is safe, and safer than the spec claims: even `FETCH_RETRY_CAP = 2` leaves the day-2 alarm intact, and `= 1` would not mute it either as long as the source keeps publishing new links (autoevolution posts ~15-20/day — the exact case being monitored). The alarm goes mute only if the source stops publishing entirely AND all its links are retired, which the spec already classifies as not-an-alarm. Pinning the wrong invariant produces a regression test that passes while the real property rots — and it misdirects a future reader into thinking the cap value is load-bearing when it is not.",
+      "fix": "Restate Risk 3: the invariant to pin is «an entry retired on this tick still counts toward this tick's freshness», not «the cap must stay at 3». Keep the regression test — it is worth having — but let it assert the ordering inside the tick rather than the threshold value."
+    },
+    {
+      "category": "better_alternative",
+      "severity": "minor",
+      "issue": "Per-source cross-tick state is justified in principle (the 2-day condition is inherently cross-tick and bot_state needs no DDL), but a cheaper framing is never considered: «when did source X last deliver» is derivable from tables that already exist — `pending_articles.source_name` + `fetched_at` (architecture.md:392) and `published_articles.published_at` resolved through `_resolve_source_name(link)` (news_bot.py:3158). Under that framing the only thing that MUST be persisted is the once-per-day send marker, which items 2 and 3 need anyway.",
+      "why_matters": "Left unsaid, the tech-spec will default to four new per-source counters plus four new per-source send markers — eight bot_state keys with their own restart-safety and per-calendar-day semantics, each a place the «once a day» bookkeeping can go wrong. That is the same restart trap the spec correctly identifies elsewhere, multiplied by four.",
+      "fix": "Add one line to «Технические решения» noting that «сколько дней источник ничего не давал» can be read from existing data and that only the send marker must be stored, so the tech-spec has to justify per-source counters rather than assume them."
+    },
+    {
+      "category": "better_alternative",
+      "severity": "minor",
+      "issue": "The stated reason for reversing architecture.md:420 is a reconstruction the record does not support. That line says only «Reminders/timeouts were explicitly rejected by the operator»; it does not say the rejected shape was a per-article ping. The spec asserts «тогда напоминания понимались как пинг на каждую статью».",
+      "why_matters": "The reversal itself is sound and properly made — the operator re-decided in interview Q1 with the prior rejection restated verbatim in the question, the spec preserves the dangerous half of the original rejection (no timeout, no auto-publish), and the existing mitigation «На утверждении: N» (admin_alerts.py:312-327) demonstrably cannot identify an article or restore its button. But recording an unsupported claim about what a past decision meant is how the next reader loses trust in the whole reversal — which is exactly the failure mode Risk 4 is trying to prevent.",
+      "fix": "Lead the reversal rationale with the verifiable fact: on 11 Aug a lost [E036] stranded an article and the only remedy was a DB edit; the existing «На утверждении: N» line reports the count but cannot name or unstick the article. Drop or soften the claim about how reminders were understood at the time."
+    }
+  ],
+  "worst_category": "underengineering",
+  "summary": "The idea is sound and the diagnosis is real, but the [E036] summary half has three blocking design gaps: the review listener strips the whole keyboard on any press (so a one-message summary is resolvable at one article per day), token-reuse has no defined behaviour for held rows that never got a token, and the summary is explicitly unbounded against a 4096-char hard limit with no eviction path. Separately, the per-source alarm's stated justification is stale — [E017] at 2 days plus this spec's own item 3 already cover the August incident, so the real gap is the unmeasured partial-outage case."
+}

@@ -1,0 +1,437 @@
+# Interview Plan for Feature Planning
+#
+# Tracks progress of adaptive discovery interview for a new feature/bug/refactoring.
+# Updated after EACH user response with scoring, values, and remaining gaps.
+
+# ============================================================================
+# Interview Metadata (Session Recovery)
+# ============================================================================
+interview_metadata:
+  started: "2026-08-17 16:21:27"
+  last_updated: "2026-08-17 16:52:00"
+  status: "in_progress"  # not_started | in_progress | completed
+  can_resume: true
+  current_question_num: 3
+  feature_size: "M"
+
+# ============================================================================
+# Conversation History (for session recovery)
+# ============================================================================
+conversation_history:
+  - question_num: 1
+    timestamp: "2026-08-17 16:21:27"
+    topic: "feature_name + [E036] recovery mechanism + source-silence trigger"
+    agent_question: |
+      Asked after reading PK and correcting two of my own earlier claims:
+      (a) feature name; (b) how the operator recovers a lost [E036] button —
+      flagging that architecture.md:420 records reminders/timeouts as EXPLICITLY
+      REJECTED, so "bot re-sends daily" is a reversal, not a new idea;
+      (c) when the source-silence alarm should fire — only on fetch failure
+      (narrow, near-zero false alarms) vs any reason vs any reason + named cause.
+    user_answer: |
+      (a) operator-blind-spots
+      (b) Автоповтор раз в день — the operator chose the previously rejected
+          shape with the prior rejection stated in the question.
+      (c) По любой причине, но с указанием причины.
+    summary: >
+      Name fixed. [E036] gets a daily auto-repeat — a deliberate reversal of
+      architecture.md:420. Source-silence alarm uses the BROAD condition with the
+      collapse point named in the message.
+
+  - question_num: 2
+    timestamp: "2026-08-17 16:35:00"
+    topic: "noise ceiling (both halves) + testing strategy"
+    agent_question: |
+      (a) [E036] repeat with several held articles — one summary a day / one
+          message per article per day / per article but only 7 days.
+      (b) Source-silence repeat cadence — daily while broken / once only /
+          daily but max 3.
+      (c) Test level — unit+integration / unit only / plus live post-deploy check.
+    user_answer: |
+      (a) Одно сводное в день. (b) Раз в день, пока молчит. (c) Юнит +
+      интеграционные. All three were the recommended options.
+    summary: >
+      Noise bounded: exactly one [E036] summary per day regardless of how many
+      articles are held; at most 4 source pings/day (four sources). Test strategy
+      is unit + job()-level integration; no E2E.
+
+  - question_num: 3
+    timestamp: "2026-08-17 16:52:00"
+    topic: "adjacent [E017] defect + summary wording + where the per-source breakdown lives"
+    agent_question: |
+      (a) [E017] dry-spell has NO send-marker so it re-fires on every container
+          restart — and we just lowered its threshold 3→2, making it more likely.
+          Fix here / separate task / leave alone.
+      (b) Summary message content — brief (title, link, buttons) / brief + hold
+          reason / full per-article block as today.
+      (c) Per-source breakdown in the daily [E008] plan or only in the new alert.
+    user_answer: |
+      (a) Да, починить здесь. (b) Кратко: заголовок, ссылка, кнопки.
+      (c) Только в тревоге. All three were the recommended options.
+    summary: >
+      Scope gains a third, small item: give [E017] the same once-per-day marker.
+      Summary stays terse. [E008]/[E009] formats are untouched — no per-source
+      lines added to the daily plan.
+
+# ============================================================================
+# Phase 1: High-Level Feature Understanding
+# ============================================================================
+phase1_feature_overview:
+
+  feature_name:
+    score: 100
+    status: "complete"
+    value: "operator-blind-spots"
+    gaps: ""
+    required: true
+
+  feature_description:
+    score: 95
+    status: "complete"
+    value: |
+      Three items, one spec. Shared story: the bot loses an article or a whole
+      source and the operator never finds out.
+      (1) Per-source silence alert — a source offered fresh feed entries but
+          staged nothing for 2 days; once a day; names the collapse point.
+      (2) [E036] daily summary — ONE message a day listing every held article
+          with working buttons, so a lost hold ping stops stranding its article.
+      (3) [E017] gets a once-per-day send marker (adjacent defect, same class).
+      Source attribution already exists (_resolve_source_name, news_bot.py:3158),
+      so the four source modules need no change — corrected mid-interview.
+    gaps: ""
+    required: true
+
+  work_type:
+    score: 95
+    status: "complete"
+    value: |
+      feature — new operator-facing capability. Item (3) is a straight bug fix
+      carried along because it is the same defect class (missing send marker)
+      and a few lines of work.
+    gaps: ""
+    required: true
+
+  user_problem:
+    score: 95
+    status: "complete"
+    value: |
+      Both measured on prod. (1) Channel published nothing 9-12 Aug 2026 while
+      [E008] reported healthy intake (75 entries/day) — counters are aggregate
+      and autoevolution, ~60% of publications, was the only dead source. Operator
+      found out by asking, on day four. (2) architecture.md:420 — a deleted
+      [E036] message strands its article forever; releasing it needs a DB edit.
+      Hit live on 11 Aug.
+    gaps: ""
+    required: true
+
+  target_users:
+    score: 90
+    status: "complete"
+    value: |
+      One user: the operator (TELEGRAM_ADMIN_ID). Never the channel subscribers.
+      The operator is not a programmer, so message wording carries the whole
+      diagnosis — which is why wording is called out as user-verified.
+    gaps: ""
+    required: false
+
+  success_criteria:
+    score: 90
+    status: "complete"
+    value: |
+      14 acceptance criteria in user-spec.md. Load-bearing ones: an August-shaped
+      outage pings on day 2 naming the source; the ping survives multiple
+      restarts as ONE ping; a source that itself published nothing stays silent;
+      exactly one [E036] summary a day regardless of held count; buttons in the
+      original [E036] keep working after the summary goes out; no alert can break
+      the tick.
+    gaps: ""
+    required: true
+
+  constraints:
+    score: 90
+    status: "complete"
+    value: |
+      - Admin chat only, never the public channel.
+      - «Нет ответа = не публикуем» unchanged: the summary never publishes or
+        drops anything by itself.
+      - Noise ceiling: ≤4 source pings/day + 1 summary.
+      - Fail-closed button gate (_review_listener_enabled, audit SEC-A8-1) also
+        governs the summary: no listener → no tokens, no buttons.
+      - Once-per-day bookkeeping must survive container restarts (job() re-runs
+        on every start; four restarts on 2026-08-13).
+      - [E008]/[E009]/[E036] formats unchanged.
+      - Manual deploy, outside the 10:00-20:00 MSK window.
+    gaps: ""
+    required: true
+
+  testing_strategy:
+    score: 90
+    status: "complete"
+    value: |
+      Unit always. Integration YES — job()-level runs with stubbed sources,
+      because both alarms only fire during an incident, so a silent breakage
+      would never be noticed in normal operation. Mandatory scenarios: the
+      August shape (feed alive, articles unfetchable) and the ordering between
+      the day-2 alarm and the day-3 fetch-retry cap. No E2E — no live environment
+      for automated runs; Telegram delivery is checked by hand after deploy.
+    gaps: ""
+    required: true
+
+# ============================================================================
+# Phase 2: User Experience & Scenarios
+# ============================================================================
+phase2_user_experience:
+
+  user_stories:
+    score: 90
+    status: "complete"
+    value: |
+      Two flows written out in user-spec.md § Как должно работать: (1) source
+      goes quiet → day-2 ping → daily until one article gets through → silence;
+      (2) hold ping lost → next day a summary with working buttons → operator
+      presses in the summary → article released or dropped.
+    gaps: ""
+    required: true
+
+  acceptance_criteria:
+    score: 90
+    status: "complete"
+    value: "14 testable criteria in user-spec.md"
+    gaps: ""
+    required: true
+
+  edge_cases:
+    score: 85
+    status: "complete"
+    value: |
+      - Several restarts in one day must not multiply any of the three alerts.
+      - A source that published nothing new raises nothing.
+      - Held count zero → no summary at all.
+      - Buttons disabled instance → no tokens minted, no buttons, article stays
+        held (the safe direction).
+      - Double press, in the summary or the original message, must be idempotent.
+      - Fetch-retry cap (day 3) retires the evidence the day-2 alarm reads — one
+        day of margin, pinned by its own test.
+    gaps: ""
+    required: true
+
+  error_scenarios:
+    score: 85
+    status: "complete"
+    value: |
+      Every alert path is best-effort: a DB or Telegram failure inside any of the
+      three logs and the tick continues. The send-marker bookkeeping fails OPEN —
+      a corrupt/unreadable marker sends the alert anyway, following the
+      documented stance of is_hold_cap_ping_rate_limited. Rationale: silencing an
+      alarm because its own bookkeeping broke is the worse failure.
+    gaps: ""
+    required: true
+
+  verification_strategy:
+    score: 90
+    status: "complete"
+    value: |
+      10-step agent table in user-spec.md (pytest only — no live environment).
+      Two items reserved for the operator: pressing a real button in a real
+      summary via live Telegram, and reading both new messages to judge whether
+      they are understandable. The wording is the part no test can check and the
+      part the whole feature's value rests on.
+    gaps: ""
+    required: true
+
+  ui_ux_requirements:
+    score: 80
+    status: "complete"
+    value: |
+      Summary is terse by decision: title, link, two buttons per article. No
+      markers, no «что произошло» block — those were in the original [E036].
+      Operator reviews the final wording by hand.
+    gaps: ""
+    required: false
+
+  risks:
+    score: 90
+    status: "complete"
+    value: |
+      Five risks with mitigations in user-spec.md. Governing one: noise defeats
+      both halves — this is the exact shape the operator rejected earlier, and
+      the mitigation is the one-summary-a-day form plus restart-proof markers.
+      Also: the day-2 alarm vs day-3 retry-cap margin, and architecture.md:420
+      contradicting the new behaviour if left unedited.
+    gaps: ""
+    required: true
+
+  technical_decisions:
+    score: 90
+    status: "complete"
+    value: |
+      Nine decisions in user-spec.md § Технические решения. The three that shape
+      the build: reuse the existing review token instead of minting a new one
+      (otherwise the original message's buttons die and dead tokens accumulate);
+      persist the once-per-day marker in bot_state (job() re-runs on restart);
+      the marker fails open. Plus the explicit REVERSAL of architecture.md:420,
+      recorded with its reason so a future reader does not "fix" it back.
+    gaps: ""
+    required: false
+
+  deploy_approach:
+    score: 85
+    status: "complete"
+    value: |
+      Manual, unchanged from every other change here: git pull && docker compose
+      up -d --build on the Moscow host, outside 10:00-20:00 MSK. No CI deploy
+      (deploy.yml disarmed since 2026-07-07). No new env vars expected; if a
+      threshold becomes configurable it goes in .env.example.
+    gaps: ""
+    required: false
+
+  manual_user_actions:
+    score: 85
+    status: "complete"
+    value: |
+      None for setup — no new accounts, keys or services. The only manual steps
+      are the two post-deploy checks (press a real button, read the wording).
+    gaps: ""
+    required: false
+
+# ============================================================================
+# Phase 3: Integration & Technical Context
+# ============================================================================
+phase3_integration:
+
+  integration_points:
+    score: 90
+    status: "complete"
+    value: |
+      Confirmed by reading the code (code-research.md):
+      - news_bot.py:4082 funnel dict — gains a per-source breakdown.
+      - news_bot.py:3158 _resolve_source_name / :3805 entry['source_name'] —
+        attribution, already present; use the `or` idiom from :4386/:4545.
+      - news_bot.py:4585-4620 — the [E036] send site the summary parallels.
+      - news_bot.py:4967-4983 — the [E017] check that needs a marker.
+      - admin_alerts.py — two new alert builders + one new keyboard builder;
+        free codes: E029 (gap in sequence), then E039/E040.
+      - pending_articles_repo.py:1000 list_held; :1633/:1666/:1708 token store;
+        :686/:721 the rate-limit precedent to copy.
+      - _review_listener_enabled() — fail-closed gate for the summary's buttons.
+    gaps: ""
+    required: true
+
+  dependencies:
+    score: 85
+    status: "complete"
+    value: |
+      No new packages. Depends on shipped work: the content gate ([E036], hold
+      buttons, review listener, 2026-07-25) and the fetch-retry cap (2026-08-13,
+      whose day-3 retirement bounds the day-2 alarm).
+    gaps: ""
+    required: false
+
+  technical_constraints:
+    score: 85
+    status: "complete"
+    value: |
+      - Telegram callback_data limit 64 bytes: `hd:a:` + token_urlsafe(9) ≈ 17
+        bytes, so a multi-row summary keyboard fits, but the row count needs a
+        cap rather than being unbounded.
+      - Two opposing failure stances in one feature: alerting fails OPEN, button
+        minting fails CLOSED. The tech-spec must state which governs which branch.
+      - _format_funnel is operator-facing text; the per-source breakdown belongs
+        in the new alert, not in [E008].
+    gaps: ""
+    required: false
+
+  data_requirements:
+    score: 85
+    status: "complete"
+    value: |
+      Cross-tick state in bot_state (key/value, no migration): per-source
+      "nothing staged since" counters and three send markers. Alternative — a
+      dedicated table, as fetch_failures did — is open for the tech-spec, but
+      bot_state is the established home and needs no DDL. Per-calendar-day idiom
+      already proven in record_fetch_failure (repo:606).
+    gaps: ""
+    required: false
+
+  migration_needs:
+    score: 85
+    status: "complete"
+    value: |
+      None if bot_state is used (key/value, no schema change). If a table is
+      chosen instead, it follows the CREATE TABLE IF NOT EXISTS pattern in
+      init_schema, like fetch_failures. Existing rows are unaffected either way;
+      a cold start simply has no counters and raises nothing.
+    gaps: ""
+    required: false
+
+# ============================================================================
+# Phase 4: Completion
+# ============================================================================
+phase4_completion:
+  userspec_file: "work/operator-blind-spots/user-spec.md"
+  status: "created"  # pending | created | approved
+
+# ============================================================================
+# Decision Rules
+# ============================================================================
+decision_rules:
+
+  required_threshold: 85
+  optional_threshold: 50
+
+  stop_criteria:
+    - "All required items in current cycle scope score >= 85%"
+    - "Structural: every required item has non-empty value, no TBD, gaps empty or conscious limitations"
+
+  priority_order:
+    - "Required items with score < 85% (lowest score first)"
+    - "Optional items mentioned by user in context"
+    - "Other optional items if user seems knowledgeable"
+
+  question_strategy:
+    - "3-4 questions per batch about different gaps"
+    - "Run as many batches as needed — batch size is NOT cycle limit"
+    - "Propose solutions based on PK, not just ask questions"
+    - "Challenge with substance: counterexamples, code references, unexplored scenarios"
+    - "After each response: update scores, values, gaps, conversation_history, save"
+
+# ============================================================================
+# Interview Progress
+# ============================================================================
+progress:
+  current_phase: "phase4_completion"
+  questions_asked: 3
+  last_question: "Batch 3: adjacent [E017] defect, summary wording, where the per-source breakdown lives"
+  total_required_score: 90
+  total_optional_score: 86
+  completion_estimate: "95%"
+  user_detail_level: "moderate"
+
+# ============================================================================
+# Notes
+# ============================================================================
+notes: |
+  - TWO agent errors corrected before the interview started, both stated to the
+    operator: (a) claimed entries carry no source marker and all four source
+    modules would need changing — false, _resolve_source_name(link) exists and is
+    already used at news_bot.py:4386 and :4545; (b) treated the [E036] re-mint as
+    an open design fork — architecture.md:420 already recorded reminders as
+    explicitly rejected. Sub-feature 1 shrank accordingly.
+  - The operator chose the previously-rejected shape (daily repeat) WITH the
+    rejection restated in the question. Treat as a decision, not an oversight.
+    architecture.md:420 must be rewritten when this lands, or the next reader
+    will undo the feature as a mistake.
+  - Noise is the governing constraint for both halves. Every scope choice in this
+    interview (one summary not N, terse wording, no per-source lines in [E008])
+    was made against it.
+  - Scope grew by one small item in batch 3: [E017] gets the same send marker.
+    Same defect class, and we made it more visible last week by lowering its
+    threshold 3→2.
+  - Ordering coupling to pin with a test: the day-2 silence alarm reads evidence
+    that the day-3 fetch-retry cap destroys. One day of margin.
+  - PROCESS DEVIATION: this session forbids spawning subagents unasked, so
+    code-research.md was written by the orchestrator reading the code directly
+    instead of by the code-researcher subagent. The dual validators
+    (userspec-quality-validator / userspec-adequacy-validator) in Phase 8 are
+    pending an explicit decision from the operator — their value is independence,
+    which the orchestrator cannot supply for its own document.
