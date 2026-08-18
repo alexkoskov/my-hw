@@ -9,8 +9,8 @@
 interview_metadata:
   started: "2026-08-17 16:21:27"
   last_updated: "2026-08-17 16:52:00"
-  status: "in_progress"  # not_started | in_progress | completed
-  can_resume: true
+  status: "completed"  # not_started | in_progress | completed
+  can_resume: false
   current_question_num: 3
   feature_size: "M"
 
