@@ -37,6 +37,7 @@ from unittest.mock import MagicMock, patch
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 import pytz
+from freezegun import freeze_time
 
 import news_bot
 import pending_articles_repo
@@ -947,6 +948,182 @@ class TestDrySpellAlert(_JobBase):
         msgs = self._admin_msgs(mock_admin)
         self.assertFalse(any('[E017]' in m for m in msgs),
                          f"unexpected [E017] ping on a never-published bot: {msgs!r}")
+
+    # -- once per calendar day, restarts included -----------------------
+
+    def _run_job(self):
+        with _patch_sources_empty():
+            with patch('news_bot.outage_state.is_fallback_active',
+                       return_value=False):
+                news_bot.job()
+
+    def _seed_silence(self):
+        old = (dt.datetime.now(dt.timezone.utc).replace(tzinfo=None)
+               - dt.timedelta(days=5))
+        self._seed_published('https://example.com/old',
+                             old.strftime('%Y-%m-%d %H:%M:%S'))
+
+    def _e017_count(self, mock_admin):
+        return sum(1 for m in self._admin_msgs(mock_admin) if '[E017]' in m)
+
+    def _midday(self):
+        """Pin the test's start to 12:00 UTC today, clock still ticking.
+
+        These tests assert on a CALENDAR-day gate while building timestamps
+        from the real clock, so a genuine midnight crossing partway through the
+        run flips them — measured at 0.1–2.0 s of exposure per run
+        (test-review round 2). Twelve hours of clearance on either side removes
+        it without freezing time outright, which ``job()`` would notice.
+        """
+        start = dt.datetime.now(dt.timezone.utc).replace(
+            hour=12, minute=0, second=0, microsecond=0)
+        return freeze_time(start, tick=True)
+
+    @patch('news_bot.time.sleep')
+    @patch('news_bot.send_admin_notification')
+    def test_restarts_within_one_day_ping_once(self, mock_admin, _mock_sleep):
+        # Prod restarted four times on 2026-08-13 and job() re-ran each time,
+        # so one outage produced four identical «канал молчит» pings. Three
+        # ticks here stand in for the restarts.
+        with self._midday():
+            self._seed_silence()
+
+            for _ in range(3):
+                self._run_job()
+
+        self.assertEqual(self._e017_count(mock_admin), 1,
+                         f"three ticks in one day must ping once, got "
+                         f"{self._admin_msgs(mock_admin)!r}")
+
+    def _seed_marker(self, when):
+        conn = pending_articles_repo._connect()
+        conn.execute("INSERT OR REPLACE INTO bot_state (key, value) VALUES (?, ?)",
+                     ('dry_spell_last_pinged_at', when.isoformat()))
+        conn.commit()
+        conn.close()
+
+    @patch('news_bot.time.sleep')
+    @patch('news_bot.send_admin_notification')
+    def test_a_marker_from_an_earlier_start_suppresses_the_first_tick(
+            self, mock_admin, _mock_sleep):
+        # The restart dimension of the criterion, and the only test that pins
+        # it: the marker is seeded BEFORE this process runs job() even once,
+        # which is what a container restart looks like from the new process's
+        # side. An in-process marker — precisely the bug that produced four
+        # pings on 2026-08-13 — cannot pass this.
+        with self._midday():
+            self._seed_silence()
+            self._seed_marker(dt.datetime.now(dt.timezone.utc))
+
+            self._run_job()
+
+        self.assertEqual(self._e017_count(mock_admin), 0,
+                         "a marker left by an earlier start must suppress the "
+                         "first tick of this one")
+
+    @patch('news_bot.time.sleep')
+    @patch('news_bot.send_admin_notification')
+    def test_a_delivered_ping_is_recorded_where_a_restart_will_find_it(
+            self, mock_admin, _mock_sleep):
+        # The write half of the same boundary: the ping must leave a mark in
+        # the DB, not in process memory.
+        self._seed_silence()
+
+        self._run_job()
+
+        self.assertEqual(self._e017_count(mock_admin), 1)
+        # Queried straight from the table, NOT through
+        # is_dry_spell_ping_rate_limited(): asking the gate what the gate
+        # recorded is satisfied by an in-process marker too, which is the
+        # implementation this test exists to rule out.
+        conn = sqlite3.connect(self.db_path)
+        try:
+            row = conn.execute(
+                "SELECT value FROM bot_state WHERE key=?",
+                ('dry_spell_last_pinged_at',)).fetchone()
+        finally:
+            conn.close()
+        self.assertIsNotNone(
+            row, "a delivered [E017] must leave a marker in bot_state, where "
+                 "the next container start can still see it")
+
+    @patch('news_bot.time.sleep')
+    @patch('news_bot.send_admin_notification')
+    def test_an_unreadable_gate_still_lets_the_alarm_through(
+            self, mock_admin, _mock_sleep):
+        # Fail open. The gate is consulted only after a real dry spell has been
+        # detected, so a locked DB must cost a duplicate ping, never the alarm.
+        self._seed_silence()
+
+        with patch.object(news_bot.pending_repo,
+                          'is_dry_spell_ping_rate_limited',
+                          side_effect=sqlite3.OperationalError('locked')):
+            self._run_job()
+
+        self.assertEqual(self._e017_count(mock_admin), 1,
+                         "a broken rate-limit gate must not swallow the alarm")
+
+    @patch('news_bot.time.sleep')
+    @patch('news_bot.send_admin_notification')
+    def test_a_failure_to_record_the_send_is_reported_as_such(
+            self, mock_admin, _mock_sleep):
+        # The write half of the fail-open contract. Tick completion is already
+        # guaranteed by the function's outer handler, so what this guard buys
+        # is DIAGNOSIS: without it the same fault surfaces as the generic
+        # «channel-silence check failed», which reads as "the check broke" when
+        # in fact the ping went out and only the bookkeeping failed. An
+        # operator acting on the wrong one of those looks in the wrong place.
+        self._seed_silence()
+
+        with patch.object(news_bot.pending_repo, 'mark_dry_spell_pinged',
+                          side_effect=sqlite3.OperationalError('locked')):
+            with self.assertLogs('news_bot', level='WARNING') as logs:
+                self._run_job()
+
+        self.assertEqual(self._e017_count(mock_admin), 1,
+                         "the ping itself must still go out")
+        self.assertTrue(
+            any('could not record the [E017] send' in m for m in logs.output),
+            f"the failure must name the step that broke, got {logs.output!r}")
+        self.assertFalse(
+            any('channel-silence check failed' in m for m in logs.output),
+            "a bookkeeping fault must not be reported as a broken check")
+
+    @patch('news_bot.time.sleep')
+    @patch('news_bot.send_admin_notification')
+    def test_a_new_calendar_day_pings_again(self, mock_admin, _mock_sleep):
+        # The outage is still on; the operator gets one reminder per day, not
+        # one per outage. Yesterday's marker must not suppress today.
+        self._seed_silence()
+        yesterday = (dt.datetime.now(dt.timezone.utc) - dt.timedelta(days=1))
+        conn = pending_articles_repo._connect()
+        conn.execute("INSERT OR REPLACE INTO bot_state (key, value) VALUES (?, ?)",
+                     ('dry_spell_last_pinged_at', yesterday.isoformat()))
+        conn.commit()
+        conn.close()
+
+        self._run_job()
+
+        self.assertEqual(self._e017_count(mock_admin), 1,
+                         "a new calendar day must ping again")
+
+    @patch('news_bot.time.sleep')
+    @patch('news_bot.send_admin_notification')
+    def test_an_undelivered_ping_is_retried_on_the_next_tick(
+            self, mock_admin, _mock_sleep):
+        # Telegram was down: nothing reached the operator, so the day must NOT
+        # count as pinged. Marking on the attempt rather than on delivery would
+        # eat the whole day's only alarm.
+        mock_admin.return_value = False
+        self._seed_silence()
+
+        self._run_job()
+        self.assertEqual(self._e017_count(mock_admin), 1)
+
+        mock_admin.return_value = True
+        self._run_job()
+        self.assertEqual(self._e017_count(mock_admin), 2,
+                         "an undelivered ping must be retried, not marked sent")
 
 
 if __name__ == '__main__':

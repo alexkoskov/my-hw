@@ -52,6 +52,7 @@ _KEY_SOFTFLAG_PAIR_PREFIX = 'softflag_pair:'
 # Global degraded-mode rate-limit key (1-hour window).
 _KEY_DEDUP_DEGRADED = 'dedup_degraded_last_pinged_at'
 _KEY_HOLD_CAP_PINGED = 'hold_cap_last_pinged_at'
+_KEY_DRY_SPELL_PINGED = 'dry_spell_last_pinged_at'
 
 # Review-token key prefix (dedup-review-buttons, tech-spec Decision 3).
 # Telegram callback_data is capped at 64 bytes while the queue PK is a full
@@ -725,6 +726,101 @@ def mark_hold_cap_pinged() -> None:
         conn.execute(
             "INSERT OR REPLACE INTO bot_state (key, value) VALUES (?, ?)",
             (_KEY_HOLD_CAP_PINGED, datetime.now(timezone.utc).isoformat()),
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+
+def is_dry_spell_ping_rate_limited() -> bool:
+    """True when [E017] «канал молчит» already went out on today's UTC date.
+
+    ``job()`` fires once a day on the 10:00 МСК cron AND once on every
+    container start. Prod restarted four times on 2026-08-13 and the operator
+    got four identical dry-spell pings for one outage; a repeated alarm reads
+    as a worsening situation when it is the same one.
+
+    Bounded by CALENDAR DAY, not by a rolling window like the [E038] gate
+    above. The cron fires from a 60 s poll loop, so consecutive daily ticks can
+    sit a minute SHORT of 24 h apart and a rolling 24 h window would swallow
+    tomorrow's legitimate alarm on that jitter. ``record_fetch_failure`` bounds
+    itself the same way for the same reason.
+
+    TZ-independent by construction — both sides of the comparison come from
+    ``datetime.now(timezone.utc)``; the container's own TZ (Europe/Moscow, per
+    the Dockerfile and the startup guard) does not enter into it. Note the
+    accepted edge: the cron tick lands at 07:00 UTC, far from the boundary, but
+    RESTART ticks land at any hour, so two restarts straddling 00:00 UTC ping
+    twice minutes apart. That is two, not the four this gate exists to stop,
+    and it is per calendar day as specified — not an oversight to "fix" by
+    reaching back for a rolling window.
+
+    Fails OPEN on every path it can control — missing row, corrupt value,
+    unreadable DB, future-dated marker. The guarantee is structural (a blanket
+    ``except`` around the whole body) rather than a bet on which exception type
+    a parser happens to raise: silencing the only prolonged-outage alarm
+    because its own bookkeeping broke is strictly worse than one duplicate
+    ping, and this alert has no redundant channel the way [E038] has the daily
+    «Отложено: N» line.
+
+    The one path it CANNOT control is a stopped clock: if the container's clock
+    stalls on the marked date the gate stays shut for as long as it is stuck.
+    That is deliberately not defended here — the backstop is the external
+    ``.github/workflows/uptime.yml`` watchdog, which reads the age of the last
+    Telegra.ph page from outside the host and so depends on neither this clock
+    nor this DB.
+    """
+    try:
+        conn = _connect()
+        try:
+            row = conn.execute(
+                "SELECT value FROM bot_state WHERE key=?",
+                (_KEY_DRY_SPELL_PINGED,),
+            ).fetchone()
+        finally:
+            conn.close()
+        if row is None:
+            return False
+        last = _parse_dt_tolerant(row[0], _KEY_DRY_SPELL_PINGED)
+        if last is None:
+            return False
+        if last.tzinfo is None:
+            last = last.replace(tzinfo=timezone.utc)
+        # ``.date()`` reads the value's OWN offset, so normalise first: a
+        # marker written as +05:00 would otherwise match a UTC day it does not
+        # belong to and eat that day's alarm.
+        marked = last.astimezone(timezone.utc).date()
+        today = datetime.now(timezone.utc).date()
+        if marked > today:
+            # Future-dated marker (manual edit, clock jump): it can never be
+            # overwritten by a later ping, so honouring it would silence the
+            # alarm permanently. Treat as unusable.
+            # Logs ``marked``, not the raw value: "parses as ISO-8601" does
+            # not bound length — ``fromisoformat`` accepts unlimited fractional
+            # digits, so a crafted marker would emit a half-megabyte WARNING on
+            # every tick. The normalised date is bounded and is also the more
+            # diagnostic number, since it is what the gate actually compared.
+            logger.warning(
+                "future-dated bot_state marker at key=%s: %s — ignoring",
+                _KEY_DRY_SPELL_PINGED, marked,
+            )
+            return False
+        return marked == today
+    except Exception:
+        logger.warning(
+            "dry-spell rate-limit marker unreadable — allowing the ping",
+            exc_info=True,
+        )
+        return False
+
+
+def mark_dry_spell_pinged() -> None:
+    """UPSERT the current UTC timestamp at the [E017] rate-limit key."""
+    conn = _connect()
+    try:
+        conn.execute(
+            "INSERT OR REPLACE INTO bot_state (key, value) VALUES (?, ?)",
+            (_KEY_DRY_SPELL_PINGED, datetime.now(timezone.utc).isoformat()),
         )
         conn.commit()
     finally:
@@ -1500,7 +1596,12 @@ def _parse_dt_tolerant(raw: Optional[str], key: str) -> Optional[datetime]:
         return None
     try:
         return datetime.fromisoformat(raw)
-    except ValueError:
+    except (ValueError, TypeError):
+        # TypeError, not just ValueError: ``bot_state.value`` is declared TEXT,
+        # but SQLite TEXT affinity leaves a BLOB a BLOB, so a row written as
+        # x'..' comes back as ``bytes`` and ``fromisoformat`` raises TypeError.
+        # Catching only ValueError let that escape into the callers' broad
+        # handlers, turning one malformed row into a permanently silent gate.
         logger.warning("corrupted bot_state value at key=%s: %r", key, raw)
         return None
 

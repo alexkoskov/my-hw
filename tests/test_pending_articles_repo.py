@@ -20,6 +20,8 @@ import unittest
 from datetime import datetime, timedelta, timezone
 from unittest.mock import patch
 
+from freezegun import freeze_time
+
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 import news_bot
@@ -2487,3 +2489,127 @@ class TestHoldCapPingRateLimit(unittest.TestCase):
         conn.commit()
         conn.close()
         self.assertFalse(pending_articles_repo.is_hold_cap_ping_rate_limited(6))
+
+
+class TestDrySpellPingRateLimit(unittest.TestCase):
+    """[E017] is rate-limited to ONE per calendar day, restarts included.
+
+    ``job()`` runs once daily on the 10:00 МСК cron, but it also runs on every
+    container start — prod restarted four times on 2026-08-13 and the operator
+    got four identical «канал молчит» pings for one outage. A repeated alarm
+    reads as a worsening situation when it is the same one, which is the exact
+    way an alert channel stops being read.
+
+    Calendar day rather than a rolling 24 h window (the [E038] shape): two
+    consecutive cron ticks are almost exactly 24 h apart, so a rolling window
+    would swallow the next day's legitimate alarm on a few seconds of jitter.
+    ``record_fetch_failure`` bounds itself the same way for the same reason.
+    """
+
+    def setUp(self):
+        self.tmp = tempfile.NamedTemporaryFile(suffix='.db', delete=False)
+        self.tmp.close()
+        self._orig_db = news_bot.DB_FILE
+        news_bot.DB_FILE = self.tmp.name
+        news_bot.init_db()
+
+    def tearDown(self):
+        news_bot.DB_FILE = self._orig_db
+        os.unlink(self.tmp.name)
+
+    def _store(self, value):
+        """Put ``value`` at the marker key, or clear it when ``value`` is None."""
+        conn = pending_articles_repo._connect()
+        if value is None:
+            conn.execute("DELETE FROM bot_state WHERE key=?",
+                         ('dry_spell_last_pinged_at',))
+        else:
+            conn.execute(
+                "INSERT OR REPLACE INTO bot_state (key, value) VALUES (?, ?)",
+                ('dry_spell_last_pinged_at', value))
+        conn.commit()
+        conn.close()
+
+    @freeze_time('2026-08-18 00:05:00')
+    def test_gate_follows_the_calendar_day(self):
+        # Frozen just past midnight UTC on purpose: every discriminating case
+        # here is a boundary case, and against the real clock 'late yesterday'
+        # silently stops separating this gate from a rolling 24 h window for
+        # the half hour before 00:00 UTC.
+        cases = [
+            ('unmarked DB', None, False),
+            ('marked earlier today', '2026-08-18T00:01:00+00:00', True),
+            # Ten minutes old in wall-clock terms, yet a different calendar
+            # day — this is the case a rolling 24 h window gets wrong, and the
+            # alarm must still go out.
+            ('marked late yesterday', '2026-08-17T23:55:00+00:00', False),
+            ('marked well within the last 24 h, but yesterday',
+             '2026-08-17T06:00:00+00:00', False),
+            # Same instant as 2026-08-17T20:00Z — yesterday in UTC. Comparing
+            # the value's own offset would read it as today and eat the alarm.
+            ('marked with a non-UTC offset', '2026-08-18T01:00:00+05:00',
+             False),
+            # Under a strict equality gate this case cannot fail — `marked ==
+            # today` is already False for a future date. It is kept because it
+            # pins the rule as EQUALITY: a `marked >= today` variant, which a
+            # future marker would silence permanently, fails here. The guard's
+            # own observable effect is its WARNING, which nothing asserts.
+            ('marked in the future', '2026-08-19T00:01:00+00:00', False),
+        ]
+        for label, stored, expected in cases:
+            with self.subTest(label):
+                self._store(stored)
+                self.assertEqual(
+                    pending_articles_repo.is_dry_spell_ping_rate_limited(),
+                    expected)
+
+    def test_marking_suppresses_the_rest_of_the_day(self):
+        self.assertFalse(pending_articles_repo.is_dry_spell_ping_rate_limited())
+        pending_articles_repo.mark_dry_spell_pinged()
+        self.assertTrue(pending_articles_repo.is_dry_spell_ping_rate_limited())
+
+    def test_unreadable_marker_does_not_suppress(self):
+        """Fail OPEN. Silencing the only prolonged-outage alarm because its own
+        bookkeeping got garbled is strictly worse than one duplicate ping —
+        same contract as ``is_hold_cap_ping_rate_limited``.
+
+        The BLOB case is not hypothetical padding: ``bot_state.value`` is TEXT,
+        but SQLite TEXT affinity leaves a BLOB a BLOB, and ``fromisoformat``
+        answers a non-str with TypeError rather than ValueError — which used to
+        escape the gate and disable [E017] until someone found the row.
+        """
+        # 12345 was dropped after review: TEXT affinity converts an inserted
+        # int back to '12345' on read, so it exercises the ValueError path and
+        # not the TypeError one it was meant to pin. A BLOB survives as bytes.
+        for garbage in ('not-a-timestamp', '', '   ', '2026-13-45T99:99:99',
+                        sqlite3.Binary(b'\x00\x01')):
+            with self.subTest(repr(garbage)):
+                self._store(garbage)
+                self.assertFalse(
+                    pending_articles_repo.is_dry_spell_ping_rate_limited())
+
+    def test_a_blob_marker_does_not_break_the_sibling_hold_cap_gate(self):
+        """Pins `_parse_dt_tolerant`'s TypeError arm where it is observable.
+
+        The dry-spell gate's own blanket ``except`` masks the widening, so
+        reverting `(ValueError, TypeError)` back to `ValueError` leaves every
+        dry-spell test green (test-review round 2). ``is_hold_cap_ping_rate_
+        limited`` shares the parser and has no such blanket, so it is where a
+        silent revert shows up.
+        """
+        conn = pending_articles_repo._connect()
+        conn.execute(
+            "INSERT OR REPLACE INTO bot_state (key, value) VALUES (?, ?)",
+            ('hold_cap_last_pinged_at', sqlite3.Binary(b'\x00\x01')))
+        conn.commit()
+        conn.close()
+
+        self.assertFalse(pending_articles_repo.is_hold_cap_ping_rate_limited(6))
+
+    def test_an_unreadable_database_does_not_suppress(self):
+        """The gate must not turn a DB fault into a silent outage: this alert
+        has no redundant channel the way [E038] has «Отложено: N»."""
+        with patch.object(pending_articles_repo, '_connect',
+                          side_effect=sqlite3.OperationalError('database is locked')):
+            self.assertFalse(
+                pending_articles_repo.is_dry_spell_ping_rate_limited())
