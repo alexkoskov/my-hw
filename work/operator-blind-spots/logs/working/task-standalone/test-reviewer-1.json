@@ -1,0 +1,49 @@
+{
+  "status": "needs_improvement",
+  "summary": "Five new tests for the [E017] once-per-calendar-day gate; all five are behavioural, hit a real sqlite DB, and were verified by mutation testing (rolling-24h window and mark-on-attempt mutants are both killed). One real hole: the restart dimension of the acceptance criterion is not pinned — an in-process marker that a container restart wipes (exactly the prod bug of 2026-08-13) passes all three job-level tests when each is run in isolation; the suite-level failure it produces is an artifact of module-global leakage between test methods, not an assertion. Secondary: the one subcase that separates a calendar-day gate from a rolling 24 h window is built off the real clock and stops discriminating between 23:30 and 23:59 UTC.",
+  "findings": [
+    {
+      "severity": "major",
+      "category": "missing_coverage",
+      "location": "tests/test_job_distributed_publish.py:970 (test_restarts_within_one_day_ping_once)",
+      "issue": "Nothing pins that the once-a-day marker survives a container restart, which is the whole point of the criterion «независимо от числа перезапусков» and the reason the marker is persisted in bot_state at all. The test calls news_bot.job() three times inside ONE process, so a module-level in-process marker suppresses ticks 2 and 3 just as well as the DB one. Verified by mutation: replacing pending_repo.is_dry_spell_ping_rate_limited()/mark_dry_spell_pinged() in job() with a module-global dict keyed on today's date leaves all three new job-level tests GREEN when each is run in isolation (pytest ...::test_restarts_within_one_day_ping_once etc. — 1 passed each), i.e. the implementation that reproduces the four-pings-in-one-outage prod incident passes the test written to prevent it. Run as a class the mutant does fail, but only because the module global leaks across test methods and takes pre-existing tests (test_pings_when_channel_silent_for_days, test_pings_on_the_gap_that_the_august_outage_slipped_through) down with it — that is cross-test pollution, not a guard. Neither is the write side asserted: no test checks that a delivered ping leaves anything in bot_state.",
+      "recommendation": "Add two cases to TestDrySpellAlert that cross the process boundary in both directions (both verified here: they fail against the in-process mutant and pass against the shipped implementation). (1) Read side — a marker left by an EARLIER start suppresses the FIRST tick of this process: self._seed_silence(); write ('dry_spell_last_pinged_at', datetime.now(timezone.utc).isoformat()) into bot_state BEFORE any job() call; self._run_job(); assertEqual(self._e017_count(mock_admin), 0, 'a marker persisted by a previous container start must suppress'). This is the exact complement of the existing test_a_new_calendar_day_pings_again, which already pre-seeds yesterday and expects a ping. (2) Write side — after one delivered ping, assertTrue(pending_articles_repo.is_dry_spell_ping_rate_limited()) so the marker is asserted to live in the DB and not in process memory. Case (1) can be folded into test_restarts_within_one_day_ping_once as a second phase (pre-seeded marker, then three ticks, expect 0) if a separate function is unwanted; no mock changes needed."
+    },
+    {
+      "severity": "minor",
+      "category": "anti_pattern",
+      "location": "tests/test_pending_articles_repo.py:2536 (test_gate_follows_the_calendar_day, 'marked late yesterday')",
+      "issue": "The 'marked late yesterday' subcase is the ONLY case in the whole increment that distinguishes the calendar-day gate from a rolling 24 h window (confirmed: the rolling-window mutant is killed by this subcase alone — the other three subcases and all three job-level tests stay green). It is built from the real clock: late_yesterday = now.replace(hour=0, minute=30) - 1h, i.e. always yesterday 23:30 but always `30 min + time-of-day` old. Its age crosses 24 h once the run starts at or after 23:30 UTC, so between 23:30 and 23:59 UTC (30 min/day) a rolling-24 h regression would also return False and the case silently stops discriminating — no failure, just a guard that evaporates. The comment 'minutes old in wall-clock terms' is only true just after midnight; at noon the value is 12.5 h old. Same class of exposure, much narrower: 'marked earlier today' (now.isoformat(), expects True) and the three-tick job test flip to a spurious FAILURE if UTC midnight passes mid-test.",
+      "recommendation": "Freeze the clock — freezegun is already a dev dependency (requirements-dev.txt) and already used in tests/test_distributed_schedule_integration.py. Wrap the boundary case: @freeze_time('2026-08-18 00:05:00'), store '2026-08-17T23:55:00+00:00' → assertFalse (10 minutes old, previous calendar date — inside any rolling window at every run time), then store '2026-08-18T00:01:00+00:00' → assertTrue. Verified here: passes against the shipped implementation, fails against the rolling-24h mutant regardless of run time. Freeze the same instant over the whole cases list so 'marked earlier today' cannot straddle midnight, and add @freeze_time to test_restarts_within_one_day_ping_once for the same reason. No mock changes otherwise; keep the real sqlite DB."
+    },
+    {
+      "severity": "minor",
+      "category": "redundant_testing",
+      "location": "tests/test_pending_articles_repo.py:2540 (test_gate_follows_the_calendar_day, 'marked yesterday')",
+      "issue": "('marked yesterday', now - timedelta(days=1)) sits exactly on the 24 h boundary: for the calendar-day gate it is the same equivalence class as 'marked late yesterday', and against a rolling-24 h regression it resolves to not-limited by a sub-millisecond margin (the test computes `now` slightly before the function does), so it kills nothing that its neighbour does not. It is the one case in the list whose outcome depends on execution timing rather than on the rule under test.",
+      "recommendation": "Move it off the boundary so it means something on its own: use (now - timedelta(days=1, hours=6)).isoformat() → False as the 'clearly an older day' case, and let the frozen 23:55/00:05 pair (previous finding) carry the boundary. Keep the four-case subTest shape — one behaviour, a set of inputs — as it is."
+    },
+    {
+      "severity": "minor",
+      "category": "missing_coverage",
+      "location": "news_bot.py:4980-4998 (dry-spell block) / tests/test_job_distributed_publish.py:948",
+      "issue": "The increment adds two new DB calls inside the dry-spell try/except, and nothing exercises the failure path required by the user-spec criterion «Ни одна из тревог не может сорвать дневной цикл». Worth noting because the behaviour is not the one the repo docstring promises: is_dry_spell_ping_rate_limited() fails open on a garbled VALUE (tested), but if the call itself raises (sqlite locked/corrupt) the exception is caught by the surrounding handler and the ping is dropped entirely for that tick — fail-closed at the job level. Also untested: mark_dry_spell_pinged() raising after a successful send, which leaves the day unmarked and re-pings next tick.",
+      "recommendation": "One test in TestDrySpellAlert with the gate patched to raise: with patch('news_bot.pending_repo.is_dry_spell_ping_rate_limited', side_effect=sqlite3.OperationalError('database is locked')): self._run_job() — assert job() returns normally (no exception escapes) and assert the observed [E017] behaviour explicitly, so the fail-closed-at-job-level choice is documented rather than incidental. Uses the existing real DB; only the one repo function is mocked."
+    }
+  ],
+  "metrics": {
+    "filesReviewed": 4,
+    "litmusTest": {
+      "checked": 5,
+      "passed": 4,
+      "failed": 1
+    },
+    "coverageAssessment": "adequate",
+    "pyramidBalance": {
+      "unit": 3,
+      "integration": 3,
+      "e2e": 0,
+      "assessment": "healthy"
+    }
+  }
+}

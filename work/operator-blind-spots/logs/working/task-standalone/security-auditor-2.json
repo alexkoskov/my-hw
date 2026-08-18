@@ -1,0 +1,73 @@
+{
+  "status": "approved",
+  "summary": {
+    "totalFindings": 3,
+    "critical": 0,
+    "major": 0,
+    "minor": 3
+  },
+  "round1_verification": [
+    {
+      "round1": "major — Non-TEXT bot_state value raises TypeError out of the gate and silences [E017] indefinitely",
+      "status": "closed",
+      "evidence": "Two independent layers now hold the fail-open contract. (1) _parse_dt_tolerant (pending_articles_repo.py:1586) catches (ValueError, TypeError). (2) is_dry_spell_ping_rate_limited wraps its ENTIRE body in `except Exception: return False` (pending_articles_repo.py:795-800), so the guarantee no longer depends on which exception fromisoformat raises. Verified empirically against 16 hostile marker values on the real schema — None-row, '', sqlite3.Binary(b'\\x00\\xff'), int 12345, float 1.5, 100 000-char garbage, embedded NUL, embedded newline, year 0001, and a 500 000-char parseable value: every one returned False and none raised. The blanket except also absorbs MemoryError/OverflowError classes that the widened tuple would still miss, which is what makes this structural rather than a bet on exception types. Defence in depth is real: even if the gate's own handler raised, job()'s gate try/except (news_bot.py:4984-4991) defaults rate_limited to False."
+    },
+    {
+      "round1": "major — A transient DB error inside the new gate drops that tick's [E017]",
+      "status": "closed",
+      "evidence": "The gate call is now decided in its own try/except at news_bot.py:4984-4991, outside the send, defaulting to rate_limited=False and logging through sanitize_error_message. sanitize_error_message (news_bot.py:331-362) is itself defensive — it catches a raising __str__ and returns '<unrepresentable exception>' — so the handler cannot itself throw the alarm away. The symmetric half was applied too: mark_dry_spell_pinged() has its own try/except (news_bot.py:5016-5021) with an accurate message, so the log now distinguishes 'alarm not sent' from 'alarm sent, marker not persisted', and a failed marker write can no longer skip _record_heartbeat(). Covered at both levels: test_an_unreadable_gate_still_lets_the_alarm_through (job level) and test_an_unreadable_database_does_not_suppress (repo level)."
+    },
+    {
+      "round1": "minor — Calendar-day comparison uses the stored value's own UTC offset",
+      "status": "closed",
+      "evidence": "pending_articles_repo.py:783 now normalises with last.astimezone(timezone.utc).date() before comparing. Verified both directions: a '+05:00' marker whose instant falls on the previous UTC day correctly returns False (test case 'marked with a non-UTC offset'), and a live +14:00-rendered timestamp of the current instant correctly returns True — i.e. the fix normalises rather than merely rejecting offsets."
+    },
+    {
+      "round1": "minor — Docstring asserts a host-timezone invariant the deploy contradicts",
+      "status": "closed",
+      "evidence": "The docstring (pending_articles_repo.py:751-756) now states the property as 'TZ-independent by construction — both sides of the comparison come from datetime.now(timezone.utc); the container's own TZ (Europe/Moscow, per the Dockerfile and the startup guard) does not enter into it.' The '07:00 UTC / seven hours clear' reassurance is correctly qualified as applying to the cron tick only, with the restart-tick straddle documented as an accepted two-ping edge rather than an oversight — which is the note that stops a later reader 'fixing' it back into a rolling window."
+    },
+    {
+      "round1": "minor — A stopped container clock pins the gate closed",
+      "status": "partially closed (as logged) — residual re-raised below as finding 2",
+      "evidence": "The future-dated branch (pending_articles_repo.py:784-793) is present and verified: both a +1 day marker and '9999-12-31T23:59:59+00:00' return False. That closes the unrecoverable half — a future marker can never be overwritten, so honouring it would have silenced [E017] forever. The stuck-clock case itself is unchanged by design (marked == today holds indefinitely) and is accepted against the external uptime.yml watchdog, but the docstring note the round-1 recommendation asked for — naming that watchdog as the clock-stall backstop — was not added."
+    },
+    {
+      "round1": "minor — Raw %r logging in _parse_dt_tolerant",
+      "status": "skipped by decision (findings log row 12) — accepted; the NEW %r line is assessed separately as finding 1",
+      "evidence": "The skip reasoning holds for the shared helper: pre-existing, and no exposure with the current key set. Recording it against increment B (which adds keys that may hold tokens and links) is the right placement."
+    }
+  ],
+  "findings": [
+    {
+      "severity": "minor",
+      "category": "A09: Security Logging and Monitoring Failures",
+      "title": "The new future-dated-marker branch logs the raw stored value with %r, unbounded in length",
+      "description": "Answering the question raised directly: the round-1 skip reasoning for _parse_dt_tolerant does NOT transfer wholesale to this line, because the two differ on both axes that mattered.\n\nOn CONFIDENTIALITY the new line is strictly SAFER than the helper, and acceptable as-is. Its key is hardcoded to _KEY_DRY_SPELL_PINGED rather than taken as a parameter, so unlike the shared helper it can never pick up the increment B and C keys that motivated recording finding 12 in the first place. And the branch is only reachable after _parse_dt_tolerant returned a datetime, so row[0] is necessarily a string that parses as ISO-8601, not free-form operator text. Verified also that %r is doing useful work here: repr() escapes an embedded newline to '\\n', so a marker containing 'WARNING fake log line' produced one 163-byte log record rather than a forged second line. Log injection is closed.\n\nOn AVAILABILITY it is not acceptable, and this is new. 'Parses as ISO-8601' does not bound length on this interpreter: Python 3.13's datetime.fromisoformat accepts an unlimited number of fractional-second digits. Verified end to end against the real schema — a marker of '2099-01-01T00:00:00.' followed by 500 000 zeros parses, takes the future-dated branch, and emits a SINGLE 500 158-byte WARNING record. It repeats on every tick (daily cron plus every container start) for as long as the row sits there, into the host's json-file driver. At a larger value the %r allocation itself becomes a memory-pressure event inside the tick.\n\nThe fix is not a sanitiser call — it is logging the right variable. `marked` is already computed on the line above, is the normalised UTC date the gate actually compared, is inherently bounded, and is more diagnostic than the raw string, which the operator would still have to normalise by hand to understand the decision.",
+      "location": "pending_articles_repo.py:789-792",
+      "impact": "A single malformed bot_state row turns each tick into an unbounded log write. No credential exposure with this key, and no log forging. Requires DB write access — an operator manual edit is the realistic source, which is the scenario the branch was written for.",
+      "recommendation": "Log the bounded, already-computed normalised date instead of the raw value:\n\n    logger.warning(\n        \"future-dated bot_state marker at key=%s: %s (now %s) — ignoring\",\n        _KEY_DRY_SPELL_PINGED, marked, today,\n    )\n\nThis removes the unbounded write, keeps every byte of diagnostic value, and needs no sanitiser. Note the same unbounded-length property applies to the pre-existing helper at pending_articles_repo.py:1592 (verified: 100 121-byte record from a 100 000-char value) — worth carrying into the increment B note where finding 12 was already parked, since a truncation there fixes both.",
+      "cwe": "CWE-779"
+    },
+    {
+      "severity": "minor",
+      "category": "A09: Security Logging and Monitoring Failures",
+      "title": "Stuck clock remains the one permanent-suppression path, and the docstring does not name its backstop",
+      "description": "Re-raised as the acknowledged residual of round-1 minor 5, which the findings log correctly records as 'applied in part'. With the future-dated branch in place, the gate returns True on exactly one condition: marked == today. Every other path — missing row, unparseable value, non-str value, unreadable DB, future date — was verified to return False. So the only way [E017] stays suppressed indefinitely is a container clock that stops advancing across a date boundary: the marker written on the stuck date matches forever, while silent_days is frozen at the same value and therefore keeps the alarm nominally due on every tick.\n\nThe decision to leave this to the external watchdog is sound — .github/workflows/uptime.yml runs outside the host and alarms on the age of the last Telegra.ph page, so it depends on neither the bot's clock nor its DB, which is exactly the independence a clock-stall backstop needs. What is missing is that the code does not say so. The round-1 recommendation had two halves and only the first was applied; the docstring's 'Fails OPEN on EVERY path' is now, strictly read, slightly overstated, because a stuck clock is a path on which it fails closed. Increments B and C copy this idiom by design, and they will copy the docstring with it.",
+      "location": "pending_articles_repo.py:761-765 (docstring) and pending_articles_repo.py:794",
+      "impact": "Documentation risk, not a live defect. The next maintainer of this idiom reads an unqualified 'fails open on every path' and does not learn that the gate is not the last line of defence, nor which component is.",
+      "recommendation": "Add one sentence to the docstring, no code change:\n\n    The one path this gate cannot fail open on is a STOPPED clock — a marker\n    written on a frozen date matches forever. That is deliberately left to the\n    external backstop: .github/workflows/uptime.yml runs outside the host and\n    alarms on the age of the last Telegra.ph page, so it reads neither this\n    clock nor this DB. This gate is not the last line of defence.\n\nAlso soften 'Fails OPEN on EVERY path' to 'Fails OPEN on every path it can observe' so the claim and the caveat do not contradict each other three paragraphs apart.",
+      "cwe": "CWE-1109"
+    },
+    {
+      "severity": "minor",
+      "category": "A09: Security Logging and Monitoring Failures",
+      "title": "Pre-existing: unguarded statements earlier in job() abort the tick before the dry-spell block is reached",
+      "description": "Reported because the brief asks explicitly whether any path can still leave [E017] permanently suppressed. NOT introduced by this increment and not a regression — the block's position is unchanged — but it is the largest remaining suppression surface, and it is larger than the stuck-clock one.\n\nAn AST walk of job() (news_bot.py:4010-5034) shows ~35 top-level statements that are not inside a try: among them init_db() at 4038, the source fetch loop at 4100, the staging loop at 4143, count_pending() at 4662, compute_fixed_slots() at 4680, and the publish slot loop at 4777. The dry-spell guard sits at 4974, downstream of all of them. Any consistent raise upstream aborts every tick before the guard runs, so the alarm never fires. The uncomfortable part is the correlation: the condition [E017] exists to report is 'nothing is publishing', which is precisely the state in which the publish machinery upstream of it is most likely to be the thing raising.\n\nWhat keeps this minor rather than major is that the failure is loud, unlike the round-1 major which was silent by construction. job() is called unguarded at news_bot.py:5158 and registered via schedule.do(job) at 5154, and `schedule` propagates job exceptions, so a consistent raise kills the process into a Docker restart loop rather than leaving a healthy-looking bot. _record_heartbeat() at 5034 is also skipped, which is what watchdog.sh reads, and uptime.yml covers it from outside. Three independent alarms fire; the bot is not quietly quiet.",
+      "location": "news_bot.py:4974 (guard position), news_bot.py:4038/4100/4143/4662/4680/4777 (unguarded upstream statements)",
+      "impact": "A persistent fault in any unguarded upstream stage suppresses [E017] on every tick. Mitigated in depth: skipped heartbeat, crash-looping container, and the external Telegra.ph-age watchdog all surface the condition through channels that do not run this code.",
+      "recommendation": "No change required inside increment A — this is out of its scope and the mitigations are real. Worth recording as an architectural note for increments B and C, which will place their own markers in the same position: monitoring that reports on the publish pipeline is placed downstream of it, so it inherits the pipeline's failures. If it is ever revisited, the cheap move is to hoist the dry-spell guard above the fetch and publish loops (it reads only get_max_published_at() and needs nothing they produce), which removes the correlation without adding a try.",
+      "cwe": "CWE-703"
+    }
+  ]
+}
