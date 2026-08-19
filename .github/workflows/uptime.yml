@@ -238,6 +238,7 @@ jobs:
           resolve() {   # $1 title, $2 telegram text
             existing=$(find_issue "$1")
             if [ -z "$existing" ]; then
+              echo "no open alarm for «$1» — nothing to clear"
               return 0
             fi
             send "$2"
