@@ -27,6 +27,22 @@
 | 5 Unsung Hot Wheels Heroes | 99 | 4 |
 | Last Car Culture Set for 2026 | 56 | 6 |
 | Premium Collector Set Is a Mooneyes Diorama | 40 | 4 |
+| 11 New Hot Wheels Collectibles to Start Hunting | 28 | 3 |
+| New Hot Wheels Pop Culture Set Is Coming | 16 | 3 |
+
+Эти шесть статей участвуют в 24 флагах из 31 — то есть дают почти весь мусор.
+
+**Примеры того, что признавалось дублем** (полный список — в выводе запроса ниже):
+
+| статья A | статья B | по какой паре совпали |
+|---|---|---|
+| New Hot Wheels Mercedes-Benz 6x6 Will Likely Sell Like Hotcakes | 5 Unsung Hot Wheels Heroes | `porsche 911 gt2 evo|red line club|B` |
+| 2026 Hot Wheels Case Q Unboxing: STH Is a Pontiac | Premium Collector Set Is a Mooneyes Diorama | `mini series|boulevard|B` |
+| 2026 Hot Wheels Collectors Convention Malaysia | Last Car Culture Set for 2026 | `ferrari 250 gto|team transport|B` |
+| New Hot Wheels RLC Exclusive '21 Ford Bronco | 11 New Hot Wheels Collectibles | `ferrari f40|red line club|B` |
+
+Ни в одном случае общая линия не является предметом обеих статей — это
+упоминание внутри перечисления.
 
 **Счёт правила «линия названа в заголовках обеих статей»:**
 
