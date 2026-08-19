@@ -23,8 +23,26 @@ name: Uptime watch
 #      probe would have been permanently INCONCLUSIVE — i.e. silent false comfort.
 #      Verified against the live API before being trusted.
 #
-# ALERT DEDUP. GitHub Actions is stateless, so an open GitHub issue is used as
-# the outage flag: one Telegram message when it starts, one when it recovers,
+# TWO ALARMS, NOT ONE. The probes fail for unrelated reasons and demand
+# unrelated responses, so each carries its own severity, message and dedup flag:
+#
+#   * probe 1 fails  -> 🔴 the HOST is unreachable. Go to the hoster console.
+#   * probe 2 fails  -> 🟡 the host is fine and nothing was PUBLISHED. Look at
+#     the queue, the sources and the review pings — never at the console.
+#
+# Folding both into one 🔴 «Прод не отвечает» was actively harmful: on
+# 2026-08-15 the host was up 15 days, sshd answered, the bot heartbeat was
+# fresh, and the only real fact was that the single article of a thin news day
+# had been correctly cancelled as a duplicate. The alert still opened with
+# «Прод не отвечает» and advised the hoster console — pointing the operator at
+# the one layer that was demonstrably healthy. An alarm that misnames the layer
+# costs more than no alarm, because it is acted on.
+#
+# While the host alarm is open the publication alarm stays silent: a dead host
+# cannot publish, and saying so twice is noise, not information.
+#
+# ALERT DEDUP. GitHub Actions is stateless, so an open GitHub issue per alarm is
+# used as its flag: one Telegram message when it starts, one when it recovers,
 # silence in between. Without this the operator would get a message every 30
 # minutes for the whole outage.
 #
@@ -139,14 +157,19 @@ jobs:
           ssh_ok='${{ steps.ssh.outputs.ok }}'
           pub_ok='${{ steps.pub.outputs.ok }}'
           [ -z "$pub_ok" ] && pub_ok=true   # publication check skipped
-          reasons=""
-          [ "$ssh_ok" != true ] && reasons="${reasons}• сервер не отвечает на SSH (не присылает приветствие)%0A"
-          [ "$pub_ok" != true ] && reasons="${reasons}• больше суток не выходило ни одной публикации%0A"
-          if [ -n "$reasons" ]; then
-            echo "down=true" >> "$GITHUB_OUTPUT"
-            echo "reasons=$reasons" >> "$GITHUB_OUTPUT"
+
+          # Each probe becomes its OWN verdict. They are never merged into a
+          # single "down" flag again: the whole point is that the operator can
+          # read the severity and know which layer to open.
+          if [ "$ssh_ok" != true ]; then
+            echo "host_down=true" >> "$GITHUB_OUTPUT"
           else
-            echo "down=false" >> "$GITHUB_OUTPUT"
+            echo "host_down=false" >> "$GITHUB_OUTPUT"
+          fi
+          if [ "$pub_ok" != true ]; then
+            echo "pub_down=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "pub_down=false" >> "$GITHUB_OUTPUT"
           fi
 
       - name: Alert or recover
@@ -168,13 +191,12 @@ jobs:
           # attacker-influenced turns into command injection. Nothing here is
           # today — the strings are generated a few lines above — but the habit
           # is what keeps it true after the next edit.
-          DOWN: ${{ steps.verdict.outputs.down }}
-          REASONS: ${{ steps.verdict.outputs.reasons }}
+          HOST_DOWN: ${{ steps.verdict.outputs.host_down }}
+          PUB_DOWN: ${{ steps.verdict.outputs.pub_down }}
         run: |
           set -u
-          title="🔴 Прод не отвечает"
-          existing=$(gh issue list --state open --search "$title in:title" --json number --jq '.[0].number' || true)
-          reasons_text=$(printf '%s' "$REASONS" | sed 's/%0A/\n/g')
+          HOST_TITLE="🔴 Прод не отвечает"
+          PUB_TITLE="🟡 Прод не публикует"
 
           send() {
             if [ -z "${BOT_TOKEN:-}" ] || [ -z "${CHAT_ID:-}" ]; then
@@ -189,27 +211,59 @@ jobs:
               --data-urlencode "text=$1" >/dev/null || echo "Telegram send failed"
           }
 
+          # Open-issue lookup per alarm. The two titles share no distinctive
+          # word ("отвечает" vs "публикует"), so GitHub's AND-of-terms title
+          # search cannot return one for the other.
+          find_issue() {
+            gh issue list --state open --search "$1 in:title" --json number --jq '.[0].number' || true
+          }
+
           # Telegram FIRST, issue bookkeeping second, and the bookkeeping may
           # never abort the step. The issue is only a dedup flag; the message is
           # the entire product of this workflow. Run #195 had them the other way
           # round and a `gh` failure swallowed the alert — the same lesson the
           # bot itself learned with [E038], where the ping was moved outside the
           # repo call's try for exactly this reason.
-          if [ "$DOWN" = true ]; then
-            if [ -z "$existing" ]; then
-              send "$(printf '[watch] 🔴 Прод не отвечает\n\n%b\nЗайти по SSH может не получиться — используй консоль хостера.' "$reasons_text")"
-              gh issue create --title "$title" \
-                --body "$(printf 'Автоматическая проверка не прошла.\n\n%b' "$reasons_text")" >/dev/null \
-                || echo "issue create failed — alert was already sent; dedup degraded to one message per run"
-            else
-              echo "already alerted (issue #$existing) — staying silent"
-            fi
-          else
+          raise() {   # $1 title, $2 telegram text, $3 issue body
+            existing=$(find_issue "$1")
             if [ -n "$existing" ]; then
-              send "[watch] 🟢 Прод снова отвечает."
-              gh issue close "$existing" --comment "Проверка снова проходит." >/dev/null \
-                || echo "issue close failed — recovery message was already sent"
-            else
-              echo "all good"
+              echo "already alerted (issue #$existing) — staying silent"
+              return 0
             fi
+            send "$2"
+            gh issue create --title "$1" --body "$3" >/dev/null \
+              || echo "issue create failed — alert was already sent; dedup degraded to one message per run"
+          }
+
+          resolve() {   # $1 title, $2 telegram text
+            existing=$(find_issue "$1")
+            if [ -z "$existing" ]; then
+              return 0
+            fi
+            send "$2"
+            gh issue close "$existing" --comment "Проверка снова проходит." >/dev/null \
+              || echo "issue close failed — recovery message was already sent"
+          }
+
+          # ---- host alarm (🔴) -------------------------------------------------
+          if [ "$HOST_DOWN" = true ]; then
+            raise "$HOST_TITLE" \
+              "$(printf '[watch] 🔴 Прод не отвечает\n\n• сервер не отвечает на SSH (не присылает приветствие)\n\nЗайти по SSH может не получиться — используй консоль хостера.')" \
+              "Проба SSH-приветствия не прошла три раза подряд."
+          else
+            resolve "$HOST_TITLE" "[watch] 🟢 Прод снова отвечает."
+          fi
+
+          # ---- publication alarm (🟡) -----------------------------------------
+          # Suppressed while the host is down: an unreachable host trivially
+          # explains the missing publications, and a second ping would only
+          # dilute the one that matters.
+          if [ "$HOST_DOWN" = true ]; then
+            echo "host alarm active — publication alarm suppressed"
+          elif [ "$PUB_DOWN" = true ]; then
+            raise "$PUB_TITLE" \
+              "$(printf '[watch] 🟡 Больше суток нет публикаций\n\nСервер и SSH отвечают — с хостом всё в порядке, в консоль хостера идти незачем.\n\nСмотреть здесь: жив ли контейнер (docker ps), не пуста ли очередь (pending_articles) и не была ли единственная статья дня отменена в ревью.')" \
+              "Свежей страницы Telegra.ph нет больше суток, при этом SSH-проба проходит."
+          else
+            resolve "$PUB_TITLE" "[watch] 🟢 Публикации возобновились."
           fi
