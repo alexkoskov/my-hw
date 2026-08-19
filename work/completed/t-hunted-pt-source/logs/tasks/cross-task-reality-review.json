@@ -1,0 +1,123 @@
+{
+  "validator": "reality-checker",
+  "batch": [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14],
+  "mode": "cross-task-integration",
+  "iteration": 1,
+  "status": "changes_required",
+  "findings": [
+    {
+      "severity": "critical",
+      "category": "hallucination",
+      "task": 7,
+      "issue": "Smoke command uses wrong module path and missing required argument. `from llm_engines._llm_common import _build_system_prompt` will fail with ModuleNotFoundError — there is no `llm_engines/` directory; the file is `_llm_common.py` at repo root. Additionally `_build_system_prompt(prompt_body: str)` requires one positional argument, so `_build_system_prompt()` raises TypeError.",
+      "fix": "Replace the broken smoke command with: `python -c \"from _llm_common import _build_system_prompt; import pathlib; body = pathlib.Path('.claude/skills/project-knowledge/references/ux-guidelines.md').read_text(); print(_build_system_prompt(body)[:200])\"` — or simply drop this smoke check and rely on `pytest tests/test_ux_guidelines_structure.py -v` which already validates the file content."
+    },
+    {
+      "severity": "major",
+      "category": "feasibility",
+      "task": 3,
+      "issue": "Task 3 Details says: `test_has_exactly_the_five_keys` will have 'Old expected size: 7 keys. New expected size: 8 keys.' However the test is named `test_has_exactly_the_five_keys` and its docstring says 'Decision 4 — the five explicit netloc keys' — the current map already has 7 keys (not five). The rename instructions say 'rename to test_has_exactly_the_eight_keys is optional cosmetic'. This leaves a misleadingly-named test AND an outdated docstring ('five explicit netloc keys') that misrepresents the map size. Coupled with the test_values_are_only_the_three_source_names test (which currently covers 4 sources, not 3), both test names and the class docstring are stale.",
+      "fix": "In Task 3 instructions, mandate the rename (not 'optional cosmetic'): rename both tests and update the class docstring from 'Decision 4 — the five explicit netloc keys' to reflect the actual count after the addition. This is enforced in the TDD step — the rename should be required, not optional, to prevent future confusion."
+    },
+    {
+      "severity": "major",
+      "category": "feasibility",
+      "task": 12,
+      "issue": "Task 12 states 'existing 933+ tests' baseline and '~16 new tests' for a total of '~950'. Actual pytest collection count is 935 tests (verified: `935 tests collected`). The new test count of 16 is also understated: tech-spec and individual tasks describe ~33 new test methods across 8 test files (14 in test_t_hunted_source, 3 admin_alerts, 3 sources_registry, 2 telegram, 3 boilerplate_filter, 4 ux_guidelines_structure, 3 deploy_invariant, 1 integration). The acceptance criteria 'exit code 0, no regressions in existing 935+ tests' will lead QA agent to accept a green suite even if some new tests are missing, because the expected count is wrong.",
+      "fix": "Update Task 12 to say '935 existing + ~33 new feature tests ≈ ~968 total' (exact count finalised at implementation time). Alternatively change the AC to: 'full suite green with zero regressions' and 'all new test files listed in tech-spec exist and have the method count declared in each task'."
+    },
+    {
+      "severity": "major",
+      "category": "cross-task-integration",
+      "task": 9,
+      "issue": "Task 9 (Code Audit) lists `tests/test_sources_registry.py` as modified by 'Task 5' in the Files-to-audit section (line 109: 'tests/test_sources_registry.py (modified — Task 5)'). However after Round 1 fixes, test_sources_registry.py is modified in Task 3 (not Task 5). Task 5 explicitly says 'tests/test_sources_registry.py is NOT modified in this task'. If the auditor reads this incorrect attribution, they may skip the Task 3 changes to test_sources_registry.py during audit or check the wrong task's review logs.",
+      "fix": "Update Task 9 Details → Files to audit list: change 'tests/test_sources_registry.py (modified — Task 5)' to 'tests/test_sources_registry.py (modified — Task 3)'."
+    },
+    {
+      "severity": "major",
+      "category": "cross-task-integration",
+      "task": 10,
+      "issue": "Task 10 (Security Audit) lists `tests/test_sources_registry.py` among 'Модифицированные модули — Wave 1-3' but does not list `tests/test_sources_registry.py` as modified by Task 5 (it isn't). More importantly, Task 10 lists `tests/test_integration.py (Task 5)` as a modified source file to audit, but Task 5 creates a new file `tests/test_news_bot_dispatcher.py` — the choice between extending test_integration.py or creating a new file is left to the implementer. The audit file list should reflect both possibilities so the security auditor finds the dispatcher tests regardless of which file was used.",
+      "fix": "Update Task 10 file list to: 'tests/test_integration.py OR tests/test_news_bot_dispatcher.py (new/modified — Task 5)' — matching the actual Task 5 language. Also fix the sources_registry attribution to Task 3."
+    },
+    {
+      "severity": "minor",
+      "category": "feasibility",
+      "task": 5,
+      "issue": "Task 5 says 'In TestSendTelegraphTeaser after test_lamley_teaser_appends_news_tag (line ~100)'. Actual location in current codebase: `test_lamley_teaser_appends_news_tag` is at line 89, not ~100. This is a minor line-number drift that will not cause implementation failure but may briefly confuse the implementing agent scanning for the insertion point.",
+      "fix": "Update line reference to '(line ~89)' or remove the line hint and anchor by content: 'after test_lamley_teaser_appends_news_tag'."
+    },
+    {
+      "severity": "minor",
+      "category": "feasibility",
+      "task": 2,
+      "issue": "Task 2 details section says 'E029 пропущен сознательно: это был «зарезервированный» зазор'. No evidence in admin_alerts.py of a reserved gap at E029 — the codes jump directly from E028 (lamley_no_body) to E030 (orangetrack). This explanation is plausible but not verifiable from code. If a future agent or reviewer checks the file and sees no E029, they may add it to fill the 'gap', unintentionally renumbering.",
+      "fix": "Add a comment in admin_alerts.py near the E028/E030 boundary stating: `# E029 intentionally skipped — gap preserved for ordering continuity.` This makes the decision self-documenting in the file itself."
+    },
+    {
+      "severity": "minor",
+      "category": "feasibility",
+      "task": 1,
+      "issue": "Task 1 TDD Anchor specifies 14 test methods (6 in TestFetchTHuntedArticle, 8 in TestHostAllowlist) but the Acceptance Criteria says '~14 тест-методов' and the description says 'всего ~14 методов'. The tech-spec Testing Strategy section lists the same 14 named methods. However the task also mentions 3 additional SSRF negative cases (`test_rejects_userinfo_attack`, `test_rejects_suffix_host_attack`, `test_rejects_subdomain_variants`) as part of TestHostAllowlist — bringing the total to 11 in TestHostAllowlist, not 8. The TDD Anchor explicitly lists 8 methods for TestHostAllowlist but the detailed description lists 11. This inconsistency may cause the implementing agent to write only 8 methods and miss 3 SSRF edge cases.",
+      "fix": "Update Task 1 TDD Anchor to list all 11 TestHostAllowlist methods (including userinfo-attack, suffix-host-attack, subdomain-variants) and change the header count to '11 методов' and total to '~17 тест-методов'. Update the Acceptance Criteria count accordingly."
+    },
+    {
+      "severity": "minor",
+      "category": "feasibility",
+      "task": 3,
+      "issue": "Task 3 Acceptance Criteria says: 'python -c \"from news_bot import t_hunted_source\"' succeeds (import edit applied). While this will work in Python (a module-level `import t_hunted_source` makes it accessible as `news_bot.t_hunted_source`), this is an unusual verification idiom. More robustly: the Verify-smoke command `python -c \"from news_bot import _source_hashtag, _resolve_source_name; ...\"` already exercises the import chain. The explicit AC is fine but redundant.",
+      "fix": "No code change needed. Informational: the AC is technically correct. Keep as-is or replace with `python -c 'import news_bot; assert hasattr(news_bot, \"t_hunted_source\"); print(\"OK\")'` which is clearer."
+    },
+    {
+      "severity": "minor",
+      "category": "hints",
+      "task": 8,
+      "issue": "Task 8 Implementation hints say 'НЕ передавать source_name в _create_mock_rss_entry — _fetch_rss_entries перезаписывает это поле через _resolve_source_name(link) (см. news_bot.py:1498)'. This is a valid implementation hint. However, the same note also says '_create_mock_full_article принимает source_name напрямую — это уже staged-уровень, передавать можно как явное значение'. This creates a potential confusion: the agent might patch both places. The distinction between RSS-level source_name (ignored) vs staged-level source_name (explicit) should be called out more clearly to avoid redundant assertions.",
+      "fix": "Minor clarification only. Current wording is adequate; no code change needed."
+    }
+  ],
+  "cross_task_integration_analysis": {
+    "duplicate_resource_initialization": {
+      "verdict": "pass",
+      "notes": "No shared heavy resources introduced. Tech-spec Shared Resources section explicitly states 'None'. HTTP session is passed as parameter (not a singleton). BeautifulSoup is instantiated per-call inside the parser function, same pattern as lamley_source.py. No LLM client, DB connection, or browser instance is duplicated across tasks."
+    },
+    "hidden_dependencies": {
+      "verdict": "pass",
+      "notes": "Task 1 references admin_alerts.alert_t_hunted_* (created in Task 2). This is resolved by monkey-patching in tests (explicitly documented in Task 1). Production code works after both tasks merge. Task 3 references t_hunted_source (Task 1) via depends_on:[1]. Task 5 references news_bot.py post-Task-3 wiring via depends_on:[3]. Task 8 references both Task 1 (t_hunted_source importable) and Task 3 (NETLOC_TO_SOURCE) via depends_on:[1,3]. All critical chain dependencies are declared."
+    },
+    "inconsistent_approaches": {
+      "verdict": "pass",
+      "notes": "All tasks in Wave 2 use the same HTTP/requests pattern. No task introduces curl_cffi, httpx, or aiohttp. Boilerplate patterns all use re.compile with re.I, matching existing convention. Alert builders all follow the f-string return pattern. No library inconsistency detected across wave-parallel tasks."
+    },
+    "file_modification_conflicts": {
+      "verdict": "pass",
+      "notes": "Wave 2 parallel tasks: Task 3 (news_bot.py only), Task 4 (feeds.json + boilerplate_filter.py + test_boilerplate_filter.py), Task 5 moved to Wave 3 (test_telegram.py + test_news_bot_dispatcher.py), Task 6 (deploy.sh + deploy.yml + deploy_test.yml + test_deploy_files_invariant.py). Zero file overlap across all wave-parallel tasks. Wave 3 parallel: Task 5 (test_telegram.py + test_news_bot_dispatcher.py), Task 7 (ux-guidelines.md + test_ux_guidelines_structure.py), Task 8 (test_distributed_schedule_integration.py). Zero overlap."
+    },
+    "naming_consistency": {
+      "verdict": "pass",
+      "notes": "Alert function names are consistent across all tasks: alert_t_hunted_host_rejected, alert_t_hunted_fetch_error, alert_t_hunted_no_body (hyphen form in function name using underscore). SOURCE_HASHTAG_OVERRIDE key 't-hunted.blogspot.com' (hyphenated netloc) is consistent. source_name 't-hunted' (hyphenated) is consistent. Hashtag '#thunted' (no hyphen) is consistent with AC6. No cross-task naming divergence found."
+    },
+    "test_fixture_sharing": {
+      "verdict": "pass",
+      "notes": "SAMPLE_HTML fixture is defined in test_t_hunted_source.py (Task 1) and used only there. Integration test (Task 8) uses _create_mock_rss_entry and _create_mock_full_article helpers from the existing TestDistributedSchedule base class — no new cross-file fixture sharing. test_deploy_files_invariant.py (Task 6) uses pathlib.Path for file reading, no shared fixtures. No cross-test fixture dependency issues found."
+    },
+    "tasks_registry_ownership": {
+      "verdict": "pass",
+      "notes": "After Round 1 fixes: test_sources_registry.py is owned by Task 3 (correctly declared in depends_on chain). Task 5 explicitly excludes test_sources_registry.py from its scope. Task 3's AC mandates the suite stays green (no-RED-mid-wave guarantee). The ownership is unambiguous."
+    },
+    "wave_3_task5_placement": {
+      "verdict": "pass",
+      "notes": "Task 5 moved to Wave 3 with depends_on:[3] in Round 1. This is correct: Task 5 writes tests that exercise news_bot.py SOURCE_HASHTAG_OVERRIDE and dispatcher branch, both of which are wired in Task 3 (Wave 2). Running Task 5 before Task 3 would cause test failures."
+    }
+  },
+  "stats": {
+    "tasks_checked": 14,
+    "claims_verified": 61,
+    "issues_found": 10,
+    "by_severity": {
+      "critical": 1,
+      "major": 4,
+      "minor": 5
+    }
+  }
+}

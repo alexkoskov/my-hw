@@ -1,0 +1,52 @@
+{
+  "status": "fail",
+  "round": 2,
+  "sources": {
+    "user_spec": true,
+    "tech_spec": true,
+    "tasks": false
+  },
+  "requirements_total": 10,
+  "requirements_covered": 10,
+  "requirements_partial": 0,
+  "requirements_missing": 0,
+  "findings": [
+    {
+      "type": "structural_gap",
+      "source": "tech-spec",
+      "requirement": "Decision 7: SOURCE_EMOJI + SOURCE_LABEL for t-hunted",
+      "detail": "Round-1 finding 3 was addressed by adding SOURCE_EMOJI + SOURCE_LABEL content to the Decisions section, but the fix appended that content as a second '**Decision:**' block inside the '### Decision 8' markdown section rather than creating a separate '### Decision 7' heading. The result is a malformed entry: Decision 8 now has two independent '**Decision:**' / '**Rationale:**' / '**Alternatives considered:**' blocks under one heading. User-Spec Deviations at line 198 references 'Decision 7' but no '### Decision 7' heading exists in the document — a reader trying to locate it in the Decisions section will not find it. The decision-level content is present and discoverable only if the reader reads to the end of Decision 8's text, which violates the intent of having a named Decisions section.",
+      "severity": "critical"
+    },
+    {
+      "type": "structural_gap",
+      "source": "tech-spec",
+      "requirement": "User-Spec Deviations section coherence",
+      "detail": "The User-Spec Deviations section opens with the statement 'None.' (line 193) immediately followed by three documented deviation entries (lines 195-198). The 'None.' statement is stale text that was not removed when deviations were added. A quick reader scanning the section sees 'None.' and may stop reading, missing the three entries entirely. This is a structural coherence issue: the section header and its first sentence directly contradict its body.",
+      "severity": "major"
+    }
+  ],
+  "round1_resolutions": [
+    {
+      "finding": "CRITICAL — AC7 glossary structural test missing",
+      "status": "resolved",
+      "evidence": "tests/test_ux_guidelines_structure.py with 4 assertions added to Testing Strategy (unit tests section), Task 5 description, and Task 7 Verify-smoke. AC7 requirement 'структурное наличие глоссария проверяется тестом' is now fully covered."
+    },
+    {
+      "finding": "CRITICAL — LLM non-Russian fallback path absent",
+      "status": "resolved",
+      "evidence": "Decision 8 documents reuse of existing _is_mostly_russian output check in _llm_common.py:134-153. Architecture 'How it works' section updated to include the fallback routing through Google Translate with '↳ автоперевод' marker. Error scenario row 5 from user-spec is explicitly addressed."
+    },
+    {
+      "finding": "CRITICAL structural_gap — SOURCE_LABEL decision content only in Task 3",
+      "status": "partially resolved — new structural issue introduced",
+      "evidence": "SOURCE_LABEL rationale content was moved into the Decisions section, but was appended to Decision 8 without a '### Decision 7' heading. The content is present but not properly titled or cross-referenced, creating the new structural_gap finding above."
+    },
+    {
+      "finding": "MAJOR underengineering — LLM fallback gap",
+      "status": "resolved",
+      "evidence": "Same as the LLM fallback CRITICAL finding — resolved by Decision 8."
+    }
+  ],
+  "summary": "All 10 user-spec requirements (AC1-AC10) are now fully covered after round-1 fixes. Round-1 critical gaps are resolved. However, the fix for finding 3 (SOURCE_LABEL structural gap) introduced a new structural issue: the SOURCE_EMOJI + SOURCE_LABEL content was appended inside Decision 8's markdown block rather than under a dedicated '### Decision 7' heading, leaving User-Spec Deviations with a broken reference to a non-existent 'Decision 7' heading. Additionally, the User-Spec Deviations section has a stale 'None.' sentence that contradicts the three entries following it. Two findings remain: 1 critical structural_gap (Decision 7 heading missing), 1 major structural coherence issue (stale 'None.' in Deviations)."
+}

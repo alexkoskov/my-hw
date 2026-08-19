@@ -1,0 +1,83 @@
+........................................................................ [ 40%]
+....................................................... [ 70%]
+.......F.........................F.........F.........        [100%]
+=================================== FAILURES ===================================
+____ TestDrySpellPingRateLimit.test_marking_suppresses_the_rest_of_the_day _____
+
+self = <test_pending_articles_repo.TestDrySpellPingRateLimit testMethod=test_marking_suppresses_the_rest_of_the_day>
+
+    def test_marking_suppresses_the_rest_of_the_day(self):
+        self.assertFalse(pending_articles_repo.is_dry_spell_ping_rate_limited())
+        pending_articles_repo.mark_dry_spell_pinged()
+>       self.assertTrue(pending_articles_repo.is_dry_spell_ping_rate_limited())
+E       AssertionError: False is not true
+
+tests/test_pending_articles_repo.py:2566: AssertionError
+_ TestDrySpellAlert.test_a_delivered_ping_is_recorded_where_a_restart_will_find_it _
+
+self = <test_job_distributed_publish.TestDrySpellAlert testMethod=test_a_delivered_ping_is_recorded_where_a_restart_will_find_it>
+mock_admin = <MagicMock name='send_admin_notification' id='281473060222832'>
+_mock_sleep = <MagicMock name='sleep' id='281473060218464'>
+
+    @patch('news_bot.time.sleep')
+    @patch('news_bot.send_admin_notification')
+    def test_a_delivered_ping_is_recorded_where_a_restart_will_find_it(
+            self, mock_admin, _mock_sleep):
+        # The write half of the same boundary: the ping must leave a mark in
+        # the DB, not in process memory.
+        self._seed_silence()
+
+        self._run_job()
+
+        self.assertEqual(self._e017_count(mock_admin), 1)
+        # Queried straight from the table, NOT through
+        # is_dry_spell_ping_rate_limited(): asking the gate what the gate
+        # recorded is satisfied by an in-process marker too, which is the
+        # implementation this test exists to rule out.
+        conn = sqlite3.connect(self.db_path)
+        try:
+            row = conn.execute(
+                "SELECT value FROM bot_state WHERE key=?",
+                ('dry_spell_last_pinged_at',)).fetchone()
+        finally:
+            conn.close()
+>       self.assertIsNotNone(
+            row, "a delivered [E017] must leave a marker in bot_state, where "
+                 "the next container start can still see it")
+E       AssertionError: unexpectedly None : a delivered [E017] must leave a marker in bot_state, where the next container start can still see it
+
+tests/test_job_distributed_publish.py:1030: AssertionError
+------------------------------ Captured log call -------------------------------
+WARNING  news_bot:news_bot.py:5006 [dry-spell] channel silent for 5 days — sending [E017] admin warning.
+___________ TestDrySpellAlert.test_restarts_within_one_day_ping_once ___________
+
+self = <test_job_distributed_publish.TestDrySpellAlert testMethod=test_restarts_within_one_day_ping_once>
+mock_admin = <MagicMock name='send_admin_notification' id='281473060839040'>
+_mock_sleep = <MagicMock name='sleep' id='281473060842736'>
+
+    @patch('news_bot.time.sleep')
+    @patch('news_bot.send_admin_notification')
+    def test_restarts_within_one_day_ping_once(self, mock_admin, _mock_sleep):
+        # Prod restarted four times on 2026-08-13 and job() re-ran each time,
+        # so one outage produced four identical «канал молчит» pings. Three
+        # ticks here stand in for the restarts.
+        self._seed_silence()
+
+        for _ in range(3):
+            self._run_job()
+
+>       self.assertEqual(self._e017_count(mock_admin), 1,
+                         f"three ticks in one day must ping once, got "
+                         f"{self._admin_msgs(mock_admin)!r}")
+E       AssertionError: 3 != 1 : three ticks in one day must ping once, got ['[E019] 🟡 OpenRouter: осталось ~$4.14\n\nЧто произошло: баланс OpenRouter опустился ниже порога $5.00.\n\nЧто сделать: пополни баланс на https://openrouter.ai/ (Settings → Credits). Иначе кредиты кончатся, переводы начнут падать и посты придержатся до пополнения.', '[E009] 🟢 Бот сработал, новых статей нет.\n\nВоронка приёма за тик:\n• получено записей: 0 (источников не ответило: 0)\n• новых после фильтров: 0\n• отсеяно: нет статьи 0, чеклист 0, реклама 0, жанр 0, дубль-блок 0\n• дедуп degraded (всё равно опубликованы): 0\n• добавлено в очередь: 0\nГде схлопнулось: источники не дали новых записей\nперевод/пост — очередь пуста', '[E017] ⚠️ Канал молчит 5+ дней\n\nЧто произошло: за последние 5 дней не вышло ни одного поста. Бот работает, но публиковать нечего — возможно, фильтр отсекает всё, иссяк источник, или мешает сеть сервера.\n\nЧто сделать: глянь логи (`sudo journalctl -u news_bot.service | tail -50`) — ищи «Filtered out», «held», ошибки сети.', '[E019] 🟡 OpenRouter: осталось ~$4.14\n\nЧто произошло: баланс OpenRouter опустился ниже порога $5.00.\n\nЧто сделать: пополни баланс на https://openrouter.ai/ (Settings → Credits). Иначе кредиты кончатся, переводы начнут падать и посты придержатся до пополнения.', '[E009] 🟢 Бот сработал, новых статей нет.\n\nВоронка приёма за тик:\n• получено записей: 0 (источников не ответило: 0)\n• новых после фильтров: 0\n• отсеяно: нет статьи 0, чеклист 0, реклама 0, жанр 0, дубль-блок 0\n• дедуп degraded (всё равно опубликованы): 0\n• добавлено в очередь: 0\nГде схлопнулось: источники не дали новых записей\nперевод/пост — очередь пуста', '[E017] ⚠️ Канал молчит 5+ дней\n\nЧто произошло: за последние 5 дней не вышло ни одного поста. Бот работает, но публиковать нечего — возможно, фильтр отсекает всё, иссяк источник, или мешает сеть сервера.\n\nЧто сделать: глянь логи (`sudo journalctl -u news_bot.service | tail -50`) — ищи «Filtered out», «held», ошибки сети.', '[E019] 🟡 OpenRouter: осталось ~$4.14\n\nЧто произошло: баланс OpenRouter опустился ниже порога $5.00.\n\nЧто сделать: пополни баланс на https://openrouter.ai/ (Settings → Credits). Иначе кредиты кончатся, переводы начнут падать и посты придержатся до пополнения.', '[E009] 🟢 Бот сработал, новых статей нет.\n\nВоронка приёма за тик:\n• получено записей: 0 (источников не ответило: 0)\n• новых после фильтров: 0\n• отсеяно: нет статьи 0, чеклист 0, реклама 0, жанр 0, дубль-блок 0\n• дедуп degraded (всё равно опубликованы): 0\n• добавлено в очередь: 0\nГде схлопнулось: источники не дали новых записей\nперевод/пост — очередь пуста', '[E017] ⚠️ Канал молчит 5+ дней\n\nЧто произошло: за последние 5 дней не вышло ни одного поста. Бот работает, но публиковать нечего — возможно, фильтр отсекает всё, иссяк источник, или мешает сеть сервера.\n\nЧто сделать: глянь логи (`sudo journalctl -u news_bot.service | tail -50`) — ищи «Filtered out», «held», ошибки сети.']
+
+tests/test_job_distributed_publish.py:979: AssertionError
+------------------------------ Captured log call -------------------------------
+WARNING  news_bot:news_bot.py:5006 [dry-spell] channel silent for 5 days — sending [E017] admin warning.
+WARNING  news_bot:news_bot.py:5006 [dry-spell] channel silent for 5 days — sending [E017] admin warning.
+WARNING  news_bot:news_bot.py:5006 [dry-spell] channel silent for 5 days — sending [E017] admin warning.
+=========================== short test summary info ============================
+FAILED tests/test_pending_articles_repo.py::TestDrySpellPingRateLimit::test_marking_suppresses_the_rest_of_the_day
+FAILED tests/test_job_distributed_publish.py::TestDrySpellAlert::test_a_delivered_ping_is_recorded_where_a_restart_will_find_it
+FAILED tests/test_job_distributed_publish.py::TestDrySpellAlert::test_restarts_within_one_day_ping_once
+3 failed, 177 passed, 29 subtests passed in 48.07s

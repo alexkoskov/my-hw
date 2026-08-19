@@ -1,0 +1,77 @@
+{
+  "status": "approved_with_suggestions",
+  "summary": "Every round-1 and security-auditor fix landed correctly and I verified each by injection rather than by reading: the gate call now fails open at the caller, the mark write can no longer skip _record_heartbeat(), the docstring's claims are all true (I checked the record_fetch_failure comparison and the TZ-independence argument), the INFO line is now WARNING, _parse_dt_tolerant absorbs bytes/int/float/list and as a side effect also un-breaks the sibling hold-cap gate, the astimezone normalisation is right, and the future-dated branch is reachable and self-heals. The three questions asked all come back clean: the blanket except swallows nothing that matters (KeyboardInterrupt still propagates, every path logs with exc_info, the connection is always closed), the future-marker branch is correct end to end, and neither job() handler can raise. My round-2 critical is WITHDRAWN — it was an artifact of the review process, not of the code, and is now recorded below as a process note with the proof. Increment A is approved; what remains is six minors, none blocking.",
+  "criticalIssues": [],
+  "suggestions": [
+    {
+      "file": "work/operator-blind-spots/logs/working/task-standalone/code-reviewer-2.json",
+      "line": 0,
+      "severity": "minor",
+      "category": "best-practices",
+      "suggestion": "WITHDRAWN CRITICAL, recorded so the cost is not paid twice. Round 2 reported three of the increment's new tests failing intermittently (~1 in 20 runs of the two test files) with the signature 'mark_dry_spell_pinged() returns normally and leaves no row'. There is no defect. Both failures were caused by the test-reviewer's mutation harness (scratchpad/mutate.py) installing mutants into the SHARED working tree — the same news_bot.py and pending_articles_repo.py my pytest runs import — while I was running the suite. Proven by exact reproduction in an isolated copy of the tree: M13_wrong_key (mark_dry_spell_pinged writes to key 'dry_spell_last_pinged_at_v2') reproduces failure B byte-for-byte, same three tests, same '3 failed, 177 passed, 29 subtests'; M9_job_gate_fail_closed (rate_limited = True in the gate's except handler) reproduces failure A byte-for-byte, same test, same line 1047, same two mutually-exclusive log lines at news_bot.py:4988 and :4998, same '1 failed, 179 passed'. The timing objection dissolves too: mutate.py's restore() is shutil.move(path+'.bak', path), a rename, so after a restore the source file carries the .bak's mtime — i.e. the moment the mutant was APPLIED, never the moment it was removed (verified empirically). pending_articles_repo.py's 12:05:42 is therefore the apply of M13, the last repo-touching mutant in the harness, not a restore; my failing run imported four seconds INTO that window. The mtimes cannot show when mutants came off, which is why the schedule looked contradictory. Process fix, not code fix: a mutation harness must operate on a copy — `git worktree add` or a tar-copy to /tmp, which is exactly how I verified this — never on the tree other agents are testing against. Cost this time: one review round and a false-critical that would have blocked a correct increment.",
+      "benefit": "The next parallel review does not lose a round to phantom flakes, and the withdrawn critical is on the record with its cause so nobody re-opens it from the transcript.",
+      "optional": true
+    },
+    {
+      "file": "pending_articles_repo.py",
+      "line": 791,
+      "severity": "minor",
+      "category": "maintainability",
+      "suggestion": "The new future-dated branch logs the raw stored value with %r — `logger.warning(\"future-dated bot_state marker at key=%s: %r — ignoring\", _KEY_DRY_SPELL_PINGED, row[0])`. That is a SECOND instance of the pattern the findings log defers in row 12, and unlike the first it is new code rather than a pre-existing shared helper. It is safe here and I am not asking for a change now: this site is hard-wired to _KEY_DRY_SPELL_PINGED, and the only writer of that key is mark_dry_spell_pinged(), which stores a timestamp — no token or link can reach it. The ask is bookkeeping: add this line to the increment-B note alongside _parse_dt_tolerant, because a sweep aimed at the helper alone will fix one site and leave this one, and by then the reader has no easy way to tell which %r sites are key-scoped and which are generic.",
+      "benefit": "The deferred row-12 fix stays complete when it is finally made, instead of covering the helper and silently missing the copy this increment introduced.",
+      "optional": true
+    },
+    {
+      "file": "news_bot.py",
+      "line": 4973,
+      "severity": "minor",
+      "category": "readability",
+      "suggestion": "The dry-spell block went from 6 lines to about 45, and the innermost logger.warning now sits at six levels of indentation (try > if > if > else > if > try) inside a job() that already runs from line 4010 to 5040. Every level is justified individually — the fail-open gate, the branch, the delivery check, the mark guard — which is exactly how this shape gets past review each time. Extracting `_maybe_send_dry_spell_alert(silent_days)` next to _record_heartbeat would leave three lines at the call site and let the helper read as a flat sequence, and it costs nothing in behaviour because the function already has no return value the caller uses. I am NOT asking for it in this increment: the change is scoped and matching the neighbouring [E038] site was the right call. Flagging it as the moment to decide, because increment C adds a per-source variant of this same block and the user-spec says it reuses this idiom — two more copies at six levels is the version nobody will volunteer to untangle.",
+      "benefit": "Names the extraction point before increment C triples the shape, rather than after.",
+      "optional": true
+    },
+    {
+      "file": "tests/test_pending_articles_repo.py",
+      "line": 2578,
+      "severity": "minor",
+      "category": "best-practices",
+      "suggestion": "In test_unreadable_marker_does_not_suppress the `12345` case does not test what the docstring says it tests. The docstring's point is that fromisoformat answers a non-str with TypeError rather than ValueError; I instrumented the actual reads and SQLite's TEXT affinity converts the bare int on the way in, so the row comes back as the STRING '12345' and fromisoformat raises ValueError — the same path as 'not-a-timestamp'. The BLOB case is the real one and it works: `sqlite3.Binary(b'\\x00\\x01')` comes back as `b'\\x00\\x01'` and does raise TypeError, so the coverage the security finding asked for is genuinely there. Either drop the int from the garbage set or keep it and stop attributing the TypeError claim to it — as written the test looks like it pins two TypeError shapes when it pins one.",
+      "benefit": "The set of garbage inputs stops over-claiming, so a future reader who deletes the BLOB case as 'redundant with the int case' cannot silently remove the only coverage of the widened except.",
+      "optional": true
+    },
+    {
+      "file": ".claude/skills/project-knowledge/references/patterns.md",
+      "line": 350,
+      "severity": "minor",
+      "category": "maintainability",
+      "suggestion": "patterns.md documents the [E038] rate-limit gate in detail at line 350 — global not per-link, why, and that the read fails open — and there is no entry anywhere in project-knowledge for [E017] (grep finds zero hits across all five reference files). This increment gives [E017] a gate of the same class with a deliberately DIFFERENT bound (calendar day, not rolling window) for a reason that took a paragraph of docstring to justify, and the user-spec says increments B and C reuse the idiom. Two or three lines next to the [E038] entry — [E017] is bounded per UTC calendar day because consecutive daily ticks can sit a minute short of 24 h and a rolling window would swallow the next day's alarm; marked only after a delivered send; fails open on every path — would carry it. The project's own standing rule is that docs are deliverables for any ops-visible change, and this changes what the operator sees during an outage.",
+      "benefit": "The one place a future reader looks to decide 'rolling window or calendar day?' answers the question, instead of the answer living only in a docstring inside the third copy of the idiom.",
+      "optional": false
+    },
+    {
+      "file": "admin_alerts.py",
+      "line": 585,
+      "severity": "minor",
+      "category": "best-practices",
+      "suggestion": "Pre-existing and outside this increment's diff, but it is the body of the very alert this increment is about, and the operator now sees it once per outage day rather than once per restart: alert_channel_silent still tells them to run `sudo journalctl -u news_bot.service | tail -50`. Prod has been Docker-only since the migration — there is no news_bot.service and no sudoers entry — so the one actionable instruction in the message fails at the prompt. `docker logs --tail 50 hw-news-bot` is the current equivalent. Worth folding in whenever [E017]'s text is next touched; alert_backup_missing at line 142 mentions crontab/journalctl too and has the same staleness.",
+      "benefit": "The «Что сделать» half of the alert becomes executable again, which is the whole reason the alert has that section.",
+      "optional": true
+    },
+    {
+      "file": "tests/test_job_distributed_publish.py",
+      "line": 953,
+      "severity": "minor",
+      "category": "best-practices",
+      "suggestion": "Pre-existing, but it showed up as a confound while chasing the critical finding above and it is worth recording. These job() tests make LIVE network calls: the failure output contains «[E019] 🟡 OpenRouter: осталось ~$4.14», a real balance read from the OpenRouter API by _maybe_alert_openrouter_balance (news_bot.py:1624), and the value drifted between runs ($4.15 → $4.14). Consequences: the file takes ~45 s where the repo file takes 3.5 s, the suite fails differently with no network, and every run has an unpinned external dependency in the middle of the tick under test. `_JobBase` already patches the other externals; adding `patch('news_bot._maybe_alert_openrouter_balance')` to the base (or to _run_job in this class) removes it. Do this before adding the increment-C job tests, not after.",
+      "benefit": "Removes an unpinned external from the tick under test and cuts the file's runtime by an order of magnitude, which also makes the intermittent failure above far cheaper to bisect.",
+      "optional": true
+    }
+  ],
+  "metrics": {
+    "filesReviewed": 4,
+    "criticalIssuesCount": 0,
+    "majorIssuesCount": 0,
+    "minorIssuesCount": 7,
+    "testCoverageAssessment": "adequate"
+  }
+}

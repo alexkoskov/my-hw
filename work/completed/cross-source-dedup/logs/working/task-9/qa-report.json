@@ -1,0 +1,187 @@
+{
+  "feature": "cross-source-dedup",
+  "task": "Task 9: Pre-deploy QA",
+  "date": "2026-06-06",
+  "status": "passed",
+  "summary": {
+    "totalChecks": 23,
+    "passed": 18,
+    "failed": 0,
+    "notVerifiable": 5,
+    "criticals": 0,
+    "majors": 0,
+    "minors": 0
+  },
+  "testSuite": {
+    "status": "passed",
+    "details": "python3 -m pytest -q (repo root) => 1083 passed, 2 skipped, 0 failed, 0 errors in ~14s. Matches known-green baseline exactly (1083/2/0). The 2 skips are explicit conditional skips with reasons (tests/test_mattel_news_source.py:613 'live listing snapshot not available', :629 'live article snapshot not available') — pre-existing, unrelated to this feature, motivated. Feature test files alone: 143 passed (tests/test_model_extractor.py, test_integration.py::TestCrossSourceDedup + TestFingerprintCarryThrough, test_pending_articles_repo.py, test_migration.py, test_admin_alerts.py, test_backfill_fingerprints.py)."
+  },
+  "acceptanceCriteria": [
+    {
+      "criterion": "AC1 (user): Each new article with paragraphs gets a model_fingerprint extracted and stored in pending_articles.model_fingerprint as JSON.",
+      "status": "passed (deviation approved)",
+      "evidence": "tests/test_model_extractor.py::TestExtractFingerprint (18 tests) proves extraction; tests/test_pending_articles_repo.py::TestInsertPendingFingerprint::test_insert_pending_with_fingerprint_roundtrip proves storage+JSON roundtrip. DEVIATION: shape is dict {\"strict\":[...],\"brands\":[...]} not list[str]. Approved — tech-spec '## User-Spec Deviations' ('Refined: Fingerprint shape is dict, not list [APPROVED]') + Decision 4/5; operator confirmed AC8/AC9/AC10 two-level granularity intent during user-spec phase. Smoke: extract_fingerprint({'title':'2018 Toyota 4Runner gold chase','paragraphs':['Subaru Legacy GT (BP).']}) => {'strict':['subaru legacy gt','toyota 4runner'],'brands':['subaru','toyota']}."
+    },
+    {
+      "criterion": "AC2 (user): On publish, model_fingerprint moves into published_articles.model_fingerprint with the rest of the article fields.",
+      "status": "passed",
+      "evidence": "tests/test_integration.py::TestFingerprintCarryThrough::test_pending_to_published_roundtrip — inserts pending row with dict fingerprint, calls move_to_published, SELECTs raw published_articles.model_fingerprint, asserts json.loads(stored) == fp. Source: pending_articles_repo.move_to_published carries the column (Task 4 deviation, two-line SELECT/INSERT column addition, documented in decisions.md Task 4)."
+    },
+    {
+      "criterion": "AC3 (user): Hard-block at >=50% overlap — article NOT inserted into pending; link goes to processed_news; INFO log; quiet [E015] ping.",
+      "status": "passed",
+      "evidence": "tests/test_integration.py::TestCrossSourceDedup::test_hard_block_path — second article NOT in pending, link present in processed_news (Decision 8 mark_processed), E015 ping fired (asserted via mock call_args_list). E015 builder: tests/test_admin_alerts.py::test_e015_cross_source_blocked."
+    },
+    {
+      "criterion": "AC4 (user): Soft-flag at 30-49% — article published; operator gets [E014] columnar Russian ping with shared model list.",
+      "status": "passed",
+      "evidence": "tests/test_integration.py::TestCrossSourceDedup::test_soft_flag_path — both articles inserted, exactly one E014 fired. E014 builder format: tests/test_admin_alerts.py::test_e014_cross_source_dupe (asserts code prefix, emoji, key substrings, model list)."
+    },
+    {
+      "criterion": "AC5 (user): Ping-noise guard — same (new_link, existing_link) pair pings E014 at most once per 7 days; state in bot_state.",
+      "status": "passed",
+      "evidence": "tests/test_integration.py::TestCrossSourceDedup::test_soft_flag_rate_limited (second identical pair within window => no second E014). Unit: tests/test_pending_articles_repo.py::TestPairRateLimit — within_window_true, after_window_false (backdated bot_state row, no time.sleep), independent_pairs, corrupted_timestamp_does_not_block. State stored in bot_state via softflag_pair:{new}\\n{existing} key (Decision 6)."
+    },
+    {
+      "criterion": "AC6 (user): Empty fingerprint on new article => dedup skipped; DB stores [] (here {\"strict\":[],\"brands\":[]}), not NULL.",
+      "status": "passed",
+      "evidence": "tests/test_integration.py::TestCrossSourceDedup::test_empty_fingerprint (article with no brands passes through, fingerprint {\"strict\":[],\"brands\":[]} stored, no comparison). Unit: tests/test_model_extractor.py::TestSimilarity::test_empty_fp_returns_zero + test_both_empty_returns_zero (Decision 4 empty-fp guard returns 0.0). Storage distinct-from-NULL: tests/test_pending_articles_repo.py::TestInsertPendingFingerprint::test_insert_pending_with_empty_fingerprint_roundtrip."
+    },
+    {
+      "criterion": "AC7 (user): Comparison runs against ALL sources — within-source republishes also caught.",
+      "status": "passed",
+      "evidence": "tests/test_integration.py::TestCrossSourceDedup::test_within_source_dedup — two articles from SAME source_name with 100% overlap => second blocked (pins Decision 9 no-source-filter)."
+    },
+    {
+      "criterion": "AC8 (user): Anti-false-100% — if either fp has only 1 model, compare on strict models only; brand-only fallback only when both have >=2 distinct brands.",
+      "status": "passed",
+      "evidence": "tests/test_model_extractor.py::TestSimilarity::test_one_token_strict_both_sides_no_brand_fallback, ::test_one_strict_one_brand_each, ::test_two_strict_one_brand_each (brand-count guard boundary). Source: model_extractor.similarity guards len<=1 and brands<2 (Decision 4). Fixture probe: cross_source_dedup_pairs.py Pair 5 (same-brand-different-model) + Pair 6 (1-token both sides), both classified non-dupe in test_calibration_accuracy."
+    },
+    {
+      "criterion": "AC9 (user): Extractor/compare crash => article still published (degraded mode); ERROR log with traceback; channel unaffected.",
+      "status": "passed",
+      "evidence": "tests/test_integration.py::TestCrossSourceDedup::test_degraded_mode — extract_fingerprint patched to raise; article still inserted (model_fingerprint NULL), exactly one rate-limited E016 fired with exception class name, second job() within hour fires zero E016, second article still published. try/except Exception wrap = Decision 12. E016 builder: tests/test_admin_alerts.py::test_e016_dedup_degraded."
+    },
+    {
+      "criterion": "AC10 (user): Schema migration auto-runs at init_db() via try/except sqlite3.OperationalError; re-run on migrated DB is a no-op.",
+      "status": "passed",
+      "evidence": "tests/test_migration.py::TestMigration::test_init_schema_idempotent + test_init_db_idempotent (double-call, no raise, both columns present). Live smoke: double init_schema on :memory: => pending model_fingerprint True, published model_fingerprint True, no exception. Source: pending_articles_repo.init_schema ALTER block in try/except OperationalError (Decision 11)."
+    },
+    {
+      "criterion": "AC11 (user): backfill_fingerprints.py walks last 14d published_articles, derives fingerprint, writes new column; idempotent; logs summary.",
+      "status": "passed (deviation approved)",
+      "evidence": "tests/test_backfill_fingerprints.py: test_idempotency_second_run_processed_zero, test_days_window_honored, test_summary_structure, test_fetch_empty_stores_computed_empty, test_fetch_exception_leaves_null, test_days_clamp_rejects_out_of_range[*]. DEVIATION: paragraphs are re-fetched via news_bot.fetch_full_article (Path A) because published_articles does NOT store paragraphs. Approved — tech-spec '## User-Spec Deviations' + Decision 10 ([APPROVED 2026-06-04]). Idempotency marker: WHERE model_fingerprint IS NULL. Dry-run smoke on fresh empty DB: exit 0, full summary block (Window/Processed/Skipped/Empty fp/Errors/Duration), DB md5 unchanged before==after (zero writes)."
+    },
+    {
+      "criterion": "AC12 (user): Calibration fixture with 8 labelled pairs (4 dupes incl. real 2026-06-03, 4 non-dupes incl. AC8 probe + 1-token guard); classifier >=7/8 correct.",
+      "status": "passed",
+      "evidence": "tests/fixtures/cross_source_dedup_pairs.py (4 DUPE_PAIRS incl. Pair 1 real 2026-06-03 t-hunted<->autoevolution; 4 NON_DUPE incl. Pair 5 same-brand-diff-model, Pair 6 1-token guard, Pair 8 industry-news empty-fp). tests/test_model_extractor.py::test_calibration_accuracy (>=7/8 floor; decisions.md Task 1 reports actual 8/8) + ::test_calibration_real_pair_must_pass (Pair 1 must classify duplicate; T8 M1 hardened to assert classifier verdict)."
+    },
+    {
+      "criterion": "AC-tech-1: All ALTER TABLE migrations idempotent on repeated init_schema() via try/except sqlite3.OperationalError.",
+      "status": "passed",
+      "evidence": "tests/test_migration.py::test_init_schema_idempotent + tests/test_pending_articles_repo.py::TestSchema::test_init_schema_is_idempotent (row counts preserved). Live double-init smoke green for both tables."
+    },
+    {
+      "criterion": "AC-tech-2: Schema-pin tests updated — EXPECTED_PENDING has model_fingerprint; EXPECTED_PENDING_COLUMNS and EXPECTED_PUBLISHED_COLUMNS updated.",
+      "status": "passed",
+      "evidence": "tests/test_pending_articles_repo.py::TestCrossSourceDedupSchemaPin::test_expected_pending_includes_model_fingerprint + ::test_expected_published_includes_model_fingerprint + TestInsertPendingFingerprint::test_pending_json_cols_registers_model_fingerprint (T8 M2 hardening). tests/test_migration.py::test_pending_articles_has_expected_columns + ::test_published_articles_has_expected_columns assert full column-set + per-column shape (litmus: dropping the ALTER fails the set-equality assert)."
+    },
+    {
+      "criterion": "AC-tech-3: pytest -q green including all new tests (model_extractor, backfill, admin_alerts, integration TestCrossSourceDedup, migration, pending_articles_repo).",
+      "status": "passed",
+      "evidence": "Full suite 1083 passed / 2 skipped / 0 failed. Feature subset alone 143 passed."
+    },
+    {
+      "criterion": "AC-tech-4: No regressions in existing tests (1012+ at HEAD pass).",
+      "status": "passed",
+      "evidence": "1083 passed = baseline 1012 (pre-feature) + ~71 new feature tests; 0 failed. Test count grew well above the +20 floor noted in the task; coverage growth healthy."
+    },
+    {
+      "criterion": "AC-tech-5: Performance — extract_fingerprint <10ms on 10KB body; full dedup stage <100ms per article.",
+      "status": "not_verifiable",
+      "evidence": "Treated as not_verifiable per Decision 3 / task Details — guaranteed CONSTRUCTIVELY via bounded quantifiers (ReDoS-safe regex) + structural window-bounded queries, NOT via wall-clock CI asserts (avoids flakiness). Structural guards: tests/test_model_extractor.py::TestExtractFingerprint::test_long_body_no_hang (10KB body completes) + tests/test_pending_articles_repo.py::TestListRecentFingerprints window tests (bounded candidate set). Empirical backing: security-audit.md Focus 2 measured worst-case 1.87ms on 10KB adversarial input across all 3 regexes (3 orders of magnitude under budget). Considered met constructively; criterion is sound."
+    },
+    {
+      "criterion": "AC-tech-6: No new external dependencies in requirements.txt.",
+      "status": "passed",
+      "evidence": "diff of requirements.txt vs pre-feature baseline (git show b891885:requirements.txt) => EMPTY (no diff). Also empty vs HEAD. Stdlib re/json/set/datetime/sqlite3 only."
+    },
+    {
+      "criterion": "AC-tech-7: Backfill idempotent — second run on same DB skips processed rows, summary Processed: 0.",
+      "status": "passed",
+      "evidence": "tests/test_backfill_fingerprints.py::test_idempotency_second_run_processed_zero. Idempotency marker WHERE model_fingerprint IS NULL (Decision 10). Dry-run smoke confirmed summary structure with Processed/Skipped counters."
+    },
+    {
+      "criterion": "AC-tech-8: E016 rate-limit — consecutive calls within an hour send the ping exactly once.",
+      "status": "passed",
+      "evidence": "tests/test_pending_articles_repo.py::TestDedupDegradedRateLimit::test_degraded_rate_limit_within_hour_true + ::after_hour_false (backdated bot_state, no time.sleep) + unset_returns_false + corrupted_timestamp_does_not_block. Integration: TestCrossSourceDedup::test_degraded_mode asserts exactly one E016 across two job() runs within the hour."
+    },
+    {
+      "criterion": "AC-tech-9: Migration block survives init_db() called twice with no warning/error in logs.",
+      "status": "passed",
+      "evidence": "tests/test_migration.py::TestMigration::test_init_db_idempotent passes (double init_db, no raise). Per-statement try/except sqlite3.OperationalError swallows the duplicate-column attempt silently (Decision 11)."
+    },
+    {
+      "criterion": "AC-tech-10: deploy.sh FILES list contains model_extractor.py AND backfill_fingerprints.py (else prod ImportError on first tick).",
+      "status": "passed",
+      "evidence": "grep -nE 'model_extractor.py|backfill_fingerprints.py' deploy.sh => line 56 \"model_extractor.py\", line 57 \"backfill_fingerprints.py\" (both in FILES list). Also confirmed by security-audit.md verified-invariant 8."
+    },
+    {
+      "criterion": "AC-tech-11: backfill_fingerprints.py imports news_bot BEFORE logging.basicConfig() (so _TokenRedactingFilter attaches to root logger).",
+      "status": "passed",
+      "evidence": "grep: 'import news_bot' at line 72; 'logging.basicConfig(' at line 219 (inside main()) — import precedes basicConfig. Confirmed by security-audit.md verified-invariant 1 (runtime filter-chain inspection)."
+    }
+  ],
+  "coverageCheck": {
+    "status": "passed",
+    "details": "Every Tasks 1-5 file has a corresponding test file and each passed AC ties to a behavior-exercising test (not import-only): model_extractor.py -> tests/test_model_extractor.py (29 tests, real extract+similarity); backfill_fingerprints.py -> tests/test_backfill_fingerprints.py (11 tests, real extractor+repo wiring, persisted DB-state asserts); pending_articles_repo.py -> tests/test_pending_articles_repo.py + tests/test_migration.py (62 tests, DB roundtrip + schema-pin + rate-limit window-expiry); admin_alerts.py -> tests/test_admin_alerts.py (test_e014/e015/e016, content asserts); news_bot.py (_check_cross_source_dedup gate) -> tests/test_integration.py::TestCrossSourceDedup + TestFingerprintCarryThrough (8 scenarios on real job() loop, DB-state + ping introspection); deploy.sh -> verified by grep (FILES list contains both new files). No feature file lacks tests."
+  },
+  "findings": [],
+  "auditInputs": {
+    "codeAudit": "PASS-WITH-NOTES (0 crit / 2 major / 5 minor / 3 nit). Report file absent on this machine (was on prior machine's gitignored logs/) but verdict preserved in decisions.md Task 6. Two non-blocking follow-ups: news_bot reaches into pending_repo._connect() (private API); degraded path opens two sequential connections. Neither blocks deploy.",
+    "securityAudit": "PASS (0 HIGH / 0 MED / 2 LOW info). SSRF (allowlist), ReDoS (1.87ms/10KB), SQLi (all 7 helpers parametrized), secret leakage (type(exc).__name__ only + _redact_text boundary), rendering injection (parse_mode=None) all empirically clean. Caveat-5 import-order verified. logs/audits/security-audit.md.",
+    "testAudit": "PASS WITH NOTES (0 crit / 0 high / 2 medium / 2 low / 2 info). M1 (must-pass asserted threshold not verdict) and M2 (missing direct _PENDING_JSON_COLS guard) both FIXED in Task 8 session. L1/L2 cosmetic, left as-is. logs/audits/test-audit.md."
+  },
+  "smokeChecks": {
+    "fullSuite": "1083 passed, 2 skipped, 0 failed",
+    "doubleInitSchema": "pending+published model_fingerprint present, no exception on double-call",
+    "extractor": "{'strict': ['subaru legacy gt', 'toyota 4runner'], 'brands': ['subaru', 'toyota']}",
+    "deploySh": "lines 56-57: model_extractor.py + backfill_fingerprints.py in FILES",
+    "importOrder": "import news_bot (L72) before logging.basicConfig (L219)",
+    "requirementsDiff": "empty vs pre-feature baseline b891885 and vs HEAD",
+    "backfillDryRun": "exit 0; summary block present; DB md5 a97fcc21676e2d1ac2cfddc08b89d863 identical before==after (zero writes). Stdout fragment: 'Backfill complete:\\n  Window:    1 days (0 rows scanned)\\n  Processed: 0 (computed fingerprint)\\n  Skipped:   0 (already had fingerprint)\\n  Empty fp:  0 (no brands found / unreachable)\\n  Errors:    0\\n  Duration:  0m 0s'. Run from isolated /tmp dir with a fresh empty news.db; the real prod DB was never touched (no news.db exists in repo root)."
+  },
+  "deferredToPostDeploy": [
+    {
+      "criterion": "AC-tech-5: Performance budget — extract_fingerprint <10ms on 10KB body; full dedup stage <100ms per article.",
+      "reason": "By design there are no wall-clock CI assertions (Decision 3 — avoids flakiness). Guaranteed constructively via bounded quantifiers + window-bounded queries; empirically backed by security-audit 1.87ms/10KB. Live confirmation under prod article volume is optional.",
+      "verificationCondition": "Live prod tick processing real articles after deploy.",
+      "verificationSteps": "Optional: time a few news_bot.job() ticks on VPS (journalctl timing) and confirm no perceptible per-article slowdown. No hard gate."
+    },
+    {
+      "criterion": "AC11/Scenario 4 (user): Operator runs backfill_fingerprints.py on prod after first deploy; summary reports Errors: 0 (or low with documented Cloudflare 403s).",
+      "reason": "Requires the live prod DB (published_articles with 14 days of real rows) and live source re-fetch via fetch_full_article. Pre-deploy verified only structurally on an empty/seeded test DB.",
+      "verificationCondition": "First deploy completed; VPS SSH session; prod news.db migrated by first cron tick.",
+      "verificationSteps": "On VPS: python3 backfill_fingerprints.py --days 14; inspect summary (Processed/Skipped/Empty fp/Errors). Then sqlite3 /home/hwbot/bot/news.db 'SELECT COUNT(*) FROM published_articles WHERE model_fingerprint IS NOT NULL' matches expected backfilled count. Re-run NULL rows after Cloudflare cooldown if Errors>0."
+    },
+    {
+      "criterion": "AC3/AC4 live ping visibility — [E015] hard-block and [E014] soft-flag pings actually arrive in operator Telegram and look correct.",
+      "reason": "Requires live Telegram delivery + real cross-source duplicate traffic; pre-deploy verified only builder content + gate firing via mocks.",
+      "verificationCondition": "2-week post-deploy monitoring window with real article flow.",
+      "verificationSteps": "Spot-check each [E014] and [E015] in operator Telegram: verify code/emoji/links/percentage render as plain text and the flagged pair is plausibly a duplicate. Tool: Telegram visual review (operator-side)."
+    },
+    {
+      "criterion": "User-spec acceptance: channel @myhwchannel has no visible cross-source duplicates over first 2 weeks; monthly archive review.",
+      "reason": "Requires live channel observation over a 2-week+ window (false-negative SLA); cannot be checked pre-deploy.",
+      "verificationCondition": "Post-deploy 2-week passive monitoring.",
+      "verificationSteps": "1x/week review last 7 days of @myhwchannel for repeated topics from different sources; once/month review last 30 posts. If a duplicate slips through => false negative, tune threshold/lexicon. Tool: Telegram visual review."
+    },
+    {
+      "criterion": "AC10 live migration confirmation — model_fingerprint TEXT column present on prod news.db after first cron tick.",
+      "reason": "Requires the live prod DB; pre-deploy verified only on :memory: and temp DBs.",
+      "verificationCondition": "First cron tick on VPS runs init_db() migration.",
+      "verificationSteps": "On VPS: sqlite3 /home/hwbot/bot/news.db '.schema pending_articles' and '.schema published_articles' => model_fingerprint TEXT present on both. Tool: sqlite3 CLI."
+    }
+  ]
+}

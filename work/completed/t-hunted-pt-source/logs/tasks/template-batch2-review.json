@@ -1,0 +1,83 @@
+{
+  "validator": "task-validator",
+  "batch": [6, 7, 8, 9, 10],
+  "status": "approved",
+  "findings": [
+    {
+      "severity": "minor",
+      "category": "content",
+      "task": 6,
+      "section": "Context Files",
+      "issue": "Project-knowledge files referenced with `~/.claude/skills/project-knowledge/references/...` paths (lines 61-64). The `~/.claude/` location does not contain a `project-knowledge` skill — the actual PK reference files live in the project repo at `.claude/skills/project-knowledge/references/`. Other tasks in this feature (e.g. Task 7, Task 10) correctly use `../../../.claude/skills/project-knowledge/references/...`. Agent loading these context files via the `~` paths will get file-not-found.",
+      "fix": "Replace `~/.claude/skills/project-knowledge/references/...` prefixes with `../../../.claude/skills/project-knowledge/references/...` for project.md, architecture.md, deployment.md, patterns.md."
+    },
+    {
+      "severity": "minor",
+      "category": "content",
+      "task": 8,
+      "section": "Context Files",
+      "issue": "Project-knowledge files use `~/.claude/skills/project-knowledge/references/...` paths (lines 77-79). Same issue as Task 6 — `~/.claude/` has no project-knowledge skill; the files live in the project repo.",
+      "fix": "Replace `~/.claude/skills/project-knowledge/references/...` with `../../../.claude/skills/project-knowledge/references/...` for project.md, architecture.md, patterns.md."
+    },
+    {
+      "severity": "minor",
+      "category": "content",
+      "task": 9,
+      "section": "Context Files",
+      "issue": "Mixed path conventions for project-knowledge references. Lines 64-67 use `~/.claude/skills/project-knowledge/references/...` (broken — that location does not exist), but the same set of files is referenced correctly elsewhere in this feature's tasks. The `ux-guidelines.md` link on line 67 and 84 also uses `~/.claude/...` (broken).",
+      "fix": "Replace all `~/.claude/skills/project-knowledge/...` prefixes with `../../../.claude/skills/project-knowledge/...`. Unify path style across the Context Files list."
+    },
+    {
+      "severity": "minor",
+      "category": "consistency",
+      "task": 6,
+      "section": "frontmatter / Reviewers",
+      "issue": "Skill is `code-writing` and the task creates a new test file (`tests/test_deploy_files_invariant.py`), but Reviewers list is `[code-reviewer, deploy-reviewer]` — `test-reviewer` is absent. Validator rule: code-writing → should include test-reviewer. The task does follow tech-spec verbatim (tech-spec also omits test-reviewer here), so this is a task-creator-faithful-to-tech-spec case; flag at tech-spec level if anywhere. Minor severity because the reviewers list comes directly from the approved tech-spec.",
+      "fix": "Either (a) add `test-reviewer` to both frontmatter reviewers and Reviewers section (deviates from tech-spec — would need an explicit note), or (b) leave as-is and accept the deviation from the skill-↔-reviewer mapping rule. Recommended: accept as-is; the deploy-reviewer angle is the primary risk and code-reviewer covers test quality at a basic level."
+    },
+    {
+      "severity": "minor",
+      "category": "structure",
+      "task": 7,
+      "section": "Reviewers",
+      "issue": "Reviewer report paths use absolute filesystem paths (`/Users/alex/MyFiles/ai-projects/my-hw/my-hw-bot/work/...`) on lines 151-152 instead of repo-relative `work/{feature}/logs/working/task-{N}/...` format from the template and task-creator rules. Absolute paths leak local machine layout into the repo and break if the project moves.",
+      "fix": "Replace with `work/t-hunted-pt-source/logs/working/task-7/code-reviewer-{round}.json` and `work/t-hunted-pt-source/logs/working/task-7/prompt-reviewer-{round}.json`."
+    },
+    {
+      "severity": "minor",
+      "category": "structure",
+      "task": 8,
+      "section": "Reviewers",
+      "issue": "Reviewer report paths use absolute filesystem paths on lines 124-125 instead of repo-relative format. Same issue as Task 7.",
+      "fix": "Replace with `work/t-hunted-pt-source/logs/working/task-8/code-reviewer-{round}.json` and `work/t-hunted-pt-source/logs/working/task-8/test-reviewer-{round}.json`."
+    },
+    {
+      "severity": "minor",
+      "category": "structure",
+      "task": 7,
+      "section": "Verification Steps",
+      "issue": "Smoke subsection (line 111) duplicates the Automated subsection (line 108) — same command, same expected outcome. Smoke section should add executable checks beyond test runs (curl, python -c, MCP tool) per template guidance.",
+      "fix": "Either remove the Smoke subsection (tech-spec Verify-smoke is only the pytest command, so omission is acceptable) or replace its content with a non-pytest check — e.g. `grep -c '^| ' .claude/skills/project-knowledge/references/ux-guidelines.md` to count glossary rows, or `python -c \"from pathlib import Path; assert '## Glossary' in Path('.claude/skills/project-knowledge/references/ux-guidelines.md').read_text()\"`."
+    },
+    {
+      "severity": "minor",
+      "category": "structure",
+      "task": 8,
+      "section": "Verification Steps",
+      "issue": "Smoke subsection (line 94) duplicates the Automated subsection (line 89). Same issue as Task 7.",
+      "fix": "Either drop the Smoke subsection (tech-spec only specifies the pytest command) or augment with a non-pytest check (e.g. count assertions via `grep` to confirm at least 8 asserts exist in the new test method)."
+    },
+    {
+      "severity": "minor",
+      "category": "atomicity",
+      "task": 6,
+      "section": "What to do / Acceptance Criteria",
+      "issue": "Task touches 4 files (deploy.sh, deploy.yml, deploy_test.yml, tests/test_deploy_files_invariant.py), exceeding the soft 1-3 files atomicity guideline. The four edits are logically cohesive (same purpose: enforce the FILES-list invariant across all three deploy targets + add the CI regression test), so this is not a split candidate. Flagging only because the file count exceeds the heuristic — recommendation is to accept as-is.",
+      "fix": "No action required. Logical cohesion (the four files are tied to the same R7 mitigation per tech-spec) justifies the 4-file scope."
+    }
+  ],
+  "stats": {
+    "tasks_checked": 5,
+    "issues_found": 9
+  }
+}

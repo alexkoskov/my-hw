@@ -1,0 +1,50 @@
+{
+  "status": "approved",
+  "summary": "New integration smoke test cleanly reuses the existing TestDistributedSchedule harness (setUp/tearDown, _set_rss_entries, _create_mock_rss_entry, _make_claude_result, fetch_full_patcher) and adds no parallel mock infrastructure. Mocks target the correct symbols (news_bot.transcreate_via_claude side_effect list ordered EN→PT matching entry order), and assertions are tied to user-visible AC outcomes: source_name column per row, mock_claude.call_count==2, both teaser dispatches, absence of [E031]/[E032]/[E033] admin pings, untouched outage_state. _resolve_source_name / NETLOC_TO_SOURCE wiring is exercised end-to-end (not bypassed) — t-hunted.blogspot.com and www.autoevolution.com both exist in NETLOC_TO_SOURCE (news_bot.py:835-844), the autoevolution.com base mapping is also present, and pending_articles_repo.get_published returns a dict keyed by column name (published_articles schema has source_name TEXT NOT NULL — pending_articles_repo.py:71-83). No leaked patches: the test uses only inline `with patch(...)` for transcreate_via_claude (auto-cleaned), the base setUp owns all persistent patchers including the tempfile DB.",
+  "criticalIssues": [],
+  "suggestions": [
+    {
+      "file": "tests/test_distributed_schedule_integration.py",
+      "line": 931,
+      "severity": "minor",
+      "category": "maintainability",
+      "suggestion": "The inline comment references `news_bot.py:1535` for the source_name override location. Line numbers in inline comments rot quickly. Consider rephrasing as `_fetch_rss_entries overrides source_name via _resolve_source_name(link) at collection time` without the line number, or use a stable reference like the function name only.",
+      "benefit": "Lower comment maintenance burden — comment stays correct across unrelated refactors.",
+      "optional": true
+    },
+    {
+      "file": "tests/test_distributed_schedule_integration.py",
+      "line": 934,
+      "severity": "minor",
+      "category": "best-practices",
+      "suggestion": "freeze_time('2026-05-26 09:00:00') is hard-coded mid-test. The happy-path test above uses '2026-04-27 09:00:00'. Both are pragmatic, but consider extracting the cron-tick timestamp ('YYYY-MM-DD 09:00:00') into a module-level constant (e.g. `CRON_TICK_UTC = '2026-05-26 09:00:00'`) referenced by both tests, or into a class attribute. Optional — current code is consistent with the existing pattern in this file.",
+      "benefit": "One place to update freeze_time when the codebase introduces stale-pub-date guards or other time-sensitive logic.",
+      "optional": true
+    },
+    {
+      "file": "tests/test_distributed_schedule_integration.py",
+      "line": 994,
+      "severity": "minor",
+      "category": "readability",
+      "suggestion": "The admin-alert exclusion assertion checks three error codes via string contains. Consider extracting a frozenset constant `T_HUNTED_ALERT_CODES = ('[E031]', '[E032]', '[E033]')` at module or class level and using `any(any(code in m for code in T_HUNTED_ALERT_CODES) for m in msgs)`. Makes future additions (E034+) a one-line change.",
+      "benefit": "Single source of truth for the t-hunted alert code set; explicit data structure improves readability vs. inlined OR chain.",
+      "optional": true
+    },
+    {
+      "file": "tests/test_distributed_schedule_integration.py",
+      "line": 936,
+      "severity": "minor",
+      "category": "readability",
+      "suggestion": "Both Claude side_effect entries use the same paragraphs list `['First paragraph.', 'Second paragraph.']`, differentiated only by `title_prefix`. The base mock_full_article fixture also uses these exact paragraphs (line 97). Consider using distinguishably different EN paragraph text per entry (e.g. `['EN article first para.', ...]` and `['PT article first para.', ...]`) so a regression that crosses Claude responses between rows is caught by an assert on the stored ru_paragraphs content.",
+      "benefit": "Stronger guard against cross-language data-mixing regressions; debugging output reveals which response went to which row.",
+      "optional": true
+    }
+  ],
+  "metrics": {
+    "filesReviewed": 1,
+    "criticalIssuesCount": 0,
+    "majorIssuesCount": 0,
+    "minorIssuesCount": 4,
+    "testCoverageAssessment": "adequate"
+  }
+}

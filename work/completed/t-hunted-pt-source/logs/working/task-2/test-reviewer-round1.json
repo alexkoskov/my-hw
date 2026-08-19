@@ -1,0 +1,20 @@
+{
+  "status": "passed",
+  "summary": "Three new unit tests (E031/E032/E033) and the uniqueness-aggregate extension follow the established E025-E028 lamley pattern exactly. All assertions are meaningful and lock builder identity via the [E0XX] code prefix, link wiring via the URL substring, and severity via the emoji. Litmus tests pass: removing any core line of the builder (return prefix, link interpolation, error arg interpolation, or body-missing wording) causes the corresponding test to fail. No shared state between tests. Full suite runs 950 passed / 2 skipped — matches expected baseline (947 prior + 3 new). No regressions.",
+  "findings": [],
+  "metrics": {
+    "filesReviewed": 2,
+    "litmusTest": {
+      "checked": 4,
+      "passed": 4,
+      "failed": 0
+    },
+    "coverageAssessment": "adequate",
+    "pyramidBalance": {
+      "unit": 4,
+      "integration": 0,
+      "e2e": 0,
+      "assessment": "healthy"
+    }
+  }
+}

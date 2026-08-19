@@ -4958,31 +4958,85 @@ def job():
                 f"{sanitize_error_message(exc)}"
             )
 
-    # Channel-silence guard (2026-06-23): warn the operator if the channel has
-    # gone quiet for DRY_SPELL_ALERT_DAYS+ days. Reads the same last-publish
-    # timestamp as the crash-loop guard. A publish this tick resets the gap, so
-    # this only fires during a real dry spell. Skipped when nothing was ever
-    # published (fresh DB) so a brand-new bot doesn't false-alarm. Never raises
-    # — monitoring must not break the tick.
+    _maybe_ping_dry_spell()
+
+    _record_heartbeat()
+
+
+def _maybe_ping_dry_spell():
+    """Warn the operator when the channel has been silent for days ([E017]).
+
+    Channel-silence guard (2026-06-23): reads the same last-publish timestamp
+    as the crash-loop guard. A publish this tick resets the gap, so this only
+    fires during a real dry spell. Skipped when nothing was ever published
+    (fresh DB) so a brand-new bot doesn't false-alarm. Never raises —
+    monitoring must not break the tick.
+
+    Once per calendar day (2026-08-18): ``job()`` re-runs on every container
+    start, so before this gate one outage produced one ping PER RESTART — four
+    on 2026-08-13. The marker is persisted because the restart is precisely
+    what wipes in-process state, and it is written only after the send actually
+    succeeded, so a Telegram outage cannot consume the day's only alarm.
+
+    Extracted from ``job()`` (code-review round 2): the block reached six
+    levels of nesting inside an already thousand-line function, and every level
+    of it is a fail-open decision that has to be read to be trusted.
+    """
     try:
         last_pub = _parse_published_at_utc(pending_repo.get_max_published_at())
-        if last_pub is not None:
-            silent_days = (datetime.now(timezone.utc) - last_pub).days
-            if silent_days >= DRY_SPELL_ALERT_DAYS:
+        if last_pub is None:
+            return
+        silent_days = (datetime.now(timezone.utc) - last_pub).days
+        if silent_days < DRY_SPELL_ALERT_DAYS:
+            return
+
+        # Decided OUTSIDE the send's try/except and defaulting to "not
+        # limited": the gate is consulted only after the dry spell is already
+        # established, so letting a locked DB or a disk fault raise here would
+        # consume a DETECTED outage alarm — the one failure this whole function
+        # exists to prevent. A duplicate ping is the cheaper wrong answer.
+        try:
+            rate_limited = pending_repo.is_dry_spell_ping_rate_limited()
+        except Exception as gate_exc:
+            logger.warning(
+                f"[dry-spell] rate-limit gate unavailable, sending anyway: "
+                f"{sanitize_error_message(gate_exc)}"
+            )
+            rate_limited = False
+
+        if rate_limited:
+            # WARNING, not INFO: the dry spell itself is still true on every
+            # tick after the first, and an operator grepping for WARNING during
+            # a multi-day outage should not see day one and then silence.
+            logger.warning(
+                f"[dry-spell] channel silent for {silent_days} days — "
+                f"[E017] already sent today, staying quiet."
+            )
+            return
+
+        # Logged BEFORE the attempt: if Telegram is down the send fails
+        # silently for the operator, and this line is the only record that the
+        # dry spell was detected at all.
+        logger.warning(
+            f"[dry-spell] channel silent for {silent_days} days — "
+            f"sending [E017] admin warning."
+        )
+        if send_admin_notification(admin_alerts.alert_channel_silent(silent_days)):
+            # A failure to record the send costs at most one duplicate ping
+            # tomorrow; letting it raise would skip `_record_heartbeat()` in
+            # the caller and look like a dead tick to the watchdog.
+            try:
+                pending_repo.mark_dry_spell_pinged()
+            except Exception as mark_exc:
                 logger.warning(
-                    f"[dry-spell] channel silent for {silent_days} days — "
-                    f"sending [E017] admin warning."
-                )
-                send_admin_notification(
-                    admin_alerts.alert_channel_silent(silent_days)
+                    f"[dry-spell] could not record the [E017] send: "
+                    f"{sanitize_error_message(mark_exc)}"
                 )
     except Exception as exc:
         logger.error(
             f"[dry-spell] channel-silence check failed: "
             f"{sanitize_error_message(exc)}"
         )
-
-    _record_heartbeat()
 
 
 #: Heartbeat marker path. Env-overridable (``HEARTBEAT_FILE``) so the Docker

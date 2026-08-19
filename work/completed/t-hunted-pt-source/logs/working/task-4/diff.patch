@@ -1,0 +1,200 @@
+commit 2d5417a9b471e7b1fadebf5e8502c0dc5b7fbc8f
+Author: alex <sunny413x@gmail.com>
+Date:   Fri May 29 21:44:34 2026 +0300
+
+    feat: task 4 — feeds.json t-hunted RSS + boilerplate PT patterns
+    
+    - feeds.json: append t-hunted RSS URL (now 4/5 entries, under cap)
+    - boilerplate_filter.py: append PT defence-in-depth block (10
+      ^-anchored ReDoS-safe regex patterns) to _BOILERPLATE_PATTERNS
+      after the existing RU block. Length-bound 120 chars protects
+      EN/RU streams from false positives (Decision 4 / RU precedent).
+    - tests/test_boilerplate_filter.py: 10 positive PT-pattern tests
+      (parametrised), one negative PT-lookalike-prose-kept test, one
+      ReDoS-safety regression for the new patterns.
+    
+    Co-Authored-By: Claude Opus 4.7 (1M context) <noreply@anthropic.com>
+
+diff --git a/boilerplate_filter.py b/boilerplate_filter.py
+index c0771d8..85ab649 100644
+--- a/boilerplate_filter.py
++++ b/boilerplate_filter.py
+@@ -155,6 +155,45 @@ _BOILERPLATE_PATTERNS = [
+         r'^\s*(найти|купить)\b.*\bна\s+(ebay|amazon|aliexpress|mattel|walmart)\b',
+         re.I,
+     ),
++    # ------------------------------------------------------------------
++    # Portuguese — defence in depth for t-hunted.blogspot.com.
++    # Blogger PT-locale template emits short standalone labels for
++    # share widgets, navigation links and comment forms that bleed into
++    # the paragraph stream. All patterns are ^-anchored, ReDoS-safe (no
++    # nested greedy quantifiers), and bounded by ``_MAX_BOILERPLATE_LEN``
++    # so inline mentions inside real prose are preserved.
++    # ------------------------------------------------------------------
++    # "Compartilhar no Facebook" / "Compartilhar via WhatsApp" etc.
++    re.compile(
++        r'^compartilhar\s+(no|em|via|por)\s+'
++        r'(facebook|twitter|x|whatsapp|telegram|email)\b',
++        re.I,
++    ),
++    # "Marcadores: hot wheels, mattel" — Blogger labels footer.
++    re.compile(r'^marcadores\s*:', re.I),
++    # "Postado por <author>" — Blogger byline.
++    re.compile(r'^postado\s+por\b', re.I),
++    # Bare "Postagem" label (exact-match — avoids FP on prose
++    # «Postagem nova foi publicada»).
++    re.compile(r'^postagem$', re.I),
++    # "Enviar por email" — PT "Email this".
++    re.compile(r'^enviar\s+por\s+email\b', re.I),
++    # "Postagens mais antigas" / "Postagens mais recentes" — older/newer
++    # post navigation links.
++    re.compile(r'^postagens\s+mais\s+(antigas|recentes)$', re.I),
++    # "Assinar: Postagens (Atom)" — feed-subscribe link.
++    re.compile(r'^assinar\s*:', re.I),
++    # "Leia mais" — read-more link (anchored as standalone label, not
++    # part of inline prose). Only «leia mais» is included; «ler mais»
++    # was excluded due to higher FP risk per code-research §4.D.
++    re.compile(r'^leia\s+mais$', re.I),
++    # "Postar um comentário" / "Postar comentário" — Blogger comment
++    # form trigger. ``[áa]`` covers NFC-normalised UTF-8 plus an ASCII
++    # fallback in case the feedparser/encoding pipeline strips diacritics.
++    re.compile(r'^postar\s+(um\s+)?coment[áa]rio$', re.I),
++    # "Página inicial" / "Página principal" home link. ``p[aá]gina``
++    # handles both UTF-8 and ASCII fallbacks.
++    re.compile(r'^p[aá]gina\s+(inicial|principal)$', re.I),
+ ]
+ 
+ 
+diff --git a/feeds.json b/feeds.json
+index 8275f26..67652f7 100644
+--- a/feeds.json
++++ b/feeds.json
+@@ -1,5 +1,6 @@
+ [
+     "https://www.autoevolution.com/rss/tag-Hot+Wheels.xml",
+     "https://www.autoevolution.com/rss/tag-Hot+Wheels+News.xml",
+-    "https://lamleygroup.com/category/hot-wheels/feed/"
++    "https://lamleygroup.com/category/hot-wheels/feed/",
++    "https://t-hunted.blogspot.com/feeds/posts/default?alt=rss"
+ ]
+\ No newline at end of file
+diff --git a/tests/test_boilerplate_filter.py b/tests/test_boilerplate_filter.py
+index a035f3f..35b52e0 100644
+--- a/tests/test_boilerplate_filter.py
++++ b/tests/test_boilerplate_filter.py
+@@ -94,6 +94,40 @@ class TestIsBoilerplatePositive:
+     def test_russian_patterns_filtered(self, text):
+         assert is_boilerplate(text) is True, f"expected boilerplate: {text!r}"
+ 
++    @pytest.mark.parametrize(
++        "text",
++        [
++            # 1. ^compartilhar\s+(no|em|via|por)\s+(facebook|twitter|x|whatsapp|telegram|email)
++            "Compartilhar no Facebook",
++            "compartilhar em Twitter",
++            "Compartilhar via WhatsApp",
++            "Compartilhar por Email",
++            # 2. ^marcadores\s*:
++            "Marcadores: hot wheels, mattel",
++            # 3. ^postado\s+por\b
++            "Postado por Editor",
++            # 4. ^postagem$ (short Blogger label — exact match)
++            "Postagem",
++            # 5. ^enviar\s+por\s+email\b
++            "Enviar por email",
++            # 6. ^postagens\s+mais\s+(antigas|recentes)$
++            "Postagens mais antigas",
++            "Postagens mais recentes",
++            # 7. ^assinar\s*:
++            "Assinar: Postagens (Atom)",
++            # 8. ^leia\s+mais$
++            "Leia mais",
++            # 9. ^postar\s+(um\s+)?coment[áa]rio$
++            "Postar um comentário",
++            "Postar comentario",
++            # 10. ^p[aá]gina\s+(inicial|principal)$
++            "Página inicial",
++            "Pagina principal",
++        ],
++    )
++    def test_portuguese_patterns_filtered(self, text):
++        assert is_boilerplate(text) is True, f"expected boilerplate: {text!r}"
++
+ 
+ # ---------------------------------------------------------------------------
+ # Pure-filter negative cases (must be PRESERVED — real content)
+@@ -128,6 +162,20 @@ class TestIsBoilerplateNegative:
+         assert is_boilerplate("") is False
+         assert is_boilerplate("   ") is False
+ 
++    def test_pt_lookalike_prose_kept(self):
++        # Long PT prose containing "compartilhar" inline (not anchored at
++        # ^ start) must NOT be filtered — defense against FP on real
++        # Portuguese article body content. Length comfortably exceeds the
++        # 120-char bound as a second-line safety net.
++        text = (
++            "Os colecionadores adoram compartilhar no Facebook fotos das suas "
++            "raridades e novidades sobre a linha Hot Wheels lançada este mês."
++        )
++        assert len(text) > _MAX_BOILERPLATE_LEN
++        assert is_boilerplate(text) is False, (
++            f"unexpectedly filtered PT prose: {text!r}"
++        )
++
+ 
+ # ---------------------------------------------------------------------------
+ # Length threshold: long content with trigger phrase is NOT filtered.
+@@ -195,6 +243,53 @@ class TestAffiliateLengthBound:
+         assert elapsed < 0.1, f"is_boilerplate too slow: {elapsed:.3f}s"
+ 
+ 
++class TestRegexSafety:
++    """Cross-language ReDoS-safety regressions. Each new pattern family
++    must complete under a tight time bound on adversarial 120-char
++    inputs (the same ceiling enforced by ``_MAX_BOILERPLATE_LEN``).
++
++    Pattern: cross-platform — uses ``time.monotonic()`` rather than
++    ``signal.alarm`` (alarm is POSIX-only, breaks on Windows CI)."""
++
++    @pytest.mark.parametrize(
++        "adversarial",
++        [
++            # 1. compartilhar — pump alternation choices via repeated "no "
++            ("compartilhar " + "no " * 35 + "facebook")[:_MAX_BOILERPLATE_LEN],
++            # 2. marcadores — long colon-suffixed payload
++            ("marcadores" + ":" * (_MAX_BOILERPLATE_LEN - len("marcadores"))),
++            # 3. postado por — long tail
++            ("postado por " + "x" * (_MAX_BOILERPLATE_LEN - len("postado por "))),
++            # 4. postagem — long tail to test anchored exact-match
++            ("postagem" + "x" * (_MAX_BOILERPLATE_LEN - len("postagem"))),
++            # 5. enviar por email — bait long tail
++            ("enviar por email" + "x" * (_MAX_BOILERPLATE_LEN - len("enviar por email"))),
++            # 6. postagens mais antigas — pump alternation and tail
++            ("postagens mais " + "antigas" * 15)[:_MAX_BOILERPLATE_LEN],
++            # 7. assinar — colon spam
++            ("assinar" + ":" * (_MAX_BOILERPLATE_LEN - len("assinar"))),
++            # 8. leia mais — long tail
++            ("leia mais" + "x" * (_MAX_BOILERPLATE_LEN - len("leia mais"))),
++            # 9. postar um comentário — pump "um " tokens
++            ("postar " + "um " * 35 + "comentario")[:_MAX_BOILERPLATE_LEN],
++            # 10. página inicial — pump alternation
++            ("pagina " + "inicial" * 15)[:_MAX_BOILERPLATE_LEN],
++        ],
++    )
++    def test_pt_patterns_no_redos_under_120_char_input(self, adversarial):
++        import time
++
++        # Exact ceiling: spec mandates adversarial-shaped 120-char input.
++        assert len(adversarial) <= _MAX_BOILERPLATE_LEN
++        t0 = time.monotonic()
++        is_boilerplate(adversarial)
++        elapsed = time.monotonic() - t0
++        assert elapsed < 0.1, (
++            f"is_boilerplate too slow on PT adversarial input "
++            f"({elapsed:.3f}s): {adversarial!r}"
++        )
++
++
+ class TestQuickLinkVerbGateRemoved:
+     """Aff1 dropped its (buy|order|grab|shop) verb gate 2026-05-08 after
+     «*QUICK LINK!* Find the 2026 Fast & Furious ... case on eBay» slipped

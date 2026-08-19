@@ -1,0 +1,20 @@
+{
+  "status": "approved",
+  "summary": "Round-2 re-check: all 3 round-1 majors fixed correctly, no new mirages introduced. Verified 8 claims (3 corrected items + 5 sanity-check spot checks).",
+  "findings": [],
+  "stats": {
+    "total_claims_checked": 8,
+    "confirmed": 8,
+    "mirages_found": 0,
+    "verified_claims": [
+      "Decision 7 emoji facts (lines 72-74) now correctly state SOURCE_EMOJI = {autoevolution: orange, lamley: green, mattel: purple, orangetrack: blue} — matches news_bot.py:857-862 verbatim (\\U0001F7E0 / \\U0001F7E2 / \\U0001F7E3 / \\U0001F535)",
+      "Task 5 / Testing Strategy now reference real test names: test_has_exactly_the_five_keys (tests/test_sources_registry.py:45) and test_values_are_only_the_three_source_names (tests/test_sources_registry.py:56), both confirmed present with 'consider rename' note acknowledging the legacy mismatch",
+      "Decision 5(a) quote 'Твоя единственная задача: преобразовывать входящий' is content-anchored without **bold** markdown — matches ux-guidelines.md:22 verbatim; replacement target 'английский' is a plain word in the source",
+      "_llm_common.py:134-153 line range for _is_mostly_russian (Decision 8) is exact — function starts at line 134, ends at line 153",
+      "news_bot.py references hold: _source_hashtag (line 799), NETLOC_TO_SOURCE (line 823), _resolve_source_name (line 834), fetch_full_article (line 1405)",
+      "_llm_common.py:_build_user_message exists at line 119",
+      "All cited files exist: lamley_source.py, tests/test_lamley_source.py, boilerplate_filter.py, admin_alerts.py, feeds.json, deploy.sh",
+      "No round-1 minors regressed in the edited regions"
+    ]
+  }
+}

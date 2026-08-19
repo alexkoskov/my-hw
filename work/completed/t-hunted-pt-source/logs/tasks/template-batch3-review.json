@@ -1,0 +1,61 @@
+{
+  "validator": "task-validator",
+  "batch": [11, 12, 13, 14],
+  "status": "approved",
+  "findings": [
+    {
+      "severity": "minor",
+      "category": "consistency",
+      "task": 12,
+      "section": "Context Files",
+      "issue": "Audit-report references point to `logs/working/task-9/code-reviewer-*.json`, `task-10/security-auditor-*.json`, `task-11/test-reviewer-*.json`. But Tasks 9/10/11 are audit tasks with `reviewers: []` — they do not produce reviewer JSONs at those paths. Their actual deliverables are audit reports under `logs/audits/` (e.g. Task 11 writes `logs/audits/test-audit.json` per its own AC). The cross-references will not resolve to existing files at QA execution time.",
+      "fix": "Update Context Files in Task 12 to reference the actual audit-report paths produced by Tasks 9/10/11. Likely: `work/t-hunted-pt-source/logs/audits/code-audit.json`, `logs/audits/security-audit.json`, `logs/audits/test-audit.json`. Align with the path scheme used in Task 11's own AC for `test-audit.json`."
+    },
+    {
+      "severity": "minor",
+      "category": "structure",
+      "task": 13,
+      "section": "Context Files",
+      "issue": "Context Files lists `[logs/deploy/deploy-test.log](../logs/deploy/deploy-test.log)` as a context file, but this artefact is created by this task itself — it does not yet exist when the agent reads context. Including a self-produced deliverable under Context Files is mildly misleading; it belongs under Details → Files (where it is also listed).",
+      "fix": "Remove the `deploy-test.log` link from Context Files. It is already accurately described under Details → Files as the new artefact this task produces."
+    },
+    {
+      "severity": "minor",
+      "category": "decomposition",
+      "task": 11,
+      "section": "frontmatter",
+      "issue": "`depends_on: [1, 2, 3, 4, 5, 6, 7, 8]` lists every Wave 1-3 task. Tech-spec assigns Tasks 9, 10, 11 to the Audit Wave (Wave 4) as parallel siblings, all of which need Wave 1-3 done. The dependency is logically correct, but the list could be simplified by depending on a representative completion gate or by relying on `wave: 4` semantics (waves enforce ordering already in the feature-execution flow). Not a correctness issue, just verbosity that has to be kept in sync with Wave 1-3 task IDs if they ever renumber.",
+      "fix": "Optional: trim `depends_on` to the latest task(s) of Wave 3 (e.g. [7, 8]) since Wave 3 already transitively depends on Waves 1-2. Or leave as-is for explicitness — both are acceptable."
+    },
+    {
+      "severity": "minor",
+      "category": "content",
+      "task": 12,
+      "section": "Acceptance Criteria",
+      "issue": "AC item «Финальный статус в JSON — `passed` (criticals == 0)» is tautological as a criterion — the task's job is to determine pass/fail, not to guarantee a passing outcome. A failing QA is still a valid completion of the task (it just blocks merge). Listing `passed` as an AC mildly conflates outcome with deliverable.",
+      "fix": "Reword to: «JSON-отчёт содержит детерминированный финальный статус (`passed` или `failed`) согласно правилу `criticals == 0`». The AC then validates that the decision rule was applied, not that QA itself succeeded."
+    },
+    {
+      "severity": "minor",
+      "category": "carry-forward",
+      "task": 12,
+      "section": "Acceptance Criteria",
+      "issue": "Tech-spec Acceptance Criteria includes `t_hunted_source.py ≤170 LOC` (soft check). Task 12 covers it via `wc -l t_hunted_source.py` in Verification Steps → Smoke (with «>200 LOC → minor» note), but the tech-spec threshold is ≤170 LOC, and Task 12's threshold is 130-170 expected, >200 = minor. The threshold mapping (170 in tech-spec vs >200 minor in Task 12) is slightly looser than tech-spec.",
+      "fix": "Align the LOC threshold in Task 12 Verification Steps with tech-spec: treat >170 LOC as the soft-check breach (severity = minor per tech-spec soft-check intent). Either tighten the Task 12 threshold or add a comment explaining the looser bound."
+    }
+  ],
+  "stats": {
+    "tasks_checked": 4,
+    "issues_found": 5,
+    "criticals": 0,
+    "majors": 0,
+    "minors": 5
+  },
+  "notes": {
+    "task_11": "Test-audit task — analysis-only, no TDD anchor (correct, non-code). Skills `[test-master]` matches Required Skills section. Reviewers `[]` matches Reviewers section narrative («None — audit task — output is itself a review»). Verification Steps present with Automated sanity-check on JSON schema. AC covers all dimensions named in tech-spec Task 11 (meaningful assertions, error-path coverage, no interdependence, integration cross-language proof, ReDoS bounded timeout, fixture freshness, structural tests, deploy invariant tests). Carry-forward from tech-spec is complete.",
+    "task_12": "Pre-deploy QA — non-code task, no TDD anchor (correct). Skills `[pre-deploy-qa]` matches. `verify: [smoke]` matches actual smoke checks present (RSS, hashtag, FILES grep, hard-constraint diffs). Detailed AC1-AC10 mapping in Details → Implementation hints traces every user-spec AC to a concrete test or smoke command. Reviewers `[]` matches narrative. Tech-spec Task 12 carry-forward complete (pytest, user-spec ACs, tech-spec ACs, FILES invariant, RSS accessibility, hashtag smoke all covered).",
+    "task_13": "Deploy task — non-code, no TDD anchor (correct). Skills `[deploy-pipeline]` matches. `verify: [smoke]` matches gh-run / ssh smoke checks. Reviewers `[]` matches narrative («не код, а вызов CI/CD пайплайна»). Tech-spec Task 13 carry-forward complete (squash-merge dev → deploy_test.yml → SCP → service restart, prod promotion deferred to Task 14 sign-off — explicitly documented). Edge cases comprehensively cover CI failure, FILES-array miss, sudoers loss, service failure, alert spikes, network issues.",
+    "task_14": "Post-deploy verification — non-code, no TDD anchor (correct). Skills `[post-deploy-qa]` matches. `verify: [smoke, user]` matches actual smoke (journalctl, systemctl) + user (Telegram visual, Telegraph rendering, channel scroll) checks. Reviewers `[]` matches narrative («финальная верификация на живом окружении, ревьюеров нет»). All 6 verification bullets from tech-spec Task 14 carry over: first publish 24-48h, hero+hashtag preview, Telegraph RU page, [E031-E033] alerts 24h+7d, RU quality vs baseline, no regression in existing sources. Prod-promotion handoff explicitly documented as out-of-scope and operator-initiated.",
+    "decomposition": "No dependency cycles. Wave numbering consistent (Task 11 wave 4, Tasks 12-14 wave 5). Each task has clear single responsibility. No merge/split candidates among these four. No shared-resource competition (tech-spec Shared Resources = None). Tech-spec Acceptance Criteria items map to Task 12's traceability matrix, then deferred items flow to Task 14."
+  }
+}

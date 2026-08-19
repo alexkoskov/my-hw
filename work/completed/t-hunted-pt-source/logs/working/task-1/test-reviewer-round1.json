@@ -1,0 +1,91 @@
+{
+  "status": "needs_improvement",
+  "summary": "All 14 expected tests are present, named correctly, pass locally (pytest: 14 passed in 0.10s), and exercise real production code paths — not just mocks. Litmus test passes on every behavioural test: removing the corresponding production line (SSRF check, filter ordering, image dedup, image-limit clamp, body fallback chain) would cause the test to fail. Mocking is appropriately scoped (only HTTP session + three not-yet-existing admin_alerts builders that Task 2 ships). Test fixtures don't perform real HTTP. The autouse monkeypatch fixture uses `raising=False` so the patch works today (Task 2 unmerged) and continues to work post-merge — the production-code references (`admin_alerts.alert_t_hunted_host_rejected/_fetch_error/_no_body`) match exactly. Test pyramid is healthy: 14 unit tests for ~150-LOC parser, no e2e/integration needed at this layer (those land in Task 3 wiring). The main weakness is shallow notifier-payload assertions on three of the four error-path tests: they verify the notifier was called but not WHAT was passed, leaving room for a regression where the wrong alert builder is invoked (e.g., fetch-error builder fired on a host-rejection). Recommend tightening those three assertions before approval. Two minor improvements would round out coverage: (a) explicit assertion on the HTTP error path that `session.get` was invoked (proving the path went through HTTP, not short-circuited via SSRF); (b) a small assertion on the boilerplate-before-subtitle test that the first surviving content paragraph also moves into `paragraphs` correctly (currently only the absence of 'Share on Facebook' is checked there).",
+  "findings": [
+    {
+      "severity": "major",
+      "category": "mock_only",
+      "location": "tests/test_t_hunted_source.py:282-295 (TestHostAllowlist::test_fetch_returns_none_and_pings_when_host_rejected)",
+      "issue": "Notifier assertion is shallow — only `notifier.assert_called_once()` is checked. The test cannot distinguish between a correct call to `alert_t_hunted_host_rejected` and an incorrect call to `alert_t_hunted_fetch_error` / `alert_t_hunted_no_body` on the same code path. A future refactor that accidentally swaps builders (or fires the no-body alert before SSRF check) would pass this test silently. This is the canonical SSRF negative case from the review focus, which explicitly asks for verification of BOTH `None` return AND proper message content.",
+      "recommendation": "After the existing two assertions, add:\n```python\nmsg = notifier.call_args.args[0]\nassert isinstance(msg, str)\nassert '[E031-STUB]' in msg  # stub fingerprint for the host-rejected builder\nassert 'evil.example.com' in msg  # link is round-tripped through the alert\n```\nThe `[E031-STUB]` substring locks the test to the host-rejected builder specifically (because the autouse fixture installs that exact prefix on `alert_t_hunted_host_rejected`); a regression that fires the fetch-error or no-body alert by mistake would produce `[E032-STUB]` / `[E033-STUB]` and fail this assertion. The `'evil.example.com'` substring proves the URL is propagated into the alert (not silently dropped)."
+    },
+    {
+      "severity": "major",
+      "category": "mock_only",
+      "location": "tests/test_t_hunted_source.py:122-137 (TestFetchTHuntedArticle::test_returns_none_on_http_error)",
+      "issue": "The test verifies the notifier was called and the payload is a string, but does not verify it is the FETCH-error alert specifically. If a future refactor mis-routes the HTTP-error path through the no-body alert (or the host-rejected alert), this test still passes — both produce a string arg. Same anti-pattern as the SSRF case above.",
+      "recommendation": "Replace the loose `assert isinstance(msg, str)` with two builder-specific checks:\n```python\nmsg = notifier.call_args.args[0]\nassert '[E032-STUB]' in msg  # stub fingerprint for the fetch-error builder\nassert 'boom' in msg  # the underlying exception message is included\nassert 't-hunted.blogspot.com' in msg  # link is included\n```\nThis pins the test to the fetch-error builder (the autouse stub uses `[E032-STUB] fetch error: {link}: {err}`), so a swap to E031/E033 would break the test. Verifying that `'boom'` (the ConnectionError message) ends up in the alert proves the production code passed the exception detail through to the builder — without that, the alert would say only 'fetch error' with no diagnostic info."
+    },
+    {
+      "severity": "major",
+      "category": "mock_only",
+      "location": "tests/test_t_hunted_source.py:139-154 (TestFetchTHuntedArticle::test_returns_none_on_missing_body)",
+      "issue": "Only `notifier.assert_called_once()` is asserted. Same flaw as the two findings above — the test cannot detect a regression that fires the wrong alert builder. This case is particularly fragile because the no-body path is structurally similar to the success path (HTTP succeeded, just no body wrapper) and could easily be conflated with the fetch-error path during refactor.",
+      "recommendation": "Add:\n```python\nmsg = notifier.call_args.args[0]\nassert '[E033-STUB]' in msg  # stub fingerprint for the no-body builder\nassert 't-hunted.blogspot.com' in msg  # link is included\n```\nAlso consider adding `session.get.assert_called_once()` to prove the path actually went through HTTP (vs. short-circuiting via SSRF) — the URL passed is on the allowlist, so `session.get` MUST have been called for this test's premise to hold."
+    },
+    {
+      "severity": "minor",
+      "category": "missing_coverage",
+      "location": "tests/test_t_hunted_source.py:208-233 (TestFetchTHuntedArticle::test_boilerplate_filter_applied_before_subtitle_lift)",
+      "issue": "The test correctly asserts the subtitle is the real lead and 'Share on Facebook' is absent from both subtitle and paragraphs. But it doesn't assert that the order of the remaining content paragraphs is preserved after the filter+lift sequence — only that 'Second content paragraph.' is present (which is a list-membership check). If filter_boilerplate scrambled order, this test still passes.",
+      "recommendation": "Replace the final assertion with an exact-order check:\n```python\nassert out['paragraphs'] == ['Second content paragraph.']\n```\nThis pins the post-filter, post-lift output to the single expected element and detects any order-changing or extra-paragraph regression."
+    },
+    {
+      "severity": "minor",
+      "category": "missing_coverage",
+      "location": "tests/test_t_hunted_source.py:93-120 (TestFetchTHuntedArticle::test_parses_title_subtitle_paragraphs_images)",
+      "issue": "Happy-path test does not assert anything about the trailing PT boilerplate ('Compartilhar no Facebook', 'Marcadores: Pop Culture, 2026'). Today these SHOULD remain in `paragraphs` (the EN filter doesn't match them; PT patterns land in Task 4). The test silently allows either outcome — when Task 4 lands PT patterns, this test won't fail or signal that behaviour changed.",
+      "recommendation": "Add an explicit assertion documenting the current (pre-Task-4) state:\n```python\n# PT boilerplate is NOT stripped today — EN-only filter. Task 4 will\n# add PT patterns and this assertion will flip to `not in`.\nassert 'Compartilhar no Facebook' in out['paragraphs']\nassert 'Marcadores: Pop Culture, 2026' in out['paragraphs']\n```\nThis turns Task 4's behavioural change into a deliberate test update rather than a silent drift, and acts as a cross-task documentation marker."
+    },
+    {
+      "severity": "minor",
+      "category": "anti_pattern",
+      "location": "tests/test_t_hunted_source.py:177 (TestFetchTHuntedArticle::test_image_limit_enforced)",
+      "issue": "Asserts `t_hunted_source._IMAGE_LIMIT == 10` inside the test. This pins the constant value to 10 — but the previous assertion `len(out['images']) == t_hunted_source._IMAGE_LIMIT` already verifies the clamp uses whatever the constant is set to. The literal `== 10` check tests configuration, not behaviour, and creates double-maintenance if the limit ever changes (acceptable defensively, but worth flagging as low-priority noise).",
+      "recommendation": "Either delete the `assert t_hunted_source._IMAGE_LIMIT == 10` line and trust the symbolic assertion, OR move the literal check into a separate one-line module-config test that documents intent:\n```python\ndef test_image_limit_constant_is_ten(self):\n    \"\"\"AC anchor: tech-spec Task 1 mandates _IMAGE_LIMIT == 10.\"\"\"\n    assert t_hunted_source._IMAGE_LIMIT == 10\n```\nLow priority — the duplicate assertion is harmless and arguably useful as a spec anchor."
+    }
+  ],
+  "metrics": {
+    "filesReviewed": 4,
+    "litmusTest": {
+      "checked": 14,
+      "passed": 14,
+      "failed": 0
+    },
+    "coverageAssessment": "adequate",
+    "pyramidBalance": {
+      "unit": 14,
+      "integration": 0,
+      "e2e": 0,
+      "assessment": "healthy"
+    },
+    "perTestVerdict": {
+      "TestFetchTHuntedArticle::test_parses_title_subtitle_paragraphs_images": "PASS — meaningful assertions on title, subtitle, paragraphs list membership, image dedup result. Litmus: removing image-dedup logic or filter_boilerplate call would fail the assertion. Minor gap noted (PT boilerplate not explicitly asserted).",
+      "TestFetchTHuntedArticle::test_returns_none_on_http_error": "PASS-WITH-GAP — verifies `None` return and notifier call, but builder identity not pinned. See major finding #2.",
+      "TestFetchTHuntedArticle::test_returns_none_on_missing_body": "PASS-WITH-GAP — verifies `None` return and notifier call, but builder identity not pinned. See major finding #3.",
+      "TestFetchTHuntedArticle::test_image_limit_enforced": "PASS — asserts `len(images) == _IMAGE_LIMIT`. Litmus: removing the `break` in the dedup loop would fail this. Minor duplicate constant assertion noted.",
+      "TestFetchTHuntedArticle::test_image_dedup_strips_blogger_size_suffix": "PASS — realistic Blogger URLs (`=s1600`, `=s640`, `=s320-c`), asserts exact list contents. Litmus: removing the size-suffix regex would make photo1 appear twice and fail the assertion.",
+      "TestFetchTHuntedArticle::test_boilerplate_filter_applied_before_subtitle_lift": "PASS — correctly uses an EN boilerplate string (in filter today) at position 1, asserts the lead floats correctly into subtitle. Litmus: swapping filter and lift order would make 'Share on Facebook' the subtitle and fail. Minor order-strictness gap noted.",
+      "TestHostAllowlist::test_allows_t_hunted_blogspot_com": "PASS — single positive case, clear assertion.",
+      "TestHostAllowlist::test_rejects_other_blogspot_subdomain": "PASS — covers both `other.blogspot.com` and `someblog.blogspot.com`, exact-match assertion. Litmus: an `endswith('.blogspot.com')` regression would let these through and fail.",
+      "TestHostAllowlist::test_rejects_arbitrary_external_host": "PASS — covers external host, loopback, and AWS metadata IP. Strong SSRF coverage.",
+      "TestHostAllowlist::test_rejects_non_http_scheme": "PASS — covers `file://`, `ftp://`, `gopher://`. Litmus: removing the scheme check would let `file:///etc/passwd` through and fail (note: with hostname empty, the host check would also catch it — partial double-coverage, fine).",
+      "TestHostAllowlist::test_fetch_returns_none_and_pings_when_host_rejected": "PASS-WITH-GAP — asserts `None` return, notifier called, AND `session.get.assert_not_called()` (good — proves short-circuit before HTTP). But builder identity not pinned. See major finding #1.",
+      "TestHostAllowlist::test_rejects_userinfo_attack": "PASS — `http://t-hunted.blogspot.com@evil.com/x` correctly rejected. Litmus: switching from `parsed.hostname` to a netloc-split would pass `t-hunted.blogspot.com` and fail this.",
+      "TestHostAllowlist::test_rejects_suffix_host_attack": "PASS — `t-hunted.blogspot.com.attacker.example` correctly rejected. Litmus: switching to `endswith` would let this through and fail.",
+      "TestHostAllowlist::test_rejects_subdomain_variants": "PASS — covers `evil.t-hunted.blogspot.com` and `www.t-hunted.blogspot.com`. Litmus: any suffix-based check would let `www.` through and fail."
+    },
+    "expectedTestsPresent": {
+      "count": 14,
+      "total": 14,
+      "missing": []
+    },
+    "fixtureAndMockHygiene": {
+      "noRealHttpCalls": true,
+      "autouseFixtureCleanup": true,
+      "noTestInterdependence": true,
+      "monkeypatchMatchesProductionRefs": true,
+      "notes": "monkeypatch.setattr(..., raising=False) is correct — the three alert_t_hunted_* attributes do not yet exist on admin_alerts (Task 2 ships them), and production code calls `admin_alerts.alert_t_hunted_*` directly. After Task 2 merges, the autouse patch replaces the real builders with stubs, which is the intended behaviour for an isolated unit test of t_hunted_source."
+    }
+  }
+}

@@ -1,0 +1,35 @@
+{
+  "status": "passed",
+  "summary": "Three test edits in tests/test_sources_registry.py all pass the litmus test and assert real behavior on the real (non-mocked) NETLOC_TO_SOURCE constant and _resolve_source_name helper. The two updated set-equality assertions correctly extend to 8 keys / 5 values; the new TestResolveSourceName::test_resolves_t_hunted method makes a meaningful behavioral assertion that fails if the new mapping line is removed. The 981-passed suite confirms no regressions. The task explicitly defers tests for SOURCE_HASHTAG_OVERRIDE / _source_hashtag patch / dispatcher branch to Task 5 (per Task 3 description and TDD Anchor section); those deferrals are documented and not in-scope for this review. Two minor concerns: (1) test method names and class docstring now misleadingly reference 'five keys' / 'three source names' while expected sets are 8 / 5 — flagged as cosmetic by teammate, confirmed minor; (2) Task 3's production code adds the live SOURCE_HASHTAG_OVERRIDE + _source_hashtag patch + blogspot dispatcher branch to main with positive-path assertions deferred to Task 5, so until Task 5 lands the regression net for #thunted byte format and blogspot dispatch is the Verify-smoke one-liner only — acceptable per the documented task split.",
+  "findings": [
+    {
+      "severity": "minor",
+      "category": "anti_pattern",
+      "location": "tests/test_sources_registry.py:45",
+      "issue": "Method name test_has_exactly_the_five_keys is now misleading — expected set contains 8 keys. Class docstring at line 43 'Decision 4 — the five explicit netloc keys' is also stale. Misleading test names are a Category 6 anti-pattern (implementation/documentation drift) — future readers diffing the registry will be confused why a test named 'five_keys' enforces eight. Teammate flagged this as optional cosmetic; task description (step 7) explicitly permits the rename as optional. Recommend doing it now so the misleading name does not accumulate technical debt as the registry grows further.",
+      "recommendation": "Rename TestNetlocToSource::test_has_exactly_the_five_keys → test_has_exactly_the_eight_keys (or, better, test_netloc_keys_match_expected_set — count-agnostic, survives future additions without another rename). Update the class docstring on line 43 from 'Decision 4 — the five explicit netloc keys' to 'Decision 4 — the registered netloc → source_name keys' (count-agnostic). Same rename pattern applies to test_values_are_only_the_three_source_names → test_values_match_expected_source_names. Zero behavior change; pure readability fix that ships in the same commit as the assertion update so the file stays consistent."
+    },
+    {
+      "severity": "minor",
+      "category": "missing_coverage",
+      "location": "tests/test_sources_registry.py (and tests/test_telegram.py, tests/test_news_bot_dispatcher.py — deferred)",
+      "issue": "Task 3 ships three pieces of production logic to main whose positive-path tests are deferred to Task 5: (a) SOURCE_HASHTAG_OVERRIDE constant + _source_hashtag override-first lookup (Decision 2) — no test in this diff asserts that _source_hashtag('https://t-hunted.blogspot.com/x') returns '#thunted'; (b) fetch_full_article blogspot dispatcher branch — no test asserts blogspot URLs route to t_hunted_source.fetch_t_hunted_article; (c) the override map is only exercised by the Verify-smoke one-liner, not by automated CI. Regression net on the OTHER three sources' hashtags is solid (tests/test_telegram.py::TestSourceHashtag covers autoevolution/mattel/lamley/example fall-through correctly through the patched helper) — so the fall-through path IS guarded. But the positive assertion that the override actually kicks in for t-hunted has no CI guard until Task 5 lands. This is an explicitly documented in-spec deferral (Task 3 description paragraph 4, TDD Anchor section, step 7 last paragraph), not a developer oversight, so it does not fail this review — but it is worth surfacing as a known gap so the orchestrator can confirm Task 5 actually closes it.",
+      "recommendation": "No action in this task — the deferral is intentional and documented. For Task 5's test-reviewer pass, verify that all three deferred tests actually land: tests/test_telegram.py::test_t_hunted_teaser_uses_thunted_tag (locks '#thunted #news' byte format and confirms SOURCE_HASHTAG_OVERRIDE path), tests/test_news_bot_dispatcher.py::test_fetch_full_article_routes_blogspot_to_t_hunted (locks dispatcher branch), tests/test_news_bot_dispatcher.py::test_fetch_full_article_unknown_domain_returns_none (locks fall-through regression). If any of those three tests is missing or mock-only when Task 5 ships, escalate to a major finding at that point. Optionally — if it can be added cheaply in a Task 3 fixup commit before Task 5 begins — add a one-line assertion to tests/test_sources_registry.py asserting _source_hashtag('https://t-hunted.blogspot.com/x') == '#thunted'; this would close the CI gap immediately without waiting for Task 5, but is not required."
+    }
+  ],
+  "metrics": {
+    "filesReviewed": 2,
+    "litmusTest": {
+      "checked": 3,
+      "passed": 3,
+      "failed": 0
+    },
+    "coverageAssessment": "adequate",
+    "pyramidBalance": {
+      "unit": 3,
+      "integration": 0,
+      "e2e": 0,
+      "assessment": "healthy"
+    }
+  }
+}

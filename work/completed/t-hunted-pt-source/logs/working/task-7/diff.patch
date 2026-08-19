@@ -1,0 +1,194 @@
+diff --git a/.claude/skills/project-knowledge/references/ux-guidelines.md b/.claude/skills/project-knowledge/references/ux-guidelines.md
+index 0c1f57c..0c215c0 100644
+--- a/.claude/skills/project-knowledge/references/ux-guidelines.md
++++ b/.claude/skills/project-knowledge/references/ux-guidelines.md
+@@ -19,7 +19,7 @@ Treat the text below as your role for the duration of any translation work in th
+ 
+ > **Инструкция:**
+ >
+-> Ты — ведущий редактор и локализатор контента для популярного Telegram-канала. Твоя единственная задача: преобразовывать входящий английский текст в высококлассный русскоязычный контент.
++> Ты — ведущий редактор и локализатор контента для популярного Telegram-канала. Твоя единственная задача: преобразовывать **входящий текст (английский или португальский)** в высококлассный русскоязычный контент.
+ >
+ > **Алгоритм обработки текста:**
+ >
+@@ -101,6 +101,41 @@ Different sources come with different "native voice" and different structural qu
+ - **Good title example (2026-04-24):** Legends Tour 2026 → `"🏆 Legends Tour 2026: 20 стран, 5 месяцев, одна дайкаст-модель"` — punchy, numbered, ends on a hook.
+ - **Good title example (2026-04-24):** Brick Shop × HW → `"🏁 Brick Shop × Hot Wheels: Lamborghini, Aston Martin и Toyota теперь в пластиковых кирпичах"` — lists the three brands the reader actually wants to know about.
+ 
++### 🟤 t-hunted
++
++- **Voice:** независимый бразильский блог про Hot Wheels — коллекционерская community-журналистика. Автор — фанат, не журналист, не пресс-служба. [TBD operator после первых 5-10 публикаций — точная характеристика регистра, является ли блог one-author или несколько голосов]
++- **Tone dial:** «друг по хобби» — слегка ближе к autoevolution-баровому регистру, чем к mattel-пресс-релизу. Allow informal collector vocabulary. Используй PT-EN-RU глоссарий ниже — НЕ калькировать «caça» → «охота» (правильно «хант»), НЕ калькировать «Super Caça» → «Супер-охота» (правильно «Super-T»).
++- **Length:** [TBD operator] — большинство постов короткие, до 5-10 параграфов; иногда длинные deep-dive обзоры новых линеек.
++- **Structure quirks:** Blogger-шаблонные артефакты (Compartilhar, Marcadores, Postar comentário) уже отрезаны парсером — в LLM payload они НЕ попадают. Если что-то Blogger-ное всё-таки прорвалось — это сигнал к расширению `boilerplate_filter.py` PT-блока.
++- **Good/bad title examples:** [TBD operator — добавить после первых 5-10 публикаций]
++
++## Glossary — PT/EN/RU
++
++Hot Wheels collector jargon: переводы канонические для канала. LLM использует
++эту таблицу для PT→RU транскреации t-hunted статей, для EN→RU других источников
++— как референс по согласованности терминов.
++
++| PT | EN | RU (preferred) | Notes |
++|---|---|---|---|
++| Caça | (Treasure) Hunt | Хант | НЕ «охота» — устоявшийся коллекционерский сленг |
++| Super Caça | Super Treasure Hunt | Super-T (Супер-хант) | НЕ «Супер-охота» |
++| Caça ao Tesouro | Treasure Hunt | T-Hunt | Полная форма |
++| Linha principal | Mainline | Mainline | Не переводить — кастинговая категория |
++| Linha premium | Premium line | Premium | Не переводить |
++| Edição limitada | Limited edition | Лимитка / лимитированная серия | |
++| Coleção | Collection / series | Серия / коллекция | По контексту |
++| Modelo | Casting | Кастинг | Не «модель» (заводит в путаницу с «model car») |
++| Pintura | Paint / deco | Окрас / расцветка | |
++| Decalque | Tampo / decal | Тампо / декаль | «Тампо» — заводская печать; «декаль» — отдельная наклейка [VERIFY operator] |
++| Roda | Wheel (variant) | Колёса / диски | Указывать тип: RR (Real Riders), 5SP, etc. |
++| Lançamento | Release / drop | Релиз / релиз новой серии | |
++| Carrinho | Diecast car (lit. "little car") | Машинка / даикаст | «Carrinho» — общий collectible-сленг, не уменьшительное [VERIFY operator] |
++| Série | Series (e.g. Pop Culture, Boulevard) | Серия | Заглавный регистр у названия серии: «серия Pop Culture» |
++
++Operator: после первых 5-10 публикаций пересмотри `[VERIFY operator]` пункты против
++реальных t-hunted постов и поправь предпочитаемый RU-перевод там, где LLM
++систематически промахивается.
++
+ ## Red flags to self-check before stage
+ 
+ If any of these are true, **stop and rework** — you're breaking the prompt:
+diff --git a/tests/test_ux_guidelines_structure.py b/tests/test_ux_guidelines_structure.py
+new file mode 100644
+index 0000000..5b360b4
+--- /dev/null
++++ b/tests/test_ux_guidelines_structure.py
+@@ -0,0 +1,122 @@
++"""Structural assertions on ``ux-guidelines.md`` for the t-hunted PT source.
++
++The file at ``.claude/skills/project-knowledge/references/ux-guidelines.md``
++is the runtime system-prompt every LLM transcreation engine loads at runtime
++(see ``_llm_common._build_system_prompt``). The feature ``t-hunted-pt-source``
++makes three edits to it:
++
++1. Widen the input-language assertion in the system-prompt blockquote so the
++   LLM accepts PT alongside EN.
++2. Add a ``### 🟤 t-hunted`` per-source style block under
++   ``## Per-source style notes``.
++3. Add a new ``## Glossary — PT/EN/RU`` H2 section with at least 14 baseline
++   entries.
++
++These tests pin those three edits structurally so that a future merge or
++refactor cannot silently revert them. All assertions are **content-anchored**
++(string / heading lookups) — no line-number coupling, so they survive future
++prompt-text drift in other features.
++"""
++
++import re
++from pathlib import Path
++
++REPO_ROOT = Path(__file__).resolve().parent.parent
++UX_GUIDELINES = (
++    REPO_ROOT
++    / ".claude"
++    / "skills"
++    / "project-knowledge"
++    / "references"
++    / "ux-guidelines.md"
++)
++
++
++def _read() -> str:
++    return UX_GUIDELINES.read_text(encoding="utf-8")
++
++
++def _section(content: str, heading: str) -> str:
++    """Return the slice of *content* from *heading* up to the next ``## `` heading.
++
++    *heading* must be the full line text (e.g. ``"## Glossary — PT/EN/RU"``).
++    Returns empty string if *heading* is absent.
++    """
++    lines = content.splitlines()
++    start: int | None = None
++    for i, line in enumerate(lines):
++        if line.strip() == heading:
++            start = i
++            break
++    if start is None:
++        return ""
++    end = len(lines)
++    for j in range(start + 1, len(lines)):
++        if lines[j].startswith("## ") and not lines[j].startswith("### "):
++            end = j
++            break
++    return "\n".join(lines[start:end])
++
++
++def test_glossary_section_present():
++    content = _read()
++    assert "## Glossary — PT/EN/RU" in content, (
++        "Missing ``## Glossary — PT/EN/RU`` H2 section — required by "
++        "user-spec AC7 and tech-spec Decision 5."
++    )
++
++
++def test_glossary_has_at_least_10_entries():
++    section = _section(_read(), "## Glossary — PT/EN/RU")
++    assert section, "Glossary section not found — see test_glossary_section_present."
++
++    data_rows = []
++    for line in section.splitlines():
++        stripped = line.strip()
++        if not stripped.startswith("|"):
++            continue
++        # Skip the separator row (``|---|---|---|---|``)
++        if re.fullmatch(r"\|[\s\-:|]+\|", stripped):
++            continue
++        # Skip the header row (contains ``PT`` and ``EN`` column names)
++        if "PT" in stripped and "EN" in stripped and "RU" in stripped:
++            continue
++        data_rows.append(stripped)
++
++    assert len(data_rows) >= 10, (
++        f"Glossary table has {len(data_rows)} data rows; expected ≥10 per "
++        "user-spec AC7."
++    )
++
++
++def test_t_hunted_style_block_present():
++    content = _read()
++    per_source = _section(content, "## Per-source style notes")
++    assert per_source, "## Per-source style notes section missing."
++    assert "### 🟤 t-hunted" in per_source, (
++        "Missing ``### 🟤 t-hunted`` per-source style block (with U+1F7E4 "
++        "brown circle emoji) inside ``## Per-source style notes`` — required "
++        "by tech-spec Decision 5."
++    )
++
++
++def test_input_language_prompt_widened():
++    content = _read()
++    # Anchor by unique opening phrase of the system-prompt sentence about input
++    # language. Take everything up to the next sentence boundary (period
++    # followed by whitespace) so the assertion isn't fooled by ``английский``
++    # appearing later in the blockquote.
++    match = re.search(
++        r"Твоя единственная задача[^.]*\.",
++        content,
++    )
++    assert match, (
++        "Anchor sentence 'Твоя единственная задача…' not found in "
++        "ux-guidelines.md — system-prompt blockquote may have been rewritten."
++    )
++    sentence = match.group(0).lower()
++    assert "английский" in sentence and "португальский" in sentence, (
++        "System-prompt input-language assertion must mention both "
++        "'английский' AND 'португальский' so the LLM accepts PT input "
++        "(tech-spec Decision 5). Found sentence: " + match.group(0)
++    )
+diff --git a/work/t-hunted-pt-source/tasks/7.md b/work/t-hunted-pt-source/tasks/7.md
+index 30550d2..5917166 100644
+--- a/work/t-hunted-pt-source/tasks/7.md
++++ b/work/t-hunted-pt-source/tasks/7.md
+@@ -1,5 +1,5 @@
+ ---
+-status: planned
++status: in_progress
+ depends_on: []
+ wave: 3
+ skills: [prompt-master]

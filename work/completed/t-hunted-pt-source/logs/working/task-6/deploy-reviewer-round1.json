@@ -1,0 +1,29 @@
+{
+  "status": "approved",
+  "summary": {
+    "totalFindings": 2,
+    "critical": 0,
+    "major": 0,
+    "minor": 2
+  },
+  "findings": [
+    {
+      "severity": "minor",
+      "category": "ci-workflow",
+      "title": "Invariant test is hard-coded to a single filename; will not catch the NEXT first-party-import-without-deploy-mirror regression",
+      "description": "tests/test_deploy_files_invariant.py asserts the literal substring '\"t_hunted_source.py\"' in each of the three deploy files. That correctly guards Task 3's wiring, which is the immediate Risk R7 concern. But the test is essentially the R7 invariant from one task hard-coded as three asserts — when Task N+1 adds, say, 'reddit_hw_source.py' as another news_bot.py import, this test will stay green even if the deployer forgets to add it to FILES. A more durable form would derive the list of expected entries from news_bot.py's top-level imports (filter to first-party module names that have a sibling *.py file in repo root) and assert each appears in all three FILES arrays. The test file's own docstring frames it as a general 'every new first-party module' invariant, which over-promises versus the implementation. Not blocking for Task 6 — this round's deploy correctness is fine — but worth recording so the team treats the test as the single-purpose guard it actually is rather than the general R7 backstop the docstring claims.",
+      "location": "tests/test_deploy_files_invariant.py:1-51",
+      "impact": "False sense of security: future first-party imports added to news_bot.py can still slip through to production and ImportError on the next cron tick, despite a green pytest run. The R7 risk reduction is real for this commit only.",
+      "recommendation": "Either (a) tighten the docstring to say 't_hunted_source.py specifically' (cheap, accurate), or (b) replace the three hand-written asserts with a single discover-then-check loop, e.g. import ast; parse news_bot.py; collect Import/ImportFrom names whose `<name>.py` sits in repo root; for each entry, assert `\"{entry}\"` substring appears in deploy.sh, deploy.yml, deploy_test.yml. Option (b) is what the docstring already promises and would future-proof R7."
+    },
+    {
+      "severity": "minor",
+      "category": "ci-workflow",
+      "title": "FILES arrays are duplicated three times — current commit kept them in sync, but the structural drift risk remains",
+      "description": "deploy.sh, .github/workflows/deploy.yml, and .github/workflows/deploy_test.yml each hold their own 22-entry FILES array. This commit successfully mirrored t_hunted_source.py into all three at the same grouped position (after orangetrack_source.py, before telegraph_publisher.py) — diff confirmed deploy.yml ↔ deploy_test.yml are now byte-for-byte identical inside FILES, and deploy.sh differs only in leading whitespace (4-space vs 2-space indent inside the array block, which is harmless for bash). The grouped-position claim in the prompt is verified. However the underlying triplication is itself the structural source of Risk R7 — every future module addition needs three edits in three files in three different syntaxes. A single source of truth (e.g. a `deploy_files.txt` at repo root that all three workflows read via `mapfile -t FILES < deploy_files.txt`) would eliminate the divergence vector entirely. Not in scope for Task 6, but worth flagging since the team will hit this again on the next source addition.",
+      "location": "deploy.sh:37-60, .github/workflows/deploy.yml:123-146, .github/workflows/deploy_test.yml:94-117",
+      "impact": "Maintenance burden and ongoing R7 exposure: every new news_bot.py import requires three coordinated edits, and the only guard is the per-task invariant test from finding #1.",
+      "recommendation": "Consider extracting FILES into a shared manifest file (`deploy_files.txt` or `.deploy/manifest.txt`) and having deploy.sh + both workflows source it via `mapfile -t FILES < <repo-root>/deploy_files.txt`. Then the invariant test becomes 'every first-party module imported by news_bot.py appears in deploy_files.txt' — one assertion, one source of truth."
+    }
+  ]
+}

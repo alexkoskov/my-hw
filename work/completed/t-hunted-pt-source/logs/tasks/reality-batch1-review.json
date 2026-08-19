@@ -1,0 +1,55 @@
+{
+  "validator": "reality-checker",
+  "batch": [1, 2, 3],
+  "iteration": 1,
+  "status": "changes_required",
+  "findings": [
+    {
+      "severity": "critical",
+      "category": "cross-task-integration",
+      "task": 3,
+      "issue": "Task 3 adds 't-hunted.blogspot.com' to NETLOC_TO_SOURCE and 't-hunted' as a value, which immediately breaks two existing tests in tests/test_sources_registry.py: test_has_exactly_the_five_keys (asserts the exact set of 7 netlocs) and test_values_are_only_the_three_source_names (asserts values == {autoevolution, lamley, mattel, orangetrack}). After Task 3, both tests fail. The fix is in Task 5 (depends_on: [3]), but Task 3's own Automated verification section says 'pytest tests/test_telegram.py tests/test_sources_registry.py -v → all green' and 'pytest -x → full suite still green'. These ACs are infeasible as written — they contradict each other with the task scope.",
+      "fix": "Either (a) move the test_sources_registry.py updates into Task 3 (add the t-hunted assertions to both test_has_exactly_the_five_keys and test_values_are_only_the_three_source_names as part of the Task 3 diff), or (b) remove the test_sources_registry.py assertion from Task 3's Automated verification section and explicitly note that those two tests will be broken until Task 5 lands. Option (a) is strongly preferred to keep each wave's test suite green."
+    },
+    {
+      "severity": "major",
+      "category": "hints",
+      "task": 1,
+      "issue": "Step 6 implementation hints contain a full prescriptive algorithm with specific code blocks: the entire structure of fetch_t_hunted_article is spelled out step-by-step including exact Python expressions (e.g. 'base = re.sub(r\"=s\\d+(-c)?$\", \"\", src.split(\"?\", 1)[0])', 'paragraphs = filter_boilerplate(paragraphs)', exact BeautifulSoup call chains). This goes beyond pointing to patterns — it prescribes the implementation in detail. Step 7 similarly includes a full implementation recipe. Implementation hints should reference lamley_source.py patterns and flag key differences, not pre-write the solution.",
+      "fix": "Condense step 6 into 3-4 directional bullets referencing lamley_source.py line ranges and noting the two key differences (h3/post-body selectors, Blogger image dedup). Move the regex literal and call-order details into the TDD Anchor section as test-fixture anchors, not implementation instructions."
+    },
+    {
+      "severity": "major",
+      "category": "feasibility",
+      "task": 3,
+      "issue": "Task 3 claims 'This task has no new tests of its own' but its Automated verification step requires 'pytest tests/test_telegram.py tests/test_sources_registry.py -v → all green' and 'pytest -x → full suite still green'. These two statements are contradictory: Task 3 modifies NETLOC_TO_SOURCE which causes test_sources_registry.py tests to fail, yet the task declares it produces no test changes and expects a green suite. The agent executing this task will face a failing test suite with no guidance on what to fix.",
+      "fix": "Add an explicit step to Task 3's 'What to do' section: update test_has_exactly_the_five_keys and test_values_are_only_the_three_source_names in tests/test_sources_registry.py to include the t-hunted entries, so the suite stays green immediately after Task 3. Remove the duplicate test update from Task 5 (or keep it as a no-op verify step)."
+    },
+    {
+      "severity": "minor",
+      "category": "hints",
+      "task": 1,
+      "issue": "Task 1 step 1 references 'lamley_source.py HTML extraction block (строки 328-372)' but the block runs through line 379 (the return statement). The range undershoots by 7 lines — an agent reading only to line 372 would miss the image collection loop and the return dict.",
+      "fix": "Update the line range reference to 328-379 (or 328-380 to include the closing brace). Also note: the tech-spec says lamley is ~380 LOC; wc -l returns 379 — accurate."
+    },
+    {
+      "severity": "minor",
+      "category": "hints",
+      "task": 2,
+      "issue": "Task 2 Details section says 'Add three new tests before test_e030_orangetrack_summary_header'. The reference 'test_e028_lamley_no_body (line 202-206)' is accurate. The section also says 'test_e030 on 207-214' but the actual test_e030_orangetrack_summary_header spans lines 207-215 (with a trailing blank comment line). This is a 1-line minor discrepancy, not blocking.",
+      "fix": "Update the line range to 207-215. No functional impact."
+    },
+    {
+      "severity": "minor",
+      "category": "feasibility",
+      "task": 1,
+      "issue": "Task 1 says 'import admin_alerts' and then calls 'notifier(admin_alerts.alert_t_hunted_host_rejected(link))' directly (with an inline None guard). The lamley blueprint uses a _notify(notifier, message) helper (lamley_source.py:199-205) which also logs the message at ERROR level before forwarding to notifier. Task 1's approach skips the error log emitted by _notify. This means host-rejected/fetch-error/no-body events will NOT appear in journalctl unless the test of the module already produces the log separately. The lamley pattern logs unconditionally even when notifier=None.",
+      "fix": "Either copy the _notify helper pattern from lamley_source.py (adds error-level logging alongside the notifier call), or add explicit logger.error() calls before each notifier(). Either approach satisfies the alert traceability requirement."
+    }
+  ],
+  "stats": {
+    "tasks_checked": 3,
+    "claims_verified": 41,
+    "issues_found": 6
+  }
+}

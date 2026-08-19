@@ -416,6 +416,51 @@ cross-over story); default-reject applies only inside
 `_BROAD_DIECAST_NETLOCS`. Adding a netloc there is the change with the largest
 false-negative risk. Regression tests: `tests/test_relevance_filter.py`.
 
+### Channel-silence alarm [E017] — once per calendar day (2026-08-18)
+
+`_maybe_ping_dry_spell()` (news_bot.py) warns the operator when nothing has
+published for `DRY_SPELL_ALERT_DAYS`+ days (prod: 2, lowered from 3 on
+2026-08-13 so the August-shaped outage would fire on day two).
+
+The alarm is gated to **one per calendar day**, persisted in `bot_state`
+(`dry_spell_last_pinged_at`) via the
+`is_dry_spell_ping_rate_limited` / `mark_dry_spell_pinged` pair in
+`pending_articles_repo`. Before the gate, one outage produced one ping **per
+container restart** — four on 2026-08-13 — and a repeated alarm reads as a
+worsening situation when it is the same one. The marker lives in the DB
+precisely because a restart is what wipes in-process state.
+
+Four properties, each of which cost something to learn:
+
+- **Calendar day, not a rolling window** — unlike the [E038] gate above, which
+  takes `window_hours`. The cron fires from a 60 s poll loop, so two daily
+  ticks can sit a minute short of 24 h apart and a rolling window would swallow
+  the next day's legitimate alarm on that jitter. `record_fetch_failure` bounds
+  itself the same way for the same reason. Accepted edge: restart ticks land at
+  any hour, so two straddling 00:00 UTC ping twice minutes apart — two, not
+  four, and per calendar day as specified. Do not "fix" that back into a
+  rolling window.
+- **Marked only after the send returns True.** A Telegram outage must not
+  consume the day's only alarm; a failed send costs a retry, not a silence.
+- **Fails open on every path it controls** — missing row, corrupt value,
+  unreadable DB, future-dated marker. The guarantee is a blanket `except`
+  around the whole gate body rather than a bet on exception types: the parser
+  `_parse_dt_tolerant` had to be widened to `TypeError` because `bot_state`
+  has TEXT affinity but leaves a BLOB a BLOB, and `fromisoformat` answers a
+  non-str with `TypeError`, which used to escape and disable the alarm
+  indefinitely. Unlike [E038], this alert has **no** redundant channel — there
+  is no daily line carrying the same fact — which is why the bar is higher.
+- **The one path it cannot control is a stopped clock**, which pins the gate
+  shut for as long as it is stuck. Deliberately undefended here; the backstop
+  is `.github/workflows/uptime.yml`, which reads the age of the last Telegra.ph
+  page from outside the host.
+
+The alert body (`admin_alerts.alert_channel_silent`) tells the operator to read
+`docker logs --tail 50 hw-news-bot`. It said `sudo journalctl -u
+news_bot.service` until 2026-08-18 — dead advice since the Docker migration,
+and it matters more now that the operator sees this text once per outage day
+rather than once per restart.
+
 ### Fetch-retry cap (2026-08-13)
 
 A link whose article cannot be fetched is deliberately **not** marked

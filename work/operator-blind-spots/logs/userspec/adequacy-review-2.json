@@ -1,0 +1,105 @@
+{
+  "status": "changes_required",
+  "round": 2,
+  "round1_findings_status": {
+    "1_listener_strips_keyboard": "partially_closed",
+    "2_tokenless_held_rows": "closed",
+    "3_unbounded_summary": "closed",
+    "4_stale_justification": "closed",
+    "5_no_link_to_token_lookup": "partially_closed",
+    "6_silence_no_longer_free": "open",
+    "7_delivered_ambiguous_for_held": "open",
+    "8_sizing_and_ship_order": "partially_closed",
+    "9_risk3_misdiagnosis": "closed",
+    "10_derivable_per_source_state": "open",
+    "11_reversal_rationale": "partially_closed"
+  },
+  "findings": [
+    {
+      "category": "underengineering",
+      "severity": "critical",
+      "issue": "ROUND-1 FINDING 6, STILL OPEN AND NOW WORSE. The spec still answers with an assertion, not a mechanism: «Правило \"нет ответа — не публикуем\" не меняется... она только возвращает возможность нажать кнопку» (user-spec.md:157-159). No end state is defined — neither «a held row drops out of the summary after N days» nor «the operator is now expected to press 🚫». Re-verified in code that a held row has no exit but an operator press: only `move_to_published` (pending_articles_repo.py:1089, DELETE at :1200 — unreachable for a held row, the publish path reads `list_pending` which carries `hold_reason IS NULL`) and `skip_pending` (pending_articles_repo.py:1281) remove it; eviction excludes held rows explicitly (pending_articles_repo.py:975-995); «doing NOTHING is a supported outcome» is the written contract (news_bot.py:849-852).",
+      "why_matters": "In round 1 this was quality decay. The rewrite made it structural: the new cap says «показываются САМЫЕ СТАРЫЕ» (user-spec.md:134-135). Combine the two facts — declined-by-silence rows never leave, and the oldest rows always occupy the visible slots — and a handful of articles the operator silently declined permanently blockade the head of the summary, pushing genuinely new held articles into «и ещё M». Within months the summary stops showing the articles it exists to rescue, silently, with no error anywhere. The feature switches itself off through normal use, and the worse the backlog the more completely it fails.",
+      "fix": "Pick one and write it into the spec with a matching acceptance criterion: (a) say out loud that silence is no longer a terminal answer and the operator must press «🚫 Не публиковать» to clear a row — this changes what silence means and belongs in «Ограничения», not in a tech-spec; or (b) a held row drops OUT OF THE SUMMARY after N days while staying held, so «нет ответа = не публикуем» keeps costing nothing and the summary stays a rescue tool. Option (b) preserves the operator's rule and is the recommended one."
+    },
+    {
+      "category": "feasibility",
+      "severity": "major",
+      "issue": "ROUND-1 FINDING 5, PARTIALLY CLOSED. The spec now acknowledges the new lookup («новый способ искать пропуск по статье», user-spec.md:289-290) but says nothing about filtering by token KIND, nor what to do when more than one candidate matches. Verified that both kinds can coexist for ONE link: `hold_markers` is computed at news_bot.py:4291, i.e. BEFORE the dedup block, and the dedup 'flag' branch mints a `dedup` token for that same link at news_bot.py:4463-4468, while the hold branch mints a `hold` token for it at news_bot.py:4596-4601. Both live in one flat namespace, value `<kind>|<link>` (pending_articles_repo.py:1620-1723).",
+      "why_matters": "If the summary reuses the `dedup` token in a hold keyboard, `resolve_hold_callback` answers «⚠️ Кнопка устарела» and deliberately does NOT consume the token (news_bot.py:758-764). Tomorrow's summary finds the same token and builds the same dead button — forever. The article stays in exactly the stranded state the feature exists to end, and nothing logs an error. This is the documented SEC-CG-2 bug class (architecture.md:418-419), reintroduced through the new lookup.",
+      "fix": "One line in the spec: finding an existing pass must match the article AND the button kind (hold), and if no matching pass is found the article is treated as having none (mint a fresh one — the branch already defined by Scenario 3). No implementation detail needed beyond that."
+    },
+    {
+      "category": "underengineering",
+      "severity": "major",
+      "issue": "ROUND-1 FINDING 7, STILL OPEN. The spec never states that a HELD article does not count as «дошла до очереди публикации». The nearest wording is «Ни одна из них не доходит до очереди публикации — неважно, по какой причине» (user-spec.md:71-72) plus «считать поводом любую причину» (user-spec.md:201-204) — a hint, not a statement. The word «придержана» does not appear anywhere in the silence-alarm section, and there is no acceptance criterion for a source whose every article was held.",
+      "why_matters": "The code actively pushes toward the unsafe reading: a held row increments `inserted` (news_bot.py:4570-4580) and `funnel['staged'] = inserted` (news_bot.py:4628), so the counter nearest to hand counts a held article as delivered. Under that reading a content-gate regression that holds every article from one source reads as a perfectly healthy source — a silent source with a healthy counter, precisely this feature's target failure class.",
+      "fix": "Add one sentence to Scenario 1 / «Технические решения»: «дошла» means the article became PUBLISHABLE; an article held for review has NOT reached the queue. Add an acceptance criterion for a source whose every article was held for review."
+    },
+    {
+      "category": "sizing",
+      "severity": "major",
+      "issue": "ROUND-1 FINDING 8, PARTIALLY CLOSED. «Замечание о размере» (user-spec.md:286-293) now admits the growth and allows a split, but defers the decision to tech-spec time («если на техспеке объём окажется великоват») and proposes the REVERSE order: silence alarm first, «потому что проще и не трогает путь с кнопками». It is not simpler: item 1 means per-source attribution across the eight funnel increment sites (news_bot.py:4143, :4149, :4207, :4237, :4330, :4396, :4512, :4580, :4628), cross-tick per-source state with restart safety, a new alert and integration tests reproducing a two-day outage. Item 3 ([E017] marker) is a handful of lines around news_bot.py:4962-4980.",
+      "why_matters": "The proposed order ships the largest and least-evidenced part first and delays the only part backed by a measured operator incident (11 Aug, article recoverable only by a DB edit, architecture.md:420). It also leaves the spec's own justification for item 1 unverified: «полный обвал теперь и так даёт сигнал на второй день» (user-spec.md:44-47) is true only ONCE item 3 exists — today [E017] still re-fires per restart, so the premise is an assumption, not an observation. Deferring the split to tech-spec time usually means no split.",
+      "fix": "Record the split in the spec now, in this order: A = item 3 ([E017] once-per-day marker, which also establishes the shared marker idiom the spec itself names as the only overlap); B = items 2+4 (summary + re-render) once the critical finding and the button-path majors are resolved; C = item 1 (per-source silence alarm), last, after two-three weeks of observation that show whether the partial-outage case recurs."
+    },
+    {
+      "category": "feasibility",
+      "severity": "major",
+      "issue": "NEW (residue of round-1 finding 1). The re-render decision (user-spec.md:214-217) is buildable — `_review_edit_message` hardcodes `reply_markup=None` (news_bot.py:1023) but that is a call argument, not a Telegram limit, and `list_held()` (pending_articles_repo.py:998-1020) already returns the list oldest-first. What the spec does not say is HOW the bot tells a press in the summary from a press in the original [E036]. Reusing the same token (user-spec.md:218-220) makes the two buttons' `callback_data` byte-identical — `hd:a:<token>` under the grammar map at news_bot.py:925-934. Two routes exist and differ enormously in cost: (a) by message_id — but the bot never captures an outgoing message id, `send_admin_notification` returns only True/False (news_bot.py:601, :656, :671) and discards the `send_message` result, so this needs a new return value, new persisted state that survives restarts, and a comparison on every press; (b) a second grammar prefix (e.g. `hs:`) pointing at the SAME token — one entry in the map at news_bot.py:931-934, reuse decision untouched. Also unstated: yesterday's summary keeps live buttons once today's is sent — which one is authoritative and what a press in the stale one does.",
+      "why_matters": "The spec asserts «перерисовка включается только для сводки, одиночный путь сохраняет нынешнее поведение дословно» (user-spec.md:184-186) and turns it into an acceptance criterion (user-spec.md:144-145), but provides no discriminator to make that true. The intuitive route (a) is the expensive one and its blocker (send_admin_notification returns a bool) is discovered only during implementation. If a stale summary falls back to the legacy path, the operator gets exactly the round-1 failure — the whole keyboard stripped and an unnamed status line — in the message they are most likely to scroll back to.",
+      "fix": "State in the spec that the summary's buttons must be distinguishable from the single [E036]'s while pointing at the same pass, and say what happens to a press in yesterday's summary (recommended: only the newest summary is live; a press in an older one is answered «сводка устарела» and changes nothing)."
+    },
+    {
+      "category": "feasibility",
+      "severity": "major",
+      "issue": "NEW. Keeping the buttons alive makes repeat and stale presses a routine event (the spec expects them — user-spec.md:130-131), and that combination breaks the listener. A press on an already-resolved row returns «⚠️ Статья уже недоступна» (news_bot.py:849-880) and leaves `list_held()` unchanged, so a re-render from the current list produces THE SAME text and THE SAME keyboard → Telegram answers `BadRequest: Message is not modified`. The edit call runs BEFORE the callback answer (news_bot.py:1108-1112, answer at :1113), so the exception aborts the handler and `answer_callback_query` never fires; only the listener's per-update try/except sees it.",
+      "why_matters": "Today this is impossible — the first press removes the keyboard (news_bot.py:1023) so there is never a second one. After this feature the operator gets a spinner that never resolves and no feedback at all, on the message that is supposed to be the rescue path. Worse for review purposes: acceptance criterion user-spec.md:130-131 («повторное нажатие не выполняет действие дважды») still PASSES — the test goes green while the operator sees nothing.",
+      "fix": "Add to the spec: a press that changes nothing must still give the operator a visible answer, and the summary text must always differ after a press (e.g. the status line names the article and the outcome, including «уже разобрана»). Add an acceptance criterion for a repeat press on an already-resolved row in the summary."
+    },
+    {
+      "category": "feasibility",
+      "severity": "major",
+      "issue": "NEW. Restart safety is pinned only for the SEND marker: «Учёт \"раз в сутки\" должен переживать перезапуск» (user-spec.md:163-164), the criterion at user-spec.md:113-114 and test 3 all talk about repeat SENDS. Nothing pins the silence COUNTER to calendar days. `main()` calls `job()` immediately on every start (news_bot.py:5113) and restarts are routine — four on 2026-08-13, recorded in pending_articles_repo.py:608-620.",
+      "why_matters": "A counter that increments per tick reaches two within an hour. Concrete false alarm: autoevolution 403s on one tick (explicitly documented as normally transient, news_bot.py:4152-4157), the container is restarted, the next tick picks up genuinely new feed entries which also fail — the alarm fires for a «second day» that never happened. That is exactly the spec's own Risk 2 («тревога начнёт врать»), and its mitigation (user-spec.md:178-181) does not cover it. The project already has the proven idiom: `record_fetch_failure` increments at most once per calendar day via `date(last_failed_at) < date('now')` (pending_articles_repo.py:608-620).",
+      "fix": "One line in «Ограничения»: «раз в сутки» applies to the silence counter as well as to the send marker — several ticks in one calendar day count as one day. Add an acceptance criterion: three ticks on the same day with the source blocked do not produce a day-2 alarm."
+    },
+    {
+      "category": "underengineering",
+      "severity": "major",
+      "issue": "NEW. The spec excludes a source that offered nothing new (user-spec.md:116) and justifies it with false alarms on the irregular t-hunted and orangetrack (user-spec.md:178-181). That exclusion also hides the second way a source dies. Verified: `_fetch_rss_entries` wraps each feed in its own try/except (news_bot.py:3776-3780) — a dead feed produces a `logger.error` and `continue`, no admin notification at all (its own docstring: «RSS errors currently go to the local logger only»), and `funnel['sources_failed']` does not increment because the outer fetcher did not raise (news_bot.py:4100-4113).",
+      "why_matters": "If autoevolution's FEED dies — URL change, redesign, DNS — the bot sees zero fresh entries from it, [E017] stays silent because the other sources keep publishing and reset the gap (news_bot.py:4962-4980), the new alarm stays silent by the spec's own exclusion, and no source-failure ping exists on this path. So «частичная авария», declared in «Зачем» (user-spec.md:49-55) as the main gap being closed, is closed only for the variant «feed alive, articles blocked». For a source posting 15-20 entries a day, two days of zero fresh entries is itself an anomaly and is distinguishable from a quiet day at t-hunted.",
+      "fix": "Either extend the condition for high-volume sources (a source whose normal daily volume collapses to zero also counts as silent), or keep the exclusion and record it honestly in «Ограничения» as a known uncovered half — «умершая лента этой тревогой не ловится и сегодня не ловится ничем» — so nobody reads the feature as closing the whole partial-outage class."
+    },
+    {
+      "category": "underengineering",
+      "severity": "minor",
+      "issue": "NEW. The summary cap is expressed as «больше, чем помещается в одно сообщение» (user-spec.md:134-135) — not a number, and the fit varies with title length per source. Round 1 asked for an explicit N. Also unstated: the cap must be re-applied on EVERY re-render, and a re-render from the current held list can surface articles that were never in the sent message (including ones held after it went out, whose own [E036] was sent separately).",
+      "why_matters": "A length-driven bound is untestable as written and will be re-decided arbitrarily in the tech-spec; test 13 («придержанных статей больше предела») cannot be written without knowing the предел. The self-growing list is probably desirable — it drains the backlog — but the operator will see a message that adds rows on its own, and that behaviour is nowhere described.",
+      "fix": "State N as a number of articles, and add one sentence that the re-render applies the same cap to the current held list, so resolving a top article pulls the next one into view."
+    },
+    {
+      "category": "underengineering",
+      "severity": "minor",
+      "issue": "NEW. The alarm must name «сколько свежих новостей он предложил, сколько дошло и на каком шаге отсеялось больше всего» (user-spec.md:111-112), but not over which window — the second day alone, or both days. `funnel` lives exactly one tick (built at news_bot.py:4082, logged at news_bot.py:4633), so the two readings need different amounts of storage.",
+      "why_matters": "These numbers exist to tell the operator where to go and fix things; their meaning depends on the period. Unstated, it is decided by whichever counter is nearest to hand, and the operator will read a two-day alarm's numbers as covering two days.",
+      "fix": "One sentence: the numbers cover the tick that raised the alarm (recommended — the funnel is already per-tick), or both days if the operator wants the cumulative view."
+    },
+    {
+      "category": "better_alternative",
+      "severity": "minor",
+      "issue": "ROUND-1 FINDING 10, STILL OPEN. «Технические решения» (user-spec.md:199-236) contains no line noting that «how long since source X delivered» is derivable from data that already exists — `pending_articles.source_name` + `fetched_at` (architecture.md:392) and `published_articles.published_at` resolved through `_resolve_source_name` (news_bot.py:3158) — so that only the send marker strictly must be stored.",
+      "why_matters": "Unsaid, the tech-spec will default to four per-source counters plus four per-source send markers — eight bot_state keys, each with its own restart-safety and per-calendar-day semantics, i.e. the trap of finding N3 multiplied by four.",
+      "fix": "Add one line stating that the per-source counters must be justified rather than assumed, since the underlying question is answerable from existing tables and only the send marker inherently needs storing."
+    },
+    {
+      "category": "better_alternative",
+      "severity": "minor",
+      "issue": "ROUND-1 FINDING 11, PARTIALLY CLOSED. The main rationale for reversing architecture.md:420 now leads with the verifiable 11 Aug fact (user-spec.md:232-236) — fixed. A weaker version of the same reconstruction survives at user-spec.md:208-210: «пять напоминаний в день — то самое, из-за чего напоминания отвергли в прошлый раз». architecture.md:420 records only THAT reminders and timeouts were rejected, not WHY.",
+      "why_matters": "Risk 4 of the spec exists to stop documentation from out-arguing the code; asserting an unrecorded reason for a past decision is how the next reader loses trust in the reversal that Risk 4 is protecting.",
+      "fix": "Reword to what the record supports: one summary a day was chosen because five pings a day would be noise, full stop — no claim about why the earlier rejection happened."
+    }
+  ],
+  "worst_category": "underengineering",
+  "summary": "Переписывание закрыло 4 находки из 11 полностью (2, 3, 4, 9) и 3 частично (1, 5, 8), но находка 6 не просто осталась открытой — новый потолок «показываются самые старые» превратил её в critical: отклонённые молчанием статьи не уходят никогда и навсегда занимают голову сводки, из-за чего фича самоотключается по мере использования. Пересмотр дизайна принёс четыре новые проблемы выполнимости: нечем отличить нажатие в сводке от нажатия в [E036] (пропуск и callback_data общие, message_id бот не сохраняет), повторное нажатие даёт «Message is not modified» до ответа на callback и подвешивает спиннер, счётчик «два дня подряд» не привязан к календарным суткам при рутинных перезапусках, и умершая RSS-лента не даёт ни свежих записей, ни уведомления — то есть «частичная авария» закрывается наполовину. Порядок выпуска: сначала пункт 3 ([E017]-отметка), затем сводка, тревога о молчащем источнике последней — обратный порядок из спеки ставит первой самую большую и наименее доказанную часть и оставляет её собственное обоснование непроверенным."
+}

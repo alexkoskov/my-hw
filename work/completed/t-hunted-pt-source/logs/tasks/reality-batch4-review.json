@@ -1,0 +1,54 @@
+{
+  "validator": "reality-checker",
+  "batch": [10, 11, 12],
+  "iteration": 1,
+  "status": "approved",
+  "findings": [
+    {
+      "severity": "major",
+      "category": "missing_file",
+      "task": 12,
+      "issue": "Task 12 What-to-do step 1 instructs the agent to read audit reports from 'work/t-hunted-pt-source/logs/working/task-9/code-reviewer-*.json', 'task-10/security-auditor-*.json', 'task-11/test-reviewer-*.json'. These paths do not match where Tasks 9, 10, and 11 actually write their outputs. Task 9 writes to 'work/t-hunted-pt-source/logs/audits/code-audit.json'; Task 10 writes to 'work/t-hunted-pt-source/logs/audits/security-audit.json'; Task 11 writes to 'work/t-hunted-pt-source/logs/audits/test-audit.json'. The logs/working/task-{9,10,11}/ directories do not exist and will never be created by any task in this feature. As a consequence, the QA agent in Task 12 will silently proceed without reading the audit findings — defeating the critical-findings-gate described in the task description.",
+      "fix": "In Task 12 What-to-do step 1, replace the three 'logs/working/task-N/*.json' paths with the correct paths: 'work/t-hunted-pt-source/logs/audits/code-audit.json' (Task 9), 'work/t-hunted-pt-source/logs/audits/security-audit.json' (Task 10), 'work/t-hunted-pt-source/logs/audits/test-audit.json' (Task 11). Also update the same section in Task 12 Context Files."
+    },
+    {
+      "severity": "minor",
+      "category": "hints",
+      "task": 10,
+      "issue": "Task 10 Details → Files section contains a literal mkdir/cat shell command 'mkdir -p logs/audits && cat > logs/audits/security-audit.json' using a short relative path that omits the 'work/t-hunted-pt-source/' prefix. If an agent follows this command literally from the project root it creates './logs/audits/' in the project root instead of the feature folder. Task 11's equivalent line correctly uses the full path 'mkdir -p work/t-hunted-pt-source/logs/audits'.",
+      "fix": "Change the inline command hint in Task 10 line 178 from 'mkdir -p logs/audits && cat > logs/audits/security-audit.json' to 'mkdir -p work/t-hunted-pt-source/logs/audits' (matching Task 11's phrasing). The canonical output path stated above the hint already uses the correct full path, so this is a consistency fix."
+    },
+    {
+      "severity": "minor",
+      "category": "feasibility",
+      "task": 10,
+      "issue": "Task 10 What-to-do step 3 instructs the auditor to use 'git diff main...HEAD' to see only this feature's changes. The feature branch 'feature/t-hunted-pt-source' was branched from 'dev', not from 'main'. Using 'main...HEAD' as the diff range includes all commits from main→dev (framework install, bug fixes, etc.) — roughly 11 additional commits and hundreds of unrelated files — making it harder to focus on feature-only changes. Task 12 consistently uses 'origin/dev' as the comparison base, which is the correct target branch for this feature.",
+      "fix": "Change 'git diff main...HEAD' in Task 10 step 3 to 'git diff origin/dev...HEAD' (matching Task 12's convention) to scope the diff to feature-only changes."
+    },
+    {
+      "severity": "minor",
+      "category": "feasibility",
+      "task": 12,
+      "issue": "Task 12 acceptance criterion and description states '933+ существующих тестов'. The actual baseline test count on the current branch is 935 (confirmed by pytest --collect-only). While 935 satisfies the '933+' floor and the claim is technically not wrong, the 2-test discrepancy could cause minor confusion if an agent reports 935 and the reviewer cross-checks against the '933' figure.",
+      "fix": "Update the baseline count in Task 12 acceptance criteria from '933+' to '935+' (or '935+ existing tests') to match the actual collected count."
+    }
+  ],
+  "stats": {
+    "tasks_checked": 3,
+    "claims_verified": 47,
+    "issues_found": 4
+  },
+  "notes": {
+    "task_10_files_to_read": "All 14 source files listed in Task 10 Context Files exist and are accessible: admin_alerts.py, boilerplate_filter.py, news_bot.py, feeds.json, lamley_source.py, ux-guidelines.md, and all referenced test files (those that exist pre-Wave-1-3). The 5 Wave-1-3 output files (t_hunted_source.py, test_t_hunted_source.py, test_deploy_files_invariant.py, test_ux_guidelines_structure.py, test_news_bot_dispatcher.py) do not yet exist — this is expected since Task 10 depends_on=[1,2,3,4,5,6,7,8] and will run only after those tasks complete.",
+    "task_11_files_to_read": "Task 11 scope list of 9 test files exactly matches the set of test files created or extended by Tasks 1-8 per tech-spec Testing Strategy. No omissions found. The 'OR' condition for test_integration.py vs test_news_bot_dispatcher.py correctly reflects Task 5's implementation choice.",
+    "task_10_section_references": "All code-research.md section references in Task 10 are valid: §B (line 684, Parser blueprint), §E (line 1050, PT glossary), §A.5 (line 655, admin_alerts.py builders). The letter-notation (§A, §B, etc.) maps to top-level sections within the Tech-Spec Deepening chapter (§17) of code-research.md.",
+    "task_10_lamley_line_reference": "Task 10 references lamley_source.py 'строки 209-226' for _is_allowed_lamley_url/_ALLOWED_HOSTS. Verified: comment block starts at line 209, _ALLOWED_HOSTS at line 213, _is_allowed_lamley_url definition at line 216, closing at line 226. Reference is accurate.",
+    "task_10_llm_common_line_reference": "Tech-spec Decision 8 references _llm_common.py:134-153 for _is_mostly_russian. Verified: function definition is at line 134, body spans lines 134-153 (20 lines). Reference is accurate.",
+    "task_12_smoke_commands": "All 9 smoke commands in Task 12 Verification Steps are syntactically correct and reference functions/files that will exist after Wave 1-3 completes: _source_hashtag (news_bot.py:799), _resolve_source_name (news_bot.py:834), init_schema (pending_articles_repo.py:165), is_boilerplate (boilerplate_filter.py:161), feedparser (installed, v6.0.12). The 'wc -l t_hunted_source.py' and 'grep ... t_hunted_source.py' commands require running from the project root — the task preamble establishes this context.",
+    "task_12_git_diff_base": "Task 12 smoke uses 'git diff origin/dev -- requirements.txt' and 'git diff origin/dev -- .env.example'. origin/dev branch exists and is the correct merge target. This is consistent with the feature merge strategy.",
+    "task_10_smoke_boilerplate": "Task 10 ReDoS sanity smoke calls 'boilerplate_filter.is_boilerplate(pat)' — confirmed as a public function exported by boilerplate_filter module.",
+    "task_10_smoke_secrets_grep": "Task 10 smoke uses 'git diff main...HEAD ... | grep ...' for credential scanning. The broader diff base (main instead of origin/dev) slightly widens the grep surface but doesn't produce false negatives for the feature files listed. Minor issue only.",
+    "task_12_e_codes": "Task 12 references E031-E033 as new alert codes. Verified: last existing code in admin_alerts.py is E030 (orangetrack summary header, line 321). E029 is a deliberate skip (gap between E028 Lamley no-body and E030 Orangetrack). E031-E033 are the correct next sequential codes.",
+    "cross_task_path_consistency": "Tasks 9, 10, 11 all write to 'work/t-hunted-pt-source/logs/audits/'. Task 12 reads from 'work/t-hunted-pt-source/logs/working/task-{9,10,11}/'. This is the critical mismatch reported as a major finding."
+  }
+}

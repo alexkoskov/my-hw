@@ -1,0 +1,97 @@
+{
+  "feature": "t-hunted-pt-source",
+  "audit_type": "code",
+  "auditor": "code-reviewing",
+  "timestamp": "2026-05-29T19:17:02Z",
+  "tasks_audited": [1, 2, 3, 4, 5, 6, 7, 8],
+  "status": "approved_with_suggestions",
+  "summary": "Feature ships clean. Per-task reviewers already closed all blockers across rounds. At feature scope I see no critical or major defects — only minor doc/code drift items (tech-spec Decision 2 text now describes a source_name-keyed override map but the implementation is netloc-keyed with `#` already in the value; `fetch_full_article` docstring not updated to mention blogspot/t-hunted; SOURCE_LABEL capitalisation deliberately diverges from peers per Decision 7). The parser correctly mirrors lamley's contract minus WAF apparatus, dispatcher branch ordering is safe (no overlap with existing netlocs), all three deploy FILES arrays carry the new module, and no shared-resource regressions were introduced.",
+  "total_findings": {"critical": 0, "major": 0, "minor": 5},
+  "headline_verdict": [
+    "approved_with_suggestions — no critical/major findings, 5 minor doc/cosmetic items",
+    "Cross-task wiring is coherent: parser ↔ dispatcher ↔ override map ↔ deploy FILES all line up; SSRF allowlist hardened beyond tech-spec text",
+    "Recommend non-blocking follow-ups (tech-spec text refresh; dispatcher docstring) — not gating Wave 5"
+  ],
+  "findings_by_component": {
+    "parser": [
+      {
+        "severity": "minor",
+        "issue": "`fetch_t_hunted_article` docstring lists return fields as `{title, subtitle, paragraphs, images}` but the matching lamley docstring at `lamley_source.py:236` lists only `{title, paragraphs, images}` (lamley actually also returns subtitle — its docstring is stale). The t-hunted docstring is correct; the inconsistency is in lamley. Flagging here because reviewers comparing the two parsers will wonder which is canonical.",
+        "file": "t_hunted_source.py",
+        "line": 105,
+        "recommendation": "No code change for t-hunted. Optionally raise a follow-up to fix `lamley_source.py:236` docstring — not part of this feature's scope."
+      }
+    ],
+    "alerts": [
+      {
+        "severity": "minor",
+        "issue": "E031-E033 builders are declared between E028 (Lamley last) and the orangetrack E030 aggregator, breaking ascending numeric order in the file layout. E030 now appears AFTER E033 at `admin_alerts.py:360`. Functionally irrelevant — codes are looked up by name, not file position — but a future reader scanning E0XX top-to-bottom will hit E031 before E030.",
+        "file": "admin_alerts.py",
+        "lines": "321-366",
+        "recommendation": "Either move the E030 aggregator block above E031 to restore numeric order, or add a one-line comment above E031 noting the deliberate insertion point (`# Inserted between E028 and E030 to keep per-source clusters contiguous`). Not blocking."
+      }
+    ],
+    "wiring": [
+      {
+        "severity": "minor",
+        "issue": "Tech-spec Decision 2 text: `SOURCE_HASHTAG_OVERRIDE = {'t-hunted': 'thunted'}` (source_name keyed, value WITHOUT leading `#`). Implementation: `SOURCE_HASHTAG_OVERRIDE = {'t-hunted.blogspot.com': '#thunted'}` (netloc keyed, value WITH leading `#`). The implementation is structurally better — it slots directly into `_source_hashtag`'s already-extracted netloc without a second `_resolve_source_name` round-trip — but tech-spec text is now stale. No decisions.md entry notes this deviation.",
+        "file": "news_bot.py",
+        "lines": "862-864",
+        "recommendation": "Add a one-paragraph note to `work/t-hunted-pt-source/decisions.md` Task 3 entry capturing the Decision 2 textual drift (netloc-keyed, `#`-included value). Optionally update tech-spec Decision 2 prose to match the shipped shape. Code itself is correct as-is."
+      },
+      {
+        "severity": "minor",
+        "issue": "`fetch_full_article` docstring (`news_bot.py:1441-1446`) enumerates supported sources as `corporate.mattel.com / lamleygroup.com / autoevolution.com` and omits both `orangetrackdiecast.com` (pre-existing omission) and the new `blogspot.com` branch. Reader sees five `if` branches but only three documented sources.",
+        "file": "news_bot.py",
+        "lines": "1441-1447",
+        "recommendation": "Extend the docstring to include `orangetrackdiecast.com` (pass-through) and `t-hunted.blogspot.com` (Blogger HTML scrape). One-line addition per source."
+      },
+      {
+        "severity": "minor",
+        "issue": "`SOURCE_LABEL['t-hunted'] = 'T-Hunted'` is the only entry with mixed-case capitalisation; the other four (`autoevolution`, `mattel`, `lamley`, `orangetrack`) are lowercase. Decision 7 documents this as deliberate (mirrors the source's own brand spelling). The asymmetry is intentional but visually surprising.",
+        "file": "news_bot.py",
+        "line": 902,
+        "recommendation": "Either accept as-is (Decision 7 is explicit) or add a one-line inline comment at line 902 (`# Capitalised to mirror the source's own brand spelling — Decision 7`) so future maintainers don't normalise it during a routine cleanup pass. Not blocking."
+      }
+    ],
+    "prompt": [],
+    "tests": [
+      {
+        "severity": "minor",
+        "issue": "`SOURCE_HASHTAG_OVERRIDE` is a single-entry dict at this point in time. No test in `tests/test_sources_registry.py` or elsewhere asserts the map structure itself (e.g., that the value carries the leading `#`, or that all keys are normalised netlocs). The `#thunted` byte-format is locked in `tests/test_telegram.py` via the end-to-end output path, which is sufficient — but the map invariant has no direct unit test. Future additions to the map (e.g., another blogspot source) could silently break the `#`-prefix convention without test signal.",
+        "file": "tests/test_sources_registry.py",
+        "line": 1,
+        "recommendation": "Optional: add `test_source_hashtag_override_values_start_with_hash` asserting `all(v.startswith('#') for v in SOURCE_HASHTAG_OVERRIDE.values())` and `test_source_hashtag_override_keys_are_normalised_netlocs` asserting `not any(k.startswith('www.') for k in ...)`. Defends against future-additions drift. Not gating."
+      }
+    ]
+  },
+  "cross_component_review": {
+    "duplicate_logic_vs_lamley_orangetrack": {
+      "verdict": "pass",
+      "findings": [],
+      "notes": "`t_hunted_source.py` (206 LOC) is a deliberate trimmed copy of `lamley_source.py` (379 LOC) per Decision 1: same `(link, session, notifier) -> dict|None` contract, same `_notify` helper shape, same SSRF allowlist idiom (`_is_allowed_<source>_url` exact-match against `_ALLOWED_HOSTS`), same flat HTML walk (`<p>/<li>/<h2-4>/<blockquote>`), same boilerplate-filter-before-subtitle-lift ordering, same first-paragraph-as-subtitle convention. WAF / 429-retry / cool-down / URL blacklist / curl_cffi blocks are intentionally dropped. The image-dedup helper IS divergent (`_BLOGGER_SIZE_SUFFIX_RE` vs lamley's bare `split('?')`) — but the divergence is necessary per Risk R3 (Blogger encodes size in path, lamley's logic structurally fails) and is locked by a unit test. Refactoring three near-identical `_notify` helpers (lamley + orangetrack + t-hunted) to a shared module would be a worthwhile maintenance follow-up, but the duplication predates this feature; not in scope to address here. `t_hunted_source.py` did NOT adopt orangetrack's aggregator-alert pattern (Decision 3) — confirmed: three direct builders E031/E032/E033, no per-tick state, no `_ping` callback shape."
+    },
+    "architectural_drift_from_source_parser_pattern": {
+      "verdict": "pass",
+      "findings": [],
+      "notes": "Signature `fetch_t_hunted_article(link, session=None, notifier=None) -> Optional[Dict]` matches lamley's signature byte-for-byte. Dispatcher branch in `fetch_full_article` (`news_bot.py:1475-1476`) follows the same `if 'X' in domain: return Y(...)` idiom as the four existing branches (orangetrack/mattel/lamley/autoevolution) — NOT an `if/elif` chain. Branch ordering is safe: `blogspot.com` substring does not overlap with the four preceding netlocs (orangetrackdiecast.com, corporate.mattel.com, lamleygroup.com, autoevolution.com), so the new branch is reachable and does not shadow any existing branch. `NETLOC_TO_SOURCE['t-hunted.blogspot.com']` is positioned next to the existing entries (line 841); the entry value `'t-hunted'` matches the SOURCE_EMOJI/SOURCE_LABEL keys for consistency."
+    },
+    "shared_resource_compliance": {
+      "verdict": "pass",
+      "findings": [],
+      "notes": "Tech-spec promised: 'None. No singleton resources are introduced.' Verified: `t_hunted_source.py` introduces NO module-level mutable state (no lock, no counter, no cache dict — contrast lamley which has `_throttle_lock`, `_last_request_time`, `_consecutive_429_count`, `_cooldown_until`, `_url_blacklist`). Only module-level constants are tuples / ints / strings / compiled regex (`_ALLOWED_HOSTS`, `_TIMEOUT_SECONDS`, `_IMAGE_LIMIT`, `_MAX_BYTES`, `_USER_AGENT`, `_BLOGGER_SIZE_SUFFIX_RE`) — all immutable, thread-safe. HTTP session: per-call (`session = session or requests.Session()`) matching the existing per-call pattern; no shared connection pool introduced. SQLite: no t-hunted code path touches `pending_articles_repo` lifecycle. LLM client: no t-hunted code path instantiates any `*_transcreation` client. `boilerplate_filter._BOILERPLATE_PATTERNS` is extended in place (10 PT patterns appended) — same global list as before, no new module-level state."
+    }
+  },
+  "audit_focus_checklist_results": {
+    "decision_1_lamley_blueprint_minus_waf": "PASS — contract `(link, session, notifier) -> dict|None` matches; WAF/cooldown/retry/blacklist/curl_cffi blocks absent.",
+    "decision_2_source_hashtag_override_ordering": "PASS with minor doc drift — override consulted FIRST (line 815), legacy `parts[-2]` fallback runs only on miss (line 818-820); netloc-keyed not source-name-keyed (deviation from tech-spec prose, captured as minor finding).",
+    "decision_3_no_aggregator_alerts_for_t_hunted": "PASS — E031/E032/E033 are direct builders; no per-tick aggregation introduced.",
+    "decision_4_pt_patterns_flat_list_anchored_bounded": "PASS — 10 patterns appended to flat `_BOILERPLATE_PATTERNS`, all `^`-anchored, length-bounded by existing `_MAX_BOILERPLATE_LEN = 120`.",
+    "decision_7_source_emoji_label_archived_consumer_only": "PASS — only `hw_review.py:198` reads `SOURCE_EMOJI`; no production path (channel teaser / admin alerts) consumes these dicts; brown 🟤 unused elsewhere.",
+    "decision_8_reuses_existing_is_mostly_russian_fallback": "PASS — no new code in `t_hunted_source.py` or `news_bot.py` reimplements `_is_mostly_russian` or adds a PT-input-specific guard; existing output-language check covers PT input transparently.",
+    "risk_r3_blogger_image_dedup_strips_size_suffix": "PASS — `_BLOGGER_SIZE_SUFFIX_RE = re.compile(r'=s\\d+(-c)?(?:/|$)')` strips before dedup key comparison; lamley's `split('?')` logic is replaced (not extended) per Decision 1 deviation in decisions.md.",
+    "risk_r7_t_hunted_in_all_three_files_arrays": "PASS — `t_hunted_source.py` literally present at the same relative position (after orangetrack_source.py, before telegraph_publisher.py) in `deploy.sh:43`, `.github/workflows/deploy.yml:129`, `.github/workflows/deploy_test.yml:100`. Regression-locked by `tests/test_deploy_files_invariant.py` per decisions.md Task 6.",
+    "prompt_invariant_blockquote_markers_preserved": "PASS (per decisions.md Task 7 note: 'Block-quote integrity verified: only the widened sentence differs vs baseline'; full prompt re-verification deferred to security-auditor / prompt-reviewer scope — they already approved).",
+    "shared_resources_no_new_singletons": "PASS — see cross_component_review.shared_resource_compliance."
+  }
+}

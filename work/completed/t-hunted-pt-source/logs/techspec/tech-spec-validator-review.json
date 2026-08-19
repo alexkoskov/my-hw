@@ -1,0 +1,68 @@
+{
+  "status": "changes_required",
+  "round": 2,
+  "round_1_fixes_verified": [
+    {
+      "finding": "Task 7 skill: code-writing -> prompt-master",
+      "verified": true,
+      "evidence": "tech-spec.md:275 — '- **Skill:** prompt-master'"
+    },
+    {
+      "finding": "Task 7 Verify-smoke added",
+      "verified": true,
+      "evidence": "tech-spec.md:277 — 'Verify-smoke: pytest tests/test_ux_guidelines_structure.py -v -> all 4 structural assertions pass'"
+    },
+    {
+      "finding": "Task 7 line-number ref removed, content-anchored",
+      "verified": true,
+      "evidence": "tech-spec.md:274 — description now says 'find sentence beginning <...>', 'no line numbers' explicit"
+    },
+    {
+      "finding": "Task 13 embedded 2-7 days timeline removed",
+      "verified": true,
+      "evidence": "tech-spec.md:314 — Task 13 now says only 'On positive verification from Task 14' with no time-based language"
+    }
+  ],
+  "findings": [
+    {
+      "severity": "critical",
+      "category": "structure",
+      "issue": "Decision 7 has lost its heading. Lines 72-74 contain an unlabelled second 'Decision: / Rationale: / Alternatives considered:' block immediately after Decision 8 (lines 68-71). The User-Spec Deviations section at line 198 still references 'Brown circle emoji (Decision 7)', so this content is intended to be Decision 7 but the '### Decision 7: ...' heading is missing. The numbering also reads 1, 2, 3, 4, 5, 6, 8 with #7 absent as a labelled section. Likely an artefact of an edit during round-1 fixes (Decision 8 was inserted but Decision 7's heading was overwritten).",
+      "fix": "Restore '### Decision 7: SOURCE_EMOJI / SOURCE_LABEL entries for archived consumer (technical hygiene)' (or equivalent title) as a heading line immediately before the orphan '**Decision:** Add SOURCE_EMOJI[t-hunted] = ...' block on line 72. Also reorder if desired so the sequence reads 1, 2, 3, 4, 5, 6, 7, 8 in document order (currently Decision 8 precedes the orphan Decision 7 body)."
+    },
+    {
+      "severity": "major",
+      "category": "tasks",
+      "issue": "Task 5 (Wave 2) creates the new file 'tests/test_ux_guidelines_structure.py' and its Verify-smoke claims this test will be green after Wave 2 completes. But that test asserts content on 'ux-guidelines.md' which is only modified in Task 7 (Wave 3, later). The assertions (glossary section present, >=10 entries, t-hunted block present, prompt widened) will all fail until Task 7 lands. Either the Verify-smoke is incorrect or the file should move to Task 7.",
+      "fix": "Two options. (a) Move creation of tests/test_ux_guidelines_structure.py from Task 5 to Task 7 — same agent edits the prompt file and writes its structural tests together, Verify-smoke green at Wave 3 completion. (b) Keep test creation in Task 5 but reword Task 5 Verify-smoke to acknowledge red-until-Task-7 (e.g. 'pytest tests/test_ux_guidelines_structure.py --collect-only -> 4 tests collected; full run gated until Task 7 lands per TDD ordering'). Option (a) is cleaner and avoids a known-failing test at end of Wave 2."
+    },
+    {
+      "severity": "minor",
+      "category": "task_quality",
+      "issue": "Decision 8 (line 69) contains an embedded line-number reference '_llm_common.py:134-153'. The line-number-reference rule in validator section 8b targets task descriptions, not Decisions, so this is not a strict violation — recording as polish. Decision 7's orphan body (line 73) also contains 'news_bot.py:857-862' — same concern.",
+      "fix": "Optional polish: replace 'in _llm_common.py:134-153' with 'in _llm_common.py (the _is_mostly_russian helper)' and 'verified against news_bot.py:857-862' with 'verified against news_bot.py (SOURCE_EMOJI / SOURCE_LABEL dict literals)'. Keeps Decisions stable across future refactors. Not a blocker."
+    },
+    {
+      "severity": "minor",
+      "category": "tasks",
+      "issue": "Task 7 lists reviewers 'code-reviewer, prompt-reviewer'. Per the catalog (skills-and-reviewers.md line 50) the default for prompt-master is only 'prompt-reviewer'. Including code-reviewer is a superset, not a violation, but is broader than the default mapping.",
+      "fix": "Optional: drop 'code-reviewer' from Task 7 reviewers to match the default skill-to-reviewer mapping, or keep it as defence-in-depth (the file edited is the canonical LLM prompt source — code-reviewer eyes are reasonable). Author's call."
+    }
+  ],
+  "structural_checks_passed": [
+    "Frontmatter: created=2026-05-26 (YYYY-MM-DD), status=draft, branch=dev, size=M — all valid",
+    "All required sections present and non-empty: Solution, Architecture (with What/How subsections), Decisions, Data Models (explicit None), Dependencies (with New packages / Using existing), Testing Strategy (size M declared), Agent Verification Plan (with Verification approach + Tools required), Risks (table with Risk + Mitigation), Acceptance Criteria, Implementation Tasks",
+    "Risks table: realistic and per-risk mitigations, no generic placeholders",
+    "Agent Verification Plan: tools listed (pytest, bash+grep, python3+feedparser, ssh hwbot), verification approach split pre/post-deploy",
+    "Per-task Verify-smoke fields present: Tasks 1, 2, 3, 4, 5, 6, 7, 8 all have concrete pytest/python commands; Task 14 has Verify-user equivalent via operator visual checks",
+    "Tasks: 14 total (within 15-task threshold, no MVP/Extension split needed); skills all from catalog (code-writing, prompt-master, code-reviewing, security-auditor, test-master, pre-deploy-qa, deploy-pipeline, post-deploy-qa)",
+    "Reviewers: all from catalog (code-reviewer, security-auditor, test-reviewer, prompt-reviewer, deploy-reviewer); Audit / QA / Deploy / Post-deploy tasks correctly have reviewers=none per catalog",
+    "Sequencing: time-free; Task 13 fix verified — no embedded hours/days/weeks/sprints",
+    "Wave file-modify conflict scan: Wave 1 (Task 1 vs Task 2), Wave 2 (Tasks 3-6), Wave 3 (Tasks 7-8) — no two tasks in the same wave modify the same file. Specifically, new files created by Task 5 (test_ux_guidelines_structure.py) and Task 6 (test_deploy_files_invariant.py) and the dispatcher test in Task 5 do not collide with each other or with Tasks 3/4 in Wave 2.",
+    "Standards compliance: file paths align with architecture.md (root-level module convention t_hunted_source.py mirrors lamley_source.py); naming follows patterns.md per code-research evidence",
+    "Decision 8 properly references user-spec error scenario row 5 ('LLM вернул вывод не на русском'); cross-checked against user-spec.md:44 — Rationale links to row 5 verbatim. Round-2 spot-check: PASS",
+    "Round-2 spot-check on Decision 7: content present but heading missing (see critical finding)",
+    "Round-2 spot-check on content-anchoring in Task 7: confirmed — Russian sentence anchor used, no line numbers"
+  ],
+  "summary": "Round-2 verdict: 4/4 round-1 fixes correctly applied (Task 7 skill, Task 7 Verify-smoke, Task 7 content-anchoring, Task 13 timeline removal). One critical structural regression introduced by round-1 edits: Decision 7's heading was deleted, leaving an orphan Decision/Rationale/Alternatives block (lines 72-74) attached to Decision 8. One major task-quality issue: Task 5 Verify-smoke claims green on tests/test_ux_guidelines_structure.py, but the file under test (ux-guidelines.md) is only modified in Task 7 (Wave 3) — the test will be red at end of Wave 2. Two minor polish items (line-number refs in Decisions, optional reviewer pruning) are non-blocking. Status: changes_required pending the critical Decision 7 heading restoration and Task 5 / Task 7 test-creation realignment."
+}

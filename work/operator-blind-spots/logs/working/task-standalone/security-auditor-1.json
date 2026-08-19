@@ -1,0 +1,71 @@
+{
+  "status": "approved",
+  "summary": {
+    "totalFindings": 6,
+    "critical": 0,
+    "major": 2,
+    "minor": 4
+  },
+  "findings": [
+    {
+      "severity": "major",
+      "category": "A09: Security Logging and Monitoring Failures",
+      "title": "Non-TEXT bot_state value raises TypeError out of the gate and silences [E017] indefinitely",
+      "description": "is_dry_spell_ping_rate_limited() delegates parsing to _parse_dt_tolerant (pending_articles_repo.py:1544), which catches ONLY ValueError. datetime.fromisoformat() raises TypeError - not ValueError - for any non-str argument (verified on this interpreter: bytes, int and None all give 'TypeError: fromisoformat: argument must be str'). The bot_state.value column is declared TEXT, and TEXT affinity converts inserted integers/reals to text, but it does NOT convert BLOBs: a value written as an x'..' literal, via sqlite3.Binary, or by any future writer that does not pass a str comes back from fetchone() as bytes. That TypeError propagates out of the gate, out of pending_repo.is_dry_spell_ping_rate_limited(), and is swallowed by the broad 'except Exception' at news_bot.py:4997 which logs '[dry-spell] channel-silence check failed' and moves on. The alarm is then skipped on EVERY tick - cron and restart alike - for as long as that value sits in the row. This is the permanently-quiet outage alarm, and it directly contradicts the function's own documented contract ('Fails OPEN - missing or corrupt value returns False'). The new test test_unreadable_marker_does_not_suppress only exercises str garbage ('not-a-timestamp', '', '   ', '2026-13-45T99:99:99'), all of which take the handled ValueError path, so the fail-open claim is asserted but not actually covered for the non-str case. Reachable via the exact scenario the review brief names: a manual bot_state edit on the prod DB.",
+      "location": "pending_articles_repo.py:765 (call) and pending_articles_repo.py:1544-1557 (_parse_dt_tolerant)",
+      "impact": "One malformed row in bot_state permanently disables the only in-bot alarm for a prolonged channel outage. The operator sees a healthy-looking bot while the channel is dead; the failure is silent by construction because the swallowed exception is logged at ERROR under a message that reads like a transient check failure, not like a disabled alarm.",
+      "recommendation": "Make the fail-open contract structural rather than dependent on which exception fromisoformat happens to raise. Wrap the whole gate body:\n\n    def is_dry_spell_ping_rate_limited() -> bool:\n        try:\n            conn = _connect()\n            try:\n                row = conn.execute(\n                    \"SELECT value FROM bot_state WHERE key=?\",\n                    (_KEY_DRY_SPELL_PINGED,),\n                ).fetchone()\n            finally:\n                conn.close()\n            if row is None:\n                return False\n            last = _parse_dt_tolerant(row[0], _KEY_DRY_SPELL_PINGED)\n            ...\n        except Exception:\n            logger.warning(\n                \"[E017] rate-limit gate unreadable - alarm allowed through\",\n                exc_info=True,\n            )\n            return False\n\nAdditionally harden _parse_dt_tolerant itself (`except (ValueError, TypeError)`) so the same trap does not fire for the [E038] hold-cap gate and the soft-flag pair gate that share it. Extend the parametrised garbage list in test_unreadable_marker_does_not_suppress with a BLOB value written as sqlite3.Binary(b'...') so the non-str path is actually covered.",
+      "cwe": "CWE-755"
+    },
+    {
+      "severity": "major",
+      "category": "A09: Security Logging and Monitoring Failures",
+      "title": "A transient DB error inside the new gate drops that tick's [E017] after the dry spell has already been detected",
+      "description": "The gate call at news_bot.py:4979 sits INSIDE the same try block as the send, and after the dry spell has already been established by get_max_published_at(). Any sqlite3 error from the new _connect()/SELECT - 'database is locked' past the 5 s busy timeout set in _connect() (pending_articles_repo.py:203; the dedup review listener is documented there as a second concurrent writer), 'database or disk is full', 'database disk image is malformed' - propagates to the except at news_bot.py:4997 and the tick ends with no alarm sent, even though the code had already decided one was due. The stated design ('Fails OPEN', and user-spec: 'если отметка испорчена или недоступна, тревога всё равно уходит') is implemented for a corrupt VALUE but not for an unavailable MARKER: 'недоступна' is exactly this path. This is not a regression - a DB-wide failure would also break get_max_published_at() a few lines earlier - but the diff adds a second, independent DB round-trip between detection and send, widening the window in which the alarm is lost for reasons unrelated to the alarm itself.",
+      "location": "news_bot.py:4979",
+      "impact": "A lock contention window or a disk fault turns a detected outage into no operator notification for that tick. With the cron at 07:00 UTC the next opportunity is 24 h later, so a single transient error costs a full day of the outage alarm during the exact incident class the alert exists for.",
+      "recommendation": "Decide the gate defensively so no DB condition can consume a detected alarm:\n\n    try:\n        rate_limited = pending_repo.is_dry_spell_ping_rate_limited()\n    except Exception as gate_exc:\n        logger.warning(\n            f\"[dry-spell] rate-limit gate unavailable, sending anyway: \"\n            f\"{sanitize_error_message(gate_exc)}\"\n        )\n        rate_limited = False\n\nSymmetrically, mark_dry_spell_pinged() at news_bot.py:4995 raising after a successful send currently surfaces as '[dry-spell] channel-silence check failed', which misattributes a bookkeeping write failure to the check. Give it its own try/except with an accurate message so the log distinguishes 'alarm not sent' from 'alarm sent, marker not persisted'.",
+      "cwe": "CWE-703"
+    },
+    {
+      "severity": "minor",
+      "category": "A09: Security Logging and Monitoring Failures",
+      "title": "Calendar-day comparison uses the stored value's own UTC offset instead of a normalised UTC date",
+      "description": "Line 770 compares last.date() with datetime.now(timezone.utc).date(). datetime.date() returns the date in the value's OWN offset, not in UTC. mark_dry_spell_pinged() always writes an offset-aware UTC timestamp, so today's writer is consistent; but any other writer of this key is not covered. A marker of '2026-08-18T01:00:00+05:00' (instant 2026-08-17T20:00Z) compares equal to the UTC date 2026-08-18 and suppresses a day on which no ping was ever sent. Realistic sources: a manual bot_state edit by the operator using local time (the brief's own scenario), a DB restored from a differently-configured instance, or increments B and C reusing this idiom - the user-spec explicitly designates increment A as establishing the once-per-day marker idiom for the other two, so the defect would be copied. The naive-value branch (line 768-769) is correct for values this module writes, but it stamps UTC onto a naive string without evidence that the string was UTC. A closely related sub-second case: the marker timestamp is taken at MARK time, not at DETECTION time, so a send completing just before 00:00 UTC and marked just after records tomorrow's date and suppresses tomorrow's legitimate alarm.",
+      "location": "pending_articles_repo.py:770",
+      "impact": "A single day's outage alarm can be suppressed by a marker that does not represent a ping sent on that UTC day. Fail-CLOSED direction, i.e. towards silence, which is the direction this feature is supposed to avoid.",
+      "recommendation": "Normalise before comparing, and record the day rather than the instant:\n\n    return last.astimezone(timezone.utc).date() == datetime.now(timezone.utc).date()\n\nStronger still, store the UTC date itself - datetime.now(timezone.utc).date().isoformat() - so the stored value states the unit the gate actually compares, removes the offset ambiguity for increments B and C, and closes the midnight mark-time window. Keep the tolerant parse for backward compatibility with any timestamp already written.",
+      "cwe": "CWE-1339"
+    },
+    {
+      "severity": "minor",
+      "category": "best-practice",
+      "title": "Docstring asserts a host-timezone invariant the code does not need and the deploy contradicts",
+      "description": "The docstring states 'The host runs UTC, and the daily tick lands at 07:00 UTC - seven hours clear of the date boundary.' Two problems. (1) The container is not expected to run UTC: news_bot.py:5090-5097 raises a startup admin ping whenever TZ != 'Europe/Moscow', and the Dockerfile installs tzdata specifically for TZ=Europe/Moscow. The gate is nevertheless correct, because datetime.now(timezone.utc) and the pytz-explicit cron (news_bot.py:5126) are both host-TZ independent - so the docstring documents a dependency that does not exist and gets the deployed value wrong. A stated-but-false invariant is the kind that invites a later 'simplification' to naive datetime.now(), which would move the gate's day boundary by the host offset and, for a ping near midnight MSK, silence a day. (2) The '07:00 UTC, seven hours clear of the boundary' reassurance covers only the cron tick; restart-triggered ticks - the entire reason this gate exists, four of them on 2026-08-13 - land at arbitrary hours including either side of 00:00 UTC.",
+      "location": "pending_articles_repo.py:748-749",
+      "impact": "Documentation risk rather than a live defect: the next maintainer of this idiom (increments B and C reuse it by design) may rely on a host-TZ guarantee that is both untrue and unnecessary.",
+      "recommendation": "Restate the invariant as a property of the code: 'TZ-independent by construction - both sides of the comparison are datetime.now(timezone.utc); the host TZ (Europe/Moscow per the Dockerfile, guarded at startup) does not enter into it.' Drop the '07:00 UTC / seven hours clear' reassurance or qualify it as applying to the cron tick only, since restart ticks are unbounded in time-of-day and are the case the gate is for.",
+      "cwe": "CWE-1109"
+    },
+    {
+      "severity": "minor",
+      "category": "A09: Security Logging and Monitoring Failures",
+      "title": "A stopped container clock pins the gate closed for as long as the clock is stuck",
+      "description": "The gate is a pure equality test against datetime.now(timezone.utc).date(). If the container clock stops advancing across a date boundary (host clock stuck, no NTP inside the netns behind the sing-box gateway, a suspended/resumed host), the marker written on the stuck date matches forever and [E017] never fires again, while silent_days is frozen at the same value and therefore keeps the alarm nominally due. This is the one clock condition under which the alarm is permanently quiet rather than merely delayed. The opposite skews are benign: a backward jump across midnight makes the marker's date differ from today and the gate opens (duplicate ping, the intended fail direction), and a forward jump writes a future date that likewise fails the equality test and opens the gate.",
+      "location": "pending_articles_repo.py:770",
+      "impact": "Indefinite alarm suppression under a stuck clock. Substantially mitigated by defence in depth already present: .github/workflows/uptime.yml runs outside the host and alarms on the age of the last Telegra.ph page, which does not depend on the bot's clock or its DB.",
+      "recommendation": "No code change strictly required given the external watchdog. If cheap insurance is wanted, treat a marker whose date is in the FUTURE relative to now as unusable (return False) and note in the docstring that the external uptime.yml watchdog is the backstop for clock-stall - so the next reader knows this gate is not the last line of defence.",
+      "cwe": "CWE-367"
+    },
+    {
+      "severity": "minor",
+      "category": "A09: Security Logging and Monitoring Failures",
+      "title": "Corrupt-marker log line emits raw DB content without the project's sanitising helpers",
+      "description": "Reviewed per focus area 4. The two log lines added to job() are clean: both interpolate only silent_days, an int, and the alert body reaches Telegram through send_admin_notification, which applies _redact_text before building the payload (news_bot.py:626, Decision 12); the surrounding except keeps sanitize_error_message(exc). No secret, URL, token or article content enters the new lines, and no hardcoded credential appears anywhere in the diff. The one gap is indirect: the new key is routed through _parse_dt_tolerant, whose warning at pending_articles_repo.py:1556 logs the raw stored value with %r and passes through neither _redact_text nor sanitize_error_message. Values under dry_spell_last_pinged_at are timestamps written by mark_dry_spell_pinged(), so nothing sensitive is exposed today, and the helper is pre-existing rather than introduced here - but it is the only new path in this diff that writes unfiltered DB content to the log, and prod logs go to the json-file driver on the host.",
+      "location": "pending_articles_repo.py:1556",
+      "impact": "No exposure with the current key set. Becomes an exposure if any future bot_state key - including the increment B and C markers this idiom is meant to seed - ever holds a token, a URL with a query-string credential, or operator-supplied text.",
+      "recommendation": "Route the raw value through the project's existing sanitiser before logging, or truncate and log only its type and length: logger.warning('corrupted bot_state value at key=%s: type=%s len=%s', key, type(raw).__name__, len(raw) if hasattr(raw, '__len__') else 'n/a'). The key name alone is enough to locate the bad row with a follow-up query.",
+      "cwe": "CWE-532"
+    }
+  ]
+}

@@ -1,0 +1,509 @@
+# Interview Plan for Feature Planning
+#
+# Tracks progress of adaptive discovery interview for a new feature/bug/refactoring.
+# Updated after EACH user response with scoring, values, and remaining gaps.
+#
+# Scoring: 0-100% (how well we understand this aspect)
+# Status: pending → partial → complete
+# Required: true = must reach threshold, false = cover if relevant
+
+# ============================================================================
+# Interview Metadata (Session Recovery)
+# ============================================================================
+interview_metadata:
+  started: "2026-05-24 23:00:00"
+  last_updated: "2026-05-25 02:30:00"
+  status: "completed"
+  can_resume: false
+  current_question_num: 5
+  feature_size: "M"  # 4-point extension to existing pipeline (parser + dispatcher branch + prompt + boilerplate patterns)
+  # Cycle 3 (cleanup pass) skipped: all required items scored >=85% after Cycle 2, no TBD, no gaps remaining.
+  # Validation: both validators APPROVED after 3 rounds. User approved on 2026-05-25.
+
+# ============================================================================
+# Conversation History (for session recovery)
+# ============================================================================
+# Preserves complete Q&A. Update after EVERY user response.
+#
+conversation_history:
+  - question_num: 1
+    timestamp: "2026-05-24 23:00:00"
+    topic: "feature_description + work_type"
+    agent_question: |
+      Дано: подключить t-hunted.blogspot.com, та же pipeline что у других источников, PT вместо EN. Я перепроверил код — действительно reuse существующего pipeline, новый не нужен. 4 точки расширения: blogger scraper, branch в dispatcher, prompt update (+PT), boilerplate PT patterns.
+    user_answer: |
+      "в итоге долен получиться тот же самый пайплайн, что и у остальных источников, с той лишь разницей, что язык оригинала португальский. Итог - статья в телеграфе + превью в телеграме" — потом "погнали" подтвердило feature_name=t-hunted-pt-source.
+    summary: "Confirmed: extension to existing pipeline, not new architecture. Size M (4 extension points)."
+
+  - question_num: 2
+    timestamp: "2026-05-25 00:30:00"
+    topic: "user_problem + success_criteria + constraints + testing_strategy (batch)"
+    agent_question: |
+      Q1 user_problem: расширение охвата (бразильская перспектива HW Brasil exclusives) или просто частота?
+      Q2 success_criteria: 7-day metrics (no [E021]/[E024], RU quality >= autoevolution baseline, no PT-vs-EN dup bugs, carry_over within norm).
+      Q3 constraints: no headless browser, no new ENV vars, no SOURCES restructure, LLM budget +25% max.
+      Q4 testing_strategy: unit (parser fixture + PT boilerplate + prompt composition) + integration (smoke EN+PT in one tick) + visual E2E by operator.
+    user_answer: |
+      "согласен" — accepted all 4 proposals as-is.
+    summary: "user_problem=content breadth (Brazilian perspective), 4 success_criteria items, 4 constraints, three-layer testing strategy."
+
+  - question_num: 3
+    timestamp: "2026-05-25 00:45:00"
+    topic: "cross-source content dedup — scope decision"
+    agent_question: |
+      User raised: «как ловить дубли когда несколько источников пишут об одном». Analyzed 3 risk cases (i autoevolution+lamley, ii autoevolution+t-hunted, iii t-hunted→lamley), 4 detection approaches (A title+product tokens, B image pHash, C LLM-pair, D embeddings), 3 action policies (silent skip / INFO+admin / publish-with-marker). Recommended: split into separate feature `cross-source-content-dedup`, pilot with INFO+admin ping for 2-4 weeks before silent skip.
+    user_answer: |
+      "да" — accepted split + pilot strategy.
+    summary: "Cross-source content dedup is a known limitation of this feature. Captured as a follow-up feature in decisions.md. Pilot policy: INFO log + admin ping E040 (when implemented)."
+
+  - question_num: 4
+    timestamp: "2026-05-25 01:30:00"
+    topic: "Cycle 2 batch 1 — hashtag spelling, AC, edge cases, alerts+verification"
+    agent_question: |
+      Q1 hashtag: #thunted vs #tHunted vs #t_hunted (Telegram rejects hyphens). Q2 8 acceptance criteria. Q3 edge case strategy (R3-R8 wait-and-see vs pre-emptive). Q4 dedicated 2-3 admin alerts E031-E033 + visual verification on test channel.
+    user_answer: |
+      "q1 согласен q2 и q3 почему за основу берем lamley логику?... q4 ок" → discussion on blueprint choice (lamley vs autoevolution vs orangetrack); agent justified lamley on structural-closeness grounds; then "lamley" confirmed.
+    summary: "#thunted chosen. AC=8 criteria. Edge cases R3-R8 mostly wait-and-see, R1+R2+R7 pre-emptive. Alerts E031-E033 dedicated. Lamley confirmed as blueprint (minus WAF apparatus)."
+
+  - question_num: 5
+    timestamp: "2026-05-25 01:45:00"
+    topic: "Cycle 2 batch 2 — user stories, error scenarios, integration points, deploy approach"
+    agent_question: |
+      Q5 6-step subscriber flow (no 🇧🇷 marker). Q6 9-scenario error table. Q7 12-row integration points table + no new deps. Q8 8-step standard CI/CD deploy flow.
+    user_answer: |
+      "принимаю" — accepted all 4 proposals as-is.
+    summary: "All phase2 + phase3 items filled. user_stories, error_scenarios, integration_points, dependencies, deploy_approach, manual_user_actions, ui_ux_requirements, technical_constraints, data_requirements, migration_needs all complete."
+
+# ============================================================================
+# Phase 1: High-Level Feature Understanding
+# ============================================================================
+# Interview Cycle 1 scope
+phase1_feature_overview:
+
+  feature_name:
+    score: 100
+    status: "complete"
+    value: "t-hunted-pt-source"
+    gaps: ""
+    required: true
+
+  feature_description:
+    score: 95
+    status: "complete"
+    value: "Add t-hunted.blogspot.com as a 4th news source. Pipeline reuses the existing fetch → dedup → scrape → boilerplate → LLM transcreation → Telegraph → Telegram path. The only structural difference: source language is Portuguese (PT) instead of English. 4 extension points required: (1) new blogger-style scraper, (2) new branch in article dispatcher, (3) prompt update to accept PT input + per-source style note + PT-EN-RU glossary, (4) PT boilerplate patterns. No new pipeline, no new architecture, no headless browser."
+    gaps: ""
+    required: true
+
+  work_type:
+    score: 100
+    status: "complete"
+    value: "feature"
+    gaps: ""
+    required: true
+
+  user_problem:
+    score: 90
+    status: "complete"
+    value: "Channel coverage gap: existing 3 EN sources (autoevolution, lamley, orangetrack) miss the Brazilian Hot Wheels perspective. t-hunted covers HW Brasil exclusives (e.g. Pop Culture lines that ship to Brazil before global), photo-reviews of regional releases, and a different editorial angle on the same scene. Goal is content breadth, not just publishing frequency."
+    gaps: ""
+    required: true
+
+  target_users:
+    score: 80
+    status: "complete"
+    value: "Existing subscribers of the prod Telegram channel — Russian-speaking Hot Wheels collectors. No new audience segment; just richer feed for the current one."
+    gaps: ""
+    required: false
+
+  success_criteria:
+    score: 90
+    status: "complete"
+    value: |
+      Measured 7 days after t-hunted lands in prod:
+      1. Zero [E021]/[E024]-class admin alerts from t-hunted parser in the 7-day window (parser is stable).
+      2. RU translation quality not worse than autoevolution baseline — operator subjective check on 5-10 t-hunted posts.
+      3. Zero duplicate publishes to the channel that traceback to PT-vs-EN token-handling bugs.
+      4. plan-of-day carry_over stays within norm (≤3 days backlog), no queue runaway.
+    gaps: ""
+    required: true
+
+  constraints:
+    score: 95
+    status: "complete"
+    value: |
+      Hard "no" list:
+      - No headless browser dependency (Mattel lesson — ~300MB deps, slow cron tick).
+      - No new ENV vars — .env already loaded.
+      - No restructuring of SOURCES registry — only an extra branch in the article dispatcher (news_bot.py:1414).
+      - LLM cost budget: current ~$3/mo (OpenRouter openai/gpt-5.4-mini), allow up to +25% from t-hunted addition.
+    gaps: ""
+    required: true
+
+  testing_strategy:
+    score: 90
+    status: "complete"
+    value: |
+      Feature size M → three layers:
+      1. Unit tests:
+         - blogger scraper on a captured t-hunted HTML fixture (title, body paragraphs, hero image extraction)
+         - boilerplate filter on PT patterns (Compartilhar, Leia mais, Marcadores:)
+         - prompt composition test: source_lang/source_name flows correctly into the LLM call
+      2. Integration test: smoke pipeline tick with one EN + one PT entry in the same job() run — verify dedup, slot ordering, both publish without cross-language interference.
+      3. No E2E. Operator visually verifies first t-hunted posts on the test channel via the standard `git push dev` → deploy_test cycle.
+    gaps: ""
+    required: true
+
+# ============================================================================
+# Phase 2: User Experience & Scenarios
+# ============================================================================
+# Interview Cycle 2 scope (together with Phase 3)
+phase2_user_experience:
+
+  user_stories:
+    score: 90
+    status: "complete"
+    value: |
+      Subscriber-side flow (the only user-facing actor — no operator UI in this feature):
+
+      1. Brazilian collector blogger publishes a new post on t-hunted.blogspot.com (e.g. "Mais fotos da série Pop Culture 2026").
+      2. Next 10:00 МСК cron tick picks up the entry via feedparser (the t-hunted RSS URL was added to feeds.json).
+      3. t_hunted_source.fetch_t_hunted_article scrapes title + body paragraphs + 3-5 inline images from .post-body / .entry-content.
+      4. boilerplate_filter strips Blogger footer noise (Marcadores:, Compartilhar no Facebook, etc).
+      5. _fallback_publish stages the row; LLM transcreates PT → RU using the shared ux-guidelines.md system prompt (now with widened input-language + #🟤 t-hunted per-source block + PT-EN-RU glossary).
+      6. Telegraph page created with hero image + RU body. Telegram channel post emits "#thunted #news" with INSTANT VIEW preview card.
+      7. Subscriber sees the preview card in feed indistinguishable from autoevolution/lamley posts — same shape, RU translation, tap opens Telegraph.
+
+      No special "🇧🇷 Brazilian perspective" marker on the post — operator decision: source attribution travels via the hashtag (#thunted), no extra UI signal needed. Subscribers don't need to know the post originated in PT — that's an implementation detail.
+    gaps: ""
+    required: true
+
+  acceptance_criteria:
+    score: 90
+    status: "complete"
+    value: |
+      8 testable criteria (operator approved Cycle 2 batch 1):
+      1. RSS feed t-hunted.blogspot.com is added to feeds.json; feedparser parses without errors; under cap=5.
+      2. t_hunted_source.fetch_t_hunted_article(link, session, notifier) returns {title, subtitle, paragraphs, images} or None — same shape as lamley.
+      3. SSRF allowlist hard-locked to ('t-hunted.blogspot.com',) — no glob, exact match.
+      4. Article dispatcher (news_bot.py:1414-1439) routes via 'blogspot.com' in domain branch to fetch_t_hunted_article.
+      5. _resolve_source_name returns 't-hunted' for t-hunted.blogspot.com netloc; NETLOC_TO_SOURCE map extended; source_name flows to LLM payload without code changes in *_transcreation.py.
+      6. Telegram channel post emits exactly "#thunted #news" — special-case in _source_hashtag for blogspot subdomain (or override map keyed by source_name).
+      7. ux-guidelines.md: input-language assertion widened to accept PT; new ### 🟤 t-hunted per-source style block; new PT-EN-RU glossary section between Per-source notes and Red flags.
+      8. After 7 days on test channel: operator subjectively confirms RU translation quality ≥ autoevolution baseline on 5-10 sample posts.
+    gaps: ""
+    required: true
+
+  edge_cases:
+    score: 90
+    status: "complete"
+    value: |
+      Wait-and-see (acceptable risk, monitor first):
+      - R3: Blogger image URLs not dedup'd by lamley's base-split logic (=s1600 vs =s640 in path, not query). Start with lamley logic verbatim; tighten if duplicates appear in first 10 posts.
+      - R4: Long PT essay paragraphs >4000 chars triggering _truncate_paragraphs warning. Monitor; raise cap if it fires often.
+      - R5: PT boilerplate patterns applied globally (no language tag in _BOILERPLATE_PATTERNS). Same precedent as 2026-05-08 RU defence-in-depth block — length bound + ^-anchored regexes protect EN/RU streams.
+      - R6: feedparser bozo flag on slightly-malformed Blogger XML. Existing behaviour (WARN + continue) — no fix.
+      - R8: PT-EN-RU glossary baseline is partial (code-researcher proposed 10 entries). Iterate after operator sees first 5-10 publishes; not blocking.
+
+      Pre-emptive fix (in scope):
+      - R1+R2: Hashtag = #thunted (Telegram doesn't accept hyphens). _source_hashtag patched OR per-source override map; netloc-based naive fallback would emit #blogspot. Hard requirement of AC6.
+      - R7: New t_hunted_source.py must be added to ALL THREE FILES lists (deploy.sh + deploy.yml + deploy_test.yml). Pre-deploy QA verifies all three.
+    gaps: ""
+    required: true
+
+  error_scenarios:
+    score: 90
+    status: "complete"
+    value: |
+      | Scenario | Behaviour |
+      |---|---|
+      | RSS feed t-hunted.blogspot.com unreachable | _fetch_rss_entries catches requests.RequestException → admin alert [E002] generic source-fetch-failed → next cron tick retries |
+      | Hostname not in SSRF allowlist (defensive — shouldn't happen via RSS) | fetch_t_hunted_article returns None → admin alert [E031] t-hunted host rejected → entry dropped |
+      | Parser cannot find .post-body / .entry-content | None → admin alert [E033] t-hunted no body → entry dropped |
+      | HTTP 5xx/timeout on article fetch | None → admin alert [E032] t-hunted fetch error → 3-strike attempt counter handled by pipeline (same as lamley) |
+      | LLM returns mostly PT/EN output (_is_mostly_russian False) | ClaudeTranscreationError → per-article Google Translate fallback → post publishes with ↳ автоперевод marker on Telegraph page |
+      | Long PT essay paragraph >4000 chars | _truncate_paragraphs logs WARNING, post still publishes (no error) |
+      | Same Hot Wheels release covered by t-hunted AND autoevolution/lamley | KNOWN LIMITATION — handled by separate cross-source-content-dedup feature (not in scope) |
+      | Blogger XML feedparser bozo flag | Existing WARN+continue behaviour, no change |
+      | Image URL dedup misses Blogger =s1600 vs =s640 variants | Wait-and-see — start with lamley logic, tighten if dupes observed in first 10 posts |
+    gaps: ""
+    required: true
+
+  verification_strategy:
+    score: 85
+    status: "complete"
+    value: |
+      Two stages:
+
+      Pre-deploy (agent / pytest, gateable by CI):
+      - All unit tests in tests/test_t_hunted_source.py green.
+      - tests/test_sources_registry.py extended NETLOC_TO_SOURCE assertions green.
+      - tests/test_telegram.py extended with test_t_hunted_teaser_appends_news_tag — locks hashtag spelling.
+      - tests/test_boilerplate_filter.py extended with TestIsBoilerplatePositive::test_portuguese_patterns_filtered.
+      - All three FILES lists (deploy.sh, deploy.yml, deploy_test.yml) include t_hunted_source.py.
+
+      Post-deploy (operator, on test channel @myhwchannel123):
+      - First t-hunted post lands within 24-48 hours of merge to dev.
+      - Visual checklist on test channel: (a) Telegram preview card with hero image, (b) hashtag renders correctly as #thunted (no truncation), (c) Telegraph page has full body in RU, (d) no PT phrases leaked into RU output, (e) emoji prefix on title.
+      - First 5-10 posts: operator spot-checks RU translation quality against original article (subjective).
+      - 7-day stability check: zero [E021-E034] admin alerts traceback to t-hunted parser.
+      - dev → main promotion only after positive verification on test instance.
+    gaps: ""
+    required: true
+
+  ui_ux_requirements:
+    score: 0
+    status: "pending"
+    value: ""
+    gaps: "Specific UI/UX requirements if applicable"
+    required: false
+
+  risks:
+    score: 90
+    status: "complete"
+    value: |
+      Risk register (severity grading from code-research.md §13):
+
+      HIGH:
+      - R1 (Telegram hashtag rejects hyphens) → mitigation: hashtag spelling locked to #thunted in AC6, test_telegram.py invariant.
+      - R2 (_source_hashtag returns #blogspot by default) → mitigation: special-case patch in news_bot.py OR per-source override map.
+
+      MEDIUM:
+      - R3 (Blogger image URL dedup) → wait-and-see, fix if dupes observed.
+      - R7 (deploy FILES list — one of three forgotten) → INVARIANT comment + pre-deploy checklist.
+      - R8 (PT-EN-RU glossary is provisional) → iterate based on first 5-10 publishes.
+      - Cross-source content dedup is a KNOWN limitation — same release may publish twice (autoevolution + t-hunted on same Hot Wheels release). Separate feature cross-source-content-dedup planned next (Cycle 1 batch 2 decision).
+
+      LOW:
+      - R4 (4000-char truncation on long PT essays) → monitor _truncate_paragraphs WARNINGs.
+      - R5 (PT boilerplate cross-applied to EN/RU) → length-bound + word boundaries same as RU precedent 2026-05-08.
+      - R6 (Blogger malformed XML / bozo flag) → existing WARN+continue behaviour.
+    gaps: ""
+    required: true
+
+  technical_decisions:
+    score: 90
+    status: "complete"
+    value: |
+      D1: Hashtag = #thunted (not #t-hunted: Telegram rejects hyphens; not #blogspot: default _source_hashtag behaviour, would clash with future blogspot sources). Patch _source_hashtag with a blogspot-subdomain special case OR add a source_name-keyed override map.
+      D2: Blueprint = lamley_source.py (minus WAF/throttle apparatus). Reasoning: HTML structure closest to Blogger (flat .entry-content), simplest signature surface, ~150 LOC vs orangetrack's 700+. Autoevolution would force Cloudflare+blocks complexity not needed for Blogger.
+      D3: Dedicated admin alerts E031-E033 (host-rejected / fetch-error / no-body) rather than reusing generic [E002] alert_source_fetch_failed. Three is enough — operator triage benefits from named alerts, four (lamley's count) would be overkill.
+      D4: 🟤 emoji for t-hunted in SOURCE_EMOJI (only "warm" circle remaining, doesn't clash with orange/purple/green/blue used by other sources). Cosmetic for archived hw_review only.
+      D5: PT boilerplate patterns added globally to _BOILERPLATE_PATTERNS (no per-language tagging). Length-bound 120-char + ^-anchored regexes provide false-positive safety, mirroring the 2026-05-08 RU defence-in-depth precedent.
+      D6: No language tagging in feeds.json. _resolve_source_name infers source from netloc; LLM auto-detects PT from content. Per-feed lang shape would be a separate refactor.
+    gaps: ""
+    required: false
+
+  deploy_approach:
+    score: 90
+    status: "complete"
+    value: |
+      Standard project flow per .claude/skills/project-knowledge/references/deployment.md:
+
+      1. Implementer creates feature/t-hunted-pt-source branch from origin/dev.
+      2. Single atomic PR with all ~15 file edits (parser+dispatcher+prompt+boilerplate+tests+3 deploy lists). Feature works fully or not at all; partial deploys risk ImportError on cron tick.
+      3. Pre-deploy gate: pytest tests/ green locally + CI green on PR.
+      4. PR squash-merged to dev.
+      5. deploy_test.yml fires via workflow_run → SCPs files to /home/hwbot/bot_test/ → restarts news_bot_test.service.
+      6. Operator observes 5-10 first t-hunted posts on @myhwchannel123 over 2-7 days (visual checklist from verification_strategy).
+      7. On green light → merge dev → main → deploy.yml → prod (/home/hwbot/bot/ + news_bot.service).
+      8. After 7 days of clean prod operation (zero [E031-E033] alerts, RU quality OK) → /done command archives feature folder to work/completed/.
+
+      NO new infrastructure: no env vars, no new GitHub secrets, no new deps, no schema migration. Cron schedule unchanged. Rollback: git revert + push (standard, ~2-3 min per docs).
+    gaps: ""
+    required: false
+
+  manual_user_actions:
+    score: 80
+    status: "complete"
+    value: |
+      Operator side (one-off):
+      - Add the t-hunted RSS URL to feeds.json BEFORE merging (or in the PR itself).
+      - Observe @myhwchannel123 first 5-10 t-hunted publishes — visual checklist (hero image, hashtag spelling, RU quality, no PT leakage).
+      - Optionally tune the PT-EN-RU glossary in ux-guidelines.md after seeing real translations (iterate as separate small PR).
+
+      No new API keys, no bot setup (existing bot covers both channels), no DB migration, no new ENV vars to set on the server.
+    gaps: ""
+    required: false
+
+  ui_ux_requirements:
+    score: 90
+    status: "complete"
+    value: |
+      No UI changes. Channel post visual layout stays byte-identical to existing sources: single hashtag line + INSTANT VIEW preview card. Telegraph page layout reuses the standard hero+subtitle+body+footer template. No "🇧🇷 Brazilian perspective" or other source-distinguishing marker per user_stories — attribution via hashtag (#thunted) suffices.
+    gaps: ""
+    required: false
+
+# ============================================================================
+# Phase 3: Integration & Technical Context
+# ============================================================================
+# Interview Cycle 2 scope (together with Phase 2)
+phase3_integration:
+
+  integration_points:
+    score: 90
+    status: "complete"
+    value: |
+      All edits to existing modules (~15 files), no architecture changes:
+
+      news_bot.py:
+        - Line 34-38: `import t_hunted_source`
+        - Lines 799-808: `_source_hashtag` patch for blogspot subdomain (returns '#thunted')
+        - Lines 823-831: `NETLOC_TO_SOURCE['t-hunted.blogspot.com'] = 't-hunted'`
+        - Lines 857-868: `SOURCE_LABEL['t-hunted'] = 'T-Hunted'`, `SOURCE_EMOJI['t-hunted'] = '🟤'` (optional, archived hw_review only)
+        - Lines 1414-1439: new `elif 'blogspot.com' in domain` branch in fetch_full_article
+
+      Configuration:
+        - feeds.json: append "https://t-hunted.blogspot.com/feeds/posts/default?alt=rss"
+        - boilerplate_filter.py:158: PT defence-in-depth block (~10 patterns)
+
+      LLM prompt:
+        - ux-guidelines.md:22: widen input-language assertion to EN/PT
+        - ux-guidelines.md:104: new ### 🟤 t-hunted block + new ## Glossary PT/EN/RU section
+
+      Alerts:
+        - admin_alerts.py: 3 new builders (alert_t_hunted_host_rejected/fetch_error/no_body) — codes E031-E033
+
+      Deploy plumbing (INVARIANT: all three lockstep):
+        - deploy.sh:37 → add "t_hunted_source.py"
+        - .github/workflows/deploy.yml:124 → same
+        - .github/workflows/deploy_test.yml:95 → same
+
+      Tests (mirror lamley pattern):
+        - New tests/test_t_hunted_source.py — TestFetch + TestHostAllowlist
+        - tests/test_sources_registry.py: extend NETLOC_TO_SOURCE assertions
+        - tests/test_telegram.py: add test_t_hunted_teaser_appends_news_tag (locks #thunted)
+        - tests/test_boilerplate_filter.py: extend TestIsBoilerplatePositive with PT cases
+        - tests/test_admin_alerts.py: tests for E031-E033 builders
+    gaps: ""
+    required: true
+
+  dependencies:
+    score: 90
+    status: "complete"
+    value: |
+      No new Python deps. Existing packages cover everything:
+        - feedparser (already used by _fetch_rss_entries) — parses Blogger RSS/Atom feeds out of the box
+        - requests (already used by lamley) — plain HTTP, no Cloudflare/WAF needed for Blogger
+        - beautifulsoup4 (already used) — HTML scraping of .post-body / .entry-content
+        - admin_alerts (existing module) — extend with E031-E033 builders
+
+      No new external services. Existing LLM dispatcher (claude/openai/gemini/openrouter) handles PT input via prompt update — no per-engine code change.
+
+      No new GitHub secrets, no new env vars.
+    gaps: ""
+    required: false
+
+  technical_constraints:
+    score: 90
+    status: "complete"
+    value: |
+      - MAX_DAILY_POSTS = 4 (PR #10) is the hard daily cap. Adding 4th source increases queue pressure but does not change publish cadence; surplus goes to carry_over.
+      - MIN_INTERVAL_MINUTES = 90 between publishes — unchanged.
+      - _truncate_paragraphs cap of 4000 chars per paragraph remains; long PT essays may hit it (R4 monitoring).
+      - SSRF: per-parser allowlist is the security gate (`('t-hunted.blogspot.com',)` exact match, no glob). Dispatcher's `'blogspot.com' in domain` substring is intentionally permissive.
+      - Test fixture pinned to a captured t-hunted HTML file (not live fetch) — same convention as test_lamley_source.py SAMPLE_HTML.
+      - Token redaction applies via existing _redact_text path — no new secret patterns to register.
+    gaps: ""
+    required: false
+
+  data_requirements:
+    score: 95
+    status: "complete"
+    value: |
+      No schema changes. SQLite tables (processed_news, pending_articles, published_articles, failed_articles, bot_state) all unchanged. `source_name='t-hunted'` is just a free-text value in the existing source_name TEXT column. No migration needed on existing news.db files (prod + test).
+    gaps: ""
+    required: false
+
+  migration_needs:
+    score: 95
+    status: "complete"
+    value: |
+      No data migration. No backfill needed. Existing pending_articles / published_articles untouched. Fresh t-hunted entries enter via normal cron tick from the moment the feature lands in dev/prod.
+    gaps: ""
+    required: false
+
+# ============================================================================
+# Phase 4: Completion
+# ============================================================================
+phase4_completion:
+  userspec_file: "work/t-hunted-pt-source/user-spec.md"
+  status: "approved"
+
+# ============================================================================
+# Decision Rules
+# ============================================================================
+decision_rules:
+
+  required_threshold: 85
+  optional_threshold: 50
+
+  # Stop criteria (BOTH must be true to exit a cycle)
+  stop_criteria:
+    - "All required items in current cycle scope score >= 85%"
+    - "Structural: every required item has non-empty value, no TBD, gaps empty or conscious limitations"
+
+  priority_order:
+    - "Required items with score < 85% (lowest score first)"
+    - "Optional items mentioned by user in context"
+    - "Other optional items if user seems knowledgeable"
+
+  question_strategy:
+    - "3-4 questions per batch about different gaps"
+    - "Run as many batches as needed — batch size is NOT cycle limit"
+    - "Propose solutions based on PK, not just ask questions"
+    - "Challenge with substance: counterexamples, code references, unexplored scenarios"
+    - "After each response: update scores, values, gaps, conversation_history, save"
+
+# ============================================================================
+# Interview Progress
+# ============================================================================
+progress:
+  current_phase: "phase1_feature_overview"
+  questions_asked: 0
+  last_question: ""
+  total_required_score: 0
+  total_optional_score: 0
+  completion_estimate: "0%"
+  user_detail_level: "unknown"  # brief | moderate | detailed
+
+# ============================================================================
+# Notes
+# ============================================================================
+notes: |
+  Free-form notes:
+  - Important insights
+  - Areas of uncertainty
+  - Pivot points
+  - Scope changes
+
+# ============================================================================
+# USAGE INSTRUCTIONS
+# ============================================================================
+#
+# 1. INIT: Created by init-feature-folder.sh at work/{feature}/logs/userspec/interview.yml
+#    Set metadata.started, metadata.status: in_progress
+#
+# 2. INITIAL SCORING: After user's free-form description, score ALL items
+#    Detailed 80-95%, brief 50-70%, vague 20-40%, not mentioned 0%
+#
+# 3. INTERVIEW LOOP (save after EVERY response):
+#    a) Find required items with score < 85% in current cycle scope
+#    b) Ask 3-4 questions about different gaps
+#    c) Propose solutions based on PK
+#    d) User answers
+#    e) Update: conversation_history, scores, values, gaps, metadata
+#    f) Save immediately
+#    g) Check stop criteria (score >= 85% AND structural: value filled, no TBD, gaps resolved)
+#    h) Not done → repeat. Done → next cycle.
+#
+# 4. CYCLES:
+#    Cycle 1: phase1_feature_overview items
+#    Cycle 2: phase2_user_experience + phase3_integration items
+#    Cycle 3: ALL items still below threshold (cleanup pass)
+#
+# 5. RESUME: If metadata.status is "in_progress"
+#    Load, show conversation summary, resume from current state
+#
+# 6. COMPLETION: After user approves user-spec.md
+#    Set phase4_completion.status: approved
+#    Set metadata.status: completed

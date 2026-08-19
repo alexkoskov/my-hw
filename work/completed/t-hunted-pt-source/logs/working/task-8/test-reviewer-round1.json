@@ -1,0 +1,56 @@
+{
+  "status": "needs_improvement",
+  "summary": "Single new integration test (`test_integration_t_hunted_smoke_en_pt_mixed_tick`) at tests/test_distributed_schedule_integration.py:908. Test is well-structured, reuses base-class setUp/tearDown (tempfile DB isolation is sound), exercises the real `_fetch_rss_entries` → `_resolve_source_name` → `NETLOC_TO_SOURCE` chain (Task 3 wiring), and DB-level assertions on `published_articles.source_name` for both EN and PT links survive the litmus test for the routing regression (Litmus #1 PASS). However, two coverage gaps weaken the smoke value: (a) PT-vs-EN language differentiation is only inferred from `mock_claude.side_effect` ordering — `call_args_list` is never inspected to prove the correct `article` payload (with `source_name` and `link`) reached each Claude call (Litmus #2 PARTIAL); (b) boilerplate filter integration on PT input is fully bypassed because `fetch_full_patcher` in setUp returns a synthetic article — defence-in-depth from Task 4 is NOT integration-tested (Litmus #4 FAIL — acknowledged in task spec as unit-test territory but worth noting). Hashtag rendering (Litmus #3) is correctly delegated to Task 5 unit tests. AC coverage is partial-by-design: AC1, AC4 (indirectly), AC5 verified; AC2/3/6/7/8/9/10 delegated. The test passes the core litmus test for the wiring regression it was scoped to catch, but the language-differentiation claim in the docstring («cross-language interference») is not as tightly pinned as the assertions suggest.",
+  "findings": [
+    {
+      "severity": "major",
+      "category": "missing_coverage",
+      "location": "tests/test_distributed_schedule_integration.py:935-942",
+      "issue": "Language differentiation between EN and PT is asserted only by `side_effect=[en_result, pt_result]` ordering plus `call_count == 2`. The test never inspects `mock_claude.call_args_list` to verify which `article` payload (with `source_name`, `link`, and `paragraphs`) was passed to each call. A regression where both entries are tagged `source_name='autoevolution'` before reaching Claude (e.g., a NETLOC_TO_SOURCE miss that defaults to 'other' followed by a downstream fallback to 'autoevolution') would still consume the two-element side_effect in order and pass `call_count == 2`. The DB assertion on `pt_row['source_name'] == 't-hunted'` catches that specific regression on the DB side, but the litmus claim in the docstring («no cross-language interference») specifically about what reaches the LLM is not pinned. The 'cross-language' adjective in the test name implies the LLM payload is verified — it isn't.",
+      "recommendation": "After `news_bot.job()` returns, add per-call argument assertions: `en_call_article = mock_claude.call_args_list[0].args[0]; pt_call_article = mock_claude.call_args_list[1].args[0]; self.assertEqual(en_call_article['link'], en_link); self.assertEqual(en_call_article['source_name'], 'autoevolution'); self.assertEqual(pt_call_article['link'], pt_link); self.assertEqual(pt_call_article['source_name'], 't-hunted')`. This pins the LLM payload contract: the right source_name reaches `_build_user_message` for each entry, making the test failure-mode-correct under the user-spec AC5 wording ('передаёт его в LLM payload')."
+    },
+    {
+      "severity": "major",
+      "category": "missing_coverage",
+      "location": "tests/test_distributed_schedule_integration.py:908 (test scope)",
+      "issue": "PT boilerplate filter (Task 4 defence-in-depth) is bypassed entirely. `fetch_full_patcher` in setUp (line 221-229) replaces `fetch_full_article` with a synthetic-article factory that NEVER calls `boilerplate_filter.is_boilerplate` against PT input ('compartilhar', 'marcadores:', 'postado por'). The acknowledged tradeoff in the task spec — 'реальный диспетчер не вызывается, парсеры не дёргаются' — leaves a gap: a regression where someone reorders the boilerplate filter so PT patterns are dropped (or where the PT block is accidentally `^`-unanchored and starts matching real prose) would NOT be detected by this integration test OR by any other test in the suite at the integration level. The unit test `TestIsBoilerplatePositive::test_portuguese_patterns_filtered` (Task 4) is necessary but not sufficient for end-to-end confidence. Single integration smoke that does not exercise the only PT-specific code path in the pipeline is undersized for what it claims to cover.",
+      "recommendation": "Two options: (1) Acknowledged scope — accept the gap explicitly by renaming the test to `test_integration_t_hunted_smoke_en_pt_routing_and_storage` (drop the implicit 'full pipeline' framing) and adding a docstring sentence: 'NOTE: boilerplate filter is exercised only at unit-test level (test_boilerplate_filter.py). This smoke does not assert filter behaviour because fetch_full_article is mocked.' (2) Stronger coverage — add a second integration test or extend this one to NOT mock `fetch_full_article` for the PT link, instead mocking `t_hunted_source._http_get` to return a Blogger-style HTML body containing both real prose AND PT boilerplate patterns ('compartilhar\\nmarcadores:\\nReal prose paragraph.'), then assert the published row's `paragraphs` does NOT contain the boilerplate lines. Option (2) is the only path that defends Task 4's integration into the pipeline at integration scope."
+    },
+    {
+      "severity": "minor",
+      "category": "anti_pattern",
+      "location": "tests/test_distributed_schedule_integration.py:937-941",
+      "issue": "Diagnostic-only `title_prefix='EN article'` / `'PT article'` distinction in `_make_claude_result` is unused — no assertion checks which RU-title landed on which row. The comment in the task spec hints these prefixes help 'при отладке видно какая была какой', but without an assertion the prefixes are pure documentation. If the slot loop ever swaps the order of pending row processing (e.g., a sort change), the test would still pass but published_articles would silently carry the wrong RU-title against the wrong link. Minor because the linked source_name assertions already pin the row identity at storage layer; this is about defence-in-depth on the RU-title path.",
+      "recommendation": "Either drop the title_prefix differentiation (it adds noise without value), OR add: `self.assertIn('EN article', en_row.get('ru_title') or ''); self.assertIn('PT article', pt_row.get('ru_title') or '')` after the source_name assertions. This pins LLM-output → DB-row identity, catching regressions where Claude results are written to the wrong staged row."
+    },
+    {
+      "severity": "minor",
+      "category": "missing_coverage",
+      "location": "tests/test_distributed_schedule_integration.py:953-959",
+      "issue": "User-spec verification step 2 says the integration smoke proves 'slot ordering не страдает' / 'slot ordering preserved'. The test only asserts both rows publish (set equality on `_published_links()`) — it does not assert that the two publishes happened in any specific slot order, that two distinct slot-wait sleeps fired, or that the slot offsets for N=2 match `compute_publish_slots` output. The existing `test_full_happy_path_*` does this for N=3 (lines 350-386); the same pattern could be replicated for N=2 to make 'slot ordering preserved' a real claim rather than a phrasing in the docstring. Without it, a regression that publishes both articles in one slot (e.g., min-interval guard broken) would still pass.",
+      "recommendation": "Add after the `set(published) == {en_link, pt_link}` assertion: copy the `expected_offsets` / `sleep_args` pattern from lines 357-386 with N=2 and assert `len(sleep_args) == len([o for o in expected_offsets if o > 0])`. If duplicating the compute_publish_slots block is too heavy, at minimum assert `self.mock_sleep.call_count >= 1` with a comment explaining the slot-wait expectation for N=2 from `freeze_time('2026-05-26 09:00:00')` (12:00 МСК). This makes the user-spec 'slot ordering preserved' claim mechanically enforced."
+    },
+    {
+      "severity": "minor",
+      "category": "anti_pattern",
+      "location": "tests/test_distributed_schedule_integration.py:919-922 (NOTE comment)",
+      "issue": "Comment references `news_bot.py:1535` for `_fetch_rss_entries` override behaviour. Line numbers in code comments drift on every refactor (the file shows the line at 1535 today, task spec text said 1498). This is a documentation antipattern, not a correctness issue, but it creates churn in code review and review-cycle confusion if the line moves.",
+      "recommendation": "Replace the line-number reference with a function-name reference: `# `_fetch_rss_entries` overrides this field via `_resolve_source_name(link)` at collection time (see news_bot._fetch_rss_entries)`. Same approach as the rest of the file's references (e.g., line 815 `news_bot.py:1237` — also vulnerable; consider a sweep, but out of scope for this round)."
+    }
+  ],
+  "metrics": {
+    "filesReviewed": 1,
+    "litmusTest": {
+      "checked": 4,
+      "passed": 2,
+      "failed": 2
+    },
+    "coverageAssessment": "adequate",
+    "pyramidBalance": {
+      "unit": 0,
+      "integration": 1,
+      "e2e": 0,
+      "assessment": "healthy"
+    }
+  }
+}

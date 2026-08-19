@@ -1,0 +1,60 @@
+{
+  "status": "approved",
+  "summary": "Task 5 test wiring is correct, focused, and passes all 15 tests in the affected files. Production wiring in news_bot.py (SOURCE_HASHTAG_OVERRIDE='#thunted', NETLOC_TO_SOURCE entry for t-hunted.blogspot.com, blogspot.com branch in fetch_full_article calling t_hunted_source.fetch_t_hunted_article) matches every assertion byte-for-byte. Tests honour the locked names, the exact #thunted/#thunted #news strings, and the AC requirement that the unknown-domain dispatcher branch returns None.",
+  "criticalIssues": [],
+  "suggestions": [
+    {
+      "file": "tests/test_news_bot_dispatcher.py",
+      "line": 47,
+      "severity": "minor",
+      "category": "best-practices",
+      "suggestion": "Optionally also assert the keyword argument: the dispatcher calls t_hunted_source.fetch_t_hunted_article(link, notifier=send_admin_notification). Locking notifier=ANY (or just asserting 'notifier' in mock_fetch.call_args.kwargs) would catch a regression that drops the notifier wiring while still passing the link assertion. The spec only requires the positional-arg + call_count + return-value assertions, so this is purely optional.",
+      "benefit": "Hardens guard against a future refactor that silently drops the notifier= keyword arg from the dispatcher branch.",
+      "optional": true
+    },
+    {
+      "file": "tests/test_news_bot_dispatcher.py",
+      "line": 56,
+      "severity": "minor",
+      "category": "best-practices",
+      "suggestion": "test_fetch_full_article_unknown_domain_returns_none does not patch the five source-fetchers. If an unknown link were ever to accidentally match one of the substring checks (e.g., a future 'example.com' domain accidentally containing one of the registered substrings), the test could hit a real network call. Current 'unknown.example.com' is safe against today's branches, but defensively patching news_bot.fetch_mattel_article / lamley_source.fetch_lamley_article / autoevolution_source.fetch_autoevolution_article / t_hunted_source.fetch_t_hunted_article (and asserting call_count == 0 on each) would give the hard-guarantee the task spec describes as an acceptable variant.",
+      "benefit": "Eliminates any residual risk of accidental network traffic and gives the test a stronger 'no handler matched' assertion surface.",
+      "optional": true
+    },
+    {
+      "file": "tests/test_news_bot_dispatcher.py",
+      "line": 20,
+      "severity": "minor",
+      "category": "maintainability",
+      "suggestion": "The sys.path hack (sys.path.insert with dirname/dirname/abspath) is duplicated across many test files in this project — including test_telegram.py — so it is consistent with surrounding style. No action required, but a conftest.py-level fix would remove the duplication project-wide. Out of scope for Task 5.",
+      "benefit": "DRY for path bootstrap across the whole test suite.",
+      "optional": true
+    }
+  ],
+  "metrics": {
+    "filesReviewed": 2,
+    "criticalIssuesCount": 0,
+    "majorIssuesCount": 0,
+    "minorIssuesCount": 3,
+    "testCoverageAssessment": "adequate"
+  },
+  "verification": {
+    "testsRun": "pytest tests/test_telegram.py tests/test_news_bot_dispatcher.py -v",
+    "result": "15 passed in 0.44s",
+    "crossFileChecks": {
+      "_source_hashtag_returns_thunted_for_t_hunted_blogspot": "verified — news_bot.py:862-864 SOURCE_HASHTAG_OVERRIDE has 't-hunted.blogspot.com': '#thunted'",
+      "dispatcher_blogspot_branch_calls_t_hunted_source": "verified — news_bot.py:1475-1476 calls t_hunted_source.fetch_t_hunted_article(link, notifier=send_admin_notification)",
+      "unknown_domain_returns_none": "verified — news_bot.py:1480-1481 logs warning and returns None when no branch matches",
+      "patch_target_is_canonical": "verified — news_bot.py:38 'import t_hunted_source' makes news_bot.t_hunted_source.fetch_t_hunted_article the correct 'patch where used' target"
+    },
+    "acceptanceCriteriaMet": {
+      "TestSourceHashtag_test_t_hunted_hashtag_asserts_thunted": true,
+      "TestSendTelegraphTeaser_test_t_hunted_teaser_uses_thunted_tag_asserts_exact_text": true,
+      "new_file_test_news_bot_dispatcher_py_has_both_tests": true,
+      "pytest_target_files_all_green": true,
+      "tests_no_network_calls": true,
+      "tests_do_not_duplicate_existing_assertions": true,
+      "tests_test_sources_registry_py_not_modified": true
+    }
+  }
+}

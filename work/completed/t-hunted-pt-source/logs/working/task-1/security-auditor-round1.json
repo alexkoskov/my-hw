@@ -1,0 +1,92 @@
+{
+  "status": "approved",
+  "commit": "c12b7e81eeb290923fe660b834de5d745e9f8b1f",
+  "scope": {
+    "files": [
+      "t_hunted_source.py",
+      "tests/test_t_hunted_source.py"
+    ],
+    "loc_changed": 530,
+    "mode": "code-audit"
+  },
+  "summary": {
+    "totalFindings": 3,
+    "critical": 0,
+    "major": 0,
+    "minor": 3
+  },
+  "owaspChecklist": {
+    "A01_broken_access_control": "n/a — pure outbound HTTP fetcher, no auth/RBAC surface",
+    "A02_cryptographic_failures": "pass — no crypto primitives introduced; TLS handled by requests/urllib3 defaults",
+    "A03_injection": "pass — no SQL/OS/LDAP queries; HTML parsed with BeautifulSoup html.parser (no XXE-capable parser); no eval/exec/subprocess; user-controlled link goes only into requests.get URL and admin alert strings (alerts emit to ops channel, not to a code-evaluating sink)",
+    "A04_insecure_design": "pass — exact-match SSRF allowlist is a defense-in-depth gate behind the permissive 'blogspot.com' substring dispatcher in news_bot.fetch_full_article (documented in module docstring lines 16-20); fail-closed design (urlparse exception → False; missing hostname → '' → not in tuple → False)",
+    "A05_security_misconfiguration": "pass — UA is generic non-identifying; no debug routes; no permissive CORS (n/a — outbound only); _MAX_BYTES=2MB cap defined",
+    "A06_vulnerable_components": "pass — uses already-vetted project deps (requests, beautifulsoup4); BS4 invoked with 'html.parser' (stdlib, no lxml RCE/XXE surface)",
+    "A07_auth_failures": "n/a — no authentication code introduced",
+    "A08_software_data_integrity": "pass — no deserialization of untrusted data (no pickle/yaml.load/json eval); HTML is text-parsed",
+    "A09_logging_monitoring": "pass — three distinct admin-alert codes (E031 host-rejected, E032 fetch-error, E033 no-body); ERROR-level log via _notify; oversize-body case has WARN log with size + URL",
+    "A10_ssrf": "pass — primary focus of review; see ssrfChecklist below"
+  },
+  "ssrfChecklist": {
+    "exact_match_allowlist": "verified — _ALLOWED_HOSTS=('t-hunted.blogspot.com',) used with `host in _ALLOWED_HOSTS`; no glob/startswith/endswith/regex/substring",
+    "scheme_restriction": "verified — only http/https accepted; file://, javascript:, data:, gopher://, ftp:// rejected (urlparse returns scheme!=http/https and/or hostname=None for opaque schemes)",
+    "userinfo_attack_t-hunted.blogspot.com@evil.com": "verified — urlparse hostname returns 'evil.com', not 't-hunted.blogspot.com'; covered by test_rejects_userinfo_attack",
+    "suffix_host_attack_t-hunted.blogspot.com.evil.example": "verified — hostname='t-hunted.blogspot.com.attacker.example' fails tuple membership; covered by test_rejects_suffix_host_attack",
+    "subdomain_variants_evil.t-hunted.blogspot.com_www.t-hunted.blogspot.com": "verified — exact-match rejects both; covered by test_rejects_subdomain_variants",
+    "case_insensitivity": "verified — host lower-cased before comparison (line 94); allowlist values are already lowercase",
+    "fail_closed_on_parse_error": "verified — urlparse(ValueError|AttributeError) → False; hostname=None → '' → not in tuple",
+    "network_short_circuit_on_reject": "verified — fetch_t_hunted_article returns before session.get() when host rejected; asserted by test_fetch_returns_none_and_pings_when_host_rejected (session.get.assert_not_called)",
+    "loopback_link_local_aws_metadata": "verified — 127.0.0.1, 169.254.169.254 rejected by exact-host membership; covered by test_rejects_arbitrary_external_host"
+  },
+  "redosChecklist": {
+    "pattern": "=s\\d+(-c)?(?:/|$)",
+    "bounded_quantifiers": "yes — \\d+ is greedy-linear, (-c)? is fixed, (?:/|$) is alternation of single char/anchor",
+    "nested_quantifiers": "none",
+    "catastrophic_backtracking_test": "verified — 50,000-char digit run substituted in <0.2 ms (linear time)",
+    "anchor_safety": "alternation /|$ does not create ambiguous overlap (per-position match attempt is O(1))"
+  },
+  "findings": [
+    {
+      "severity": "minor",
+      "category": "A10:2021 SSRF — defense-in-depth",
+      "title": "allow_redirects=True (default) lets the allowlisted host redirect to an attacker-controlled host",
+      "description": "session.get() at line 120-124 uses the requests default allow_redirects=True. If t-hunted.blogspot.com (or an intermediary in Blogger's CDN) ever returns a 3xx Location pointing at an external/internal host, urllib3 will follow without re-validating the destination against _ALLOWED_HOSTS. The bypass requires either (a) Blogger account takeover of t-hunted.blogspot.com or (b) a future Blogger feature that lets posters emit arbitrary 3xx Location headers — both are low-likelihood, but the cost of disabling redirects is one keyword argument. Project convention in lamley_source.py also omits this hardening, so this is a systemic minor rather than task-specific.",
+      "location": "t_hunted_source.py:120-124",
+      "impact": "Theoretical SSRF bypass after a redirect; with Blogger's actual behavior today the issue is unreachable.",
+      "recommendation": "Add allow_redirects=False, or follow redirects manually and re-validate each hop's host with _is_allowed_t_hunted_url: `response = session.get(link, timeout=_TIMEOUT_SECONDS, headers={'User-Agent': _USER_AGENT}, allow_redirects=False)` and, if a 3xx is received, resolve Location relative to the original URL and re-check the allowlist before re-issuing. Apply project-wide for consistency with lamley_source.",
+      "cwe": "CWE-918"
+    },
+    {
+      "severity": "minor",
+      "category": "A04:2021 Insecure Design — resource exhaustion",
+      "title": "_MAX_BYTES check runs only after the full body has been downloaded into memory",
+      "description": "Line 133 reads `len(response.content)` AFTER `session.get(...)` has already buffered the entire response. A hostile or misbehaving upstream (e.g., compromised CDN edge for t-hunted.blogspot.com, or an upstream HTTP smuggling scenario) could send a multi-GB body and exhaust process memory before the 2 MB cap takes effect. The cap currently functions only as a 'drop oversized garbage before BeautifulSoup' filter — not as a DoS guard.",
+      "location": "t_hunted_source.py:120-140",
+      "impact": "Memory-exhaustion DoS on the bot process if upstream sends arbitrarily large body. Low likelihood for Blogger but non-zero.",
+      "recommendation": "Use streamed download with manual size enforcement: `response = session.get(link, timeout=_TIMEOUT_SECONDS, headers={'User-Agent': _USER_AGENT}, stream=True); chunks=[]; total=0; for chunk in response.iter_content(65536): total += len(chunk); if total > _MAX_BYTES: response.close(); logger.warning(...); return None; chunks.append(chunk); body = b''.join(chunks)`. Defer if you intentionally match lamley_source's pattern (then carry a project-wide TODO).",
+      "cwe": "CWE-770"
+    },
+    {
+      "severity": "minor",
+      "category": "A09:2021 Security Logging — information disclosure",
+      "title": "Full untrusted URL echoed verbatim in admin-alert / log strings without length cap or sanitization",
+      "description": "Lines 115, 129, 136-139, 164 pass the caller-supplied `link` through `admin_alerts.alert_t_hunted_*` and `logger.warning` unmodified. A hostile RSS feed could craft a multi-kilobyte URL containing control characters or Telegram-MarkdownV2 metacharacters that mangle the admin alert rendering, or simply blow up the alert channel with noise. Same pattern as lamley_source so systemic — but worth flagging because Task 2's E031-E033 builders will land next and should escape/truncate at the boundary.",
+      "location": "t_hunted_source.py:115, 129, 136-139, 164",
+      "impact": "Admin-channel UX degradation; not exploitable for code execution.",
+      "recommendation": "In admin_alerts.alert_t_hunted_* (Task 2), truncate link to ~200 chars and escape Telegram MarkdownV2 special chars before embedding. No change needed in t_hunted_source.py itself.",
+      "cwe": "CWE-117"
+    }
+  ],
+  "positiveFindings": [
+    "SSRF allowlist uses Python tuple-membership on `urlparse(...).hostname.lower()` — the textbook-correct primitive; rejects all four required negative cases (userinfo, suffix, subdomain, foreign netloc) plus loopback/link-local/AWS-metadata.",
+    "Fail-closed: any parse error → False; missing hostname → '' → not in tuple. No exception escapes _is_allowed_t_hunted_url.",
+    "Scheme allowlist (http/https) blocks file://, javascript:, data:, gopher://, ftp:// — explicitly tested.",
+    "Network short-circuit verified by test asserting session.get is NOT called on host rejection.",
+    "Regex `=s\\d+(-c)?(?:/|$)` is bounded, non-nested, ReDoS-safe (50k digit run sub'd in <0.2 ms).",
+    "HTML parsed with html.parser (stdlib), not lxml — no XXE/RCE surface from BeautifulSoup backend.",
+    "<script>/<style>/<noscript> tags decomposed before text extraction — XSS-via-text-content vector closed for downstream renderers.",
+    "Timeout pinned at 15 s; UA is generic non-credential string; no eval/exec/subprocess/pickle/yaml.load.",
+    "No secrets in source — module imports admin_alerts but contains no API keys, tokens, or connection strings.",
+    "Notifier failure isolated: _notify wraps notifier(message) in try/except so an alert-channel outage cannot break the parser."
+  ]
+}

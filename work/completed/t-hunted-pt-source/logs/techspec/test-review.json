@@ -1,0 +1,42 @@
+{
+  "status": "passed",
+  "summary": "Round-2 review: all five round-1 major findings are resolved in the updated Testing Strategy. (1) AC7 ux-guidelines structural coverage — new `tests/test_ux_guidelines_structure.py` listed with 4 behavioral assertions (glossary section present, ≥10 entries, t-hunted style block present, input-language prompt widened), wired into Task 5 Files-to-modify and Task 7 Verify-smoke. (2) AC10 deploy invariant — new `tests/test_deploy_files_invariant.py` listed with 3 file-specific assertions, wired into Task 6 in addition to the original shell grep — converts the manual checklist into a pytest regression. (3) AC4 dispatcher routing — two direct unit tests added (`test_fetch_full_article_routes_blogspot_to_t_hunted` and `test_fetch_full_article_unknown_domain_returns_none`) in Task 5, covering both the positive routing path and the negative regression for unknown domains. (4) SSRF variants — three new TestHostAllowlist methods added: `test_rejects_userinfo_attack`, `test_rejects_suffix_host_attack`, `test_rejects_subdomain_variants` — covering the realistic attack surface. (5) ReDoS safety — `TestRegexSafety::test_pt_patterns_no_redos_under_120_char_input` added with explicit timeout-based assertion description. Pyramid balance unchanged and healthy. Two minor items remain: Task 8 integration smoke wording is still loose (same as round-1 minor — wording 'without cross-language interference' could devolve to mock-call assertions); SSRF case-variant uppercase normalization test is still not listed (round-1 recommended both subdomain and uppercase variants — subdomain was added, uppercase was not). Both are minor (low severity, no critical/major).",
+  "findings": [
+    {
+      "severity": "minor",
+      "category": "anti_pattern",
+      "location": "tech-spec.md §Implementation Tasks / Task 8 description (lines 281-282)",
+      "issue": "Task 8 wording for the integration smoke test was flagged in round-1 as loose ('asserts both publish without cross-language interference, dedup unchanged, slot ordering preserved, both rows land in `published_articles`') and the wording is unchanged in round-2. As-worded, an implementing agent could satisfy 'both publish without cross-language interference' with mocks that simply return success for both calls — the test would pass even if `source_name` plumbing into the LLM payload were broken, or if the PT entry skipped boilerplate filtering. Litmus-test risk: removing the source_name plumbing line in `_build_user_message` would not necessarily fail the test as worded.",
+      "recommendation": "Tighten Task 8 description to six explicit behavioral assertions (per code-research §C.6): (1) `_resolve_source_name` stamps `'t-hunted'` on the PT entry and `'autoevolution'` on the EN entry; (2) `t_hunted_source.fetch_t_hunted_article` is called for the PT entry and NOT for the EN entry (assert call counts on parser mocks); (3) returned PT article paragraphs do NOT contain literal PT boilerplate strings (`Compartilhar`, `Marcadores`) — proves boilerplate filter ran on PT content; (4) `pending_articles_repo.insert_pending` called once with `source_name='t-hunted'` and once with `source_name='autoevolution'`; (5) `_source_hashtag` returns `'#thunted'` for PT URL and `'#autoevolution'` for EN URL; (6) `_build_user_message` payload includes the correct `source_name` for each article (inspect the captured payload, not just call count). Adding this prescriptive list prevents the implementer from degrading to mock-call-only assertions and ensures the test catches plumbing regressions."
+    },
+    {
+      "severity": "minor",
+      "category": "missing_coverage",
+      "location": "tech-spec.md §Testing Strategy / TestHostAllowlist (lines 131-134)",
+      "issue": "Round-1 review recommended three SSRF security-variant tests: (a) userinfo attack, (b) suffix-host attack, (c) uppercase host normalization. The fix added (a) and (b) plus a new `test_rejects_subdomain_variants` case (`evil.t-hunted.blogspot.com`) — which is a valuable addition — but the uppercase-host normalization test (`test_allows_uppercase_host_variant` asserting `_is_allowed_t_hunted_url('https://T-Hunted.Blogspot.COM/x')` returns True) was not added. A regression that drops the `.lower()` normalization would still not be caught. Severity is minor because the case is unlikely to surface in real RSS-feed input (Blogger emits lowercase hosts), but the test costs nothing and locks the invariant.",
+      "recommendation": "Add `TestHostAllowlist::test_allows_uppercase_host_variant` to `tests/test_t_hunted_source.py` testing strategy: assert `_is_allowed_t_hunted_url('https://T-Hunted.Blogspot.COM/2026/05/post.html')` returns True. Locks the `.lower()` normalization in the allowlist guard. Add to Task 1 test methods list."
+    },
+    {
+      "severity": "minor",
+      "category": "missing_coverage",
+      "location": "tech-spec.md §Implementation Tasks / Task 2 (lines 230-234)",
+      "issue": "Round-1 minor #3 noted that admin-alert test names `test_alert_t_hunted_host_rejected_e031` etc. are listed without specified assertion shape. The fix did not add prescriptive assertion guidance — Task 2 description still says only 'positive cases for each builder'. Without guidance, an implementer could write `assert builder(link) is not None` which passes even if the builder returns an empty or wrong string. Severity is minor because the existing E025-E028 lamley alert tests already establish convention in this codebase that an implementer is likely to follow.",
+      "recommendation": "Append to Task 2 description: 'Each positive case asserts (a) returned string starts with or contains the `[E03X]` code prefix; (b) contains the input link (or its `_redact_text` form); (c) for `alert_t_hunted_fetch_error`, contains the error parameter substring. Mirror the existing E025-E028 lamley alert test pattern in `tests/test_admin_alerts.py`.'"
+    }
+  ],
+  "metrics": {
+    "filesReviewed": 3,
+    "litmusTest": {
+      "checked": 22,
+      "passed": 20,
+      "failed": 2
+    },
+    "coverageAssessment": "adequate",
+    "pyramidBalance": {
+      "unit": 38,
+      "integration": 1,
+      "e2e": 0,
+      "assessment": "healthy"
+    }
+  }
+}

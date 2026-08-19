@@ -1,0 +1,61 @@
+{
+  "validator": "reality-checker",
+  "batch": [7, 8, 9],
+  "iteration": 1,
+  "status": "approved",
+  "findings": [
+    {
+      "severity": "major",
+      "category": "hallucination",
+      "task": 7,
+      "issue": "Task 7 specifies replacing `английский` with `(английский или португальский)` and states bold markers should be preserved, producing: `преобразовывать входящий **(английский или португальский)** текст`. But code-research §5.A suggests a different wording: `входящий **англоязычный или португалоязычный** текст`, and code-research §A.4 (the patching table) gives yet a third form: `входящий текст (английский или португальский)`. Three conflicting prescriptions across the feature's source documents. Task 7 is internally consistent but diverges from the patching-table form. The TDD anchor test uses substring checks for `английский` AND `португальский` and will pass any of the three formulations — however the implementer reading the task alongside code-research will encounter contradictory wording and may choose the wrong one, breaking the semantic coherence of the prompt sentence (adjective form vs noun form).",
+      "fix": "Pick one canonical form and remove the others. The tech-spec Decision 5 says 'replace `английский` segment with `(английский или португальский)`' — lock Task 7 §What-to-do step 3 to this exact replacement and add a note that code-research §5.A wording is superseded by the task."
+    },
+    {
+      "severity": "major",
+      "category": "feasibility",
+      "task": 8,
+      "issue": "Task 8 step 3 instructs constructing mock RSS entries with explicit `source_name='t-hunted'` via `_create_mock_rss_entry(link=..., source_name='t-hunted', ...)`. However the real `_fetch_rss_entries` (which is NOT mocked — only `fetch_rss` is mocked in setUp) processes each entry returned by `fetch_rss` and OVERWRITES `source_name` via `_resolve_source_name(link or url)` (news_bot.py:1498). The `source_name` field carried in the mock entry dict is silently discarded. The `source_name` that flows into `pending_articles` and `published_articles` comes solely from `_resolve_source_name(link)`. The test will still work correctly because the t-hunted link URL resolves to `'t-hunted'` after Task 3 wiring — but the instruction is architecturally incorrect and will mislead an implementer into thinking they can control `source_name` via the RSS entry field. If an implementer adds an assert on the RSS entry's `source_name` field (rather than the resolved one from the DB), the test will produce a false positive.",
+      "fix": "Remove the `source_name='t-hunted'` argument from `_create_mock_rss_entry` in Task 8 step 3 (or add a clarifying comment that source_name in the RSS entry is irrelevant — the pipeline resolves it via `_resolve_source_name(link)`, so the correct assertion target is `pending_articles_repo.get_published(link)['source_name']` from the DB, not the mock entry's `source_name` field)."
+    },
+    {
+      "severity": "minor",
+      "category": "feasibility",
+      "task": 7,
+      "issue": "Task 7 step 2 instructs to run all 4 tests BEFORE editing ux-guidelines.md and asserts they must all FAIL (TDD red phase). However `test_input_language_prompt_widened` checks that `английский` AND `португальский` both appear in the anchor sentence. The current file has `английский` (line 22) and NOT `португальский` — so this test will fail for the right reason. However if the implementer runs the tests and one test passes unexpectedly (e.g. a future file already contains `португальский` somewhere), the TDD guard is silently bypassed. The task does not instruct the implementer to check the exact error message to confirm the failure is for the right reason.",
+      "fix": "Minor: add a note in the TDD anchor section to verify each test fails for the specific expected reason (e.g. `test_input_language_prompt_widened` should fail with AssertionError about missing `португальский`, not with FileNotFoundError or import error)."
+    },
+    {
+      "severity": "minor",
+      "category": "feasibility",
+      "task": 8,
+      "issue": "Task 8 step 5 says to run `news_bot.job()` inside `with freeze_time('2026-05-26 09:00:00')`. The freeze_time timestamp is hardcoded. The existing happy-path test uses `'2026-04-27 09:00:00'`. No functional issue since `compute_publish_slots` computes relative to `now` — but the date is different from the existing test pattern without explanation. The `pub_date` in `_create_mock_full_article` is hardcoded to `'2026-04-27'`. If any publish-window guard checks whether `pub_date` is stale relative to `now`, the 2026-05-26 freeze_time with 2026-04-27 pub_date could cause unexpected behaviour.",
+      "fix": "Minor: align the freeze_time date with the pub_date in mock articles, or verify that `_fallback_publish` does not reject articles whose `pub_date` is >30 days old relative to `now`. Use the same freeze date as existing happy-path tests (`'2026-04-27 09:00:00'`) for consistency unless there is a specific reason to use 2026-05-26."
+    },
+    {
+      "severity": "minor",
+      "category": "tdd",
+      "task": 9,
+      "issue": "Task 9 enumerates files to audit in the Details section. The file `_llm_common.py` is NOT in the audit list. Tech-spec Decision 8 explicitly references `_llm_common._build_user_message` (line 97) as passing `source_name` to the LLM payload and `_llm_common.py:134-153` for `_is_mostly_russian`. Task 9's architecture audit should verify Decision 8 compliance (no new code for PT input fallback) against the actual `_llm_common.py` source. Since this module is NOT modified by the feature, its omission from the audit list is defensible — but the audit checklist item 'Decision 8 compliance' (line 163) cannot be verified without reading `_llm_common.py`.",
+      "fix": "Add `_llm_common.py` to Task 9's 'Comparison baselines (do not modify, read-only for audit)' list alongside `lamley_source.py` and `orangetrack_source.py`, scoped to Decision 8 compliance verification only."
+    }
+  ],
+  "stats": {
+    "tasks_checked": 3,
+    "claims_verified": 31,
+    "issues_found": 5
+  },
+  "notes": {
+    "task_7_content_anchor": "VERIFIED: ux-guidelines.md line 22 contains the sentence 'Твоя единственная задача: преобразовывать входящий английский текст в высококлассный русскоязычный контент.' — the anchor is real and unique in the file. Content-anchored edit is feasible.",
+    "task_7_insertion_points": "VERIFIED: '## Per-source style notes' at line 74, '### 🟡 Mattel' at line 95, '## Red flags to self-check before stage' at line 104. The Mattel block ends at line 102 with no trailing blank before Red flags at line 104 — implementer must add blank lines per Task 7 edge-case note.",
+    "task_7_invariant_line": "VERIFIED: line 132 of ux-guidelines.md contains the verbatim-blockquote invariant as specified.",
+    "task_7_glossary_section": "VERIFIED: No '## Glossary — PT/EN/RU' section exists yet in ux-guidelines.md — all 4 TDD tests will correctly fail before edits.",
+    "task_8_class_name": "VERIFIED: Class 'TestDistributedSchedule' exists at line 128 of test_distributed_schedule_integration.py. Single class in the file.",
+    "task_8_helpers": "VERIFIED: '_set_rss_entries' (line 252), '_published_links' (line 258), '_pending_links' (line 270), '_admin_messages' (line 274), '_make_claude_result' (line 105 as module-level function), '_create_mock_rss_entry' (line 69 as module-level function), '_create_mock_full_article' (line 86 as module-level function) — all exist and match Task 8 usage.",
+    "task_8_outage_state_functions": "VERIFIED: 'outage_state.get_ping_count()' (line 207), 'outage_state.is_fallback_active()' (line 225) exist. outage_state reads news_bot.DB_FILE at call time — tempfile patch in setUp propagates correctly.",
+    "task_8_get_published": "VERIFIED: 'pending_articles_repo.get_published(link)' exists at line 372, returns dict with 'source_name' column (confirmed in published_articles DDL at line 77).",
+    "task_8_source_name_flow": "FINDING (major): source_name in mock RSS entry is overwritten by _resolve_source_name(link) in _fetch_rss_entries — the explicit source_name='t-hunted' arg in _create_mock_rss_entry is functionally a no-op for the pipeline.",
+    "task_9_files_exhaustiveness": "VERIFIED: All 17 files listed in Task 9 Details correspond to actual project files. The optional 'tests/test_integration.py or tests/test_news_bot_dispatcher.py' disambiguation correctly covers the Task 5 deliverable. lamley_source.py and orangetrack_source.py listed as comparison baselines — confirmed present in project root. _llm_common.py not listed (minor gap for Decision 8 verification).",
+    "code_research_section_names": "NOTE: Task 7 references code-research '§D', '§E', '§5' — these correspond to sections named '### D.', '### E.' and '## 5.' in the actual code-research.md file. Naming convention is consistent."
+  }
+}

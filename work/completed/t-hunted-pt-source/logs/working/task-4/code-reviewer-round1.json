@@ -1,0 +1,41 @@
+{
+  "status": "approved",
+  "summary": "Task 4 implementation precisely matches Decision 4 and the RU defence-in-depth precedent: 10 `^`-anchored, ReDoS-safe PT patterns appended to `_BOILERPLATE_PATTERNS` after the RU block with a matching block comment, `_MAX_BOILERPLATE_LEN` and public API untouched, `feeds.json` cleanly extended to 4/5 entries. All 162 tests pass; 27 new PT-specific assertions plus a cross-language `TestRegexSafety` ReDoS regression class are in place; no regressions on EN/RU/affiliate/author-plug suites. No critical or major findings.",
+  "criticalIssues": [],
+  "suggestions": [
+    {
+      "file": "tests/test_boilerplate_filter.py",
+      "line": 280,
+      "severity": "minor",
+      "category": "best-practices",
+      "suggestion": "`import time` is performed inside the test method body of `TestRegexSafety::test_pt_patterns_no_redos_under_120_char_input` (and similarly inside `TestAffiliateLengthBound::test_redos_safety_long_buy_pattern` on line 236). Hoisting `import time` to the module top would be marginally cleaner and matches the rest of the project's import style. Trivial style nit, not a defect.",
+      "benefit": "Slightly cleaner imports; aligns with PEP 8 module-level import convention used elsewhere in the file.",
+      "optional": true
+    },
+    {
+      "file": "tests/test_boilerplate_filter.py",
+      "line": 276,
+      "severity": "minor",
+      "category": "maintainability",
+      "suggestion": "Adversarial input #10 (`'pagina ' + 'inicial' * 15`) results in length 112, not the 120-char ceiling targeted by the other entries (see verification: 112 chars). The remaining 9 inputs are exactly 120 chars. Inconsistency is harmless because the `assert len(adversarial) <= _MAX_BOILERPLATE_LEN` invariant still holds and 112 chars is still adversarial-grade, but tightening to exactly 120 would make the suite uniform with the spec's `adversarial-shape вход ровно 120 char` phrasing in tasks/4.md step 1. Optional polish.",
+      "benefit": "Uniform 120-char adversarial inputs across all 10 PT patterns; matches the task-spec wording exactly.",
+      "optional": true
+    },
+    {
+      "file": "boilerplate_filter.py",
+      "line": 24,
+      "severity": "minor",
+      "category": "maintainability",
+      "suggestion": "The module docstring (line 22-23) still says `English patterns are primary ...; Russian patterns are a belt-and-suspenders safety net`. With the PT block now added, a one-line follow-up sentence (e.g. `Portuguese patterns added 2026-05-29 for t-hunted.blogspot.com — same defence-in-depth model.`) would keep the documentation in sync with the code. Not a defect — pure documentation hygiene.",
+      "benefit": "Module docstring remains an accurate inventory of pattern families; lowers cognitive overhead for future maintainers.",
+      "optional": true
+    }
+  ],
+  "metrics": {
+    "filesReviewed": 3,
+    "criticalIssuesCount": 0,
+    "majorIssuesCount": 0,
+    "minorIssuesCount": 3,
+    "testCoverageAssessment": "excellent"
+  }
+}

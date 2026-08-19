@@ -1,0 +1,111 @@
+commit 93aad9efcd5d0fd09ad464dacc907c971be02903
+Author: alex <sunny413x@gmail.com>
+Date:   Fri May 29 21:44:24 2026 +0300
+
+    feat: task 6 — t_hunted_source in deploy FILES + pytest invariant
+    
+    Adds "t_hunted_source.py" to FILES arrays in all three deploy files
+    (deploy.sh, deploy.yml, deploy_test.yml) at the same grouped position
+    (after orangetrack_source.py). Without this, news_bot.service would
+    ImportError on next cron tick (Risk R7).
+    
+    New tests/test_deploy_files_invariant.py asserts file presence in
+    all three FILES arrays via plain substring match — turns the R7
+    invariant into a CI-catchable pytest regression rather than relying
+    on shell-grep alone.
+    
+    Co-Authored-By: Claude Opus 4.7 (1M context) <noreply@anthropic.com>
+
+diff --git a/.github/workflows/deploy.yml b/.github/workflows/deploy.yml
+index 6a7a4b6..2d46b19 100644
+--- a/.github/workflows/deploy.yml
++++ b/.github/workflows/deploy.yml
+@@ -126,6 +126,7 @@ jobs:
+             "mattel_news_source.py"
+             "lamley_source.py"
+             "orangetrack_source.py"
++            "t_hunted_source.py"
+             "telegraph_publisher.py"
+             "pending_articles_repo.py"
+             "claude_transcreation.py"
+diff --git a/.github/workflows/deploy_test.yml b/.github/workflows/deploy_test.yml
+index c659134..e56a375 100644
+--- a/.github/workflows/deploy_test.yml
++++ b/.github/workflows/deploy_test.yml
+@@ -97,6 +97,7 @@ jobs:
+             "mattel_news_source.py"
+             "lamley_source.py"
+             "orangetrack_source.py"
++            "t_hunted_source.py"
+             "telegraph_publisher.py"
+             "pending_articles_repo.py"
+             "claude_transcreation.py"
+diff --git a/deploy.sh b/deploy.sh
+index ed0916d..008f8f6 100644
+--- a/deploy.sh
++++ b/deploy.sh
+@@ -40,6 +40,7 @@ FILES=(
+     "mattel_news_source.py"
+     "lamley_source.py"
+     "orangetrack_source.py"
++    "t_hunted_source.py"
+     "telegraph_publisher.py"
+     "pending_articles_repo.py"
+     "claude_transcreation.py"
+diff --git a/tests/test_deploy_files_invariant.py b/tests/test_deploy_files_invariant.py
+new file mode 100644
+index 0000000..5cb8650
+--- /dev/null
++++ b/tests/test_deploy_files_invariant.py
+@@ -0,0 +1,51 @@
++"""Invariant test: every new first-party module imported by news_bot.py must
++appear in ALL THREE deploy FILES arrays (deploy.sh, deploy.yml, deploy_test.yml).
++
++Skipping any one of them causes `news_bot.service` to ImportError on the next
++cron tick on the server, with no CI signal at deploy time (the workflow's own
++`if [[ ! -f "$file" ]]` check only fires for files MISSING locally, not for
++files missing from the FILES array). Tech-spec Risk R7.
++
++This test mirrors the shell-grep fallback at the deploy stage but runs as part
++of the regular `pytest tests/` suite — so the R7 invariant is caught in CI
++before merge, not after deploy.
++
++Implementation note: plain substring match on file contents (no bash/YAML AST
++parsing). The double-quoted form `"t_hunted_source.py"` is identical in the
++bash array and in the YAML `run: |` block, so one assertion form fits all
++three files.
++"""
++
++from pathlib import Path
++
++REPO_ROOT = Path(__file__).resolve().parent.parent
++
++EXPECTED_ENTRY = '"t_hunted_source.py"'
++
++
++def test_t_hunted_source_in_deploy_sh():
++    content = (REPO_ROOT / "deploy.sh").read_text(encoding="utf-8")
++    assert EXPECTED_ENTRY in content, (
++        f'{EXPECTED_ENTRY} missing from deploy.sh FILES array — '
++        "news_bot.service will ImportError on the next cron tick (Risk R7)."
++    )
++
++
++def test_t_hunted_source_in_deploy_yml():
++    content = (REPO_ROOT / ".github" / "workflows" / "deploy.yml").read_text(
++        encoding="utf-8"
++    )
++    assert EXPECTED_ENTRY in content, (
++        f'{EXPECTED_ENTRY} missing from .github/workflows/deploy.yml FILES array — '
++        "prod news_bot.service will ImportError on the next cron tick (Risk R7)."
++    )
++
++
++def test_t_hunted_source_in_deploy_test_yml():
++    content = (REPO_ROOT / ".github" / "workflows" / "deploy_test.yml").read_text(
++        encoding="utf-8"
++    )
++    assert EXPECTED_ENTRY in content, (
++        f'{EXPECTED_ENTRY} missing from .github/workflows/deploy_test.yml FILES array — '
++        "test news_bot_test.service will ImportError on the next cron tick (Risk R7)."
++    )

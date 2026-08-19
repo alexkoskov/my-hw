@@ -1,0 +1,59 @@
+{
+  "status": "approved_with_suggestions",
+  "summary": "Increment A is a tight, well-reasoned fix that does exactly one thing: gates the [E017] send behind a bot_state day-marker. The calendar-day-over-rolling-window choice is correct and I verified the mechanism that justifies it (schedule fires from a 60 s poll loop, so consecutive ticks can sit ~23h59m apart and a strict 24 h window really would swallow the next day's alarm). Naming, connection handling and caller wiring match the _KEY_HOLD_CAP_PINGED pair exactly, and there is no scope creep. One real gap: the helper's docstring promises 'Fails OPEN' but only two of its three failure paths do — a DB error inside the gate propagates to job()'s outer try/except and silently skips the alert for that tick, which contradicts the user-spec's «если отметка испорчена или недоступна, тревога всё равно уходит». Confirmed empirically.",
+  "criticalIssues": [],
+  "suggestions": [
+    {
+      "file": "news_bot.py",
+      "line": 4979,
+      "severity": "major",
+      "category": "error-handling",
+      "suggestion": "The gate does NOT fail open on a DB error. `pending_repo.is_dry_spell_ping_rate_limited()` opens its own connection and can raise (sqlite3.OperationalError 'database is locked' once the 5 s busy timeout is exhausted, disk I/O error, unmounted /data volume). That raise propagates to the block's outer `except Exception` at news_bot.py:4996, which logs and continues — so the [E017] alert is skipped entirely for that tick. I confirmed this by injecting sqlite3.OperationalError into the gate and running job(): 0 pings sent, only '[dry-spell] channel-silence check failed: database is locked' in the log. This contradicts the user-spec «Технические решения»: «учёт отправок отказывает в сторону лишнего сообщения: если отметка испорчена или недоступна, тревога всё равно уходит» — 'недоступна' (unavailable) is precisely this path. The helper's own docstring also overstates its contract by claiming 'Fails OPEN' without qualification; it fails open on missing and on corrupt, but fails CLOSED on unavailable. Note this wiring is inherited verbatim from the [E038] site (news_bot.py:4874), where it is defensible because patterns.md:350 records that 'nothing is hidden' — the daily [E008]/[E009] «Отложено: N» line still carries the total. [E017] has no such backstop: it is the only signal of a prolonged outage, so the same shape has a materially worse consequence here. Fix (4 lines, keeps the existing pattern): wrap just the gate call — `try: limited = pending_repo.is_dry_spell_ping_rate_limited()` / `except Exception as gate_err: logger.warning(f'[dry-spell] rate-limit marker unreadable, sending anyway: {sanitize_error_message(gate_err)}'); limited = False` — then branch on `limited`. Add a test that injects a raise into the gate and asserts the ping still goes out; that is the one behaviour in this increment with no test.",
+      "benefit": "Restores the fail-open guarantee the spec promises and the docstring already claims, on the one alert that has no redundant channel. Worst case becomes one duplicate ping instead of a whole day with no outage alarm.",
+      "optional": false
+    },
+    {
+      "file": "pending_articles_repo.py",
+      "line": 749,
+      "severity": "minor",
+      "category": "maintainability",
+      "suggestion": "The docstring's date-boundary safety argument reasons only about the cron tick: 'the daily tick lands at 07:00 UTC — seven hours clear of the date boundary'. That is accurate (verified: schedule.every().day.at('10:00', tz=Europe/Moscow) at news_bot.py:5126, and tests/test_distributed_schedule_integration.py:308 pins 07:00 UTC == 10:00 МСК), but the whole reason this gate exists is the RESTART tick, and restart ticks land at arbitrary hours. Two restarts straddling 00:00 UTC (03:00 МСК) yield two pings minutes apart. Behaviourally this is fine and I am not asking for a code change: two is far better than the four the operator got on 2026-08-13, calendar-day accounting is the reading the spec itself sanctions elsewhere («Мы решили считать \"два дня подряд\" по календарным суткам»), and the AC («не чаще раза в сутки») is met per calendar day. But the stated justification does not cover the case the fix was built for. Add one sentence: a restart-triggered tick can land at any hour, so a pair straddling 00:00 UTC can ping twice within minutes — accepted, because the alternative (a rolling window) fails in the worse direction by silencing a real next-day alarm.",
+      "benefit": "The docstring stops leaving its most likely edge case unaddressed, so the next reader does not mistake the midnight double-ping for an oversight and 'fix' it back into a rolling window.",
+      "optional": false
+    },
+    {
+      "file": "tests/test_pending_articles_repo.py",
+      "line": 2531,
+      "severity": "minor",
+      "category": "best-practices",
+      "suggestion": "The new tests capture `now = datetime.now(timezone.utc)` and then let the SUT read the clock again, so they are wall-clock dependent: if UTC midnight falls between the two reads, the 'marked earlier today' case flips to a different date and fails. Same exposure in test_marking_suppresses_the_rest_of_the_day and, across three job() ticks, in test_restarts_within_one_day_ping_once (tests/test_job_distributed_publish.py:970). The odds are tiny, but freezegun is already a project dependency and already used for exactly this shape — tests/test_distributed_schedule_integration.py:308 does `freeze_time('2026-04-27 07:00:00')  # 07:00 UTC == 10:00 МСК`. Wrapping these in freeze_time removes the flake and lets you assert the interesting boundary directly (freeze at 23:59:30, mark, jump to 00:00:30, assert the gate reopens) instead of approximating it with `now.replace(hour=0, minute=30) - timedelta(hours=1)`.",
+      "benefit": "Removes a rare CI flake and turns the midnight-crossing case — the one genuinely load-bearing boundary for a calendar-day gate — into an explicit assertion rather than an inferred one.",
+      "optional": true
+    },
+    {
+      "file": "news_bot.py",
+      "line": 4980,
+      "severity": "minor",
+      "category": "best-practices",
+      "suggestion": "The suppressed branch logs at INFO. The ping is deduped, but the underlying condition — channel silent for N days — is still a warning-level fact on every tick after the first. During a multi-day outage an operator grepping logs for WARNING sees day 1 and then nothing, even though the dry spell is ongoing. Consider keeping this line at logger.warning (the message already says «staying quiet», so it cannot be mistaken for a second ping), or leave it at INFO deliberately and say why in the comment.",
+      "benefit": "Log severity keeps tracking the condition rather than the notification decision, so the log stays usable as the outage record the comment above it says it is.",
+      "optional": true
+    },
+    {
+      "file": "pending_articles_repo.py",
+      "line": 735,
+      "severity": "minor",
+      "category": "maintainability",
+      "suggestion": "This is the third near-identical rate-limit marker pair in the module: is_dedup_degraded_rate_limited/mark_dedup_degraded_pinged (line 1615), is_hold_cap_ping_rate_limited/mark_hold_cap_pinged (line 686), and now the dry-spell pair — same SELECT, same _parse_dt_tolerant call, same tz-naive coercion, same INSERT OR REPLACE, differing only in the key and the comparison. I am explicitly NOT recommending a refactor in this increment: matching the neighbouring pair line-for-line is the right call for a scoped fix, the three variants differ in connection ownership (two take a conn, one opens its own), and the project's own standing guidance is to build a safety net only under a measured break. Flagging it only as a marker: if a fourth marker lands in increment C (the per-source dry-spell alerts the user-spec describes will need one per source), that is the moment to extract a shared `_is_marker_same_day(key)` / `_mark(key)` helper rather than paste a fourth copy.",
+      "benefit": "Names the duplication threshold in advance so increment C makes the extraction decision deliberately, instead of arriving at six copies by inertia.",
+      "optional": true
+    }
+  ],
+  "metrics": {
+    "filesReviewed": 4,
+    "criticalIssuesCount": 0,
+    "majorIssuesCount": 1,
+    "minorIssuesCount": 4,
+    "testCoverageAssessment": "adequate"
+  }
+}
