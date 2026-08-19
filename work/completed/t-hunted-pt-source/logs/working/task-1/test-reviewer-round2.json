@@ -1,0 +1,52 @@
+{
+  "status": "passed",
+  "summary": "Round 2 fixes close all 3 round-1 MAJORs and both round-1 minors. Builder-identity now pinned via [E031-STUB]/[E032-STUB]/[E033-STUB] fingerprints from the autouse fixture, so the three error-path tests fail under any wrong-builder regression (host-reject -> fetch-error -> no-body cross-routing now caught). Paragraphs assertion in test_boilerplate_filter_applied_before_subtitle_lift is now exact-order list equality; redundant _IMAGE_LIMIT literal check removed. PT-footer survival is correctly deferred to Task 4 alongside the PT boilerplate-filter change. Test pyramid is balanced (14 unit tests, mocked HTTP only), litmus test passes on all behavioural tests, and every test earns its place. No critical, major, or minor findings remain.",
+  "findings": [],
+  "metrics": {
+    "filesReviewed": 2,
+    "litmusTest": {
+      "checked": 14,
+      "passed": 14,
+      "failed": 0
+    },
+    "coverageAssessment": "adequate",
+    "pyramidBalance": {
+      "unit": 14,
+      "integration": 0,
+      "e2e": 0,
+      "assessment": "healthy"
+    }
+  },
+  "round1FindingsResolution": {
+    "MAJOR_1_fetch_error_builder_identity": {
+      "status": "resolved",
+      "location": "tests/test_t_hunted_source.py:140",
+      "evidence": "Now asserts '[E032-STUB]' in notifier payload; autouse stub at lines 37-42 returns that fingerprint exclusively from alert_t_hunted_fetch_error. Litmus: if the parser mistakenly routed ConnectionError to alert_t_hunted_host_rejected (E031) or alert_t_hunted_no_body (E033), the substring check would fail."
+    },
+    "MAJOR_2_no_body_builder_identity": {
+      "status": "resolved",
+      "location": "tests/test_t_hunted_source.py:162",
+      "evidence": "Now asserts '[E033-STUB]' in notifier payload; fixture at lines 43-48 pins that fingerprint to alert_t_hunted_no_body. Distinguishes the parser-failure branch from a sibling fetch-error branch that would also reach a notifier call."
+    },
+    "MAJOR_3_host_rejected_builder_identity": {
+      "status": "resolved",
+      "location": "tests/test_t_hunted_source.py:308",
+      "evidence": "Now asserts '[E031-STUB]' in notifier payload, complementing the existing session.get.assert_not_called() short-circuit check. Wrong-builder regression (e.g. host-reject path emitting E032) now caught."
+    },
+    "MINOR_1_exact_order_paragraphs": {
+      "status": "resolved",
+      "location": "tests/test_t_hunted_source.py:242",
+      "evidence": "Substring 'in' check replaced with list-equality `out['paragraphs'] == ['Second content paragraph.']`. Catches reordering, extra residual entries, or duplication that the membership check missed."
+    },
+    "MINOR_2_redundant_image_limit_literal": {
+      "status": "resolved",
+      "location": "tests/test_t_hunted_source.py:184",
+      "evidence": "Self-referential `_IMAGE_LIMIT == 10` literal check removed; the surviving `len(out['images']) == _IMAGE_LIMIT` assertion exercises the cap against real parser output."
+    },
+    "MINOR_3_pt_footer_survival": {
+      "status": "deferred",
+      "location": "tests/test_t_hunted_source.py (no test added)",
+      "evidence": "Explicit deferral to Task 4 (PT boilerplate filter) is correct sequencing — adding a PT-footer-stripped assertion now would either falsely pass (filter currently lets PT lines through) or churn on the Task 4 commit. SAMPLE_HTML at lines 81-82 already includes PT footer fixtures so Task 4 can land its assertion without re-touching the fixture. Acceptable deferral, not a defect."
+    }
+  }
+}

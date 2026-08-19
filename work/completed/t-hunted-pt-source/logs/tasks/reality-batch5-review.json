@@ -1,0 +1,67 @@
+{
+  "validator": "reality-checker",
+  "batch": [13, 14],
+  "iteration": 1,
+  "status": "approved",
+  "findings": [
+    {
+      "severity": "critical",
+      "category": "missing_file",
+      "task": 13,
+      "issue": "t_hunted_source.py is NOT present in the FILES arrays of deploy.sh, .github/workflows/deploy.yml, or .github/workflows/deploy_test.yml at the time of this validation. Task 13 assumes Task 6 has already added it and that Task 12 (pre-deploy QA) green-lit the deploy_files_invariant test. The transitive dependency chain (13→12→9/10/11→6) means Task 6 must complete before Task 13 is attempted. However, the deploy will silently fail to copy t_hunted_source.py to the server if Task 6 was skipped or partially executed — the deploy_test.yml Copy-files step would not error (it only errors if listed files are missing from the repo, not if they are absent from the list). The ImportError would only appear at the next cron tick on the server.",
+      "fix": "This is a pre-execution state issue, not a task authoring flaw — Task 6 must be completed and verified (via test_deploy_files_invariant.py) before Task 13 begins. The task body already documents this dependency correctly in the Details section. To make it harder to accidentally skip: add explicit depends_on: [6] to Task 13 frontmatter alongside [12], or confirm that the feature-execution orchestrator enforces transitive depends_on. No task file edit is strictly required if the orchestrator handles transitivity."
+    },
+    {
+      "severity": "minor",
+      "category": "feasibility",
+      "task": 13,
+      "issue": "Task 13 writes its artifact to work/t-hunted-pt-source/logs/deploy/deploy-test.log, but the logs/deploy/ subdirectory does not exist in the repository and has no precedent in any other feature's work/ tree (only logs/qa/ exists in llm-transcreation feature). The task description marks the file as '(new)' but contains no mkdir instruction.",
+      "fix": "Add a step before writing the log: 'mkdir -p work/t-hunted-pt-source/logs/deploy'. Alternatively, note in the Details section that the directory must be created first. Most agents and write-tools will create parent dirs automatically, so this is low risk in practice."
+    },
+    {
+      "severity": "minor",
+      "category": "hints",
+      "task": 14,
+      "issue": "Task 14 implementation hint (line 108) says to follow conventions from 'other logs/qa/*.json reports in work/completed/' — but no post-deploy-qa.json files exist anywhere in work/completed/ or any other completed feature. The prior-art pointer is empty.",
+      "fix": "Remove the 'if exists in work/completed/' qualifier from the hint, or point to the only existing qa artifact: work/llm-transcreation-and-distributed-publishing/logs/qa/pre-deploy-qa.md (which is a Markdown pre-deploy QA report, not a JSON post-deploy report — format differs). The fallback in the hint ('if not — design minimally') is sufficient; just drop the misleading forward reference."
+    }
+  ],
+  "stats": {
+    "tasks_checked": 2,
+    "claims_verified": 31,
+    "issues_found": 3
+  },
+  "verified_claims": [
+    "deploy_test.yml exists at .github/workflows/deploy_test.yml — CONFIRMED",
+    "deploy_test.yml step 'Restart news_bot_test service on server' runs 'sudo /usr/bin/systemctl restart news_bot_test.service' — CONFIRMED (line 200)",
+    "deploy_test.yml emits '::notice::news_bot_test.service restarted on dev branch code.' — CONFIRMED (line 202)",
+    "news_bot_test.service is the correct unit name per deployment.md two-instance topology table — CONFIRMED",
+    "deploy_test.yml triggers via workflow_run on CI completion for dev branch — CONFIRMED",
+    "deploy_test.yml steps match Task 13 step names: Checkout, Verify secrets, SSH agent, Add host to known_hosts, Copy files to server, Write runtime env vars, Install Python dependencies, Restart news_bot_test service, Deploy summary — CONFIRMED",
+    "gh pr merge --squash --delete-branch flags are valid gh CLI syntax — CONFIRMED",
+    "gh run list --branch dev --limit 5 is a valid gh CLI command — CONFIRMED",
+    "gh run view <run-id> --log is a valid gh CLI flag for extracting notices — CONFIRMED",
+    "SSH alias 'hwbot' convention and direct address '148.135.207.54' match deployment.md — CONFIRMED",
+    "sudoers rule covers journalctl -u news_bot_test.service NOPASSWD — CONFIRMED (deployment.md line 107)",
+    "sudoers rule covers systemctl restart/status news_bot_test.service NOPASSWD — CONFIRMED",
+    "Task 13 depends_on: [12] — transitive chain covers Task 6 via 12→9/10/11→6 — CONFIRMED",
+    "E030 is the last defined alert code in admin_alerts.py (orangetrack summary header) — CONFIRMED",
+    "E029 does not exist in admin_alerts.py (gap between E028 lamley-no-body and E030 orangetrack) — CONFIRMED, gap is intentional or legacy",
+    "Tech-spec Decision 3 states E031-E033 are 'next codes after E030' — CONSISTENT with actual code state",
+    "journalctl filter grep -E \"\\[E03[1-3]\\]\" in Task 13 line 84 correctly matches [E031], [E032], [E033] — CONFIRMED",
+    "journalctl filter grep -E \"\\[E03[1-3]\\]\" in Task 14 lines 35 and 74 is identical and consistent with Task 13 and tech-spec Decision 3 — CONFIRMED",
+    "Task 14 Acceptance Criteria journalctl command uses news_bot_test.service (not news_bot.service) — CONFIRMED",
+    "Task 14 references prod service as news_bot.service for post-promotion checks — CONFIRMED (consistent with deployment.md)",
+    "Task 14 QA report path work/t-hunted-pt-source/logs/qa/post-deploy-qa.json — logs/qa/ precedent exists in llm-transcreation feature — CONFIRMED",
+    "Task 13 log path work/t-hunted-pt-source/logs/deploy/deploy-test.log — logs/deploy/ does NOT exist — ISSUE (minor, filed above)",
+    "deploy.sh FILES array does not contain t_hunted_source.py (pre-Task-6 state) — CONFIRMED as expected pre-execution state",
+    "deploy.yml FILES array does not contain t_hunted_source.py (pre-Task-6 state) — CONFIRMED",
+    "deploy_test.yml FILES array does not contain t_hunted_source.py (pre-Task-6 state) — CONFIRMED",
+    "Task 13 journalctl grep pattern for ImportError: grep -E \"ImportError|Traceback|t_hunted|t-hunted\" — valid regex — CONFIRMED",
+    "deploy_test.yml 'Verify required secrets' step checks SSH_HOST, SSH_USER, DEPLOY_PATH_TEST, SSH_PRIVATE_KEY plus LLM keys — matches Task 13 Dependencies list — CONFIRMED",
+    "Task 13 states 'promotion to main' uses deploy.yml which restarts news_bot.service (not news_bot_test.service) — CONFIRMED against deploy.yml line 249",
+    "Task 14 optional INFO-line grep pattern for t-hunted parse activity is structurally sound for post-deploy observability — CONFIRMED",
+    "Task 14 edge case '[E033] no-body' points to updating .post-body/.entry-content selector in t_hunted_source.py — consistent with Decision 1 parser blueprint — CONFIRMED",
+    "No hardcoded secrets in Task 13 or Task 14 implementation hints — CONFIRMED"
+  ]
+}

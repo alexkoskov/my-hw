@@ -1,0 +1,130 @@
+{
+  "validator": "task-validator",
+  "mode": "cross-task-integration",
+  "batch": [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14],
+  "iteration": 1,
+  "status": "changes_required",
+  "findings": [
+    {
+      "severity": "critical",
+      "category": "decomposition",
+      "task": 13,
+      "section": "frontmatter (wave + depends_on)",
+      "issue": "Task 13 declares wave: 5 and depends_on: [6, 12], but Task 12 is also wave: 5. Validator rule: dependent task's wave MUST be strictly greater than dependency's wave. Task 13 in wave 5 cannot depend on Task 12 in wave 5 — same-wave tasks execute in parallel, but Task 13 needs Task 12 done first.",
+      "fix": "Either bump Task 13 to wave 6 (and Task 14 to wave 7) to express strict sequential ordering, OR document and accept the convention that the Final Wave executes sequentially per teammate_name (qa-runner → deployer → post-deploy-qa). If the orchestrator (feature-execution skill) treats Final Wave as a sequential chain when depends_on links exist within the wave, document this exception in tech-spec §Implementation Tasks header. As written, the wave numbers do not encode the actual execution ordering."
+    },
+    {
+      "severity": "critical",
+      "category": "decomposition",
+      "task": 14,
+      "section": "frontmatter (wave + depends_on)",
+      "issue": "Task 14 declares wave: 5 and depends_on: [13], but Task 13 is also wave: 5. Same-wave-with-internal-dependency anti-pattern as Task 13 → 12. Per validator rule, dependent task's wave must be strictly greater.",
+      "fix": "Bump Task 14 wave to 7 (or 6 if Task 13 stays at 5) so the wave field encodes actual execution ordering. Alternatively, formally document Final Wave sequential-by-depends_on convention in tech-spec."
+    },
+    {
+      "severity": "major",
+      "category": "decomposition",
+      "task": 12,
+      "section": "frontmatter (wave) — context",
+      "issue": "Task 12 wave 5 with deps [9, 10, 11] is valid (audit waves at 4). However, the cluster of tasks 12, 13, 14 all in wave 5 with internal sequential dependencies is structurally inconsistent with the wave-as-parallel-unit semantics applied to earlier waves (1-4). This is a top-level structural smell, not a bug in Task 12 itself.",
+      "fix": "If feature-execution skill treats the Final Wave as sequential when depends_on links exist within it, accept and document. Otherwise re-number to waves 5/6/7 to make the ordering explicit and parser-clear. Recommend bumping 13→6 and 14→7 to align with the rest of the decomposition's convention (wave is a parallelism unit)."
+    },
+    {
+      "severity": "minor",
+      "category": "consistency",
+      "task": 3,
+      "section": "Title vs Description",
+      "issue": "Task 3 title says 'news_bot.py wiring (import + dispatcher + NETLOC_TO_SOURCE + SOURCE_HASHTAG_OVERRIDE + archived consumer dicts) + sources_registry test extension'. The title is long but accurately reflects the merged scope after round-1 fix (sources_registry test extension was moved in from Task 5). This is acceptable; the long title makes scope unambiguous. No fix needed but flag for awareness.",
+      "fix": "Acceptable as-is. Optional: shorten title to 'news_bot.py wiring + sources_registry test extension'; full scope already enumerated in body."
+    },
+    {
+      "severity": "minor",
+      "category": "consistency",
+      "task": 4,
+      "section": "depends_on",
+      "issue": "Task 4 declares depends_on: []. Task 4 says 'парсер `t_hunted_source.py` (Task 1) вызовет `filter_boilerplate` уже с готовыми PT-паттернами после merge waves' — i.e. Task 1's parser will use the PT patterns added by Task 4. There is no hard runtime dependency (filter_boilerplate accepts any pattern list), and Task 4 unit tests don't import t_hunted_source. So depends_on: [] is technically correct. However, semantically Task 4 and Task 1 must both be done before the integration smoke test (Task 8) can verify cross-language behaviour. The current decomposition handles this via Task 8 depends_on: [1, 3] — but Task 4 isn't in Task 8's depends_on either, even though the integration test scenario uses PT content that conceptually relies on Task 4's PT patterns landing. In practice, Task 8 mocks fetch_full_article so the parser+filter path isn't exercised, so it's still acceptable.",
+      "fix": "No fix required. Optional: add a 'Cross-task notes' line in Task 4 explicitly noting that Task 4 lands in parallel with Task 1 and is not a runtime dependency for Task 1 (PT patterns appended to flat list, no new API)."
+    },
+    {
+      "severity": "minor",
+      "category": "consistency",
+      "task": 5,
+      "section": "What to do (Out of scope clause)",
+      "issue": "Task 5 contains a clear 'Out of scope (moved to Task 3)' clause for sources_registry test edits — exactly as instructed by round-1 fix. Cross-reference with Task 3 confirms Task 3 picked up the work. This is clean and consistent. Flagging for completeness, not as a defect.",
+      "fix": "No fix required — round-1 fix correctly applied."
+    },
+    {
+      "severity": "minor",
+      "category": "resource-sharing",
+      "task": 3,
+      "section": "Details (SOURCE_HASHTAG_OVERRIDE introduction)",
+      "issue": "Tech-spec §Shared resources says 'None. No singleton resources are introduced.' Task 3 introduces a new module-level mutable dict `SOURCE_HASHTAG_OVERRIDE` in news_bot.py. While this isn't a singleton in the traditional sense (no instance, no shared state across processes), it IS a new module-level data structure read by other code paths (`_source_hashtag`). Task 3 correctly notes 'dict is used read-only' but tech-spec wording could be tightened to acknowledge this addition.",
+      "fix": "Optional: update tech-spec §Shared resources to explicitly note `SOURCE_HASHTAG_OVERRIDE` as a new module-level constant (Decision 2), parallel to existing `NETLOC_TO_SOURCE` / `SOURCE_EMOJI` / `SOURCE_LABEL`. This is documentation hygiene, not a structural bug. Task 3 itself handles ownership correctly: single creator (Task 3), single reader (`_source_hashtag` via same task), no competing instances."
+    },
+    {
+      "severity": "minor",
+      "category": "consistency",
+      "task": 8,
+      "section": "depends_on",
+      "issue": "Task 8 depends_on: [1, 3]. Task 8 mocks fetch_full_article entirely and doesn't dispatch to t_hunted_source — so technically only Task 3 (NETLOC_TO_SOURCE mapping for source_name resolution) is required at runtime. However, Task 8's file scope mentions reading t_hunted_source.py for context; and the import chain `import news_bot` (which imports t_hunted_source after Task 3) requires t_hunted_source.py to exist on disk. So depends_on: [1, 3] is correct.",
+      "fix": "No fix required — depends_on correctly captures both transitive and contextual dependencies."
+    },
+    {
+      "severity": "minor",
+      "category": "consistency",
+      "task": 12,
+      "section": "AC mapping (AC4 dispatcher)",
+      "issue": "Task 12 AC mapping says 'AC4 (dispatcher) → pytest -k test_fetch_full_article_routes_blogspot_to_t_hunted'. This test name is locked in Task 5's deliverable in `tests/test_news_bot_dispatcher.py`. Cross-reference is consistent. Flagging for completeness — verified.",
+      "fix": "No fix required."
+    },
+    {
+      "severity": "minor",
+      "category": "consistency",
+      "task": 13,
+      "section": "depends_on (round-1 fix verification)",
+      "issue": "Round-1 fix specified Task 13 depends_on: [6, 12]. File confirms this. Task 6 (deploy plumbing — FILES arrays) is the hard prerequisite for Task 13's SCP step succeeding. Task 12 (pre-deploy QA) is the quality gate. Both correctly captured. Verified.",
+      "fix": "No fix required — round-1 fix correctly applied."
+    }
+  ],
+  "cross_task_integration_summary": {
+    "shared_resource_ownership": {
+      "verdict": "pass",
+      "notes": "Each new artefact has exactly one owner-task: t_hunted_source.py (Task 1); admin_alerts E031-E033 (Task 2); NETLOC_TO_SOURCE/SOURCE_HASHTAG_OVERRIDE/SOURCE_EMOJI/SOURCE_LABEL entries in news_bot.py (Task 3); feeds.json entry + boilerplate_filter PT block (Task 4); deploy FILES arrays + test_deploy_files_invariant.py (Task 6); ux-guidelines.md edits + test_ux_guidelines_structure.py (Task 7). No two tasks compete to create the same resource. Consumers correctly declare depends_on on owners (Task 3→1, Task 5→3, Task 8→1+3, Task 13→6)."
+    },
+    "no_competing_instances_in_same_wave": {
+      "verdict": "pass",
+      "notes": "Wave 1: Task 1 (parser) and Task 2 (alerts) touch disjoint files. Wave 2: Task 3 (news_bot.py + test_sources_registry.py), Task 4 (feeds.json + boilerplate_filter.py + test_boilerplate_filter.py), Task 6 (deploy.sh + 2x deploy yml + test_deploy_files_invariant.py) — fully disjoint file sets. Wave 3: Task 5 (test_telegram.py + test_news_bot_dispatcher.py), Task 7 (ux-guidelines.md + test_ux_guidelines_structure.py), Task 8 (test_distributed_schedule_integration.py) — disjoint."
+    },
+    "wave_ordering_consistency": {
+      "verdict": "issues",
+      "notes": "Waves 1→2→3→4 obey strict 'dependent wave > dependency wave'. Wave 5 violates this internally: Tasks 12, 13, 14 are all wave 5 with sequential depends_on chain (12 → 13 → 14). Per validator rule, this should be waves 5/6/7. Flagged as critical findings on Tasks 13 and 14."
+    },
+    "depends_on_graph_acyclic": {
+      "verdict": "pass",
+      "notes": "Graph: 1→[], 2→[], 3→[1], 4→[], 5→[3], 6→[1], 7→[], 8→[1,3], 9→[1-8], 10→[1-8], 11→[1-8], 12→[9,10,11], 13→[6,12], 14→[13]. No cycles. Topological order achievable: 1,2,4,7 → 3,6 → 5,8 → 9,10,11 → 12 → 13 → 14."
+    },
+    "file_modification_conflicts_within_wave": {
+      "verdict": "pass",
+      "notes": "Exhaustive enumeration in 'no_competing_instances_in_same_wave' above. No two same-wave tasks modify the same file."
+    },
+    "cross_references_consistent": {
+      "verdict": "pass",
+      "notes": "Verified pairs: Task 1 ↔ Task 2 (admin_alerts builders, monkey-patch noted on Task 1 side, builders created on Task 2 side); Task 3 ↔ Task 5 (sources_registry test ownership moved to Task 3, Task 5 explicitly notes 'out of scope'); Task 3 ↔ Task 7 (ux-guidelines tests owned by Task 7, Task 5 explicitly notes 'created in Task 7, not here'); Task 5 ↔ Task 8 (Task 5 unit-tests dispatcher, Task 8 integration-tests cross-language pipeline — distinct concerns, both reference the same Task 3 wiring); Task 12 ↔ Task 14 (deferredToPostDeploy handoff contract); Task 13 ↔ Task 14 (deploy → verify chain, prod-merge deferred consistently). All cross-references are bidirectionally consistent."
+    },
+    "test_file_ownership": {
+      "verdict": "pass",
+      "notes": "Each new test file has exactly one owner: tests/test_t_hunted_source.py (Task 1), tests/test_news_bot_dispatcher.py (Task 5), tests/test_deploy_files_invariant.py (Task 6), tests/test_ux_guidelines_structure.py (Task 7). Extensions: tests/test_admin_alerts.py (Task 2 only), tests/test_sources_registry.py (Task 3 only after round-1 fix), tests/test_telegram.py (Task 5 only), tests/test_boilerplate_filter.py (Task 4 only), tests/test_distributed_schedule_integration.py (Task 8 only). No two tasks extend the same test file."
+    },
+    "round_1_fixes_verified": {
+      "verdict": "pass",
+      "notes": "Task 5 wave 2 → wave 3: CONFIRMED (Task 5 frontmatter wave: 3). Task 3 sources_registry test extension moved in: CONFIRMED (Task 3 §What to do step 7 includes the three test edits; Task 5 §Description has explicit 'Out of scope (moved to Task 3)' clause). Task 13 depends_on [12] → [6, 12]: CONFIRMED (Task 13 frontmatter depends_on: [6, 12])."
+    }
+  },
+  "stats": {
+    "tasks_checked": 14,
+    "issues_found": 10,
+    "critical": 2,
+    "major": 1,
+    "minor": 7
+  }
+}

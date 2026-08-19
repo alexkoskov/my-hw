@@ -1,0 +1,55 @@
+{
+  "status": "approved_with_suggestions",
+  "summary": "Three edits to ux-guidelines.md (widened input-language sentence, t-hunted per-source block, PT/EN/RU glossary) cleanly satisfy tech-spec Decision 5 and user-spec AC7. The widened sentence is unambiguous about output language (русскоязычный контент) and uses positive framing. The t-hunted block mirrors the existing 5-field shape from Autoevolution/Lamley. The glossary table has clear column semantics with a 'RU (preferred)' header that softens the rules into preferences. Findings are minor polish suggestions; no critical or major issues. The 4 structural tests + content-anchored assertions make the edits regression-safe.",
+  "findings": [
+    {
+      "severity": "minor",
+      "category": "context",
+      "location": ".claude/skills/project-knowledge/references/ux-guidelines.md:22 (widened input-language sentence)",
+      "issue": "The widened phrase 'входящий текст (английский или португальский)' is correct, positive, and consistent with the existing bold-emphasis convention (the original wrapped 'входящий английский' in **bold**; the new version wraps the full noun phrase). Output language is locked by 'в высококлассный русскоязычный контент' in the same sentence, so there is no realistic risk the LLM interprets PT input as a license to answer in PT. One residual minor risk: the parenthetical form '(английский или португальский)' could read to a literal-minded model as a parenthetical clarification ('the input may happen to be EN or PT') rather than an enumeration ('accept both languages as valid input'). In practice the prompt body has no follow-up that contradicts this, and the test asserts both words co-occur — which is the load-bearing property.",
+      "recommendation": "No change required. If you ever want to tighten further, an alternative phrasing 'входящий текст на английском или португальском' (preposition + nominal cases) reads more enumerative than parenthetical, but the current canonical wording from Decision 5 is fine and matches the test contract."
+    },
+    {
+      "severity": "minor",
+      "category": "framing",
+      "location": ".claude/skills/project-knowledge/references/ux-guidelines.md:107 (Tone dial — t-hunted)",
+      "issue": "The Tone dial field uses two CAPS-prefixed negatives ('НЕ калькировать «caça» → «охота» (правильно «хант»), НЕ калькировать «Super Caça» → «Супер-охота» (правильно «Super-T»)'). These are legitimate hard boundaries — preventing the two most-likely calques — and each carries inline motivation ('правильно «хант»', 'правильно «Super-T»'). This matches the existing Mattel-block pattern ('*DO NOT* apply pure «другу в баре» tone here — it clashes with the press-release context'), so the negative usage is consistent with the file's house style. However, the CAPS 'НЕ' is heavier than the surrounding directive emphasis (bold labels only, no caps elsewhere in per-source blocks). Mattel uses '*DO NOT*' (italic + caps) once; t-hunted uses 'НЕ' twice in caps.",
+      "recommendation": "Optional polish: drop the CAPS and let the rule + motivation carry the weight, e.g. 'Не калькируй «caça» как «охота» — используй «хант» (устоявшийся коллекционерский сленг); «Super Caça» — это «Super-T», не «Супер-охота».' Same prohibition, softer emphasis, motivation upfront. Keep as-is if consistency with Mattel's '*DO NOT*' precedent feels more important than uniform low-emphasis tone."
+    },
+    {
+      "severity": "minor",
+      "category": "clarity",
+      "location": ".claude/skills/project-knowledge/references/ux-guidelines.md:106, 108, 110 ([TBD operator] markers in t-hunted block)",
+      "issue": "Three of the five t-hunted fields contain [TBD operator] markers inline with LLM-facing prose. In **Voice** the marker is appended after a real characterisation ('коллекционерская community-журналистика. Автор — фанат...'), so the LLM has substance to work with and the marker reads as a comment. In **Length** the marker precedes a hypothesis ('[TBD operator] — большинство постов короткие, до 5-10 параграфов; иногда длинные deep-dive обзоры новых линеек'), so the LLM still sees a usable length range. In **Good/bad title examples** the field is wholly '[TBD operator — добавить после первых 5-10 публикаций]', i.e. empty for the LLM. Decision 5 explicitly approves this — operator owns iterative prose tuning per AC7 deferral — so this is by design, not a leak. The risk is purely cosmetic: the LLM may parse '[TBD operator]' as a placeholder it should fill, but the bracketed form + Russian operator-facing prose make it visually distinct from instructions.",
+      "recommendation": "No change required for round 1. If round 2 finds the LLM echoing '[TBD operator]' back into output (very unlikely — it's not in the system prompt blockquote), wrap the markers in HTML-style comments invisible to LLM-reading the markdown (e.g. '<!-- [TBD operator: ... ] -->'), or move them to a dedicated 'Operator follow-ups' section outside the per-source block. The current shape is defensible as-is."
+    },
+    {
+      "severity": "minor",
+      "category": "specificity",
+      "location": ".claude/skills/project-knowledge/references/ux-guidelines.md:114-116 (Glossary intro prose)",
+      "issue": "The intro says 'переводы канонические для канала' ('canonical translations for the channel'). 'Canonical' is strong — it can over-constrain the model and conflict with the system-prompt directive '**Транскреация:** переложи текст на «живой» русский язык' which favours creative re-expression. The table's column header 'RU (preferred)' already signals the entries are preferences, which is the right framing. The intro 'canonical' wording works against that softening.",
+      "recommendation": "Soften the intro to match the 'preferred' framing in the column header. Example: 'Hot Wheels collector jargon: предпочитаемые переводы для согласованности канала. LLM использует таблицу как референс при PT→RU транскреации t-hunted статей и при EN→RU других источников — приоритет всегда у читабельности и контекста, таблица задаёт fallback там, где буквальный перевод хуже устоявшегося жаргона.' This makes the glossary advisory (matching 'RU (preferred)') and explicitly tells the LLM that context can override the table — protecting transcreation freedom."
+    },
+    {
+      "severity": "minor",
+      "category": "structure",
+      "location": ".claude/skills/project-knowledge/references/ux-guidelines.md:129, 132 ([VERIFY operator] flags inside table Notes column)",
+      "issue": "Two table rows have '[VERIFY operator]' embedded in the Notes column ('«Тампо» — заводская печать; «декаль» — отдельная наклейка [VERIFY operator]' and '«Carrinho» — общий collectible-сленг, не уменьшительное [VERIFY operator]'). This mixes audiences: the rest of the Notes column is LLM-facing guidance ('НЕ «охота»', 'Не переводить', 'По контексту'), but '[VERIFY operator]' is operator-facing. The LLM may parse the bracket as part of the recommendation or as noise. The outro sentence ('Operator: после первых 5-10 публикаций пересмотри [VERIFY operator] пункты') clarifies the marker's intent for human readers but the LLM only sees both in the same stream.",
+      "recommendation": "Optional polish: move the [VERIFY operator] flag to a parenthetical at the end of the Notes ('(оператор уточнит после 5-10 публикаций)') or use a dedicated column / footnote symbol. Current form is acceptable — the test (test_glossary_has_at_least_10_entries) only counts rows, not Notes content — and the outro disambiguates the marker. Skip if cost outweighs the polish."
+    },
+    {
+      "severity": "minor",
+      "category": "criteria",
+      "location": ".claude/skills/project-knowledge/references/ux-guidelines.md:112-137 (Glossary section as a whole)",
+      "issue": "The section has clear column semantics (PT source term → EN bridge → RU preferred) and uses parenthetical 'preferred' to signal softness. It correctly does NOT instruct the LLM to perform literal substitution row-by-row — there is no 'replace X with Y' directive. The Per-source Tone dial field cross-references the glossary ('Используй PT-EN-RU глоссарий ниже'), which is appropriate scoping. One missing piece: there is no success criterion telling the LLM HOW to use the glossary (lookup-on-doubt? always-prefer? fallback-only?). For a transcreation prompt this absence is reasonable — the system-prompt body already specifies 'Транскреация: переложи текст на живой русский' — but a single line on glossary precedence would prevent the LLM from either ignoring the table (missing the calque-prevention value) or over-applying it (mechanical substitution killing transcreation).",
+      "recommendation": "Optional one-line addition before or after the table: 'Применяй таблицу как страховку от калек (Caça → «охота», Super Caça → «Супер-охота», Carrinho → «маленькая машинка»). Если контекст подсказывает более живой русский вариант — используй его; таблица задаёт минимум согласованности, не максимум буквальности.' This locks the soft-preference framing and gives the LLM permission to deviate when transcreation calls for it — closing the gap between the table-as-rule and the prompt-as-transcreation-directive."
+    }
+  ],
+  "metrics": {
+    "filesReviewed": 5,
+    "promptsReviewed": 3,
+    "criticalIssuesCount": 0,
+    "majorIssuesCount": 0,
+    "minorIssuesCount": 6
+  }
+}

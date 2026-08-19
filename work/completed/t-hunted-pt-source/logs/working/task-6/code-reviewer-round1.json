@@ -1,0 +1,63 @@
+{
+  "status": "approved",
+  "summary": "Task 6 implementation is minimal, correct, and exactly mirrors what the spec asked for. Three deploy files each gained one line (`\"t_hunted_source.py\"`) in the same grouped position right after `\"orangetrack_source.py\"`, with byte-for-byte symmetry verified across deploy.sh / deploy.yml / deploy_test.yml. The new pytest invariant file is 51 LOC, three independent test functions, plain-substring assertions (matching the deliberate non-AST contract), CWD-independent via `pathlib.Path(__file__).resolve().parent.parent`. Risk R7 is now CI-catchable; full suite 981 passed, 2 skipped.",
+  "criticalIssues": [],
+  "suggestions": [
+    {
+      "file": "tests/test_deploy_files_invariant.py",
+      "line": 23,
+      "severity": "minor",
+      "category": "maintainability",
+      "suggestion": "Three test functions are near-duplicates parameterised only by file path and error-message prefix. Consider collapsing into a single `@pytest.mark.parametrize` test with `(deploy_path, label)` tuples — same 3 reported test IDs, less drift surface when the next source module is added (one new EXPECTED_ENTRY rather than three).",
+      "benefit": "Less duplication when a future source module (lamley/orangetrack/t_hunted-style) repeats the exercise. Pytest IDs stay readable via `ids=`.",
+      "optional": true
+    },
+    {
+      "file": "tests/test_deploy_files_invariant.py",
+      "line": 21,
+      "severity": "minor",
+      "category": "best-practices",
+      "suggestion": "`EXPECTED_ENTRY` and `REPO_ROOT` are module-level constants tied to one specific file name. As more new source modules land, this invariant test will accumulate per-file constants. Consider promoting to a list of modules-to-check (e.g. `DEPLOYED_MODULES = [...]`) sourced from a single place — but only if Wave 2/3 introduces more invariant entries; YAGNI applies if this remains a one-off.",
+      "benefit": "Single edit point for the next source-module addition; aligns with the test's own docstring claim that it's an invariant for 'every new first-party module imported by news_bot.py'.",
+      "optional": true
+    }
+  ],
+  "metrics": {
+    "filesReviewed": 4,
+    "criticalIssuesCount": 0,
+    "majorIssuesCount": 0,
+    "minorIssuesCount": 2,
+    "testCoverageAssessment": "adequate"
+  },
+  "dimensionsChecked": {
+    "architecture": "N/A — pure deploy plumbing + invariant test, no business logic.",
+    "separationOfConcerns": "Clean. Each test asserts one file; constants extracted; no logic beyond read+assert.",
+    "readability": "Excellent. Module docstring explicitly references Risk R7 and the shell-grep parallel; assertion messages are actionable (name the file, name the consequence, name the risk ID).",
+    "errorHandling": "N/A — read_text raises FileNotFoundError which is correct fail-loud behaviour for a missing deploy file.",
+    "typeSafety": "N/A — Python without type hints, consistent with project test style (spot-checked tests/test_admin_alerts.py).",
+    "testing": "3 tests cover the exact invariant. Coverage is adequate — anything more (YAML AST, bash parser) would over-engineer per the task's explicit non-goal.",
+    "dependencies": "Only `pathlib` (stdlib). No new third-party packages.",
+    "security": "N/A — no secrets, no user input, no I/O beyond reading repo-tracked files.",
+    "performance": "N/A — 3 file reads at test time, <10ms total (measured: 0.01s).",
+    "crossFileConsistency": "VERIFIED. `diff` confirms deploy.sh:37-60 vs deploy.yml:123-146 are byte-for-byte identical (modulo `    ` vs `            ` leading whitespace which is required by their host syntaxes). deploy.yml:123-146 vs deploy_test.yml:94-117 are 100% identical including indent. New line `\"t_hunted_source.py\"` sits at position 6 (1-indexed) in all three arrays, immediately after `\"orangetrack_source.py\"` and before `\"telegraph_publisher.py\"` — matches spec exactly.",
+    "resourceManagement": "N/A — no resources opened/held; `read_text` closes the handle synchronously."
+  },
+  "verificationEvidence": {
+    "pytestNewFile": "tests/test_deploy_files_invariant.py: 3 passed in 0.01s.",
+    "pytestFullSuite": "981 passed, 2 skipped in 13.77s — zero regressions.",
+    "smokeGrep": "`grep -l \"t_hunted_source.py\" deploy.sh .github/workflows/deploy.yml .github/workflows/deploy_test.yml` returns exactly 3 paths (exit 0).",
+    "indentAudit": "deploy.sh line 43: 4 spaces (matches bash FILES array convention, lines 38-59). deploy.yml line 129: 12 spaces (matches `run: |` block convention, lines 124-145). deploy_test.yml line 100: 12 spaces (matches deploy.yml byte-for-byte).",
+    "mirrorSymmetry": "diff(deploy.sh:37-60 stripped, deploy.yml:123-146 stripped) → empty. diff(deploy.yml:123-146, deploy_test.yml:94-117) → empty (including indent).",
+    "diffMinimality": "git show 93aad9e --stat: exactly +1 line per deploy file + 1 new test file (54 insertions total). No incidental edits to env blocks, restart sections, concurrency groups, or comments.",
+    "positionGrouping": "Inserted between `\"orangetrack_source.py\"` and `\"telegraph_publisher.py\"` in all three files — preserves the addition-order grouping of source modules called out in code-research §A.6."
+  },
+  "acceptanceCriteriaTrace": {
+    "t_hunted_in_deploy_sh_after_orangetrack": "PASS (deploy.sh:43)",
+    "t_hunted_in_deploy_yml_after_orangetrack": "PASS (deploy.yml:129)",
+    "t_hunted_in_deploy_test_yml_after_orangetrack": "PASS (deploy_test.yml:100)",
+    "invariant_test_created_3_methods_green": "PASS (51 LOC, 3 functions, 3 passed)",
+    "pytest_invariant_3_passed": "PASS (verified above)",
+    "smoke_grep_returns_all_three": "PASS (verified above)",
+    "no_other_changes_in_deploy_files": "PASS (verified via `git show --stat`: +1 each, no other hunks)"
+  }
+}

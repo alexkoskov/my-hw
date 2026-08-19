@@ -1,0 +1,59 @@
+{
+  "status": "approved",
+  "summary": "Task 3 delivers all five atomic news_bot.py edits and the in-scope test extension cleanly. Each edit is narrowly scoped, mirrors the existing per-source conventions, and passes the full Verify-smoke matrix (`#thunted t-hunted` one-liner + 4 regression checks for autoevolution/lamley/mattel/orangetrack hashtags). Cross-file consistency with t_hunted_source.fetch_t_hunted_article and lamley_source.fetch_lamley_article verified at signature level — no runtime crash surface introduced.",
+  "criticalIssues": [],
+  "suggestions": [
+    {
+      "file": "news_bot.py",
+      "line": 1444,
+      "severity": "minor",
+      "category": "maintainability",
+      "suggestion": "fetch_full_article docstring (lines 1441-1447) still enumerates only mattel / lamley / autoevolution as supported sources; orangetrack was previously added and t-hunted is added in this task, but the docstring was not refreshed. Extending the 'Supported sources' sentence to include 't-hunted.blogspot.com (Blogger scrape, PT-BR)' would keep the contract self-describing for future maintainers grepping the dispatcher.",
+      "benefit": "Keeps the dispatcher docstring authoritative as the source set grows; reduces drift between docstring and behaviour.",
+      "optional": true
+    },
+    {
+      "file": "news_bot.py",
+      "line": 832,
+      "severity": "minor",
+      "category": "readability",
+      "suggestion": "The NETLOC_TO_SOURCE leading comment block (lines 823-834) mentions Decision 14 / `_source_hashtag` separation but predates the new SOURCE_HASHTAG_OVERRIDE map living right below. A one-sentence cross-reference like 'See SOURCE_HASHTAG_OVERRIDE below for the override hook that handles outlier netlocs (e.g. blogspot-hosted sources)' would aid navigation between the two parallel maps that are now distinct lookups on the same kind of key.",
+      "benefit": "Reduces cognitive load when a future reader is auditing why a netloc resolves one way for source-tagging and a different way for channel hashtag.",
+      "optional": true
+    },
+    {
+      "file": "tests/test_sources_registry.py",
+      "line": 43,
+      "severity": "minor",
+      "category": "readability",
+      "suggestion": "TestNetlocToSource docstring still reads 'Decision 4 — the five explicit netloc keys.' The map now has 8 keys (5 source brands, multiple www-variants). The test method names `test_has_exactly_the_five_keys` and `test_values_are_only_the_three_source_names` are also stale (8 keys / 5 values now). Task spec explicitly noted the rename as optional cosmetic, but the stale numerals are mildly misleading for anyone running `pytest -v` and scanning the report. Worth a follow-up rename when next touching this file.",
+      "benefit": "Test names that match what they assert reduce reviewer confusion; the current state is intentional per task spec but accrues small readability debt.",
+      "optional": true
+    },
+    {
+      "file": "news_bot.py",
+      "line": 1475,
+      "severity": "minor",
+      "category": "best-practices",
+      "suggestion": "Dispatcher branch ordering: the substring check `'blogspot.com' in domain` is at the END of the if-chain. This is correct today (no other branch matches blogspot.com), but the if/return chain is order-independent only as long as no condition is a superset of another. Adding a short inline comment like `# Order independent — each branch returns; see code-research §A.1` next to the new branch would lock the invariant for future contributors who might be tempted to elif-rewrite the whole chain.",
+      "benefit": "Documents the deliberate if/return shape so a future refactor doesn't accidentally introduce fall-through ordering bugs.",
+      "optional": true
+    },
+    {
+      "file": "news_bot.py",
+      "line": 815,
+      "severity": "minor",
+      "category": "best-practices",
+      "suggestion": "The override-map check uses `if override is not None:` which is correct but slightly defensive — `SOURCE_HASHTAG_OVERRIDE` values are always non-empty strings by definition (a `#` plus at least one char). An equivalent `if override:` would read more idiomatically and would still short-circuit cleanly on missing keys (`.get` returns None → falsy). Not worth changing unless the file is being touched anyway; the current form is explicit and self-documenting.",
+      "benefit": "Marginal readability; current form is defensible as 'explicit over implicit'.",
+      "optional": true
+    }
+  ],
+  "metrics": {
+    "filesReviewed": 2,
+    "criticalIssuesCount": 0,
+    "majorIssuesCount": 0,
+    "minorIssuesCount": 5,
+    "testCoverageAssessment": "adequate"
+  }
+}

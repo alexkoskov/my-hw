@@ -1,0 +1,35 @@
+{
+  "status": "passed",
+  "summary": "Four new tests (2 in tests/test_telegram.py, 2 in tests/test_news_bot_dispatcher.py) lock Task 3 wiring at unit level. All four pass the litmus test: each asserts on real behavior of the production code path it claims to guard. Hashtag tests call the real _source_hashtag (no mock); teaser test exercises real send_telegraph_teaser → real _source_hashtag and asserts the exact byte sequence '#thunted #news'; dispatcher blogspot test patches the correct symbol (news_bot.t_hunted_source.fetch_t_hunted_article — same module object as the import on line 38) and asserts both call_count == 1 AND args[0] == link, so a misroute to lamley/autoevolution/mattel/orangetrack would fail (mock never called) and a misroute that drops the link arg would also fail. Unknown-domain test exercises the real fall-through (no handler matches → None). Pyramid balance is healthy: pure unit tests, no network, no DB, only the external Bot and one internal source-fetcher are mocked (≤2 mocks per test). One minor observation: the dispatcher test does not assert the notifier=send_admin_notification kwarg is forwarded — a future edit that drops it would not be caught — but this matches the task spec's stated assertion list (call_count, args[0], result), so it is a deliberate scope choice rather than a quality gap. No critical or major findings. Approved without rework.",
+  "findings": [
+    {
+      "severity": "minor",
+      "category": "missing_coverage",
+      "location": "tests/test_news_bot_dispatcher.py:44-48",
+      "issue": "test_fetch_full_article_routes_blogspot_to_t_hunted asserts mock_fetch.call_count == 1 and args[0] == link, but does not verify the notifier=send_admin_notification kwarg that the production dispatcher passes (news_bot.py:1476). A future edit that silently drops the notifier kwarg (regressing admin-ping coverage on t-hunted fetch errors) would not be caught by this test.",
+      "recommendation": "Optional hardening (not blocking — matches task spec): add `kwargs = mock_fetch.call_args.kwargs; assert kwargs.get('notifier') is news_bot.send_admin_notification` after the existing call_args extraction. This locks the notifier-forwarding contract that t-hunted_source.fetch_t_hunted_article relies on for admin alerts. Skip if scope of Task 5 is strictly 'routing only'."
+    },
+    {
+      "severity": "minor",
+      "category": "anti_pattern",
+      "location": "tests/test_news_bot_dispatcher.py:48",
+      "issue": "Assertion `result == expected` where `expected` is the mock's own return value looks like the mock-return anti-pattern in isolation (mock returns X, test asserts X). However, the test ALSO asserts call_count == 1 AND args[0] == link, so the routing contract is genuinely verified — the `result == expected` line only confirms the dispatcher returns the fetcher's value verbatim (does not swallow/transform it). Acceptable as-is, but worth flagging the pattern so future maintainers do not strip the call_count/args[0] checks and leave only `result == expected` (which would then be pure mock-wiring).",
+      "recommendation": "No change required. If readability is a concern, add an inline comment above line 48: `# routing is verified by call_count + args[0]; this line locks pass-through (dispatcher returns fetcher result verbatim).` Leave assertion intact."
+    }
+  ],
+  "metrics": {
+    "filesReviewed": 4,
+    "litmusTest": {
+      "checked": 4,
+      "passed": 4,
+      "failed": 0
+    },
+    "coverageAssessment": "adequate",
+    "pyramidBalance": {
+      "unit": 4,
+      "integration": 0,
+      "e2e": 0,
+      "assessment": "healthy"
+    }
+  }
+}

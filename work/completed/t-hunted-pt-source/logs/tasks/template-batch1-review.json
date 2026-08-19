@@ -1,0 +1,70 @@
+{
+  "validator": "task-validator",
+  "batch": [1, 2, 3, 4, 5],
+  "status": "changes_required",
+  "findings": [
+    {
+      "severity": "critical",
+      "category": "decomposition",
+      "task": 5,
+      "section": "frontmatter",
+      "issue": "Task 5 declares `depends_on: [3]` but both Task 3 and Task 5 are in `wave: 2`. Per the wave-parallelism contract, tasks within the same wave must be independent — `depends_on` must point to tasks in a strictly earlier wave. Task 5's tests genuinely depend on Task 3's wiring (it asserts `_source_hashtag` returns `'#thunted'`, the `SOURCE_HASHTAG_OVERRIDE` map being defined, the dispatcher routing blogspot URLs), so the dependency is real — what is wrong is the wave assignment.",
+      "fix": "Move Task 5 to `wave: 3` (or rebalance: split Task 3 so the wiring lands in a wave-1 sibling). Easiest fix: change `wave: 2` → `wave: 3` in Task 5 frontmatter and update tech-spec §Implementation Tasks grouping accordingly. Same correction should be propagated to tech-spec (Task 5 currently listed under Wave 2)."
+    },
+    {
+      "severity": "major",
+      "category": "decomposition",
+      "task": 3,
+      "section": "frontmatter / dependencies",
+      "issue": "Task 3 declares `depends_on: [1]` only, but its production code path imports `t_hunted_source` and the dispatcher branch passes `notifier=send_admin_notification` which in turn — when the parser fires — calls `admin_alerts.alert_t_hunted_host_rejected/_fetch_error/_no_body` (built in Task 2). If Task 3 is merged before Task 2, the parser will `AttributeError` on its first failure path at runtime. Task 1 even documents this in its own Details/Cross-task notes (recommends monkey-patching alerts because Task 2 builders may not exist yet). Task 3 should depend on both Tasks 1 and 2 to make the dependency graph honest.",
+      "fix": "Change `depends_on: [1]` → `depends_on: [1, 2]` in Task 3 frontmatter. (Alternatively explicitly document the soft dependency and accept that integration tests in Wave 3 would catch it — but the static dep is cheaper.) Also reflect in tech-spec §Wave 2 narrative."
+    },
+    {
+      "severity": "minor",
+      "category": "consistency",
+      "task": 4,
+      "section": "Context Files",
+      "issue": "Task 4 uses tilde-expanded paths for PK files (`[project.md](~/.claude/skills/project-knowledge/references/project.md)`) while Tasks 1, 2, 3, 5 use repo-relative paths (`[project.md](../../../.claude/skills/project-knowledge/references/project.md)`). Tilde does not expand in standard markdown renderers, so the links won't be clickable from the task file location.",
+      "fix": "Replace the three `~/.claude/...` paths with `../../../.claude/...` to match the convention used by sibling tasks (Tasks 1, 2, 3, 5)."
+    },
+    {
+      "severity": "minor",
+      "category": "structure",
+      "task": 3,
+      "section": "TDD Anchor",
+      "issue": "Task 3 is a code task (modifies `news_bot.py`) but its TDD Anchor section explicitly states 'This task has no new tests of its own' and points to Task 5 for coverage. The template's TDD Anchor section is intended either to enumerate tests-to-write-first OR be deleted (non-code tasks). Keeping the section as a cross-reference note is unusual and weakens the TDD signal.",
+      "fix": "Either (a) delete the TDD Anchor section entirely (the cross-task pointer can move into Details / Cross-task notes), OR (b) move the smoke one-liner `python -c \"from news_bot import _source_hashtag, _resolve_source_name; ...\"` into TDD Anchor as the executable assertion that gates this task. Option (a) is cleaner and matches the template's contract."
+    },
+    {
+      "severity": "minor",
+      "category": "carry-forward",
+      "task": 2,
+      "section": "TDD Anchor",
+      "issue": "Tech-spec Testing Strategy names the three Task 2 unit tests as `test_alert_t_hunted_host_rejected_e031`, `test_alert_t_hunted_fetch_error_e032`, `test_alert_t_hunted_no_body_e033`. Task 2 implements equivalent coverage but renames them to `test_e031_t_hunted_host_rejected` / `test_e032_t_hunted_fetch_error` / `test_e033_t_hunted_no_body` (code-prefix-first style). The function-behaviour coverage is identical — no AC is lost — but the test-method names diverge from the spec verbatim. Naming drift makes future spec-vs-code grepping noisier.",
+      "fix": "Either align Task 2's TDD Anchor + AC to use the tech-spec names (`test_alert_t_hunted_host_rejected_e031`, etc.) or update tech-spec Testing Strategy to use the code-prefix-first style. The Task-2 style is arguably better (alphabetical sort groups all E031 in one place), so prefer updating tech-spec for consistency — but pick one and apply across spec + task."
+    },
+    {
+      "severity": "minor",
+      "category": "structure",
+      "task": 1,
+      "section": "Description",
+      "issue": "Description section is very long (multi-paragraph, ~5 paragraphs including implementation-shaped detail like the dedup regex `=s\\d+(-c)?`). Some content (regex pattern, exact field order) overlaps with What-to-do / Details. Not strictly a template violation (template allows 'as much as needed'), but the redundancy makes the file harder to maintain — the same regex appears in Description, What to do, Acceptance Criteria, and Implementation hints.",
+      "fix": "Trim Description to ~2 paragraphs that state purpose and outcome. Keep the regex / field-order detail in the canonical places (Implementation hints + AC). Non-blocking."
+    },
+    {
+      "severity": "minor",
+      "category": "atomicity",
+      "task": 4,
+      "section": "What to do / scope",
+      "issue": "Task 4 bundles two thematically related but functionally independent changes: (a) appending one line to `feeds.json` and (b) adding 10 PT regex patterns + 3 test methods to `boilerplate_filter.py` + `test_boilerplate_filter.py`. The boilerplate piece alone is 4 files of edits / ~40 lines of test code; the feeds.json piece is a one-line config change with a separate smoke check (feedparser HTTP). They share no code path — feeds.json is consumed by `_fetch_rss_entries`, boilerplate by `filter_boilerplate` — and each could be reviewed independently. Task description acknowledges 'Две независимые правки в одном таске' — that is a split candidate signal.",
+      "fix": "Consider splitting into Task 4a (feeds.json) + Task 4b (boilerplate PT patterns). Low priority — the current bundle is small enough to review as one unit, and splitting adds ceremony for a 1-line config change. Accept as-is unless reviewer load is a concern."
+    }
+  ],
+  "stats": {
+    "tasks_checked": 5,
+    "issues_found": 7,
+    "critical": 1,
+    "major": 1,
+    "minor": 5
+  }
+}

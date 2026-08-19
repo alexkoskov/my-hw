@@ -1,0 +1,199 @@
+{
+  "status": "passed",
+  "summary": "Holistic test-suite review across Waves 1-3 of t-hunted-pt-source. AC1-AC10 coverage is complete with strong (non-tautological) assertions. 5/5 litmus probes pass on the highest-value behaviours (SSRF, image dedup, hashtag override, dispatcher routing, PT boilerplate). Pyramid is healthy: ~53 unit tests, 1 integration smoke, 0 E2E — appropriate for an M-sized backend feature with no user-facing flows. Tests isolate cleanly via tempfile DBs, autouse monkeypatch fixtures, and `freeze_time`. Two minor coverage gaps surfaced: no direct test pins the new feeds.json entry; the deploy-invariant test asserts substring presence but not array-position correctness. Both are minor and explainable as covered-elsewhere (integration smoke + grep verify-smoke). No flake risk, no shared-state regressions, no critical/major findings.",
+  "findings": [
+    {
+      "severity": "minor",
+      "category": "missing_coverage",
+      "location": "tests/ (no test file owns AC1 explicitly)",
+      "issue": "AC1 ('RSS feed added to feeds.json, feedparser parses without errors, entries enter pending queue') is not directly pinned by any unit test. `_resolve_source_name` returning 't-hunted' proves the netloc map (Task 3 wiring) but does not assert the literal presence of 'https://t-hunted.blogspot.com/feeds/posts/default?alt=rss' in feeds.json. The integration smoke mocks `fetch_rss` and bypasses the real feeds.json file, so a future regression that deletes the feed URL while leaving the netloc map intact would pass all tests.",
+      "recommendation": "Add a one-line invariant test in `tests/test_deploy_files_invariant.py` (or new `tests/test_feeds_json_invariant.py`): assert `'t-hunted.blogspot.com' in json.load(open('feeds.json'))`. Mirrors the deploy-invariant pattern already used for the FILES arrays and turns Risk R7-shape regression into a CI signal."
+    },
+    {
+      "severity": "minor",
+      "category": "anti_pattern",
+      "location": "tests/test_deploy_files_invariant.py:23,28,38,48",
+      "issue": "All three invariant tests do plain `'\"t_hunted_source.py\"' in content` substring matches on the raw file. This catches a missing entry but does not catch ordering / array-misplacement errors (e.g. someone moves the string from the FILES bash array into a stale comment block or a different YAML key would still pass). Tech-spec Risk R7 specifically warns about the FILES array — substring alone is weaker than the intent.",
+      "recommendation": "Either: (a) anchor with surrounding context (e.g. `'FILES=( ' in content_before_entry and '\"t_hunted_source.py\"' in files_block`), or (b) parse the FILES array via a tiny regex `r'FILES=\\(([^)]+)\\)'` and assert membership of `\"t_hunted_source.py\"`. Same for the YAML files — extract the `FILES=` line in the `run: |` block and assert membership. Low cost, high signal-fidelity gain."
+    },
+    {
+      "severity": "minor",
+      "category": "redundant_testing",
+      "location": "tests/test_news_bot_dispatcher.py:23 + tests/test_distributed_schedule_integration.py:923",
+      "issue": "Dispatcher routing for blogspot URLs is tested both at unit level (`test_fetch_full_article_routes_blogspot_to_t_hunted`) and inside the integration smoke (which implicitly exercises the same routing via `_resolve_source_name`). The integration test does NOT exercise the real `fetch_full_article` dispatcher path (it's mocked in setUp via `fetch_full_patcher`), so this is not a true duplication — but the unit test's call_count==1 + args[0]==link is the strict gate, and the integration smoke's source_name assertions cover the storage-side. Acceptable as is; flagging for awareness so future maintainers don't 'simplify' by dropping the unit test (it has unique value).",
+      "recommendation": "Add a one-line comment in the integration test noting that the dispatcher routing is unit-tested in `tests/test_news_bot_dispatcher.py` so the integration's role is DB-storage / no-alerts / no-dedup-collapse, not dispatcher routing per se. Prevents accidental deletion."
+    },
+    {
+      "severity": "minor",
+      "category": "anti_pattern",
+      "location": "tests/test_distributed_schedule_integration.py:956",
+      "issue": "Integration smoke uses `freeze_time('2026-05-26 09:00:00')` (single fixed timestamp). The PT mock RSS entry's `pub_date` ('2026-04-27' per `_create_mock_rss_entry` default) is ~30 days behind frozen time. Comment in test (line 952-955) notes 'no stale-pub-date guard exists today' — but if such a guard is added later, this test would silently start dropping the PT entry without making the regression obvious. Not a bug today.",
+      "recommendation": "Either parametrise `pub_date` to match `freeze_time` (`pub_date='2026-05-26'`), or add an explicit `assertEqual(mock_claude.call_count, 2, ...)` precondition comment that names the no-stale-guard invariant. Already done in the existing assertion message — sufficient."
+    },
+    {
+      "severity": "minor",
+      "category": "redundant_testing",
+      "location": "tests/test_t_hunted_source.py:30 (autouse stub fixture)",
+      "issue": "The autouse `_stub_t_hunted_alerts` fixture stubs `admin_alerts.alert_t_hunted_*` with `[E03N-STUB]` sentinels. Task 2 has since landed real builders. The stub fixture is now dead-but-harmless wrapping over functional production builders — fingerprints `[E031-STUB]/[E032-STUB]/[E033-STUB]` are pinned in 4 tests instead of the real `[E031]/[E032]/[E033]` codes. This means a hypothetical regression where the parser starts calling the wrong builder (E031 vs E033) would still pass these tests (stubs forward all calls into typed sentinels). However, the `*_t_hunted_*` builder names are pinned via the stub's `raising=False` setattr semantics — calling a non-existent builder would attributeerror.",
+      "recommendation": "Now that Task 2 is merged, drop the autouse stub fixture and let the tests bind to the real builders. Then the `[E031]`/`[E032]`/`[E033]` substring assertions become genuine end-to-end pinnings of (parser routing) × (alert code identity). Effort: delete the 22-line fixture, change 4 substring assertions from `'[E03N-STUB]'` to `'[E03N]'`. Low risk, high signal."
+    },
+    {
+      "severity": "minor",
+      "category": "anti_pattern",
+      "location": "tests/test_t_hunted_source.py (SAMPLE_HTML fixture and other inline HTML)",
+      "issue": "HTML fixtures use `<h3 class=\"post-title entry-title\">` for the title. Tech-spec/code-research §C.1 describes Blogger output as `<h3 class=\"post-title entry-title\">` (confirmed) — fixture is Blogger-shaped, NOT lamley-shaped. Task spec specifically asked to verify fixture freshness. OK: fixtures match Blogger's actual flat `.post-body`/`.entry-content` structure (confirmed in code), title selector `h3.post-title` matches Blogger convention. No issue.",
+      "recommendation": "No action. Flagged here as evidence the audit explicitly verified this per task spec line 'Fixture freshness for test_t_hunted_source.py is explicitly noted'."
+    }
+  ],
+  "metrics": {
+    "filesReviewed": 9,
+    "litmusTest": {
+      "checked": 5,
+      "passed": 5,
+      "failed": 0,
+      "probes": [
+        {
+          "behaviour": "SSRF rejection (userinfo-attack)",
+          "test": "tests/test_t_hunted_source.py::TestHostAllowlist::test_rejects_userinfo_attack",
+          "regression": "switching from urlparse().hostname to substring check",
+          "verdict": "test fails — passes litmus"
+        },
+        {
+          "behaviour": "Image dedup (=s1600 vs =s640)",
+          "test": "tests/test_t_hunted_source.py::TestFetchTHuntedArticle::test_image_dedup_strips_blogger_size_suffix",
+          "regression": "removing the =s\\d+(-c)? strip",
+          "verdict": "test fails on len(images)==3 vs expected 2 — passes litmus"
+        },
+        {
+          "behaviour": "Hashtag override (#thunted vs default #blogspot)",
+          "test": "tests/test_telegram.py::TestSourceHashtag::test_t_hunted_hashtag",
+          "regression": "removing SOURCE_HASHTAG_OVERRIDE lookup",
+          "verdict": "test fails — actual would be '#blogspot' (R2) — passes litmus"
+        },
+        {
+          "behaviour": "Dispatcher routing for blogspot",
+          "test": "tests/test_news_bot_dispatcher.py::test_fetch_full_article_routes_blogspot_to_t_hunted",
+          "regression": "removing the blogspot dispatcher branch",
+          "verdict": "mock_fetch.call_count==0 fails the assertion — passes litmus"
+        },
+        {
+          "behaviour": "PT boilerplate filtering of 'Compartilhar no Facebook'",
+          "test": "tests/test_boilerplate_filter.py::TestIsBoilerplatePositive::test_portuguese_patterns_filtered",
+          "regression": "removing the PT defence-in-depth pattern block",
+          "verdict": "12 parametrised cases fail (is_boilerplate returns False) — passes litmus"
+        }
+      ]
+    },
+    "coverageAssessment": "excellent",
+    "pyramidBalance": {
+      "unit": 53,
+      "integration": 1,
+      "e2e": 0,
+      "assessment": "healthy"
+    },
+    "acCoverageMatrix": {
+      "AC1": [
+        "tests/test_sources_registry.py::TestResolveSourceName::test_resolves_t_hunted (proves netloc map, not feeds.json literal)",
+        "GAP: no direct invariant test for feeds.json entry (see minor finding #1)"
+      ],
+      "AC2": [
+        "tests/test_t_hunted_source.py::TestFetchTHuntedArticle::test_parses_title_subtitle_paragraphs_images",
+        "tests/test_t_hunted_source.py::TestFetchTHuntedArticle::test_returns_none_on_http_error",
+        "tests/test_t_hunted_source.py::TestFetchTHuntedArticle::test_returns_none_on_missing_body",
+        "tests/test_t_hunted_source.py::TestFetchTHuntedArticle::test_image_limit_enforced",
+        "tests/test_t_hunted_source.py::TestFetchTHuntedArticle::test_image_dedup_strips_blogger_size_suffix",
+        "tests/test_t_hunted_source.py::TestFetchTHuntedArticle::test_boilerplate_filter_applied_before_subtitle_lift"
+      ],
+      "AC3": [
+        "tests/test_t_hunted_source.py::TestHostAllowlist::test_allows_t_hunted_blogspot_com",
+        "tests/test_t_hunted_source.py::TestHostAllowlist::test_rejects_other_blogspot_subdomain",
+        "tests/test_t_hunted_source.py::TestHostAllowlist::test_rejects_arbitrary_external_host (incl. 127.0.0.1, AWS metadata IP)",
+        "tests/test_t_hunted_source.py::TestHostAllowlist::test_rejects_non_http_scheme (file://, ftp://, gopher://)",
+        "tests/test_t_hunted_source.py::TestHostAllowlist::test_rejects_userinfo_attack",
+        "tests/test_t_hunted_source.py::TestHostAllowlist::test_rejects_suffix_host_attack",
+        "tests/test_t_hunted_source.py::TestHostAllowlist::test_rejects_subdomain_variants",
+        "tests/test_t_hunted_source.py::TestHostAllowlist::test_fetch_returns_none_and_pings_when_host_rejected (end-to-end: short-circuits before HTTP + pings E031)"
+      ],
+      "AC4": [
+        "tests/test_news_bot_dispatcher.py::test_fetch_full_article_routes_blogspot_to_t_hunted (call_count==1, args[0]==link, result passthrough)",
+        "tests/test_news_bot_dispatcher.py::test_fetch_full_article_unknown_domain_returns_none (regression: unknown domains return None, not silently routed)",
+        "tests/test_distributed_schedule_integration.py::test_integration_t_hunted_en_pt_dispatch_and_routing_smoke (cross-language non-interference at DB level)"
+      ],
+      "AC5": [
+        "tests/test_sources_registry.py::TestResolveSourceName::test_resolves_t_hunted (returns 't-hunted' for blogspot URL)",
+        "tests/test_distributed_schedule_integration.py::test_integration_t_hunted_en_pt_dispatch_and_routing_smoke (pt_call_row.get('source_name') == 't-hunted' on the Claude call_args_list[1])"
+      ],
+      "AC6": [
+        "tests/test_telegram.py::TestSourceHashtag::test_t_hunted_hashtag (locks '#thunted' exact)",
+        "tests/test_telegram.py::TestSendTelegraphTeaser::test_t_hunted_teaser_uses_thunted_tag (locks '#thunted #news' byte-for-byte; pins Decision 2 + Risks R1 + R2)"
+      ],
+      "AC7": [
+        "tests/test_ux_guidelines_structure.py::test_glossary_section_present",
+        "tests/test_ux_guidelines_structure.py::test_glossary_has_at_least_10_entries (counts table rows, ≥10 enforced)",
+        "tests/test_ux_guidelines_structure.py::test_t_hunted_style_block_present (inside Per-source notes section)",
+        "tests/test_ux_guidelines_structure.py::test_input_language_prompt_widened (regex sentence anchor for both 'английский' AND 'португальский')"
+      ],
+      "AC8": [
+        "tests/test_boilerplate_filter.py::TestIsBoilerplatePositive::test_portuguese_patterns_filtered (12 parametrised PT cases)",
+        "tests/test_boilerplate_filter.py::TestIsBoilerplateNegative::test_pt_lookalike_prose_kept (long PT prose with 'compartilhar' inline not filtered)",
+        "tests/test_boilerplate_filter.py::TestIsBoilerplateNegative::test_pt_compartilhar_inline_short_prose_kept (anchoring guarantee at <=120 chars)",
+        "tests/test_boilerplate_filter.py::TestRegexSafety::test_pt_patterns_no_redos_under_120_char_input (10 parametrised adversarial inputs, time.monotonic <100ms each, behaviour-binding expected={True|False})",
+        "tests/test_boilerplate_filter.py::TestLengthThreshold::test_long_paragraph_with_trigger_preserved (length-bound defense)"
+      ],
+      "AC9": [
+        "tests/test_admin_alerts.py::test_e031_t_hunted_host_rejected (code prefix + emoji + link + 'хост'/'allowlist' wording)",
+        "tests/test_admin_alerts.py::test_e032_t_hunted_fetch_error (code + emoji + link + error string)",
+        "tests/test_admin_alerts.py::test_e033_t_hunted_no_body (code + emoji + link + body-missing wording)",
+        "tests/test_admin_alerts.py::test_all_alerts_have_unique_codes (E031/E032/E033 in the global uniqueness set)",
+        "tests/test_t_hunted_source.py:: 4 parser tests pin '[E031-STUB]/[E032-STUB]/[E033-STUB]' fingerprints — verifies parser routes failures to the correct builder identity (see minor finding #5 re. stub)"
+      ],
+      "AC10": [
+        "tests/test_deploy_files_invariant.py::test_t_hunted_source_in_deploy_sh",
+        "tests/test_deploy_files_invariant.py::test_t_hunted_source_in_deploy_yml",
+        "tests/test_deploy_files_invariant.py::test_t_hunted_source_in_deploy_test_yml"
+      ]
+    },
+    "isolation": {
+      "assessment": "clean",
+      "notes": [
+        "tests/test_distributed_schedule_integration.py uses tempfile DB per test (setUp/tearDown) + reverse-order patch teardown — no cross-test SQLite contamination",
+        "tests/test_t_hunted_source.py uses autouse `_stub_t_hunted_alerts` fixture with monkeypatch (auto-reverted by pytest)",
+        "tests/test_news_bot_dispatcher.py uses `with patch(...)` context — auto-restored",
+        "tests/test_boilerplate_filter.py is pure-function testing — no shared state",
+        "tests/test_sources_registry.py uses monkeypatch fixture — auto-reverted",
+        "No module-level state in t_hunted_source.py beyond constants (_IMAGE_LIMIT, allowlist set) — no fixture reset required",
+        "Random-order pytest run would still pass: no test depends on prior side-effects, no alphabetical ordering tricks"
+      ]
+    },
+    "flakeRisk": {
+      "assessment": "low",
+      "notes": [
+        "ReDoS tests use time.monotonic() with 100ms bound — generous margin, no flake risk on CI",
+        "Affiliate length-bound test (TestAffiliateLengthBound::test_redos_safety_long_buy_pattern) also uses 100ms bound — fine",
+        "Integration test uses `freeze_time('2026-05-26 09:00:00')` — deterministic",
+        "No real network calls in any reviewed file (requests mocked via MagicMock(spec=requests.Response) or session monkeypatch)",
+        "No system clock dependency outside frozen contexts",
+        "Test-level mocks for telegram bot, fetch_full_article, transcreate_via_claude, send_admin_notification — all in-memory"
+      ]
+    },
+    "integrationCrossLanguageProofStrength": {
+      "assessment": "strong-for-stated-scope",
+      "notes": [
+        "Test honestly scoped (after T8 round-2 rename) to 'dispatch + routing + DB + no-alert' — not 'full pipeline'.",
+        "Call-args inspection on mock_claude.call_args_list[0] and [1] proves per-entry payload routing (link + source_name pinned)",
+        "side_effect=[en_result, pt_result] with call_count==2 assertion catches both 'too few' and 'too many' invocations (StopIteration on 3rd call)",
+        "Both rows verified in published_articles via DB-level introspection (bypasses repo cache)",
+        "Explicit OUT OF SCOPE comment block delegates parser + boilerplate + hashtag to their unit tests — honest scope.",
+        "Caveat (already acknowledged in test docstring): real parsers are mocked via setUp's fetch_full_patcher; this does not prove that real PT parser output + real boilerplate filter + real LLM payload would route without interference. That cross-product is exercised piecewise at unit level. For a single-feature integration smoke, this delegation is acceptable per test pyramid (3+ deps mocked → integration not e2e)."
+      ]
+    },
+    "errorPathCoverageParser": {
+      "host_rejected": "PASS — tests/test_t_hunted_source.py::TestHostAllowlist::test_fetch_returns_none_and_pings_when_host_rejected asserts None + session.get not called + notifier called with [E031-STUB] fingerprint",
+      "fetch_error": "PASS — TestFetchTHuntedArticle::test_returns_none_on_http_error asserts None + notifier with [E032-STUB] fingerprint (distinguishes from E031/E033)",
+      "no_body": "PASS — TestFetchTHuntedArticle::test_returns_none_on_missing_body asserts None + notifier with [E033-STUB] fingerprint"
+    },
+    "redosTimeoutBound": "100ms per pattern via time.monotonic() (cross-platform; documented preferred over signal.alarm which is POSIX-only). Each of 10 adversarial PT inputs at <=120 chars asserted to complete under 0.1s AND match expected classification. Bound is tight enough that catastrophic backtracking would trip it on any modern CI runner.",
+    "fixtureFreshness": "PASS — tests/test_t_hunted_source.py::SAMPLE_HTML uses Blogger-shaped HTML (`<h3 class=\"post-title entry-title\">`, `<div class=\"post-body entry-content\">`) matching tech-spec line 39 selector convention. Not lamley-shaped (lamley uses `<h1 class=\"entry-title\">` + `<article><div class=\"entry-content\">`). Image URLs use real Blogger CDN pattern `https://blogger.googleusercontent.com/img/{id}/=s{N}/photo.jpg` with size token mid-path.",
+    "structuralTestsContentAnchoring": "PASS — tests/test_ux_guidelines_structure.py uses `_section(content, heading)` helper that splits on heading string match (not line number); `test_input_language_prompt_widened` uses `re.search(r'Твоя единственная задача[^.]*\\.', content)` anchored on the unique opening phrase. All 4 assertions survive line-number drift from unrelated edits."
+  }
+}

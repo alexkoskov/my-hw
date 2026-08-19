@@ -1,0 +1,37 @@
+{
+  "status": "passed",
+  "summary": "All 3 Round 1 findings closed cleanly. The ReDoS regression now binds classification behaviour alongside the timing bound — the parametrise was converted to (adversarial, expected) tuples, the result is captured into `result`, and `assert result is expected` was added with a diagnostic message. All 10 expected values were verified against actual regex semantics (executed against the implementation): the True cases (marcadores, postado por, assinar) force real regex evaluation, so a stubbed `is_boilerplate(_) -> False` no longer satisfies the test — the litmus test now passes. The reviewer's Round 1 expectation that `enviar por email` should classify True was wrong (the `\\b` boundary between `l` and `x` is not a word boundary, so the regex doesn't match) and the fixer correctly identified the True classification as False — confirmed by execution. The anchoring-only negative case `test_pt_compartilhar_inline_short_prose_kept` was added (text 43 chars, well under the 120-char bound, proves `^` anchoring alone saves inline `compartilhar`). The misleading 'Exact ceiling' comment was rewritten to accurately describe the mixed ≤120 / =120 ceiling situation. Full suite confirmed: 982 passed, 2 skipped — no regressions. Each new per-case inline comment explains the regex mechanics that drive the expected classification, which improves long-term maintainability.",
+  "findings": [],
+  "metrics": {
+    "filesReviewed": 2,
+    "litmusTest": {
+      "checked": 3,
+      "passed": 3,
+      "failed": 0
+    },
+    "coverageAssessment": "adequate",
+    "pyramidBalance": {
+      "unit": 3,
+      "integration": 0,
+      "e2e": 0,
+      "assessment": "healthy"
+    }
+  },
+  "round1FindingsResolution": [
+    {
+      "finding": "MAJOR — ReDoS test had no behavioural assertion (litmus test failure)",
+      "status": "closed",
+      "evidence": "tests/test_boilerplate_filter.py:266 — parametrise signature now `(adversarial, expected)`; line 345 captures `result = is_boilerplate(adversarial)`; line 354 asserts `result is expected`. All 10 expected values executed against actual implementation: 3 True (marcadores, postado por, assinar) + 7 False (compartilhar/postagem/enviar por email/postagens mais/leia mais/postar um/pagina inicial) — all match regex semantics. The True cases prevent a no-op stub from passing."
+    },
+    {
+      "finding": "MINOR — anchoring-only negative case missing",
+      "status": "closed",
+      "evidence": "tests/test_boilerplate_filter.py:179 — `test_pt_compartilhar_inline_short_prose_kept` added with `Eles vão compartilhar no Facebook em breve.` (43 chars, ≤ _MAX_BOILERPLATE_LEN), asserts is_boilerplate(text) is False. Pins `^` anchoring guarantee independently of length-bound."
+    },
+    {
+      "finding": "MINOR — misleading 'Exact ceiling' comment",
+      "status": "closed",
+      "evidence": "tests/test_boilerplate_filter.py:340-342 — comment softened to `Adversarial inputs at or near the 120-char ceiling enforced by _MAX_BOILERPLATE_LEN (most hit exactly 120; the 'pagina inicial' case lands at 112 due to integer-multiplied truncation).` Accurate against the `<= _MAX_BOILERPLATE_LEN` assertion."
+    }
+  ]
+}

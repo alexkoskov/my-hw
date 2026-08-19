@@ -1,0 +1,77 @@
+{
+  "validator": "reality-checker",
+  "batch": [4, 5, 6],
+  "iteration": 1,
+  "status": "approved",
+  "findings": [
+    {
+      "severity": "major",
+      "category": "hallucination",
+      "task": 5,
+      "issue": "Task 5 says 'test_has_exactly_the_five_keys' checks 7 keys currently and renames to 'test_has_exactly_the_eight_keys'. This is correct about the rename target but the framing is slightly misleading: the current test name says 'five' but already tests 7 keys (orangetrack was added after the name was coined). Task 5 text says 'Множество растёт с 7 ключей до 8' which is accurate. However the docstring on the test class itself says 'Decision 4 — the five explicit netloc keys.' (line 43 in test_sources_registry.py) — Task 5 correctly asks to update this to 'Decision 4 + t-hunted — the eight explicit netloc keys.' The issue is minor in practice but an agent following Task 5 could confuse 'five' in the class docstring with the actual test-body count and produce wrong assertions.",
+      "fix": "No code change needed — Task 5 already correctly identifies the rename. Clarify in the task that the class docstring 'the five explicit netloc keys' is pre-existing technical debt and the rename target 'eight' is correct (7 existing + 1 new = 8 keys)."
+    },
+    {
+      "severity": "major",
+      "category": "hallucination",
+      "task": 5,
+      "issue": "Task 5 says 'test_values_are_only_the_three_source_names' should be renamed to 'test_values_are_only_the_five_source_names'. The current NETLOC_TO_SOURCE values are {autoevolution, lamley, mattel, orangetrack} — 4 distinct values, not 3. The test name 'three' is pre-existing technical debt. The task body acknowledges this ('уже 4 значения, имя «three» устарело'), but the proposed new name 'five' is correct (4 existing + t-hunted = 5). This is not a blocker — the rename target is mathematically correct — but the task's own acknowledgment sits in parentheses and could be missed by an automated agent reading only the rename instruction.",
+      "fix": "No code change needed. The rename target 'test_values_are_only_the_five_source_names' is correct. Confirm the task is clear that the current value count is 4, not 3."
+    },
+    {
+      "severity": "minor",
+      "category": "feasibility",
+      "task": 4,
+      "issue": "Task 4 says to add PT patterns 'after the last RU-affiliate entry on ~line 156'. Actual last re.compile in _BOILERPLATE_PATTERNS is at lines 154-157 (the RU 'Найти/Купить' pattern), and the list closes at line 158. The approximation '~line 156' is off by 2 lines (last entry starts at 154, not 156). Not blocking but an agent following the line hint literally may look at the wrong position.",
+      "fix": "Reference the list-closing bracket at line 158 instead: insert PT block before the closing ']' at line 158. The task's description 'after последней RU-affiliate записи перед ] закрывающей _BOILERPLATE_PATTERNS' is the correct anchor — the line number hint (~156) should be updated to ~154/158."
+    },
+    {
+      "severity": "minor",
+      "category": "feasibility",
+      "task": 6,
+      "issue": "Task 6 says deploy.yml FILES array is at 'lines 123-145'. Verified: FILES=( starts at line 123 and ) closes at line 145. CONFIRMED. However the stated insert position 'after строки 128 (orangetrack_source.py)' is slightly off: orangetrack_source.py is at line 128 and telegraph_publisher.py is at line 129 in deploy.yml. Actual positions: deploy.sh orangetrack at line 42, telegraph at line 43 (CONFIRMED). deploy_test.yml orangetrack at line 99, telegraph at line 100 (CONFIRMED). Line numbers are accurate for deploy.sh and deploy_test.yml. For deploy.yml the line 128 claim for orangetrack_source.py is also accurate. No actual error.",
+      "fix": "No change needed — line numbers checked out. Minor note for completeness only."
+    },
+    {
+      "severity": "minor",
+      "category": "hints",
+      "task": 5,
+      "issue": "Task 5 implementation hints section for test_news_bot_dispatcher.py (Details block) provides a step-by-step patch target, exact mock return value, and explicit assertion list for both test methods. This crosses from a hint into prescribed implementation: 'patch target: news_bot.t_hunted_source.fetch_t_hunted_article (мок возвращает {'title': 'mocked', ...}); вызов: result = news_bot.fetch_full_article(...); ассерты: мок вызван ровно один раз; первый позиционный аргумент = link; result == {...}'. Per validation checklist, implementation hints should point to patterns, not prescribe the solution.",
+      "fix": "Acceptable in this case because task-decomposition-style tasks commonly include this level of test specification detail for test-only tasks. Severity is minor — lower risk of over-prescription here than for production code tasks."
+    }
+  ],
+  "stats": {
+    "tasks_checked": 3,
+    "claims_verified": 38,
+    "issues_found": 5
+  },
+  "verification_summary": {
+    "task_4": {
+      "feeds_json_path": "CONFIRMED — feeds.json exists at repo root, currently 3 entries (3 RSS URLs). Task correctly says 'add as 4th entry'.",
+      "boilerplate_filter_py_path": "CONFIRMED — boilerplate_filter.py exists, _BOILERPLATE_PATTERNS list is at line 51, RU defence block starts at line 132, list closes at line 158. Task line hint ~156 is slightly off (actual last re.compile: line 154). No functional issue.",
+      "test_boilerplate_filter_py_path": "CONFIRMED — tests/test_boilerplate_filter.py exists. TestIsBoilerplatePositive at line 28, test_russian_patterns_filtered at line 94, TestIsBoilerplateNegative at line 103, TestAffiliateLengthBound at line 155, test_redos_safety_long_buy_pattern at line 185. All template references accurate.",
+      "no_TestRegexSafety_class_yet": "CONFIRMED — TestRegexSafety does not exist yet in the file; task correctly says to create it as a new class.",
+      "_MAX_BOILERPLATE_LEN_value": "CONFIRMED — value is 120 as stated.",
+      "depends_on_wave1": "Task 4 has depends_on: [] (empty), which is correct per the task description (functional independence from Task 1 confirmed)."
+    },
+    "task_5": {
+      "test_sources_registry_py_path": "CONFIRMED — file exists. test_has_exactly_the_five_keys at line 45 tests 7 keys. test_values_are_only_the_three_source_names at line 56 tests 4 values. test_resolve_source_name_known_netlocs at line 80. All referenced.",
+      "test_telegram_py_path": "CONFIRMED — file exists. TestSourceHashtag at line 19, test_lamley at line 32, TestSendTelegraphTeaser at line 42, test_lamley_teaser_appends_news_tag at line 89. All positions accurate.",
+      "current_hashtag_behavior": "CONFIRMED — _source_hashtag('https://t-hunted.blogspot.com/...') currently returns '#blogspot'. SOURCE_HASHTAG_OVERRIDE does not exist yet in news_bot.py. Task 5 correctly depends_on: [3].",
+      "patch_target_validity": "CONFIRMED — news_bot.py uses 'import lamley_source' style (module import, not from-import) for lamley. Task 3 will add 'import t_hunted_source' in same style. Patch target 'news_bot.t_hunted_source.fetch_t_hunted_article' is correct for this import pattern.",
+      "dispatcher_structure": "CONFIRMED — fetch_full_article uses if/return chain (not if/elif), exactly as stated in task note.",
+      "depends_on_3": "CONFIRMED — Task 5 has depends_on: [3], appropriate since tests target Task 3 wiring."
+    },
+    "task_6": {
+      "deploy_sh_exists": "CONFIRMED — deploy.sh exists at repo root.",
+      "deploy_yml_exists": "CONFIRMED — .github/workflows/deploy.yml exists.",
+      "deploy_test_yml_exists": "CONFIRMED — .github/workflows/deploy_test.yml exists.",
+      "deploy_sh_insert_position": "CONFIRMED — orangetrack_source.py at line 42, telegraph_publisher.py at line 43. Insert after line 42.",
+      "deploy_yml_insert_position": "CONFIRMED — orangetrack_source.py at line 128, telegraph_publisher.py at line 129. Task claims 'after строки 128' which is accurate.",
+      "deploy_test_yml_insert_position": "CONFIRMED — orangetrack_source.py at line 99, telegraph_publisher.py at line 100. Task claims 'after строки 99' which is accurate.",
+      "invariant_comments": "CONFIRMED — INVARIANT comment exists in deploy.sh (lines 22-24) and deploy.yml (lines 109-113).",
+      "depends_on_1": "CONFIRMED — Task 6 has depends_on: [1], appropriate since deploy.sh fs-checks the file exists at deploy time.",
+      "test_file_new": "CONFIRMED — tests/test_deploy_files_invariant.py does not yet exist, task correctly says to create it."
+    }
+  }
+}

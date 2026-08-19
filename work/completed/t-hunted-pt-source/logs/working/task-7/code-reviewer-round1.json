@@ -1,0 +1,41 @@
+{
+  "status": "approved",
+  "summary": "Task 7 lands cleanly. All three edits to ux-guidelines.md are content-anchored, the blockquote invariant (file L167) is preserved byte-for-byte except for the one widened sentence, canonical noun-form wording per Decision 5 is used verbatim, the brown circle emoji is the correct U+1F7E4 (4-byte UTF-8 f0 9f 9f a4), the glossary table has 14 well-formed 4-column rows with both [VERIFY operator] markers in place, and the structural test file passes all 4 assertions.",
+  "criticalIssues": [],
+  "suggestions": [
+    {
+      "file": "tests/test_ux_guidelines_structure.py",
+      "line": 82,
+      "severity": "minor",
+      "category": "maintainability",
+      "suggestion": "The header-row detection heuristic ('PT' in stripped and 'EN' in stripped and 'RU' in stripped) is fragile against future glossary edits. A future row that happens to mention all three tokens in its Notes column (e.g. a row contrasting PT vs EN vs RU usage of a term) would be silently dropped from the count. Consider anchoring on the literal header text, e.g. stripped.startswith('| PT |'), or detecting the separator row first and then skipping exactly the immediately-preceding row as header.",
+      "benefit": "Eliminates a latent false-negative in row counting if the table grows with diverse Notes content. Probe in round-1 confirmed the heuristic currently matches only the header, so this is not a present-day bug — just a footgun for future contributors.",
+      "optional": true
+    },
+    {
+      "file": "tests/test_ux_guidelines_structure.py",
+      "line": 109,
+      "severity": "minor",
+      "category": "readability",
+      "suggestion": "The regex 'Твоя единственная задача[^.]*\\.' will stop at the first '.' character. If a future edit to the sentence introduces an abbreviation, ellipsis ('…' is fine since it's a single codepoint, but '...') or decimal number before mentioning languages, the matched 'sentence' would be truncated and the language-name substring check could spuriously fail. Consider matching to the end of the blockquote line (everything until newline) or to a sentence terminator that includes '!?' as well, and document the heuristic in a comment.",
+      "benefit": "Test failure messages would be clearer if a future prompt edit changed punctuation. Low priority — current sentence has no embedded periods.",
+      "optional": true
+    },
+    {
+      "file": ".claude/skills/project-knowledge/references/ux-guidelines.md",
+      "line": 137,
+      "severity": "minor",
+      "category": "readability",
+      "suggestion": "The trailing 'Operator: после первых 5-10 публикаций пересмотри [VERIFY operator] пункты…' paragraph references '[VERIFY operator]' as a literal label. This is the third occurrence of that string in the file (besides the two Decalque/Carrinho Notes), which is fine for human readers but means future regex-based scans of the form `grep '[VERIFY operator]' ux-guidelines.md | wc -l` will report 3, not 2. Optional: rephrase as 'пересмотри отмеченные так пункты' or wrap the instruction reference in backticks (`[VERIFY operator]`) so it's visually distinct from the Notes-column markers.",
+      "benefit": "Improves greppability/counting symmetry without changing semantics. Pure quality-of-life nit.",
+      "optional": true
+    }
+  ],
+  "metrics": {
+    "filesReviewed": 2,
+    "criticalIssuesCount": 0,
+    "majorIssuesCount": 0,
+    "minorIssuesCount": 3,
+    "testCoverageAssessment": "adequate"
+  }
+}

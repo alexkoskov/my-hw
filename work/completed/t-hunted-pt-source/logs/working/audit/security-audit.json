@@ -1,0 +1,105 @@
+{
+  "task": 10,
+  "feature": "t-hunted-pt-source",
+  "audited_at": "2026-05-29",
+  "auditor_skill": "security-auditor",
+  "status": "approved",
+  "files_reviewed": [
+    "t_hunted_source.py",
+    "boilerplate_filter.py",
+    "admin_alerts.py",
+    "news_bot.py",
+    "feeds.json",
+    "deploy.sh",
+    ".github/workflows/deploy.yml",
+    ".github/workflows/deploy_test.yml",
+    ".claude/skills/project-knowledge/references/ux-guidelines.md",
+    "tests/test_t_hunted_source.py",
+    "tests/test_news_bot_dispatcher.py",
+    "tests/test_admin_alerts.py",
+    "tests/test_boilerplate_filter.py",
+    "tests/test_deploy_files_invariant.py",
+    "tests/test_ux_guidelines_structure.py"
+  ],
+  "summary": "Reviewed 15 files across Wave 1-3 changes; no Critical/High findings. SSRF allowlist is exact-match on hostname (not netloc), strictly equivalent to the lamley baseline. 10 new PT boilerplate regexes are all ^-anchored with bounded quantifiers and run only under the 120-char ceiling — ReDoS-safe. Admin alerts are routed through send_admin_notification which applies _redact_text, and logger calls are scrubbed by the root-level _TokenRedactingFilter. 2 Medium findings on defence-in-depth gaps consistent with the lamley/autoevolution baseline (not regressions), 1 Low on hardening opportunity.",
+  "summary_counts": {
+    "critical": 0,
+    "high": 0,
+    "medium": 2,
+    "low": 1,
+    "total": 3
+  },
+  "owasp_checklist": {
+    "A01_broken_access_control": "N/A (no auth surface in feature; no filesystem access outside tests/)",
+    "A02_cryptographic_failures": "OK (requests default verify=True not disabled; HTTPS RSS endpoint in feeds.json; http+https both accepted in allowlist matches lamley baseline)",
+    "A03_injection": "OK (no subprocess/os.system/eval/exec; no SQL changes; source_name='t-hunted' is free-text into existing TEXT column)",
+    "A04_insecure_design": "OK with caveat — allowlist is exact-match (not glob/endswith); ordering enforces allowlist BEFORE fetch. See SEC-002 for redirect-follow gap (consistent with baseline).",
+    "A05_security_misconfiguration": "OK (plain Mozilla-style UA, no leaked tokens in headers, raise_for_status() called, timeout=15s applied; verify=True default not overridden)",
+    "A06_vulnerable_components": "OK (no new packages added — confirmed against tech-spec AC; reuses requests, beautifulsoup4, feedparser)",
+    "A07_identification_auth_failures": "N/A (no endpoints / no auth flow in feature)",
+    "A08_software_integrity_failures": "OK (deploy plumbing extends existing FILES arrays in 3 files atomically; pytest invariant test guards against future drift; no curl|bash or new external-fetch in deploy pipeline; feedparser usage on RSS unchanged)",
+    "A09_security_logging_monitoring": "OK (E031/E032/E033 cover the three parser failure modes; _notify writes to logger.error AND notifier; root-level _TokenRedactingFilter scrubs secrets from logs; send_admin_notification applies _redact_text to alert bodies)",
+    "A10_ssrf": "FINDING — SEC-002 (redirect-follow defence-in-depth gap, consistent with baseline) and SEC-003 (memory-after-download for MAX_BYTES). Core exact-match host check is correct."
+  },
+  "findings": [
+    {
+      "id": "SEC-001",
+      "severity": "Low",
+      "owasp_id": "A05",
+      "cwe_id": "CWE-693",
+      "file": "t_hunted_source.py",
+      "line_range": "92-95",
+      "title": "Allowlist accepts http:// alongside https://, leaving a TLS-downgrade window",
+      "description": "_is_allowed_t_hunted_url permits both 'http' and 'https' schemes. The RSS feed today serves https URLs only, but a hostile actor controlling the RSS payload (or a man-in-the-middle on the RSS fetch — itself https from feeds.json so MITM is hard) could inject an http:// t-hunted URL that the parser would fetch over cleartext.",
+      "attack_scenario": "Attacker compromises t-hunted.blogspot.com or sits on-path of the RSS endpoint; substitutes a 'http://t-hunted.blogspot.com/x' link in a feed entry. Bot performs an unencrypted GET, exposing the User-Agent header and response content to passive on-path observers. No real credentials are exposed (no Authorization header is sent), but the same downgrade door would matter if a future change ever attached auth to this parser.",
+      "recommendation": "Tighten to https-only: replace `if parsed.scheme not in ('http', 'https'):` with `if parsed.scheme != 'https':`. Matches Blogger's actual production posture (HTTPS-only since 2018). NB: lamley has the same http+https acceptance — consider as a separate hardening pass across both parsers if approved.",
+      "matches_baseline": "lamley_source.py:223 accepts both schemes too — not a regression introduced by this feature."
+    },
+    {
+      "id": "SEC-002",
+      "severity": "Medium",
+      "owasp_id": "A10",
+      "cwe_id": "CWE-918",
+      "file": "t_hunted_source.py",
+      "line_range": "118-125",
+      "title": "Redirect-following defaults to True; allowlist not re-applied to final URL",
+      "description": "session.get(link, timeout=..., headers=...) does not set allow_redirects=False. By default requests follows 30x redirects up to 30 hops. The SSRF allowlist is checked only on the caller-supplied URL, not on the redirect chain or the final URL. If t-hunted.blogspot.com serves a 301/302 to an arbitrary external host (or to an internal address such as 127.0.0.1, 169.254.169.254, or a private RFC1918 range), requests will follow and download the response.",
+      "attack_scenario": "Attacker who has taken over the Blogger blog (the source we already trust for content) sets up a server-side redirect on a Blogger post URL — Blogger 'Redirect' admin feature, or a 'Custom 404'-style trick — pointing at http://169.254.169.254/latest/meta-data/iam/security-credentials/ or http://localhost:8080/internal-admin. The bot's allowlist passes (initial URL is t-hunted.blogspot.com); requests follows the redirect; the bot's server makes an HTTP GET to the internal/metadata endpoint. The response body (potentially containing cloud-vendor IAM credentials or internal admin pages) is loaded into BeautifulSoup but is not exfiltrated to the channel (parser returns None when no .post-body wrapper is found). Severity is bounded by: (a) attacker must already control the blog source (high bar — Google account hijack); (b) bot runs on a VPS with no IMDS service in the standard project deployment; (c) the response is not surfaced to the operator beyond a debug log line. The risk is the network read itself (probe of internal services from the bot's server).",
+      "recommendation": "Either set `allow_redirects=False` (Blogger does not normally serve redirects; treat any 3xx as a no-body case and ping E033), or follow redirects manually with allowlist re-check on each hop. Concretely: pass `allow_redirects=False` to session.get and treat 3xx as a parser miss. NB: lamley_source.py has the same gap — flagged as a defence-in-depth opportunity, not a regression. Recommended fix as a small follow-up across both parsers.",
+      "matches_baseline": "lamley_source.py exhibits the same default-follow behaviour; not a regression."
+    },
+    {
+      "id": "SEC-003",
+      "severity": "Medium",
+      "owasp_id": "A05",
+      "cwe_id": "CWE-770",
+      "file": "t_hunted_source.py",
+      "line_range": "120-140",
+      "title": "_MAX_BYTES enforced after full response body is buffered in memory",
+      "description": "session.get(...) is called without stream=True, so the entire HTTP body is downloaded and buffered before the `len(response.content) > _MAX_BYTES` check. A malicious upstream serving a multi-gigabyte body (or a slow drip up to the 15s timeout) would force the bot to allocate that much memory before the size cap rejects it. The 15s read timeout caps the slow-drip case but does not cap memory if the server can deliver the bytes quickly.",
+      "attack_scenario": "Attacker (controlling the source server or sitting on-path with a TLS-MITM — high bar but documented) serves a 1.5 GB response body that arrives within 15 seconds. The bot's Python process RSS spikes by ~1.5 GB; on a small VPS this is enough to trigger OOM kill of news_bot.service. Cron retries the same fetch every tick → systemd back-off → effective denial of service. Mitigated in practice by Blogger's own outbound traffic shaping (Blogger does not host attacker-controlled response sizes), but the parser's hardening surface should not depend on the upstream's good behaviour.",
+      "recommendation": "Switch to streaming download with early-exit: `with session.get(link, ..., stream=True) as response: chunks = []; total = 0; for chunk in response.iter_content(64*1024): chunks.append(chunk); total += len(chunk); if total > _MAX_BYTES: logger.warning(...); return None; body = b''.join(chunks)`. This caps memory at _MAX_BYTES + 64KB regardless of upstream behaviour. NB: lamley_source.py exhibits the same memory-after-download pattern — flagged as a hardening opportunity, not a regression.",
+      "matches_baseline": "lamley_source.py uses the same post-download size check; not a regression."
+    }
+  ],
+  "non_findings": [
+    "SSRF allowlist hardness (CORE CHECK): _is_allowed_t_hunted_url uses parsed.hostname (NOT parsed.netloc) — defeats userinfo-injection (http://t-hunted.blogspot.com@evil.com/x). Exact-match against ('t-hunted.blogspot.com',) — defeats suffix-host attacks (t-hunted.blogspot.com.attacker.example) and subdomain variants (evil.t-hunted.blogspot.com). Lowercased — defeats case-folding bypass (T-HUNTED.BLOGSPOT.COM). Scheme-gate before host-check — rejects file://, gopher://, javascript:. urlparse handles URL-encoded hostnames (%2e for dot) by leaving them in the hostname, so dot-encoded suffix attacks also fail the exact-match. Strict identity to lamley_source.py:213-226. Allowlist call (line 114) is the FIRST statement in fetch_t_hunted_article — ordering is correct: allowlist BEFORE network. The 4 negative smoke-tests in the task acceptance criteria all return correct booleans.",
+    "ReDoS sanity (CORE CHECK): All 10 new PT patterns in boilerplate_filter._BOILERPLATE_PATTERNS (lines 167-196) are ^-anchored, use only bounded quantifiers (\\s+, \\s*, no nested unbounded quantifiers like (a+)+ or (a|a)*, no overlapping alternations like (foo|food)*). The 120-char ceiling (_MAX_BOILERPLATE_LEN, line 37) is checked before regex execution in is_boilerplate (line 211). Worst-case input is bounded to O(120 * 10) ≈ 1200 char-pattern operations per paragraph — well under any DOS threshold. The behavioural test test_pt_patterns_no_redos_under_120_char_input (Task 4) already enforces this empirically.",
+    "Telegram hashtag closed-set (CORE CHECK): SOURCE_HASHTAG_OVERRIDE = {'t-hunted.blogspot.com': '#thunted'} is a module-level constant referenced READ-ONLY in _source_hashtag (news_bot.py:815). No .update() / .__setitem__ call site accepts user-controlled input. _source_hashtag's lookup key is the normalised (www-stripped, lowercased) netloc derived from urlparse(source_url).netloc — NOT the raw URL string. A hostile URL such as 'https://attacker.example/?#thunted' yields netloc='attacker.example' which misses the override and falls through to the netloc parts[-2] default, producing '#example' — no markup injection possible because '#' is a plain character in Telegram plain-text mode (parse_mode=None enforced at send_message call site, ref news_bot.py:938+ and the parse_mode-None invariant documented at news_bot.py:396-403).",
+    "Resource exhaustion settings consistent with lamley baseline: _TIMEOUT_SECONDS=15 (passed correctly to session.get), _MAX_BYTES=2_000_000 (~2MB; same magnitude as lamley's 5MB cap which is bigger; t-hunted's tighter cap is intentional given Blogger's smaller pages), _IMAGE_LIMIT=10 (matches lamley). raise_for_status() called on line 125 — 5xx responses are not parsed as valid HTML. Memory-after-download caveat captured in SEC-003.",
+    "Logging redaction coverage: alert builders (alert_t_hunted_host_rejected/_fetch_error/_no_body) embed `link` and `error` strings into the alert body. These bodies are passed through admin_alerts builders to t_hunted_source._notify, which calls logger.error(message) and then notifier(message). The notifier (bound to news_bot.send_admin_notification at call sites) applies _redact_text BEFORE the Telegram payload is built (news_bot.py:388). Independently, the root-level _TokenRedactingFilter (news_bot.py:344-356) scrubs Telegram-bot-tokens, OpenAI/Anthropic/OpenRouter/Gemini key shapes from every LogRecord at handler dispatch — so logger.error/exception inside t_hunted_source.py is also scrubbed. Defence in depth holds even if a future RSS feed embedded a secret in a URL.",
+    "No hardcoded credentials: greps for (api_key|token|password|secret|bearer|authorization) returned zero matches in t_hunted_source.py, boilerplate_filter.py, admin_alerts.py (new E031-E033 builders), tests/test_t_hunted_source.py, tests/test_news_bot_dispatcher.py, tests/test_admin_alerts.py extension. The _USER_AGENT string is the static 'Mozilla/5.0 (compatible; HotWheelsNewsBot/1.0)' — no token leakage.",
+    "No dangerous code execution: greps for (subprocess|os.system|os.popen|eval(|exec(|pickle.load|yaml.load|shell=True) returned zero matches in all new/modified source files of this feature.",
+    "TLS verification not disabled: no verify=False anywhere in t_hunted_source.py or news_bot.py changes. requests' default verify=True applies.",
+    "Deploy integrity: t_hunted_source.py appears in all 3 FILES arrays (deploy.sh, .github/workflows/deploy.yml, .github/workflows/deploy_test.yml) — confirmed by grep and by the pytest invariant tests/test_deploy_files_invariant.py. No new curl|bash or external-fetch in deploy plumbing. feedparser on RSS is the same code path used by 3 existing sources — not a new deserialisation surface.",
+    "No prompt-injection markers in ux-guidelines.md: the new ### 🟤 t-hunted block (lines 104-110) and ## Glossary — PT/EN/RU section (lines 112-137) contain no 'Ignore previous instructions', 'system prompt', 'disregard', 'override' phrases that could rewrite the LLM's role. [TBD operator] / [VERIFY operator] markers are inert documentation comments — they sit inside the system-prompt blockquote as labels for operator-facing TODOs, not as instructions to the LLM. Glossary table rows contain only PT/EN/RU terminology pairs.",
+    "feeds.json content trust boundary: the file is a project-controlled config (committed to repo, deployed via SCP from the same FILES bundle). Attacker cannot modify it at runtime. N/A from an SSRF perspective.",
+    "SQL injection: N/A. source_name='t-hunted' is a free-text TEXT-column insert into pending_articles via the existing pending_articles_repo path — no new query, no concatenation, parameterised. Confirmed no new SQL strings added in news_bot.py around line 1801.",
+    "Cross-language regex interference: 10 PT patterns + 20 pre-existing EN/RU patterns sit in the same list. PT vocabulary (compartilhar, marcadores, postado) does not overlap with EN/RU patterns. Length-bound and ^-anchor prevent prose false positives in any language.",
+    "OWASP A07 (Identification/Auth): N/A — feature does not introduce any authentication code, session handling, or password flow.",
+    "Insecure deserialization: N/A — feedparser is the existing parser for 3 other sources; no new pickle/yaml/marshal usage."
+  ],
+  "pre_existing_issues": [
+    "lamley_source.py exhibits the same allow_redirects=True default and post-download size-cap pattern that this audit flags as SEC-002 / SEC-003 in t_hunted_source.py. Not introduced by this feature; recommended fix is a small cross-cutting hardening PR after this feature ships."
+  ]
+}

@@ -1,0 +1,113 @@
+diff --git a/tests/test_news_bot_dispatcher.py b/tests/test_news_bot_dispatcher.py
+new file mode 100644
+index 0000000..f419dd8
+--- /dev/null
++++ b/tests/test_news_bot_dispatcher.py
+@@ -0,0 +1,59 @@
++#!/usr/bin/env python3
++"""Unit tests for the ``news_bot.fetch_full_article`` dispatcher routing.
++
++These tests sit at the unit level (no real HTTP, no source-fetcher work)
++and guard the dispatcher's branch ordering — specifically the t-hunted
++blogspot branch added in the t-hunted-pt-source feature (Decision 1).
++
++Why a separate file: the dispatcher routing is a tiny, focused concern;
++extending ``test_integration.py`` would bury these checks in a large
++end-to-end mocking harness. A standalone file keeps the regression signal
++obvious if a future edit reorders the if-chain.
++"""
++
++import os
++import sys
++from unittest.mock import MagicMock, patch
++
++sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
++
++import news_bot
++
++
++def test_fetch_full_article_routes_blogspot_to_t_hunted():
++    """A blogspot.com link must route to
++    ``t_hunted_source.fetch_t_hunted_article(link, …)`` exactly once and
++    propagate its return value. Guards the dispatcher branch added in
++    Task 3 (t-hunted-pt-source feature) against accidental reordering or
++    removal."""
++    expected = {
++        'title': 'mocked',
++        'subtitle': '',
++        'paragraphs': ['p'],
++        'images': [],
++    }
++    link = 'https://t-hunted.blogspot.com/2026/05/post.html'
++
++    mock_fetch = MagicMock(return_value=expected)
++    with patch(
++        'news_bot.t_hunted_source.fetch_t_hunted_article',
++        new=mock_fetch,
++    ):
++        result = news_bot.fetch_full_article({'link': link})
++
++    assert mock_fetch.call_count == 1
++    # First positional argument MUST be the link as-supplied.
++    args, _ = mock_fetch.call_args
++    assert args[0] == link
++    assert result == expected
++
++
++def test_fetch_full_article_unknown_domain_returns_none():
++    """Regression: an unknown domain falls through the entire dispatcher
++    if-chain and returns ``None`` (no source handler matched). Locks the
++    fall-through behaviour so a future edit can't silently route unknown
++    domains to the wrong handler."""
++    result = news_bot.fetch_full_article(
++        {'link': 'https://unknown.example.com/some-path'}
++    )
++    assert result is None
+diff --git a/tests/test_telegram.py b/tests/test_telegram.py
+index 6206740..3c134a6 100644
+--- a/tests/test_telegram.py
++++ b/tests/test_telegram.py
+@@ -35,6 +35,16 @@ class TestSourceHashtag(unittest.TestCase):
+             "#lamleygroup",
+         )
+ 
++    def test_t_hunted_hashtag(self):
++        """Locks Decision 2 (SOURCE_HASHTAG_OVERRIDE) + R1 (Telegram drops
++        hyphens in hashtags) + R2 (naive ``parts[-2]`` would yield
++        ``#blogspot``). For ``t-hunted.blogspot.com`` the override map must
++        emit ``#thunted`` byte-for-byte."""
++        self.assertEqual(
++            _source_hashtag("https://t-hunted.blogspot.com/2026/05/post.html"),
++            "#thunted",
++        )
++
+     def test_strips_www_prefix(self):
+         self.assertEqual(_source_hashtag("https://www.example.com/"), "#example")
+ 
+@@ -99,6 +109,26 @@ class TestSendTelegraphTeaser(unittest.TestCase):
+         kwargs = mock_bot.send_message.await_args.kwargs
+         self.assertEqual(kwargs['text'], '#lamleygroup #news')
+ 
++    @patch('news_bot.TELEGRAM_BOT_TOKEN', 'test_token')
++    @patch('news_bot.TELEGRAM_CHANNEL_ID', '@channel')
++    @patch('news_bot.Bot')
++    def test_t_hunted_teaser_uses_thunted_tag(self, mock_bot_class):
++        """Locks AC6: the channel teaser for a ``t-hunted.blogspot.com``
++        source URL emits ``#thunted #news`` byte-for-byte (Decision 2
++        SOURCE_HASHTAG_OVERRIDE). Guards R1 (Telegram drops hyphens) and
++        R2 (default ``parts[-2]`` would yield ``#blogspot``)."""
++        mock_bot = MagicMock()
++        mock_bot.send_message = AsyncMock()
++        mock_bot_class.return_value = mock_bot
++
++        ok = send_telegraph_teaser(
++            telegraph_url='https://telegra.ph/X',
++            source_url='https://t-hunted.blogspot.com/2026/05/post.html',
++        )
++        self.assertTrue(ok)
++        kwargs = mock_bot.send_message.await_args.kwargs
++        self.assertEqual(kwargs['text'], '#thunted #news')
++
+     @patch('news_bot.TELEGRAM_BOT_TOKEN', 'test_token')
+     @patch('news_bot.TELEGRAM_CHANNEL_ID', '@channel')
+     @patch('news_bot.Bot')

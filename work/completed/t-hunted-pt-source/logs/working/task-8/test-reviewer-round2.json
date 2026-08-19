@@ -1,0 +1,20 @@
+{
+  "status": "passed",
+  "summary": "Round 2 closes both Round 1 MAJOR findings. (1) `call_args_list[0].args[0]` and `[1].args[0]` are now inspected with four assertions: en_link / 'autoevolution' and pt_link / 't-hunted'. Signature verified — `transcreate_via_claude(article: dict, *, ...)` at claude_transcreation.py:330 takes a single positional dict; news_bot.py:1201 calls `transcreate_via_claude(row)` positionally, so `args[0]` is the correct accessor (not `kwargs`). A regression tagging both payloads `source_name='autoevolution'` would fail at the `pt_call_row['source_name'] == 't-hunted'` assertion; a swapped-order regression would fail at the `link` assertion on call index 0 or 1. (2) The 'full pipeline' framing is gone from both block comment and docstring. Block comment now leads with 'EN + PT dispatch & routing smoke' and adds an explicit OUT OF SCOPE list (real fetch_full_article / parsers, PT boilerplate filter, hashtag rendering) with delegations to the unit tests that cover them. Docstring explicitly states 'NOT a full-pipeline test'. Test name `test_integration_t_hunted_en_pt_dispatch_and_routing_smoke` retains the `integration_t_hunted` substring required by the tech-spec `-k` selector. Round 1 minors (title_prefix unused, slot-ordering not pinned for N=2, line-number drift) remain unchanged per orchestrator policy.",
+  "findings": [],
+  "metrics": {
+    "filesReviewed": 1,
+    "litmusTest": {
+      "checked": 4,
+      "passed": 4,
+      "failed": 0
+    },
+    "coverageAssessment": "adequate",
+    "pyramidBalance": {
+      "unit": 0,
+      "integration": 1,
+      "e2e": 0,
+      "assessment": "healthy"
+    }
+  }
+}

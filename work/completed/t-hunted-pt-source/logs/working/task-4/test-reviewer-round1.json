@@ -1,0 +1,44 @@
+{
+  "status": "needs_improvement",
+  "summary": "PT boilerplate patterns are well covered: the positive parametrised test exhaustively pins all 10 regex families (16 cases incl. UTF-8/ASCII fallback variants) and the negative prose test correctly proves the length-bound is the safety net. However, the ReDoS-safety regression has no behavioural assertion on is_boilerplate's return value — it only asserts (a) fixture length and (b) elapsed-time bound, so a no-op implementation that returns False unconditionally would still pass. That's a litmus-test failure for the test family that exists specifically to guard the new regexes. Additionally, the negative test only exercises the length>120 branch; an inline-prose-under-120 case is not pinned, leaving the pure anchoring guarantee unverified.",
+  "findings": [
+    {
+      "severity": "major",
+      "category": "empty_test",
+      "location": "tests/test_boilerplate_filter.py:279-290 (TestRegexSafety::test_pt_patterns_no_redos_under_120_char_input)",
+      "issue": "The ReDoS regression test discards the return value of is_boilerplate(adversarial). Asserts are: `len(adversarial) <= _MAX_BOILERPLATE_LEN` (a self-check on the parametrise fixture — passes with any implementation) and `elapsed < 0.1`. Litmus test fails: a stubbed `def is_boilerplate(_): return False` still satisfies both assertions because (i) the length assertion is about the test input, not the call result, and (ii) a no-op returns instantly. So this test catches ReDoS only — it does NOT bind to behaviour, so a refactor that breaks classification but stays fast slips through silently. The test is also the sole place that runs the PT regexes against adversarial-shaped 120-char inputs, so losing the behaviour assertion is a real coverage gap.",
+      "recommendation": "Add a result assertion alongside the timing bound. For each adversarial input, document the expected classification and pin it. Two viable shapes: (1) split the parametrise list into `(adversarial, expected)` tuples and assert `is_boilerplate(adversarial) is expected` — most inputs (compartilhar/marcadores/postado/enviar/postagens mais/assinar/postar um/pagina) start with a matching anchored prefix and should classify as True; postagem-xxx and leia-mais-xxx tails fail the `$` anchor so classify as False. (2) Simpler: capture the return into `result` and add `assert result in (True, False)` plus a per-case expected map. Concrete patch:\n```python\n@pytest.mark.parametrize(\n    \"adversarial,expected\",\n    [\n        ((\"compartilhar \" + \"no \" * 35 + \"facebook\")[:_MAX_BOILERPLATE_LEN], True),\n        ((\"marcadores\" + \":\" * (_MAX_BOILERPLATE_LEN - len(\"marcadores\"))), True),\n        ((\"postado por \" + \"x\" * (_MAX_BOILERPLATE_LEN - len(\"postado por \"))), True),\n        ((\"postagem\" + \"x\" * (_MAX_BOILERPLATE_LEN - len(\"postagem\"))), False),  # $ anchor\n        ((\"enviar por email\" + \"x\" * (_MAX_BOILERPLATE_LEN - len(\"enviar por email\"))), True),\n        ((\"postagens mais \" + \"antigas\" * 15)[:_MAX_BOILERPLATE_LEN], False),  # $ anchor\n        ((\"assinar\" + \":\" * (_MAX_BOILERPLATE_LEN - len(\"assinar\"))), True),\n        ((\"leia mais\" + \"x\" * (_MAX_BOILERPLATE_LEN - len(\"leia mais\"))), False),  # $ anchor\n        ((\"postar \" + \"um \" * 35 + \"comentario\")[:_MAX_BOILERPLATE_LEN], False),  # $ anchor + truncation\n        ((\"pagina \" + \"inicial\" * 15)[:_MAX_BOILERPLATE_LEN], False),  # $ anchor\n    ],\n)\ndef test_pt_patterns_no_redos_under_120_char_input(self, adversarial, expected):\n    import time\n    t0 = time.monotonic()\n    result = is_boilerplate(adversarial)\n    elapsed = time.monotonic() - t0\n    assert elapsed < 0.1, f\"ReDoS suspected ({elapsed:.3f}s): {adversarial!r}\"\n    assert result is expected, f\"classification drift on {adversarial!r}\"\n```\nThe expected values above need to be verified against the actual regex semantics before merging — the point is to bind every adversarial input to a known classification so behaviour is locked in addition to performance.",
+      "litmusTestFailed": true
+    },
+    {
+      "severity": "minor",
+      "category": "missing_coverage",
+      "location": "tests/test_boilerplate_filter.py:165-177 (TestIsBoilerplateNegative::test_pt_lookalike_prose_kept)",
+      "issue": "The negative test uses a 129-char prose string and asserts `len(text) > _MAX_BOILERPLATE_LEN` — so it proves the length-bound saves the line, but does NOT prove anchoring alone would save a short-prose inline match. If a future patch raised `_MAX_BOILERPLATE_LEN` to e.g. 200 the test would silently break coverage of the anchoring guarantee. The review brief explicitly called out that the test should prove EITHER `^`-anchoring OR length>120 — currently only the latter half is asserted.",
+      "recommendation": "Add a second negative case under 120 chars where 'compartilhar' appears inline (not at `^`), so anchoring alone has to save it:\n```python\ndef test_pt_compartilhar_inline_short_prose_kept(self):\n    # Short prose (<120 chars) with 'compartilhar' inline — anchoring\n    # alone (not length bound) must save it.\n    text = \"Eles vão compartilhar no Facebook em breve.\"\n    assert len(text) <= _MAX_BOILERPLATE_LEN\n    assert is_boilerplate(text) is False\n```\nKeep the existing length-bound test as-is. Together the two cases pin both safety nets independently.",
+      "litmusTestFailed": false
+    },
+    {
+      "severity": "minor",
+      "category": "anti_pattern",
+      "location": "tests/test_boilerplate_filter.py:282 (TestRegexSafety inline comment)",
+      "issue": "The inline comment 'Exact ceiling: spec mandates adversarial-shaped 120-char input' is misleading — 9 of 10 fixtures hit exactly 120 chars but the 10th (`pagina inicial` + `inicial`*15) lands at 112 due to integer multiplication overflowing the budget then being truncated by `[:_MAX_BOILERPLATE_LEN]`. The assertion uses `<= _MAX_BOILERPLATE_LEN` which correctly accepts 112, but the comment overstates the contract.",
+      "recommendation": "Either pad the `pagina inicial` fixture to 120 (`'pagina ' + 'inicial' * 15 + 'x' * 8`)[:120]) to match the others and keep the 'exact ceiling' claim accurate, or soften the comment to 'Adversarial inputs at or near the 120-char ceiling enforced by _MAX_BOILERPLATE_LEN.'"
+    }
+  ],
+  "metrics": {
+    "filesReviewed": 2,
+    "litmusTest": {
+      "checked": 3,
+      "passed": 2,
+      "failed": 1
+    },
+    "coverageAssessment": "adequate",
+    "pyramidBalance": {
+      "unit": 3,
+      "integration": 0,
+      "e2e": 0,
+      "assessment": "healthy"
+    }
+  }
+}

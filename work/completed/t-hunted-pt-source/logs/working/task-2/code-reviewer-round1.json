@@ -1,0 +1,32 @@
+{
+  "status": "approved",
+  "summary": "Three new admin-alert builders (E031-E033) for t-hunted parser are correctly added to admin_alerts.py, matching the lamley E025/E027/E028 shape, severity, Russian copy style, and section structure. Placement (between E028 and E030), function signatures, severity emoji, and unique-codes regression test all align with the task spec, tech-spec Decision 3, and code-research §A.5. Full suite (29 tests) passes; smoke check returns the expected [E031]/[E032]/[E033] prefixes.",
+  "criticalIssues": [],
+  "suggestions": [
+    {
+      "file": "admin_alerts.py",
+      "line": 337,
+      "severity": "minor",
+      "category": "best-practices",
+      "suggestion": "alert_t_hunted_fetch_error omits a 'Что произошло:' preamble and jumps straight from 'Ошибка: {error}' to 'Что сделать:'. This intentionally mirrors E027 (alert_lamley_fetch_error), so it is consistent — but if the operator ever wants a one-line context ('HTTP/сетевая ошибка при загрузке статьи'), adding it would make the alert self-describing without needing to recall the code. Strictly optional; matching E027 is the documented choice.",
+      "benefit": "Marginally improves alert self-containment for on-call triage.",
+      "optional": true
+    },
+    {
+      "file": "tests/test_admin_alerts.py",
+      "line": 207,
+      "severity": "minor",
+      "category": "readability",
+      "suggestion": "The three new t-hunted tests (E031-E033) are inserted between test_e028_lamley_no_body and test_e030_orangetrack_summary_header, producing non-ascending numeric order in the test file (028 -> 031 -> 032 -> 033 -> 030). This exactly matches the source-file ordering rationale (E030 is an outlier aggregator that stays last) and was explicitly required by the task spec, so no change is needed — but a one-line section comment ('# E030 lives below the t-hunted block — see admin_alerts.py ordering note') would prevent future contributors from 'fixing' the order.",
+      "benefit": "Prevents accidental reordering by future contributors who might assume strict numeric ascending order.",
+      "optional": true
+    }
+  ],
+  "metrics": {
+    "filesReviewed": 2,
+    "criticalIssuesCount": 0,
+    "majorIssuesCount": 0,
+    "minorIssuesCount": 2,
+    "testCoverageAssessment": "adequate"
+  }
+}

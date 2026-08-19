@@ -1,0 +1,147 @@
+{
+  "feature": "t-hunted-pt-source",
+  "date_started": "2026-05-30",
+  "spec_reference": "work/t-hunted-pt-source/tasks/14.md",
+  "deploy_reference": "work/t-hunted-pt-source/logs/deploy/deploy-test.log",
+  "dev_sha": "7e967da67bfe53b844d74e6267fb513dc2953189",
+  "environment_test": {
+    "service": "news_bot_test.service",
+    "deploy_path": "/home/hwbot/bot_test/",
+    "channel": "@myhwchannel123",
+    "watch_window": "T+0 → T+7day (24h hard gate, 7day full watch)",
+    "t_plus_0_snapshot": {
+      "timestamp_local": "2026-05-30T12:54 MSK",
+      "timestamp_bst": "2026-05-30T10:54 BST",
+      "uptime_minutes_at_snapshot": 48,
+      "service_state": "active (running) since 2026-05-30 10:05:58 BST",
+      "first_cron_tick_outcome": {
+        "tick_at_bst": "2026-05-30T10:06",
+        "rss_entries_fetched": 75,
+        "new_entries_after_dedup": 19,
+        "published_to_telegram": 1,
+        "publish_links": [
+          "https://telegra.ph/Car-Culture-Road-Trip-uzhe-na-predzakaze--i-tut-est-Chase-dve-novinki-i-kucha-boli-dlya-kollekcionerov-05-30"
+        ],
+        "publish_sources": ["autoevolution"]
+      },
+      "t_hunted_observations": {
+        "t_hunted_entries_seen_in_rss": 2,
+        "t_hunted_entries_processed": 2,
+        "t_hunted_published": 0,
+        "t_hunted_skipped_thin_body": 2,
+        "skipped_urls": [
+          "https://t-hunted.blogspot.com/2026/05/novos-car-culture-com-ferrari-na-loja.html",
+          "https://t-hunted.blogspot.com/2026/05/novos-fast-and-furious-premium-agora-na.html"
+        ],
+        "explanation": "Both entries returned valid dicts with paragraphs=[] after subtitle lift (t_hunted_source.py:181-182), triggering news_bot.py:1802 WARNING. No E031/E032/E033 fired because parser did NOT return None — see deploy-test.log Observation 1 for full investigation. Same pattern as lamley_source.py."
+      },
+      "e03x_alerts_in_window": 0,
+      "e03x_grep_command": "ssh hwbot 'journalctl -u news_bot_test.service --since \"2026-05-30 10:05:00\" | grep -E \"\\[E03[1-3]\\]\"'",
+      "e03x_grep_output": "(empty)",
+      "pre_recovery_crashloop_traceback_count": 38,
+      "post_recovery_traceback_count": 0
+    },
+    "hotfix_event": {
+      "discovered_at": "2026-05-30T13:30 MSK",
+      "investigation": "User reported only 2 t-hunted entries in today's tick (12:06 MSK), both silently skipped. Traced to news_bot.py:1802 firing on empty paragraphs after subtitle lift in t_hunted_source.py:181-182. User confirmed product intent: photo-gallery posts (1 intro + N photos) must publish.",
+      "hotfix_pr": "https://github.com/alexkoskov/my-hw/pull/13",
+      "hotfix_commit_on_dev": "a0ae3f8",
+      "hotfix_diff_summary": "t_hunted_source.py: conditional subtitle lift (skip when fewer than 2 paragraphs survive boilerplate filter); _IMAGE_LIMIT raised 10 to 30. tests/test_t_hunted_source.py: +1 new test, +43/-5 lines total.",
+      "auto_deploy_outcome": "deploy_test.yml workflow_run triggered as expected → SAME workflow_run/FILES drift incident as Wave 6 (main YAML still missing t_hunted_source.py in FILES). Service stayed on previous parser code; no crashloop this time because the file already exists on server from Wave 6 recovery, just got skipped during scp.",
+      "recovery_dispatch_run": "https://github.com/alexkoskov/my-hw/actions/runs/26682318000",
+      "recovery_dispatch_outcome": "workflow_dispatch --ref dev → dev YAML used → 22 files copied (including new t_hunted_source.py) → service restarted on hotfix code at 12:11 BST = 14:11 MSK.",
+      "post_recovery_verification_at_msk": "2026-05-30T14:46 MSK (user-pasted SSH output)",
+      "verification_results": {
+        "service_uptime_min": 33,
+        "service_restarts_after_recovery": 0,
+        "file_mtime_matches_deploy": true,
+        "file_size_bytes": 8701,
+        "e03x_grep_since_deploy": "CLEAN",
+        "traceback_or_import_error": "CLEAN",
+        "today_publish_slots_observed": [
+          {"slot": "1/4", "time_msk": "12:06", "source": "autoevolution", "url": "https://telegra.ph/Car-Culture-Road-Trip-uzhe-na-predzakaze--i-tut-est-Chase-dve-novinki-i-kucha-boli-dlya-kollekcionerov-05-30"},
+          {"slot": "2/4", "time_msk": "13:36", "source": "autoevolution", "url": "https://telegra.ph/Hot-Wheels-Legends-Tour-ishchet-novuyu-zvezdu-Velikobritanii-05-30"}
+        ],
+        "note": "Slots 1 and 2 published BEFORE recovery deploy (on pre-hotfix code). After recovery, immediate-on-startup tick ran but processed no new entries (today's RSS exhausted, t-hunted already-skipped marked as processed)."
+      }
+    },
+    "checks": [
+      {
+        "id": "AC1",
+        "name": "no_e03x_in_24h_window",
+        "description": "ssh hwbot 'journalctl -u news_bot_test.service --since \"24 hours ago\" | grep -E \"\\[E03[1-3]\\]\"' returns empty (or only confirmed transient errors logged with operator note)",
+        "status": "deferred",
+        "due_by": "2026-05-31T10:06 BST (T+24h from recovery deploy)",
+        "evidence": "T+0 snapshot: NO_E03X_ALERTS in 48-min window since recovery"
+      },
+      {
+        "id": "AC2",
+        "name": "first_t_hunted_publish_visible_in_channel",
+        "description": "Operator confirms first t-hunted publication in @myhwchannel123 with hero image + correct hashtag #thunted (not truncated, clickable) + emoji 🟤",
+        "status": "deferred",
+        "due_by": "2026-05-31T12:00 MSK (next natural cron tick) or 2026-06-01T12:00 MSK (allowed 24-48h window per spec)",
+        "evidence_required": "Telegram message URL (https://t.me/myhwchannel123/<message_id>) + visual confirmation note from operator",
+        "blockers": "UNBLOCKED at 14:11 MSK by hotfix (PR #13 / commit a0ae3f8). Photo-gallery posts now publish; waiting for next RSS poll to bring a t-hunted entry (tomorrow 10:00 MSK natural cron tick at the earliest).",
+        "unblocked_by_hotfix": true
+      },
+      {
+        "id": "AC3",
+        "name": "telegraph_page_clean_russian",
+        "description": "Operator opens Instant View / Telegraph page from ≥1 t-hunted publication, confirms no PT phrase leakage (compartilhar, marcadores, postado, decalque, etc.), no EN leakage, coherent RU prose",
+        "status": "deferred",
+        "due_by": "After AC2 produces ≥1 publish",
+        "evidence_required": "Telegraph URL + brief operator note on translation quality"
+      },
+      {
+        "id": "AC4",
+        "name": "ru_quality_spot_check_5_posts",
+        "description": "Operator spot-checks ≥5 t-hunted publications against originals on t-hunted.blogspot.com (source link in Telegraph footer), confirms RU quality subjectively not worse than autoevolution baseline",
+        "status": "deferred",
+        "due_by": "T+7day or earlier when 5 posts accumulate",
+        "evidence_required": "List of 5 Telegram message URLs + originals + operator quality rating",
+        "blockers": "Subject to t-hunted publish cadence — may not reach 5 in 7 days depending on RSS volume + thin-body skip rate"
+      },
+      {
+        "id": "AC5",
+        "name": "no_repeated_e03x_in_7day_window",
+        "description": "7-day cumulative watch: ssh hwbot 'journalctl -u news_bot_test.service --since \"7 days ago\" | grep -E \"\\[E03[1-3]\\]\"' shows no repeated alerts (transient one-offs acceptable with operator note)",
+        "status": "deferred",
+        "due_by": "2026-06-06 (T+7day)",
+        "evidence_required": "Daily grep output captured here, cumulative count"
+      },
+      {
+        "id": "AC6",
+        "name": "no_regression_in_other_sources",
+        "description": "Operator scrolls @myhwchannel123 over 7 days, confirms autoevolution / lamley / orangetrack continue publishing at normal cadence (~1-3 posts/day per source)",
+        "status": "deferred",
+        "due_by": "2026-06-06 (T+7day)",
+        "evidence_required": "Cadence count per source (e.g., autoevolution: 5 posts in 7d, lamley: 3 posts in 7d, orangetrack: 4 posts in 7d) + operator note"
+      },
+      {
+        "id": "AC7",
+        "name": "qa_report_complete_with_decision",
+        "description": "This file is completed with all check statuses and a go/no-go decision for dev→main promotion",
+        "status": "deferred",
+        "due_by": "After AC1-AC6 resolve",
+        "evidence_required": "decision field set to 'go' or 'no-go', summary field written"
+      }
+    ]
+  },
+  "environment_prod": null,
+  "decision": "pending",
+  "decision_rationale": "Awaiting 24h gate (AC1) + first t-hunted publish (AC2) + 7-day watch (AC5/AC6). Promotion to main MUST NOT proceed until all blocking checks pass.",
+  "backlog_followups_surfaced": [
+    {
+      "id": "B1",
+      "title": "Defensive E03x alert when fetched dict has paragraphs=[] after subtitle lift",
+      "rationale": "Both t-hunted and lamley parsers silently skip thin-body posts (1 paragraph or less surviving boilerplate filter). Operator has zero observability on skip-rate. Optional small spec — applies symmetrically to both parsers.",
+      "scope": "lamley_source.py + t_hunted_source.py + add admin_alerts.alert_*_thin_body builders + tests"
+    },
+    {
+      "id": "B2",
+      "title": "Infrastructure-fix: workflow_run / FILES drift root cause",
+      "rationale": "deploy_test.yml workflow_run trigger executes default-branch (main) YAML, ignoring dev's updated FILES array. Causes silent SCP omission of new modules. Self-resolves on prod-merge of this feature (deploy.yml uses push trigger, not workflow_run). Recommended preventive fixes documented in decisions.md Task 13.",
+      "scope": ".github/workflows/deploy_test.yml refactor (Option A: FILES from checked-out file) + Option B (post-restart smoke-import step). Separate spec."
+    }
+  ]
+}

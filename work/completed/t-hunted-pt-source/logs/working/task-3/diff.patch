@@ -1,0 +1,149 @@
+commit 9757f72839c00a544a29b67122420a9624ab8056
+Author: alex <sunny413x@gmail.com>
+Date:   Fri May 29 21:45:42 2026 +0300
+
+    feat: task 3 — news_bot wiring + sources_registry test extension
+    
+    Five atomic edits in news_bot.py:
+    - import t_hunted_source between orangetrack_source and telegraph_publisher
+    - NETLOC_TO_SOURCE['t-hunted.blogspot.com'] = 't-hunted'
+    - SOURCE_HASHTAG_OVERRIDE = {'t-hunted.blogspot.com': '#thunted'} + _source_hashtag patch
+    - fetch_full_article dispatcher branch for 'blogspot.com' in domain
+    - SOURCE_EMOJI['t-hunted'] = '🟤', SOURCE_LABEL['t-hunted'] = 'T-Hunted'
+    
+    tests/test_sources_registry.py updated to keep suite green: NETLOC_TO_SOURCE
+    key-count + values-set assertions extended for new t-hunted entry;
+    new TestResolveSourceName::test_resolves_t_hunted method.
+    
+    Decision 2 (SOURCE_HASHTAG_OVERRIDE map) + Decision 7 (emoji + label
+    hygiene) applied verbatim per tech-spec.
+    
+    Co-Authored-By: Claude Opus 4.7 (1M context) <noreply@anthropic.com>
+
+diff --git a/news_bot.py b/news_bot.py
+index 55e4b10..ff25829 100644
+--- a/news_bot.py
++++ b/news_bot.py
+@@ -35,6 +35,7 @@ from mattel_news_source import fetch_mattel_news, fetch_mattel_article
+ import autoevolution_source
+ import lamley_source
+ import orangetrack_source
++import t_hunted_source
+ import telegraph_publisher
+ from telegraph_publisher import TelegraphError
+ 
+@@ -797,12 +798,23 @@ def transcreate_text(text, source='auto', target='ru', is_title=False):
+     return result
+ 
+ def _source_hashtag(source_url):
+-    """Return a Telegram hashtag for the source: `#{brand}` from the URL's
+-    netloc, stripping `www.` and the TLD. Example: `corporate.mattel.com`
+-    → `#mattel`, `autoevolution.com` → `#autoevolution`."""
++    """Return a Telegram hashtag for the source.
++
++    Lookup order:
++      1. ``SOURCE_HASHTAG_OVERRIDE`` (keyed on the normalised, ``www.``-
++         stripped, lowercased netloc) — handles outliers where the default
++         TLD-strip would emit the hoster (e.g. ``blogspot``) instead of
++         the brand. Returns the override value as-is.
++      2. Fallback: lift `#{parts[-2]}` from the netloc, stripping `www.`
++         and the TLD. Example: `corporate.mattel.com` → `#mattel`,
++         `autoevolution.com` → `#autoevolution`.
++    """
+     netloc = urlparse(source_url).netloc.lower()
+     if netloc.startswith('www.'):
+         netloc = netloc[4:]
++    override = SOURCE_HASHTAG_OVERRIDE.get(netloc)
++    if override is not None:
++        return override
+     parts = netloc.split('.')
+     label = parts[-2] if len(parts) >= 2 else netloc
+     return f"#{label}"
+@@ -826,11 +838,32 @@ NETLOC_TO_SOURCE = {
+     'lamleygroup.com':               'lamley',
+     'www.lamleygroup.com':           'lamley',
+     'corporate.mattel.com':          'mattel',
++    't-hunted.blogspot.com':         't-hunted',
+     'orangetrackdiecast.com':        'orangetrack',
+     'www.orangetrackdiecast.com':    'orangetrack',
+ }
+ 
+ 
++# Override map for the channel-post hashtag (Decision 2 of t-hunted-pt-source
++# tech-spec). Default in ``_source_hashtag`` lifts the TLD-stripped second-
++# level label from the netloc (e.g. ``corporate.mattel.com`` → ``#mattel``),
++# which works for outlets where the brand IS the second-level domain. The
++# override map handles outliers where ``parts[-2]`` is the hoster instead of
++# the brand — for ``t-hunted.blogspot.com`` the default would emit
++# ``#blogspot`` (the platform, not the source). Keyed on the normalised
++# (``www.``-stripped, lowercased) netloc; value is the full hashtag string
++# WITH the leading ``#`` and dash-stripped at definition time.
++#
++# Why dash-stripped in the value: Telegram hashtag rules accept only
++# ``[a-zA-Z0-9_]``; a literal ``#t-hunted`` would render as ``#t`` followed
++# by ``-hunted`` plain text. Storing ``#thunted`` here keeps the value
++# WYSIWYG against what subscribers see in the channel and avoids a runtime
++# regex / replace.
++SOURCE_HASHTAG_OVERRIDE = {
++    't-hunted.blogspot.com': '#thunted',
++}
++
++
+ def _resolve_source_name(link):
+     """Map a URL to its internal `source_name` via `NETLOC_TO_SOURCE`.
+ 
+@@ -859,12 +892,14 @@ SOURCE_EMOJI = {
+     'mattel':        '\U0001F7E3',  # purple circle
+     'lamley':        '\U0001F7E2',  # green circle
+     'orangetrack':   '\U0001F535',  # blue circle
++    't-hunted':      '\U0001F7E4',  # brown circle
+ }
+ SOURCE_LABEL = {
+     'autoevolution': 'autoevolution',
+     'mattel':        'mattel',
+     'lamley':        'lamley',
+     'orangetrack':   'orangetrack',
++    't-hunted':      'T-Hunted',
+ }
+ 
+ def send_telegraph_teaser(telegraph_url, source_url):
+@@ -1437,6 +1472,8 @@ def fetch_full_article(entry):
+             return lamley_source.fetch_lamley_article(link, notifier=send_admin_notification)
+         if 'autoevolution.com' in domain:
+             return autoevolution_source.fetch_autoevolution_article(entry)
++        if 'blogspot.com' in domain:
++            return t_hunted_source.fetch_t_hunted_article(link, notifier=send_admin_notification)
+     except Exception as exc:
+         logger.exception(f"Source fetcher failed for {link}: {exc}")
+         return None
+diff --git a/tests/test_sources_registry.py b/tests/test_sources_registry.py
+index cb7dd89..fcc3359 100644
+--- a/tests/test_sources_registry.py
++++ b/tests/test_sources_registry.py
+@@ -51,11 +51,12 @@ class TestNetlocToSource:
+             'corporate.mattel.com',
+             'orangetrackdiecast.com',
+             'www.orangetrackdiecast.com',
++            't-hunted.blogspot.com',
+         }
+ 
+     def test_values_are_only_the_three_source_names(self):
+         assert set(NETLOC_TO_SOURCE.values()) == {
+-            'autoevolution', 'lamley', 'mattel', 'orangetrack',
++            'autoevolution', 'lamley', 'mattel', 'orangetrack', 't-hunted',
+         }
+ 
+     def test_autoevolution_both_netlocs(self):
+@@ -102,6 +103,12 @@ class TestResolveSourceName:
+         # Empty netloc → 'other', does not raise.
+         assert _resolve_source_name('') == 'other'
+ 
++    def test_resolves_t_hunted(self):
++        # t-hunted.blogspot.com → 't-hunted' (Task 3 mapping).
++        assert _resolve_source_name(
++            'https://t-hunted.blogspot.com/2026/05/post.html'
++        ) == 't-hunted'
++
+ 
+ # ---------------------------------------------------------------------------
+ # _fetch_rss_entries

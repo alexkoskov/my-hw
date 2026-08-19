@@ -1,0 +1,18 @@
+{
+  "status": "approved",
+  "findings": [
+    {
+      "severity": "minor",
+      "category": "structure",
+      "issue": "Decision 7 ([TECHNICAL] SOURCE_EMOJI / SOURCE_LABEL) heading is restored, but its position in the document is out of numerical order — it appears at line 73, AFTER Decision 8 (line 68). All decisions 1-6 are in order; only 7 and 8 are swapped. Readers scanning sequentially will see `Decision 6 → Decision 8 → Decision 7`, which may briefly disorient.",
+      "fix": "Optional cosmetic: swap the two blocks so Decision 7 sits between Decision 6 and Decision 8. Not blocking — both headings exist and content is consistent."
+    },
+    {
+      "severity": "minor",
+      "category": "task_quality",
+      "issue": "Task 5 description still includes the phrase `(or new test_news_bot_dispatcher.py)` in Files-to-modify. Optionality at the tech-spec level is fine, but decomposition will need to commit to one path. Same optionality already declared in the test list at lines 137-139, so this is informational only.",
+      "fix": "Optional: pick one (extend `tests/test_integration.py` vs. new `tests/test_news_bot_dispatcher.py`) during decomposition. No tech-spec change needed."
+    }
+  ],
+  "summary": "Round-3 fixes verified. (1) Critical fix from round-2 — `### Decision 7:` heading is restored at line 73 with full Decision/Rationale/Alternatives content (only quirk: it sits after Decision 8 numerically, flagged as a minor structural finding). (2) Major fix from round-2 — `tests/test_ux_guidelines_structure.py` is now created in Task 7 (Wave 3) where the assertions' target file edits actually land; Task 5 description explicitly notes the relocation (line 258); Task 7 Files-to-modify lists the new test file (line 280); Task 7 Verify-smoke runs it (line 279). (3) User-Spec Deviations stale `None.` removed — section now correctly opens with the explicit refinements list. No new critical findings. No wave-file conflicts. All 14 tasks ≤ 15 cap, all skills/reviewers in catalog, no time estimates, all required sections present and non-empty. Status: approved."
+}

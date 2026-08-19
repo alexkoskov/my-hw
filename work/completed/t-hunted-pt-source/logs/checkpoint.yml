@@ -1,0 +1,42 @@
+# Feature Execution Checkpoint
+# Written by feature-execution skill after each wave.
+# Read by SessionStart(compact) hook for context recovery.
+# Read by feature-execution Phase 1 to detect resume scenario.
+
+skill: feature-execution
+feature: t-hunted-pt-source
+feature_dir: work/t-hunted-pt-source
+execution_plan: work/t-hunted-pt-source/logs/execution-plan.md
+team_name: t-hunted-pt-source
+
+last_completed_wave: 6
+total_waves: 7
+
+# Format: task_number: status (planned | in_progress | done)
+tasks:
+  1: done
+  2: done
+  3: done
+  4: done
+  5: done
+  6: done
+  7: done
+  8: done
+  9: done
+  10: done
+  11: done
+  12: done
+  13: done   # completed with incident — see decisions.md + deploy-test.log
+  14: planned
+
+next_wave: 7
+
+# Incident summary for resume-after-compact context:
+# - PR #12 squash-merged to dev (SHA 7e967da)
+# - Initial deploy_test.yml auto-run (26679230672) FAILED functionally:
+#   workflow_run executed main's stale YAML (21 FILES, no t_hunted_source.py)
+#   → ModuleNotFoundError crashloop on test instance for ~37 min
+# - Recovered via `gh workflow run deploy_test.yml --ref dev` (run 26679953068)
+#   → dev YAML used (22 FILES) → service active, t_hunted_source.py deployed,
+#   first cron tick clean, autoevolution publish to Telegram succeeded
+# - Promotion dev→main DEFERRED (Task 14 sign-off + recommended infra-fix PR first)
