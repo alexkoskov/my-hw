@@ -1,107 +1,87 @@
 {
-  "status": "changes_required",
+  "status": "approved",
   "checks": {
-    "completeness": "fail",
+    "completeness": "pass",
     "edge_cases": "pass",
     "acceptance_criteria": "pass",
     "contradictions": "pass",
     "template_compliance": "pass",
-    "size_check": "pass"
+    "size_check": "warning"
   },
   "findings": [
     {
       "check": "completeness",
-      "severity": "critical",
-      "issue": "«Зачем» contains a specific illustrative example — «Новый Mercedes-Benz 6x6» flagged as a duplicate of «5 Unsung Heroes» because both mention Porsche 911 GT2 and Red Line Club, with «5 Unsung Heroes» credited with 99 pairs — that appears nowhere in interview.yml or code-research.md (confirmed by grep across the whole feature folder and repo). The only 'Unsung' hit in the interview is a generic title-pattern reference («N Unsung…», used to describe roundup-title patterns in general), not a concrete flagged pair. No article named 'Mercedes-Benz 6x6' or a pair count of 99 exists in either source of truth. This directly undermines the section's own opening claim ('Правило измеримо неверное, и это померено на проде, а не предположено') by presenting an invented example as measured fact.",
-      "location": "Зачем, paragraph 2 ('Причина в том, что статьи...')",
-      "fix": "Remove the fabricated example or replace it with a verified one. The interview/code-research record real, citable cases instead: the hub articles «Last Car Culture Set for 2026» (56 pairs, 6 flags) and «Mooneyes Diorama» (40 pairs, 4 flags), or reuse the already-verified Boulevard example that appears later in 'Как должно работать'."
-    },
-    {
-      "check": "completeness",
-      "severity": "major",
-      "issue": "The claim «Шесть таких статей дали почти весь мусор» (six such round-up articles caused almost all the noise) has no matching figure in interview.yml or code-research.md. The notes name at most four hub-article titles with pair/flag counts (Unboxing: 10 Affordable Cars — 296 pairs; 11 New Collectibles — 28 pairs; Last Car Culture Set for 2026 — 56 pairs/6 flags; Mooneyes Diorama — 40 pairs/4 flags) and never state a total count of contributing articles.",
-      "location": "Зачем, paragraph 2",
-      "fix": "Either cite the actually-named hub articles and their flag counts from the interview notes, or drop the unverified aggregate 'six articles' claim."
+      "severity": "minor",
+      "issue": "AC bullet 'Число подавленных срабатываний попадает в ежедневный пинг [E008]/[E009]...' cites specific alert codes that appear in neither interview.yml nor code-research.md — they trace instead to adequacy-review.json's own investigation, which cited architecture.md. Verified independently against architecture.md:340-342 and admin_alerts.py (E008 = alert_plan_of_day, E009 = alert_quiet_day, both real, well-established daily pings): the claim is factually correct, not a fabrication like the round-1 Mercedes-Benz example. But within this feature's own artifact trail (interview.yml / measurements.md / code-research.md), its origin is undocumented.",
+      "location": "Критерии приёмки, bullet 'Число подавленных срабатываний попадает в ежедневный пинг [E008]/[E009]...'",
+      "fix": "Optional: add a line to code-research.md noting E008/E009 as the daily-ping destination for the suppressed count, so the AC's origin is traceable within this feature's own logs. No change to the AC itself is needed — the fact checks out against the codebase."
     },
     {
       "check": "completeness",
       "severity": "minor",
-      "issue": "The accepted publish-timing side effect ('Публикации ускорятся... Оператор это принял.') drops the operator's stated rationale from the interview: 'очередь чаще пустая, чем переполненная (15.08 в ней было ноль), так что ускорение выхода — улучшение, а не давление на слоты.' Without it, the acceptance reads as a bare assertion rather than a reasoned decision.",
-      "location": "Ограничения, bullet 'Публикации ускорятся'",
-      "fix": "Add the one-line rationale from the interview record so the acceptance is traceable to why, not just that."
-    },
-    {
-      "check": "completeness",
-      "severity": "minor",
-      "issue": "Interview topic 'deploy_approach' (manual deploy to the Moscow Docker host, strictly outside the 10:00–20:00 MSK publish window because a restart resets the in-process daily schedule) was discussed and scored complete (85%) in the interview but is absent from user-spec.md entirely.",
+      "issue": "Two interview topics scored complete (deploy_approach: manual deploy to the Moscow Docker host strictly outside the 10:00-20:00 MSK publish window; manual_user_actions: explicit 'none, keys/tokens untouched') remain absent from user-spec.md. Both were already flagged as minor/deferrable in round 1 ('borderline in-scope for user-spec template') and were not part of the requested round-2 fix list, so they carry over unresolved.",
       "location": "missing — would belong in Ограничения or Как проверить",
-      "fix": "Add a line noting the deploy-timing constraint, or confirm explicitly that it is deferred to tech-spec (borderline in-scope for user-spec by this project's template, so low severity)."
+      "fix": "Add one line each, or explicitly state they're deferred to tech-spec."
     },
     {
-      "check": "edge_cases",
-      "severity": "major",
-      "issue": "Several edge cases scored 'complete' in the interview are not mentioned anywhere in user-spec.md: empty/missing candidate title; `paragraphs=None`/empty list on the new article; malformed/non-dict candidate fingerprint (skipped silently, NOT routed through fail-open); a fingerprint with no `pairs` key (branch never runs). Only the 'line named nowhere' case is covered (Risk 3). Formal edge-case presence in the doc is met (Риски is non-empty with mitigations), so this does not fail the check, but the gap is real: a reader cannot tell from the spec that a malformed candidate fingerprint is handled differently from a genuine crash.",
-      "location": "missing — would belong in Риски or Ограничения",
-      "fix": "Add these as risk lines or fold into Ограничения, distinguishing 'malformed input is skipped silently' from 'a crash triggers fail-open [E016]' — the interview record treats these as two different code paths."
-    },
-    {
-      "check": "edge_cases",
-      "severity": "major",
-      "issue": "Acronym (RLC/STH) and Portuguese-title matching — scored complete (85%) in the interview and documented at length in code-research.md §3 (including a real asymmetry: uppercase-only acronyms under-match lowercase PT prose) — is never mentioned in user-spec.md. The rule's precision claims implicitly depend on this matching behavior working correctly across both languages.",
-      "location": "missing — would belong in Ограничения or Риски",
-      "fix": "Add a line noting the rule relies on the existing series-name matcher's behavior (including PT titles and case-sensitive acronyms), and note the known acronym-casing asymmetry as an accepted limitation."
-    },
-    {
-      "check": "acceptance_criteria",
-      "severity": "major",
-      "issue": "Orphan flow: step 5 of 'Как должно работать' explicitly states the subject-rejected article is queued 'молча и без отсрочки' (no 24h defer), but no acceptance criterion verifies the 'без отсрочки' part specifically — AC4 only tests the terminal not-dupe/no-[E015] aspect. Symmetrically, step 4 ('declared in both → all as today: [E014] with buttons + 24h defer') has no AC re-confirming that the flagged case still gets the defer and buttons — exactly the behavior that ~26 existing integration test call sites currently pin and that this change risks breaking (per code-research §4.2–4.3).",
-      "location": "Критерии приёмки",
-      "fix": "Add two criteria: one asserting a subject-rejected broad pair publishes without the 24h defer, and one re-confirming a subject-confirmed broad pair still gets the defer + review buttons unchanged."
-    },
-    {
-      "check": "acceptance_criteria",
+      "check": "completeness",
       "severity": "minor",
-      "issue": "AC7 ('Каждое подавленное срабатывание пишется в лог — по нему можно посчитать, сколько шума срезано') is testable at its core (a log line exists per suppressed pair) but doesn't specify what the log line must contain. A log line that satisfies the letter of the criterion (e.g., just 'suppressed: 1') without identifying the pair/link would not actually let anyone 'count how much noise was cut' per-case as the criterion's own purpose clause promises.",
-      "location": "Критерии приёмки, bullet 7",
-      "fix": "Specify minimally what the suppressed-hit log line must contain (e.g., the two article links/titles and the rejected series name) so the criterion is verifiable against its stated purpose, not just its literal wording."
+      "issue": "The operator's stated rationale for accepting the publish-timing side effect ('очередь чаще пустая, чем переполненная (15.08 в ней было ноль), так что ускорение выхода — улучшение, а не давление на слоты') still isn't in the spec — this was flagged in round 1 and not addressed by the round-2 edit (which fixed the AC gap around the defer, a different issue).",
+      "location": "Ограничения, bullet 'Публикации ускорятся'",
+      "fix": "Add the one-line rationale from interview.yml so the acceptance reads as reasoned, not just asserted."
+    },
+    {
+      "check": "edge_cases",
+      "severity": "minor",
+      "issue": "The new «Краевые случаи» subsection picked up 3 of the 4 items from round-1's finding (empty/missing candidate title, malformed/non-dict fingerprint, PT/acronym matching) — correctly dropping the 4th (paragraphs=None on the new article), which is moot now that the first-paragraph fallback was cut. But it also dropped a 5th edge case that was independently scored complete in the interview and is distinct from 'malformed fingerprint': a fingerprint that is a valid dict but has no `pairs` key at all, where the branch simply never runs (interview notes: 'Отпечаток без pairs — ветка не запускается вовсе').",
+      "location": "Критерии приёмки → Краевые случаи",
+      "fix": "Add: 'Отпечаток кандидата без ключа pairs — ветка правила не запускается, поведение не меняется.'"
     },
     {
       "check": "contradictions",
       "severity": "minor",
-      "issue": "Ограничения states 'Правило set-overlap не трогаем... остаётся как есть,' while Технические решения / Risk 2 describe an explicit routing decision (Р1): subject-rejected broad pairs are now deliberately kept OUT of the backstop rather than falling through to it. On close reading these are consistent — the actual population of candidates that reaches the backstop is unchanged versus today (subject-rejected pairs never reached it before either, since today ANY shared broad key already terminates as a flag) — but the two sections sitting side by side without connecting them reads ambiguously on a first pass.",
-      "location": "Ограничения ('Правило set-overlap не трогаем') vs Технические решения / Риск 2",
-      "fix": "Add a clarifying clause that 'не трогаем' refers to the backstop's own logic/thresholds, not to what feeds it — to preempt the (incorrect) reading that this change alters the backstop's exposure."
+      "issue": "Технические решения contains two bullets about the same 'правило set-overlap' that read as contradictory in isolation: one says its verdict is now capped at soft flag for subject-rejected pairs (a real behavioral change in that routing path — 'ограничить его вердикт мягким флагом'); a later bullet says 'Мы решили оставить правило set-overlap нетронутым, потому что оно вне причины поломки.' The intended distinction (thresholds/Jaccard logic untouched vs. an external cap on its output in one specific caller) is real and traces to the interview ('backstop... ОСТАВЛЯЕМ как есть... Не трогаем в этой фиче' = don't touch its own thresholds), and Ограничения bullet 4 was reworded in round 2 to state this disambiguation — but the same clarifying clause wasn't echoed next to this Технические решения bullet, so a reader skimming only that section sees an apparent self-contradiction. This is the same class of ambiguity flagged in round 1 (there, between Ограничения and Технические решения/Риск 2), resurfacing here in a spot the round-2 edit didn't touch.",
+      "location": "Технические решения, bullet 'Мы решили оставить правило set-overlap нетронутым, потому что оно вне причины поломки.'",
+      "fix": "Append a clarifying clause, e.g.: '...его собственные пороги и Jaccard-логика не меняются; меняется только то, что его вердикт теперь ограничен мягким флагом на ветке пар, отклонённых по предмету (см. выше).'"
+    },
+    {
+      "check": "size_check",
+      "severity": "minor",
+      "issue": "Критерии приёмки now totals 16 checkbox items (12 main + 4 in the newly added «Краевые случаи» subsection), exceeding the >10-acceptance-criteria warning threshold. This grew from 11 in round 1 (already borderline, not flagged) to 16 after the round-2 edge-case additions requested by this validator. The spec's depth still reads as proportionate to a declared M-size bug fix that has to pin a lot of pre-existing regression-sensitive behavior (|D branch unchanged, fail-open preserved, defer timing in both directions, backstop thresholds untouched) rather than net-new scope — so this looks like a threshold trip from safety-heavy enumeration, not a misdeclared size.",
+      "location": "Критерии приёмки (12 items) + Краевые случаи (4 items) = 16",
+      "fix": "No action required for approval. Optionally group the 'unchanged behavior' criteria (|D branch, fail-open) separately from the 'new behavior' criteria if the list needs trimming for readability."
     }
   ],
   "interview_coverage": {
     "covered": [
       "Measured false-flag rate: 31 soft flags / 22 with surviving fingerprints / 21 false / 1 real, over 1.5 months",
-      "Root cause: round-up articles produce a cartesian pair explosion, all 22 flags fired at 0-7% overlap",
+      "Root cause: round-up articles produce a cartesian pair explosion; all 22 flags fired at 0-7% overlap",
+      "Concrete example now traceable: 'Mercedes-Benz 6x6' x '5 Unsung Heroes' pair via shared key porsche 911 gt2 evo|red line club|B (matches measurements.md exactly) — round-1's blocking finding is resolved",
+      "Six hub articles (296/99/56/40/28/16 pairs) accounting for the bulk of the noise",
       "Cost beyond annoyance: a real duplicate (t-hunted Car Culture 21.07 vs autoevolution 18.07) was masked by the noise and both copies published",
-      "New rule definition: shared series must be declared in both articles' subject area (title, + first paragraph fallback for the new article; candidate limited to title only)",
-      "Distinctive (|D) branch / [E015] hard block unchanged",
-      "Terminal verdict for subject-rejected broad pairs / decision NOT to fall through to the set-overlap backstop (Р1)",
-      "Subject-area asymmetry caused by published_articles lacking a paragraphs column (Р2)",
-      "E014 ping text change — drop the 'порог автоблокировки 50%' phrase, name the matched line (Р3, corrected after code-research disproved the original premise)",
+      "New rule definition: shared series must be named in both articles' TITLES only (symmetric) — first-paragraph fallback explicitly cut per delegated decision, with rationale (inert on 6/6 real posts, untestable on the corpus, would have made the rule asymmetric/order-dependent)",
+      "Distinctive (|D) branch / [E015] hard block unchanged, candidate scan continues past a subject-rejected pair",
+      "Design change on subject-rejected routing: set-overlap backstop now runs (not skipped) but its verdict is capped at soft flag — [E015] impossible from that branch; documented as a reversal from the originally-planned 'terminal, skip backstop' design, with the risk it mitigates (masking a latent backstop hard-block) traced to code-research §6.7",
+      "24h publish defer pinned to exactly [E014] firing, explicitly not set for subject-rejected pairs",
+      "E014 ping text change — drop the hardcoded 'порог автоблокировки (50%) не достигнут' sentence on the broad branch only, keep it on the set-overlap branch where it's accurate",
       "Dedup log lines stop printing overlap% for the broad branch",
-      "Shadow log of suppressed broad-pair hits (Р4)",
+      "Suppressed-hit counter surfaced in the daily ping",
       "Fail-open behavior preserved ([E016] + publish on any crash)",
-      "Regression corpus: 31 real prod pairs (22 surviving fingerprints + 2 recovered via extract_fingerprint), target 3 real dupes flagged / ≤1 false remaining out of 21",
-      "Publish-timing side effect (~20 articles publish same-day instead of next-day), explicitly accepted by the operator",
-      "Risk: rule derived and validated on the same 22 pairs (overfitting risk), mitigated by the shadow log",
-      "Risk: a duplicate whose line is named nowhere (title or first paragraph) will pass silently — accepted",
-      "Risk: the first-paragraph backstop is inert on all currently available data (verified on 6 real t-hunted posts) — covered by a synthetic test only",
-      "Testing scope: unit tests always; no new integration tests, but ~26 existing call sites (_seed_published) need rewriting; no E2E",
+      "Regression corpus: 31 real prod pairs (22 surviving fingerprints + 2 recovered via extract_fingerprint), target 3 real dupes flagged / <=1 false remaining out of 21",
+      "Publish-timing side effect (~20 articles publish same-day instead of next-day), accepted by the operator (though the stated rationale for acceptance is still missing from the doc)",
+      "Risk: rule derived and validated on the same 22 pairs (overfitting), mitigated by the suppressed-count log",
+      "Risk: a duplicate whose line is named nowhere in either title will pass silently — accepted",
+      "Edge cases: empty/missing candidate title, malformed/non-dict candidate fingerprint (skipped silently, distinct from a fail-open crash), Portuguese title matching, uppercase-only RLC/STH acronym matching — all four now in a dedicated Краевые случаи subsection",
+      "Testing scope: unit tests always; no new integration tests, but ~25 existing _seed_published call sites need rewriting; no E2E, with rationale for both decisions",
       "Post-deploy verification: 2-4 weeks of live [E014] monitoring + watch for an [E015] spike",
-      "No schema migration needed"
+      "No schema migration needed; asymmetry/backfill-idempotency reasons for rejecting the fingerprint-storage alternative documented in Технические решения"
     ],
     "missing": [
-      "Specific edge cases: empty/missing candidate title; paragraphs=None/empty on the new article; malformed/non-dict candidate fingerprint (skipped silently, distinct from a fail-open crash); fingerprint with no `pairs` key",
-      "Acronym (RLC/STH) and Portuguese-title matching behavior, including the documented uppercase-only-acronym under-match asymmetry",
-      "Deploy approach: manual deploy to the Moscow Docker host, strictly outside the 10:00-20:00 MSK publish window",
-      "Confirmation that no manual user actions are required (keys/tokens untouched)",
-      "Operator's stated rationale for accepting the publish-timing side effect (queue is empty more often than full; 15.08 had zero pending)"
+      "Edge case: candidate fingerprint that is a valid dict but has no `pairs` key (branch never runs) — distinct from the 'malformed/non-dict' case that IS now covered",
+      "Deploy approach: manual deploy to the Moscow Docker host, strictly outside the 10:00-20:00 MSK publish window (carried over from round 1, not part of the requested fixes)",
+      "Explicit confirmation that no manual user actions are required (keys/tokens untouched) (carried over from round 1)",
+      "Operator's stated rationale for accepting the publish-timing side effect (queue is empty more often than full; 15.08 had zero pending) (carried over from round 1)"
     ]
   },
-  "summary": "Спек структурно полон и в основном хорошо укоренён в измерениях — числа корпуса (31/22/21/1, плюс 2 восстановленных → 3 реальных/21 ложный) сходятся между «Зачем», «Критериями приёмки» и «Тестированием», критерии приёмки не используют неверифицируемых формулировок, шаблон и фронтматтер соблюдены. Но раздел «Зачем» содержит пример (Mercedes-Benz 6x6 / 5 Unsung Heroes / Porsche 911 GT2, 99 пар), не подтверждённый ни интервью, ни code-research — это блокирующая находка, требующая правки перед approval. Также стоит закрыть несколько edge-case тем из интервью, отсутствующих в спеке (пустые заголовки/абзацы, acronym/PT-matching), и добавить критерии, явно проверяющие отсрочку публикации в обоих сценариях (флаг/отклонение)."
+  "summary": "Все находки раунда 1 закрыты по существу: пример Mercedes-Benz/5 Unsung Heroes теперь дословно совпадает с measurements.md (блокирующая находка снята), добавлены четыре краевых случая, критерий на суточную отсрочку публикации закрывает обе ветки (флаг/отклонение), а вырезание страховки первым абзацем выполнено чисто — следов асимметрии или упоминаний абзаца не осталось. Новых критических или блокирующих проблем не найдено; открыты только мелкие остатки (недостающая рационализация тайминга публикаций, один пропущенный edge case, лёгкая формулировочная неувязка про 'нетронутый' set-overlap в Технических решениях, и превышение порога в 10 критериев приёмки — 16 против 10, ожидаемо для M-фичи с упором на сохранение регрессионного поведения). Статус: approved."
 }
