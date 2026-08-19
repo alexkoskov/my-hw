@@ -1,0 +1,485 @@
+# Interview Plan for Feature Planning
+#
+# Tracks progress of adaptive discovery interview for a new feature/bug/refactoring.
+# Updated after EACH user response with scoring, values, and remaining gaps.
+#
+# Scoring: 0-100% (how well we understand this aspect)
+# Status: pending → partial → complete
+# Required: true = must reach threshold, false = cover if relevant
+
+# ============================================================================
+# Interview Metadata (Session Recovery)
+# ============================================================================
+interview_metadata:
+  started: "2026-08-19 12:55:00"
+  last_updated: "2026-08-19 12:55:00"
+  status: "in_progress"
+  can_resume: true
+  current_question_num: 5
+  feature_size: "M"
+
+# ============================================================================
+# Conversation History (for session recovery)
+# ============================================================================
+# Preserves complete Q&A. Update after EVERY user response.
+#
+conversation_history:
+  - question_num: 5
+    timestamp: "2026-08-19 14:05:00"
+    topic: "publish-timing side effect"
+    agent_question: |
+      Каждый убранный ложный флаг убирает и 24-часовую отсрочку: ~20 статей за
+      1.5 месяца начнут выходить в тот же день, конкурируя за 3 слота.
+      Принимаем это изменение тайминга канала?
+    user_answer: |
+      принимаем
+    summary: "Оператор явно принял побочный эффект на тайминг публикаций."
+
+  - question_num: 4
+    timestamp: "2026-08-19 13:40:00"
+    topic: "four design decisions delegated"
+    agent_question: |
+      Батч 3: (1) провал в backstop после отклонения по предмету; (2) асимметрия
+      предметной области (у published нет тела); (3) перенос требования по тексту
+      пинга на фразу о пороге 50%; (4) нужен ли shadow-лог подавленных флагов.
+    user_answer: |
+      все на твое усмотрение
+    summary: "Оператор делегировал все четыре. Решения приняты агентом и записаны в technical_decisions."
+
+  - question_num: 3
+    timestamp: "2026-08-19 13:15:00"
+    topic: "verdict on surviving flags"
+    agent_question: |
+      Вердикт по двум выжившим флагам (обе пары против хаба «Last Car Culture
+      Set for 2026»): пара A — t-hunted «Novo lote da serie Car Culture com
+      carros alemaes» 21.07; пара B — «Car Culture 2-Pack Mix 4» 02.08.
+    user_answer: |
+      пара А - дубли. пара B - не дубли
+    summary: "A = НАСТОЯЩИЙ дубль (правило право), B = ложный. Итог правила: 3 пойманных дубля, 1 ложный, 20 ложных убрано."
+
+  - question_num: 2
+    timestamp: "2026-08-19 13:05:00"
+    topic: "fallback / backstop / ping text"
+    agent_question: |
+      Батч 2: (1) вердикт по двум выжившим Car Culture флагам; (2) дыра —
+      заголовок без имени линии: принять или страховать; (3) судьба backstop
+      (Jaccard), ни разу не сработавшего за 1.5 мес; (4) менять ли текст [E014]
+      с бесполезного «Совпадение моделей: N%» на реальную причину.
+    user_answer: |
+      1. дай ссылки на статьи 2. добираться до заголовка через первый абзац
+      3. оставляем 4. да
+    summary: "Страховка через первый абзац принята; backstop сохраняем; текст пинга меняем. Вердикт по 2 парам — ждём после чтения ссылок."
+
+  - question_num: 1
+    timestamp: "2026-08-19 12:55:00"
+    topic: "feature_overview / success_criteria / direction / testing"
+    agent_question: |
+      Батч 1 (4 вопроса): (1) имя dedup-broad-precision, тип bug, размер M;
+      (2) целевой критерий «<=1 ложный флаг в неделю при нуле пропущенных дублей»;
+      (3) направление: распространить правило подборок с тегирования на матчинг
+      (статья-подборка не может быть донором broad-флага) + покрытие МЕНЬШЕГО
+      отпечатка; подвопрос — по каким вычислимым признакам опознаётся подборка;
+      (4) регрессионный корпус из 31 реальной прод-пары вместо синтетики.
+    user_answer: |
+      1. согласен 2. согласен 3. согласен 4. ок
+    summary: "Все четыре приняты. Подвопрос про признак подборки остался без ответа — закрыт замером по проду (см. notes)."
+
+# Format:
+# - question_num: 1
+#   timestamp: "2025-11-12 15:20:33"
+#   topic: "user_problem"
+#   agent_question: |
+#     [Full question text]
+#   user_answer: |
+#     [Full answer text]
+#   summary: "Brief summary"
+
+# ============================================================================
+# Phase 1: High-Level Feature Understanding
+# ============================================================================
+# Interview Cycle 1 scope
+phase1_feature_overview:
+
+  feature_name:
+    score: 100
+    status: "complete"
+    value: "dedup-broad-precision"
+    gaps: ""
+    required: true
+
+  feature_description:
+    score: 90
+    status: "complete"
+    value: "Правило broad-пар в _pair_rule_verdict флагает [E014] по ОДНОЙ общей паре 'модель|программа|B' без порога. Убрать шум, сохранив ловлю настоящих дублей."
+    gaps: ""
+    required: true
+
+  work_type:
+    score: 100
+    status: "complete"
+    value: "bug"
+    gaps: ""
+    required: true
+
+  user_problem:
+    score: 95
+    status: "complete"
+    value: "Измерено на проде: 31 софт-флаг за 1.5 мес; из 22 с сохранившимися отпечатками 21 пара оказалась НЕ дублем (проверено вердиктом оператора 19.08) и лишь 1 — настоящим дублем. Все 22 сработали при overlap 0-7%. Оператор перестаёт доверять кнопке — это отменяет защиту."
+    gaps: ""
+    required: true
+
+  target_users:
+    score: 80
+    status: "complete"
+    value: "Оператор канала (единственный получатель [E014]); косвенно — подписчики, которых защищает дедуп."
+    gaps: ""
+    required: false
+
+  success_criteria:
+    score: 90
+    status: "complete"
+    value: "<=1 ложный флаг в неделю при НУЛЕ пропущенных настоящих дублей, замеряется на историческом корпусе прод-пар."
+    gaps: ""
+    required: true
+
+  constraints:
+    score: 90
+    status: "complete"
+    value: "Fail-open обязателен (крах -> [E016] + публикация). Broad-тир не имеет права стать необратимым: только мягкий флаг. Простое поднятие порога overlap запрещено — настоящие дубли 14/15.08 шли с 1%."
+    gaps: "Закрыто замером: признак = общая линия названа в заголовках ОБЕИХ статей"
+    required: true
+
+  testing_strategy:
+    score: 85
+    status: "complete"
+    value: "Регрессионный корпус из реальных прод-отпечатков (31 пара) как фикстура: молчать на известных ложных, срабатывать на известных настоящих. Отпечатки двух отменённых восстановить прогоном extract_fingerprint. НОВЫХ интеграционных тестов не требуется, НО существующий интеграционный набор придётся править: _seed_published (tests/test_integration.py:1100) по умолчанию сеет title='Existing Article', никак не связанный с инжектируемыми pairs, и вызывается 26 раз; 37 упоминаний pairs. Под новым правилом такие кандидаты провалят проверку предмета, и тесты, ожидающие флаг, перевернутся. Это самая объёмная часть работ — закладывать в оценку."
+    gaps: ""
+    required: true
+
+# ============================================================================
+# Phase 2: User Experience & Scenarios
+# ============================================================================
+# Interview Cycle 2 scope (together with Phase 3)
+phase2_user_experience:
+
+  user_stories:
+    score: 90
+    status: "complete"
+    value: "Оператор получает [E014] только когда общая линия заявлена как предмет ОБЕИХ статей; в остальных случаях статья идёт в очередь молча. В пинге видно, какая линия совпала. Дальше как сейчас: кнопка или бездействие (через сутки выйдет сама)."
+    gaps: ""
+    required: true
+
+  acceptance_criteria:
+    score: 90
+    status: "complete"
+    value: "AC1 broad-пара флагает, только если серия общей пары найдена в предметной области ОБЕИХ статей. AC2 предметная область новой статьи = заголовок + первый абзац, кандидата = только заголовок. AC3 на регрессионном корпусе: 3 настоящих дубля флагаются, из 21 ложного остаётся не более 1. AC4 broad-пара, отклонённая по предмету, = ТЕРМИНАЛЬНЫЙ pass: backstop не запускается, [E015] невозможен. AC5 текст [E014] больше не содержит фразы про порог автоблокировки 50%; называет общую линию. AC6 подавленные срабатывания пишутся в лог. AC7 fail-open сохранён: крах -> [E016] + публикация. AC8 ветка distinctive |D не меняется."
+    gaps: ""
+    required: true
+
+  edge_cases:
+    score: 85
+    status: "complete"
+    value: "Пустой/отсутствующий заголовок у кандидата. paragraphs=None или пустой список у новой статьи. Несколько общих пар с разными сериями — достаточно ОДНОЙ прошедшей проверку. Акронимы RLC/STH и португальские написания. Серия заявлена в первом абзаце кандидата — недостижимо (тела нет), осознанное ограничение. Отпечаток без pairs — ветка не запускается вовсе."
+    gaps: ""
+    required: true
+
+  error_scenarios:
+    score: 85
+    status: "complete"
+    value: "Любой крах внутри правила — fail-open: [E016] + статья публикуется с model_fingerprint=NULL (существующий контракт). Отсутствие paragraphs не должно бросать. Битый/не-dict отпечаток кандидата пропускается молча, как сейчас."
+    gaps: ""
+    required: true
+
+  verification_strategy:
+    score: 85
+    status: "complete"
+    value: "До деплоя: юнит-тесты + регрессионный корпус из реальных прод-отпечатков. После деплоя: shadow-лог подавленных срабатываний за 2-4 недели даёт число срезанного шума; отдельно следим, что не появилось всплеска [E015]."
+    gaps: ""
+    required: true
+
+  ui_ux_requirements:
+    score: 80
+    status: "complete"
+    value: "Текст [E014]: убрать фразу про порог автоблокировки 50%, назвать общую линию и то, что она заявлена в обеих статьях. Кнопки и остальная структура пинга не меняются."
+    gaps: ""
+    required: false
+
+  risks:
+    score: 90
+    status: "complete"
+    value: "1) Переобучение: правило выведено и проверено на одних и тех же 22 парах — проспективную проверку даст только прод, поэтому shadow-лог обязателен. 2) Unmask backstop (мягкий флаг превращается в необратимый [E015]) — СНЯТ решением делать отклонение терминальным. 3) Пропуск дубля, если линия не названа ни в заголовке, ни в первом абзаце — принято осознанно."
+    gaps: ""
+    required: true
+
+  technical_decisions:
+    score: 90
+    status: "complete"
+    value: "Р1 отклонение по предмету терминально, backstop не запускается (backstop за 1.5 мес не сработал ни разу, а риск необратимой потери статьи хуже шума). Р2 асимметрия предметной области: у published нет тела, миграция назад невозможна; дыра оператора касается новых t-hunted постов, а они всегда на стороне 'новой' статьи, где первый абзац доступен. Р3 требование по тексту пинга перенесено с процента на захардкоженную фразу про порог 50%. Р4 shadow-лог включён в объём."
+    gaps: ""
+    required: false
+
+  deploy_approach:
+    score: 85
+    status: "complete"
+    value: "Ручной деплой на московский Docker-хост (автодеплой обезврежен), строго вне окна публикаций 10:00-20:00 МСК — рестарт сбрасывает in-process расписание дня."
+    gaps: ""
+    required: false
+
+  manual_user_actions:
+    score: 90
+    status: "complete"
+    value: "Нет. Ключи, боты и токены не затрагиваются."
+    gaps: ""
+    required: false
+
+# ============================================================================
+# Phase 3: Integration & Technical Context
+# ============================================================================
+# Interview Cycle 2 scope (together with Phase 2)
+phase3_integration:
+
+  integration_points:
+    score: 90
+    status: "complete"
+    value: "news_bot._pair_rule_verdict / _check_cross_source_dedup / _pair_match; model_extractor.extract_series как готовый примитив матчинга по сырой строке; admin_alerts.alert_cross_source_dupe; выборки кандидатов в pending_articles_repo (title уже выбирается)."
+    gaps: ""
+    required: true
+
+  dependencies:
+    score: 80
+    status: "complete"
+    value: "DEDUP_SERIES_ENABLED (гейт), 24h defer _DEDUP_DEFER_HOURS, кнопки ревью, rate-limit softflag_pair в bot_state — всё сохраняется без изменений."
+    gaps: ""
+    required: false
+
+  technical_constraints:
+    score: 85
+    status: "complete"
+    value: "published_articles не хранит paragraphs (move_to_published выбрасывает тело). backfill_fingerprints идемпотентен по наличию $.pairs — вариант с записью линии в отпечаток потребовал бы правки бэкфилла, поэтому отвергнут."
+    gaps: ""
+    required: false
+
+  data_requirements:
+    score: 85
+    status: "complete"
+    value: "Фикстура-корпус из реальных прод-отпечатков и заголовков (31 пара, из них 22 с отпечатками + 2 восстановленных дубля). Никаких новых данных в рантайме не нужно."
+    gaps: ""
+    required: false
+
+  migration_needs:
+    score: 90
+    status: "complete"
+    value: "Не требуется: ни новых колонок, ни изменения формата отпечатка, ни бэкфилла."
+    gaps: ""
+    required: false
+
+# ============================================================================
+# Phase 4: Completion
+# ============================================================================
+phase4_completion:
+  userspec_file: ""  # work/{feature}/user-spec.md
+  status: "pending"  # pending | created | approved
+
+# ============================================================================
+# Decision Rules
+# ============================================================================
+decision_rules:
+
+  required_threshold: 85
+  optional_threshold: 50
+
+  # Stop criteria (BOTH must be true to exit a cycle)
+  stop_criteria:
+    - "All required items in current cycle scope score >= 85%"
+    - "Structural: every required item has non-empty value, no TBD, gaps empty or conscious limitations"
+
+  priority_order:
+    - "Required items with score < 85% (lowest score first)"
+    - "Optional items mentioned by user in context"
+    - "Other optional items if user seems knowledgeable"
+
+  question_strategy:
+    - "3-4 questions per batch about different gaps"
+    - "Run as many batches as needed — batch size is NOT cycle limit"
+    - "Propose solutions based on PK, not just ask questions"
+    - "Challenge with substance: counterexamples, code references, unexplored scenarios"
+    - "After each response: update scores, values, gaps, conversation_history, save"
+
+# ============================================================================
+# Interview Progress
+# ============================================================================
+progress:
+  current_phase: "phase1_feature_overview"
+  questions_asked: 0
+  last_question: ""
+  total_required_score: 0
+  total_optional_score: 0
+  completion_estimate: "0%"
+  user_detail_level: "unknown"  # brief | moderate | detailed
+
+# ============================================================================
+# Notes
+# ============================================================================
+notes: |
+  ЗАМЕР ПО ПРОДУ (120 статей с отпечатками) ОПРОВЕРГ ОБА КАНДИДАТА-ПРИЗНАКА:
+
+  1. «Размер отпечатка = подборка» — НЕ работает. «Boulevard Mix 4 Unboxing:
+     Ferrari Enzo» имеет 90 пар и при этом является партнёром НАСТОЯЩЕГО дубля
+     15.08 (t-hunted «mais fotos do lote Boulevard»). Запрет крупным отпечаткам
+     быть донором убил бы этот true positive. При этом «11 New Collectibles»
+     (28 пар) — источник ложных.
+
+  2. «Покрытие меньшего отпечатка» — НЕ работает. У t-hunted-постов 1-2 пары,
+     поэтому покрытие = 100% и у настоящего дубля 15.08, и у ложного 19.08
+     (t-hunted «Ferrari F40 no Red Line Club» против подборки «11 New
+     Collectibles»). Метрика одинаковая, вердикты противоположные.
+
+  ЧТО ЗАМЕР ПОКАЗАЛ ПОЛОЖИТЕЛЬНОГО: признак по ЗАГОЛОВКУ («Unboxing: N…»,
+  «N New…», «N Unsung…») корректно разделяет спорную пару 19.08 (подборка
+  ловится) и настоящий дубль 15.08 (Boulevard Mix 4 Unboxing НЕ ловится —
+  после «Unboxing:» идёт не число). Но он покрывает лишь часть: хабы «Last Car
+  Culture Set» (56 пар, 6 флагов) и «Mooneyes Diorama» (40 пар, 4 флага) под
+  шаблон не подходят.
+
+  ВЫВОД ДЛЯ ТЕХСПЕКА: одиночного признака нет, нужна комбинация. Семантика,
+  которую надо закодировать (формулировка оператора): подборка, упоминающая
+  модель X, не является дублем отдельной статьи про X. Алгоритм — предмет
+  тех-спеки; user-spec фиксирует ИЗМЕРИМЫЙ критерий приёмки на корпусе.
+
+  Распределение: медиана пар у статей-подборок по заголовку 13 (max 296),
+  у остальных 0 (max 90).
+
+  НАЙДЕННЫЙ ПРИЗНАК (замер 19.08, кандидат для тех-спеки): флагать только если
+  СЕРИЯ общей пары названа в ЗАГОЛОВКАХ ОБЕИХ статей. Смысл: общая линия должна
+  быть заявленным предметом обеих публикаций, а не упоминанием внутри текста.
+
+  Результат на историческом корпусе (вердикты оператора получены 19.08):
+    - из 22 флагов правило оставило 2, убрало 20;
+    - пара A (t-hunted «Novo lote Car Culture com carros alemaes» 21.07 против
+      autoevolution «Last Car Culture Set for 2026» 18.07) — оператор: ДУБЛИ.
+      Правило её сохраняет = верное срабатывание;
+    - пара B («Car Culture 2-Pack Mix 4» против того же хаба) — оператор: НЕ
+      дубли. Единственный оставшийся ложный флаг;
+    - оба известных дубля вне этих 22 (отпечатки вычищены) тоже пойманы:
+      14.08 team transport в обоих заголовках, 15.08 boulevard в обоих.
+
+  ИТОГОВЫЙ СЧЁТ ПРАВИЛА: поймано 3 настоящих дубля из 3, ложных осталось 1
+  вместо 21 за полтора месяца (~0.15/нед при цели <=1/нед). Пропусков нет.
+
+  ВАЖНАЯ ПОПРАВКА К БАЗОВОЙ ЛИНИИ: «статья опубликована» НЕ равно «дублем не
+  была». Пара A была опубликована ОБЕИМИ сторонами и при этом является
+  настоящим дублем — то есть текущая система один реальный дубль уже
+  пропустила в канал (оператор не нажал кнопку в шуме). Это усиливает
+  обоснование фичи: шум не просто раздражает, он маскирует истинные
+  срабатывания.
+
+  ЧЕСТНОЕ ОГРАНИЧЕНИЕ: правило выведено на тех же 22 парах, на которых
+  проверено — риск переобучения. Смягчающее обстоятельство: это не подобранное
+  число, а семантический принцип. Проспективную проверку даст только прод.
+
+  ИЗВЕСТНАЯ ДЫРА: правило опирается на заголовок. Пост t-hunted вида «Mais
+  fotos do novo lote» без имени линии в заголовке даст пропуск.
+  РЕШЕНИЕ ОПЕРАТОРА (19.08): дыру НЕ принимаем — страхуемся, доискивая имя
+  линии в ПЕРВОМ АБЗАЦЕ, если в заголовке его нет. Область поиска предмета =
+  заголовок + первый абзац.
+
+  ПОПРАВКА ПОСЛЕ CODE-RESEARCH (19.08) — вопрос 4 батча 2 был задан на ложной
+  предпосылке. Проверено в коде: admin_alerts.py:823-834 рендерит «Совпавшая
+  серия/тема» всегда, когда pairs непуст, а _pair_match их всегда заполняет —
+  значит при broad-флаге процент НЕ показывается, он остался только у легаси-
+  backstop. Реально бесполезен оператору другой, ЗАХАРДКОЖЕННЫЙ текст в блоке
+  «Что произошло» (admin_alerts.py:869-871): «статья прошла в очередь, потому
+  что порог автоблокировки (50%) не достигнут» — печатается безусловно и к
+  broad-ветке отношения не имеет. Требование переносится на него.
+
+  РИСК ВТОРОГО ПОРЯДКА (найден code-research, подтверждён в news_bot.py:2845-
+  2848): broad-флаг СЕЙЧАС терминален — backstop после него не запускается.
+  Если новое правило скажет «не дубль», статья провалится в backstop, который
+  при strict-overlap >=0.50 даёт НЕОБРАТИМЫЙ хард-блок [E015]. То есть фича,
+  задуманная как «меньше шума», может превратить мягкий флаг в потерю статьи.
+  Прямо противоречит принципу architecture.md «broad => ничего необратимого».
+  Требует решения ДО тех-спеки.
+
+  ДАННЫЕ (code-research): заголовок доступен на ОБЕИХ сторонах бесплатно
+  (article уже приходит в _check_cross_source_dedup и не читается; обе выборки
+  кандидатов уже SELECT title). ПЕРВЫЙ АБЗАЦ — только у pending: у
+  published_articles нет колонки paragraphs, тело выбрасывается в
+  move_to_published. Вариант «положить заявленную линию в fingerprint» упирается
+  в backfill_fingerprints._already_backfilled — идемпотентность завязана на
+  наличие $.pairs, поэтому старые строки молча не обновятся.
+
+  ХОРОШИЕ НОВОСТИ: португальский работает (проверено вживую — «Novo lote da
+  série Car Culture» -> ['car culture'], названия линий Mattel не переводит);
+  extract_series() уже принимает сырую строку и годится как примитив матчинга.
+
+  ПРОВЕРКА ПОЛНОТЫ (19.08) вернула needs_more, 5 пробелов. Разбор:
+
+  [ЗАКРЫТ ДАННЫМИ] Замер 3/3 и 1/21 был получен на TITLE-ONLY правиле, до
+  добавления страховки первым абзацем — проверяющий справедливо заподозрил, что
+  страховка расширит область поиска и вернёт часть ложных. ПРОВЕРЕНО вживую:
+  шесть постов t-hunted из корпуса прогнаны через fetch_full_article +
+  extract_series, сравнение «серии в заголовке» против «серии в первом абзаце».
+  Первый абзац НЕ ДОБАВИЛ НИ ОДНОЙ новой серии ни в одном из шести случаев.
+  Следствия двойные: (1) замер корпуса остаётся в силе для финального правила;
+  (2) страховка на всех доступных данных ИНЕРТНА — в реальных постах t-hunted
+  линия всегда уже названа в заголовке. Оставляем как защиту от будущей формы
+  поста, но в тех-спеке это НЕ несущая часть, и тест на неё будет синтетическим.
+
+  [ЗАКРЫТ ПРАВКОЙ] testing_strategy вводил в заблуждение фразой «интеграционные
+  не нужны» — переписан, см. выше.
+
+  [ЗАКРЫТ ЗАПИСЬЮ] Компромисс решения Р1: пара, отклонённая по предмету, больше
+  не проверяется backstop вообще — в отличие от пар без общей серии, которые до
+  него доходят. Теоретически настоящий дубль, отклонённый по предмету, но
+  проходящий backstop по strict-overlap 30-50%, теперь пройдёт молча. Принято
+  осознанно: backstop не сработал ни разу за 1.5 месяца, а альтернатива —
+  необратимый [E015] — хуже. Ловится shadow-логом.
+
+  [В ОБЪЁМ] Лог-строки news_bot.py:4398/4408/4438 печатают overlap %d%%, что
+  для broad-ветки даёт 0-7% и путает единицы измерения с backstop. Правим
+  вместе с текстом пинга.
+
+  [ПРИНЯТ ОПЕРАТОРОМ 19.08] Побочный эффект на тайминг: каждый убранный ложный
+  флаг убирает и 24-часовую отсрочку. ~20 статей за 1.5 месяца начнут выходить
+  в тот же день, а не на следующий, конкурируя за 3 слота. Оператор согласен
+  явно. Обоснование: очередь чаще пустая, чем переполненная (15.08 в ней было
+  ноль), так что ускорение выхода — улучшение, а не давление на слоты.
+
+  РЕШЕНИЯ ОПЕРАТОРА, батч 2:
+    - backstop (Jaccard 30-50/50+) ОСТАВЛЯЕМ как есть, несмотря на 0
+      срабатываний за 1.5 месяца. Не трогаем в этой фиче.
+    - текст [E014] МЕНЯЕМ: «Совпадение моделей: N%» вводит в заблуждение
+      (в новой логике процент ничего не решает) -> показывать реальную
+      причину: общая линия и то, что она заявлена в обеих статьях.
+
+# ============================================================================
+# USAGE INSTRUCTIONS
+# ============================================================================
+#
+# 1. INIT: Created by init-feature-folder.sh at work/{feature}/logs/userspec/interview.yml
+#    Set metadata.started, metadata.status: in_progress
+#
+# 2. INITIAL SCORING: After user's free-form description, score ALL items
+#    Detailed 80-95%, brief 50-70%, vague 20-40%, not mentioned 0%
+#
+# 3. INTERVIEW LOOP (save after EVERY response):
+#    a) Find required items with score < 85% in current cycle scope
+#    b) Ask 3-4 questions about different gaps
+#    c) Propose solutions based on PK
+#    d) User answers
+#    e) Update: conversation_history, scores, values, gaps, metadata
+#    f) Save immediately
+#    g) Check stop criteria (score >= 85% AND structural: value filled, no TBD, gaps resolved)
+#    h) Not done → repeat. Done → next cycle.
+#
+# 4. CYCLES:
+#    Cycle 1: phase1_feature_overview items
+#    Cycle 2: phase2_user_experience + phase3_integration items
+#    Cycle 3: ALL items still below threshold (cleanup pass)
+#
+# 5. RESUME: If metadata.status is "in_progress"
+#    Load, show conversation summary, resume from current state
+#
+# 6. COMPLETION: After user approves user-spec.md
+#    Set phase4_completion.status: approved
+#    Set metadata.status: completed
