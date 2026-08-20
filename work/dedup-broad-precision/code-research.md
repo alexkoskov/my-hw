@@ -528,3 +528,490 @@ Full grep across `*.py` (excluding venv/tests) for `overlap_pct` / `n_matches` /
 - **Load-time asserts** in `model_extractor` (lines 179-197, 227-242) fire at **import**. Any change to the fingerprint dict or lexicon must keep them satisfied or the whole bot fails to start.
 - **`similarity()` and the backstop stay untouched** per the agreed direction — but note the backstop is reached only on a pair-rule `pass` (news_bot.py:2845-2849). **Making the broad branch stricter routes more articles into the backstop**, which was previously shadowed by the broad flag. Articles that used to get a broad flag may now get a *backstop* flag instead (if their `strict` overlap lands in `[0.30, 0.50)`) — or even a **backstop hard block** at ≥0.50. This is a non-obvious second-order effect: the fix could surface latent backstop verdicts that the broad branch has been masking for months.
 - **No local DB** in the repo (`find . -name '*.db'` → empty); `news_bot.DB_FILE` is read at call time by `pending_articles_repo._connect()` (repo:204-218). Corpus work needs prod data pulled over SSH, or fixture-built DBs.
+
+---
+
+# Updated: 2026-08-20
+
+**Scope of this pass:** implementation-level. The rule was frozen since §1–§6 above:
+**flag a broad pair only if the pair's series is named in the TITLE of BOTH articles;
+symmetric; body never read; the first-paragraph fallback is CUT.** This section reports
+exact edit points, the three design forks the tech-spec must settle, and a **measured**
+(not estimated) test-surgery cost.
+
+**Method for this pass:** static read **plus a working prototype** of the whole feature
+built in a throwaway `git worktree` off `6a7228c` and run against the full suite. The
+prototype was deleted; its diff is at
+`/private/tmp/claude-501/-Users-alex-MyFiles-ai-projects-my-hw-my-hw-bot/6deaa3b0-1223-4ac9-b32c-93316bdc8c24/scratchpad/prototype.patch`.
+It is **evidence, not a proposal** — the tech-spec owns naming, comments and text.
+
+## U0. What the frozen rule retires from the first pass
+
+| First-pass item | Status now |
+|---|---|
+| **F3** — `published_articles` has no `paragraphs` column | **MOOT.** Only mattered for the first-paragraph fallback, which is cut. |
+| **§2.3 Options A / B / C** (DB column vs fingerprint key vs hybrid) | **All MOOT.** The spec picked "title from the existing projection, both sides". No migration, no fingerprint key, no backfill. |
+| **F8** — `_already_backfilled` keys on `$.pairs` | **MOOT** as a blocker (it only threatened Option B). Still true, still worth not disturbing. |
+| **§5.2 property 1** — "fixtures are article dicts, fingerprints derived" | **INVERTED for the new corpus** — see §U6. |
+| **F6 / §6.1** — «Совпадение моделей: N%» is already unreachable on the broad path | **Still true and now load-bearing**: the AC's three-way text branch is about the «Что произошло» sentence (admin_alerts.py:869-873), not the match block. |
+
+## U1. Implementation surface — exact anchors
+
+### U1.1 The new article's title (spec: "no plumbing needed" — confirmed, with one hazard)
+
+`_check_cross_source_dedup(article, fingerprint, conn, new_source)` (news_bot.py:2796)
+still never reads `article`. The field is **`article['title']`** — every source fetcher
+sets it (`autoevolution_source.py:495,566`, `t_hunted_source.py:336`,
+`lamley_source.py:429`, `orangetrack_source.py:396`).
+
+**HAZARD — an order-dependence trap that defeats the spec's symmetry constraint.**
+The candidate row's title is not `article['title']`; it is what `job()` wrote into
+`pending_articles.title` at **news_bot.py:4547**:
+
+```python
+'title': article.get('title') or entry.get('title') or '',
+```
+
+That idiom (5 occurrences: 4244, 4251, 4342, 4404, 4547) falls back to the RSS entry
+title when the fetcher returned an empty one. If the gate reads only `article['title']`,
+then for such an article the **new** side sees `''` while the **candidate** side (once
+the same article is in the DB) sees the entry title — an asymmetric verdict that depends
+on which article arrived second. That is precisely what "Правило симметрично"
+(user-spec Ограничения) forbids.
+
+**Cheap fix:** hoist the expression to a local before the gate call at news_bot.py:4388
+and reuse it both at the gate and at 4547. `entry` is in scope there.
+
+### U1.2 The candidate's title — dict key is `'title'`
+
+Both fetch helpers already project it:
+`list_recent_pending_fingerprints` — `pending_articles_repo.py:1534`;
+`list_recent_published_fingerprints` — `pending_articles_repo.py:1553`.
+`_row_to_dict` (repo:189-201) keys the dict off `cursor.description`, so the key is
+**literally `'title'`** — no aliasing, no rename. `move_to_published` (repo:1277-1287)
+carries `title` verbatim, so a published candidate keeps its original-language title.
+**No schema change, no query change.** (Confirms F2 at implementation level.)
+
+### U1.3 The check itself — inside `_pair_rule_verdict` (news_bot.py:2698-2733)
+
+Loop body anchors: 2712 `for row in candidates:` · 2718 `shared = new_pairs & cand_pairs`
+· 2721 `shared_sorted` · 2723-2726 the `|D` early return · **2727-2730 the broad branch —
+the edit point** · 2731-2733 the tail.
+
+Three primitives, all already present:
+
+1. **Series out of a pair key** — the key is `"<model>|<series>|<tier>"`, theme-only
+   `"*|<series>|B"`. `_build_pairs` (model_extractor.py:533-563) guarantees exactly three
+   fields: model tokens are `[a-z0-9 -]` and series canonicals are pipe-free by the
+   load-time assert at model_extractor.py:179-183. So `key.split('|')[-2]` is total.
+2. **Series out of a title** — `model_extractor.extract_series(text)` (model_extractor.py:711).
+   It returns **canonical** names and pair keys embed **canonical** names, so a plain set
+   intersection is correct with no normalisation step.
+3. **Robustness** — verified live, `extract_series` never raises and returns `[]` for
+   `None`, `''`, `123`, `[]`, `{}`, `{'title': None}`. This satisfies the edge case
+   «Пустой или отсутствующий заголовок кандидата — проверка предмета не проходит,
+   исключения нет» **with no guard code at all**.
+
+**Cost:** hoist `extract_series(new_title)` once outside the loop; call
+`extract_series(row.get('title') or '')` per candidate that shares a pair. Measured:
+**4 µs per title scan** → 0.8 ms for a full 200-row window even if evaluated eagerly.
+Perf is a non-issue.
+
+### U1.4 Live scoring of the frozen rule against measurements.md
+
+Run against the real module on `dev` (`series ∈ extract_series(title_A)` and
+`∈ extract_series(title_B)`):
+
+| measurement-1 case | expected | rule says |
+|---|---|---|
+| Mercedes-Benz 6x6 × 5 Unsung Heroes (`red line club`) | false | **no flag** ✅ |
+| Case Q Unboxing STH × Mooneyes Diorama (`boulevard`) | false | **no flag** ✅ |
+| Convention Malaysia × Last Car Culture Set (`team transport`) | false | **no flag** ✅ |
+| RLC Exclusive '21 Bronco × 11 New Collectibles (`red line club`) | false | **no flag** ✅ |
+| Novo lote **Car Culture** × Last **Car Culture** Set | TRUE dupe | **flag** ✅ |
+| Mais fotos **Boulevard** × 2026 **Boulevard** Mix 4 | TRUE dupe | **flag** ✅ |
+| Mais fotos Boulevard × Unboxing: 10 Affordable Cars | false | **no flag** ✅ |
+| **Car Culture 2-Pack Mix 4 × Last Car Culture Set** | false | **FLAGS** ⚠️ |
+
+The last row **is** the "≤1 ложный" the AC budgets for. Both titles genuinely name
+`car culture`; no title-scope rule can separate it. Worth naming explicitly in the
+tech-spec so the corpus AC is not read as "0 false positives".
+
+Also confirmed: `extract_series("New Hot Wheels RLC Exclusive '21 Ford Bronco")` →
+`['red line club']` (uppercase acronym matches) while `"novo lote rlc"` → `[]` — the
+edge case about acronym casing behaves exactly as the spec describes.
+
+## U2. THE THIRD SIGNAL — options and the recommendation
+
+**Precondition finding that reshapes this whole question:** grep across all `*.py`
+(venv excluded) shows **no test and no non-`news_bot` module calls
+`_check_cross_source_dedup`, `_pair_rule_verdict`, `_set_overlap_backstop_verdict`,
+`_pair_match` or `_fetch_dedup_candidates`.** Each has exactly one caller, all inside
+`news_bot.py`. **Changing their arity or return shape breaks zero tests.** 100 % of gate
+coverage is end-to-end through `job()` in `tests/test_integration.py`.
+
+The three states the `[E014]` builder must tell apart:
+(a) broad-pair flag · (b) ordinary backstop flag (sim 0.30–0.50) · (c) capped backstop
+flag (sim ≥ 0.50, block withheld). Today `alert_cross_source_dupe` (admin_alerts.py:799)
+forks only on `if pairs:` (admin_alerts.py:823), so (b) and (c) are indistinguishable.
+
+| Option | Call sites that change | Verdict |
+|---|---|---|
+| **1. Extra key in the match dict** — gate sets `match['block_withheld']=True` on the downgrade; `job()` forwards it as a new keyword-only kwarg | gate (news_bot.py:2871 region) · E014 send (news_bot.py:4477-4491) · builder signature (admin_alerts.py:799-811) · «Что произошло» (admin_alerts.py:869-873) | **RECOMMENDED — least invasive.** The builder already carries `buttons_enabled` as a keyword-only bool after `*`; a second one is the same shape. The positional-contract pin `test_e014_buttons_enabled_is_keyword_only` (test_admin_alerts.py:471) asserts a 9th **positional** arg raises `TypeError` — a keyword-only param keeps that green. |
+| **2. Derive it in `job()` from `match['overlap_pct'] >= 50`** | E014 send only | **WRONG — it lies.** `overlap_pct = int(round(best_sim*100))` (news_bot.py:2786) but the block branch tests `best_sim >= 0.50` (news_bot.py:2792). Enumerated: **350 Jaccard fractions below 0.50 round to ≥50 %**, the smallest being `50/101 = 0.4950`. Round-up fingerprints reach ~74 strict models (296 pairs ÷ 4 series), so `\|strict\|` in the 50-100 range is real prod data. In those cases `job()` would print "the threshold WAS reached but the block was withheld" for an article the backstop would only ever have flagged — a direct violation of «ни в одном не врёт». |
+| **3. Verdict enum** — new decision string e.g. `'flag_capped'` | `_check_cross_source_dedup` returns · `job()` dispatch at news_bot.py:4395 and 4420 · both gate docstrings | Works, but strictly more invasive than 1 and **still needs the builder kwarg anyway** — the builder is pure and cannot see `decision`. No gain. |
+
+**Note:** option 1 does not need a `None`-safe read anywhere the backstop path is absent
+— `match.get('block_withheld')` on a `_pair_match` dict simply returns `None`.
+
+## U3. THE CAP — where the downgrade belongs
+
+Control flow today, `_check_cross_source_dedup` (news_bot.py:2836-2872):
+
+```
+2842  if DEDUP_SERIES_ENABLED and pairs:
+2843      candidates = _fetch_dedup_candidates(conn)
+2844      decision, match = _pair_rule_verdict(pairs, candidates)
+2845-2848 if decision != 'pass': return (decision, match)      # TERMINAL
+2864-2865 if not strict and not series: return ('pass', None)  # empty short-circuit
+2869-2872 return _set_overlap_backstop_verdict(fingerprint, strict, candidates, new_source)
+```
+
+**The subject-rejected path always reaches the backstop.** A non-empty `pairs` implies a
+non-empty `series` (`_pass3_series`, model_extractor.py:566-590, derives both from the
+same `_scan_series` result), so the empty short-circuit at 2864 can never fire on this
+path. No new branch is needed to get there.
+
+**Where the cap belongs: in the gate, at the `return` on news_bot.py:2871-2872** — i.e.
+bind the backstop result, downgrade, then return.
+
+- **Not in `_set_overlap_backstop_verdict`** (news_bot.py:2736-2794). The user-spec is
+  explicit that the backstop's thresholds are out of scope («Пороги правила set-overlap
+  не трогаем»); adding a `cap` parameter there puts the change inside the function the
+  spec fences off, for zero benefit.
+- **Not in `job()`.** `job()` cannot know a pair was subject-rejected unless the gate
+  tells it, and the `decision == 'block'` branch (news_bot.py:4395-4418) has irreversible
+  side effects — `mark_processed` at 4402-4406 and the `[E015]` send at 4407-4417. A
+  downgrade there means re-ordering a branch that drops articles. Highest risk, no gain.
+
+**State that must be threaded:** `_pair_rule_verdict` must report that at least one
+broad pair failed the subject check. Because the funnel counter (§U4) needs the same
+fact, make it an **`int` count**, not a bool — one value serves the cap (`> 0`) and the
+ping. Return shape `(decision, match, suppressed)`; §U2's precondition finding makes the
+arity change free. `_check_cross_source_dedup` then also returns 3-tuple so `job()` can
+count — its single call site is **news_bot.py:4391-4393**.
+
+**Two consequences worth pinning in the tech-spec:**
+
+1. Case (c) is only reachable when the new article has non-empty `strict` and a
+   cross-source 7-day candidate at ≥0.50. A **theme-only** rejected key (`*|<series>|B`)
+   has empty `strict`, so `similarity()` returns 0.0 at its AC6 guard and the backstop is
+   a guaranteed no-op — the cap never fires there.
+2. The cap applies to the **backstop's** block only. A later `|D` pair still returns
+   `('block', …)` from `_pair_rule_verdict` and still fires `[E015]` — required by
+   «Поведение распознающей (`|D`) пары не изменилось» and unaffected by the cap.
+
+## U4. THE COUNTER — funnel plumbing
+
+**architecture.md:341's "counts only" claim is accurate**, verified against the code:
+`funnel` is declared as a flat dict of plain ints at **news_bot.py:4082-4094**, every
+consumer goes through `_funnel_int` (admin_alerts.py:172-182) which clamps to a
+non-negative int and never raises, and no funnel value is ever a string. A
+`dedup_suppressed: 0` int fits the contract exactly. The **diagnostic detail** the
+risk-1 mitigation asks for (both links, the shared line, both titles) belongs in the log
+line, not the funnel — the same split architecture.md already documents.
+
+Exact edit points:
+
+| What | Anchor |
+|---|---|
+| Declare `'dedup_suppressed': 0` | news_bot.py:4082-4094 (next to `'dedup_degraded'` at :4091) |
+| Increment | news_bot.py:4391-4393, right after the gate call — **once per article**, not per rejected candidate (see the ambiguity below) |
+| `[funnel]` log line | news_bot.py:4632-4642 (format string + arg list) |
+| `[E009]` breakdown block | `_format_funnel`, admin_alerts.py:221-271 — read at :246-258, new bullet next to the `if held:` conditional at :259-263 |
+| `[E008]` compact line | `_format_funnel_line`, admin_alerts.py:275-305 — suffix built like `failed_part` at :296, appended in the return at :300-303 |
+
+**`job()` runs once a day** — a single fixed cron tick at 10:00 МСК (news_bot.py:4011,
+:5090-5091, `schedule.every().day`), so the per-tick funnel *is* the daily figure and
+`[E008]`/`[E009]` *is* the daily ping. No aggregation layer needed.
+
+**Do NOT fold it into the «отсеяно» sum** (`_format_funnel_line`, admin_alerts.py:288-294).
+A suppressed flag is not a drop — the article is staged. This is the same reasoning
+`held_for_review` already carries, with a ready-made precedent test to copy
+(`test_held_rows_are_not_counted_as_dropped`, test_admin_alerts.py:871-877).
+
+**Zero existing funnel tests break.** `TestIntakeFunnel` (test_admin_alerts.py:713) uses
+*partial* dicts — `_funnel_int` reads a missing key as 0 — and every assertion is
+`assertIn`/`assertNotIn`, never an exact-block equality. Verified by running the full
+prototype: all funnel tests stayed green.
+
+**AMBIGUITY the tech-spec must close.** «Число подавленных срабатываний» has two
+readings: (i) count of rejected *candidate pairs* — a round-up article can contribute 20
+in one tick; (ii) count of *articles* whose broad flag was withheld — which is what a
+«срабатывание» meant in measurement 1 (31 `softflag_pair:` keys = 31 pings, since the old
+rule remembered only the first broad match and emitted one `[E014]` per article).
+**(ii) is the one that is comparable to the 31/22 baseline.** A second sub-question: if
+the pair is rejected but the backstop then flags anyway, was anything "suppressed"? The
+operator did see a ping. The spec's step 7 assumes the common case («статья идёт в
+очередь молча») and does not say.
+
+## U5. TEST SURGERY — MEASURED, NOT ESTIMATED
+
+**This is the headline correction of this pass.** measurements.md замер 3 calls the test
+edit «самая объёмная часть работ» on the basis of 25 `_seed_published` call sites. That
+estimate is **wrong by an order of magnitude**, and it is now measured rather than argued.
+
+### U5.1 Method
+
+A full prototype of the frozen feature — subject check, scan continuation, the cap, the
+third signal, the three-way `[E014]` text, the funnel counter, and the percent-free broad
+log branch — was built in a detached worktree off `6a7228c` and run against the whole
+suite. Diff size: **`news_bot.py` +51/−20, `admin_alerts.py` +25/−2, tests +4/−1.**
+
+### U5.2 The measured numbers
+
+| Run | Result |
+|---|---|
+| Baseline, unmodified `6a7228c` | `1970 passed, 2 skipped, 517 subtests` |
+| Prototype **with** the cap, tests untouched | **`2 failed`**, 1968 passed |
+| Prototype **without** the cap, tests untouched | **`8 failed`**, 1962 passed |
+| Prototype with the cap **+ a 3-line change to `_seed_published`'s default** | **`1970 passed, 2 skipped`** — fully green |
+
+### U5.3 The 2 tests that actually go red
+
+Both are in `tests/test_integration.py::TestCrossSourceDedup`, both seed a **theme-only**
+`*|k-pop demon hunters|B` pair against the default candidate title `'Existing Article'`
+(which names no series). Their `strict` is empty on both sides, so the backstop cannot
+substitute a flag — `similarity()` returns 0.0 at its AC6 guard:
+
+| Test | def | seed | dies on |
+|---|---|---|---|
+| `test_soft_flag_defers_publication_by_a_day` | :2440 | :2450 | `publish_after` stays NULL → the 23 h/25 h delta asserts at :2470-2473 |
+| `test_theme_only_pop_culture_flags_no_model` | :2517 | :2532 | `assertEqual(len(e014_calls), 1)` :2570-2573 and `assertIn('k-pop demon hunters', …)` :2574 |
+
+### U5.4 The 6 tests that ride entirely on the cap
+
+These seed `toyota supra|car culture|B` with **100 % strict overlap**, so once the broad
+flag is suppressed the backstop *would* hard-block them. With the cap they stay green
+(the `[E014]` is substituted by a capped backstop flag); **without** the cap all six flip
+to `[E015]` and go red:
+
+`test_broad_pair_soft_flag_is_terminal` :1313 · `test_soft_flag_logged_even_when_alert_rate_limited` :1393 ·
+`test_flag_on_e014_send_includes_review_keyboard` :3625 · `test_flag_off_e014_send_has_no_keyboard` :3707 ·
+`test_flag_on_non_numeric_admin_no_keyboard_no_token` :3748 · `test_only_e014_carries_keyboard` :3796.
+
+**They are the de-facto regression test for the cap** — and the fact that they pass for
+the *wrong reason* (a backstop flag standing in for a pair flag) is exactly why the
+`_seed_published` fix below matters: it restores their original intent.
+
+### U5.5 The fix — 3 lines, one place
+
+`_seed_published` (test_integration.py:1100-1101) hardcodes `title='Existing Article'`,
+`paragraphs=['Body.']` while injecting a hand-written `pairs` list. Making the default
+title derive from the seeded fingerprint's `series` fixes **all 8** at once and
+future-proofs new seeds:
+
+```python
+def _seed_published(self, link, fingerprint, source='autoevolution', title=None):
+    if title is None:
+        _series = ' '.join(fingerprint.get('series') or [])
+        title = f'Existing {_series} Article' if _series else 'Existing Article'
+```
+
+Verified: `extract_series('Existing Car Culture Article')` → `['car culture']`,
+`extract_series('Existing K-Pop Demon Hunters Article')` → `['k-pop demon hunters']`.
+Full suite green with this change alone. (Per-test explicit `title=` kwargs at the 8
+call sites are the alternative; 8 lines instead of 3, no other difference.)
+
+### U5.6 Cause buckets — what is NOT broken
+
+- **Old-`[E014]`-text assertions: ZERO.** Repo-wide grep confirms **no test asserts
+  «порог автоблокировки», «Совпавшая серия/тема» or «Совпадение моделей»** — both live
+  only in `admin_alerts.py:824`/`:871`. The body is pinned by components instead
+  (`"[E014]"`, `"Похож на дубль"`, `"Что произошло"` at test_admin_alerts.py:336/364/601,
+  `"Что сделать"`, and the no-raw-key-leak `assertNotIn` guards). Rewriting the sentence
+  three ways is free — only the `"Что произошло"` header must survive.
+  `'Совпадение:'` / `'Совпавшие пары'` at test_integration.py:1234, 1600-1601, 1738-1739,
+  2162 are all **`[E015]`** assertions, untouched.
+- **"Broad verdict is terminal": ZERO red.** `test_broad_pair_soft_flag_is_terminal`
+  (:1313) survives once its candidate title declares the series — a *subject-passing*
+  broad flag is still terminal, so the test keeps validating real behaviour. Its
+  docstring (:1319-1323) and the gate docstrings (news_bot.py:2809-2818, :2846-2848)
+  claim **both** verdicts are terminal, which stops being true. **Prose amendment, not a
+  test rewrite.**
+- **Extractor layer: ZERO.** Putting the rule in `news_bot._pair_rule_verdict` leaves
+  `TestSharesPair` (6 tests, test_model_extractor.py:874-931), `TestPairs` (12 tests,
+  :672-872) and the `_pair_tier_verdict` calibration harness (:363-387) untouched — they
+  call `model_extractor` directly. Pushing the rule down into `shares_pair`/`_build_pairs`
+  instead would break all 18 on the signature change alone, since neither function takes
+  a title. **Strong argument for the gate-layer placement.**
+  Also verified: all three `expected_verdict: 'soft-flag'` corpus pairs name their series
+  in **both** titles, so the existing calibration corpus survives either way.
+- **Whole files with zero breakage:** `test_model_extractor.py`, `test_admin_alerts.py`,
+  `test_pending_articles_repo.py` (41 dedup-adjacent tests), `test_backfill_fingerprints.py`
+  (15 — its `_seed_published` at :113 is a *different*, module-level helper that never
+  runs `job()`), `test_no_token_leak_in_logs.py` (its `[E014]` string at :666 is a
+  hand-written literal, not the builder). **All breakage is confined to
+  `tests/test_integration.py`.**
+
+### U5.7 What is NOT covered today and must be written
+
+Nothing in the suite pins the new behaviour. Minimum new tests:
+
+1. Broad pair, series in **both** titles → `[E014]` with the pairs block and no
+   «порог» sentence.
+2. Broad pair, series in only **one** title → no `[E014]`, no 24 h defer, and the
+   suppressed counter increments.
+3. Subject-rejected pair **+ 100 % strict overlap** → `[E014]`, and **`[E015]` is
+   impossible** (the cap; this is the AVP step-4 test).
+4. Subject-rejected pair on candidate *N*, then a `|D` pair on candidate *N+1* →
+   `[E015]` still fires (scan continuation).
+5. Subject-rejected pair on candidate *N*, then a subject-**passing** broad pair on
+   candidate *N+1* → `[E014]` names candidate *N+1*.
+6. Empty / `None` candidate title → no flag, no exception.
+7. Portuguese title resolves (`Novo lote da série Car Culture`) — **currently an
+   emergent property with no regression guard anywhere** (the parametrised lexicon test
+   at test_model_extractor.py:602-618 is English-only).
+8. The three `[E014]` text variants, rendered by the real builder.
+
+## U6. CORPUS FIXTURE
+
+### U6.1 Conventions on disk
+
+`tests/fixtures/` holds `cross_source_dedup_pairs.py` (28 KB labelled corpus, a **Python
+module**), `orangetrack_golden.json` (the only JSON corpus), `mattel_flight_builder.py`,
+and `articles/{t_hunted,autoevolution-blocked,orangetrack,lamley}/` HTML trees.
+
+JSON convention, from `tests/test_orangetrack_golden.py:44-55`:
+
+```python
+_GOLDEN_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                            "fixtures", "orangetrack_golden.json")
+json.load(fh)["fixtures"]
+```
+
+The file is `{"__README__": "<why this exists / editing it IS the gate failure>",
+"fixtures": {…}}`, and the loader resolves the path from `__file__` (pytest is run both
+from repo root and from `tests/`). That header-plus-payload shape is the house style for
+a data corpus that must not be casually regenerated — worth copying verbatim here.
+
+### U6.2 The natural shape for this corpus
+
+**Pre-baked fingerprints + titles, not article dicts.** This inverts the first pass's
+§5.2 property 1, and the frozen rule is what makes it sound: the rule reads **only**
+titles and **only** the `pairs` sets, both of which survive in the prod DB. Bodies are
+unrecoverable (autoevolution answers 403 in bulk; `published_articles` never stored
+paragraphs) — and with the fallback cut, **they are not needed.**
+
+```json
+{
+  "label": "2026-07-28-mercedes-6x6-vs-unsung-heroes",
+  "a": {"link": "...", "title": "New Hot Wheels Mercedes-Benz 6x6 ...",
+        "source_name": "autoevolution", "fingerprint": {"strict": [...], "brands": [...],
+        "series": [...], "pairs": ["porsche 911 gt2 evo|red line club|B", ...]}},
+  "b": {"...": "same shape"},
+  "operator_verdict": "not-a-dupe" | "dupe",
+  "expected_flag": false,
+  "shared_pairs_today": ["porsche 911 gt2 evo|red line club|B"],
+  "note": "prod softflag_pair key, flagged YYYY-MM-DD; the shared line is a passing mention"
+}
+```
+
+**The harness can call the real production function directly.** `_pair_rule_verdict` is
+pure — no DB, no I/O — so the test builds a one-element candidate list
+`[{'link':…, 'source_name':…, 'title':…, 'model_fingerprint': <fp dict>}]` and asserts the
+verdict. **No sqlite fixture, no `job()`, no mocking.** This is a materially cheaper
+harness than `TestCrossSourceDedup`'s.
+
+**Sizing / hooks:** the largest fingerprint has 296 pair keys (~12 KB); ~48 article
+records → roughly 100–200 KB. Well under `check-added-large-files --maxkb=1000`
+(`.pre-commit-config.yaml`). JSON is safe under `trailing-whitespace` /
+`end-of-file-fixer` (unlike the HTML evidence trees, which are explicitly excluded).
+
+### U6.3 The prod pull — exactly what must be extracted
+
+Repeating the first pass: **no local DB exists** (`find . -name '*.db'` → empty). The
+data is only on the prod host (`45.90.216.165`, `/data/news.db`, via
+`docker exec -i hw-news-bot`).
+
+1. **The flag ledger** — `SELECT key FROM bot_state WHERE key LIKE 'softflag_pair:%'`.
+   Key shape is `softflag_pair:{new_link}\n{existing_link}` (`_pair_key`,
+   pending_articles_repo.py:1609-1616). 31 rows expected. **Never garbage-collected**, so
+   this side is stable.
+2. **Fingerprints + titles for both sides** —
+   `SELECT link, title, model_fingerprint FROM published_articles` and the same from
+   `pending_articles`. 22 of the 31 pairs have both sides surviving; the other 9 were
+   cleaned away with their rows.
+3. **Titles for the two extra dupes** (14.08 `team transport`, 15.08 `boulevard`) —
+   `SELECT link, title FROM processed_news WHERE link IN (…)`. That table is
+   `(link, title, pub_date)` (news_bot.py:1548).
+4. **Rebuild the two missing t-hunted fingerprints** — `news_bot.fetch_full_article({'link': …})`
+   then `model_extractor.extract_fingerprint(article)`. The t-hunted parser works live
+   (measurement 2 used it on six posts). Their autoevolution partners' fingerprints
+   survived in the DB (4 and 90 pairs), so **no autoevolution re-fetch is needed** —
+   which is fortunate, because bulk re-fetch there is 403 (backfill_fingerprints.py:237-253).
+
+**Corpus size is 24 pairs, not 31**: 22 surviving + 2 rebuilt = 3 true dupes + 21 false —
+which is exactly the arithmetic in the acceptance criterion. The remaining 9 are
+unrecoverable and should be documented as such in the `__README__`.
+
+**Land the raw dump first, transform second.** The repo has a precedent and a hook rule
+for exactly this: `work/source-formatting-parity/corpus-raw/` (see
+`work/source-formatting-parity/tasks/1.md:224-243`), excluded from the whitespace hooks
+in `.pre-commit-config.yaml`. The rationale there applies verbatim — the extract is
+unrepeatable (9 of 31 fingerprints are *already* gone), so it must be committed as-is
+before anyone starts reshaping it.
+
+## U7. Spec items the code cannot support as written
+
+Four things, in descending severity. None is a blocker; all need a sentence in the
+tech-spec.
+
+**U7.1 — The 24 h defer AC contradicts itself in the capped branch.** AC:
+«Суточная отсрочка публикации ставится ровно тогда, когда выдан `[E014]`, и не ставится
+для отклонённых по предмету пар.» In the capped case **both clauses apply at once**: the
+pair *was* subject-rejected *and* an `[E014]` *is* issued. The code cannot honour both —
+the defer stamp is set in the `decision == 'flag'` branch (news_bot.py:4426-4432), before
+the rate-limit check, and a capped verdict is a `'flag'`. **The first clause must win:
+the defer follows the `[E014]`, not the rejection.** Otherwise a flagged article gets a
+cancel button with no window to press it — the exact 2026-07-28 incident
+`_DEDUP_DEFER_HOURS` exists to prevent (news_bot.py:2632-2638).
+
+**U7.2 — Which pairs the `[E014]` names when only some pass.** A single candidate can
+share several broad pairs with only some passing the title check. `_pair_match(row,
+shared_sorted, n_total)` (news_bot.py:2726, :2730) currently passes **all** shared keys,
+and `alert_cross_source_dupe` renders them verbatim through `_render_pairs_block`
+(admin_alerts.py:790-793). Rendering the full set would name lines that are *not*
+declared in both titles — «ни в одном не врёт» forbids it. The builder cannot filter
+(it never sees the titles), so **the gate must pass only the passing subset**. Note this
+also changes `n_matches`, which is moot on the broad path (no percent sentence) but is
+still forwarded at news_bot.py:4479-4480.
+
+**U7.3 — `match['overlap_pct']` is bracket-indexed in three log statements.** news_bot.py:4400,
+:4410, :4440 (and :4478 on the send). The AC «Лог-строки дедупа не печатают процент
+пересечения для broad-ветки» is satisfied by **branching the log on `match.get('pairs')`**,
+not by dropping the key from `_pair_match`: a `KeyError` there lands inside the fail-open
+handler (news_bot.py:4505-4531) and degrades the gate silently at one `[E016]` per hour.
+Keep `overlap_pct` in the dict; just stop printing it. (Sharpest breakage edge, carried
+forward from §6.6.)
+
+**U7.4 — «Правило симметрично» is not free.** See §U1.1: it holds only if the gate reads
+the same `article.get('title') or entry.get('title') or ''` expression that
+news_bot.py:4547 writes to the row. Reading a bare `article['title']` silently
+reintroduces order-dependence for any article whose fetcher returned an empty title.
+
+**Minor, no action needed:** the `[E015]` log at news_bot.py:4398-4400 prints the same
+unit-ambiguous `overlap_pct` on the `|D` pair-rule path. Out of scope per «Поведение
+распознающей (`|D`) пары не изменилось», but it is the same defect and a one-line fix if
+the tech-spec wants consistency.
+
+## U8. Docs that become false
+
+- `architecture.md:328` — «Both verdicts are terminal.» False for a subject-rejected `|B`.
+- `architecture.md:328` — the `|B` line needs the title-declaration condition and the
+  measured 95 % FP rate that motivated it (`deployment.md:365-375` currently instructs
+  the operator to watch for exactly this).
+- `project.md:41` — «a shared *broad* pair soft-flags it» needs the same qualifier.
+- `architecture.md:341` — the funnel counter list gains `dedup_suppressed`.
+- **In-code prose:** `_check_cross_source_dedup`'s docstring (news_bot.py:2809-2818) and
+  the inline comment at news_bot.py:2846-2848 both assert terminality of both verdicts.
