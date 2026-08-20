@@ -12,8 +12,8 @@
 # ============================================================================
 interview_metadata:
   started: "2026-08-19 12:55:00"
-  last_updated: "2026-08-19 12:55:00"
-  status: "in_progress"
+  last_updated: "2026-08-20 10:00:00"
+  status: "completed"
   can_resume: true
   current_question_num: 5
   feature_size: "M"
@@ -289,8 +289,8 @@ phase3_integration:
 # Phase 4: Completion
 # ============================================================================
 phase4_completion:
-  userspec_file: ""  # work/{feature}/user-spec.md
-  status: "pending"  # pending | created | approved
+  userspec_file: "work/dedup-broad-precision/user-spec.md"
+  status: "approved"
 
 # ============================================================================
 # Decision Rules
