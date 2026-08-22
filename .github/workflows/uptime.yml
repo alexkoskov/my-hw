@@ -128,7 +128,18 @@ jobs:
           m = re.search(r"-(\d{2})-(\d{2})$", pages[0]["path"])
           if not m:
               print("true"); sys.exit()          # unexpected path shape
-          today = datetime.date.today()
+          # Both halves of the staleness test MUST be read off the SAME clock.
+          # They were not: `today` came from datetime.date.today() (UTC on the
+          # runner) while the hour below was Moscow. Between 00:00 and 03:00 МСК
+          # the hour wraps to 0 while the UTC date has not rolled yet, so
+          # `days == 1 and msk_hour >= 21` goes false and a live outage reports
+          # itself RECOVERED — then re-fires at 03:00 МСК when the UTC date
+          # catches up and `days > 1` takes over. Seen live on 2026-08-21: one
+          # dry day produced alert 21:25, false recovery 00:15, second alert
+          # 03:46 in the middle of the night, real recovery 10:08.
+          now_msk = (datetime.datetime.now(datetime.timezone.utc)
+                     + datetime.timedelta(hours=3))
+          today = now_msk.date()
           month, day = int(m.group(1)), int(m.group(2))
           last = datetime.date(today.year, month, day)
           if last > today:                       # published in December, now January
@@ -138,8 +149,7 @@ jobs:
           # still legitimately the newest. The last slot is 19:30 МСК, so after
           # ~21:00 МСК a missing post for TODAY is real. Before that, yesterday
           # is fine — the gap between 19:30 and the next 10:00 is normal.
-          msk_hour = (datetime.datetime.now(datetime.timezone.utc)
-                      + datetime.timedelta(hours=3)).hour
+          msk_hour = now_msk.hour
           days = (today - last).days
           sys.stderr.write("last page: %s (%d days ago), MSK hour %d\n"
                            % (last, days, msk_hour))
