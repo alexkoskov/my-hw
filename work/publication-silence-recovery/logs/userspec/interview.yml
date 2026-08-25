@@ -12,7 +12,7 @@
 # ============================================================================
 interview_metadata:
   started: "2026-08-25 23:02:59"  # Timestamp (YYYY-MM-DD HH:MM:SS)
-  last_updated: "2026-08-25 23:19:39"
+  last_updated: "2026-08-25 23:29:00"
   status: "in_progress"  # not_started | in_progress | completed
   can_resume: true
   current_question_num: 2
@@ -404,6 +404,10 @@ notes: |
     presented as proof of recovery; durable Telegram delivery remains separate.
   - Independent interview-completeness-checker verdict: complete/high confidence,
     no gaps across item coverage, logic, PK alignment, code findings or testing.
+  - Validation round 1 approved with no critical findings. Follow-up fixes move
+    retained-slot/SQLite/checkout mechanics to tech-spec, make the watcher
+    expected-state matrix explicit, and treat future MM-DD as inconclusive except
+    for the bounded December-to-January rollover.
 
 # ============================================================================
 # USAGE INSTRUCTIONS
