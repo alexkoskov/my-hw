@@ -3,16 +3,10 @@
   "findings": [
     {
       "severity": "major",
-      "category": "tasks",
-      "issue": "The aggregate-snapshot failure contract is not deterministic across the tech spec and code research. Architecture says the job 'may fall back' to the existing publishable count, while code-research.md defines the concrete bounded path: call count_pending(), create no release opportunities, and propagate if that fallback also fails. Task 3 only says to cover errors, so decomposition could legitimately choose different behavior.",
-      "fix": "State the exact fallback call and exception boundary in Architecture/Decision 8, and make Task 3 or its technical acceptance criterion require aggregate failure -> count_pending() ordinary plan -> zero release opportunities, with fallback failure propagated."
-    },
-    {
-      "severity": "minor",
-      "category": "tasks",
-      "issue": "The user-spec requirement that E014 keep/E036 approve after 19:30 waits until the next day's 10:00 slot is only implied by generic cutoff language. The Testing Strategy and Task 3 name restart/cutoff and callback-boundary coverage but do not explicitly assign this cross-day review-release case.",
-      "fix": "Add an explicit integration case and technical acceptance statement for a keep/approve committed after 19:30: no immediate publication and eligibility at the next day's 10:00 opportunity."
+      "category": "task_quality",
+      "issue": "Task 2 duplicates the concrete 1 MiB evidence-size decision from Decision 7 in its Description ('1-MiB-bounded'). Per the task-brevity rules, configuration values and technical choices belong in Decisions, while implementation tasks should define scope and reference the decision.",
+      "fix": "Change Task 2's Description to request a bounded tri-state classifier and reference Decision 7, leaving the concrete 1 MiB value only in Decisions/Architecture/Acceptance Criteria and the later decomposed task file."
     }
   ],
-  "summary": "Template validation passes with no critical findings. Frontmatter, required sections, decision records, risks, task fields, skill/reviewer catalog use, concrete paths, wave ordering, and same-wave file ownership are valid. One major implementation-contract ambiguity and one minor requirement-traceability gap should be tightened before decomposition."
+  "summary": "Round 2 passes with no critical findings. Both prior findings are resolved: the snapshot fallback is now deterministic and the post-19:30 next-day behavior has explicit integration coverage and acceptance traceability. Frontmatter, required sections, paths, skills/reviewers, task granularity otherwise, wave ordering, and same-wave file ownership are valid. One newly introduced task-description duplication should be removed before decomposition."
 }

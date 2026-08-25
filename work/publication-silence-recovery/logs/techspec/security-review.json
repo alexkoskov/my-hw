@@ -1,53 +1,55 @@
 {
   "status": "approved",
   "summary": {
+    "totalFindings": 0,
+    "critical": 0,
+    "major": 0,
+    "minor": 0
+  },
+  "round": 2,
+  "previousRound": {
+    "status": "approved",
     "totalFindings": 3,
     "critical": 0,
     "major": 1,
     "minor": 2
   },
-  "findings": [
+  "round1Closure": [
     {
-      "severity": "major",
-      "category": "A08:2021 Software and Data Integrity Failures",
-      "title": "Trusted classifier revision and failed-checkout gate are not acceptance-tested",
-      "description": "Decision 6 says the workflow checks out a trusted default-branch revision, but neither the checkout contract nor Task 4's static workflow acceptance requires an explicit `ref`. `workflow_dispatch` can run against a selected ref, so default `actions/checkout` behavior can execute a classifier from that selected branch instead of the reviewed default branch. The specification also says checkout failure becomes `inconclusive`, but it does not require classification to be gated on `steps.<checkout-id>.outcome == 'success'`; checking only that `publication_watch.py` exists could execute a partially populated workspace after an action failure. The action SHA pin and `persist-credentials: false` are strong controls, but they do not select or validate the repository revision being executed.",
-      "location": "Sections: Architecture / External publication watch steps 3-4; Decision 6; Testing Strategy / Static workflow contract; Task 4",
-      "impact": "A manual run can derive the publication verdict from code outside the reviewed default branch, and a degraded checkout can produce a false stale/recovery transition instead of the promised no-op. That undermines the integrity of the issue-backed monitoring state and can create or close an operator alarm on untrusted evidence-processing code.",
-      "recommendation": "Make the trust boundary executable and testable: give checkout an `id`, set `ref: ${{ github.event.repository.default_branch }}` (or another explicitly documented immutable default-branch SHA), and allow the classifier to run only when `steps.<checkout-id>.outcome == 'success'`. Otherwise write exactly `inconclusive` without importing or executing workspace code. Extend the static workflow test and acceptance criterion to assert the explicit ref, the outcome gate, and that a failed/partial checkout cannot reach `python3 publication_watch.py`.",
+      "finding": "Trusted classifier revision and failed-checkout gate are not acceptance-tested",
+      "status": "closed",
+      "evidence": "Architecture steps 3-4 now require an explicit checkout id, `ref: ${{ github.event.repository.default_branch }}`, a full-SHA action pin, non-persisted credentials, and execution of repository code only when the checkout outcome is successful. Decision 6, the risk table, Acceptance Criteria, Task 4, and the static workflow contract all repeat and test the ref/outcome gates. Failed or partial checkout must become `inconclusive` without importing workspace code.",
       "cwe": "CWE-494"
     },
     {
-      "severity": "minor",
-      "category": "A04:2021 Insecure Design / A08:2021 Unsafe Data Processing",
-      "title": "Untrusted Telegraph response has no byte-size or nesting budget",
-      "description": "The design correctly passes Telegraph JSON through a runner-temporary file/stdin, validates its shape, avoids shell evaluation, and never logs the raw body. However, `curl --max-time` bounds elapsed time only; the proposed CLI can still read an arbitrarily large or deeply nested response before `json.loads`. A compromised or malfunctioning upstream could consume runner memory/CPU and abort the watch run before the independent alarm logic completes.",
-      "location": "Sections: Architecture / External publication watch steps 2, 4-5; Decision 5; Testing Strategy / watcher matrix",
-      "impact": "Availability impact is limited to an ephemeral GitHub-hosted runner, but an oversized response could suppress both host and publication monitoring for that scheduled run rather than yielding the specified `inconclusive` publication result.",
-      "recommendation": "Specify a small maximum evidence size (for example 1 MiB). Enforce it before full decoding (`sys.stdin.buffer.read(MAX_BYTES + 1)` or an equivalent fixed-file size check) and return `inconclusive` when exceeded. Catch `RecursionError` alongside JSON/type/value errors and add oversized/deeply nested cases to the offline watcher matrix. Keep raw evidence out of logs.",
+      "finding": "Untrusted Telegraph response has no byte-size or nesting budget",
+      "status": "closed",
+      "evidence": "Architecture steps 2 and 5 and Decision 7 now impose a 1 MiB evidence limit before JSON decoding; the CLI reads at most 1 MiB plus one sentinel byte. Oversized input and `RecursionError` become `inconclusive`, raw evidence is not logged, and unit/subprocess tests explicitly cover oversized and excessively deep JSON.",
       "cwe": "CWE-400"
     },
     {
-      "severity": "minor",
-      "category": "A09:2021 Security Logging and Monitoring Failures",
-      "title": "Callback and scheduler logging hygiene is preserved only implicitly",
-      "description": "Existing callback authorization is fail-closed and runs before token lookup, token kinds are checked, review tokens are not logged, and SQL mutations are parameterized. The feature nevertheless changes callback status and adds a scheduler-snapshot failure log without making log sanitization an explicit acceptance rule. The existing decision audit line logs the full article link; externally sourced links can contain CR/LF characters or credential-like query/userinfo data, and a new raw exception log could bypass the project's `sanitize_error_message` convention.",
-      "location": "Sections: Architecture / Runtime scheduler steps 7-8; Testing Strategy / callback status and snapshot read error; existing news_bot.py `_handle_review_update` decision log",
-      "impact": "Low-probability audit-log forgery or disclosure of URL query/userinfo data can make operator-decision records misleading. Unsanitized exception text can also reveal local paths or configured credentials if a future repository implementation includes values in an error.",
-      "recommendation": "Add a security acceptance clause: snapshot errors use `sanitize_error_message`; review logs contain action, constant status and a CR/LF-safe path-only or hashed article identifier; raw callback tokens, URL userinfo/query strings, Telegraph bodies and secrets are never logged. Preserve and extend existing non-admin-before-DB, token-kind and no-token-leak tests.",
+      "finding": "Callback and scheduler logging hygiene is preserved only implicitly",
+      "status": "closed",
+      "evidence": "Runtime steps 8-9 now require `sanitize_error_message()` for the snapshot failure path and CR/LF-safe article identifiers without URL userinfo/query data. Unit tests and a dedicated Acceptance Criterion prohibit callback tokens, raw Telegraph evidence, credential-bearing URLs, forged line breaks, and unsanitized new exceptions in logs.",
       "cwe": "CWE-117"
     }
   ],
+  "findings": [],
   "checksPerformed": [
-    "Hardcoded-secret scan covered the feature specs, relevant source/workflow/manifests, examples and local secret-file handling. No credential was found hardcoded in source. The configured `.env` is intentionally ignored and mode 0600; `.env.example` contains placeholders.",
-    "OWASP A01/A07: verified the existing Telegram callback trust boundary is the numeric `from_user.id` admin check before every token lookup/state change, with a second resolver gate and token-kind separation. The tech spec preserves these controls and forbids callback-side publication.",
-    "OWASP A02: watcher endpoints remain HTTPS; credentials stay in GitHub secrets/environment and no new cryptographic primitive or credential store is proposed.",
-    "OWASP A03: the proposed SQLite aggregate has no user parameters and existing mutations are parameterized. Telegraph JSON is passed as data via file/stdin, classifier output is restricted to three constants, and no `eval`, dynamic shell, subprocess interpolation or SQL construction is required.",
-    "OWASP A04/A05: scheduler failure is fail-closed for extra release opportunities; watcher uncertainty is tri-state and host monitoring stays independent. Resource bounds are the residual gap reported above.",
-    "OWASP A06: no Python package is added. Local manifests were inspected; no network/CVE audit was run per the review scope. The only proposed action is full-length SHA-pinned.",
-    "OWASP A08: verified the proposed checkout SHA is full-length, credentials are not persisted, Telegraph token is scoped to the fetch step, repository classifier receives response data only, and checkout failure is intended to degrade to `inconclusive`. Explicit revision/outcome enforcement is the major gap reported above.",
-    "OWASP A09: raw Telegraph body and review token are prohibited from logs; issue-backed transitions remain the durable audit state. URL/error sanitization is the residual gap reported above.",
-    "OWASP A10: watcher network destinations are fixed Telegraph/Telegram/GitHub APIs, and the new classifier performs no network request. Review article links are not introduced as a new fetch surface by this feature.",
-    "Production, external APIs, git state and implementation source were not mutated; this review changed only this report."
+    "Hardcoded-secret detection covered the current feature specs, relevant bot/repository code, uptime workflow, dependency/deployment manifests, fixtures/examples, and local secret-file handling. No credential is hardcoded in reviewed source. The configured `.env` remains ignored and mode 0600; `.env.example` contains placeholders.",
+    "OWASP A01/A07: callback authorization remains a fail-closed numeric Telegram admin-id check before token lookup or mutation, followed by resolver re-check and token-kind separation. The updated design preserves non-admin-before-DB, idempotency, and no-callback-publish tests.",
+    "OWASP A02: external watcher endpoints remain fixed HTTPS APIs; secrets are supplied through step-scoped GitHub environments, checkout credentials are not persisted, and no new cryptographic primitive or plaintext credential store is introduced.",
+    "OWASP A03: the new SQLite partition is a constant aggregate statement with no interpolated input; existing callback mutations are parameterized. Telegraph evidence crosses the shell boundary only as a fixed temporary file/stdin stream, classifier output is allow-listed to three constants, and the architecture requires unexpected output to become `inconclusive` rather than shell code or an output record.",
+    "OWASP A04/A05: scheduler snapshot failure cannot create an extra publication opportunity; watcher uncertainty cannot raise or resolve an alarm. The 1 MiB plus sentinel-byte input budget, `RecursionError` handling, exact CLI contract, successful-checkout gate, and independent SSH contour make failure behavior bounded and explicit.",
+    "OWASP A06: no Python dependency is added. The sole new workflow action is identified by a full 40-character commit SHA and credentials are not persisted. Network/CVE lookup was intentionally not run under this spec-only, no-network review; final implementation audit remains required.",
+    "OWASP A08: the workflow contract now pins the official checkout action, explicitly selects the repository default branch, validates checkout outcome before executing workspace code, and treats partial/missing source as `inconclusive`. The static contract test is required to lock every one of these controls.",
+    "OWASP A09: operator decisions remain logged after authorization without callback tokens; changed identifiers are required to strip CR/LF, URL userinfo and query data, and changed exception paths use the existing secret sanitizer. Raw Telegraph payloads are prohibited from stdout/stderr and logs.",
+    "OWASP A10: the watcher fetch target is the fixed Telegraph API and the classifier performs no network call. Callback queue-state changes introduce no new URL fetch or SSRF surface.",
+    "Issue-backed alarm dedup remains explicitly best-effort and may produce duplicates during GitHub bookkeeping failure; reliable Telegram redelivery and uniqueness are documented as separate approved scope, not silently claimed by this feature.",
+    "No spec, implementation, git state, production state, external service, dependency registry, or network endpoint was modified or queried by this review; only this report was overwritten."
+  ],
+  "notes": [
+    "All three round-1 findings are closed at Architecture, Decision, Risk, Test, Acceptance Criteria, and Task levels rather than only in narrative prose.",
+    "No new critical, major, or minor architecture finding remains in the current tech spec. Security properties must still be verified against the eventual implementation in Task 7, especially exact GitHub expression placement, output allow-listing, temporary-file quoting, SQL text, and log-sanitizer use."
   ]
 }

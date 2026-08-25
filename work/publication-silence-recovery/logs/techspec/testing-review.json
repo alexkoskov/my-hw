@@ -1,40 +1,26 @@
 {
-  "status": "needs_improvement",
-  "summary": "The strategy has a healthy unit/integration balance, meaningful real-SQLite assertions, and an appropriate no-live-E2E decision, but two load-bearing production seams are not yet pinned by behavioral tests: the watcher CLI actually executed by GitHub Actions and the mixed publishable-plus-withheld queue that exercises the planned-slots/execution-opportunities split.",
+  "status": "passed",
+  "summary": "All prior load-bearing gaps are now covered with behavioral anchors: the real watcher CLI is exercised through stdin/stdout, the mixed publishable-plus-withheld timeline proves the planned/execution slot merge, and an after-19:30 decision is carried into the following day's 10:00 scheduler path. The unit/integration balance remains healthy and live E2E remains correctly excluded. One minor size-limit boundary case should be made explicit during implementation.",
   "findings": [
-    {
-      "severity": "major",
-      "category": "missing_coverage",
-      "location": "Section: Testing Strategy / Task 2: Publication-watch classifier",
-      "issue": "The unit matrix calls classify_telegraph_response() directly and the smoke command imports that function, while production is specified to consume raw JSON on stdin and trust exactly one CLI state on stdout. A broken __main__ path (reading argv instead of stdin, printing diagnostics to stdout, swallowing malformed input, or returning an unexpected state) could therefore leave all proposed classifier tests green while the scheduled workflow is always inconclusive or misclassified.",
-      "recommendation": "Add subprocess-level CLI tests for publication_watch.py. Feed representative valid, stale, and malformed JSON through stdin; assert stdout is exactly one of fresh/stale/inconclusive plus a trailing newline, assert no response body or token-shaped fixture appears on stderr, and assert the workflow-compatible exit behavior. Keep the full calendar matrix at pure-function level and use only a minimal three-state CLI set to avoid redundant coverage."
-    },
-    {
-      "severity": "major",
-      "category": "missing_coverage",
-      "location": "Section: Testing Strategy / Review-release scheduler integration",
-      "issue": "The plan separately covers an all-withheld E014 timeline and an ordinary one-row queue, but not the approved edge case containing one immediately publishable row plus one row released later. A faulty merge such as `execution_slots = planned_slots or release_opportunities` would pass both listed cases yet publish the ordinary row at 10:00 and lose the reviewed row for the rest of the day.",
-      "recommendation": "Add one real-temp-SQLite timeline with an ordinary row and a deferred or held row in the same atomic snapshot. Assert the ordinary link moves to published_articles at 10:00, perform the real keep/approve transition after that read, assert the reviewed link moves exactly once at 15:00, and assert neither link remains pending or is selected twice. This should be one parameterized behavior for E014/E036 only if the setup and expected gate transition are otherwise identical."
-    },
     {
       "severity": "minor",
       "category": "missing_coverage",
-      "location": "Section: Testing Strategy / Integration tests",
-      "issue": "`callback-at-boundary cases` does not explicitly pin the user-spec rule for a decision after the final 19:30 opportunity: no immediate publication and eligibility at 10:00 on the next job day. The fixed-time helper tests after-cutoff arithmetic, but they do not prove callback state survives into the next scheduler run.",
-      "recommendation": "Specify one cross-day SQLite integration case: release after 19:30, assert zero callback-side and same-day publishes, then run the next-day 10:00 scheduling contour and assert the same link publishes once. If full job setup is costly, compose a real callback state transition with the next-day planning/list_pending path while still asserting published-table movement."
+      "location": "Section: Testing Strategy / Publication-watch input bound",
+      "issue": "The strategy explicitly tests input over 1 MiB but does not pair it with an input of exactly 1 MiB. The contract says evidence larger than 1 MiB is rejected, so an off-by-one implementation using `>=` could reject the maximum permitted input while the proposed oversize test still passes.",
+      "recommendation": "Add one parameterized boundary test with a valid JSON body padded by insignificant whitespace to exactly 1 MiB and the same body at 1 MiB plus one byte. Assert the exact-limit body preserves its fresh/stale result and the plus-one body is inconclusive; run the pair through the CLI reader because that is where the sentinel-byte bound is enforced."
     }
   ],
   "metrics": {
     "filesReviewed": 9,
     "litmusTest": {
-      "checked": 13,
-      "passed": 10,
-      "failed": 3
+      "checked": 16,
+      "passed": 15,
+      "failed": 1
     },
-    "coverageAssessment": "insufficient",
+    "coverageAssessment": "adequate",
     "pyramidBalance": {
-      "unit": 4,
-      "integration": 6,
+      "unit": 5,
+      "integration": 8,
       "e2e": 0,
       "assessment": "healthy"
     }

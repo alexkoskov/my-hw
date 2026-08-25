@@ -182,7 +182,7 @@ The response body remains size-bounded runner-temporary evidence, not applicatio
 
 - Remaining fixed times at grace boundaries, midday/restart, after cutoff, custom times, and naive-clock rejection; existing `compute_fixed_slots(n)` behavior remains unchanged.
 - Atomic backlog partition for publishable, future-deferred, elapsed-deferred, held, and dual-gate rows; categories are mutually exclusive and exhaustive.
-- Watcher matrix: yesterday at 20:59/21:00 MSK, day-before-yesterday at 00:00/02:59/03:00, same-day, Dec-to-Jan, non-December future suffix, impossible/leap dates, malformed JSON/API shapes, empty pages, unexpected path, naive time, input over 1 MiB, and excessively deep JSON/`RecursionError`.
+- Watcher matrix: yesterday at 20:59/21:00 MSK, day-before-yesterday at 00:00/02:59/03:00, same-day, Dec-to-Jan, non-December future suffix, impossible/leap dates, malformed JSON/API shapes, empty pages, unexpected path, naive time, input exactly at the 1 MiB limit versus 1 MiB plus one byte, and excessively deep JSON/`RecursionError`.
 - Minimal subprocess contract for the real `publication_watch.py` CLI: representative `fresh`, `stale`, and malformed bodies arrive on standard input; standard output is exactly one state plus a newline, exit behavior is workflow-compatible, and neither raw evidence nor token-shaped fixtures reach standard error.
 - Callback status for clearing only one of two active gates, without weakening existing auth/token/idempotency tests; decision-log identifiers strip CR/LF, URL userinfo, and query data, and tokens never appear.
 
@@ -273,7 +273,7 @@ None.
 - **Files to read:** `work/publication-silence-recovery/user-spec.md`, `work/publication-silence-recovery/code-research.md`, `news_bot.py`
 
 #### Task 2: Publication-watch classifier
-- **Description:** Create the stdlib-only, 1-MiB-bounded tri-state Telegraph freshness classifier and its unit matrix, including recursive/oversized evidence. Pin the real stdin/stdout entry point with a minimal three-state subprocess suite so tests and the scheduled workflow execute the same contract.
+- **Description:** Create the stdlib-only bounded tri-state Telegraph freshness classifier specified by Decision 7 and its unit matrix, including boundary-size, recursive, and oversized evidence. Pin the real stdin/stdout entry point with a minimal three-state subprocess suite so tests and the scheduled workflow execute the same contract.
 - **Skill:** code-writing
 - **Reviewers:** code-reviewer, security-auditor, test-reviewer
 - **Verify-smoke:** `venv/bin/python -c "from datetime import datetime, timezone; from publication_watch import classify_telegraph_response; print(classify_telegraph_response('{\"ok\":true,\"result\":{\"pages\":[{\"path\":\"sample-08-25\"}]}}', datetime(2026, 8, 26, 17, 59, tzinfo=timezone.utc)))"` -> `fresh`
