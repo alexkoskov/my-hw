@@ -8,28 +8,21 @@
     "template_compliance": "pass",
     "size_check": "pass"
   },
-  "findings": [
-    {
-      "check": "acceptance_criteria",
-      "severity": "major",
-      "issue": "Критерий watcher-а использует формулировку «одинаково классифицирует границы 20:59/21:00», хотя ожидаемые результаты на этой паре должны различаться: вчерашняя публикация ещё допустима в 20:59 и становится просроченной в 21:00. Нужная матрица раскрыта в сценарии, но сам acceptance criterion допускает буквальное толкование как одинаковый boolean для обеих границ.",
-      "location": "«Критерии приёмки», пункт про watcher boundary matrix; ожидаемое поведение описано в «Как должно работать» → «Сценарий 3. Внешний publication watch»",
-      "fix": "Переписать критерий как явную матрицу результатов: yesterday@20:59 = fresh, yesterday@21:00 = stale; day-before-yesterday@00:00/02:59/03:00 = stale; Dec/Jan сохраняет те же правила. Убрать неоднозначное слово «одинаково» либо заменить его на «последовательно по указанной матрице»."
-    }
-  ],
+  "findings": [],
   "interview_coverage": {
     "covered": [
       "Production publication-silence incident: healthy container/heartbeat, deferred E014 row, empty 10:00 queue read, keep after job exit and no same-day publication",
       "Scheduler/review race for E014 keep/cancel/silence and the symmetric E036 approve/reject/silence path",
       "Fixed 10:00/15:00/19:30 MSK schedule, five-minute grace, single publisher and bounded opportunities per job",
-      "Mixed publish_after plus content-hold gate and fail-closed behavior on backlog read errors",
-      "Honest plan, carry-over, recap, dry-spell and heartbeat observability for empty wake-ups",
-      "Watcher UTC/MSK boundary defect, 20:59/21:00 and midnight-to-03:00 behavior, year/leap-day boundaries",
+      "Mixed publish_after plus content-hold gate and fail-closed behavior on scheduler-state read errors",
+      "Honest plan, carry-over, recap, dry-spell and heartbeat observability for empty checks",
+      "Watcher UTC/MSK boundary defect with explicit 20:59 fresh, 21:00 stale and continuous overnight stale states",
+      "Bounded Dec/Jan rollover, leap-day and future MM-DD ambiguity handling",
       "Inconclusive Telegraph evidence preserves publication-alarm state and does not imply recovery",
       "Offline TDD, integration coverage on real test SQLite, full regression/PR flow and prohibition of live publish, deploy, restart or production-row mutation",
       "Scope exclusions: persistent cross-restart cap, durable Telegram delivery, Telegraph replacement, DB migration and new scheduler/service"
     ],
     "missing": []
   },
-  "summary": "Критических findings нет: документ полный, внутренне согласован, покрывает интервью, риски и failure paths; размер M соответствует трём сценариям и десяти критериям. Quality-gate одобрен, но перед tech-spec следует сделать watcher boundary criterion самодостаточным и явно записать разные expected states для 20:59 и 21:00."
+  "summary": "Round 2 одобрен без findings: прежняя неоднозначность устранена явной expected-state matrix — yesterday@20:59=fresh, yesterday@21:00=stale, day-before-yesterday@00:00/02:59/03:00=stale. Новых противоречий, потерянных тем интервью, нетестируемых критериев или нарушений шаблона не обнаружено; размер M соответствует трём сценариям и десяти критериям."
 }

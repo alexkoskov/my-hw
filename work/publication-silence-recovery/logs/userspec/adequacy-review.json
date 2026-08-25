@@ -2,27 +2,13 @@
   "status": "approved",
   "findings": [
     {
-      "category": "overengineering",
-      "severity": "major",
-      "issue": "User-spec prescribes implementation mechanics that belong in the tech-spec: retained execution opportunities, repeated SQLite reads, separation of plan slots from wake-ups, a repository-owned classifier, and pinned checkout/credential handling.",
-      "why_matters": "These choices are plausible, but fixing them at the user-contract stage unnecessarily rules out equally valid implementations and makes later architecture review ceremonial. The user-spec should define the observable fixed-slot, single-publisher, gate and tri-state-alarm invariants; the tech-spec should choose how to achieve them.",
-      "fix": "Keep the behavioral constraints and rejected user-visible outcomes in user-spec, but move the concrete retained-slot algorithm, SQLite reread strategy, classifier packaging and GitHub checkout details into tech-spec/decisions.md."
-    },
-    {
-      "category": "underengineering",
-      "severity": "major",
-      "issue": "The watcher contract does not define how a syntactically valid MM-DD suffix that lies in the future relative to Moscow today is classified outside the legitimate December-to-January rollover.",
-      "why_matters": "The current year-reconstruction rule treats every future month/day as last year. A malformed or clock-skewed future suffix can therefore become a confident stale verdict and open a false alarm, contradicting the new rule that ambiguous Telegraph evidence is inconclusive. Dec/Jan and impossible dates are covered, but this adjacent state is not.",
-      "fix": "Add an acceptance case that permits previous-year inference only for an explicitly bounded year rollover; any other future-dated suffix must be inconclusive (or state another unambiguous policy and test it)."
-    },
-    {
       "category": "sizing",
       "severity": "minor",
-      "issue": "The declared M scope contains two independently deployable contours: the long-lived runtime scheduler/review race and the GitHub Actions alarm classifier/state transition.",
-      "why_matters": "Both are feasible with the current stack and no migration, but their tests, failure modes and rollout timing differ; treating them as one undifferentiated implementation unit increases review and rollback coupling.",
-      "fix": "Keep one incident-level user-spec if desired, but decompose implementation into two independently testable tasks/commits with separate rollback notes and verification gates."
+      "issue": "The M-sized incident package still spans two independently released contours: the in-container scheduler/review race and the default-branch GitHub Actions watcher.",
+      "why_matters": "The combined scope remains feasible in one iteration and needs no migration or new dependency, but the two contours have different test seams, rollback paths and activation moments.",
+      "fix": "Keep the shared user-spec, but decompose implementation and verification into separate scheduler and watcher tasks/commits so either contour can be reviewed or rolled back independently."
     }
   ],
-  "worst_category": "overengineering",
-  "summary": "The change is buildable with the existing Python, SQLite and GitHub Actions stack, needs no new service or migration, and is a credible high-M iteration. Approval is appropriate, but implementation details should move to the tech-spec and the watcher must define future-dated MM-DD evidence so ambiguous input cannot become a false stale alarm."
+  "worst_category": "sizing",
+  "summary": "Approved: the proposal is feasible with the current Python/SQLite/GitHub Actions stack and is a credible high-M iteration. The previous major findings are resolved: implementation HOW has moved out of the user-spec, and future MM-DD evidence now has an explicit conservative rule (only Dec-to-Jan rolls back a year; every other future suffix is inconclusive)."
 }
