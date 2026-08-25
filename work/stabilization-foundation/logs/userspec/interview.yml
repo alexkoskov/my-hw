@@ -12,7 +12,7 @@
 # ============================================================================
 interview_metadata:
   started: "2026-08-25 18:05:34"  # Timestamp (YYYY-MM-DD HH:MM:SS)
-  last_updated: "2026-08-25 19:53:45"
+  last_updated: "2026-08-25 20:10:41"
   status: "in_progress"  # not_started | in_progress | completed
   can_resume: true
   current_question_num: 8
@@ -424,6 +424,13 @@ notes: |
     уточнён через exact volume identity, DB-state matrix, UUID permit lifecycle,
     config matrix и scheduler equality boundary; пользователь подтвердит это при
     approval user-spec.
+  - VALIDATION ROUND 2 2026-08-25: validators подтвердили исправление round-1
+    blockers, затем нашли reachability contradiction для post-bootstrap DB с
+    empty ledger + другим state и offline-unverifiable live-endpoint oracle.
+    Выбрана строгая семантика: fresh permit годится только для четырёх eligible
+    DB shapes, иначе manual data-aware restore/cleanup. Добавлены dedicated
+    APP_MODE, test-owned egress sentinel, exact non-atime file invariants и
+    DB/BOOTSTRAP fatal-event acceptance coverage.
 
   question_strategy:
     - "3-4 questions per batch about different gaps"

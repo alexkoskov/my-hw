@@ -4,59 +4,59 @@
     "completeness": "pass",
     "edge_cases": "pass",
     "acceptance_criteria": "fail",
-    "contradictions": "pass",
+    "contradictions": "fail",
     "template_compliance": "pass",
     "size_check": "warning"
   },
   "findings": [
     {
-      "check": "completeness",
-      "severity": "major",
-      "issue": "Раздел объясняет технические угрозы и последствия, но не называет явно, кто получает ценность и какое действие становится для него безопасным или надёжным. Роль оператора и косвенная ценность для подписчиков остаются только в interview.yml, поэтому «Зачем» не содержит полного WHO + WHAT action + WHAT problem.",
-      "location": "Раздел «Зачем»",
-      "fix": "Добавить явную формулировку ценности, например: оператор production-бота сможет доверять результату CI и безопасно запускать или перезапускать контейнер, а подписчики не столкнутся с дублями и аварийными публикациями из-за опасного startup."
+      "check": "contradictions",
+      "severity": "critical",
+      "issue": "Bootstrap eligibility противоречит описанному restart recovery до появления первой processed_news row. Пункт 9 объявляет fatal даже с permit любую bot SQLite, где processed_news пуста, но непуста хотя бы одна другая application table. При этом пункт 11, критерий про quiet bootstrap, риск и раздел «Деплой» говорят, что до первой ledger-row следующий restart требует нового permit. После разрешённого запуска достижимо состояние с пустой processed_news и непустой pending_articles или bot_state; свежий permit для него запрещён пунктом 9, поэтому описанный recovery path фактически не существует.",
+      "location": "«Как должно работать» → «Одноразовый bootstrap/recovery», пункты 9 и 11; критерий приёмки про post-claim/quiet process; риск «Quiet bootstrap»; раздел «Деплой»",
+      "fix": "Выбрать и закрепить одну семантику. Либо явно сказать, что fresh permit повторно помогает только пока все шесть application tables пусты, а состояние empty ledger + pending/bot_state требует отдельной data-aware recovery процедуры; либо добавить такое распознанное post-bootstrap состояние в список permit-eligible с точными допустимыми таблицами/инвариантами. Затем синхронно обновить критерий, риск, edge case, deploy-инструкцию и concurrency/replay matrix."
     },
     {
       "check": "acceptance_criteria",
       "severity": "critical",
-      "issue": "Последний критерий требует, чтобы новые fatal-сообщения были «диагностичны», но не задаёт наблюдаемых признаков диагностичности. Объективно определить pass/fail для этой части нельзя. Кроме того, один пункт объединяет отсутствие изменений формата, дедуп-правил, alert-текстов и данных, propagation исключения и redaction, а запрет утечки секретов уже частично повторяет предыдущий критерий про config failure.",
-      "location": "Раздел «Критерии приёмки», последний пункт",
-      "fix": "Разбить пункт на независимые критерии. Для fatal-log задать конкретный ожидаемый контракт: имя проваленного gate/check, безопасный идентификатор поля или класса DB-ошибки, ненулевой exit и отсутствие значений секретов; reader-visible и data-regression вынести в отдельные проверяемые критерии."
+      "issue": "AC2 заканчивается требованием «live endpoint не получает запрос», но live E2E и обращения к внешним сервисам прямо запрещены разделами «Тестирование» и «Ограничения». Отрицательный факт на стороне удалённого endpoint нельзя наблюдать offline, поэтому критерий в текущем виде не имеет воспроизводимого pass/fail даже при исправной network isolation.",
+      "location": "«Критерии приёмки», AC2; «Тестирование» → E2E; «Ограничения»; «Как проверить», шаг 1",
+      "fix": "Заменить удалённое наблюдение локальным контрактом: pytest выполняется внутри доказуемого egress boundary без внешнего route/интерфейса либо с fail-closed outbound policy; каждый Python/native/subprocess red control завершается ожидаемой локальной deny-ошибкой до DNS/TCP egress; локальный packet/egress sentinel за границей фиксирует ноль попыток. Такой sentinel должен быть test-owned, а не production endpoint."
     },
     {
       "check": "acceptance_criteria",
       "severity": "major",
-      "issue": "Для границы ровно 10:00 перечислен обязательный edge case, но ожидаемое поведение не определено. Сценарий и критерии задают результат только для завершения immediate job до 10:00 и после 10:00, поэтому тест на точном равенстве не знает, должен ли сегодняшний tick сохраниться или следующий запуск назначаться на завтра.",
-      "location": "«Как должно работать» → «Сценарий 3», «Краевые случаи» и критерии lifecycle",
-      "fix": "Явно определить включительность границы, например finished_at >= 10:00 означает один job в этом запуске и следующий canonical tick завтра, и закрепить ожидаемые call count и next_run для 09:59:59, 10:00:00 и времени после 10:00."
+      "issue": "Контракт fatal event теперь объективно определён, но acceptance coverage неполон: ROUTE, VOLUME и CONFIG критерии проверяют gate/reason/redaction, тогда как rejected DB и BOOTSTRAP cases проверяются только как fail и filesystem/permit state. Требование пункта 7 о ровно одном событии с точным DB/BOOTSTRAP reason-class, ненулевом exit и отсутствии утечки не имеет соответствующего критерия; шаг проверки DB/bootstrap также не требует проверить event payload.",
+      "location": "«Как должно работать» → Read-only DB preflight, пункт 7 и таблица reason-class; критерии DB/bootstrap; «Как проверить», шаги 4–5",
+      "fix": "Расширить DB/bootstrap критерии и шаг 5: каждый rejected case должен завершаться ненулевым кодом и выдавать ровно один redacted event с ожидаемой парой DB|BOOTSTRAP + reason-class; отдельно зафиксировать, что значения permit UUID и секретов не логируются."
     },
     {
-      "check": "acceptance_criteria",
+      "check": "completeness",
       "severity": "major",
-      "issue": "Сценарий hermetic CI обещает одинаковый результат для каждого теста отдельно, в файле и в полном suite, тогда как критерий приёмки сужает проверку до неопределённых «целевых тестов». Неясно, какой набор обязан быть order-independent, и часть заявленного flow остаётся без однозначного критерия.",
-      "location": "«Как должно работать» → «Сценарий 1», шаг 4; «Критерии приёмки», второй пункт; «Как проверить», шаги 1–2",
-      "fix": "Согласовать квантор и проверку: либо требовать автономности всех тестов и описать воспроизводимую проверку, либо ограничить сценарий конкретно перечисленным набором state-leak regression tests и зафиксировать для каждого standalone/file/full-suite запуски."
+      "issue": "Production mode назван «явным», но точный discriminator не определён. Не сказано, является ли switch значением INSTANCE_LABEL=prod, отдельным mode flag/CLI contract или комбинацией трёх Compose-полей. Одновременно local/test обещано не активировать gates «от одного env-поля»; если INSTANCE_LABEL=prod и есть единственный явный switch, буквальные формулировки конфликтуют, а если switch составной, не определено поведение при missing/unknown/partial contract.",
+      "location": "«Как должно работать» → «Route и production mode», пункт 2; пункт 13; критерий Local/test; Compose-контракт",
+      "fix": "Назвать единственный authoritative discriminator и его допустимые значения. Например, exact INSTANCE_LABEL=prod включает все production gates, а secrets, DB_FILE и TZ никогда сами mode не выводят; unknown mode завершается fatal, явно выбранный test/local сохраняет non-prod поведение. Переформулировать «одно env-поле» как «ни одно недискриминирующее поле» и добавить матрицу exact prod / explicit non-prod / missing / unknown / prod-like partial config."
     },
     {
       "check": "size_check",
       "severity": "minor",
-      "issue": "Формальный порог size-check превышен по числу затронутых интеграционных границ: GitHub Actions, Docker/Compose entrypoint, VPN route, SQLite, schedule, Telegram, Telegraph и выбранный LLM provider. При трёх сценариях и десяти критериях размер M ещё выглядит управляемым, но интеграций больше пяти.",
-      "location": "Frontmatter size: M; разделы «Как должно работать», «Технические решения» и «Тестирование»",
-      "fix": "Оставить size M только при явном разбиении реализации и тестовой матрицы на три независимых потока CI/startup/scheduler; если tech-spec связывает их одной миграцией или общим rollout, пересмотреть размер на L."
+      "issue": "Размер L теперь согласован с глубиной документа и тремя failure domains, но формальные warning-пороги валидатора всё равно превышены: 13 критериев приёмки и более пяти интеграционных границ (GitHub Actions, test isolation boundary, Docker/Compose, VPN route, filesystem volume, SQLite, schedule и внешние API-конфигурации).",
+      "location": "Frontmatter size: L; разделы «Как должно работать» и «Критерии приёмки»",
+      "fix": "Сохранить size L и явно удержать уже заявленные отдельно зелёные и откатываемые increments; в tech-spec дать каждому increment собственный acceptance gate, чтобы общий пакет не превратился в один неделимый rollout."
     }
   ],
   "interview_coverage": {
     "covered": [
       "Граница stabilization-пакета и исключение большого рефакторинга, off-box backup и publication crash-gap",
-      "Fail-closed production startup при неверных VPN route, config и DB",
+      "Fail-closed production startup при неверных VPN route, config и DB с узким empty-DB override",
       "Новая семантика недоставленного E014 сохранена как handoff в отдельный reliable-admin-alert-delivery",
       "Unit/integration/full clean-env verification без live E2E и production deploy",
       "Вынос stateful admin-alert delivery в отдельную follow-up задачу",
       "Обязательный production config и закреплённые Compose-инварианты при optional review buttons",
       "One-use bootstrap/recovery authorization вместе с ALLOW_EMPTY_PROD_DB=1 без обхода wrong path, mount или corrupt SQLite",
-      "Scheduler lifecycle: immediate job до cron registration, сохранение quick pre-10 tick и mid-day restart recovery без persistent marker"
+      "Scheduler lifecycle: immediate job до cron registration, строгая граница 10:00 и mid-day restart recovery без persistent marker"
     ],
     "missing": []
   },
-  "summary": "Трассировка интервью, структура, риски и scope в целом полны и непротиворечивы. Нужны изменения перед одобрением: один критерий содержит непроверяемое требование к «диагностичности», а scheduler boundary и объём order-independence следует определить однозначно."
+  "summary": "WHO/value, точная fatal vocabulary, граница 10:00 и bounded state-leak scope из round 1 исправлены, интервью покрыто полностью. Одобрение блокируют противоречивый bootstrap recovery и непроверяемое offline-требование о состоянии live endpoint; кроме того, нужно явно назвать production-mode discriminator и завершить acceptance coverage fatal events."
 }
