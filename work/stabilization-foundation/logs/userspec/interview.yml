@@ -13,7 +13,7 @@
 interview_metadata:
   started: "2026-08-25 18:05:34"  # Timestamp (YYYY-MM-DD HH:MM:SS)
   last_updated: "2026-08-25 20:20:00"
-  status: "in_progress"  # not_started | in_progress | completed
+  status: "completed"  # not_started | in_progress | completed
   can_resume: true
   current_question_num: 8
   feature_size: "L"  # S | M | L
@@ -369,7 +369,7 @@ phase3_integration:
 # ============================================================================
 phase4_completion:
   userspec_file: "work/stabilization-foundation/user-spec.md"
-  status: "created"  # pending | created | approved
+  status: "approved"  # pending | created | approved
 
 # ============================================================================
 # Decision Rules
