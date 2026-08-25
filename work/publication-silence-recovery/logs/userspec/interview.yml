@@ -12,10 +12,10 @@
 # ============================================================================
 interview_metadata:
   started: "2026-08-25 23:02:59"  # Timestamp (YYYY-MM-DD HH:MM:SS)
-  last_updated: "2026-08-25 23:35:00"
-  status: "in_progress"  # not_started | in_progress | completed
+  last_updated: "2026-08-26 00:07:29"
+  status: "completed"  # not_started | in_progress | completed
   can_resume: true
-  current_question_num: 2
+  current_question_num: 3
   feature_size: "M"  # S | M | L
 
 # ============================================================================
@@ -46,6 +46,15 @@ conversation_history:
     summary: >-
       Подтверждён отдельный bug-flow с TDD, review, QA и PR; необратимые live
       действия остаются отдельным явным решением.
+  - question_num: 3
+    timestamp: "2026-08-26 00:07:29"
+    topic: "userspec_approval"
+    agent_question: >-
+      Подтвердить валидированный user-spec целиком и продолжить tech-spec,
+      задачи, реализацию, тесты, ревью и PR?
+    user_answer: "да по всем"
+    summary: >-
+      Пользователь формально одобрил весь user-spec и продолжение полного flow.
 # Format:
 # - question_num: 1
 #   timestamp: "2025-11-12 15:20:33"
@@ -342,7 +351,7 @@ phase3_integration:
 # ============================================================================
 phase4_completion:
   userspec_file: "work/publication-silence-recovery/user-spec.md"
-  status: "created"  # pending | created | approved
+  status: "approved"  # pending | created | approved
 
 # ============================================================================
 # Decision Rules
@@ -373,12 +382,12 @@ decision_rules:
 # Interview Progress
 # ============================================================================
 progress:
-  current_phase: "phase8_userspec_validation"
-  questions_asked: 2
-  last_question: "Подтверждён отдельный bug-flow после письменного плана."
+  current_phase: "completed"
+  questions_asked: 3
+  last_question: "Пользователь одобрил user-spec целиком: да по всем."
   total_required_score: 94
   total_optional_score: 91
-  completion_estimate: "92%"
+  completion_estimate: "100%"
   user_detail_level: "moderate"  # brief | moderate | detailed
 
 # ============================================================================
