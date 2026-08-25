@@ -11,7 +11,7 @@ size: M
 
 The runtime fix separates what the operator can honestly regard as a planned publication from the fixed times at which the scheduler must re-check reviewable rows. A pure fixed-time helper owns the 10:00/15:00/19:30 MSK eligibility and grace rules. One atomic SQLite aggregate classifies every pending row as currently publishable, time-deferred, or content-held, so a concurrent review callback is observed either before or after the snapshot instead of disappearing between separate count queries.
 
-`job()` computes the operator-facing plan only from rows that are publishable at the snapshot. When the same snapshot contains at least one deferred or held row, the execution loop retains every remaining fixed time for that day. An empty read at one of those release opportunities skips only that opportunity; the next fixed time performs a fresh `list_pending()` read. The main thread remains the only publisher, callback handlers remain state transitions, and all existing database gates continue to control eligibility.
+`job()` computes the operator-facing plan only from rows that are publishable at the snapshot. When the same snapshot contains at least one deferred or held row, the execution loop retains every remaining fixed time for that day. An empty read at one of those release opportunities skips only that opportunity; the next fixed time performs a fresh `list_pending()` read. Within `news_bot`'s automatic scheduler and Telegram review-button contour, `job()` remains the only publisher, callback handlers remain state transitions, and all existing database gates continue to control eligibility. The pre-existing operator-run `hw_review.py publish` path is a separate manual publisher and remains unchanged.
 
 The external watcher moves its inline date arithmetic into one stdlib-only tri-state classifier shared by tests and the scheduled workflow. The classifier returns `fresh`, `stale`, or `inconclusive` from a Telegraph response and one timezone-aware clock. The workflow preserves an open or closed publication alarm on `inconclusive`, keeps the SSH contour independent, and executes repository code without exposing the Telegraph token to that code.
 
@@ -38,19 +38,20 @@ No database schema, external service, scheduler library, persistent day ledger, 
 3. If `deferred + held > 0`, `execution_slots` contains all fixed times still eligible today. Otherwise it equals `planned_slots`, so a genuinely empty or ordinary one-row day does not wait for artificial later checks.
 4. At every execution slot, the main thread sleeps until the slot and reads `list_pending()` again. A row released before that read can publish in the current slot; a release committed after an empty read waits for the next fixed time.
 5. An empty read continues only when release opportunities were retained. With no reviewable snapshot backlog, existing early-break behavior remains.
-6. Publish, retry, hold-cap, recap, dry-spell, and heartbeat paths remain in the main thread. Empty opportunities increment no publish outcome counter.
-7. `[E014] keep` and `[E036] approve` continue to mutate SQLite only. If one gate is cleared while another future deferral/hold remains, the callback status reports the remaining gate instead of promising an immediately eligible slot.
-8. A snapshot read failure is logged. The job may fall back to the existing publishable count for the ordinary plan, but it creates no release opportunities from unknown review state; a failure of that fallback propagates and lets the existing process restart policy handle it.
+6. Publish, retry, hold-cap, recap, dry-spell, and heartbeat paths remain in the `news_bot` main thread. Empty opportunities increment no publish outcome counter; the separate manual `hw_review.py publish` path is unchanged.
+7. `[E014] keep` and `[E036] approve` continue to mutate SQLite only. If one gate is cleared while another future deferral/hold remains, the callback status reports the remaining gate instead of promising an immediately eligible slot. A release committed after the 19:30 opportunity remains pending and is first eligible at 10:00 on the following day; callbacks never publish immediately.
+8. `pending_articles_repo.get_schedule_backlog_counts()` is wrapped by one narrow exception boundary. If it fails, `job()` logs the error through `sanitize_error_message()`, calls the existing `pending_articles_repo.count_pending()` exactly once for the ordinary publishable plan, sets deferred and held snapshot counts to zero, and creates no release opportunities. If `count_pending()` also fails, that exception propagates and the existing process restart policy handles it.
+9. Changed callback decision logging never records raw callback tokens or full credential-bearing URLs: its article identifier is CR/LF-safe and omits URL userinfo and query data, and any new exception text passes through `sanitize_error_message()`.
 
 #### External publication watch
 
 1. The SSH greeting probe remains independent and runs even when repository checkout, Telegraph fetch, or classification is unavailable.
-2. A fetch step owns `TELEGRAPH_ACCESS_TOKEN`, writes only the API response to a fixed runner-temporary file, and records whether usable evidence was obtained. It never writes the token to the file, command output, or step output.
-3. A pinned checkout step uses `persist-credentials: false`, `fetch-depth: 1`, and `continue-on-error: true`. Checkout failure becomes publication `inconclusive`; it does not suppress the host verdict.
-4. A classifier step has no Telegraph token. It reads the temporary response through `publication_watch.py`; missing code, exceptions, unexpected output, or missing evidence are coerced to `inconclusive`.
-5. `publication_watch.py` validates the JSON shape, newest page path suffix, timezone awareness, and calendar date. Its CLI reads raw JSON from standard input and prints exactly one state to standard output; the pure function accepts an explicit clock and converts it once to `Europe/Moscow`.
+2. A fetch step owns `TELEGRAPH_ACCESS_TOKEN`, writes only the API response to a fixed runner-temporary file, and records whether usable evidence was obtained. It never writes the token to the file, command output, or step output. Evidence larger than 1 MiB is rejected before classification.
+3. A pinned checkout step has an explicit `id`, uses `ref: ${{ github.event.repository.default_branch }}`, `persist-credentials: false`, `fetch-depth: 1`, and `continue-on-error: true`. Checkout failure becomes publication `inconclusive`; it does not suppress the host verdict.
+4. A classifier step has no Telegraph token and may execute repository code only when `steps.<checkout-id>.outcome == 'success'`. It reads the temporary response through `publication_watch.py`; failed or partial checkout, missing code, exceptions, unexpected output, missing evidence, or oversized evidence are coerced to `inconclusive` without importing workspace code.
+5. `publication_watch.py` validates the JSON shape, newest page path suffix, timezone awareness, and calendar date. Its CLI reads at most 1 MiB plus one sentinel byte from standard input and prints exactly one state to standard output; oversize input and `RecursionError` are `inconclusive`. The pure function accepts an explicit clock and converts it once to `Europe/Moscow`.
 6. Yesterday is `fresh` through 20:59 MSK and `stale` from 21:00. Any date older than yesterday is `stale`. A December suffix may map to the previous year only when the current MSK month is January; any other future suffix, impossible date, malformed payload, or unavailable API result is `inconclusive`.
-7. `stale` opens the publication issue/alerts only when it is closed; `fresh` resolves only when it is open; `inconclusive` performs neither transition. Host-down still suppresses publication transitions.
+7. `stale` opens the publication issue/alerts only when lookup finds no matching open issue; `fresh` resolves the matching issue when lookup finds one; `inconclusive` performs neither transition. Issue lookup/create is best-effort and has no uniqueness constraint, so degraded bookkeeping can leave duplicates. Host-down still suppresses publication transitions.
 
 ### Shared resources
 
@@ -60,7 +61,7 @@ No new heavy process resource is introduced. Existing and workflow-scoped shared
 |----------|-----------------|-----------|----------------|
 | Production SQLite file | Existing deployment / `pending_articles_repo` connections | Daily job, review listener | 1 file; short-lived connection per repository call |
 | Telegraph response file in runner temp | Watcher fetch step | Watcher classifier step | 1 per workflow run, runner-scoped |
-| GitHub publication alarm issue | Watcher alert step | Later watcher runs via `gh issue` lookup | 0 or 1 open issue for the publication alarm |
+| GitHub publication alarm issue | Watcher alert step | Later watcher runs via `gh issue` lookup | Normally 0 or 1 matching open issue; duplicates are possible when best-effort GitHub bookkeeping degrades |
 
 ## Decisions
 
@@ -84,7 +85,7 @@ Traceability labels `US-AC1` through `US-AC10` refer to the ten acceptance-crite
 
 ### Decision 3: Keep SQLite as the eligibility source and callbacks as state-only operations
 
-**Decision:** Every retained time performs a fresh `list_pending()` read, and only the existing main-thread loop may publish. Callback resolvers clear or remove queue state and return truthful mixed-gate status.
+**Decision:** Every retained time performs a fresh `list_pending()` read, and only `job()` may publish inside `news_bot`'s automatic scheduler/review-button contour. Callback resolvers clear or remove queue state and return truthful mixed-gate status. The existing operator-run `hw_review.py publish` command remains a separate, unchanged manual publisher.
 
 **Rationale:** This satisfies US-AC1 through US-AC7 and preserves existing auth, token-kind, retry, and idempotency boundaries.
 
@@ -108,7 +109,7 @@ Traceability labels `US-AC1` through `US-AC10` refer to the ten acceptance-crite
 
 ### Decision 6: Execute the same watcher code in tests and the workflow
 
-**Decision:** The scheduled workflow checks out the repository at its trusted default-branch revision and calls the tested module; the old inline classifier is removed.
+**Decision:** The scheduled workflow checks out the repository at an explicit `${{ github.event.repository.default_branch }}` ref and calls the tested module only after that checkout step reports a successful outcome; the old inline classifier is removed.
 
 **Rationale:** This supports US-AC9 and US-AC10 by removing the production/test source-of-truth split. GitHub documents full-length commit pinning as the immutable form for third-party actions, so `actions/checkout` is pinned to official v4.4.0 commit `11d5960a326750d5838078e36cf38b85af677262`, with credentials not persisted. Sources: [GitHub secure-use reference](https://docs.github.com/en/actions/reference/security/secure-use), [official checkout v4.4.0 commit](https://github.com/actions/checkout/commit/11d5960a326750d5838078e36cf38b85af677262).
 
@@ -116,7 +117,7 @@ Traceability labels `US-AC1` through `US-AC10` refer to the ten acceptance-crite
 
 ### Decision 7: Isolate watcher secrets from repository code
 
-**Decision:** Fetch and classification are separate workflow steps; only the fetch step receives `TELEGRAPH_ACCESS_TOKEN`, and classifier input contains response data only.
+**Decision:** Fetch and classification are separate workflow steps; only the fetch step receives `TELEGRAPH_ACCESS_TOKEN`, classifier input contains response data only, and the input is capped at 1 MiB before JSON decoding.
 
 **Rationale:** This supports US-AC10 and reduces secret exposure if classifier code or diagnostics regress.
 
@@ -124,7 +125,7 @@ Traceability labels `US-AC1` through `US-AC10` refer to the ten acceptance-crite
 
 ### Decision 8: Preserve bounded current behavior on failures
 
-**Decision:** Unknown scheduler review state creates no additional publish opportunity; unknown publication evidence creates no alarm transition. Host monitoring remains independent.
+**Decision:** A failed atomic scheduler snapshot uses one ordinary `count_pending()` fallback and creates no additional publish opportunity; if that fallback fails, the job fails. Unknown publication evidence creates no alarm transition. Host monitoring remains independent.
 
 **Rationale:** This satisfies the failure requirements in US-AC8 and US-AC10 without converting uncertainty into a publish, stale alert, or recovery.
 
@@ -154,7 +155,7 @@ The new repository API `get_schedule_backlog_counts() -> tuple[int, int, int]` r
 
 `PublicationState = Literal['fresh', 'stale', 'inconclusive']` is returned by `classify_telegraph_response(body: str, now: datetime)`. It is the only classifier result accepted by the workflow; unexpected CLI output is converted to `inconclusive` at the workflow boundary.
 
-The response body remains runner-temporary evidence, not application state. GitHub issue presence remains the durable open/closed alarm flag.
+The response body remains size-bounded runner-temporary evidence, not application state. GitHub issue presence remains the best-effort durable open/closed alarm flag; duplicate matching issues are possible during degraded GitHub bookkeeping.
 
 ## Dependencies
 
@@ -181,17 +182,20 @@ The response body remains runner-temporary evidence, not application state. GitH
 
 - Remaining fixed times at grace boundaries, midday/restart, after cutoff, custom times, and naive-clock rejection; existing `compute_fixed_slots(n)` behavior remains unchanged.
 - Atomic backlog partition for publishable, future-deferred, elapsed-deferred, held, and dual-gate rows; categories are mutually exclusive and exhaustive.
-- Watcher matrix: yesterday at 20:59/21:00 MSK, day-before-yesterday at 00:00/02:59/03:00, same-day, Dec-to-Jan, non-December future suffix, impossible/leap dates, malformed JSON/API shapes, empty pages, unexpected path, and naive time.
-- Callback status for clearing only one of two active gates, without weakening existing auth/token/idempotency tests.
+- Watcher matrix: yesterday at 20:59/21:00 MSK, day-before-yesterday at 00:00/02:59/03:00, same-day, Dec-to-Jan, non-December future suffix, impossible/leap dates, malformed JSON/API shapes, empty pages, unexpected path, naive time, input over 1 MiB, and excessively deep JSON/`RecursionError`.
+- Minimal subprocess contract for the real `publication_watch.py` CLI: representative `fresh`, `stale`, and malformed bodies arrive on standard input; standard output is exactly one state plus a newline, exit behavior is workflow-compatible, and neither raw evidence nor token-shaped fixtures reach standard error.
+- Callback status for clearing only one of two active gates, without weakening existing auth/token/idempotency tests; decision-log identifiers strip CR/LF, URL userinfo, and query data, and tokens never appear.
 
 ### Integration tests
 
 - Real tempfile SQLite timeline for `[E014]`: deferred at 10:00, first read empty, real `keep` after that read, exactly the intended link published once at 15:00.
 - Symmetric `[E036] approve` timeline plus cancel/reject, silence, expiry, mixed-gate, and callback-at-boundary cases.
+- Mixed atomic snapshot timeline: one publishable row moves to `published_articles` at 10:00, one withheld row is released through the real keep/approve transition after that read and moves exactly once at 15:00; neither row is selected twice or left pending.
+- A keep/approve committed after the 19:30 opportunity remains pending overnight and is selected at 10:00 on the following day, never from the callback.
 - Ordinary one-row and empty-day regression: no artificial 15:00/19:30 waits; restart at 16:00 retains only 19:30.
-- Snapshot read error: no extra release opportunity or gate bypass; ordinary fallback plan remains bounded.
+- Snapshot read error: `get_schedule_backlog_counts()` failure calls `count_pending()` once, creates no release opportunity or gate bypass, and retains a bounded ordinary plan; fallback failure propagates.
 - Observability: operator plan uses `planned_slots`, empty opportunities do not enter publish recap, and heartbeat/dry-spell still execute after the bounded loop.
-- Static workflow contract: exact pinned checkout, `persist-credentials: false`, checkout failure tolerance, secret only on fetch step, repository classifier invocation, allowed tri-state validation, and no raise/resolve on `inconclusive`.
+- Static workflow contract: exact pinned checkout, explicit default-branch `ref`, `persist-credentials: false`, checkout failure tolerance, classifier execution gated on successful checkout outcome, secret only on fetch step, repository classifier invocation, allowed tri-state validation, and no raise/resolve on `inconclusive`.
 
 Tests must assert resulting row identity/state and published-table movement, not only mock call counts. External Telegram, Telegraph, LLM, SSH, and GitHub APIs remain mocked or absent.
 
@@ -228,8 +232,10 @@ The final QA report maps every user and technical acceptance criterion to a conc
 | A row with two gates receives a false status or publishes early | Held category dominates the aggregate, `list_pending()` retains both SQL predicates, and callback tests cover both gate-clear orders |
 | Tests pass while repeatedly selecting the same pending head | Integration publish doubles move the selected row to `published_articles` and assert the exact link plus no duplicate publication |
 | Snapshot query fails | Log the failure, use only the existing ordinary publishable fallback, and create no unknown release opportunity; fallback failure aborts the job |
-| Checkout dependency hides the host alarm | Checkout runs with `continue-on-error`; missing classifier becomes publication `inconclusive` while the SSH verdict and host transitions continue |
+| Checkout dependency hides the host alarm | Checkout runs with `continue-on-error`; only a successful outcome may run repository code, otherwise publication becomes `inconclusive` while the SSH verdict and host transitions continue |
+| Manual dispatch executes an unreviewed classifier ref | Checkout explicitly selects `github.event.repository.default_branch`; a static workflow test locks the revision and outcome gates |
 | Repository code sees the Telegraph secret | Fetch and classify are separate steps; only response data crosses the boundary and credentials are not persisted by checkout |
+| A malformed upstream response exhausts runner resources | Fetch/classifier enforce a 1 MiB evidence cap; oversize or recursive input becomes `inconclusive` without logging the body |
 | Mutable or compromised third-party action | Pin official `actions/checkout` v4.4.0 to its full commit SHA and retain least-privilege `contents: read` |
 | Inconclusive evidence causes a false recovery or alert | Workflow accepts only three states and explicitly performs no publication transition for `inconclusive` |
 | Runtime and watcher activate at different times | Separate commits/tasks and rollback notes; watcher activates on merge to `main`, runtime only after a later user-run Docker rollout |
@@ -246,11 +252,13 @@ None.
 - [ ] An empty retained opportunity continues to the next fixed time, while an ordinary/empty snapshot without reviewable rows preserves early exit.
 - [ ] The exact production `[E014]` timeline publishes the intended row once at 15:00 after `keep`; cancel and silence produce no premature publication.
 - [ ] `[E036] approve` receives the same next-slot behavior; reject/silence and both dual-gate clear orders remain non-publishing until all gates are open.
-- [ ] No callback calls the publish path, no job uses more than the three remaining fixed times, and restart/cutoff behavior remains unchanged.
+- [ ] In a mixed publishable-plus-withheld snapshot, the ordinary row publishes once at 10:00 and the subsequently released row publishes once at 15:00 without corrupting the operator-facing plan.
+- [ ] A keep/approve committed after the 19:30 opportunity remains pending until 10:00 the following day; no callback calls the publish path, no job uses more than the three remaining fixed times, and restart/cutoff behavior remains unchanged.
 - [ ] Empty release checks do not alter plan, carry-over, publish recap, dry-spell, or heartbeat truthfulness; scheduler-state read failures do not bypass a gate.
-- [ ] The tested watcher classifier returns the complete MSK boundary/calendar matrix and converts all malformed, missing, impossible, naive-clock, and ambiguous-future evidence to `inconclusive`.
-- [ ] The workflow executes that classifier, uses an immutable pinned checkout with non-persisted credentials, and keeps the Telegraph token out of repository code and outputs.
+- [ ] The tested watcher classifier returns the complete MSK boundary/calendar matrix and converts all malformed, missing, impossible, naive-clock, ambiguous-future, oversized, and recursively invalid evidence to `inconclusive`; subprocess tests pin its actual stdin/stdout CLI contract for all three states.
+- [ ] The workflow executes that classifier only after successful checkout of the explicit default-branch ref, uses an immutable pinned action with non-persisted credentials, and keeps the Telegraph token out of repository code and outputs.
 - [ ] Publication alarm transitions are `stale -> raise`, `fresh -> resolve`, `inconclusive -> no-op`; host-down suppression and independent host verdict remain intact.
+- [ ] New scheduler/callback logs sanitize exception text and never expose callback tokens, CR/LF-forged identifiers, URL userinfo/query data, or raw Telegraph evidence.
 - [ ] Focused suites, full pytest, pre-commit, and diff checks pass offline; no production publish, restart, deploy, DB mutation, or live external request occurs.
 
 ## Implementation Tasks
@@ -265,7 +273,7 @@ None.
 - **Files to read:** `work/publication-silence-recovery/user-spec.md`, `work/publication-silence-recovery/code-research.md`, `news_bot.py`
 
 #### Task 2: Publication-watch classifier
-- **Description:** Create the stdlib-only tri-state Telegraph freshness classifier and its unit matrix. Expose a deterministic local entry point suitable for both tests and the scheduled workflow.
+- **Description:** Create the stdlib-only, 1-MiB-bounded tri-state Telegraph freshness classifier and its unit matrix, including recursive/oversized evidence. Pin the real stdin/stdout entry point with a minimal three-state subprocess suite so tests and the scheduled workflow execute the same contract.
 - **Skill:** code-writing
 - **Reviewers:** code-reviewer, security-auditor, test-reviewer
 - **Verify-smoke:** `venv/bin/python -c "from datetime import datetime, timezone; from publication_watch import classify_telegraph_response; print(classify_telegraph_response('{\"ok\":true,\"result\":{\"pages\":[{\"path\":\"sample-08-25\"}]}}', datetime(2026, 8, 26, 17, 59, tzinfo=timezone.utc)))"` -> `fresh`
@@ -275,14 +283,14 @@ None.
 ### Wave 2 (contour integrations)
 
 #### Task 3: Review-release scheduler integration
-- **Description:** Integrate the planning primitives into the daily job and make both review callbacks truthful for mixed gates. Add real-temp-SQLite timeline coverage for E014/E036 release, rejection, silence, errors, and ordinary scheduling regressions.
+- **Description:** Integrate the planning primitives into the daily job, implement the exact one-call ordinary fallback, and make both review callbacks/logs truthful and safe for mixed gates. Add real-temp-SQLite timeline coverage for E014/E036 release, rejection, silence, a mixed publishable-plus-withheld snapshot, after-cutoff overnight retention, errors, and ordinary scheduling regressions.
 - **Skill:** code-writing
 - **Reviewers:** code-reviewer, security-auditor, test-reviewer
 - **Files to modify:** `news_bot.py`, `tests/test_job_distributed_publish.py`, `tests/test_integration.py`
 - **Files to read:** `compute_publish_slots.py`, `pending_articles_repo.py`, `admin_alerts.py`, `tests/test_distributed_schedule_integration.py`, `work/publication-silence-recovery/tech-spec.md`
 
 #### Task 4: Tri-state workflow integration
-- **Description:** Replace the inline publication classifier with the repository module and preserve alarm state when evidence or classifier source is inconclusive. Add an offline workflow contract test covering action pinning, secret separation, independent host verdict, and all three publication transitions.
+- **Description:** Replace the inline publication classifier with the repository module and preserve alarm state when evidence or classifier source is inconclusive. Add an offline workflow contract test covering action pinning, explicit default-branch ref, successful-checkout outcome gate, secret separation, independent host verdict, and all three publication transitions.
 - **Skill:** deploy-pipeline
 - **Reviewers:** code-reviewer, security-auditor, deploy-reviewer
 - **Verify-smoke:** `venv/bin/python -m pytest tests/test_publication_watch.py tests/test_uptime_workflow.py -q` -> all tests pass without secrets or network

@@ -1,0 +1,18 @@
+{
+  "status": "approved",
+  "findings": [
+    {
+      "severity": "major",
+      "category": "tasks",
+      "issue": "The aggregate-snapshot failure contract is not deterministic across the tech spec and code research. Architecture says the job 'may fall back' to the existing publishable count, while code-research.md defines the concrete bounded path: call count_pending(), create no release opportunities, and propagate if that fallback also fails. Task 3 only says to cover errors, so decomposition could legitimately choose different behavior.",
+      "fix": "State the exact fallback call and exception boundary in Architecture/Decision 8, and make Task 3 or its technical acceptance criterion require aggregate failure -> count_pending() ordinary plan -> zero release opportunities, with fallback failure propagated."
+    },
+    {
+      "severity": "minor",
+      "category": "tasks",
+      "issue": "The user-spec requirement that E014 keep/E036 approve after 19:30 waits until the next day's 10:00 slot is only implied by generic cutoff language. The Testing Strategy and Task 3 name restart/cutoff and callback-boundary coverage but do not explicitly assign this cross-day review-release case.",
+      "fix": "Add an explicit integration case and technical acceptance statement for a keep/approve committed after 19:30: no immediate publication and eligibility at the next day's 10:00 opportunity."
+    }
+  ],
+  "summary": "Template validation passes with no critical findings. Frontmatter, required sections, decision records, risks, task fields, skill/reviewer catalog use, concrete paths, wave ordering, and same-wave file ownership are valid. One major implementation-contract ambiguity and one minor requirement-traceability gap should be tightened before decomposition."
+}

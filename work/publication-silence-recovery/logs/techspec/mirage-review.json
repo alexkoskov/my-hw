@@ -1,0 +1,49 @@
+{
+  "status": "approved",
+  "summary": "Checked 68 factual claims against the local codebase; 66 were confirmed and 2 architectural overclaims were found. Neither blocks implementation, but both should be scoped accurately in the tech spec.",
+  "findings": [
+    {
+      "severity": "major",
+      "type": "missing_pattern",
+      "claim": "tech-spec says the main thread remains the only publisher and only the existing main-thread loop may publish",
+      "reality": "The review-button listener is state-only, but the repository also has an existing independent publisher in hw_review.py: cmd_publish() calls publish_article(), send_telegraph_teaser(), and pending_articles_repo.move_to_published(..., via_review=True). The main-thread claim is true only inside news_bot's automatic scheduler/review-button contour, not for the project as a whole.",
+      "source": "tech-spec.md, Solution; Runtime scheduler and review flow step 6; Decision 3",
+      "fix": "Scope the invariant explicitly: within news_bot's automatic scheduler and Telegram review-button contour, only job() publishes; the pre-existing operator-run hw_review publish command remains a separate manual publisher and is unchanged."
+    },
+    {
+      "severity": "major",
+      "type": "missing_pattern",
+      "claim": "tech-spec Shared resources states that the GitHub publication alarm has 0 or 1 open issue",
+      "reality": "uptime.yml implements best-effort dedup by listing the first matching open issue and then creating one when lookup returns empty. There is no uniqueness constraint; the workflow itself documents degraded bookkeeping, and a failed/false-empty lookup followed by a successful create can leave more than one matching issue. The proposed tri-state work does not add an atomic uniqueness mechanism.",
+      "source": "tech-spec.md, Architecture / Shared resources",
+      "fix": "Describe the cardinality as normally 0 or 1 open issue under best-effort lookup, with duplicates possible when GitHub issue bookkeeping degrades; do not state it as a hard instance-count invariant."
+    }
+  ],
+  "stats": {
+    "total_claims_checked": 68,
+    "confirmed": 66,
+    "mirages_found": 2,
+    "verified_claims": [
+      "compute_publish_slots.py exists",
+      "compute_fixed_slots() exists and owns fixed-time/grace filtering",
+      "DAILY_PUBLISH_TIMES is 10:00, 15:00, and 19:30",
+      "compute_fixed_slots() rejects naive datetimes",
+      "pending_articles_repo.py exists",
+      "list_pending() gates on hold_reason and publish_after",
+      "count_pending() uses the publishable eligibility predicate",
+      "count_deferred() counts future deferrals without content holds",
+      "list_held() includes every non-NULL hold_reason",
+      "clear_deferral() does not clear hold_reason",
+      "clear_hold() does not publish",
+      "news_bot.job() sizes slots once and freshly reads list_pending() per slot",
+      "news_bot.job() currently breaks on its first empty slot read",
+      "resolve_dedup_callback() clears timed deferral on keep",
+      "resolve_hold_callback() clears content hold on approve",
+      "review callbacks enforce admin and token-kind gates",
+      "admin_alerts plan and quiet builders already accept separate held/deferred counts",
+      ".github/workflows/uptime.yml has independent SSH and Telegraph probes",
+      "uptime.yml uses open GitHub issues as best-effort alarm state",
+      "Python 3.13, SQLite, pytest, unittest.mock, tempfile, pytz, curl, ssh-keyscan, and gh patterns exist in the project"
+    ]
+  }
+}
