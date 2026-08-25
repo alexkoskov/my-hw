@@ -12,11 +12,11 @@
 # ============================================================================
 interview_metadata:
   started: "2026-08-25 18:05:34"  # Timestamp (YYYY-MM-DD HH:MM:SS)
-  last_updated: "2026-08-25 19:32:47"
+  last_updated: "2026-08-25 19:53:45"
   status: "in_progress"  # not_started | in_progress | completed
   can_resume: true
   current_question_num: 8
-  feature_size: "M"  # S | M | L
+  feature_size: "L"  # S | M | L
 
 # ============================================================================
 # Conversation History (for session recovery)
@@ -417,6 +417,13 @@ notes: |
   - COMPLETENESS CHECK 2026-08-25: independent checker returned status=complete,
     confidence=high, gaps=[]; all required interview fields are structurally
     complete and the alert-delivery boundary is explicit.
+  - VALIDATION ROUND 1 2026-08-25: последующее adequacy-исследование обнаружило
+    скрытую сложность transport-independent network isolation и fail-closed
+    volume/bootstrap protocol. Scope не изменён, но текущая оценка supersedes M:
+    feature = L с тремя отдельно зелёными и откатываемыми increments. Draft
+    уточнён через exact volume identity, DB-state matrix, UUID permit lifecycle,
+    config matrix и scheduler equality boundary; пользователь подтвердит это при
+    approval user-spec.
 
   question_strategy:
     - "3-4 questions per batch about different gaps"

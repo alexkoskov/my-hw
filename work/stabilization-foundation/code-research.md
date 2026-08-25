@@ -354,3 +354,12 @@ Code-informed recommendation для следующего интервью: ли�
 L-пакет с независимыми increments, либо вынести alert workflow в
 `reliable-admin-alert-delivery`, сохранив уже принятые продуктовые решения как
 handoff.
+
+### Validation addendum (round 1)
+
+После выноса alert workflow scope остался тем же, но adequacy-проверка раскрыла
+две ранее недооценённые части: transport-independent network isolation должен
+перекрывать native `curl_cffi`, а безопасный empty-DB override требует identity
+volume, явной DB-state matrix и одноразового persistent permit protocol. Поэтому
+актуальная оценка `stabilization-foundation` — L с тремя независимыми
+increments; прежняя M-оценка выше сохранена как исходный вывод исследования.

@@ -1,0 +1,70 @@
+{
+  "status": "changes_required",
+  "findings": [
+    {
+      "category": "underengineering",
+      "severity": "critical",
+      "issue": "Production-DB identity and bootstrap eligibility are not defined tightly enough for the promised fail-closed guarantee. The normal path proves only exact path/mount, readable SQLite, a `processed_news` table and one row; a valid foreign or partial SQLite with that table also passes and `init_db()` then silently creates the rest of the bot schema. The override is even less determinate: a truly new absent DB, a zero-byte file, a valid empty SQLite, a bot DB with an empty ledger but non-empty `pending_articles`, and a foreign SQLite with no `processed_news` all fit some natural reading of «пустая/отсутствующая БД», while the spec says both that missing `processed_news` is fatal and that an absent DB may bootstrap.",
+      "why_matters": "This is the safety boundary intended to prevent work against an empty or чужая DB. A tech-spec cannot infer which cells the one-use grant may override without making a product/data-safety decision; the permissive implementation can authorize the wrong database, while the strict implementation can make the documented recovery path impossible. Read-only SQLite access does not solve identity or classification.",
+      "fix": "Add an explicit cross-product to the user-spec. Recommended minimum: normal startup must prove a populated bot DB by a stated identity invariant in addition to `processed_news`; bootstrap may override only an absent exact target, a zero-byte/new SQLite with no user tables, or a recognised bot schema in which every business table is empty. A valid SQLite with foreign tables, missing `processed_news` alongside any existing state, or an empty ledger with non-empty pending/published/failed/state rows must be either explicitly rejected or explicitly named as recovery — do not leave it implicit. State how legacy populated DBs acquire any new identity marker after the first successful preflight without weakening the read-only check that precedes it."
+    },
+    {
+      "category": "underengineering",
+      "severity": "critical",
+      "issue": "The one-use authorization has no defined completion state when an authorised process starts successfully but `processed_news` remains empty. That is reachable without an initialization exception: a quiet tick, isolated source failures, an after-20:00 bootstrap that only stages rows, or a tick producing only held/deferred pending rows can all return normally without writing the anti-repost ledger. The grant is already consumed, yet the next Docker restart sees the same empty-ledger condition and has no authorization. The spec covers «initialization then failed» but not this nominally successful empty result.",
+      "why_matters": "The documented first-deploy/recovery flow can enter a restart loop or require surprise manual intervention after an apparently successful bootstrap. Because Docker uses `restart: unless-stopped` and the immediate job is required to propagate exceptions, the exact boundary between one authorised attempt, a completed bootstrap and the next ordinary start is operational behaviour, not a tech-spec detail.",
+      "fix": "Choose and state the observable lifecycle. The simplest fail-closed rule is: the grant authorises exactly one process start, and every later start still requires a fresh grant until `processed_news` has at least one row — including after a quiet but successful tick; add this to manual actions and acceptance tests. If that operator burden is unacceptable, define a durable bootstrap-complete attestation tied to the exact DB and say when it is created/invalidated; a reusable flag or an unbound sentinel is not sufficient."
+    },
+    {
+      "category": "feasibility",
+      "severity": "major",
+      "issue": "The exact-mount and atomic-grant claims are buildable, but not with the current deployment contract left implicit. `docker-compose.yml` uses short syntax `./data:/data`; Docker Compose may create a missing source directory, so `/data` can be a real mountpoint backed by a newly-created wrong/empty host directory. No carrier, path or atomic consumption boundary is defined for the second authorization signal, so an env-only implementation cannot actually be consumed and a marker outside the verified mount need not prove the DB mount is correct.",
+      "why_matters": "A naive implementation can satisfy unit tests for `DB_FILE=/data/news.db` and `os.path.ismount('/data')` while retaining the exact wrong-directory failure the gate is meant to stop. Conversely, inventing a new service or secret store is unnecessary scope if the existing bind mount is made authoritative.",
+      "fix": "Record this concrete feasibility constraint for the tech-spec: use a long-form absolute bind `/root/hw-news/data` -> `/data` with `bind.create_host_path: false`; pin it in a static Compose test; at runtime require `/data` to be a mountpoint and the existing DB (or its parent for an absent target) to resolve exactly under `/data` with no symlink escape. Put a restrictive regular grant file on that same bind and, only after all non-overridable config/mount/DB-class checks pass, atomically rename it to a unique consumed name before any DB create/init. This is sufficient for mount presence and single-winner consumption without new infrastructure, but it does not replace the eligibility/lifecycle decisions in the two critical findings."
+    },
+    {
+      "category": "feasibility",
+      "severity": "major",
+      "issue": "«Network deny на уровне test harness» is not a complete enforcement design for this stack. Two production fetch paths use `curl_cffi==0.15.0` (`autoevolution_source.py`, `lamley_source.py`); its libcurl transport does not have to traverse Python's `socket`, `requests` or `httpx` call sites. A pytest monkeypatch or `pytest-socket`-style guard can therefore produce the required red control for `requests` while still allowing a native HTTP client or future subprocess to egress.",
+      "why_matters": "Hermetic CI is one of the three headline outcomes, and a false sense of network isolation is worse than the current visible gap: a test can still hit a paid/live service while the control test remains green. OS-level isolation also expands the work because the current Docker image excludes `tests/` and `requirements-dev.txt` via `.dockerignore`.",
+      "fix": "Require the full-suite enforcement boundary to be transport-independent — for example install/build dependencies first, then execute pytest in a Docker/network namespace with no external network. A small Python guard may remain for an immediate, readable diagnostic, but it cannot be the sole barrier. The tech-spec must include a control for a native client (or otherwise state and test the exact covered transports), not only an unmocked `requests` call."
+    },
+    {
+      "category": "sizing",
+      "severity": "major",
+      "issue": "Declared size M understates the actual package. It retrofits isolation across roughly 1,700 tests, changes the GitHub workflow and likely adds an offline test execution boundary; changes Dockerfile/Compose/entrypoint and container lifecycle; adds production config, mount, read-only DB and a stateful one-use bootstrap protocol; reorders `main()` and adds real-scheduler boundary tests. These are three independently deployable failure domains with different rollback paths, not one several-component local fix.",
+      "why_matters": "The hidden work is not the small cron reorder but making the CI and bootstrap guarantees true under native networking, container restarts and filesystem races. Keeping M encourages the custom authorization and OS/container tests to be squeezed into the same iteration without an independently green increment.",
+      "fix": "Either reclassify as L with explicit increments and independent acceptance gates, or split it. A practical split is (A) unconditional hermetic CI, (B) fail-closed route/config/mount/DB/bootstrap startup, and (C) scheduler lifecycle (small enough to join B or ship first). No code dependency requires A and C to wait for the custom bootstrap protocol."
+    },
+    {
+      "category": "underengineering",
+      "severity": "major",
+      "issue": "The scheduler boundary at exactly 10:00 is named as an edge case but has no expected result. Scenario 3 distinguishes only «completed before 10:00» (keep today's tick) and «completed after 10:00» (tomorrow), while the edge-case list explicitly includes completion at 10:00:00. `schedule==1.2.1` must make a concrete next-run choice at that equality, and a controlled-clock test cannot prove an unstated outcome.",
+      "why_matters": "This is the exact race boundary of the double-tick defect. Choosing opposite inequalities in implementation and tests can either execute a second immediate 10:00 job or skip the intended canonical tick, with both teams claiming conformance to the prose.",
+      "fix": "State the equality rule. Recommend: if the immediate job finishes at or after 10:00:00, that process has already performed the recovery tick and the next daily 10:00 is tomorrow; only a finish strictly before 10:00 preserves today's cron. Add the exact-equality case to the acceptance criterion, not only to the edge-case list."
+    },
+    {
+      "category": "underengineering",
+      "severity": "major",
+      "issue": "«Неверный формат любого обязательного config-поля» is not testable from the specified contract. The current code supports four providers, an OpenRouter key alias, provider-specific model variables and defaults; `llm_transcreation.py` also treats an unknown explicit `LLM_PROVIDER` as a warning and silently auto-selects another engine. The spec does not enumerate accepted provider/key/model mappings, whether aliases/default models count, or the locally checkable forms for channel ID, bot token and Telegraph token.",
+      "why_matters": "The startup validator can either reject currently valid configuration (for example a supported channel `@username` or key alias) or accept a provider typo and validate the auto-selected engine, violating the explicit-provider requirement. Credential validity cannot be proved without the network that this phase forbids, so «format» must have a deliberately local meaning.",
+      "fix": "Define the local config matrix: provider enum; canonical and accepted alias key for each provider; whether the provider-specific model must be explicitly present or a code default is allowed; channel-ID forms; numeric admin-ID rule; and which secrets are checked only as non-blank versus by stable syntax. State explicitly that unknown `LLM_PROVIDER` is fatal in production even though local/current dispatcher fallback may remain for non-prod, and that online credential validity is outside this preflight."
+    },
+    {
+      "category": "overengineering",
+      "severity": "major",
+      "issue": "The user-spec contains a substantial tech-spec and test-plan layer: the `HEAD~1` implementation diagnosis, dotenv timing relative to imports, test-harness enforcement approach, container-entrypoint placement, SQLite preflight mechanism, cron-registration mechanism, real `schedule`/freezegun choice, synthetic `ip route` doubles, `docker compose config` and command/tool tables. Several operator-visible constants are legitimate contracts, but the document repeatedly pins HOW rather than only the observable WHAT/WHY.",
+      "why_matters": "Per the validator contract this is scope leak into tech-spec territory. It pre-commits mechanisms before the unresolved bootstrap identity/lifecycle and native-network issues are decided, and it makes a user-level artifact drift with workflow/library changes.",
+      "fix": "Keep operator-visible invariants and inputs in the user-spec (`/data/news.db`, production label/timezone, VPN gateway, the two-signal bootstrap behaviour, observable scheduler outcomes). Move file-specific diagnosis, library/tool selection, entrypoint/module boundaries, synthetic fixtures and command tables to code-research/tech-spec. Add the missing behavioural decisions first; do not compensate for them with more implementation detail."
+    },
+    {
+      "category": "underengineering",
+      "severity": "minor",
+      "issue": "The scope of «любое tracked-изменение в pull request или push» is ambiguous against the actual workflow, whose `push` and `pull_request` events are limited to `main` and `dev`. Removing `check-skip` still leaves a push to another tracked branch with no workflow at all, while the acceptance text can be read as requiring every push.",
+      "why_matters": "A static fixture can pass for the unconditional `test` job while event filtering still violates the literal promise. The project normally promotes through PRs, so this is not blocking, but the intended required-check surface should not be inferred by the tech-spec.",
+      "fix": "State whether the guarantee covers all branch pushes or only pushes/PRs targeting `main` and `dev`. If all pushes are intended, remove the branch filter; if the project workflow scope is intended, say so in Scenario 1 and the acceptance criterion."
+    }
+  ],
+  "worst_category": "underengineering",
+  "summary": "The foundation is technically buildable, and the proposed long-form bind plus an atomically consumed grant file can enforce mount/grant mechanics without new infrastructure. It is not ready for a tech-spec because the bootstrap-eligible DB states and the post-bootstrap empty-ledger lifecycle remain undefined; the package is also L-sized in practice and needs transport-independent CI isolation."
+}

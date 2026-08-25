@@ -1,0 +1,62 @@
+{
+  "status": "changes_required",
+  "checks": {
+    "completeness": "pass",
+    "edge_cases": "pass",
+    "acceptance_criteria": "fail",
+    "contradictions": "pass",
+    "template_compliance": "pass",
+    "size_check": "warning"
+  },
+  "findings": [
+    {
+      "check": "completeness",
+      "severity": "major",
+      "issue": "Раздел объясняет технические угрозы и последствия, но не называет явно, кто получает ценность и какое действие становится для него безопасным или надёжным. Роль оператора и косвенная ценность для подписчиков остаются только в interview.yml, поэтому «Зачем» не содержит полного WHO + WHAT action + WHAT problem.",
+      "location": "Раздел «Зачем»",
+      "fix": "Добавить явную формулировку ценности, например: оператор production-бота сможет доверять результату CI и безопасно запускать или перезапускать контейнер, а подписчики не столкнутся с дублями и аварийными публикациями из-за опасного startup."
+    },
+    {
+      "check": "acceptance_criteria",
+      "severity": "critical",
+      "issue": "Последний критерий требует, чтобы новые fatal-сообщения были «диагностичны», но не задаёт наблюдаемых признаков диагностичности. Объективно определить pass/fail для этой части нельзя. Кроме того, один пункт объединяет отсутствие изменений формата, дедуп-правил, alert-текстов и данных, propagation исключения и redaction, а запрет утечки секретов уже частично повторяет предыдущий критерий про config failure.",
+      "location": "Раздел «Критерии приёмки», последний пункт",
+      "fix": "Разбить пункт на независимые критерии. Для fatal-log задать конкретный ожидаемый контракт: имя проваленного gate/check, безопасный идентификатор поля или класса DB-ошибки, ненулевой exit и отсутствие значений секретов; reader-visible и data-regression вынести в отдельные проверяемые критерии."
+    },
+    {
+      "check": "acceptance_criteria",
+      "severity": "major",
+      "issue": "Для границы ровно 10:00 перечислен обязательный edge case, но ожидаемое поведение не определено. Сценарий и критерии задают результат только для завершения immediate job до 10:00 и после 10:00, поэтому тест на точном равенстве не знает, должен ли сегодняшний tick сохраниться или следующий запуск назначаться на завтра.",
+      "location": "«Как должно работать» → «Сценарий 3», «Краевые случаи» и критерии lifecycle",
+      "fix": "Явно определить включительность границы, например finished_at >= 10:00 означает один job в этом запуске и следующий canonical tick завтра, и закрепить ожидаемые call count и next_run для 09:59:59, 10:00:00 и времени после 10:00."
+    },
+    {
+      "check": "acceptance_criteria",
+      "severity": "major",
+      "issue": "Сценарий hermetic CI обещает одинаковый результат для каждого теста отдельно, в файле и в полном suite, тогда как критерий приёмки сужает проверку до неопределённых «целевых тестов». Неясно, какой набор обязан быть order-independent, и часть заявленного flow остаётся без однозначного критерия.",
+      "location": "«Как должно работать» → «Сценарий 1», шаг 4; «Критерии приёмки», второй пункт; «Как проверить», шаги 1–2",
+      "fix": "Согласовать квантор и проверку: либо требовать автономности всех тестов и описать воспроизводимую проверку, либо ограничить сценарий конкретно перечисленным набором state-leak regression tests и зафиксировать для каждого standalone/file/full-suite запуски."
+    },
+    {
+      "check": "size_check",
+      "severity": "minor",
+      "issue": "Формальный порог size-check превышен по числу затронутых интеграционных границ: GitHub Actions, Docker/Compose entrypoint, VPN route, SQLite, schedule, Telegram, Telegraph и выбранный LLM provider. При трёх сценариях и десяти критериях размер M ещё выглядит управляемым, но интеграций больше пяти.",
+      "location": "Frontmatter size: M; разделы «Как должно работать», «Технические решения» и «Тестирование»",
+      "fix": "Оставить size M только при явном разбиении реализации и тестовой матрицы на три независимых потока CI/startup/scheduler; если tech-spec связывает их одной миграцией или общим rollout, пересмотреть размер на L."
+    }
+  ],
+  "interview_coverage": {
+    "covered": [
+      "Граница stabilization-пакета и исключение большого рефакторинга, off-box backup и publication crash-gap",
+      "Fail-closed production startup при неверных VPN route, config и DB",
+      "Новая семантика недоставленного E014 сохранена как handoff в отдельный reliable-admin-alert-delivery",
+      "Unit/integration/full clean-env verification без live E2E и production deploy",
+      "Вынос stateful admin-alert delivery в отдельную follow-up задачу",
+      "Обязательный production config и закреплённые Compose-инварианты при optional review buttons",
+      "One-use bootstrap/recovery authorization вместе с ALLOW_EMPTY_PROD_DB=1 без обхода wrong path, mount или corrupt SQLite",
+      "Scheduler lifecycle: immediate job до cron registration, сохранение quick pre-10 tick и mid-day restart recovery без persistent marker"
+    ],
+    "missing": []
+  },
+  "summary": "Трассировка интервью, структура, риски и scope в целом полны и непротиворечивы. Нужны изменения перед одобрением: один критерий содержит непроверяемое требование к «диагностичности», а scheduler boundary и объём order-independence следует определить однозначно."
+}
