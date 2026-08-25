@@ -1,10 +1,10 @@
 {
   "status": "approved",
-  "summary": "Validation round 2 checked 76 factual claims against the current local codebase and found 0 mirages. Both prior architectural overclaims are fixed, and the new fallback, workflow-gating, input-bound, logging, and test-seam claims are consistent with the repository and explicitly proposed changes.",
+  "summary": "Final validation round 3 checked 77 factual claims against the current local codebase and found 0 mirages. Both prior architectural overclaims remain fixed; the clarified exact-1-MiB versus 1-MiB-plus-one-byte boundary is consistent with the specified sentinel-byte CLI design.",
   "findings": [],
   "stats": {
-    "total_claims_checked": 76,
-    "confirmed": 76,
+    "total_claims_checked": 77,
+    "confirmed": 77,
     "mirages_found": 0,
     "verified_claims": [
       "compute_publish_slots.py exists",

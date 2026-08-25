@@ -6,50 +6,51 @@
     "major": 0,
     "minor": 0
   },
-  "round": 2,
+  "round": 3,
   "previousRound": {
+    "round": 2,
     "status": "approved",
-    "totalFindings": 3,
+    "totalFindings": 0,
     "critical": 0,
-    "major": 1,
-    "minor": 2
+    "major": 0,
+    "minor": 0
   },
-  "round1Closure": [
+  "historicalClosures": [
     {
       "finding": "Trusted classifier revision and failed-checkout gate are not acceptance-tested",
       "status": "closed",
-      "evidence": "Architecture steps 3-4 now require an explicit checkout id, `ref: ${{ github.event.repository.default_branch }}`, a full-SHA action pin, non-persisted credentials, and execution of repository code only when the checkout outcome is successful. Decision 6, the risk table, Acceptance Criteria, Task 4, and the static workflow contract all repeat and test the ref/outcome gates. Failed or partial checkout must become `inconclusive` without importing workspace code.",
+      "evidence": "The current Architecture, Decision 6, risk table, static workflow contract, Acceptance Criteria and Task 4 all require an explicit checkout id, default-branch ref, full-SHA action pin, `persist-credentials: false`, and a successful checkout outcome before workspace code can execute. Failed or partial checkout becomes `inconclusive` without importing repository code.",
       "cwe": "CWE-494"
     },
     {
       "finding": "Untrusted Telegraph response has no byte-size or nesting budget",
       "status": "closed",
-      "evidence": "Architecture steps 2 and 5 and Decision 7 now impose a 1 MiB evidence limit before JSON decoding; the CLI reads at most 1 MiB plus one sentinel byte. Oversized input and `RecursionError` become `inconclusive`, raw evidence is not logged, and unit/subprocess tests explicitly cover oversized and excessively deep JSON.",
+      "evidence": "The current Architecture and Decision 7 enforce a 1 MiB pre-decode cap and a CLI read of at most 1 MiB plus one sentinel byte. Unit tests distinguish exactly 1 MiB from 1 MiB plus one byte; oversized input and `RecursionError` become `inconclusive`, and raw evidence is excluded from logs and stderr.",
       "cwe": "CWE-400"
     },
     {
       "finding": "Callback and scheduler logging hygiene is preserved only implicitly",
       "status": "closed",
-      "evidence": "Runtime steps 8-9 now require `sanitize_error_message()` for the snapshot failure path and CR/LF-safe article identifiers without URL userinfo/query data. Unit tests and a dedicated Acceptance Criterion prohibit callback tokens, raw Telegraph evidence, credential-bearing URLs, forged line breaks, and unsanitized new exceptions in logs.",
+      "evidence": "The current runtime design, tests and Acceptance Criteria require `sanitize_error_message()` for new failure logs and CR/LF-safe article identifiers without URL userinfo/query data. Raw callback tokens, credential-bearing URLs and Telegraph evidence are explicitly prohibited from logs.",
       "cwe": "CWE-117"
     }
   ],
   "findings": [],
   "checksPerformed": [
-    "Hardcoded-secret detection covered the current feature specs, relevant bot/repository code, uptime workflow, dependency/deployment manifests, fixtures/examples, and local secret-file handling. No credential is hardcoded in reviewed source. The configured `.env` remains ignored and mode 0600; `.env.example` contains placeholders.",
-    "OWASP A01/A07: callback authorization remains a fail-closed numeric Telegram admin-id check before token lookup or mutation, followed by resolver re-check and token-kind separation. The updated design preserves non-admin-before-DB, idempotency, and no-callback-publish tests.",
-    "OWASP A02: external watcher endpoints remain fixed HTTPS APIs; secrets are supplied through step-scoped GitHub environments, checkout credentials are not persisted, and no new cryptographic primitive or plaintext credential store is introduced.",
-    "OWASP A03: the new SQLite partition is a constant aggregate statement with no interpolated input; existing callback mutations are parameterized. Telegraph evidence crosses the shell boundary only as a fixed temporary file/stdin stream, classifier output is allow-listed to three constants, and the architecture requires unexpected output to become `inconclusive` rather than shell code or an output record.",
-    "OWASP A04/A05: scheduler snapshot failure cannot create an extra publication opportunity; watcher uncertainty cannot raise or resolve an alarm. The 1 MiB plus sentinel-byte input budget, `RecursionError` handling, exact CLI contract, successful-checkout gate, and independent SSH contour make failure behavior bounded and explicit.",
-    "OWASP A06: no Python dependency is added. The sole new workflow action is identified by a full 40-character commit SHA and credentials are not persisted. Network/CVE lookup was intentionally not run under this spec-only, no-network review; final implementation audit remains required.",
-    "OWASP A08: the workflow contract now pins the official checkout action, explicitly selects the repository default branch, validates checkout outcome before executing workspace code, and treats partial/missing source as `inconclusive`. The static contract test is required to lock every one of these controls.",
-    "OWASP A09: operator decisions remain logged after authorization without callback tokens; changed identifiers are required to strip CR/LF, URL userinfo and query data, and changed exception paths use the existing secret sanitizer. Raw Telegraph payloads are prohibited from stdout/stderr and logs.",
-    "OWASP A10: the watcher fetch target is the fixed Telegraph API and the classifier performs no network call. Callback queue-state changes introduce no new URL fetch or SSRF surface.",
-    "Issue-backed alarm dedup remains explicitly best-effort and may produce duplicates during GitHub bookkeeping failure; reliable Telegram redelivery and uniqueness are documented as separate approved scope, not silently claimed by this feature.",
-    "No spec, implementation, git state, production state, external service, dependency registry, or network endpoint was modified or queried by this review; only this report was overwritten."
+    "Hardcoded-secret scan covered the current tech/user specs, relevant bot and SQLite repository code, uptime workflow, dependency/deployment manifests and examples. No source credential or private key was found. The configured local `.env` remains ignored and mode 0600; `.env.example` contains placeholders.",
+    "OWASP A01/A07: Telegram review authorization remains fail-closed on numeric `from_user.id` before token lookup or mutation, with resolver re-check, token-kind separation and idempotency. Callback handlers remain state-only and cannot invoke publication.",
+    "OWASP A02: external calls remain fixed HTTPS APIs; credentials are step-scoped, checkout credentials are not persisted, and no new cryptographic or plaintext-secret storage mechanism is introduced.",
+    "OWASP A03: the SQLite aggregate is a constant, input-free statement and existing callback writes are parameterized. Telegraph JSON crosses the workflow boundary only as bounded file/stdin data; tri-state output is allow-listed and unexpected output becomes `inconclusive`. No dynamic SQL, eval, unsafe shell interpolation or command construction is required.",
+    "OWASP A04/A05: scheduler snapshot failure cannot create release opportunities; watcher uncertainty cannot open or close publication state. Input size, recursive JSON, checkout failure, missing code and independent SSH behavior all have explicit bounded failure contracts.",
+    "OWASP A06: no Python package is added. The sole new action is full-commit pinned and configured without persisted credentials. Network/CVE lookup was not run because this validation is explicitly local, spec-only and no-network; implementation audit remains mandatory.",
+    "OWASP A08: the reviewed workflow design selects the trusted default branch explicitly, pins checkout by full SHA, validates checkout outcome before executing repository code, separates Telegraph secret scope from classifier scope and converts partial/missing source to `inconclusive`.",
+    "OWASP A09: authorized operator decisions retain an audit line without callback tokens; changed identifiers exclude CR/LF, URL userinfo and query data; changed exception paths use the shared secret sanitizer; raw upstream payloads are prohibited from stdout, stderr and logs.",
+    "OWASP A10: the watcher fetch destination is fixed to Telegraph and the classifier performs no network call. Queue-state callbacks introduce no new user-controlled fetch destination or SSRF surface.",
+    "Best-effort GitHub issue dedup and lack of guaranteed Telegram redelivery remain explicitly documented limitations assigned to separate monitoring scope, not hidden security guarantees of this feature.",
+    "No spec, implementation, git state, production system, dependency registry or network endpoint was changed or queried; this validation overwrote only the requested report."
   ],
   "notes": [
-    "All three round-1 findings are closed at Architecture, Decision, Risk, Test, Acceptance Criteria, and Task levels rather than only in narrative prose.",
-    "No new critical, major, or minor architecture finding remains in the current tech spec. Security properties must still be verified against the eventual implementation in Task 7, especially exact GitHub expression placement, output allow-listing, temporary-file quoting, SQL text, and log-sanitizer use."
+    "Final round 3 confirms zero critical, major or minor security gaps in the current tech-spec architecture.",
+    "Task 7 must still audit the completed implementation for exact SQL, GitHub expression placement, checkout outcome branching, shell quoting, output allow-listing, evidence-size enforcement and log sanitization before rollout."
   ]
 }
