@@ -370,3 +370,135 @@ publish path. Positive control обязателен: только `call_count` �
 уже закреплённые зависимости (`schedule`, `pytz`, python-telegram-bot) и stdlib /
 SQLite. Watcher использует предустановленные на GitHub runner `python3`, `curl`,
 `ssh-keyscan` и `gh`; исследование внешней документации не требовалось.
+
+## Updated: 2026-08-26
+
+### Scheduler: выбранный implementation contract
+
+`job()` должен развести два списка, которые сейчас представлены одной переменной
+`slots`:
+
+- **planned publish slots** — `compute_fixed_slots(publishable_count, now_msk)`;
+  только они передаются в `[E008]`, backlog/carry-over и считаются обещанным
+  планом для уже публикуемой очереди;
+- **release opportunities** — все ещё допустимые фиксированные времена сегодня,
+  но только если атомарный снимок очереди содержит хотя бы одну deferred/held
+  строку. В противном случае runtime использует planned slots и пустой день не
+  остаётся жить до вечера.
+
+Чистый helper в `compute_publish_slots.py`, например
+`remaining_fixed_slots(now, daily_times=DAILY_PUBLISH_TIMES, grace_minutes=5)
+-> list[datetime]`, должен владеть eligibility/grace-арифметикой.
+`compute_fixed_slots()` переиспользует его и по-прежнему режет результат до `n`;
+`job()` переиспользует тот же helper без искусственного `n=3` для release
+opportunities. Это сохраняет один источник fixed-time правил.
+
+Наличие release candidate нельзя безопасно получать тремя раздельными вызовами
+`count_pending()`, `count_deferred()` и `list_held()`: callback может перевести
+строку между предикатами между двумя SELECT, и оба чтения её пропустят. Нужен один
+aggregate SELECT в `pending_articles_repo.py`, например
+`get_schedule_backlog_counts() -> (publishable, deferred, held)`, где категории
+взаимоисключающи:
+
+- publishable: `hold_reason IS NULL` и defer отсутствует/истёк;
+- deferred: `hold_reason IS NULL` и `publish_after > CURRENT_TIMESTAMP`;
+- held: `hold_reason IS NOT NULL` независимо от `publish_after`.
+
+Один SQLite statement даёт снимок до или после callback: release виден либо как
+withheld, либо как publishable; cancel/reject виден либо в снимке, либо оставляет
+только лишнюю безопасную wake-up opportunity. При ошибке aggregate read текущая
+очередь может быть рассчитана fallback-вызовом `count_pending()`, но
+дополнительные release opportunities не открываются: ошибка логируется,
+publisher остаётся fail-closed относительно неизвестного reviewable backlog.
+
+В slot loop пустой `list_pending()` завершает только текущую opportunity
+(`continue`), а не весь список. Gate остаётся в `list_pending()`; callback только
+меняет SQLite и никогда не вызывает `_fallback_publish`. Поэтому:
+
+- release до slot read попадает в текущий слот;
+- release сразу после empty read попадает в следующий фиксированный слот;
+- cancel/reject оставляет последующие reads пустыми;
+- E014 silence допускает строку после expiry, E036 silence не допускает никогда;
+- dual-gate строка появляется только после снятия обоих условий;
+- один `job()` всё ещё имеет максимум три opportunity и не публикует вне них.
+
+Для наблюдаемости нужны разные имена/счётчики (`planned_slots`,
+`release_opportunities`, `empty_opportunities`, publish outcome counters).
+Пустой read не увеличивает `[E034]`; финальный лог маркирует carry-over как
+первоначальный planned carry-over. `[E008]` показывает только planned slots, а
+held/deferred остаются отдельными строками. Текущую повторно используемую
+переменную `held_count` стоит разделить на backlog и publish-outcome count.
+После `E036 approve` надо повторно проверить `publish_after`: при втором gate
+status сообщает, что отсрочка ещё действует, а не обещает ближайший слот.
+
+Отвергнутые варианты: только `break -> continue` (список уже содержит один
+утренний slot), sizing по `publishable+deferred+held` (одна withheld строка всё
+равно покупает только одну opportunity), публикация из callback (второй
+publisher и off-slot post), всегда три runtime slots (удерживает действительно
+пустой день), отдельные jobs/condition signaling (несоразмерная смена lifecycle).
+
+### Watcher: выбранный tri-state contract
+
+Новый stdlib-only `publication_watch.py` должен быть единственным classifier-ом,
+исполняемым и unit-тестами, и workflow:
+
+`classify_telegraph_response(body: str, now: datetime) ->
+Literal['fresh', 'stale', 'inconclusive']`.
+
+Функция один раз переводит timezone-aware `now` в `Europe/Moscow`, строго
+валидирует `ok/result/pages/pages[0].path`, извлекает suffix `MM-DD` и не логирует
+body. Невалидный JSON/API result, пустые pages, неизвестный path, невозможная
+дата и naive clock дают `inconclusive`. Future candidate переносится на прошлый
+год только для `today.month == 1 and month == 12`; любой иной future `MM-DD`
+неоднозначен. После этого `days > 1` — stale, `days == 1` становится stale ровно
+с 21:00 МСК, остальное fresh.
+
+`.github/workflows/uptime.yml` получает pinned `actions/checkout` с
+`persist-credentials: false`, размещённый после SSH probe и с безопасной
+деградацией: отсутствие helper/ошибка checkout или classifier-а даёт
+`inconclusive`, но не мешает host verdict. Telegraph body передаётся helper-у
+без token; секрет остаётся только в fetch step. Workflow переносит `pub_state`
+без сведения к boolean:
+
+| Evidence | Publication issue closed | Publication issue open |
+|---|---|---|
+| `stale` | открыть + alert | ничего |
+| `fresh` | ничего | recovery + закрыть |
+| `inconclusive` | ничего | ничего |
+
+При host-down publication transition по-прежнему подавлен. Это исправляет
+нынешний fail-open, где `true` одновременно означает fresh, skipped и API error,
+из-за чего неубедительный ответ способен закрыть настоящий alarm.
+
+Отвергнуты: продублировать формулу в module и heredoc (два источника истины),
+тестами извлекать inline Python из YAML (хрупкий parser-by-markers), считать
+unknown свежим (ложный recovery). Checkout failure обязательно должен быть
+inconclusive, а не останавливать host alert path.
+
+### Конкретные files и regression tests
+
+- `compute_publish_slots.py`, `tests/test_compute_fixed_slots.py` — общий helper:
+  10:00 grace, 12:00 `[15:00,19:30]`, restart 16:00 `[19:30]`, after-cutoff `[]`.
+- `pending_articles_repo.py`, `tests/test_pending_articles_repo.py` — один
+  snapshot partition; future defer+hold учитывается ровно как held; elapsed defer
+  как publishable; сумма категорий равна числу pending rows.
+- `news_bot.py`, `tests/test_job_distributed_publish.py` (real tempfile SQLite) —
+  production timeline E014: empty 10:00 read, real `keep`, один publish нужного
+  link в 15:00; зеркальный E036 approve; cancel/reject дают ноль; silence и
+  expiry; dual gate; обычный N=1 не получает 15:00/19:30 wake-ups; aggregate-read
+  failure не создаёт дополнительный publish path. Publish stub обязан удалять/
+  перемещать выбранную строку, иначе call-count может скрыть повтор head row.
+- `tests/test_integration.py` — callback truthfulness для E036 + active
+  `publish_after`; существующие auth/token/idempotency assertions сохраняются.
+- `publication_watch.py`, `tests/test_publication_watch.py` — 20:59/21:00,
+  00:00/02:59/03:00, Dec31→Jan1, non-Dec future suffix, leap-day, malformed/empty
+  payloads и aware-clock requirement.
+- `.github/workflows/uptime.yml` + статический workflow test — production вызывает
+  repo helper, передаёт tri-state до alarm branch, `inconclusive` не вызывает ни
+  `raise`, ни `resolve`, checkout failure не блокирует host contour.
+
+Scheduler и watcher следует реализовать отдельными task/commit: у них разные
+activation/rollback paths. Главные остаточные риски — долгоживущий E036 держит
+job до 19:30 (bounded и явно принят), release точно на границе выбирается
+SQLite-commit-vs-SELECT порядком, а workflow fix активируется только после
+promotion `dev -> main`; runtime bot требует отдельного позднего manual deploy.
