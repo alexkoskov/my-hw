@@ -12,7 +12,7 @@
 # ============================================================================
 interview_metadata:
   started: "2026-08-25 18:05:34"  # Timestamp (YYYY-MM-DD HH:MM:SS)
-  last_updated: "2026-08-25 20:10:41"
+  last_updated: "2026-08-25 20:20:00"
   status: "in_progress"  # not_started | in_progress | completed
   can_resume: true
   current_question_num: 8
@@ -431,6 +431,11 @@ notes: |
     DB shapes, иначе manual data-aware restore/cleanup. Добавлены dedicated
     APP_MODE, test-owned egress sentinel, exact non-atime file invariants и
     DB/BOOTSTRAP fatal-event acceptance coverage.
+  - VALIDATION ROUND 3 2026-08-25: оба validator verdict = approved, critical=0.
+    Перед финальным коммитом закрыты оставшиеся major findings: sidecar-bearing
+    DB non-overridable даже с permit, malformed permit = invalid_permit и exact
+    earliest-gate ownership ROUTE→VOLUME→CONFIG→DB→BOOTSTRAP. Формальный size
+    warning (>10 AC, >5 integrations) принят и соответствует L/increments.
 
   question_strategy:
     - "3-4 questions per batch about different gaps"

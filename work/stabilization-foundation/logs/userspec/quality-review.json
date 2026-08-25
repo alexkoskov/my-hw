@@ -1,48 +1,34 @@
 {
-  "status": "changes_required",
+  "status": "approved",
   "checks": {
     "completeness": "pass",
     "edge_cases": "pass",
-    "acceptance_criteria": "fail",
-    "contradictions": "fail",
+    "acceptance_criteria": "pass",
+    "contradictions": "pass",
     "template_compliance": "pass",
     "size_check": "warning"
   },
   "findings": [
     {
-      "check": "contradictions",
-      "severity": "critical",
-      "issue": "Bootstrap eligibility противоречит описанному restart recovery до появления первой processed_news row. Пункт 9 объявляет fatal даже с permit любую bot SQLite, где processed_news пуста, но непуста хотя бы одна другая application table. При этом пункт 11, критерий про quiet bootstrap, риск и раздел «Деплой» говорят, что до первой ledger-row следующий restart требует нового permit. После разрешённого запуска достижимо состояние с пустой processed_news и непустой pending_articles или bot_state; свежий permit для него запрещён пунктом 9, поэтому описанный recovery path фактически не существует.",
-      "location": "«Как должно работать» → «Одноразовый bootstrap/recovery», пункты 9 и 11; критерий приёмки про post-claim/quiet process; риск «Quiet bootstrap»; раздел «Деплой»",
-      "fix": "Выбрать и закрепить одну семантику. Либо явно сказать, что fresh permit повторно помогает только пока все шесть application tables пусты, а состояние empty ledger + pending/bot_state требует отдельной data-aware recovery процедуры; либо добавить такое распознанное post-bootstrap состояние в список permit-eligible с точными допустимыми таблицами/инвариантами. Затем синхронно обновить критерий, риск, edge case, deploy-инструкцию и concurrency/replay matrix."
-    },
-    {
       "check": "acceptance_criteria",
-      "severity": "critical",
-      "issue": "AC2 заканчивается требованием «live endpoint не получает запрос», но live E2E и обращения к внешним сервисам прямо запрещены разделами «Тестирование» и «Ограничения». Отрицательный факт на стороне удалённого endpoint нельзя наблюдать offline, поэтому критерий в текущем виде не имеет воспроизводимого pass/fail даже при исправной network isolation.",
-      "location": "«Критерии приёмки», AC2; «Тестирование» → E2E; «Ограничения»; «Как проверить», шаг 1",
-      "fix": "Заменить удалённое наблюдение локальным контрактом: pytest выполняется внутри доказуемого egress boundary без внешнего route/интерфейса либо с fail-closed outbound policy; каждый Python/native/subprocess red control завершается ожидаемой локальной deny-ошибкой до DNS/TCP egress; локальный packet/egress sentinel за границей фиксирует ноль попыток. Такой sentinel должен быть test-owned, а не production endpoint."
+      "severity": "major",
+      "issue": "Sidecar rejection однозначно задан для normal DB path (`DB|sidecar_present`), но не замкнут в bootstrap cross-matrix. Пункт 7 говорит, что sidecar-bearing DB автоматически не открывается, однако пункт 10 не повторяет sidecar среди состояний, которые permit никогда не обходит, а bootstrap AC не проверяет flag+permit при существующем journal/WAL/SHM. Четыре eligible DB shapes описывают main file/schema и сами по себе не исключают ортогонально присутствующий sidecar, поэтому test oracle для этой комбинации остаётся неявным.",
+      "location": "«Как должно работать» → Read-only DB preflight, пункт 7; «Одноразовый bootstrap/recovery», пункт 10; критерии DB и Bootstrap",
+      "fix": "Явно добавить `sidecar_present` в список bootstrap-ineligible состояний и в bootstrap acceptance matrix: даже flag+fresh permit завершается `DB|sidecar_present`, permit не расходуется, main DB и sidecar set не меняются; operator выполняет отдельный backup/recovery."
     },
     {
       "check": "acceptance_criteria",
       "severity": "major",
-      "issue": "Контракт fatal event теперь объективно определён, но acceptance coverage неполон: ROUTE, VOLUME и CONFIG критерии проверяют gate/reason/redaction, тогда как rejected DB и BOOTSTRAP cases проверяются только как fail и filesystem/permit state. Требование пункта 7 о ровно одном событии с точным DB/BOOTSTRAP reason-class, ненулевом exit и отсутствии утечки не имеет соответствующего критерия; шаг проверки DB/bootstrap также не требует проверить event payload.",
-      "location": "«Как должно работать» → Read-only DB preflight, пункт 7 и таблица reason-class; критерии DB/bootstrap; «Как проверить», шаги 4–5",
-      "fix": "Расширить DB/bootstrap критерии и шаг 5: каждый rejected case должен завершаться ненулевым кодом и выдавать ровно один redacted event с ожидаемой парой DB|BOOTSTRAP + reason-class; отдельно зафиксировать, что значения permit UUID и секретов не логируются."
-    },
-    {
-      "check": "completeness",
-      "severity": "major",
-      "issue": "Production mode назван «явным», но точный discriminator не определён. Не сказано, является ли switch значением INSTANCE_LABEL=prod, отдельным mode flag/CLI contract или комбинацией трёх Compose-полей. Одновременно local/test обещано не активировать gates «от одного env-поля»; если INSTANCE_LABEL=prod и есть единственный явный switch, буквальные формулировки конфликтуют, а если switch составной, не определено поведение при missing/unknown/partial contract.",
-      "location": "«Как должно работать» → «Route и production mode», пункт 2; пункт 13; критерий Local/test; Compose-контракт",
-      "fix": "Назвать единственный authoritative discriminator и его допустимые значения. Например, exact INSTANCE_LABEL=prod включает все production gates, а secrets, DB_FILE и TZ никогда сами mode не выводят; unknown mode завершается fatal, явно выбранный test/local сохраняет non-prod поведение. Переформулировать «одно env-поле» как «ни одно недискриминирующее поле» и добавить матрицу exact prod / explicit non-prod / missing / unknown / prod-like partial config."
+      "issue": "Краевой случай с испорченным permit обязан дать точный `BOOTSTRAP|reason`, но словарь не содержит `invalid_permit` и не говорит, что malformed/non-UUID content нормализуется в `missing_permit` или другой существующий класс. При требовании exact reason два совместимых implementation/test oracle всё ещё возможны.",
+      "location": "Таблица fatal reason-class; «Краевые случаи» про испорченный permit; Bootstrap criterion",
+      "fix": "Либо добавить `invalid_permit` в BOOTSTRAP reason-class и matrix, либо явно определить, что отсутствующий, unreadable и malformed permit дают конкретные разные или один выбранный существующий reason."
     },
     {
       "check": "size_check",
       "severity": "minor",
-      "issue": "Размер L теперь согласован с глубиной документа и тремя failure domains, но формальные warning-пороги валидатора всё равно превышены: 13 критериев приёмки и более пяти интеграционных границ (GitHub Actions, test isolation boundary, Docker/Compose, VPN route, filesystem volume, SQLite, schedule и внешние API-конфигурации).",
+      "issue": "Размер L соответствует глубине и трём failure domains, но формальные warning-пороги валидатора превышены: 13 критериев приёмки и более пяти интеграционных границ.",
       "location": "Frontmatter size: L; разделы «Как должно работать» и «Критерии приёмки»",
-      "fix": "Сохранить size L и явно удержать уже заявленные отдельно зелёные и откатываемые increments; в tech-spec дать каждому increment собственный acceptance gate, чтобы общий пакет не превратился в один неделимый rollout."
+      "fix": "Сохранить заявленное разбиение на отдельно зелёные и откатываемые CI, scheduler и production-startup increments с собственными acceptance gates."
     }
   ],
   "interview_coverage": {
@@ -58,5 +44,5 @@
     ],
     "missing": []
   },
-  "summary": "WHO/value, точная fatal vocabulary, граница 10:00 и bounded state-leak scope из round 1 исправлены, интервью покрыто полностью. Одобрение блокируют противоречивый bootstrap recovery и непроверяемое offline-требование о состоянии live endpoint; кроме того, нужно явно назвать production-mode discriminator и завершить acceptance coverage fatal events."
+  "summary": "Критических findings нет: strict post-bootstrap recovery согласован с четырьмя eligible shapes, network criterion полностью offline, APP_MODE и DB/BOOTSTRAP fatal coverage определены, atime исключён. Draft одобрен по правилам quality-validator; перед tech-spec желательно явно замкнуть sidecar+permit cross-case и reason для malformed permit."
 }

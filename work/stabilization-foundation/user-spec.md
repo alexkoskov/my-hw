@@ -68,30 +68,32 @@ size: L
 
 7. Обычный production-start открывает БД без возможности создать или изменить файл. Для успеха нужны: подтверждённый volume, exact path, regular non-symlink file с разрешённым чтением, исправная SQLite, отсутствие `-journal`/`-wal`/`-shm` sidecars, все шесть application tables (`processed_news`, `pending_articles`, `published_articles`, `failed_articles`, `bot_state`, `fetch_failures`) и `processed_news` с count > 0. Дополнительные SQLite internal tables допустимы; частичная или foreign schema — нет. Sidecar-bearing DB требует отдельного operator recovery и автоматически не открывается.
 8. Failed preflight не создаёт DB, journal/WAL/SHM, marker или таблицы. DB bytes, size, mtime/ctime, mode, inode, schema/rows, существующий sidecar set и directory entries остаются прежними; access time явно исключён из контракта. Failure пишет ровно один redacted fatal event с именем gate, reason-class из таблицы ниже и, для config, именем поля без его значения; permit UUID и secret values не логируются. Затем процесс завершается ненулевым кодом до listener/job/network.
+9. После выбора exact `APP_MODE=production` проверки идут в фиксированном порядке `ROUTE → VOLUME → CONFIG → DB → BOOTSTRAP`. Первая ошибка владеет единственным fatal event, последующие gates не запускаются, permit до `BOOTSTRAP` не читается и не расходуется. Symlink/nonregular/path/mount принадлежат `VOLUME`; invalid config — `CONFIG`; corrupt/sidecar/foreign/partial schema и empty ledger с другим state — `DB`; только flag/permit/replay/claim controls принадлежат `BOOTSTRAP`. Unknown `APP_MODE` даёт `CONFIG|unknown_mode` ещё до входа в production chain.
 
 | Gate | Допустимые reason-class |
 |------|--------------------------|
 | `ROUTE` | `missing_default`, `wrong_gateway`, `timeout` |
 | `VOLUME` | `mount_missing`, `identity_missing`, `identity_mismatch`, `path_escape`, `wrong_file_type` |
 | `CONFIG` | `missing_field`, `invalid_field`, `unknown_mode`, `partial_prod_contract`, `provider_mismatch` |
-| `DB` | `missing`, `empty`, `unreadable`, `corrupt`, `sidecar_present`, `foreign_or_partial_schema`, `empty_ledger` |
-| `BOOTSTRAP` | `missing_flag`, `missing_permit`, `replayed_permit`, `ineligible_state`, `concurrent_claim`, `unexpected_controls` |
+| `DB` | `unreadable`, `corrupt`, `sidecar_present`, `foreign_or_partial_schema`, `unsafe_empty_ledger` |
+| `BOOTSTRAP` | `missing_flag`, `missing_permit`, `invalid_permit`, `replayed_permit`, `concurrent_claim`, `unexpected_controls` |
 
 #### Одноразовый bootstrap/recovery
 
-9. Empty bootstrap требует одновременно `ALLOW_EMPTY_PROD_DB=1` и active permit `/data/.bootstrap/permit` с новым UUID. Permit находится на уже подтверждённом volume. Один флаг, один permit и повтор использованного UUID по отдельности не дают доступа.
-10. Permit может обойти только одну из четырёх форм нового состояния:
+10. Empty bootstrap требует одновременно `ALLOW_EMPTY_PROD_DB=1` и active permit `/data/.bootstrap/permit` с новым UUID. Permit находится на уже подтверждённом volume. Missing permit даёт `missing_permit`; nonregular, unreadable или malformed/non-UUID content — `invalid_permit`; уже использованный UUID — `replayed_permit`. Значение UUID не логируется.
+11. Permit может обойти только одну из четырёх форм нового состояния:
 
    - exact DB path отсутствует;
    - exact path — zero-byte regular file;
    - это исправная SQLite без user tables;
    - это распознанная bot SQLite со всеми шестью application tables, причём каждая из них пуста.
 
-   Valid SQLite с foreign/partial tables, отсутствующим `processed_news` рядом с любым существующим state либо пустым `processed_news` при непустой другой application table остаётся fatal. Corrupt, unreadable, directory/symlink, wrong path/mount/marker и invalid config тоже никогда не становятся bootstrap-eligible.
-11. После всех неотключаемых checks и непосредственно перед первой DB-write permit переводится в replay-proof consumed state с атомарным single-winner поведением. Ошибка до этой границы permit не расходует. После claim нового UUID недостаточно само по себе: повтор разрешён только если DB всё ещё приведена к одной из четырёх eligible shapes.
-12. Permit разрешает один process lifetime, а не объявляет пустую БД навсегда безопасной. Следующий restart проходит normal path только когда `processed_news` уже содержит хотя бы одну строку. Если ledger пуст, но все шесть application tables пусты, новая осознанная попытка может использовать fresh permit. Если partial schema или любая другая application table уже содержит state, generic permit запрещён: текущий process может продолжить работу, но перед рестартом оператор обязан сделать backup и выполнить data-aware recovery — предпочтительно restore последней исправной DB либо явную очистку только после ручной проверки. Persistent bypass и искусственная ledger-row запрещены.
-13. Только после успешного обычного или авторизованного preflight выполняется idempotent schema initialization, запускается runtime и разрешаются внешние вызовы. Для populated DB присутствующие bootstrap flag/permit считаются ошибкой конфигурации и не расходуются: оператор должен убрать их.
-14. Local/test использует `APP_MODE=local|test` (либо unset для local), относительную пустую БД, не требует VPN, marker или permit. Production gates не включаются от secrets, `TZ` или label/path по отдельности; prod-like partial contract при non-prod mode завершается fatal.
+   Valid SQLite с foreign/partial tables, отсутствующим `processed_news` рядом с любым существующим state либо пустым `processed_news` при непустой другой application table остаётся fatal. Corrupt, unreadable, sidecar-bearing, directory/symlink, wrong path/mount/marker и invalid config тоже никогда не становятся bootstrap-eligible. Sidecar даёт `DB|sidecar_present` до чтения permit; main DB и sidecar set не меняются.
+12. Любая из четырёх eligible empty shapes после read-only классификации переходит в `BOOTSTRAP`: без flag получается `missing_flag`, с flag без permit — `missing_permit`, с flag и valid fresh permit — authorised claim. Permit без flag тоже даёт `missing_flag`. Populated DB проходит normal path только без bootstrap controls; любой такой control даёт `unexpected_controls`. Wrong mount/config/corrupt/sidecar/foreign/unsafe-empty state сохраняет свой более ранний gate и до permit не доходит.
+13. После всех неотключаемых checks и непосредственно перед первой DB-write permit переводится в replay-proof consumed state с атомарным single-winner поведением. Ошибка до этой границы permit не расходует. После claim нового UUID недостаточно само по себе: повтор разрешён только если DB всё ещё приведена к одной из четырёх eligible shapes.
+14. Permit разрешает один process lifetime, а не объявляет пустую БД навсегда безопасной. Следующий restart проходит normal path только когда `processed_news` уже содержит хотя бы одну строку. Если ledger пуст, но все шесть application tables пусты, новая осознанная попытка может использовать fresh permit. Если partial schema или любая другая application table уже содержит state, generic permit запрещён: текущий process может продолжить работу, но перед рестартом оператор обязан сделать backup и выполнить data-aware recovery — предпочтительно restore последней исправной DB либо явную очистку только после ручной проверки. Persistent bypass и искусственная ledger-row запрещены.
+15. Только после успешного обычного или авторизованного preflight выполняется idempotent schema initialization, запускается runtime и разрешаются внешние вызовы. Для populated DB присутствующие bootstrap flag/permit считаются `BOOTSTRAP|unexpected_controls` и не расходуются: оператор должен убрать их.
+16. Local/test использует `APP_MODE=local|test` (либо unset для local), относительную пустую БД, не требует VPN, marker или permit. Production gates не включаются от secrets, `TZ` или label/path по отдельности; prod-like partial contract при non-prod mode завершается fatal.
 
 ### Сценарий 3. Lifecycle планировщика
 
@@ -109,8 +111,8 @@ size: L
 - [ ] Python не запускается до default route через `172.28.0.2`; route mismatch/timeout дают `ROUTE` + точный safe reason-class, ненулевой exit и no direct fallback.
 - [ ] Static Compose contract содержит `APP_MODE=production`, три pinned invariants, absolute `/root/hw-news/data` → `/data`, запрет auto-create и pinned volume ID; missing/wrong mount или identity marker дают `VOLUME` failure даже с flag+permit.
 - [ ] Mode/config matrix покрывает production, local, test, unset, unknown и partial-prod состояния; разрешённые provider/channel формы принимаются, missing/mismatched provider-key-model, nonnumeric admin и implicit model отклоняются, а dormant provider credentials не влияют на выбор. Fatal event содержит `CONFIG` + exact reason/field, но не значения.
-- [ ] Read-only DB matrix покрывает populated bot DB, absent/zero-byte DB, no-table SQLite, all-empty bot schema, partial/foreign schema, empty ledger с другим state, sidecars, corrupt, unreadable, nonregular, symlink и failed integrity. Только populated bot DB проходит normal path; каждый reject даёт nonzero exit и ровно один redacted `DB|reason`, не логирует secrets/UUID и сохраняет named filesystem attributes из контракта.
-- [ ] Bootstrap проходит только для четырёх eligible shapes с flag + fresh UUID permit; flag-only, permit-only, replay, populated DB с permit, wrong mount/config/corruption и concurrent claims дают предусмотренный fail/одного победителя. Каждый reject даёт nonzero exit и ровно один redacted `BOOTSTRAP|reason` без secret/UUID values.
+- [ ] End-to-end DB matrix покрывает populated bot DB, absent/zero-byte DB, no-table SQLite, all-empty bot schema, partial/foreign schema, empty ledger с другим state, sidecars, corrupt, unreadable, nonregular, symlink и failed integrity. Только populated DB без bootstrap controls проходит normal path; каждый reject даёт nonzero exit, сохраняет named filesystem attributes и ровно один earliest-gate event: nonregular/symlink/path — `VOLUME`, corrupt/sidecar/schema/unsafe-empty — `DB`, eligible empty state без authorization — `BOOTSTRAP`.
+- [ ] Bootstrap проходит только для четырёх eligible shapes с flag + fresh UUID permit. No-controls/flag-only/permit-only, malformed/replayed permit, populated DB controls и concurrent claims дают свой exact `BOOTSTRAP|reason`/одного победителя; wrong mount/config/corrupt/sidecar DB сохраняет более ранний `VOLUME|CONFIG|DB` reason. Permit при любом pre-claim reject не расходуется и его UUID не логируется.
 - [ ] После consumed permit normal restart разрешён при nonempty ledger; fresh permit разрешает новый empty-ledger attempt только для всё ещё eligible DB. Partial schema или empty ledger с любым другим state остаётся fatal до manual backup + data-aware restore/cleanup.
 - [ ] Local/test может создать относительную пустую DB без VPN/marker/permit; только `APP_MODE=production` включает gates, а unknown mode и prod-like partial contract fail closed.
 - [ ] При finish immediate job в 09:59:59 остаётся сегодняшний 10:00; при finish в 10:00:00 или позже job вызван один раз и следующий 10:00 завтра; исключение immediate job даёт ненулевой exit.
@@ -125,7 +127,8 @@ size: L
 - VPN sidecar жив, но route отсутствует, неверен или появляется после timeout — Python не стартует.
 - Compose запущен из другого checkout, host data path отсутствует, `/data` подменён или marker скопирован без ожидаемого ID — startup падает до DB access.
 - DB — symlink, directory, zero-byte file, foreign SQLite либо bot schema с empty ledger и непустой pending row — normal startup падает; grant разрешает только явно перечисленные новые состояния.
-- Permit предъявлен populated DB, использован двумя process одновременно, повторён после crash или испорчен — startup не превращается в reusable bypass.
+- Даже с flag + permit любой SQLite sidecar даёт `DB|sidecar_present` до claim; permit остаётся active, main file и sidecars не меняются.
+- Permit предъявлен populated DB, использован двумя process одновременно, повторён после crash или имеет malformed/non-UUID content — применяется exact `BOOTSTRAP` reason, reusable bypass не возникает.
 - Bootstrap process не добавил `processed_news` row: если все application tables по-прежнему пусты, после рестарта допустим fresh permit; если появился pending/failure/state или partial schema, новый permit сам по себе запрещён и нужен manual data-aware recovery.
 - `APP_MODE` отсутствует, неизвестен либо не-production mode смешан с prod label/path — применяется точная mode matrix, а не inference по найденным secrets.
 - Неизвестный provider раньше fallback-ился по найденному ключу — в prod теперь падает; non-prod fallback сохраняется.
@@ -191,7 +194,7 @@ size: L
 | 2. Прогнать state-leak regression standalone/file/opposite-order/full | `pytest` | dotenv, Telegraph token и OpenRouter state не протекают между cases |
 | 3. Проверить workflow и production deployment contract | статические offline-проверки | Test job unconditional; APP_MODE, exact env/data source, no-auto-create и volume identity закреплены |
 | 4. Прогнать route/config/volume failure matrix | offline process doubles | Python marker отсутствует при failed gate; fatal event имеет gate/reason, exit nonzero, secrets отсутствуют |
-| 5. Прогнать DB/bootstrap filesystem matrix | `pytest` в isolated filesystem | Normal/eligible/rejected/recovery states совпадают; каждый reject даёт exact event/exit и сохраняет named file attributes |
+| 5. Прогнать DB/bootstrap filesystem matrix | `pytest` в isolated filesystem | Normal/eligible/rejected/recovery states совпадают; каждый reject даёт event самого раннего gate, nonzero exit, не расходует permit до claim и сохраняет named file attributes |
 | 6. Прогнать scheduler lifecycle на границах | `pytest` с контролируемым временем | `<10:00` сохраняет slot; `>=10:00` даёт завтра; mid-day recovery/exception contract соблюдён |
 | 7. Запустить весь regression suite по business behavior | `pytest` | Публикации, dedup, alerts и existing rows не изменились вне startup artifacts |
 
