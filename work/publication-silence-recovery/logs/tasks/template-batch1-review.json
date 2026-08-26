@@ -2,18 +2,9 @@
   "validator": "task-validator",
   "batch": [1, 2, 3, 4, 5],
   "status": "approved",
-  "findings": [
-    {
-      "severity": "major",
-      "category": "atomicity",
-      "task": 1,
-      "section": "Description / What to do / Details",
-      "issue": "Task 1 spans four modified files and explicitly combines two independent, separately testable foundations: fixed-time eligibility in compute_publish_slots.py and atomic queue partitioning in pending_articles_repo.py, each with its own test file. This exceeds the 1-3 file scope heuristic and either half can be implemented and verified without the other.",
-      "fix": "Split Task 1 into a fixed-time helper task and an atomic backlog-snapshot task, then make scheduler integration depend on both; alternatively revise the approved tech-spec/task boundary with an explicit atomicity justification if the four-file exception is intentional. Preserve every current AC and TDD anchor in the resulting task or tasks."
-    }
-  ],
+  "findings": [],
   "stats": {
     "tasks_checked": 5,
-    "issues_found": 1
+    "issues_found": 0
   }
 }
