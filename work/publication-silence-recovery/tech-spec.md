@@ -335,5 +335,5 @@ None.
 - **Description:** Run focused and full offline regression suites, pre-commit hooks, diff checks, and acceptance traceability across scheduler and watcher contours. Write the final QA report and leave production deployment and live verification explicitly pending for the user.
 - **Skill:** pre-deploy-qa
 - **Reviewers:** none
-- **Files to modify:** `work/publication-silence-recovery/logs/qa/final-qa.md` (new report)
+- **Files to modify:** `work/publication-silence-recovery/logs/working/pre-deploy-qa-report.json` (new machine-readable report)
 - **Files to read:** `work/publication-silence-recovery/user-spec.md`, `work/publication-silence-recovery/tech-spec.md`, `compute_publish_slots.py`, `pending_articles_repo.py`, `news_bot.py`, `publication_watch.py`, `.github/workflows/uptime.yml`, `tests/test_compute_fixed_slots.py`, `tests/test_pending_articles_repo.py`, `tests/test_job_distributed_publish.py`, `tests/test_integration.py`, `tests/test_publication_watch.py`, `tests/test_uptime_workflow.py`, `work/publication-silence-recovery/logs/audit/code-audit.json`, `work/publication-silence-recovery/logs/audit/security-audit.json`, `work/publication-silence-recovery/logs/audit/test-audit.json`

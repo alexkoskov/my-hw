@@ -1,0 +1,19 @@
+{
+  "validator": "task-validator",
+  "batch": [6, 7, 8, 9],
+  "status": "approved",
+  "findings": [
+    {
+      "severity": "minor",
+      "category": "content",
+      "task": 9,
+      "section": "Context Files",
+      "issue": "The pre-deploy QA task runs pre-commit against the feature-updated deployment.md and verifies the split workflow/runtime activation boundary, but deployment.md is not listed among its Context Files.",
+      "fix": "Add [deployment.md](../../../.claude/skills/project-knowledge/references/deployment.md) to Task 9 Context Files so the QA agent reads the deployment contract it is checking and passing to pre-commit."
+    }
+  ],
+  "stats": {
+    "tasks_checked": 4,
+    "issues_found": 1
+  }
+}

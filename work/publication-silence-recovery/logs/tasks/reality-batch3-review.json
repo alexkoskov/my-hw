@@ -1,0 +1,40 @@
+{
+  "validator": "reality-checker",
+  "batch": [7, 8, 9],
+  "status": "approved",
+  "findings": [
+    {
+      "severity": "major",
+      "category": "cross-task-integration",
+      "task": 7,
+      "issue": "Tasks 6, 7, and 8 are explicitly designed to run in parallel in wave 4 and create distinct audit JSON files, but every task also requires appending its post-completion summary to the same work/publication-silence-recovery/decisions.md file. Parallel agents therefore share a writable file despite the claim that their write sets are independent, creating a lost-update or patch-conflict risk before Task 9 consumes the log.",
+      "fix": "Remove decisions.md writes from the three parallel audit tasks and have the orchestrator append all three summaries after their reports complete, or serialize a designated decisions.md owner after Tasks 6-8 while leaving the audits themselves parallel. Update each task's writable-file statement accordingly."
+    },
+    {
+      "severity": "major",
+      "category": "feasibility",
+      "task": 9,
+      "issue": "Task 9 loads the required pre-deploy-qa skill but replaces that skill's machine-readable logs/working/qa-report.json contract with a Markdown-only final-qa.md artifact. The local skill states that the orchestrator parses the JSON status, summary, acceptanceCriteria, findings, and deferredToPostDeploy fields; the task's assertion that a feature-specific Markdown path can replace this contract is not supported by the actual skill.",
+      "fix": "Produce the exact pre-deploy-qa JSON contract at the orchestrator-expected path (or explicitly configure an equivalent feature-local JSON path) and keep final-qa.md only as an optional human-readable rendering. Update the approved tech-spec file list if both artifacts are retained."
+    },
+    {
+      "severity": "major",
+      "category": "feasibility",
+      "task": 9,
+      "issue": "The automated verification invokes bare `pre-commit run`, but `pre-commit` is not resolvable on the current project shell PATH. The repository-local executable exists at venv/bin/pre-commit, while the other task commands already use explicit venv/bin/python paths, so the documented command will fail before running any hooks unless an undeclared virtual-environment activation occurs.",
+      "fix": "Change the verification command to `venv/bin/pre-commit run --files ...`, or add an explicit, verified virtual-environment activation step before using the bare executable. Prefer the direct repository-local path for consistency with the pytest commands."
+    },
+    {
+      "severity": "minor",
+      "category": "feasibility",
+      "task": 9,
+      "issue": "Task 9 runs pre-commit against .claude/skills/project-knowledge/references/deployment.md and must assess the separate workflow-merge/runtime-rollout handoff, but deployment.md is absent from its Context Files. The required pre-deploy-qa skill only mandates architecture.md and patterns.md, so it will not load deployment.md implicitly.",
+      "fix": "Add .claude/skills/project-knowledge/references/deployment.md to Task 9 Context Files and require it to be read before evaluating activation, rollback, and deferred post-deploy steps."
+    }
+  ],
+  "stats": {
+    "tasks_checked": 3,
+    "claims_verified": 57,
+    "issues_found": 4
+  }
+}

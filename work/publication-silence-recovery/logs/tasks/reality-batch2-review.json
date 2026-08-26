@@ -1,0 +1,40 @@
+{
+  "validator": "reality-checker",
+  "batch": [4, 5, 6],
+  "status": "approved",
+  "findings": [
+    {
+      "severity": "major",
+      "category": "cross-task-integration",
+      "task": 4,
+      "issue": "Task 4 requires the deploy-pipeline skill, whose Documentation Updates section directs the implementer to update deployment.md and patterns.md after configuring a workflow, while Task 5 is the designated owner of those same Project Knowledge files after Tasks 3 and 4 finish. Task 4 lists the PK files as read-only context but never explicitly overrides the skill's write instruction, so a faithful executor can modify Task 5's outputs early and duplicate or conflict with its work.",
+      "fix": "Add an explicit scope override to Task 4 stating that the deploy-pipeline documentation-update phase is intentionally deferred to Task 5 and that Task 4 must not modify Project Knowledge files; keep Task 5 as the sole owner of architecture.md, patterns.md, and deployment.md for this feature."
+    },
+    {
+      "severity": "major",
+      "category": "feasibility",
+      "task": 5,
+      "issue": "Task 5 requires documentation claims to be verified against the completed implementation, including the atomic queue partition, fixed-time helper, and publication_watch.py component, but its Context Files and first execution step only require reading news_bot.py and uptime.yml. The actual definitions live in compute_publish_slots.py, pending_articles_repo.py, and publication_watch.py; the caller/workflow cannot prove the aggregate's mutual exclusivity/exhaustiveness or the classifier's actual module contract.",
+      "fix": "Add compute_publish_slots.py, pending_articles_repo.py, and publication_watch.py to Task 5 Context Files and explicitly require reading their completed Task 1/2 implementations before updating the component tree, Data Flow, queue categories, and watcher description."
+    },
+    {
+      "severity": "major",
+      "category": "tdd",
+      "task": 6,
+      "issue": "The holistic code audit promises to verify operator-facing planned/carry-over semantics and all cross-file names/signatures, but its source and baseline lists omit admin_alerts.py and tests/test_admin_alerts.py, even though news_bot.job() calls alert_plan_of_day/alert_quiet_day with the affected planned, held, and deferred values. It also omits tests/test_distributed_schedule_integration.py, the project's existing end-to-end job/schedule regression suite that Task 3 itself requires. The proposed audit can therefore approve the scheduler contour without reading one production consumer or running its established end-to-end regression evidence.",
+      "fix": "Add admin_alerts.py, tests/test_admin_alerts.py, and tests/test_distributed_schedule_integration.py to Task 6 Context Files; include the two test files in the focused baseline, or state a narrow justified test selection while still reading the production consumer and end-to-end suite."
+    },
+    {
+      "severity": "minor",
+      "category": "feasibility",
+      "task": 6,
+      "issue": "The Description says code-audit.json is the task's only mutable artifact, but Acceptance Criteria and Post-completion also authorize and require a decisions.md summary. The later clauses make the intended behavior inferable, but the write boundary is internally inconsistent.",
+      "fix": "Change the Description to say that the only audit deliverable is code-audit.json and the only other permitted write is the standard decisions.md post-completion summary."
+    }
+  ],
+  "stats": {
+    "tasks_checked": 3,
+    "claims_verified": 52,
+    "issues_found": 4
+  }
+}

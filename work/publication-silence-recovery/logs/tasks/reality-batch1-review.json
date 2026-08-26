@@ -1,0 +1,19 @@
+{
+  "validator": "reality-checker",
+  "batch": [1, 2, 3],
+  "status": "approved",
+  "findings": [
+    {
+      "severity": "major",
+      "category": "feasibility",
+      "task": 3,
+      "issue": "The task and tech spec require count_pending() to be called exactly once when get_schedule_backlog_counts() fails, but the current job() also calls count_pending() unconditionally at the end for final_queue_size. A whole-job mock assertion of exactly one call will therefore fail even after the requested planning fallback is implemented, while removing that final read would silently change existing end-of-tick observability.",
+      "fix": "Clarify that the exactly-once requirement applies only to the planning fallback, and specify how the test distinguishes that fallback call from the existing final_queue_size read; alternatively, explicitly direct the implementation to replace the final read and state the intended observability contract."
+    }
+  ],
+  "stats": {
+    "tasks_checked": 3,
+    "claims_verified": 58,
+    "issues_found": 1
+  }
+}
