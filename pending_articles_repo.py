@@ -661,6 +661,37 @@ def clear_fetch_failure(link: str) -> bool:
         conn.close()
 
 
+def get_schedule_backlog_counts() -> tuple[int, int, int]:
+    """Return one atomic ``(publishable, deferred, held)`` queue snapshot.
+
+    Content holds dominate timed deferrals. Rows without a hold are deferred
+    only while ``publish_after`` is in the future; otherwise they are
+    publishable. The three conditional aggregates run in one SQLite statement
+    so scheduler planning cannot combine counts from different queue states.
+    """
+    conn = _connect()
+    try:
+        row = conn.execute(
+            "SELECT "
+            "COALESCE(SUM(CASE WHEN hold_reason IS NULL "
+            "AND (publish_after IS NULL "
+            "OR publish_after <= CURRENT_TIMESTAMP) "
+            "THEN 1 ELSE 0 END), 0), "
+            "COALESCE(SUM(CASE WHEN hold_reason IS NULL "
+            "AND publish_after IS NOT NULL "
+            "AND publish_after > CURRENT_TIMESTAMP "
+            "THEN 1 ELSE 0 END), 0), "
+            "COALESCE(SUM(CASE WHEN hold_reason IS NOT NULL "
+            "THEN 1 ELSE 0 END), 0) "
+            "FROM pending_articles"
+        ).fetchone()
+        if row is None:
+            return 0, 0, 0
+        return int(row[0]), int(row[1]), int(row[2])
+    finally:
+        conn.close()
+
+
 def count_deferred() -> int:
     """Rows withheld ONLY by a future ``publish_after`` — publishable in every
     other respect, just not yet.

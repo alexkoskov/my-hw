@@ -49,6 +49,32 @@ MIN_INTERVAL_MINUTES: int = 90
 DAILY_PUBLISH_TIMES: List[time] = [time(10, 0), time(15, 0), time(19, 30)]
 
 
+def remaining_fixed_slots(
+    now: datetime,
+    daily_times: List[time] = DAILY_PUBLISH_TIMES,
+    grace_minutes: int = 5,
+) -> list[datetime]:
+    """Return every fixed publish time still eligible today.
+
+    ``daily_times`` is interpreted in ``now``'s timezone, sorted without
+    mutating the caller's collection, and filtered with an inclusive grace
+    window. The result is intentionally uncapped; callers decide how many of
+    the remaining opportunities they plan to use.
+
+    Raises:
+        ValueError: if ``now`` is tz-naive.
+    """
+    if now.tzinfo is None:
+        raise ValueError("remaining_fixed_slots requires tz-aware datetime")
+
+    today = sorted(
+        datetime.combine(now.date(), slot_time, tzinfo=now.tzinfo)
+        for slot_time in daily_times
+    )
+    cutoff = now - timedelta(minutes=grace_minutes)
+    return [slot for slot in today if slot >= cutoff]
+
+
 def compute_fixed_slots(
     n: int,
     now: datetime,
@@ -93,17 +119,7 @@ def compute_fixed_slots(
     if n <= 0:
         return [], 0
 
-    tzinfo = now.tzinfo
-    today = sorted(
-        datetime.combine(now.date(), t, tzinfo=tzinfo) for t in daily_times
-    )
-
-    # A slot is eligible while it is still in the future OR has passed by no
-    # more than ``grace_minutes`` (covers the cron-tick latency at 10:00:00).
-    cutoff = now - timedelta(minutes=grace_minutes)
-    eligible = [s for s in today if s >= cutoff]
-
-    slots = eligible[:n]
+    slots = remaining_fixed_slots(now, daily_times, grace_minutes)[:n]
     carry_over = n - len(slots)
     return slots, carry_over
 

@@ -142,6 +142,27 @@ class _TmpDbCase(unittest.TestCase):
         return sqlite3.connect(self.db_path)
 
 
+class _ConnectionProbe:
+    """Small connection proxy for statement-count and close contracts."""
+
+    def __init__(self, connection=None, execute_error=None):
+        self.connection = connection
+        self.execute_error = execute_error
+        self.statements = []
+        self.closed = False
+
+    def execute(self, sql, parameters=()):
+        self.statements.append(sql)
+        if self.execute_error is not None:
+            raise self.execute_error
+        return self.connection.execute(sql, parameters)
+
+    def close(self):
+        self.closed = True
+        if self.connection is not None:
+            self.connection.close()
+
+
 # ---------------- Schema / migration tests ----------------
 
 class TestSchema(unittest.TestCase):
@@ -473,6 +494,61 @@ class TestListsAndFilters(_TmpDbCase):
             via_review=True,
         )
         self.assertEqual(repo.count_pending(), 1)
+
+
+class TestScheduleBacklogCounts(_TmpDbCase):
+
+    def test_partitions_all_pending_rows_mutually_exclusively(self):
+        now = datetime.now(timezone.utc)
+        elapsed = (now - timedelta(days=1)).strftime('%Y-%m-%d %H:%M:%S')
+        future = (now + timedelta(days=1)).strftime('%Y-%m-%d %H:%M:%S')
+        rows = (
+            ('http://ordinary', None, None),
+            ('http://elapsed', elapsed, None),
+            ('http://future', future, None),
+            ('http://held', elapsed, 'poster review'),
+            ('http://dual-gate', future, 'poster review'),
+        )
+        with self._conn() as conn:
+            conn.executemany(
+                "INSERT INTO pending_articles "
+                "(link, source_name, title, paragraphs, publish_after, "
+                "hold_reason) VALUES (?, 'mattel', 't', '[]', ?, ?)",
+                rows,
+            )
+            conn.commit()
+
+        probe = _ConnectionProbe(sqlite3.connect(self.db_path))
+        with patch.object(repo, '_connect', return_value=probe) as connect:
+            counts = repo.get_schedule_backlog_counts()
+
+        self.assertEqual(counts, (2, 1, 2))
+        self.assertEqual(sum(counts), len(rows))
+        connect.assert_called_once_with()
+        self.assertEqual(len(probe.statements), 1)
+        self.assertTrue(probe.statements[0].lstrip().upper().startswith('SELECT'))
+        self.assertTrue(probe.closed)
+
+    def test_empty_queue_returns_zero_partition(self):
+        counts = repo.get_schedule_backlog_counts()
+
+        self.assertEqual(counts, (0, 0, 0))
+        self.assertIs(type(counts), tuple)
+        self.assertTrue(all(type(count) is int for count in counts))
+
+    def test_sqlite_error_propagates_and_connection_closes(self):
+        error = sqlite3.OperationalError('snapshot unavailable')
+        probe = _ConnectionProbe(execute_error=error)
+
+        with patch.object(repo, '_connect', return_value=probe) as connect:
+            with self.assertRaisesRegex(
+                sqlite3.OperationalError, 'snapshot unavailable'
+            ):
+                repo.get_schedule_backlog_counts()
+
+        connect.assert_called_once_with()
+        self.assertEqual(len(probe.statements), 1)
+        self.assertTrue(probe.closed)
 
 
 # ---------------- update / mutation tests ----------------
