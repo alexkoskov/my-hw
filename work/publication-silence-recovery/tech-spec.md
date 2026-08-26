@@ -62,6 +62,7 @@ No new heavy process resource is introduced. Existing and workflow-scoped shared
 | Production SQLite file | Existing deployment / `pending_articles_repo` connections | Daily job, review listener | 1 file; short-lived connection per repository call |
 | Telegraph response file in runner temp | Watcher fetch step | Watcher classifier step | 1 per workflow run, runner-scoped |
 | GitHub publication alarm issue | Watcher alert step | Later watcher runs via `gh issue` lookup | Normally 0 or 1 matching open issue; duplicates are possible when best-effort GitHub bookkeeping degrades |
+| Feature `decisions.md` log | Existing planning flow; Task 5 appends Tasks 1–5, then Task 9 appends Tasks 6–9 | Later tasks and QA | 1 file; dependency-ordered writers only, never parallel task writers |
 
 ## Decisions
 
@@ -300,10 +301,10 @@ None.
 ### Wave 3 (documentation)
 
 #### Task 5: Project Knowledge update
-- **Description:** Document the scheduler's conditional release opportunities and the watcher's tri-state/default-branch activation and rollback boundaries. Keep operational guidance explicit that workflow merge and runtime Docker rollout are separate actions.
+- **Description:** Document the scheduler's conditional release opportunities and the watcher's tri-state/default-branch activation and rollback boundaries. Keep operational guidance explicit that workflow merge and runtime Docker rollout are separate actions, and consolidate the completed Tasks 1–5 summaries into the feature decisions log as its sole writer for these waves.
 - **Skill:** documentation-writing
 - **Reviewers:** code-reviewer
-- **Files to modify:** `.claude/skills/project-knowledge/references/architecture.md`, `.claude/skills/project-knowledge/references/patterns.md`, `.claude/skills/project-knowledge/references/deployment.md`
+- **Files to modify:** `.claude/skills/project-knowledge/references/architecture.md`, `.claude/skills/project-knowledge/references/patterns.md`, `.claude/skills/project-knowledge/references/deployment.md`, `work/publication-silence-recovery/decisions.md`
 - **Files to read:** `work/publication-silence-recovery/user-spec.md`, `work/publication-silence-recovery/tech-spec.md`, `news_bot.py`, `.github/workflows/uptime.yml`
 
 ### Audit Wave
@@ -332,8 +333,8 @@ None.
 ### Final Wave
 
 #### Task 9: Pre-deploy QA
-- **Description:** Run focused and full offline regression suites, pre-commit hooks, diff checks, and acceptance traceability across scheduler and watcher contours. Write the final QA report and leave production deployment and live verification explicitly pending for the user.
+- **Description:** Run focused and full offline regression suites, pre-commit hooks, diff checks, and acceptance traceability across scheduler and watcher contours. Write the final QA report, consolidate the completed Tasks 6–9 summaries into the feature decisions log as the only later writer, and leave production deployment and live verification explicitly pending for the user.
 - **Skill:** pre-deploy-qa
 - **Reviewers:** none
-- **Files to modify:** `work/publication-silence-recovery/logs/working/pre-deploy-qa-report.json` (new machine-readable report)
+- **Files to modify:** `work/publication-silence-recovery/logs/working/pre-deploy-qa-report.json` (new machine-readable report), `work/publication-silence-recovery/decisions.md`
 - **Files to read:** `work/publication-silence-recovery/user-spec.md`, `work/publication-silence-recovery/tech-spec.md`, `compute_publish_slots.py`, `pending_articles_repo.py`, `news_bot.py`, `publication_watch.py`, `.github/workflows/uptime.yml`, `tests/test_compute_fixed_slots.py`, `tests/test_pending_articles_repo.py`, `tests/test_job_distributed_publish.py`, `tests/test_integration.py`, `tests/test_publication_watch.py`, `tests/test_uptime_workflow.py`, `work/publication-silence-recovery/logs/audit/code-audit.json`, `work/publication-silence-recovery/logs/audit/security-audit.json`, `work/publication-silence-recovery/logs/audit/test-audit.json`

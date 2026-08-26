@@ -1,0 +1,26 @@
+{
+  "validator": "reality-checker",
+  "batch": [1, 2, 3, 4, 5, 6, 7, 8, 9],
+  "status": "changes_required",
+  "findings": [
+    {
+      "severity": "critical",
+      "category": "cross-task-integration",
+      "task": 2,
+      "issue": "Tasks 1 and 2 are intentionally parallel in wave 1 and have disjoint implementation files, but both Post-completion sections require appending the shared work/publication-silence-recovery/decisions.md and conditionally updating the same user-spec.md/tech-spec.md. No single owner or ordering dependency exists, so parallel execution can race, interleave summaries, or commit another task's shared-file changes.",
+      "fix": "Keep decisions.md and the approved specs read-only in Tasks 1 and 2. Have each task leave its concise completion/review handoff in a task-unique artifact, then designate the dependent Task 5 (which is transitively after both) or the feature orchestrator as the sole sequential writer that consolidates Tasks 1–2; route spec deviations to an explicit fix/approval step instead of conditional parallel edits."
+    },
+    {
+      "severity": "critical",
+      "category": "cross-task-integration",
+      "task": 4,
+      "issue": "Tasks 3 and 4 are intentionally parallel in wave 2 and write separate scheduler and watcher contours, but both Post-completion sections require writing the same decisions.md and conditionally the same user-spec.md/tech-spec.md. Task 4 correctly delegates shared Project Knowledge files to Task 5, yet the same ownership rule is missing for these shared feature files.",
+      "fix": "Make Tasks 3 and 4 read-only consumers of decisions.md and the approved specs, and give their completion summaries to one downstream owner. Extend Task 5, which depends on both contours, to append Tasks 1–5 summaries sequentially (or assign the feature orchestrator that ownership) and require a separate approved spec-fix flow for any deviation."
+    }
+  ],
+  "stats": {
+    "tasks_checked": 9,
+    "claims_verified": 121,
+    "issues_found": 2
+  }
+}

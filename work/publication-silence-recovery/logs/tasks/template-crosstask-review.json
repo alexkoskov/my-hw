@@ -1,0 +1,35 @@
+{
+  "validator": "task-validator",
+  "batch": [1, 2, 3, 4, 5, 6, 7, 8, 9],
+  "status": "changes_required",
+  "findings": [
+    {
+      "severity": "critical",
+      "category": "resource-sharing",
+      "task": 2,
+      "section": "Post-completion",
+      "issue": "Tasks 1 and 2 run in Wave 1 with no dependency between them, but both are required to append their completion entry to the same shared work/publication-silence-recovery/decisions.md file. In the shared workspace this creates competing same-wave writers and can lose or conflict one task's report.",
+      "fix": "Remove direct decisions.md writes from both parallel Wave 1 tasks and designate a later dependent task as the sole implementation-summary writer, or add separate per-task handoff artifacts and consolidate them sequentially. A natural owner is Task 5, which already depends transitively on Tasks 1 and 2; document that ownership and preserve both task summaries/review links."
+    },
+    {
+      "severity": "critical",
+      "category": "resource-sharing",
+      "task": 4,
+      "section": "Post-completion",
+      "issue": "Tasks 3 and 4 run in parallel in Wave 2 and both are required to append to the same decisions.md file. Their source scopes are disjoint, but this shared post-completion write reintroduces a same-wave collision analogous to the audit-wave conflict that Tasks 6-9 already avoid.",
+      "fix": "Make decisions.md read-only in Tasks 3 and 4 and consolidate their summaries through one dependent writer, preferably the same Task 5 owner used for Tasks 1-2. Keep Task 9 as the later sole writer for Tasks 6-9 so the two write phases remain dependency-ordered."
+    },
+    {
+      "severity": "minor",
+      "category": "decomposition",
+      "task": 9,
+      "section": "Traceability to tech-spec / Files",
+      "issue": "Task 9 makes decisions.md consolidation a concrete What-to-do step, acceptance criterion, and mutable file, but the approved tech-spec Task 9 Files to modify lists only logs/working/pre-deploy-qa-report.json. The task refinement is sensible and resolves audit-wave shared writes, but its file ownership is not carried back to the technical source of truth.",
+      "fix": "Add work/publication-silence-recovery/decisions.md to Task 9 Files to modify in tech-spec and describe its sequential audit/QA-summary ownership. If Task 5 becomes the implementation-summary writer, document the earlier ordered ownership phase there as well."
+    }
+  ],
+  "stats": {
+    "tasks_checked": 9,
+    "issues_found": 3
+  }
+}
