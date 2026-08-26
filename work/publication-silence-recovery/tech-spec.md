@@ -62,6 +62,7 @@ No new heavy process resource is introduced. Existing and workflow-scoped shared
 | Production SQLite file | Existing deployment / `pending_articles_repo` connections | Daily job, review listener | 1 file; short-lived connection per repository call |
 | Telegraph response file in runner temp | Watcher fetch step | Watcher classifier step | 1 per workflow run, runner-scoped |
 | GitHub publication alarm issue | Watcher alert step | Later watcher runs via `gh issue` lookup | Normally 0 or 1 matching open issue; duplicates are possible when best-effort GitHub bookkeeping degrades |
+| Task completion handoffs | Tasks 1–4 each create their own `logs/working/task-N/completion-summary.json` | Task 5 | 4 task-unique JSON files; no shared writer |
 | Feature `decisions.md` log | Existing planning flow; Task 5 appends Tasks 1–5, then Task 9 appends Tasks 6–9 | Later tasks and QA | 1 file; dependency-ordered writers only, never parallel task writers |
 
 ## Decisions
@@ -157,6 +158,10 @@ The new repository API `get_schedule_backlog_counts() -> tuple[int, int, int]` r
 `PublicationState = Literal['fresh', 'stale', 'inconclusive']` is returned by `classify_telegraph_response(body: str, now: datetime)`. It is the only classifier result accepted by the workflow; unexpected CLI output is converted to `inconclusive` at the workflow boundary.
 
 The response body remains size-bounded runner-temporary evidence, not application state. GitHub issue presence remains the best-effort durable open/closed alarm flag; duplicate matching issues are possible during degraded GitHub bookkeeping.
+
+### Task completion handoff
+
+Tasks 1–4 each write a task-unique `completion-summary.json` for the sequential Task 5 consumer. Every file uses the same fields: `task` (number), `status` (`done` or `blocked`), `summary` (one to three sentences), `commit` (SHA or `null`), `reviews` (reviewer/round/status/report-path objects), `verification` (command/result objects), and `proposedDeviation` (`null` or a reason/impact/decision-needed object). The handoffs are process evidence only; they do not replace reviewer reports or the ordered `decisions.md` log.
 
 ## Dependencies
 
@@ -270,7 +275,7 @@ None.
 - **Description:** Add the shared fixed-time eligibility primitive and one atomic scheduler-backlog partition. Cover their boundary and category contracts without changing the database schema or existing planned-slot API.
 - **Skill:** code-writing
 - **Reviewers:** code-reviewer, security-auditor, test-reviewer
-- **Files to modify:** `compute_publish_slots.py`, `pending_articles_repo.py`, `tests/test_compute_fixed_slots.py`, `tests/test_pending_articles_repo.py`
+- **Files to modify:** `compute_publish_slots.py`, `pending_articles_repo.py`, `tests/test_compute_fixed_slots.py`, `tests/test_pending_articles_repo.py`, `work/publication-silence-recovery/logs/working/task-1/completion-summary.json` (new handoff)
 - **Files to read:** `work/publication-silence-recovery/user-spec.md`, `work/publication-silence-recovery/code-research.md`, `news_bot.py`
 
 #### Task 2: Publication-watch classifier
@@ -278,7 +283,7 @@ None.
 - **Skill:** code-writing
 - **Reviewers:** code-reviewer, security-auditor, test-reviewer
 - **Verify-smoke:** `venv/bin/python -c "from datetime import datetime, timezone; from publication_watch import classify_telegraph_response; print(classify_telegraph_response('{\"ok\":true,\"result\":{\"pages\":[{\"path\":\"sample-08-25\"}]}}', datetime(2026, 8, 26, 17, 59, tzinfo=timezone.utc)))"` -> `fresh`
-- **Files to modify:** `publication_watch.py` (new), `tests/test_publication_watch.py` (new)
+- **Files to modify:** `publication_watch.py` (new), `tests/test_publication_watch.py` (new), `work/publication-silence-recovery/logs/working/task-2/completion-summary.json` (new handoff)
 - **Files to read:** `.github/workflows/uptime.yml`, `work/publication-silence-recovery/user-spec.md`, `work/publication-silence-recovery/code-research.md`
 
 ### Wave 2 (contour integrations)
@@ -287,7 +292,7 @@ None.
 - **Description:** Integrate the planning primitives into the daily job, implement the exact one-call ordinary fallback, and make both review callbacks/logs truthful and safe for mixed gates. Add real-temp-SQLite timeline coverage for E014/E036 release, rejection, silence, a mixed publishable-plus-withheld snapshot, after-cutoff overnight retention, errors, and ordinary scheduling regressions.
 - **Skill:** code-writing
 - **Reviewers:** code-reviewer, security-auditor, test-reviewer
-- **Files to modify:** `news_bot.py`, `tests/test_job_distributed_publish.py`, `tests/test_integration.py`
+- **Files to modify:** `news_bot.py`, `tests/test_job_distributed_publish.py`, `tests/test_integration.py`, `work/publication-silence-recovery/logs/working/task-3/completion-summary.json` (new handoff)
 - **Files to read:** `compute_publish_slots.py`, `pending_articles_repo.py`, `admin_alerts.py`, `tests/test_distributed_schedule_integration.py`, `work/publication-silence-recovery/tech-spec.md`
 
 #### Task 4: Tri-state workflow integration
@@ -295,7 +300,7 @@ None.
 - **Skill:** deploy-pipeline
 - **Reviewers:** code-reviewer, security-auditor, deploy-reviewer
 - **Verify-smoke:** `venv/bin/python -m pytest tests/test_publication_watch.py tests/test_uptime_workflow.py -q` -> all tests pass without secrets or network
-- **Files to modify:** `.github/workflows/uptime.yml`, `tests/test_uptime_workflow.py` (new)
+- **Files to modify:** `.github/workflows/uptime.yml`, `tests/test_uptime_workflow.py` (new), `work/publication-silence-recovery/logs/working/task-4/completion-summary.json` (new handoff)
 - **Files to read:** `publication_watch.py`, `.github/workflows/ci.yml`, `.claude/skills/project-knowledge/references/deployment.md`, `work/publication-silence-recovery/tech-spec.md`
 
 ### Wave 3 (documentation)
@@ -305,7 +310,7 @@ None.
 - **Skill:** documentation-writing
 - **Reviewers:** code-reviewer
 - **Files to modify:** `.claude/skills/project-knowledge/references/architecture.md`, `.claude/skills/project-knowledge/references/patterns.md`, `.claude/skills/project-knowledge/references/deployment.md`, `work/publication-silence-recovery/decisions.md`
-- **Files to read:** `work/publication-silence-recovery/user-spec.md`, `work/publication-silence-recovery/tech-spec.md`, `news_bot.py`, `.github/workflows/uptime.yml`
+- **Files to read:** `work/publication-silence-recovery/user-spec.md`, `work/publication-silence-recovery/tech-spec.md`, `news_bot.py`, `.github/workflows/uptime.yml`, `work/publication-silence-recovery/logs/working/task-1/completion-summary.json`, `work/publication-silence-recovery/logs/working/task-2/completion-summary.json`, `work/publication-silence-recovery/logs/working/task-3/completion-summary.json`, `work/publication-silence-recovery/logs/working/task-4/completion-summary.json`
 
 ### Audit Wave
 
