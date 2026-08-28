@@ -175,17 +175,19 @@ remains a TODO.
 
 **GitHub Secrets** (Settings → Secrets and variables → Actions):
 
-*Live — required by `.github/workflows/uptime.yml`; the workflow does **not** fail when
-they are missing, it silently degrades (see § Monitoring → External uptime watch):*
-- `TELEGRAPH_ACCESS_TOKEN` — same value as the server `.env`. Unset → the publication
-  probe is skipped (`uptime.yml:91-92`) and the watchdog only checks sshd.
+*Live — used by `.github/workflows/uptime.yml`; missing values degrade their own
+evidence or notification path without changing the independent SSH verdict (see
+§ Monitoring → External uptime watch):*
+- `TELEGRAPH_ACCESS_TOKEN` — same value as the server `.env`, but exposed only to
+  the dedicated evidence-fetch step. It is not available to checkout, the repository
+  classifier or alert bookkeeping. Missing token, API failure or unusable evidence
+  yields publication `inconclusive`; it is never treated as healthy recovery.
 - `TELEGRAM_BOT_TOKEN` — used to send the outage/recovery message.
 - `TELEGRAM_ADMIN_ID` — numeric chat id the message goes to. With either of the last
-  two unset, the Telegram send is skipped and only a GitHub issue is opened
-  (`uptime.yml:171-175`).
+  two unset, the Telegram send is skipped and only GitHub issue state is updated.
 
 The prod IP the watchdog probes is **not** a secret — it is hardcoded as `PROD_HOST`
-at `uptime.yml:52`.
+in the workflow.
 
 *Dead — left over from the NL deploy workflows, unusable while those are `if: false`;
 delete them when convenient:* `SSH_HOST`, `SSH_USER`, `DEPLOY_PATH`,
@@ -246,9 +248,9 @@ S2 privilege-escalation review; the record is in `work/AUDIT-2026-07-07.md:38-39
 
 Daily tick at **10:00 МСК** via `schedule.every().day.at("10:00", tz=pytz.timezone("Europe/Moscow")).do(job)` inside `news_bot.main()`. One `job()` also fires immediately on startup so a deploy doesn't wait until tomorrow's 10:00. The crash-loop guard prevents burst posting on rapid restarts.
 
-**Production scheduler = fixed daily slots** (`compute_fixed_slots`, operator pacing 2026-06-13): at most one post at each of **10:00 / 15:00 / 19:30 МСК**, oldest-pending first, ≤3/day (excess carries to the next day; AC20 admin warning at `len(pending) > 50`). A slot more than 5 min past is dropped (grace), so a restart never re-fires an already-published slot. The older even-spread `compute_publish_slots` (13:00–20:00, `MIN_INTERVAL_MINUTES=90`) is **DORMANT** — kept only for its unit tests.
+**Production scheduler = fixed daily slots** (`compute_fixed_slots`, operator pacing 2026-06-13): at most one post at each of **10:00 / 15:00 / 19:30 МСК**, ≤3/day. A slot more than 5 min past is dropped (grace), so a restart never re-fires an already-published slot. A deferred/held backlog may keep the job alive until later fixed times as conditional release checks even when the operator-facing plan is empty; those checks do not add slots or promised posts. The canonical planning and queue-state flow is in architecture.md § Data Flow.
 
-**Restart-safe by design:** `schedule` runs in-process, so a container restart kills the in-flight `job()`. But `main()` re-runs `job()` immediately on boot, which recomputes today's remaining slots from `now` — already-published slots are dropped by grace, already-published rows are skipped via Decision 9 idempotency (telegraph_url presence). Verified live on the 2026-07-06 mid-window cutover.
+**Restart-safe by design:** `schedule` runs in-process, so a container restart kills the in-flight `job()`. But `main()` re-runs `job()` immediately on boot, which recomputes the publishable plan and conditional opportunities from a fresh backlog snapshot and today's still-eligible times. Already-published times are dropped by grace, and already-published rows are skipped by the idempotency guard. Verified live on the 2026-07-06 mid-window cutover.
 
 ### ⛔ The no-deploy window: 10:00–20:00 МСК
 
@@ -440,6 +442,10 @@ start; already-sent buttons become inert (stale tokens are harmless).
 
 ## Rollback Procedure
 
+This section is the **runtime Docker rollback**. It does not roll back the external
+GitHub Actions watcher; that independent contour is documented under Monitoring →
+External uptime watch → Activation and rollback boundaries.
+
 Two routes. **Route A (host-side, fast)** gets prod back to a working state without
 touching git history — use it during an incident. **Route B (revert on `main`)** makes
 the fix permanent. Doing A then B is normal.
@@ -533,45 +539,73 @@ construction when the host itself stops serving — which is exactly what happen
 
 ### External uptime watch (GitHub Actions)
 
-`.github/workflows/uptime.yml` (added 2026-07-31) is the **second pair of eyes**, and
-the only monitoring that survives the prod host going away. It runs on GitHub's
-runners, so it needs no access to the box.
+`.github/workflows/uptime.yml` is the **second pair of eyes**, and the only monitoring
+that survives the prod host going away. It runs on GitHub's runners and maintains two
+independent signals:
 
-**What it probes**, and why these two things specifically:
+1. **Host signal:** `ssh-keyscan` must complete the sshd protocol greeting. It uses no
+   credentials and retries three times. This is deliberately stronger than a TCP port
+   check: during the 2026-07-31 outage port 22 accepted connections while sshd never
+   answered.
+2. **Publication signal:** bounded Telegra.ph API evidence is classified as `fresh`,
+   `stale` or `inconclusive`. This measures the bot's externally visible outcome; the
+   private channel's public web stub is not usable evidence.
 
-1. **sshd completes the protocol greeting** — `ssh-keyscan` fetches the host key, which
-   requires sshd to actually fork and answer. No credentials involved. This is
-   deliberately **not** a TCP port check: during the 2026-07-31 outage TCP/22 kept
-   accepting connections (`nc -vz` said "succeeded") while sshd never answered, so an
-   ordinary port monitor would have reported the host healthy. Three attempts 20 s
-   apart before declaring failure, so one transient reset does not cry wolf.
-2. **A Telegra.ph page exists from today or yesterday** — every publication creates
-   one, so this measures the outcome the bot exists for and catches "host fine, bot
-   dead". Time-aware: since the last slot is 19:30 МСК, a missing post for *today* only
-   counts as stale after ~21:00 МСК. Also deliberately **not** `t.me/s/<channel>` — that
-   was tried first and returns a stub with zero messages for this channel (it is not
-   public), which would have made the probe permanently inconclusive, i.e. silent false
-   comfort.
+**Immutable source and secret boundaries.** The checkout action is pinned to a full
+commit SHA and explicitly resolves `github.event.repository.default_branch`, with a
+shallow checkout and no persisted credentials. The repository classifier runs only
+after that checkout succeeds. A separate fetch step alone receives
+`TELEGRAPH_ACCESS_TOKEN`; it writes at most 1 MiB of evidence to a temporary runner
+file and exposes neither the token nor raw evidence through logs or step outputs.
+`publication_watch.py` receives only that file on stdin, so repository code never sees
+the secret.
 
-**Cadence:** `cron: */30`, but GitHub's scheduled runs are best-effort and routinely
-slip 5–15 minutes — treat it as "about every half hour", never as a guarantee.
+**Classifier contract.** The stdlib-only CLI accepts at most 1 MiB of UTF-8 Telegraph
+JSON and emits exactly one line: `fresh`, `stale` or `inconclusive`. It validates a
+successful non-empty page-list response and dates the newest path against one
+timezone-aware Moscow clock. A page from today is fresh; yesterday remains fresh until
+21:00 МСК and becomes stale at that boundary; older evidence is stale. Invalid,
+ambiguous, future-dated, missing, oversized or failed evidence is inconclusive. The
+workflow also normalizes a skipped, failed, timed-out or unexpectedly noisy classifier
+to inconclusive without printing repository-controlled output.
 
-**Alert dedup:** GitHub Actions is stateless, so an **open GitHub issue** («🔴 Прод не
-отвечает») is used as the outage flag — one Telegram message when the outage starts,
-one when it recovers, silence in between. Hence `permissions: issues: write`
-(`uptime.yml:43-45`). If the issue is closed by hand while prod is still down, the next
-run re-alerts.
+**State transitions.** With the host up, `stale` opens the separate «🟡 Прод не
+публикует» issue/alarm, `fresh` closes an existing one, and `inconclusive`
+leaves either open or closed state unchanged. A missing secret, checkout failure, API
+failure, malformed response or classifier failure therefore cannot manufacture a
+recovery. The SSH verdict remains available in every case. When the host is down, the
+host alarm is handled normally and all publication transitions are suppressed because
+host failure already explains the silence.
 
-**Limits worth remembering:** GitHub disables scheduled workflows after **60 days with
-no repo activity** — a quiet stretch silently turns the watchdog off, so check the
-Actions tab after any long pause. And if GitHub itself is down, so is the watch.
+**Alert dedup:** each signal has its own open GitHub issue as durable state: «🔴 Прод
+не отвечает» for the host and «🟡 Прод не публикует» for publication
+silence. Each sends one Telegram message on opening and one on recovery, with silence
+between runs. Closing an issue by hand while its failure remains causes the next
+conclusive run to alert again.
 
-**Verifying it is armed:** the three secrets it needs are listed under § Deployment
-Triggers → GitHub Secrets, and **missing secrets degrade it silently rather than
-failing the run**. To confirm: run it manually (`Actions → Uptime watch → Run
-workflow`) and read the log — it must print `sshd answered` and a `last page: …` line.
-If it prints `TELEGRAPH_ACCESS_TOKEN not set — publication probe skipped`, only half
-the watch is live.
+**Cadence and limits:** `cron: */30` is best-effort and may slip by 5–15 minutes.
+GitHub disables scheduled workflows after 60 days without repository activity, and a
+GitHub outage also removes this external observer.
+
+#### Activation and rollback boundaries
+
+- **Watcher workflow:** GitHub schedules execute the workflow from the repository's
+  default branch. Merging the workflow/helper change there activates it for subsequent
+  runs without a VPS checkout, Docker rebuild or server restart. Roll it back by
+  reverting the watcher change in the default branch; this does not alter the running
+  bot container.
+- **Runtime scheduler:** merging code does not deploy the bot. Scheduler changes reach
+  the single production container only after promotion to `main` and a separate
+  operator-run `git pull` plus Docker rebuild outside 10:00–20:00 МСК. Roll them back
+  with Route A or Route B above and rebuild the container. A runtime rollback does not
+  change the GitHub watcher, and a watcher revert does not change runtime code.
+
+**Verifying it is armed:** a future manual run (`Actions → Uptime watch → Run
+workflow`) should log `sshd answered` or the bounded retry failure, plus exactly one
+`publication state: fresh`, `publication state: stale` or `publication state:
+inconclusive` verdict. Missing Telegraph credentials should log that evidence is
+unavailable and end in inconclusive; the SSH signal remains active and the publication
+issue remains unchanged.
 
 ### Metrics
 

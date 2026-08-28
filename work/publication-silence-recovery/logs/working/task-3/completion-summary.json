@@ -1,0 +1,93 @@
+{
+  "task": 3,
+  "status": "done",
+  "summary": "Integrated an atomic publishable/deferred/held planning snapshot with truthful planned slots and bounded runtime release opportunities for E014/E036 changes. Hold approval is atomic across gate and token state, decision identifiers are bounded and sanitized, and the complete callback-to-slot timelines are covered with real temporary SQLite tests.",
+  "commit": null,
+  "reviews": [
+    {
+      "reviewer": "code-reviewer",
+      "round": 1,
+      "status": "changes_required",
+      "report-path": "work/publication-silence-recovery/logs/working/task-3/code-reviewer-1.json"
+    },
+    {
+      "reviewer": "code-reviewer",
+      "round": 2,
+      "status": "changes_required",
+      "report-path": "work/publication-silence-recovery/logs/working/task-3/code-reviewer-2.json"
+    },
+    {
+      "reviewer": "code-reviewer",
+      "round": 3,
+      "status": "approved",
+      "report-path": "work/publication-silence-recovery/logs/working/task-3/code-reviewer-3.json"
+    },
+    {
+      "reviewer": "security-auditor",
+      "round": 1,
+      "status": "changes_requested",
+      "report-path": "work/publication-silence-recovery/logs/working/task-3/security-auditor-1.json"
+    },
+    {
+      "reviewer": "security-auditor",
+      "round": 2,
+      "status": "changes_requested",
+      "report-path": "work/publication-silence-recovery/logs/working/task-3/security-auditor-2.json"
+    },
+    {
+      "reviewer": "security-auditor",
+      "round": 3,
+      "status": "approved",
+      "report-path": "work/publication-silence-recovery/logs/working/task-3/security-auditor-3.json"
+    },
+    {
+      "reviewer": "test-reviewer",
+      "round": 1,
+      "status": "needs_improvement",
+      "report-path": "work/publication-silence-recovery/logs/working/task-3/test-reviewer-1.json"
+    },
+    {
+      "reviewer": "test-reviewer",
+      "round": 2,
+      "status": "needs_improvement",
+      "report-path": "work/publication-silence-recovery/logs/working/task-3/test-reviewer-2.json"
+    },
+    {
+      "reviewer": "test-reviewer",
+      "round": 3,
+      "status": "passed",
+      "report-path": "work/publication-silence-recovery/logs/working/task-3/test-reviewer-3.json"
+    }
+  ],
+  "verification": [
+    {
+      "command": "venv/bin/python -m pytest tests/test_job_distributed_publish.py -k 'ReviewReleaseScheduler or ScheduleSnapshotFailure' -q",
+      "result": "10 passed, 45 deselected, 9 subtests passed"
+    },
+    {
+      "command": "venv/bin/python -m pytest tests/test_integration.py -k 'ResolveHoldCallback or ResolveDedupCallback or ReviewListener' -q",
+      "result": "41 passed, 105 deselected, 12 subtests passed"
+    },
+    {
+      "command": "venv/bin/python -m pytest tests/test_compute_fixed_slots.py tests/test_pending_articles_repo.py tests/test_job_distributed_publish.py tests/test_integration.py tests/test_distributed_schedule_integration.py -q",
+      "result": "362 passed, 117 subtests passed"
+    },
+    {
+      "command": "venv/bin/pre-commit run --files news_bot.py tests/test_job_distributed_publish.py tests/test_integration.py",
+      "result": "all scoped hooks passed"
+    },
+    {
+      "command": "venv/bin/python -c reviewer-report JSON validation",
+      "result": "9 reviewer reports parsed successfully"
+    },
+    {
+      "command": "venv/bin/python -c completion-summary exact shared-schema validation",
+      "result": "passed"
+    },
+    {
+      "command": "git diff --check",
+      "result": "passed"
+    }
+  ],
+  "proposedDeviation": null
+}

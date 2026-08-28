@@ -19,7 +19,7 @@ import time
 import unicodedata
 from datetime import datetime, timedelta, timezone
 from typing import NamedTuple, Optional
-from urllib.parse import urlparse
+from urllib.parse import quote, urlparse
 
 import pytz
 
@@ -99,7 +99,7 @@ import model_extractor
 # Fixed 3-slots-per-day scheduler (operator pacing 2026-06-13: 10:00/15:00/19:30
 # МСК). The old dynamic even-spread ``compute_publish_slots`` is DORMANT and no
 # longer imported here.
-from compute_publish_slots import compute_fixed_slots
+from compute_publish_slots import compute_fixed_slots, remaining_fixed_slots
 
 # Configuration - set via environment variables
 TELEGRAM_BOT_TOKEN = os.getenv('TELEGRAM_BOT_TOKEN')
@@ -153,11 +153,10 @@ REVIEW_BUTTONS_ENABLED = os.getenv(
 LOG_LEVEL = logging.INFO
 
 # Distributed-publish constants (llm-transcreation-and-distributed-publishing
-# Decisions 2, 4, 9, 14, 15). The 10:00–20:00 МСК window + 40-minute minimum
-# interval are the same numbers ``compute_publish_slots`` uses by default —
-# kept here for explicit reference in ``job()`` (window-end guard) and the
-# crash-loop guard (Decision 9). ``BACKLOG_WARNING_THRESHOLD`` seeds the
-# AC20 queue-pressure admin ping.
+# Decisions 2, 4, 9, 14, 15). The 10:00–20:00 МСК bounds drive ``job()``'s
+# window-end guard; the separate 90-minute minimum drives its crash-loop guard.
+# The dormant dynamic scheduler has historical defaults of its own.
+# ``BACKLOG_WARNING_THRESHOLD`` seeds the AC20 queue-pressure admin ping.
 MIN_INTERVAL_MINUTES = 90
 WINDOW_START_TIME = datetime.strptime("10:00", "%H:%M").time()
 WINDOW_END_TIME = datetime.strptime("20:00", "%H:%M").time()
@@ -694,6 +693,74 @@ def _is_admin_press(from_user_id):
         return False
 
 
+_REVIEW_LOG_IDENTIFIER_MAXLEN = 200
+_REVIEW_LOG_INPUT_MAXLEN = 2048
+
+
+def _sanitize_review_log_identifier(value):
+    """Return a bounded, one-line article identifier safe for audit logs.
+
+    Review links originate outside the bot.  Logging them verbatim lets URL
+    credentials, query tokens, fragments, or control characters forge or
+    contaminate the operator-decision line.  Keep only the useful URL identity
+    (scheme, host, optional port, path), then apply the shared secret scrubber.
+    Non-URLs still get control/query/fragment stripping and the same bound.
+    """
+    try:
+        raw = '' if value is None else str(value)
+    except Exception:
+        return '<unavailable>'
+
+    try:
+        # Never truncate and then parse: cutting a long URL before its ``@``
+        # can reinterpret credential userinfo as a hostname and leak it. An
+        # oversized identifier gets a constant marker, bounding work without
+        # changing URL structure.
+        if len(raw) > _REVIEW_LOG_INPUT_MAXLEN:
+            return '<oversized>'
+        one_line = ''.join(
+            ' ' if unicodedata.category(char).startswith('C') else char
+            for char in raw
+        )
+        one_line = ' '.join(one_line.split())
+        parsed = urlparse(one_line)
+
+        # ``//user:pass@host/path`` is a valid scheme-relative URL. A malformed
+        # bare ``user:pass@host/path`` also needs the same credential stripping,
+        # so retry it as a network-path reference before using the fallback.
+        url_ref = parsed if parsed.hostname else None
+        if url_ref is None and '@' in one_line and '://' not in one_line:
+            candidate = urlparse(f'//{one_line}')
+            if candidate.hostname:
+                url_ref = candidate
+
+        if url_ref is not None:
+            hostname = url_ref.hostname
+            if ':' in hostname and not hostname.startswith('['):
+                hostname = f'[{hostname}]'
+            try:
+                port = f':{url_ref.port}' if url_ref.port is not None else ''
+            except ValueError:
+                port = ''
+            prefix = f'{url_ref.scheme.lower()}://' if url_ref.scheme else '//'
+            safe = f'{prefix}{hostname}{port}{url_ref.path}'
+        else:
+            safe = one_line.split('?', 1)[0].split('#', 1)[0]
+            if '@' in safe:
+                # Hostless/malformed userinfo (``https://user:pw@/path`` or
+                # ``user:pw@/path``) has no hostname to reconstruct. Drop the
+                # entire credential-shaped prefix rather than logging it.
+                safe = safe.rpartition('@')[2] or '<unknown>'
+        safe = _redact_text(safe).strip() or '<unknown>'
+        # Percent-encoding makes the value one unambiguous structured field:
+        # whitespace or ``=`` inside an attacker-controlled path can no longer
+        # forge a second ``status=`` / ``action=`` pair on the same log line.
+        encoded = quote(safe, safe=':/[]%')
+        return encoded[:_REVIEW_LOG_IDENTIFIER_MAXLEN]
+    except Exception:
+        return '<unavailable>'
+
+
 def resolve_dedup_callback(action, token, from_user_id):
     """Decide the outcome of a dedup-review button press (pure, no I/O).
 
@@ -836,10 +903,10 @@ def resolve_hold_callback(action, token, from_user_id):
     Terminal outcomes:
         * unknown token → «⚠️ Кнопка устарела» (bot restarted / already
           consumed) — no DB writes;
-        * ``approve`` + row still held → ``clear_hold(link)`` → «✅ Одобрено
-          — выйдет в ближайший слот»: the row is already staged, so
-          clearing ``hold_reason`` puts it straight into the publishable
-          queue;
+        * ``approve`` + row still held → atomically clear the hold and consume
+          its token → «✅ Одобрено — выйдет в ближайший слот» when no other
+          gate remains, or an exact «ещё отложена [E014]» status while a future
+          ``publish_after`` still withholds the row;
         * ``reject`` + row still pending → ``skip_pending(link)`` (DELETE +
           processed_news pin, never touches published_articles) →
           «🚫 Не будет опубликовано»;
@@ -869,13 +936,16 @@ def resolve_hold_callback(action, token, from_user_id):
 
     # 3. Action branches.
     if action == 'approve':
-        # clear_hold's own rowcount is the source of truth: it returns
-        # False both when the row is gone and when it is no longer held,
-        # so a double press can never report a second fresh approval.
-        if pending_repo.clear_hold(link):
-            status = "✅ Одобрено — выйдет в ближайший слот"
-        else:
-            status = "⚠️ Статья уже недоступна"
+        outcome = pending_repo.approve_hold_and_consume_token(token, link)
+        status = {
+            pending_repo.HOLD_APPROVAL_STALE: "⚠️ Кнопка устарела",
+            pending_repo.HOLD_APPROVAL_UNAVAILABLE: "⚠️ Статья уже недоступна",
+            pending_repo.HOLD_APPROVAL_DEFERRED:
+                "✅ Одобрено — но статья ещё отложена [E014]",
+            pending_repo.HOLD_APPROVAL_READY:
+                "✅ Одобрено — выйдет в ближайший слот",
+        }[outcome]
+        return (status, status)
     elif action == 'reject':
         if pending_repo.get_pending(link) is not None:
             pending_repo.skip_pending(link)
@@ -887,7 +957,8 @@ def resolve_hold_callback(action, token, from_user_id):
         # a still-valid token on a malformed callback.
         return ("⚠️ Кнопка устарела", "⚠️ Кнопка устарела")
 
-    # 4. Terminal outcome — consume the token (idempotent delete).
+    # 4. Terminal reject outcome — consume the token (idempotent delete).
+    # Approve consumed it in the same transaction as the hold transition.
     pending_repo.delete_review_token(token)
     return (status, status)
 
@@ -1100,7 +1171,7 @@ def _handle_review_update(update):
     # not cost the audit line.
     logger.info(
         "[review] operator decision: action=%s link=%s status=%s",
-        action, link, status_text,
+        action, _sanitize_review_log_identifier(link), status_text,
     )
     message = getattr(callback_query, 'message', None)
     if message is not None:
@@ -4015,13 +4086,15 @@ def job():
     9, 14, 15 + tech-spec §Architecture How-it-works step 7).
 
     Pass layout:
-      (a) crash-loop guard      — sleep until ``last_published + 40min``
+      (a) crash-loop guard      — sleep until ``last_published + 90min``
                                   if the most recent publish is too fresh.
       (b) fetch + filter + insert — iterate ``SOURCES``, dedup, stage rows.
-      (c) compute today's slots  — ``compute_fixed_slots(N, now_msk)``.
+      (c) snapshot + plan       — atomic publishable/deferred/held counts;
+                                  announced slots use publishable rows only.
       (d) admin ping             — plan-of-day; always fires (heartbeat on
                                   quiet days); + backlog warning when N > 50.
-      (e) distributed-publish    — sleep-until-slot, publish via
+      (e) distributed-publish    — retain remaining fixed opportunities for
+                                  withheld rows, sleep-until-slot, publish via
                                   ``_fallback_publish`` (LLM/Claude only).
                                   On ``ClaudeOutageError`` the article is
                                   HELD (nothing published) and the loop
@@ -4039,7 +4112,7 @@ def job():
     # container restarts producing burst-publishes by enforcing the
     # ``MIN_INTERVAL_MINUTES`` gap between consecutive publishes across
     # restarts. Reads ``MAX(published_at)`` (UTC-naive) and sleeps until
-    # ``last_published + 40min`` if the gap is too small. Failure to
+    # ``last_published + MIN_INTERVAL_MINUTES`` if the gap is too small. Failure to
     # parse the timestamp logs a warning and skips the guard (fail-open).
     # ------------------------------------------------------------------
     try:
@@ -4645,49 +4718,56 @@ def job():
     # Step (c): compute today's publish slots.
     # ``compute_fixed_slots`` returns (slots, carry_over) for the three
     # fixed daily times (10:00/15:00/19:30 МСК, operator pacing 2026-06-13).
-    # N=0 → empty list, no admin ping (Step (d) guard), no loop (Step (e)
-    # guard). The function already bounds the result to ≤3 slots, so the old
-    # MAX_DAILY_POSTS trim is no longer needed.
+    # N=0 → an empty announced plan; Step (d)'s heartbeat still fires. Runtime
+    # may separately retain fixed opportunities for a withheld snapshot. Both
+    # helpers bound the result to ≤3 times, so no MAX_DAILY_POSTS trim is
+    # needed.
     # ------------------------------------------------------------------
     now_msk = datetime.now(MSK_TZ)
-    # ``count_pending`` counts PUBLISHABLE rows only — content-gate holds
-    # are excluded, so a parked poster post never buys the day an extra
-    # slot it can never fill, and never inflates the `> 50` backlog alarm
-    # with rows the queue cannot drain on its own. The operator still sees
-    # them: the held backlog goes into the plan ping as its own
-    # «На утверждении: N» line (read below).
-    queue_size = pending_repo.count_pending()
-    # Rows deferred by the hold cap are NOT in ``queue_size`` — they are not
-    # publishable at this instant. But the slot list is computed ONCE for the
-    # whole day, so sizing it on ``queue_size`` alone would hand a tick that
-    # starts fully deferred zero slots and skip the day entirely — including
-    # the moment a 24 h window elapses a few hours in. Over-allocating is safe:
-    # the loop breaks as soon as ``list_pending()`` comes back empty.
-    # Deliberately NOT folded into ``count_pending``: everything else that
-    # reads it (the `> 50` backlog alarm, the plan ping's «В очереди») means
-    # "publishable right now", and a deferred row is not.
+    # One atomic planning snapshot keeps the plan truthful while callbacks or
+    # defer expiry can change eligibility later in the day. Only rows that are
+    # publishable NOW buy announced slots. A withheld row instead retains all
+    # remaining fixed times as release opportunities: each one re-reads the
+    # queue, so a callback/expiry after an empty morning check can still use
+    # the afternoon slot without the callback publishing directly.
     try:
-        deferred_backlog = pending_repo.count_deferred()
+        (
+            publishable_count,
+            deferred_backlog_count,
+            held_backlog_count,
+        ) = pending_repo.get_schedule_backlog_counts()
+        release_opportunities_retained = (
+            deferred_backlog_count > 0 or held_backlog_count > 0
+        )
     except Exception as exc:
         logger.error(
-            f"count_deferred failed, sizing slots on the publishable queue "
-            f"only: {sanitize_error_message(exc)}"
+            "schedule snapshot failed; using one publishable-count planning "
+            f"fallback without release opportunities: "
+            f"{sanitize_error_message(exc)}"
         )
-        deferred_backlog = 0
-    slots, carry_over = compute_fixed_slots(
-        queue_size + deferred_backlog, now_msk,
-    )
+        # This fallback is deliberately a single planning read. If it also
+        # fails, propagate: inventing a zero queue would emit a false quiet-day
+        # heartbeat and silently skip real work.
+        publishable_count = pending_repo.count_pending()
+        deferred_backlog_count = 0
+        held_backlog_count = 0
+        release_opportunities_retained = False
 
-    # Held backlog for the plan ping. Never blocks the tick: with the
-    # «нет ответа = не публикуем» rule nothing else surfaces a forgotten
-    # hold, but a DB hiccup here must not cost the heartbeat.
-    try:
-        held_count = len(pending_repo.list_held())
-    except Exception as exc:
-        logger.error(
-            f"Failed to read the held backlog: {sanitize_error_message(exc)}"
-        )
-        held_count = 0
+    planned_slots, carry_over = compute_fixed_slots(
+        publishable_count, now_msk,
+    )
+    execution_slots = (
+        remaining_fixed_slots(now_msk)
+        if release_opportunities_retained
+        else planned_slots
+    )
+    logger.info(
+        "[schedule-snapshot] publishable=%d deferred=%d held=%d "
+        "planned_slots=%d release_opportunities=%d",
+        publishable_count, deferred_backlog_count, held_backlog_count,
+        len(planned_slots),
+        len(execution_slots) if release_opportunities_retained else 0,
+    )
 
     # ------------------------------------------------------------------
     # Step (d): admin ping with plan-of-day. Always sent — operator wants a
@@ -4695,31 +4775,32 @@ def job():
     # there are no new articles and the queue is empty.
     # Quiet day: single-line «🟢 Бот сработал, новых статей нет.»
     # Busy day:  multi-line columnar «🟢 План на сегодня — …»
-    # Backlog warning fires as a separate ping at queue_size > 50 (AC20).
+    # Backlog warning fires separately at publishable_count > 50 (AC20).
     # ------------------------------------------------------------------
     # Build the ping. The funnel renderers already fail safe internally, but
     # wrap the BUILD too (belt-and-suspenders): a formatting bug in the funnel
     # path must never break the tick — fall back to the no-funnel legacy call.
     try:
-        if queue_size == 0 and inserted == 0:
+        if publishable_count == 0 and inserted == 0:
             plan_msg = admin_alerts.alert_quiet_day(
-                funnel=funnel, held_count=held_count,
-                deferred_count=deferred_backlog)
+                funnel=funnel, held_count=held_backlog_count,
+                deferred_count=deferred_backlog_count)
         else:
             plan_msg = admin_alerts.alert_plan_of_day(
-                inserted, queue_size, slots, carry_over, funnel=funnel,
-                held_count=held_count, deferred_count=deferred_backlog,
+                inserted, publishable_count, planned_slots, carry_over,
+                funnel=funnel, held_count=held_backlog_count,
+                deferred_count=deferred_backlog_count,
             )
     except Exception as build_err:
         logger.error(
             f"Failed to build plan-of-day ping with funnel, falling back to "
             f"legacy: {sanitize_error_message(build_err)}"
         )
-        if queue_size == 0 and inserted == 0:
+        if publishable_count == 0 and inserted == 0:
             plan_msg = admin_alerts.alert_quiet_day()
         else:
             plan_msg = admin_alerts.alert_plan_of_day(
-                inserted, queue_size, slots, carry_over
+                inserted, publishable_count, planned_slots, carry_over
             )
     try:
         send_admin_notification(plan_msg)
@@ -4729,9 +4810,9 @@ def job():
             f"{sanitize_error_message(notify_err)}"
         )
 
-    if queue_size > BACKLOG_WARNING_THRESHOLD:
+    if publishable_count > BACKLOG_WARNING_THRESHOLD:
         backlog_msg = admin_alerts.alert_backlog_warning(
-            queue_size, BACKLOG_WARNING_THRESHOLD, carry_over
+            publishable_count, BACKLOG_WARNING_THRESHOLD, carry_over
         )
         try:
             send_admin_notification(backlog_msg)
@@ -4766,16 +4847,18 @@ def job():
     # ``(link, sanitized_reason)`` for the 'failed' outcomes (reason already run
     # through ``sanitize_error_message`` — never raw text, never secrets).
     published_count = 0
-    held_count = 0
+    held_outcome_count = 0
     failed_count = 0
     moved_to_failed_count = 0
-    deferred_count = 0
+    deferred_outcome_count = 0
+    empty_release_checks = 0
     recap_failures = []
-    for idx, slot in enumerate(slots, start=1):
+    for idx, slot in enumerate(execution_slots, start=1):
         # Window-end insurance.
         if slot > window_end_dt:
             logger.info(
-                f"[slot {idx}/{len(slots)}] {slot.strftime('%H:%M')} > "
+                f"[slot {idx}/{len(execution_slots)}] "
+                f"{slot.strftime('%H:%M')} > "
                 f"window_end {WINDOW_END_TIME.strftime('%H:%M')} — break."
             )
             break
@@ -4786,22 +4869,32 @@ def job():
 
         rows = pending_repo.list_pending()
         if not rows:
+            if release_opportunities_retained:
+                empty_release_checks += 1
+                logger.info(
+                    f"[slot {idx}/{len(execution_slots)}] queue empty; "
+                    f"withheld snapshot retains later release opportunities "
+                    f"— continue."
+                )
+                continue
             logger.info(
-                f"[slot {idx}/{len(slots)}] queue empty (manual-review "
-                f"preempted) — break."
+                f"[slot {idx}/{len(execution_slots)}] queue empty "
+                f"(manual-review preempted) — break."
             )
             break
         row = rows[0]
         link = row.get('link')
 
         logger.info(
-            f"[slot {idx}/{len(slots)}] publishing row {link}"
+            f"[slot {idx}/{len(execution_slots)}] publishing row {link}"
         )
-        outcome, err = _publish_with_retries(row, idx, len(slots))
+        outcome, err = _publish_with_retries(
+            row, idx, len(execution_slots),
+        )
         if outcome == 'published':
             published_count += 1
         elif outcome == 'held':
-            held_count += 1
+            held_outcome_count += 1
             # LLM outage — ``_fallback_publish`` HELD this article (nothing
             # was published) and advanced the operator-notification state
             # machine. Do NOT count a publish and do NOT strike the row: it
@@ -4810,7 +4903,8 @@ def job():
             # if the outage persists, the article simply carries over to the
             # next daily tick. No Google fallback.
             logger.warning(
-                f"[slot {idx}/{len(slots)}] LLM outage — article held, "
+                f"[slot {idx}/{len(execution_slots)}] LLM outage — article "
+                f"held, "
                 f"will retry on the next slot/day."
             )
             # Hold cap: a hold never strikes, and the next slot re-reads
@@ -4850,9 +4944,10 @@ def job():
                         f"the head, the next slot retries the defer"
                     )
                 if deferred:
-                    deferred_count += 1
+                    deferred_outcome_count += 1
                     logger.warning(
-                        f"[slot {idx}/{len(slots)}] {link} held {holds}× in a "
+                        f"[slot {idx}/{len(execution_slots)}] {link} held "
+                        f"{holds}× in a "
                         f"row — deferring {HOLD_DEFER_HOURS}h so the queue can "
                         f"move. Cause: {safe_hold}"
                     )
@@ -4898,7 +4993,8 @@ def job():
             ):
                 recap_failures.append((link, safe))
             logger.error(
-                f"[slot {idx}/{len(slots)}] publish failed for {link}: {safe}"
+                f"[slot {idx}/{len(execution_slots)}] publish failed for "
+                f"{link}: {safe}"
             )
             try:
                 new_count = pending_repo.increment_attempt(link, safe)
@@ -4913,7 +5009,8 @@ def job():
                     pending_repo.move_to_failed(link, safe)
                     moved_to_failed_count += 1
                     logger.warning(
-                        f"[slot {idx}/{len(slots)}] moved {link} to failed "
+                        f"[slot {idx}/{len(execution_slots)}] moved {link} "
+                        f"to failed "
                         f"after {new_count} strikes"
                     )
                 except Exception as repo_err:
@@ -4925,7 +5022,9 @@ def job():
     final_queue_size = pending_repo.count_pending()
     logger.info(
         f"[job] done. Published {published_count}, "
-        f"carry-over {carry_over}, queue size now {final_queue_size}."
+        f"carry-over {carry_over}, queue size now {final_queue_size}, "
+        f"empty release checks {empty_release_checks}, "
+        f"deferred outcomes {deferred_outcome_count}."
     )
 
     # ------------------------------------------------------------------
@@ -4942,11 +5041,11 @@ def job():
     # post); counters are plain ints; the build+send is wrapped in try/except
     # (log-and-continue) so a recap fault never breaks the tick.
     # ------------------------------------------------------------------
-    if published_count + held_count + failed_count > 0:
+    if published_count + held_outcome_count + failed_count > 0:
         try:
             recap_msg = admin_alerts.alert_publish_recap({
                 'published': published_count,
-                'held': held_count,
+                'held': held_outcome_count,
                 'failed': failed_count,
                 'moved_to_failed': moved_to_failed_count,
                 'failures': recap_failures,

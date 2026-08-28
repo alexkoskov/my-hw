@@ -1,0 +1,163 @@
+{
+  "status": "passed",
+  "summary": {
+    "totalChecks": 26,
+    "passed": 24,
+    "failed": 0,
+    "notVerifiable": 2,
+    "criticals": 0,
+    "majors": 0,
+    "minors": 0
+  },
+  "testSuite": {
+    "status": "passed",
+    "details": "Focused feature run: 410 passed, 0 failed, 0 skipped, and 119 subtests passed in 3.67s. Full tests/ run: 2044 passed, 0 failed, 2 skipped, and 549 subtests passed in 17.15s. The two explained skips are archived Mattel live-snapshot tests at tests/test_mattel_news_source.py:613 and :629 because their optional live fixtures are unavailable. All 7 scoped pre-commit hooks passed; git diff --check passed; no external or production action was performed."
+  },
+  "acceptanceCriteria": [
+    {
+      "criterion": "US-AC1: An E014 row hidden at the empty 10:00 read and kept afterward publishes exactly once at 15:00.",
+      "status": "passed",
+      "evidence": "tests/test_job_distributed_publish.py::TestReviewReleaseScheduler::test_e014_keep_after_empty_morning_read_publishes_once_at_next_slot passed in the focused run; it records the empty read, applies the real callback transition, asserts the exact link, and verifies the real published_articles state."
+    },
+    {
+      "criterion": "US-AC2: E036 approve after the empty morning read publishes once in the nearest remaining fixed slot and the callback does not publish.",
+      "status": "passed",
+      "evidence": "tests/test_job_distributed_publish.py::TestReviewReleaseScheduler::test_e036_approve_after_empty_morning_read_publishes_once_at_next_slot passed; the real SQLite approval precedes the 15:00 queue read and only the scheduler moves the exact row to published_articles."
+    },
+    {
+      "criterion": "US-AC3: E014 cancel and E036 reject between slots produce zero publications and do not resurrect the row.",
+      "status": "passed",
+      "evidence": "tests/test_job_distributed_publish.py::TestReviewReleaseScheduler::test_cancel_reject_and_silence_never_bypass_their_gate passed with real final pending/deleted state assertions; TestResolveDedupCallback::test_cancel_then_slot_publish_does_not_publish and TestResolveHoldCallback::test_reject_drops_the_row_and_pins_the_link also passed in the full run."
+    },
+    {
+      "criterion": "US-AC4: E014 silence keeps the row deferred for 24 hours and E036 silence keeps the row held indefinitely.",
+      "status": "passed",
+      "evidence": "tests/test_job_distributed_publish.py::TestReviewReleaseScheduler::test_defer_expiry_releases_at_first_fixed_opportunity_while_hold_silence_remains_parked and ::test_cancel_reject_and_silence_never_bypass_their_gate passed; they assert no premature publish and the correct real SQLite state through expiry/silence."
+    },
+    {
+      "criterion": "US-AC5: A dual-gate row remains non-publishable after only one gate is cleared and becomes eligible only after both are open.",
+      "status": "passed",
+      "evidence": "tests/test_pending_articles_repo.py::TestScheduleBacklogCounts::test_partitions_all_pending_rows_mutually_exclusively passed with held dominance; TestResolveDedupCallback::test_keep_does_not_promise_a_slot_to_a_held_article and TestResolveHoldCallback::test_approve_reports_a_remaining_deferral_instead_of_promising_a_slot passed with exact queue-state assertions."
+    },
+    {
+      "criterion": "US-AC6: Ordinary, empty, and 16:00 restart snapshots retain the previous bounded scheduling behavior without artificial waits.",
+      "status": "passed",
+      "evidence": "tests/test_job_distributed_publish.py::TestReviewReleaseScheduler::test_ordinary_empty_and_restart_snapshots_keep_existing_bounded_schedule passed; its subtests assert the exact queue-read/sleep counts and 19:30-only restart slot."
+    },
+    {
+      "criterion": "US-AC7: Publications occur only at 10:00, 15:00, and 19:30 MSK, at most once per opportunity, and never directly from a callback.",
+      "status": "passed",
+      "evidence": "tests/test_compute_fixed_slots.py::TestRemainingFixedSlots::test_returns_all_eligible_times_for_each_day_state and ::test_compute_fixed_slots_is_a_capped_prefix_with_unchanged_carry passed; the E014/E036/mixed scheduler timelines assert fixed-time event order, distinct row identities, and callback-side zero publication."
+    },
+    {
+      "criterion": "US-AC8: Plan, carry-over, recap, dry-spell, and heartbeat remain truthful, and scheduler-state failures do not bypass gates.",
+      "status": "passed",
+      "evidence": "tests/test_job_distributed_publish.py::TestReviewReleaseScheduler::test_mixed_publishable_and_withheld_snapshot_keeps_plan_truthful_and_publishes_distinct_rows, ::test_empty_release_checks_do_not_change_recap_and_completion_hooks, and ::TestScheduleSnapshotFailure::{test_snapshot_failure_uses_one_planning_fallback_without_release_opportunities,test_fallback_failure_propagates} all passed."
+    },
+    {
+      "criterion": "US-AC9: The watcher enforces the complete MSK 20:59/21:00, midnight, 02:59/03:00, and Dec/Jan calendar matrix without oscillation.",
+      "status": "passed",
+      "evidence": "tests/test_publication_watch.py::test_classifies_fresh_and_stale_calendar_boundaries passed for same-day, yesterday, older, year rollover, and leap-day parametrized cases using an explicit aware clock."
+    },
+    {
+      "criterion": "US-AC10: Invalid or ambiguous evidence is inconclusive and cannot raise/resolve the publication alarm; future-date inference is conservative and secrets do not enter logs.",
+      "status": "passed",
+      "evidence": "Classifier and alarm-state tests passed. The Telegraph fetch now submits access_token and limit only in the HTTPS POST form body, reads the token through a private file descriptor, and never serializes it into the URL; tests/test_uptime_workflow.py::test_telegraph_secret_is_confined_to_bounded_fetch_step explicitly rejects executable --get transport and passed."
+    },
+    {
+      "criterion": "TECH-AC1: A pure helper is the single source for fixed-time grace/cutoff eligibility and existing compute_fixed_slots behavior remains green.",
+      "status": "passed",
+      "evidence": "tests/test_compute_fixed_slots.py::TestRemainingFixedSlots::{test_returns_all_eligible_times_for_each_day_state,test_grace_boundary_and_naive_clock_contract,test_compute_fixed_slots_is_a_capped_prefix_with_unchanged_carry} passed; these nodes cover exact eligible times, grace/naive-clock boundaries, custom times, timezone preservation, and the unchanged capped-prefix/carry contract."
+    },
+    {
+      "criterion": "TECH-AC2: One SQLite statement returns an exhaustive, mutually exclusive publishable/deferred/held partition including elapsed defer and dual-gate dominance without schema changes.",
+      "status": "passed",
+      "evidence": "tests/test_pending_articles_repo.py::TestScheduleBacklogCounts::{test_partitions_all_pending_rows_mutually_exclusively,test_empty_queue_returns_zero_partition,test_sqlite_error_propagates_and_connection_closes} passed against tempfile SQLite and assert one SELECT plus exact counts/types."
+    },
+    {
+      "criterion": "TECH-AC3: Operator plan/carry-over uses publishable rows only; remaining opportunities are retained only for deferred or held snapshot backlog.",
+      "status": "passed",
+      "evidence": "tests/test_job_distributed_publish.py::TestReviewReleaseScheduler::test_mixed_publishable_and_withheld_snapshot_keeps_plan_truthful_and_publishes_distinct_rows and ::test_ordinary_empty_and_restart_snapshots_keep_existing_bounded_schedule passed with exact E008 planned-slot text and aggregate-read assertions."
+    },
+    {
+      "criterion": "TECH-AC4: Empty retained opportunities continue, while ordinary/empty snapshots without reviewable rows exit early.",
+      "status": "passed",
+      "evidence": "tests/test_job_distributed_publish.py::TestReviewReleaseScheduler::{test_e014_keep_after_empty_morning_read_publishes_once_at_next_slot,test_e036_approve_after_empty_morning_read_publishes_once_at_next_slot,test_ordinary_empty_and_restart_snapshots_keep_existing_bounded_schedule} passed after observed empty reads and with zero artificial reads/sleeps for exhausted ordinary and empty cases."
+    },
+    {
+      "criterion": "TECH-AC5: The exact E014 timeline publishes the intended row once after keep; cancel and silence do not publish prematurely.",
+      "status": "passed",
+      "evidence": "tests/test_job_distributed_publish.py::TestReviewReleaseScheduler::{test_e014_keep_after_empty_morning_read_publishes_once_at_next_slot,test_cancel_reject_and_silence_never_bypass_their_gate} passed with exact real-DB row movement and no callback publisher."
+    },
+    {
+      "criterion": "TECH-AC6: E036 approve has symmetric next-slot behavior; reject/silence and both dual-gate clear orders remain closed until eligible.",
+      "status": "passed",
+      "evidence": "tests/test_job_distributed_publish.py::TestReviewReleaseScheduler::{test_e036_approve_after_empty_morning_read_publishes_once_at_next_slot,test_cancel_reject_and_silence_never_bypass_their_gate}, tests/test_integration.py::{TestResolveHoldCallback::test_approve_reports_a_remaining_deferral_instead_of_promising_a_slot,TestResolveDedupCallback::test_keep_does_not_promise_a_slot_to_a_held_article}, and tests/test_pending_articles_repo.py::TestApproveHoldAndConsumeToken passed. The public repository operation owns the atomic hold-clear/token-consume transaction, including stale, unavailable, deferred, ready, and rollback outcomes."
+    },
+    {
+      "criterion": "TECH-AC7: Mixed publishable and withheld rows publish once each at 10:00 and 15:00 without repeated-head selection or plan corruption.",
+      "status": "passed",
+      "evidence": "tests/test_job_distributed_publish.py::TestReviewReleaseScheduler::test_mixed_publishable_and_withheld_snapshot_keeps_plan_truthful_and_publishes_distinct_rows passed and asserts two distinct links, exact event order, one published_articles move per row, and no pending duplicates."
+    },
+    {
+      "criterion": "TECH-AC8: A release after 19:30 waits pending until next-day 10:00; callbacks never publish and restart/cutoff bounds remain unchanged.",
+      "status": "passed",
+      "evidence": "tests/test_job_distributed_publish.py::TestReviewReleaseScheduler::test_after_cutoff_release_waits_for_next_day_morning_slot passed for keep/approve subtests; tests/test_compute_fixed_slots.py::TestRemainingFixedSlots::test_returns_all_eligible_times_for_each_day_state and the scheduler restart subtest pin cutoff and 19:30-only behavior."
+    },
+    {
+      "criterion": "TECH-AC9: Empty release checks preserve observability and scheduler snapshot failures do not bypass gates.",
+      "status": "passed",
+      "evidence": "tests/test_job_distributed_publish.py::{TestReviewReleaseScheduler::test_empty_release_checks_do_not_change_recap_and_completion_hooks,TestScheduleSnapshotFailure::test_snapshot_failure_uses_one_planning_fallback_without_release_opportunities,TestScheduleSnapshotFailure::test_fallback_failure_propagates} passed with exact phase ordering and propagation."
+    },
+    {
+      "criterion": "TECH-AC10: The classifier covers the complete MSK/error/size/recursion matrix and the real CLI emits exactly one allowed line for all three states.",
+      "status": "passed",
+      "evidence": "tests/test_publication_watch.py::{test_classifies_fresh_and_stale_calendar_boundaries,test_invalid_or_ambiguous_evidence_is_inconclusive,test_cli_emits_exact_tri_state_contract,test_cli_enforces_exact_one_mib_byte_limit_without_evidence_leak,test_cli_reads_only_limit_plus_sentinel_and_skips_oversized_classifier} passed, along with the recursion and first-page nodes."
+    },
+    {
+      "criterion": "TECH-AC11: Workflow checkout is immutable/default-branch/success-gated, credentials are not persisted, and the Telegraph secret is confined away from repository code and outputs.",
+      "status": "passed",
+      "evidence": "tests/test_uptime_workflow.py::{test_checkout_is_immutable_explicit_and_failure_tolerant,test_telegraph_secret_is_confined_to_bounded_fetch_step,test_classifier_runs_only_after_successful_checkout} passed. Checkout remains immutable/default-branch/failure-tolerant with persisted credentials disabled, while the token is confined to the fetch step and HTTPS POST body and is absent from repository code, outputs, and the effective URL."
+    },
+    {
+      "criterion": "TECH-AC12: Publication transitions are stale->raise, fresh->resolve, inconclusive->no-op, with independent host verdict and host-down suppression.",
+      "status": "passed",
+      "evidence": "tests/test_uptime_workflow.py::{test_publication_alarm_uses_complete_tri_state_matrix,test_host_verdict_remains_independent_and_suppresses_publication_transition} passed and assert named branch content, exact state wiring, and no raise/resolve in inconclusive."
+    },
+    {
+      "criterion": "TECH-AC13: Scheduler/callback logs sanitize exception text and omit callback tokens, forged line breaks, URL userinfo/query data, and raw Telegraph evidence.",
+      "status": "passed",
+      "evidence": "tests/test_integration.py::TestReviewListener::{test_decision_log_sanitizes_untrusted_article_identifier_and_omits_callback_token,test_decision_log_identifier_bounds_work_before_normalization} and scheduler fallback sanitization assertions passed; classifier subprocess tests assert empty stderr and no token-shaped evidence, and the workflow submits the Telegraph credential from a private file descriptor into a POST body without printing it or placing it in the URL."
+    },
+    {
+      "criterion": "TECH-AC14: Focused/full pytest, scoped pre-commit, and diff gates pass offline without any production or external action.",
+      "status": "passed",
+      "evidence": "Focused: 410 passed plus 119 subtests, 0 failed/skipped. Full: 2044 passed plus 549 subtests, 0 failed and 2 explained unrelated skips. Seven scoped hooks and git diff --check passed; no network, SSH, Docker, Telegram, Telegraph, LLM, GitHub issue/action, production DB mutation, merge, or deploy was performed."
+    },
+    {
+      "criterion": "USER-VERIFY-1: After a future merge and manual runtime rollout, a natural E014 keep or E036 approve before a remaining slot yields one ordinary production post in that slot.",
+      "status": "not_verifiable",
+      "evidence": "The approved scope forbids merge, restart, live callbacks, test publication, and production DB changes; there is one production channel and no staging. Offline real-SQLite timelines pass, but live delivery remains user-owned post-deploy verification."
+    },
+    {
+      "criterion": "USER-VERIFY-2: The live publication alarm does not close around 00:00-03:00 MSK without a new publication, and inconclusive Telegraph evidence preserves the existing GitHub issue/Telegram state.",
+      "status": "not_verifiable",
+      "evidence": "Static workflow and classifier tests pass, but observing the scheduled GitHub workflow, durable issue state, Telegraph response, and Telegram delivery requires the future default-branch activation and live service credentials expressly excluded from offline QA."
+    }
+  ],
+  "findings": [],
+  "deferredToPostDeploy": [
+    {
+      "criterion": "USER-VERIFY-1: Natural E014/E036 review release reaches exactly one remaining production slot.",
+      "reason": "There is one production bot/channel and no staging; live callbacks, restart, DB mutation, and synthetic publication are forbidden during offline QA.",
+      "verificationCondition": "The fixes, including all mandatory QA findings, are merged through a green dev-to-main PR and the operator manually rebuilds the sole Docker container outside 10:00-20:00 MSK after recording the rollback SHA.",
+      "verificationSteps": "Do not create a test article. On the first naturally occurring E014 or E036 before a remaining slot, press keep/approve once; verify the listener records the decision, the article appears exactly once at the next fixed time, no callback-time post occurs, and no duplicate appears in the later slot. Inspect production logs and retain the pre-deploy SHA for rollback."
+    },
+    {
+      "criterion": "USER-VERIFY-2: Live watcher preserves alarm state across MSK midnight and inconclusive evidence.",
+      "reason": "Scheduled GitHub execution, real Telegraph evidence, durable GitHub issue state, and Telegram delivery require live services and credentials excluded from pre-deploy QA.",
+      "verificationCondition": "The corrected watcher is merged to the repository default branch; GitHub Actions and required secrets are available; no host/runtime rollout is required for watcher activation.",
+      "verificationSteps": "Observe a scheduled or user-authorized manual Uptime watch run and its single publication verdict. Across 00:00-03:00 MSK without a new post, verify an existing publication issue is not falsely closed. During genuinely unavailable/invalid Telegraph evidence, verify verdict inconclusive, no publication issue open/close transition, independent SSH verdict, and no false Telegram recovery."
+    }
+  ]
+}

@@ -1,0 +1,23 @@
+{
+  "status": "approved",
+  "summary": {
+    "totalFindings": 1,
+    "critical": 0,
+    "major": 1,
+    "minor": 0,
+    "conclusion": "The offline audit covered all OWASP Top 10 (2021) categories and verified authorization, kind-scoped and atomic state transitions, bounded tri-state parsing, immutable checkout, alarm gates, logging redaction, and fail-safe behavior. One major CWE-598 issue remains: the Telegraph credential is placed in the effective request URL; there are no critical findings, so the contract status is approved, but remediation is required. No Python dependencies were introduced; dependency review was limited to local manifests and diffs plus action-pin provenance, and no online CVE database was queried.",
+    "reportPath": "work/publication-silence-recovery/logs/audit/security-audit.json"
+  },
+  "findings": [
+    {
+      "severity": "major",
+      "category": "OWASP A02:2021 - Cryptographic Failures",
+      "title": "Telegraph access token is sent in the request URL",
+      "description": "The fetch step combines curl's --get option with an access-token field read from a private file descriptor. The descriptor keeps the value out of the process argument list, but --get still serializes that field into the effective HTTPS URL query string, contrary to the Task 7 secret-isolation contract.",
+      "location": ".github/workflows/uptime.yml:132",
+      "impact": "The credential can be retained by upstream, proxy, or diagnostic URL logging and could then be used for unauthorized Telegraph API operations under the configured account.",
+      "recommendation": "Remove --get and submit the token and limit as an HTTPS POST form body while retaining fetch-step-only environment ownership and file-descriptor input. Add a static workflow assertion that rejects query-string token transport, including the --get form used here.",
+      "cwe": "CWE-598: Use of GET Request Method With Sensitive Query Strings"
+    }
+  ]
+}

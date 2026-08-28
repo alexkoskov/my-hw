@@ -1,0 +1,32 @@
+{
+  "status": "approved_with_suggestions",
+  "summary": "Verdict: approved_with_suggestions; scheduler and watcher cross-file contracts match the approved specs, and the focused offline baseline passed 537 tests plus 131 subtests, with 0 critical, 1 major, and 1 minor finding. A fixer is required for the mandatory repository-boundary finding; the optional documentation correction and full report are recorded at work/publication-silence-recovery/logs/audit/code-audit.json.",
+  "criticalIssues": [],
+  "suggestions": [
+    {
+      "file": "news_bot.py",
+      "line": 905,
+      "severity": "major",
+      "category": "maintainability",
+      "suggestion": "Move the atomic hold-approval transaction out of `_approve_hold_and_consume_token()` and into a public `pending_articles_repo` operation. The orchestration layer currently opens the repository's private connection, derives a private token key and separator, and executes raw SQL against `bot_state` and `pending_articles`; the repository should instead return an explicit stale/unavailable/deferred/ready outcome that `resolve_hold_callback()` maps to operator text.",
+      "benefit": "This restores the documented boundary that `pending_articles_repo.py` owns SQLite CRUD and transactional moves, prevents token-encoding or schema changes from requiring coordinated edits in `news_bot.py`, and keeps the already-correct all-or-nothing callback behavior independently testable at the data layer.",
+      "optional": false
+    },
+    {
+      "file": "news_bot.py",
+      "line": 156,
+      "severity": "minor",
+      "category": "readability",
+      "suggestion": "Update the distributed-publish constants comment to describe the actual 90-minute crash-loop guard and distinguish it from the dormant dynamic scheduler's historical interval; the same stale `last_published + 40min` wording appears in `job()`'s pass layout.",
+      "benefit": "Future scheduler changes and incident diagnosis will use the runtime value on line 161 instead of a contradictory historical value embedded in production documentation.",
+      "optional": true
+    }
+  ],
+  "metrics": {
+    "filesReviewed": 22,
+    "criticalIssuesCount": 0,
+    "majorIssuesCount": 1,
+    "minorIssuesCount": 1,
+    "testCoverageAssessment": "excellent"
+  }
+}

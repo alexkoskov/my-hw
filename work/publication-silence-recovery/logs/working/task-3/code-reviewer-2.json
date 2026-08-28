@@ -1,0 +1,46 @@
+{
+  "status": "changes_required",
+  "summary": "Round 2 closes the ordinary bounded-wait assertion, the exact release timeline/snapshot test gaps, the hold-approval partial-commit risk, and structured-field spoofing; all focused and 361-test regression suites pass. The decision-log sanitizer still has one blocking malformed-userinfo fallback: when credentials have no valid hostname, it percent-encodes `@` but leaves the username and password visible in the logged identifier.",
+  "criticalIssues": [
+    {
+      "file": "news_bot.py",
+      "line": 731,
+      "severity": "critical",
+      "category": "security",
+      "issue": "Malformed credential-bearing identifiers without a valid hostname still retain plaintext userinfo in the decision-log field.",
+      "evidence": "`_sanitize_review_log_identifier('https://alice:pw@/path?token=secret#fragment')` returns `//https//alice:pw%40/path`, and `_sanitize_review_log_identifier('alice:pw@/path?token=secret#fragment')` returns `alice:pw%40/path`. The retry-as-network-path branch treats `https` as a hostname in the first case, while the second reaches the raw fallback; later `quote()` encodes only `@`, not `alice:pw`. The new integration matrix covers scheme-relative and bare identifiers only when text after `@` is a valid hostname, so both bypasses remain untested.",
+      "impact": "A hostile or malformed article identifier can persist credential text in the operator-decision INFO log, violating Task 3's explicit rule that untrusted URL userinfo must not be logged. Percent-encoding the separator does not redact the secret values.",
+      "recommendation": "Fail closed for any `@`-bearing identifier that cannot be reconstructed with a trustworthy hostname (for example, emit `<invalid-link>`), or redact the entire userinfo-shaped prefix before the generic fallback. Add both missing-host absolute and missing-host bare cases to the listener integration test and assert that `alice`, `pw`, query/fragment data, callback token, and extra structured fields are absent."
+    }
+  ],
+  "suggestions": [],
+  "metrics": {
+    "filesReviewed": 10,
+    "criticalIssuesCount": 1,
+    "majorIssuesCount": 0,
+    "minorIssuesCount": 0,
+    "testCoverageAssessment": "excellent for scheduler, snapshot, callback atomicity, and structured-field contracts; one blocking malformed-userinfo branch remains uncovered"
+  },
+  "verification": [
+    {
+      "command": "venv/bin/python -m pytest tests/test_job_distributed_publish.py -k 'ReviewReleaseScheduler or ScheduleSnapshotFailure' -q",
+      "result": "10 passed, 45 deselected, 9 subtests passed"
+    },
+    {
+      "command": "venv/bin/python -m pytest tests/test_integration.py -k 'ResolveHoldCallback or ResolveDedupCallback or ReviewListener' -q",
+      "result": "40 passed, 105 deselected, 9 subtests passed"
+    },
+    {
+      "command": "venv/bin/python -m pytest tests/test_compute_fixed_slots.py tests/test_pending_articles_repo.py tests/test_job_distributed_publish.py tests/test_integration.py tests/test_distributed_schedule_integration.py -q",
+      "result": "361 passed, 114 subtests passed"
+    },
+    {
+      "command": "git diff --check -- news_bot.py tests/test_job_distributed_publish.py tests/test_integration.py",
+      "result": "passed"
+    },
+    {
+      "command": "venv/bin/python inline sanitizer reproduction for scheme-relative, bare-parseable, missing-host absolute/bare, and structured-field identifiers",
+      "result": "scheme-relative and structured cases safe; missing-host absolute returned //https//alice:pw%40/path and missing-host bare returned alice:pw%40/path"
+    }
+  ]
+}

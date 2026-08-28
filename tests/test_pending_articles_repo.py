@@ -1560,6 +1560,99 @@ class TestReviewTokenKinds(_TmpDbCase):
                             repo.REVIEW_TOKEN_KIND_HOLD)
 
 
+class TestApproveHoldAndConsumeToken(_TmpDbCase):
+    """Public repository boundary for the atomic E036 approval transition."""
+
+    def _seed_held(self, link, *, publish_after=None):
+        entry = _sample_entry(link=link)
+        entry['hold_reason'] = 'poster'
+        entry['publish_after'] = publish_after
+        self.assertTrue(repo.insert_pending(entry))
+
+    def _put_hold_token(self, token, link):
+        repo.put_review_token(
+            token, link, kind=repo.REVIEW_TOKEN_KIND_HOLD,
+        )
+
+    def test_returns_ready_or_deferred_and_commits_both_state_changes(self):
+        cases = (
+            ('ready', None, 'ready'),
+            ('deferred', '2099-01-01 00:00:00', 'deferred'),
+        )
+        for label, publish_after, expected in cases:
+            with self.subTest(label=label):
+                link = f'http://held/{label}'
+                token = f'tok-{label}'
+                self._seed_held(link, publish_after=publish_after)
+                self._put_hold_token(token, link)
+
+                outcome = repo.approve_hold_and_consume_token(token, link)
+
+                row = repo.get_pending(link)
+                self.assertEqual(outcome, expected)
+                self.assertIsNone(row['hold_reason'])
+                self.assertIsNone(repo.get_review_token(token))
+                publishable = [candidate['link']
+                               for candidate in repo.list_pending()]
+                if expected == 'ready':
+                    self.assertIn(link, publishable)
+                else:
+                    self.assertNotIn(link, publishable)
+
+    def test_stale_token_changes_nothing_and_remains_redeemable(self):
+        link = 'http://held/stale'
+        self._seed_held(link)
+        self._put_hold_token('tok-stale', link)
+
+        outcome = repo.approve_hold_and_consume_token(
+            'tok-stale', 'http://held/different',
+        )
+
+        self.assertEqual(outcome, 'stale')
+        self.assertEqual(repo.get_pending(link)['hold_reason'], 'poster')
+        self.assertEqual(
+            repo.get_review_token('tok-stale'),
+            (repo.REVIEW_TOKEN_KIND_HOLD, link),
+        )
+
+    def test_unavailable_target_consumes_the_terminal_token(self):
+        link = 'http://held/gone'
+        self._put_hold_token('tok-gone', link)
+
+        outcome = repo.approve_hold_and_consume_token('tok-gone', link)
+
+        self.assertEqual(outcome, 'unavailable')
+        self.assertIsNone(repo.get_review_token('tok-gone'))
+
+    def test_token_delete_failure_rolls_back_the_released_hold(self):
+        link = 'http://held/rollback'
+        token = 'tok-rollback'
+        self._seed_held(link)
+        self._put_hold_token(token, link)
+        with self._conn() as conn:
+            conn.execute(
+                "CREATE TRIGGER fail_hold_approval_token_delete "
+                "BEFORE DELETE ON bot_state "
+                "WHEN OLD.key='review_token:tok-rollback' "
+                "AND (SELECT hold_reason FROM pending_articles "
+                "WHERE link='http://held/rollback') IS NULL "
+                "BEGIN SELECT RAISE(IGNORE); END"
+            )
+            conn.commit()
+
+        with self.assertRaisesRegex(
+            sqlite3.DatabaseError,
+            'could not consume its review token',
+        ):
+            repo.approve_hold_and_consume_token(token, link)
+
+        self.assertEqual(repo.get_pending(link)['hold_reason'], 'poster')
+        self.assertEqual(
+            repo.get_review_token(token),
+            (repo.REVIEW_TOKEN_KIND_HOLD, link),
+        )
+
+
 class TestConnectBusyTimeout(_TmpDbCase):
     """Pin the busy-timeout contract on ``repo._connect()`` (5000 ms).
 

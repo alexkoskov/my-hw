@@ -1,0 +1,25 @@
+{
+  "status": "changes_requested",
+  "summary": {
+    "totalFindings": 2,
+    "critical": 0,
+    "major": 1,
+    "minor": 1
+  },
+  "findings": [
+    {
+      "id": "SEC-T3-1",
+      "severity": "major",
+      "title": "Hold approval can commit the gate release and then fail before token consumption or audit",
+      "evidence": "news_bot.py:916 commits clear_hold(link), then news_bot.py:917-924 performs new fallible reads before delete_review_token at line 944 and before the listener audit line at lines 1149-1157. The eligibility check calls list_pending(), which materializes and JSON-decodes the entire publishable queue for a single-link decision, so an unrelated corrupt/large row can fail or amplify the callback after its write committed. Fault injection against list_pending reproduced: resolve_hold_callback raised, while hold_reason was already NULL and the review token was still live. The new happy-path test at tests/test_integration.py:4544-4566 does not cover this partial outcome.",
+      "recommendation": "Make the hold transition, remaining-gate classification, and token consumption one bounded per-link operation with a single SQLite transaction, returning the terminal status only after commit. Avoid list_pending() for this check; use a targeted eligibility read. Add a fault-injection/concurrency test proving that a callback ends either fully unchanged or fully committed with the token consumed and an auditable terminal result, never with a released hold plus live token and no decision line."
+    },
+    {
+      "id": "SEC-T3-2",
+      "severity": "minor",
+      "title": "The one-line identifier sanitizer still permits structured-field spoofing",
+      "evidence": "news_bot.py:715-733 replaces controls with spaces but preserves whitespace and logger field delimiters inside the parsed path. `_sanitize_review_log_identifier('https://example.com/path status=FORGED action=approve')` returns that string unchanged, producing `action=cancel link=https://example.com/path status=FORGED action=approve status=OK`. A parser using the first ` status=` delimiter, as the new test itself does at tests/test_integration.py:4242, observes attacker-controlled status text. The final 200-character slice also occurs only after iterating and parsing the complete untrusted value.",
+      "recommendation": "Encode or quote the identifier as one structurally unambiguous log field (for example, percent-encode whitespace/delimiters or emit a JSON-escaped field) and apply a reasonable input-processing cap before normalization. Extend the test with embedded ` status=`, ` action=`, whitespace variants, and an oversized identifier, asserting that none can create a second field boundary."
+    }
+  ]
+}

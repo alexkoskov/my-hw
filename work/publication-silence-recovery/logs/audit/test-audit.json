@@ -1,0 +1,28 @@
+{
+  "status": "needs_improvement",
+  "summary": "needs_improvement: 0 critical, 1 major, 0 minor; litmus 32 checked, 31 passed, 1 failed. The offline focused suite passed with 406 tests and 117 subtests, 0 failures and 0 skips in 3.44s. Scheduler, real-SQLite callback, classifier, and tri-state workflow coverage is otherwise behavioral and adequate; the remaining major gap is that the workflow secret-confinement test does not detect access-token placement in a curl GET URL. Full report: work/publication-silence-recovery/logs/audit/test-audit.json",
+  "findings": [
+    {
+      "severity": "major",
+      "category": "missing_coverage",
+      "location": "tests/test_uptime_workflow.py:55",
+      "issue": "The named secret-confinement test verifies only which workflow step owns the GitHub secret expression and that evidence/output variables do not carry it. It never verifies curl transport semantics. The current fetch command combines `--get` with `--data-urlencode 'access_token@/dev/fd/3'`, so curl appends the decoded access token to the actual request URL query string while this test remains green. Removing the load-bearing `--get` branch or replacing it with a safe request-body transport therefore is not distinguished by the asserted behavior, so this contract fails the litmus test and provides false confidence for US-AC10's no-secret-leak guarantee.",
+      "recommendation": "Replace the workflow fetch with a POST-body request, then extend this same named-step static contract to assert that the fetch block does not contain `--get`, still contains `--data-urlencode 'access_token@/dev/fd/3'`, and selects POST explicitly or through curl's data-option semantics. Retain the existing file-descriptor/env confinement, bounded evidence, and no-output assertions. Parse only the `Fetch Telegraph evidence` step; no network call or additional mocks are needed. The test must fail if `--get` is reintroduced."
+    }
+  ],
+  "metrics": {
+    "filesReviewed": 6,
+    "litmusTest": {
+      "checked": 32,
+      "passed": 31,
+      "failed": 1
+    },
+    "coverageAssessment": "adequate",
+    "pyramidBalance": {
+      "unit": 10,
+      "integration": 22,
+      "e2e": 0,
+      "assessment": "healthy"
+    }
+  }
+}

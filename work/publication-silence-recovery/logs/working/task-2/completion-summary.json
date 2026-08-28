@@ -1,0 +1,81 @@
+{
+  "task": 2,
+  "status": "done",
+  "summary": "Добавлен stdlib-only tri-state классификатор Telegraph evidence с единственным MSK clock conversion, строгой календарной семантикой и fail-closed обработкой невалидных данных. CLI ограничивает binary stdin значением 1 MiB плюс sentinel byte, не раскрывает evidence и подтверждён non-vacuous unit/subprocess тестами и всеми профильными reviewers.",
+  "commit": null,
+  "reviews": [
+    {
+      "reviewer": "code-reviewer",
+      "round": 1,
+      "status": "approved",
+      "report-path": "work/publication-silence-recovery/logs/working/task-2/code-reviewer-1.json"
+    },
+    {
+      "reviewer": "security-auditor",
+      "round": 1,
+      "status": "approved",
+      "report-path": "work/publication-silence-recovery/logs/working/task-2/security-auditor-1.json"
+    },
+    {
+      "reviewer": "test-reviewer",
+      "round": 1,
+      "status": "needs_improvement",
+      "report-path": "work/publication-silence-recovery/logs/working/task-2/test-reviewer-1.json"
+    },
+    {
+      "reviewer": "code-reviewer",
+      "round": 2,
+      "status": "approved",
+      "report-path": "work/publication-silence-recovery/logs/working/task-2/code-reviewer-2.json"
+    },
+    {
+      "reviewer": "test-reviewer",
+      "round": 2,
+      "status": "passed",
+      "report-path": "work/publication-silence-recovery/logs/working/task-2/test-reviewer-2.json"
+    }
+  ],
+  "verification": [
+    {
+      "command": "venv/bin/python -m pytest tests/test_deploy_files_invariant.py -q (baseline before Task 2)",
+      "result": "5 passed"
+    },
+    {
+      "command": "venv/bin/python -m pytest tests/test_publication_watch.py -q (TDD RED)",
+      "result": "exit 2: ModuleNotFoundError for missing publication_watch"
+    },
+    {
+      "command": "venv/bin/python -m pytest tests/test_publication_watch.py -q (initial GREEN)",
+      "result": "39 passed"
+    },
+    {
+      "command": "venv/bin/python -m pytest tests/test_publication_watch.py -q (review-fix RED)",
+      "result": "44 passed, 1 failed: malformed tzinfo TypeError escaped"
+    },
+    {
+      "command": "venv/bin/python -m pytest tests/test_publication_watch.py -q",
+      "result": "45 passed"
+    },
+    {
+      "command": "venv/bin/python -c \"from datetime import datetime, timezone; from publication_watch import classify_telegraph_response; print(classify_telegraph_response('{\\\"ok\\\":true,\\\"result\\\":{\\\"pages\\\":[{\\\"path\\\":\\\"sample-08-25\\\"}]}}', datetime(2026, 8, 26, 17, 59, tzinfo=timezone.utc)))\"",
+      "result": "fresh"
+    },
+    {
+      "command": "venv/bin/python -m pytest tests/test_deploy_files_invariant.py -q",
+      "result": "5 passed"
+    },
+    {
+      "command": "venv/bin/pre-commit run --files publication_watch.py tests/test_publication_watch.py",
+      "result": "all applicable hooks passed"
+    },
+    {
+      "command": "venv/bin/python -m pytest -q",
+      "result": "2021 passed, 2 skipped, 530 subtests passed"
+    },
+    {
+      "command": "venv/bin/python -m compileall -q publication_watch.py tests/test_publication_watch.py",
+      "result": "exit 0"
+    }
+  ],
+  "proposedDeviation": null
+}

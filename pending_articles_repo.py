@@ -1853,3 +1853,84 @@ def delete_review_token(token: str) -> None:
         raise
     finally:
         conn.close()
+
+
+#: Outcomes returned by ``approve_hold_and_consume_token``. The repository
+#: reports queue state; ``news_bot`` owns the operator-facing Russian text.
+HOLD_APPROVAL_STALE = 'stale'
+HOLD_APPROVAL_UNAVAILABLE = 'unavailable'
+HOLD_APPROVAL_DEFERRED = 'deferred'
+HOLD_APPROVAL_READY = 'ready'
+
+
+def approve_hold_and_consume_token(token: str, link: str) -> str:
+    """Atomically approve one E036 hold and consume its review token.
+
+    Revalidates the exact hold-token mapping under ``BEGIN IMMEDIATE`` so
+    concurrent presses cannot both report a fresh approval. The target row is
+    read and updated in the same short transaction; a future ``publish_after``
+    is reported as ``deferred`` while an otherwise eligible row is ``ready``.
+
+    Returns one of the public ``HOLD_APPROVAL_*`` outcomes:
+
+    - ``stale`` — token missing, wrong kind, or mapped to another link; no write;
+    - ``unavailable`` — row missing or no longer held; token consumed;
+    - ``deferred`` — hold cleared, future timed gate remains, token consumed;
+    - ``ready`` — hold cleared with no future timed gate, token consumed.
+
+    Hold release and token consumption are all-or-nothing. In particular, a
+    failed token delete rolls the preceding hold update back.
+    """
+    conn = _connect()
+    try:
+        conn.execute("BEGIN IMMEDIATE")
+        token_key = _review_token_key(token)
+        token_row = conn.execute(
+            "SELECT value FROM bot_state WHERE key=?",
+            (token_key,),
+        ).fetchone()
+        expected_value = (
+            f"{REVIEW_TOKEN_KIND_HOLD}{_REVIEW_TOKEN_SEP}{link}"
+        )
+        if token_row is None or token_row[0] != expected_value:
+            conn.rollback()
+            return HOLD_APPROVAL_STALE
+
+        row = conn.execute(
+            "SELECT hold_reason, "
+            "CASE WHEN publish_after IS NOT NULL "
+            "AND publish_after > CURRENT_TIMESTAMP THEN 1 ELSE 0 END "
+            "FROM pending_articles WHERE link=?",
+            (link,),
+        ).fetchone()
+        if row is None or row[0] is None:
+            outcome = HOLD_APPROVAL_UNAVAILABLE
+        else:
+            released = conn.execute(
+                "UPDATE pending_articles SET hold_reason=NULL "
+                "WHERE link=? AND hold_reason IS NOT NULL",
+                (link,),
+            )
+            if released.rowcount != 1:
+                raise sqlite3.OperationalError(
+                    "hold approval lost its target row",
+                )
+            outcome = (
+                HOLD_APPROVAL_DEFERRED if bool(row[1])
+                else HOLD_APPROVAL_READY
+            )
+
+        consumed = conn.execute(
+            "DELETE FROM bot_state WHERE key=?", (token_key,),
+        )
+        if consumed.rowcount != 1:
+            raise sqlite3.OperationalError(
+                "hold approval could not consume its review token",
+            )
+        conn.commit()
+        return outcome
+    except Exception:
+        conn.rollback()
+        raise
+    finally:
+        conn.close()
