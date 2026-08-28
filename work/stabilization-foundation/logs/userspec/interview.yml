@@ -1,0 +1,489 @@
+# Interview Plan for Feature Planning
+#
+# Tracks progress of adaptive discovery interview for a new feature/bug/refactoring.
+# Updated after EACH user response with scoring, values, and remaining gaps.
+#
+# Scoring: 0-100% (how well we understand this aspect)
+# Status: pending → partial → complete
+# Required: true = must reach threshold, false = cover if relevant
+
+# ============================================================================
+# Interview Metadata (Session Recovery)
+# ============================================================================
+interview_metadata:
+  started: "2026-08-25 18:05:34"  # Timestamp (YYYY-MM-DD HH:MM:SS)
+  last_updated: "2026-08-25 20:20:00"
+  status: "completed"  # not_started | in_progress | completed
+  can_resume: true
+  current_question_num: 8
+  feature_size: "L"  # S | M | L
+
+# ============================================================================
+# Conversation History (for session recovery)
+# ============================================================================
+# Preserves complete Q&A. Update after EVERY user response.
+#
+conversation_history:
+  - question_num: 1
+    timestamp: "2026-08-25 18:15:01"
+    topic: "scope"
+    agent_question: >-
+      Включаем в первый пакет честный CI, fail-closed startup, один суточный
+      job и delivery-aware admin-alerts, а большой рефакторинг, off-box backup
+      и crash-gap публикации выносим отдельно?
+    user_answer: "да по всем"
+    summary: "Граница первого stabilization-пакета подтверждена."
+  - question_num: 2
+    timestamp: "2026-08-25 18:15:01"
+    topic: "startup_policy"
+    agent_question: >-
+      Production должен завершаться при неверной или пустой БД и неготовом VPN,
+      оставляя явный ALLOW_EMPTY_PROD_DB=1 только для первого запуска или
+      аварийного восстановления?
+    user_answer: "да по всем"
+    summary: "Подтверждён fail-closed startup с явным override для пустой БД."
+  - question_num: 3
+    timestamp: "2026-08-25 18:15:01"
+    topic: "alert_delivery_semantics"
+    agent_question: >-
+      Если actionable alert E014 не доставлен, статья остаётся отложенной, alert
+      повторяется до доставки и без него автопубликации через 24 часа нет?
+    user_answer: "да по всем"
+    summary: "Недоставленный E014 не разрешает публикацию; informational alerts не расходуют rate limit."
+  - question_num: 4
+    timestamp: "2026-08-25 18:15:01"
+    topic: "verification_and_deploy"
+    agent_question: >-
+      Проверяем unit/integration/full clean-env suite и Docker-инварианты, без
+      live E2E и без production deploy в рамках задачи?
+    user_answer: "да по всем"
+    summary: "Стратегия тестирования и отсутствие production deploy подтверждены."
+  - question_num: 5
+    timestamp: "2026-08-25 19:21:20"
+    topic: "scope_split"
+    agent_question: >-
+      Разделяем пакет: stabilization-foundation оставляет CI, startup/DB/VPN и
+      scheduler, а stateful alerts уходят в отдельный reliable-admin-alert-delivery?
+    user_answer: "да по всем"
+    summary: "Alert-delivery вынесен в отдельный follow-up; текущая задача снова M-sized."
+  - question_num: 6
+    timestamp: "2026-08-25 19:21:20"
+    topic: "required_prod_config"
+    agent_question: >-
+      Production требует Telegram bot/channel/numeric admin, Telegraph token и
+      явные LLM provider/key/model; Compose закрепляет prod, DB path и Moscow TZ,
+      а review buttons остаются optional?
+    user_answer: "да по всем"
+    summary: "Точный fail-closed production-config contract подтверждён."
+  - question_num: 7
+    timestamp: "2026-08-25 19:21:20"
+    topic: "db_bootstrap_authorization"
+    agent_question: >-
+      ALLOW_EMPTY_PROD_DB=1 действует только вместе с одноразовой авторизацией и
+      не разрешает wrong mount/path или corrupt SQLite?
+    user_answer: "да по всем"
+    summary: "Подтверждена one-use, узко ограниченная bootstrap/recovery authorization."
+  - question_num: 8
+    timestamp: "2026-08-25 19:21:20"
+    topic: "scheduler_lifecycle"
+    agent_question: >-
+      Blocking immediate job идёт до cron registration; быстрый pre-10 job не
+      отменяет canonical 10:00 tick, crossing-10 не создаёт overdue repeat, а
+      mid-day restart сохраняет recovery remaining slots?
+    user_answer: "да по всем"
+    summary: "Точная scheduler-семантика подтверждена без persistent daily marker."
+# Format:
+# - question_num: 1
+#   timestamp: "2025-11-12 15:20:33"
+#   topic: "user_problem"
+#   agent_question: |
+#     [Full question text]
+#   user_answer: |
+#     [Full answer text]
+#   summary: "Brief summary"
+
+# ============================================================================
+# Phase 1: High-Level Feature Understanding
+# ============================================================================
+# Interview Cycle 1 scope
+phase1_feature_overview:
+
+  feature_name:
+    score: 100
+    status: "complete"
+    value: "stabilization-foundation"
+    gaps: ""
+    required: true
+
+  feature_description:
+    score: 95
+    status: "complete"
+    value: >-
+      Отдельный runtime-safety пакет: unconditional hermetic CI, fail-closed
+      production startup при неверном config/DB/VPN route и устранение overdue
+      повторного tick после blocking immediate job. Контентные правила, stateful
+      alert delivery и большой рефакторинг news_bot.py не входят.
+    gaps: ""
+    required: true
+
+  work_type:
+    score: 90
+    status: "complete"
+    value: "bug"
+    gaps: ""
+    required: true
+
+  user_problem:
+    score: 90
+    status: "complete"
+    value: >-
+      Маленький production-бот накопил сложность и несколько опасных режимов:
+      CI может быть ложно-зелёным, процесс может продолжить работу с пустой БД
+      или до установки VPN-маршрута, рестарт способен породить второй tick, а
+      не доставленный alert местами считается доставленным. Это создаёт риск
+      дублей, потери состояния и незаметных сбоев.
+    gaps: ""
+    required: true
+
+  target_users:
+    score: 85
+    status: "complete"
+    value: >-
+      Оператор production-бота; подписчики канала получают косвенную пользу от
+      отсутствия дублей, пропусков и аварийных публикаций.
+    gaps: ""
+    required: false
+
+  success_criteria:
+    score: 95
+    status: "complete"
+    value: >-
+      Любое tracked-изменение запускает полный offline suite независимо от .env;
+      production не запускает Python job/API calls и не изменяет DB при неверном
+      config, DB или default route; blocking immediate job не порождает overdue
+      repeat, canonical 10:00 quick-start tick и restart recovery сохраняются.
+    gaps: ""
+    required: true
+
+  constraints:
+    score: 95
+    status: "complete"
+    value: >-
+      Не менять читательский формат, дедуп-правила и approved-задачу
+      dedup-broad-precision; не выполнять production deploy; не смешивать пакет
+      с модульным переписыванием news_bot.py, off-box backup, publication
+      crash-gap или reliable-admin-alert-delivery. Empty-DB authorization строго
+      one-use и никогда не обходит wrong path/mount/corrupt SQLite.
+    gaps: ""
+    required: true
+
+  testing_strategy:
+    score: 95
+    status: "complete"
+    value: >-
+      Unit-тесты обязательны. Интеграционные тесты нужны для чистого env,
+      startup guards и lifecycle scheduler.
+      Live E2E с production Telegram/VPN не планируется: проверяем локальными
+      doubles, Docker/Compose config и существующим полным suite.
+    gaps: ""
+    required: true
+
+# ============================================================================
+# Phase 2: User Experience & Scenarios
+# ============================================================================
+# Interview Cycle 2 scope (together with Phase 3)
+phase2_user_experience:
+
+  user_stories:
+    score: 95
+    status: "complete"
+    value: >-
+      1) Любое tracked-изменение запускает полный offline suite без .env.
+      2) Production-контейнер ждёт VPN route, затем до любых API/SQLite writes
+      проверяет config и существующую БД; опасный startup завершается.
+      3) Immediate blocking tick и cron не дают просроченный повтор, а новый
+      process после mid-day crash возобновляет оставшиеся slots.
+    gaps: ""
+    required: true
+
+  acceptance_criteria:
+    score: 90
+    status: "complete"
+    value: >-
+      Набор наблюдаемых критериев известен по четырём потокам: unconditional
+      hermetic CI, pre-side-effect startup barrier и scheduler lifecycle без
+      overdue дубля с сохранением canonical tick/restart recovery.
+    gaps: ""
+    required: true
+
+  edge_cases:
+    score: 95
+    status: "complete"
+    value: >-
+      Missing/wrong/corrupt/empty DB; typo или забытый bootstrap override; wrong
+      default route и timeout; быстрый и долгий startup до 10:00; crash/restart
+      в publish window; developer .env с настоящими ключами; selected LLM provider
+      без соответствующего key/model; forgotten bootstrap flag без one-use grant.
+    gaps: ""
+    required: true
+
+  error_scenarios:
+    score: 95
+    status: "complete"
+    value: >-
+      Startup config/DB/route error — redacted fatal log и non-zero exit до job
+      и внешнего трафика. CI network attempt — test failure. Scheduler job
+      exception не проглатывается: Docker
+      перезапускает process и recovery path остаётся доступен.
+    gaps: ""
+    required: true
+
+  verification_strategy:
+    score: 95
+    status: "complete"
+    value: >-
+      Агент запускает isolated unit/integration tests, полный suite с disabled
+      dotenv и blocked network, lifecycle tests с real schedule/freezegun,
+      synthetic route table, SQLite fault table и статические Compose-инварианты.
+      Пользователь выполняет только будущий manual deploy вне окна и проверяет
+      startup/logs; live Telegram/VPN E2E агент не выполняет.
+    gaps: ""
+    required: true
+
+  ui_ux_requirements:
+    score: 85
+    status: "complete"
+    value: >-
+      Reader-visible channel и operator-alert format не меняются. Новое
+      наблюдаемое startup-поведение — только точные redacted fatal logs и
+      non-zero container exit до запуска бота.
+    gaps: ""
+    required: false
+
+  risks:
+    score: 95
+    status: "complete"
+    value: >-
+      Fail-closed может остановить корректный first deploy; постоянный override
+      превращается в обход защиты; route barrier создаёт restart loop; scheduler
+      suppression может пропустить свежие feeds; production-only checks могут
+      сломать local/test. Митигации: one-use authorization, explicit local/prod
+      gating, bounded route wait, canonical 10:00 tick и restart recovery без
+      persistent daily marker, synthetic integration matrix.
+    gaps: ""
+    required: true
+
+  technical_decisions:
+    score: 95
+    status: "complete"
+    value: >-
+      Production-инварианты закрепляются Compose, а не ручными комментариями;
+      route barrier работает до Python; DB preflight read-only и предшествует
+      init_db; tests не доверяют developer .env и запрещают live network;
+      persistent once-per-day scheduler marker не используется, чтобы restart
+      мог восстановить remaining slots; alert delivery вынесен отдельно.
+    gaps: ""
+    required: false
+
+  deploy_approach:
+    score: 95
+    status: "complete"
+    value: >-
+      Как принято в проекте: dev→main только PR с зелёным CI, production deploy
+      вручную Docker Compose на Moscow VPS вне 10:00–20:00 МСК. Текущая задача
+      не даёт агенту полномочий выполнять deploy.
+    gaps: ""
+    required: false
+
+  manual_user_actions:
+    score: 90
+    status: "complete"
+    value: >-
+      На обычном upgrade новых секретов нет. Первый пустой deploy/recovery требует
+      явной одноразовой авторизации вместе с ALLOW_EMPTY_PROD_DB=1; после merge
+      пользователь вручную rebuild/restart вне окна и проверяет route/startup/DB
+      logs. Обычный upgrade использует существующую populated DB без override.
+    gaps: ""
+    required: false
+
+# ============================================================================
+# Phase 3: Integration & Technical Context
+# ============================================================================
+# Interview Cycle 2 scope (together with Phase 2)
+phase3_integration:
+
+  integration_points:
+    score: 95
+    status: "complete"
+    value: >-
+      GitHub Actions ci.yml; tests/conftest.py и test isolation;
+      Dockerfile/docker-compose route-setup; news_bot main/job/prod DB guard;
+      telegraph/LLM startup validation и existing deployment/runbook docs.
+    gaps: ""
+    required: true
+
+  dependencies:
+    score: 90
+    status: "complete"
+    value: >-
+      Existing SQLite and init_schema pattern, Docker external vpnnet and
+      route-setup sidecar, schedule 1.2.1+pytz, pytest/freezegun. Новая
+      production-инфраструктура не нужна.
+    gaps: ""
+    required: false
+
+  technical_constraints:
+    score: 90
+    status: "complete"
+    value: >-
+      Один production Docker instance, staging отсутствует; job блокирует process
+      до вечернего slot; restart нужен для recovery; secrets не попадают в logs;
+      VPN не имеет direct fallback; runtime prompt лежит в .claude и поэтому
+      docs-like path нельзя исключать из CI.
+    gaps: ""
+    required: false
+
+  data_requirements:
+    score: 90
+    status: "complete"
+    value: >-
+      Existing `/data/news.db` с непустым processed_news ledger и одноразовая
+      bootstrap/recovery authorization, независимая от самой разрешаемой пустой
+      DB. Existing rows и publication state не преобразуются.
+    gaps: ""
+    required: false
+
+  migration_needs:
+    score: 95
+    status: "complete"
+    value: >-
+      Миграция существующих SQLite rows не нужна. Successful preflight разрешает
+      обычному idempotent init_schema применить будущие штатные migrations; при
+      preflight failure файл не создаётся и не изменяется. One-use authorization
+      не должна храниться только внутри разрешаемой пустой DB.
+    gaps: ""
+    required: false
+
+# ============================================================================
+# Phase 4: Completion
+# ============================================================================
+phase4_completion:
+  userspec_file: "work/stabilization-foundation/user-spec.md"
+  status: "approved"  # pending | created | approved
+
+# ============================================================================
+# Decision Rules
+# ============================================================================
+decision_rules:
+
+  required_threshold: 85
+  optional_threshold: 50
+
+  # Stop criteria (BOTH must be true to exit a cycle)
+  stop_criteria:
+    - "All required items in current cycle scope score >= 85%"
+    - "Structural: every required item has non-empty value, no TBD, gaps empty or conscious limitations"
+
+  priority_order:
+    - "Required items with score < 85% (lowest score first)"
+    - "Optional items mentioned by user in context"
+    - "Other optional items if user seems knowledgeable"
+
+notes: |
+  CODE RESEARCH 2026-08-25:
+  - CI check-skip смотрит только HEAD~1..HEAD и считает все *.txt docs, поэтому
+    requirements changes и runtime .claude/.../ux-guidelines.md могут не запустить tests.
+  - import-time load_dotenv маскирует порядок-зависимый Telegraph test; job tests
+    при локальном ключе способны сделать два live OpenRouter balance GET.
+  - route-setup меняет default route после запуска news-bot; main успевает открыть
+    SQLite и выполнить Telegraph/LLM/Telegram calls до DB warning-only guard.
+  - DB_FILE и INSTANCE_LABEL сейчас зависят от hand-managed .env; compose их не pins.
+  - cron регистрируется до blocking immediate job, поэтому overdue 10:00 entry
+    запускает второй tick после возврата. Persistent daily marker запрещён: он
+    ломает mid-window restart recovery remaining slots.
+  - E014 mint/send/rate-limit происходят до insert_pending. send=False всё равно
+    расходует 7-day marker и через 24h разрешает публикацию; crash/callback race
+    создаёт dead buttons. Надёжная семантика требует durable row+token+retry.
+  - E016/E038/outage delivery markers тоже продвигаются после False. E017 уже
+    реализует правильный mark-only-on-True pattern. E036 принадлежит approved
+    operator-blind-spots и в этот scope входить не должен.
+  - Latest user decision по failed E014 supersedes старое «silence publishes in
+    24h» из approved dedup-broad-precision; precision logic менять нельзя, а
+    sequencing/supersession нужно записать явно.
+  - РЕШЕНИЕ 2026-08-25: весь stateful alert workflow вынесен в отдельный
+    reliable-admin-alert-delivery. Текущая stabilization-foundation = CI +
+    startup/config/DB/VPN + scheduler, size M. Alert findings сохраняются только
+    как handoff и сознательное out-of-scope.
+  - COMPLETENESS CHECK 2026-08-25: independent checker returned status=complete,
+    confidence=high, gaps=[]; all required interview fields are structurally
+    complete and the alert-delivery boundary is explicit.
+  - VALIDATION ROUND 1 2026-08-25: последующее adequacy-исследование обнаружило
+    скрытую сложность transport-independent network isolation и fail-closed
+    volume/bootstrap protocol. Scope не изменён, но текущая оценка supersedes M:
+    feature = L с тремя отдельно зелёными и откатываемыми increments. Draft
+    уточнён через exact volume identity, DB-state matrix, UUID permit lifecycle,
+    config matrix и scheduler equality boundary; пользователь подтвердит это при
+    approval user-spec.
+  - VALIDATION ROUND 2 2026-08-25: validators подтвердили исправление round-1
+    blockers, затем нашли reachability contradiction для post-bootstrap DB с
+    empty ledger + другим state и offline-unverifiable live-endpoint oracle.
+    Выбрана строгая семантика: fresh permit годится только для четырёх eligible
+    DB shapes, иначе manual data-aware restore/cleanup. Добавлены dedicated
+    APP_MODE, test-owned egress sentinel, exact non-atime file invariants и
+    DB/BOOTSTRAP fatal-event acceptance coverage.
+  - VALIDATION ROUND 3 2026-08-25: оба validator verdict = approved, critical=0.
+    Перед финальным коммитом закрыты оставшиеся major findings: sidecar-bearing
+    DB non-overridable даже с permit, malformed permit = invalid_permit и exact
+    earliest-gate ownership ROUTE→VOLUME→CONFIG→DB→BOOTSTRAP. Формальный size
+    warning (>10 AC, >5 integrations) принят и соответствует L/increments.
+
+  question_strategy:
+    - "3-4 questions per batch about different gaps"
+    - "Run as many batches as needed — batch size is NOT cycle limit"
+    - "Propose solutions based on PK, not just ask questions"
+    - "Challenge with substance: counterexamples, code references, unexplored scenarios"
+    - "After each response: update scores, values, gaps, conversation_history, save"
+
+# ============================================================================
+# Interview Progress
+# ============================================================================
+progress:
+  current_phase: "phase4_completion"
+  questions_asked: 8
+  last_question: "Точная scheduler-семантика подтверждена без persistent daily marker."
+  total_required_score: 94
+  total_optional_score: 90
+  completion_estimate: "95%"
+  user_detail_level: "brief"
+
+# ============================================================================
+# USAGE INSTRUCTIONS
+# ============================================================================
+#
+# 1. INIT: Created by init-feature-folder.sh at work/{feature}/logs/userspec/interview.yml
+#    Set metadata.started, metadata.status: in_progress
+#
+# 2. INITIAL SCORING: After user's free-form description, score ALL items
+#    Detailed 80-95%, brief 50-70%, vague 20-40%, not mentioned 0%
+#
+# 3. INTERVIEW LOOP (save after EVERY response):
+#    a) Find required items with score < 85% in current cycle scope
+#    b) Ask 3-4 questions about different gaps
+#    c) Propose solutions based on PK
+#    d) User answers
+#    e) Update: conversation_history, scores, values, gaps, metadata
+#    f) Save immediately
+#    g) Check stop criteria (score >= 85% AND structural: value filled, no TBD, gaps resolved)
+#    h) Not done → repeat. Done → next cycle.
+#
+# 4. CYCLES:
+#    Cycle 1: phase1_feature_overview items
+#    Cycle 2: phase2_user_experience + phase3_integration items
+#    Cycle 3: ALL items still below threshold (cleanup pass)
+#
+# 5. RESUME: If metadata.status is "in_progress"
+#    Load, show conversation summary, resume from current state
+#
+# 6. COMPLETION: After user approves user-spec.md
+#    Set phase4_completion.status: approved
+#    Set metadata.status: completed

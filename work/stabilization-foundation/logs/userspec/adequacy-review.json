@@ -1,0 +1,14 @@
+{
+  "status": "approved",
+  "findings": [
+    {
+      "category": "underengineering",
+      "severity": "major",
+      "issue": "The non-overridable gate boundary is not fully explicit for bootstrap attempts. The ordinary DB preflight rejects any `-journal`/`-wal`/`-shm` sidecar, but the four bootstrap-eligible shapes, the explicit never-eligible list, the bootstrap acceptance criterion and edge cases do not say that `sidecar_present` remains fatal even with flag plus permit. The acceptance taxonomy also asks every bootstrap-matrix reject to emit `BOOTSTRAP|reason`, although wrong mount, invalid config and corruption are owned by the earlier `VOLUME`, `CONFIG` and `DB` gates; similarly, the DB acceptance criterion asks nonregular/symlink rejects to emit `DB|reason` even though the volume gate and reason table own those cases.",
+      "why_matters": "A sidecar can contain uncheckpointed state, so classifying only the main file as an empty eligible SQLite can discard or overwrite real data. Separately, an implementation cannot both emit exactly one earliest-gate event and relabel the same failure as `BOOTSTRAP`; tests could therefore force the wrong gate ordering even though the intended fail-closed architecture is otherwise clear. This is a material but localized clarification, not a fundamental feasibility blocker.",
+      "fix": "State the ordered, non-overridable precedence explicitly: `ROUTE` -> `VOLUME` -> `CONFIG` -> read-only `DB` classification -> `BOOTSTRAP`. Name any sidecar-bearing DB as bootstrap-ineligible before permit claim and emit `DB|sidecar_present`. Reserve `BOOTSTRAP|...` for flag/permit/eligibility/claim/control failures reached only after earlier gates pass; keep symlink/nonregular at `VOLUME`, invalid config at `CONFIG`, and corrupt/sidecar DB at `DB`. Align both acceptance criteria and the bootstrap edge-case list with that taxonomy."
+    }
+  ],
+  "worst_category": null,
+  "summary": "The round-3 draft is buildable with the current Python, SQLite, Docker Compose and GitHub Actions stack: strict data-aware recovery, dedicated mode selection, offline egress verification, named no-write attributes, dormant provider variables and L-sized increments are now coherent. No critical finding remains; only the bootstrap sidecar and earliest-gate taxonomy need a localized clarification."
+}

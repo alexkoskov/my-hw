@@ -1425,13 +1425,10 @@ class TestHoldCapFailurePaths(_DistribLoopBase):
     @patch('news_bot.time.sleep')
     @patch('news_bot._fallback_publish')
     @patch('news_bot.fetch_full_article')
-    def test_deferred_backlog_still_buys_the_day_its_slots(
+    def test_deferred_backlog_retains_opportunities_without_plan_drift(
         self, mock_fetch_article, mock_publish, _mock_sleep, _mock_admin,
     ):
-        """``slots`` is computed ONCE per tick from the publishable queue. With
-        every row deferred that number is 0 — so without counting the deferred
-        backlog the tick would allocate no slots and skip the whole day, even
-        after a defer window elapses hours later."""
+        """Deferred rows buy runtime wake-ups, never announced publish slots."""
         mock_fetch_article.side_effect = lambda e: self._article_payload()
         mock_publish.side_effect = ClaudeOutageError('boom')
 
@@ -1448,12 +1445,17 @@ class TestHoldCapFailurePaths(_DistribLoopBase):
                     pending_articles_repo.defer_publish(link, until)
                 self.assertEqual(pending_articles_repo.count_pending(), 0)
 
-                with patch('news_bot.compute_fixed_slots') as mock_slots:
-                    mock_slots.return_value = ([], 0)
+                mock_publish.reset_mock()
+                with patch('news_bot.compute_fixed_slots',
+                           return_value=([], 0)) as mock_slots, \
+                        patch('news_bot.remaining_fixed_slots',
+                              wraps=news_bot.remaining_fixed_slots) \
+                            as mock_remaining:
                     news_bot.job()
 
-        # The tick must have sized its slots on queue + deferred, not on 0.
-        self.assertEqual(mock_slots.call_args.args[0], 2)
+        self.assertEqual(mock_slots.call_args.args[0], 0)
+        mock_remaining.assert_called_once()
+        mock_publish.assert_not_called()
 
 
 class TestHoldCapPingIsRateLimited(_DistribLoopBase):
@@ -1488,3 +1490,548 @@ class TestHoldCapPingIsRateLimited(_DistribLoopBase):
         for link in ('http://x/s1', 'http://x/s2'):
             self.assertIsNotNone(
                 pending_articles_repo.get_pending(link)['publish_after'], link)
+
+
+# ---------------------------------------------------------------------------
+# Review-release scheduler integration (publication-silence-recovery Task 3)
+# ---------------------------------------------------------------------------
+
+
+class _ReviewReleaseSchedulerBase(_DistribLoopBase):
+    """Real-DB helpers for callback/expiry changes between fixed slots."""
+
+    ADMIN_ID = 424242
+
+    def setUp(self):
+        super().setUp()
+        self._numeric_admin_patcher = patch(
+            'news_bot.TELEGRAM_ADMIN_ID', str(self.ADMIN_ID),
+        )
+        self._numeric_admin_patcher.start()
+
+    def tearDown(self):
+        self._numeric_admin_patcher.stop()
+        super().tearDown()
+
+    def _set_now(self, value):
+        news_bot.datetime.now.return_value = value
+
+    def _seed(self, link, *, hold_reason=None, publish_after=None):
+        self.assertTrue(pending_articles_repo.insert_pending({
+            'link': link,
+            'source_name': 'autoevolution',
+            'feed_url': None,
+            'title': f'Title for {link}',
+            'subtitle': '',
+            'paragraphs': ['First paragraph.'],
+            'images': [],
+            'blocks': None,
+            'pub_date': '2026-04-27',
+            'hold_reason': hold_reason,
+            'publish_after': publish_after,
+        }))
+
+    def _stage_token(self, link, kind, token):
+        pending_articles_repo.put_review_token(
+            token, link, kind=kind,
+        )
+        return token
+
+    def _set_publish_after(self, link, value):
+        conn = sqlite3.connect(self.db_path)
+        try:
+            conn.execute(
+                "UPDATE pending_articles SET publish_after=? WHERE link=?",
+                (value, link),
+            )
+            conn.commit()
+        finally:
+            conn.close()
+
+    def _reset_state(self):
+        conn = sqlite3.connect(self.db_path)
+        try:
+            for table in (
+                'bot_state', 'failed_articles', 'published_articles',
+                'processed_news', 'pending_articles',
+            ):
+                conn.execute(f"DELETE FROM {table}")
+            conn.commit()
+        finally:
+            conn.close()
+
+    def _publisher(self, published_links, events=None):
+        def _publish(row, via_review=False):
+            link = row['link']
+            pending_articles_repo.update_staged(
+                link, f"RU {row['title']}", '', ['RU paragraph.'], None,
+            )
+            slug = f"task-3-{len(published_links) + 1}"
+            pending_articles_repo.move_to_published(
+                link,
+                f"https://telegra.ph/{slug}",
+                f"/{slug}",
+                via_review,
+            )
+            published_links.append(link)
+            if events is not None:
+                events.append(('publish', link))
+
+        return _publish
+
+    def _change_after_first_empty_read(self, change, events, label):
+        real_list_pending = pending_articles_repo.list_pending
+        read_count = 0
+
+        def _read():
+            nonlocal read_count
+            rows = real_list_pending()
+            read_count += 1
+            events.append(('read', tuple(row['link'] for row in rows)))
+            if read_count == 1:
+                self.assertEqual(rows, [])
+                change()
+                events.append((label,))
+            return rows
+
+        return _read
+
+    def _run_job(self, *, publish_effect=None, sleep_effect=None):
+        with _patch_sources_empty(), \
+                patch('news_bot.pending_repo.get_max_published_at',
+                      return_value=None), \
+                patch('news_bot._maybe_alert_openrouter_balance'), \
+                patch('news_bot.send_admin_notification') as mock_admin, \
+                patch('news_bot.time.sleep',
+                      side_effect=sleep_effect) as mock_sleep, \
+                patch('news_bot._fallback_publish',
+                      side_effect=publish_effect) as mock_publish:
+            news_bot.job()
+        return mock_admin, mock_sleep, mock_publish
+
+    @staticmethod
+    def _messages(mock_admin):
+        return [str(call.args[0]) for call in mock_admin.call_args_list
+                if call.args]
+
+
+class TestReviewReleaseScheduler(_ReviewReleaseSchedulerBase):
+
+    def test_e014_keep_after_empty_morning_read_publishes_once_at_next_slot(self):
+        link = 'https://example.com/e014-release'
+        token = self._stage_token(
+            link,
+            pending_articles_repo.REVIEW_TOKEN_KIND_DEDUP,
+            'tok-e014-release',
+        )
+        self._seed(link, publish_after='2099-01-01 00:00:00')
+        published = []
+        events = []
+
+        def release_after_empty_read():
+            self.assertEqual(published, [])
+            status, _ = news_bot.resolve_dedup_callback(
+                'keep', token, self.ADMIN_ID,
+            )
+            self.assertEqual(
+                status, '👍 Оставлено — выйдет в ближайший слот',
+            )
+            self.assertEqual(published, [], 'callback must remain state-only')
+
+        with patch(
+            'news_bot.pending_repo.list_pending',
+            side_effect=self._change_after_first_empty_read(
+                release_after_empty_read, events, 'released',
+            ),
+        ):
+            self._run_job(
+                publish_effect=self._publisher(published, events),
+                sleep_effect=lambda seconds: events.append(('sleep', seconds)),
+            )
+
+        self.assertEqual(published, [link])
+        self.assertIsNotNone(pending_articles_repo.get_published(link))
+        self.assertEqual(events, [
+            ('read', ()),
+            ('released',),
+            ('sleep', 18_000.0),
+            ('read', (link,)),
+            ('publish', link),
+            ('sleep', 34_200.0),
+            ('read', ()),
+        ])
+
+    def test_e036_approve_after_empty_morning_read_publishes_once_at_next_slot(self):
+        link = 'https://example.com/e036-release'
+        self._seed(link, hold_reason='poster')
+        token = self._stage_token(
+            link,
+            pending_articles_repo.REVIEW_TOKEN_KIND_HOLD,
+            'tok-e036-release',
+        )
+        published = []
+        events = []
+
+        def release_after_empty_read():
+            self.assertEqual(published, [])
+            status, _ = news_bot.resolve_hold_callback(
+                'approve', token, self.ADMIN_ID,
+            )
+            self.assertEqual(
+                status, '✅ Одобрено — выйдет в ближайший слот',
+            )
+            self.assertEqual(published, [], 'callback must remain state-only')
+
+        with patch(
+            'news_bot.pending_repo.list_pending',
+            side_effect=self._change_after_first_empty_read(
+                release_after_empty_read, events, 'released',
+            ),
+        ):
+            self._run_job(
+                publish_effect=self._publisher(published, events),
+                sleep_effect=lambda seconds: events.append(('sleep', seconds)),
+            )
+
+        self.assertEqual(published, [link])
+        self.assertIsNotNone(pending_articles_repo.get_published(link))
+        self.assertEqual(events, [
+            ('read', ()),
+            ('released',),
+            ('sleep', 18_000.0),
+            ('read', (link,)),
+            ('publish', link),
+            ('sleep', 34_200.0),
+            ('read', ()),
+        ])
+
+    def test_cancel_reject_and_silence_never_bypass_their_gate(self):
+        cases = (
+            ('dedup-cancel', 'dedup', 'cancel'),
+            ('hold-reject', 'hold', 'reject'),
+            ('dedup-silence', 'dedup', None),
+            ('hold-silence', 'hold', None),
+        )
+        for name, gate, action in cases:
+            with self.subTest(name=name):
+                self._reset_state()
+                link = f'https://example.com/{name}'
+                if gate == 'dedup':
+                    self._seed(link, publish_after='2099-01-01 00:00:00')
+                    kind = pending_articles_repo.REVIEW_TOKEN_KIND_DEDUP
+                else:
+                    self._seed(link, hold_reason='poster')
+                    kind = pending_articles_repo.REVIEW_TOKEN_KIND_HOLD
+                token = self._stage_token(link, kind, f'tok-{name}')
+                published = []
+                acted = False
+
+                def decide(_seconds):
+                    nonlocal acted
+                    if acted or action is None:
+                        return
+                    acted = True
+                    if gate == 'dedup':
+                        news_bot.resolve_dedup_callback(
+                            action, token, self.ADMIN_ID,
+                        )
+                    else:
+                        news_bot.resolve_hold_callback(
+                            action, token, self.ADMIN_ID,
+                        )
+
+                self._run_job(
+                    publish_effect=self._publisher(published),
+                    sleep_effect=decide,
+                )
+
+                self.assertEqual(published, [])
+                self.assertIsNone(pending_articles_repo.get_published(link))
+                if action is None:
+                    self.assertIsNotNone(pending_articles_repo.get_pending(link))
+                else:
+                    self.assertTrue(acted)
+                    self.assertIsNone(pending_articles_repo.get_pending(link))
+
+    def test_defer_expiry_releases_at_first_fixed_opportunity_while_hold_silence_remains_parked(self):
+        deferred = 'https://example.com/defer-expires'
+        held = 'https://example.com/hold-stays'
+        self._seed(deferred, publish_after='2099-01-01 00:00:00')
+        self._seed(held, hold_reason='poster')
+        published = []
+        events = []
+
+        def expire_after_empty_read():
+            self._set_publish_after(deferred, '2000-01-01 00:00:00')
+
+        with patch(
+            'news_bot.pending_repo.list_pending',
+            side_effect=self._change_after_first_empty_read(
+                expire_after_empty_read, events, 'expired',
+            ),
+        ):
+            self._run_job(
+                publish_effect=self._publisher(published, events),
+                sleep_effect=lambda seconds: events.append(('sleep', seconds)),
+            )
+
+        self.assertEqual(published, [deferred])
+        self.assertIsNotNone(pending_articles_repo.get_pending(held))
+        self.assertEqual(
+            [row['link'] for row in pending_articles_repo.list_held()], [held],
+        )
+        self.assertEqual(events, [
+            ('read', ()),
+            ('expired',),
+            ('sleep', 18_000.0),
+            ('read', (deferred,)),
+            ('publish', deferred),
+            ('sleep', 34_200.0),
+            ('read', ()),
+        ])
+
+    def test_mixed_publishable_and_withheld_snapshot_keeps_plan_truthful_and_publishes_distinct_rows(self):
+        ordinary = 'https://example.com/ordinary'
+        deferred = 'https://example.com/released-later'
+        self._seed(ordinary)
+        self._seed(deferred, publish_after='2099-01-01 00:00:00')
+        token = self._stage_token(
+            deferred,
+            pending_articles_repo.REVIEW_TOKEN_KIND_DEDUP,
+            'tok-mixed-release',
+        )
+        published = []
+        events = []
+        released = False
+        real_list_pending = pending_articles_repo.list_pending
+
+        def record_read():
+            rows = real_list_pending()
+            events.append(('read', tuple(row['link'] for row in rows)))
+            return rows
+
+        def release_after_morning(seconds):
+            nonlocal released
+            events.append(('sleep', seconds))
+            if released:
+                return
+            released = True
+            self.assertEqual(published, [ordinary])
+            news_bot.resolve_dedup_callback('keep', token, self.ADMIN_ID)
+            events.append(('released',))
+
+        with patch('news_bot.pending_repo.list_pending',
+                   side_effect=record_read):
+            mock_admin, _, _ = self._run_job(
+                publish_effect=self._publisher(published, events),
+                sleep_effect=release_after_morning,
+            )
+
+        self.assertEqual(published, [ordinary, deferred])
+        self.assertEqual(len(set(published)), 2)
+        plans = [msg for msg in self._messages(mock_admin) if '[E008]' in msg]
+        self.assertEqual(len(plans), 1)
+        self.assertIn('Слоты сегодня: 10:00', plans[0])
+        self.assertNotIn('Слоты сегодня: 10:00, 15:00', plans[0])
+        self.assertIn('Отложено (уступили очередь): 1', plans[0])
+        self.assertEqual(events, [
+            ('read', (ordinary,)),
+            ('publish', ordinary),
+            ('sleep', 18_000.0),
+            ('released',),
+            ('read', (deferred,)),
+            ('publish', deferred),
+            ('sleep', 34_200.0),
+            ('read', ()),
+        ])
+
+    def test_after_cutoff_release_waits_for_next_day_morning_slot(self):
+        cases = (
+            ('dedup', pending_articles_repo.REVIEW_TOKEN_KIND_DEDUP, 'keep'),
+            ('hold', pending_articles_repo.REVIEW_TOKEN_KIND_HOLD, 'approve'),
+        )
+        for gate, kind, action in cases:
+            with self.subTest(gate=gate):
+                self._reset_state()
+                link = f'https://example.com/after-cutoff-{gate}'
+                if gate == 'dedup':
+                    self._seed(link, publish_after='2099-01-01 00:00:00')
+                else:
+                    self._seed(link, hold_reason='poster')
+                token = self._stage_token(link, kind, f'tok-cutoff-{gate}')
+                published = []
+
+                self._set_now(MSK.localize(dt.datetime(2026, 4, 27, 20, 30)))
+                self._run_job(publish_effect=self._publisher(published))
+                self.assertEqual(published, [])
+
+                if gate == 'dedup':
+                    news_bot.resolve_dedup_callback(
+                        action, token, self.ADMIN_ID,
+                    )
+                else:
+                    news_bot.resolve_hold_callback(
+                        action, token, self.ADMIN_ID,
+                    )
+                self.assertEqual(published, [], 'callback must not publish')
+
+                self._set_now(MSK.localize(dt.datetime(2026, 4, 28, 10, 0)))
+                self._run_job(publish_effect=self._publisher(published))
+                self.assertEqual(published, [link])
+
+    def test_ordinary_empty_and_restart_snapshots_keep_existing_bounded_schedule(self):
+        cases = (
+            ('ordinary', self.FROZEN_NOW, True, '10:00', 0, None, 1),
+            ('empty', self.FROZEN_NOW, False, None, 0, None, 0),
+            ('restart', MSK.localize(dt.datetime(2026, 4, 27, 16, 0)),
+             True, '19:30', 1, 12_600.0, 1),
+        )
+        for case in cases:
+            (name, now, seeded, expected_slot, expected_waits,
+             expected_wait_seconds, expected_reads) = case
+            with self.subTest(name=name):
+                self._reset_state()
+                self._set_now(now)
+                published = []
+                if seeded:
+                    self._seed(f'https://example.com/{name}')
+
+                with patch(
+                    'news_bot.pending_repo.get_schedule_backlog_counts',
+                    wraps=pending_articles_repo.get_schedule_backlog_counts,
+                ) as mock_snapshot, patch(
+                    'news_bot.pending_repo.count_deferred',
+                    side_effect=AssertionError('legacy planning read'),
+                ) as mock_deferred, patch(
+                    'news_bot.pending_repo.list_held',
+                    side_effect=AssertionError('legacy planning read'),
+                ) as mock_held, patch(
+                    'news_bot.pending_repo.list_pending',
+                    wraps=pending_articles_repo.list_pending,
+                ) as mock_list:
+                    mock_admin, mock_sleep, _ = self._run_job(
+                        publish_effect=self._publisher(published),
+                    )
+
+                self.assertEqual(len(published), int(seeded))
+                mock_snapshot.assert_called_once_with()
+                mock_deferred.assert_not_called()
+                mock_held.assert_not_called()
+                self.assertEqual(mock_list.call_count, expected_reads)
+                self.assertEqual(mock_sleep.call_count, expected_waits)
+                if expected_wait_seconds is not None:
+                    self.assertEqual(
+                        mock_sleep.call_args.args[0], expected_wait_seconds,
+                    )
+                messages = self._messages(mock_admin)
+                if expected_slot is None:
+                    self.assertFalse([m for m in messages if '[E008]' in m])
+                else:
+                    plan = next(m for m in messages if '[E008]' in m)
+                    self.assertIn(f'Слоты сегодня: {expected_slot}', plan)
+
+    def test_empty_release_checks_do_not_change_recap_and_completion_hooks(self):
+        link = 'https://example.com/silent-hold'
+        self._seed(link, hold_reason='poster')
+
+        with patch('news_bot._maybe_ping_dry_spell') as mock_dry_spell, \
+                patch('news_bot._record_heartbeat') as mock_heartbeat:
+            with self.assertLogs('news_bot', level='INFO') as logs:
+                mock_admin, mock_sleep, mock_publish = self._run_job()
+
+        self.assertEqual(mock_sleep.call_count, 2)
+        mock_publish.assert_not_called()
+        self.assertFalse(
+            [msg for msg in self._messages(mock_admin) if '[E034]' in msg],
+        )
+        done_lines = [line for line in logs.output if '[job] done.' in line]
+        self.assertEqual(len(done_lines), 1)
+        self.assertIn('carry-over 0', done_lines[0])
+        self.assertIn('empty release checks 3', done_lines[0])
+        mock_dry_spell.assert_called_once_with()
+        mock_heartbeat.assert_called_once_with()
+
+
+class TestScheduleSnapshotFailure(_ReviewReleaseSchedulerBase):
+
+    def test_snapshot_failure_uses_one_planning_fallback_without_release_opportunities(self):
+        ordinary = 'https://example.com/fallback-ordinary'
+        held = 'https://example.com/fallback-hidden-hold'
+        self._seed(ordinary)
+        self._seed(held, hold_reason='poster')
+        published = []
+        events = []
+        secret = 'task-3-super-secret-value'
+
+        def fallback_count():
+            call_number = len([
+                event for event in events
+                if isinstance(event, str) and event.endswith('-count')
+            ])
+            events.append(
+                'planning-count' if call_number == 0 else 'telemetry-count'
+            )
+            return 1 if call_number == 0 else 0
+
+        from compute_publish_slots import compute_fixed_slots as real_compute
+
+        def compute(n, now):
+            events.append(f'compute:{n}')
+            return real_compute(n, now)
+
+        def fail_snapshot():
+            events.append('snapshot')
+            raise RuntimeError(f'snapshot failed: {secret}')
+
+        real_list_pending = pending_articles_repo.list_pending
+
+        def list_pending():
+            events.append('list')
+            return real_list_pending()
+
+        with patch.dict(os.environ, {'OPENROUTER_API_KEY': secret}), \
+                patch('news_bot.pending_repo.get_schedule_backlog_counts',
+                      side_effect=fail_snapshot) \
+                        as mock_snapshot, \
+                patch('news_bot.pending_repo.count_pending',
+                      side_effect=fallback_count) as mock_count, \
+                patch('news_bot.compute_fixed_slots', side_effect=compute), \
+                patch('news_bot.pending_repo.list_pending',
+                      side_effect=list_pending) as mock_list, \
+                patch('news_bot.remaining_fixed_slots') as mock_remaining:
+            with self.assertLogs('news_bot', level='ERROR') as logs:
+                _, mock_sleep, _ = self._run_job(
+                    publish_effect=self._publisher(published, events),
+                )
+
+        mock_snapshot.assert_called_once_with()
+        self.assertEqual(mock_count.call_count, 2)
+        self.assertEqual(events, [
+            'snapshot', 'planning-count', 'compute:1', 'list',
+            ('publish', ordinary), 'telemetry-count',
+        ])
+        self.assertEqual(mock_list.call_count, 1)
+        self.assertEqual(mock_sleep.call_count, 0)
+        mock_remaining.assert_not_called()
+        self.assertEqual(published, [ordinary])
+        self.assertIsNotNone(pending_articles_repo.get_pending(held))
+        rendered = '\n'.join(logs.output)
+        self.assertIn('[REDACTED]', rendered)
+        self.assertNotIn(secret, rendered)
+
+    def test_fallback_failure_propagates(self):
+        with patch('news_bot.pending_repo.get_schedule_backlog_counts',
+                  side_effect=sqlite3.OperationalError('snapshot locked')) \
+                    as mock_snapshot, \
+                patch('news_bot.pending_repo.count_pending',
+                      side_effect=sqlite3.OperationalError('fallback locked')) \
+                    as mock_count, \
+                patch('news_bot.compute_fixed_slots') as mock_compute:
+            with self.assertRaisesRegex(
+                sqlite3.OperationalError, 'fallback locked',
+            ):
+                self._run_job()
+
+        mock_snapshot.assert_called_once_with()
+        mock_count.assert_called_once_with()
+        mock_compute.assert_not_called()

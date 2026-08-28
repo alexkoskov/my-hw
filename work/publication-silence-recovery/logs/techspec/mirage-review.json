@@ -1,0 +1,32 @@
+{
+  "status": "approved",
+  "summary": "Final validation round 3 checked 77 factual claims against the current local codebase and found 0 mirages. Both prior architectural overclaims remain fixed; the clarified exact-1-MiB versus 1-MiB-plus-one-byte boundary is consistent with the specified sentinel-byte CLI design.",
+  "findings": [],
+  "stats": {
+    "total_claims_checked": 77,
+    "confirmed": 77,
+    "mirages_found": 0,
+    "verified_claims": [
+      "compute_publish_slots.py exists",
+      "compute_fixed_slots() owns the existing fixed-time and five-minute grace policy",
+      "DAILY_PUBLISH_TIMES is 10:00, 15:00, and 19:30",
+      "pending_articles_repo.py uses short-lived SQLite connections",
+      "list_pending() gates on both hold_reason and publish_after",
+      "count_pending() uses the publishable eligibility predicate",
+      "count_deferred() counts future deferrals without content holds",
+      "list_held() includes rows with non-NULL hold_reason",
+      "clear_deferral() does not clear hold_reason or publish",
+      "clear_hold() does not clear publish_after or publish",
+      "news_bot.job() sizes slots once and freshly reads list_pending() at every current slot",
+      "news_bot.job() currently breaks on the first empty slot read",
+      "resolve_dedup_callback() and resolve_hold_callback() are state-only review-button operations",
+      "hw_review.py cmd_publish() is the separate pre-existing manual publisher",
+      "news_bot has sanitize_error_message() and existing review decision logging",
+      "admin_alerts plan and quiet builders already accept separate held/deferred counts",
+      ".github/workflows/uptime.yml has independent SSH and Telegraph probes",
+      "uptime.yml issue-backed alarm bookkeeping is best-effort and has no uniqueness constraint",
+      "origin/HEAD points to main and GitHub workflow changes activate from the default branch",
+      "Python 3.13, SQLite, pytest, unittest.mock, tempfile, pytz, curl, ssh-keyscan, gh, and pre-commit patterns exist in the project"
+    ]
+  }
+}

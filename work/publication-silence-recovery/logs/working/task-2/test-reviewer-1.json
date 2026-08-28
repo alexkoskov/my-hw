@@ -1,0 +1,76 @@
+{
+  "status": "needs_improvement",
+  "summary": "The focused suite is fast, behavioral, and green (39 pytest cases), with strong calendar/timezone coverage and real subprocess assertions for all three verdicts. Five actionable gaps remain: the recursive fixture does not trigger RecursionError in this runtime, the invalid-UTF-8 fixture stays malformed after permissive decoding, ASCII-only size cases do not distinguish byte counting or bounded reads, several required missing/first-page shapes are not independently pinned, and post-parse leak branches never receive token-shaped evidence.",
+  "findings": [
+    {
+      "severity": "major",
+      "category": "non_vacuousness",
+      "file": "tests/test_publication_watch.py",
+      "line": 127,
+      "location": "tests/test_publication_watch.py:127",
+      "issue": "The recursive-input test currently proves only that a deeply nested top-level list is not a valid Telegraph object; it does not prove that RecursionError is caught.",
+      "evidence": "Under the repository venv, json.loads on the exact 2,000-level fixture returns a list successfully, while 10,000 levels raises RecursionError. Therefore an implementation with RecursionError removed from the parser exception tuple still returns inconclusive for this fixture at the later top-level-dict check and keeps the test green.",
+      "recommendation": "Pin the exception path directly and exercise it through the CLI boundary as well.",
+      "proposedTest": "Monkeypatch publication_watch.json.loads to raise RecursionError and assert classify_telegraph_response returns inconclusive. Retain an actual deep-input case at a depth confirmed to raise in the test runtime (10,000 works here), preferably through _run_cli, and assert exit 0, stdout == b'inconclusive\\n', and empty stderr so traceback suppression is also proven."
+    },
+    {
+      "severity": "major",
+      "category": "non_vacuousness",
+      "file": "tests/test_publication_watch.py",
+      "line": 189,
+      "location": "tests/test_publication_watch.py:189",
+      "issue": "The invalid-UTF-8 case does not distinguish strict decoding from permissive decoding.",
+      "evidence": "Its bytes are TOKEN_SHAPED_EVIDENCE_1234567890 followed by 0xff. Dropping or replacing the invalid byte still leaves a non-JSON payload, so a regression to decode(errors='ignore') or another lossy decoder would continue to produce inconclusive and pass this test without enforcing the UTF-8 evidence boundary.",
+      "recommendation": "Make invalid UTF-8 the only reason an otherwise valid fresh response is rejected.",
+      "proposedTest": "Construct an under-limit, otherwise-valid fresh Telegraph JSON payload with 0xff inside an ignored extra string field (including the token-shaped marker). A strict decoder must emit inconclusive with exit 0 and empty stderr; permissive ignore/replace decoding would leave valid JSON and incorrectly emit fresh, making the test non-vacuous."
+    },
+    {
+      "severity": "major",
+      "category": "missing_coverage",
+      "file": "tests/test_publication_watch.py",
+      "line": 169,
+      "location": "tests/test_publication_watch.py:169",
+      "issue": "The size-boundary test proves the verdict at 1 MiB and 1 MiB + 1 for ASCII input, but not the required byte measurement, bounded read, or pre-classification short circuit.",
+      "evidence": "For both fixtures, decoded character count equals byte count. A text-mode implementation that limits characters rather than bytes would pass. An unbounded sys.stdin.buffer.read() followed by the same length check would also pass because the test supplies only 1 MiB + 1, despite violating the resource cap and reading-at-most-limit-plus-sentinel contract.",
+      "recommendation": "Add one black-box multibyte boundary and one narrow main-I/O spy test.",
+      "proposedTest": "Build valid JSON containing multibyte UTF-8 in an ignored field, pad it to exactly 1 MiB in bytes, and append one legal ASCII JSON-whitespace byte for the oversize case; assert fresh then inconclusive. Separately call main with a recording stdin.buffer whose read(size) records size and returns oversize bytes, plus a classifier spy that must not run; assert the requested size is exactly 1 MiB + 1 and stdout is exactly inconclusive plus newline."
+    },
+    {
+      "severity": "minor",
+      "category": "missing_coverage",
+      "file": "tests/test_publication_watch.py",
+      "line": 74,
+      "location": "tests/test_publication_watch.py:74",
+      "issue": "The invalid-shape matrix does not independently cover a missing result or a first-page dict with missing path, and it lacks the positive converse of the heterogeneous-pages case.",
+      "evidence": "The matrix has missing ok with a valid result, invalid result values, missing pages, a non-dict first page, and a wrong-type path. It never passes {'ok': true}, never passes pages=[{}], and only checks invalid-first/valid-second; an implementation that supplies defaults for missing result/path or rejects a valid first page because a later page is malformed can pass all current cases.",
+      "recommendation": "Complete the required missing-container/first-page matrix without duplicating implementation details.",
+      "proposedTest": "Add inconclusive cases for {'ok': true} and {'ok': true, 'result': {'pages': [{}]}}. Add a positive case with a valid dated first page followed by null or another malformed entry and assert the verdict is based only on pages[0], as required by the public contract."
+    },
+    {
+      "severity": "minor",
+      "category": "security_coverage",
+      "file": "tests/test_publication_watch.py",
+      "line": 150,
+      "location": "tests/test_publication_watch.py:150",
+      "issue": "Token-shaped leak assertions exercise parse failure and inputs rejected before classification, but no structurally valid inconclusive branch after JSON parsing.",
+      "evidence": "The token marker appears in malformed JSON, the oversized body, and invalid UTF-8. Only the malformed case reaches json.loads, and none reaches result/pages/date validation with a token-shaped ignored field; a branch-specific diagnostic that prints raw parsed evidence for ok=false, missing pages, or an impossible date would pass the suite.",
+      "recommendation": "Drive token-shaped evidence through representative post-parse inconclusive branches.",
+      "proposedTest": "Extend the subprocess table with valid JSON carrying the marker in an extra field and either ok=false or an impossible dated path. Assert exit 0, exact b'inconclusive\\n', empty stderr, and marker absence from both streams."
+    }
+  ],
+  "metrics": {
+    "filesReviewed": 6,
+    "litmusTest": {
+      "checked": 6,
+      "passed": 6,
+      "failed": 0
+    },
+    "coverageAssessment": "adequate",
+    "pyramidBalance": {
+      "unit": 4,
+      "integration": 2,
+      "e2e": 0,
+      "assessment": "healthy"
+    }
+  }
+}

@@ -1,0 +1,53 @@
+{
+  "status": "changes_required",
+  "summary": "The scheduler integration itself follows the approved snapshot/plan/execution split, keeps callbacks state-only, preserves the one-call planning fallback, and passes the focused plus 360-test regression suites. Approval is blocked because the new decision-log sanitizer still exposes URL userinfo for scheme-relative or malformed identifiers, contrary to Task 3's explicit untrusted-link logging boundary; the ordinary-queue regression test also does not pin the required absence of later artificial waits.",
+  "criticalIssues": [
+    {
+      "file": "news_bot.py",
+      "line": 721,
+      "severity": "critical",
+      "category": "security",
+      "issue": "The safe-URL branch requires both `parsed.scheme` and `parsed.hostname`, so valid scheme-relative URL references and malformed userinfo-shaped identifiers fall through to the raw-string branch without removing credentials.",
+      "evidence": "Calling `_sanitize_review_log_identifier('//alice:pw@example.com/path?callback_token=secret#fragment')` returns `'//alice:pw@example.com/path'`; calling it with `'user:pw@example.com/path?callback_token=secret#fragment'` returns `'user:pw@example.com/path'`. Both values can originate from the untrusted article identifier stored behind a review token and are then written by `_handle_review_update()` to the operator-decision INFO line. The current test covers only an absolute `https://alice:pw@...` URL, which takes the safe branch.",
+      "impact": "Credentials or credential-like secrets embedded in an untrusted identifier can be persisted in application logs. This violates the Task 3 acceptance criterion that decision logs omit URL userinfo and the implementation hint requiring a safe fallback for malformed input.",
+      "proposedFix": "Treat `parsed.netloc`/`parsed.hostname` as sufficient to identify a URL reference even when the scheme is absent, reconstruct it without userinfo, and make the non-URL fallback redact or replace any remaining userinfo-shaped prefix instead of logging it verbatim. Add scheme-relative and malformed-userinfo cases to `test_decision_log_sanitizes_untrusted_article_identifier_and_omits_callback_token`."
+    }
+  ],
+  "suggestions": [
+    {
+      "file": "tests/test_job_distributed_publish.py",
+      "line": 1826,
+      "severity": "major",
+      "category": "testing",
+      "suggestion": "The required ordinary/empty/restart anchor does not assert that the ordinary one-row case avoids waiting for 15:00 or 19:30.",
+      "evidence": "Only the `expected_slot is None` (empty-day) branch asserts `mock_sleep.call_count == 0`. For the ordinary case the test checks the 10:00 plan and one publication, but an implementation that always used `remaining_fixed_slots()` would still publish at 10:00, sleep until 15:00, encounter an empty queue, break, and pass every current assertion.",
+      "proposedFix": "Assert `mock_sleep.assert_not_called()` for the ordinary 10:00 one-row case as well as the empty day, and assert exactly one bounded wait for the 16:00 restart case. This directly pins `execution_slots == planned_slots` when no deferred/held snapshot backlog exists.",
+      "optional": false
+    }
+  ],
+  "metrics": {
+    "filesReviewed": 10,
+    "criticalIssuesCount": 1,
+    "majorIssuesCount": 1,
+    "minorIssuesCount": 0,
+    "testCoverageAssessment": "strong behavioral coverage and green focused/regression suites, with one blocking malformed-identifier case and one missing ordinary-wait assertion"
+  },
+  "verification": [
+    {
+      "command": "venv/bin/python -m pytest tests/test_job_distributed_publish.py -k 'ReviewReleaseScheduler or ScheduleSnapshotFailure' -q",
+      "result": "10 passed, 45 deselected, 9 subtests passed"
+    },
+    {
+      "command": "venv/bin/python -m pytest tests/test_integration.py -k 'ResolveHoldCallback or ResolveDedupCallback or ReviewListener' -q",
+      "result": "39 passed, 105 deselected, 6 subtests passed"
+    },
+    {
+      "command": "venv/bin/python -m pytest tests/test_compute_fixed_slots.py tests/test_pending_articles_repo.py tests/test_job_distributed_publish.py tests/test_integration.py tests/test_distributed_schedule_integration.py -q",
+      "result": "360 passed, 111 subtests passed"
+    },
+    {
+      "command": "git diff --check -- news_bot.py tests/test_job_distributed_publish.py tests/test_integration.py",
+      "result": "passed"
+    }
+  ]
+}

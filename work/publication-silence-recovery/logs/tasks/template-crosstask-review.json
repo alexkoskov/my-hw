@@ -1,0 +1,10 @@
+{
+  "validator": "task-validator",
+  "batch": [1, 2, 3, 4, 5, 6, 7, 8, 9],
+  "status": "approved",
+  "findings": [],
+  "stats": {
+    "tasks_checked": 9,
+    "issues_found": 0
+  }
+}

@@ -27,8 +27,9 @@ name: Uptime watch
 # unrelated responses, so each carries its own severity, message and dedup flag:
 #
 #   * probe 1 fails  -> 🔴 the HOST is unreachable. Go to the hoster console.
-#   * probe 2 fails  -> 🟡 the host is fine and nothing was PUBLISHED. Look at
-#     the queue, the sources and the review pings — never at the console.
+#   * probe 2 is stale -> 🟡 the host is fine and nothing was PUBLISHED. Look
+#     at the queue, the sources and the review pings — never at the console.
+#     Unavailable or ambiguous evidence is inconclusive and changes no alarm.
 #
 # Folding both into one 🔴 «Прод не отвечает» was actively harmful: on
 # 2026-08-15 the host was up 15 days, sshd answered, the bot heartbeat was
@@ -96,92 +97,124 @@ jobs:
             echo "sshd did NOT answer after 3 attempts"
           fi
 
-      - name: Probe last publication
-        id: pub
+      - name: Checkout publication classifier
+        id: watch_source
+        continue-on-error: true
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          ref: ${{ github.event.repository.default_branch }}
+          persist-credentials: false
+          fetch-depth: 1
+
+      - name: Fetch Telegraph evidence
+        id: pub_fetch
+        if: ${{ always() }}
+        continue-on-error: true
         env:
-          TELEGRAPH_TOKEN: ${{ secrets.TELEGRAPH_ACCESS_TOKEN }}
+          TELEGRAPH_ACCESS_TOKEN: ${{ secrets.TELEGRAPH_ACCESS_TOKEN }}
         run: |
-          # Every publication creates a Telegra.ph page, and the API lists them
-          # newest-first. The page path carries the creation date as a -MM-DD
-          # suffix, which is all the granularity needed here.
-          # Unset secret => probe skipped, host probe still runs.
-          ok=true
-          if [ -z "${TELEGRAPH_TOKEN:-}" ]; then
-            echo "TELEGRAPH_ACCESS_TOKEN not set — publication probe skipped"
+          set -uo pipefail
+          evidence_file="$RUNNER_TEMP/publication-watch-evidence.json"
+          rm -f "$evidence_file"
+
+          # The token reaches curl through a private file descriptor and a POST
+          # form body. Never switch this request to GET: that would put it in
+          # the URL.
+          # It is absent from the command line, evidence file, logs and outputs.
+          if [ -z "${TELEGRAPH_ACCESS_TOKEN:-}" ]; then
+            echo "TELEGRAPH_ACCESS_TOKEN not set — publication evidence unavailable"
+            exit 0
+          fi
+
+          if ! curl \
+            --fail \
+            --silent \
+            --max-time 20 \
+            --max-filesize 1048576 \
+            --data-urlencode 'access_token@/dev/fd/3' \
+            --data-urlencode 'limit=1' \
+            "https://api.telegra.ph/getPageList" \
+            3< <(printf '%s' "$TELEGRAPH_ACCESS_TOKEN") \
+            | head -c 1048577 > "$evidence_file"; then
+            rm -f "$evidence_file"
+            echo "Telegraph evidence fetch failed — publication state is inconclusive"
+            exit 0
+          fi
+
+          evidence_bytes=$(wc -c < "$evidence_file")
+          if [ "$evidence_bytes" -eq 0 ] || [ "$evidence_bytes" -gt 1048576 ]; then
+            rm -f "$evidence_file"
+            echo "Telegraph evidence is empty or oversized — publication state is inconclusive"
+            exit 0
+          fi
+          echo "Telegraph evidence fetched ($evidence_bytes bytes)"
+
+      - name: Classify publication evidence
+        id: pub
+        if: ${{ always() && steps.watch_source.outcome == 'success' }}
+        continue-on-error: true
+        run: |
+          set -u
+          evidence_file="$RUNNER_TEMP/publication-watch-evidence.json"
+          state_file="$RUNNER_TEMP/publication-watch-state.txt"
+          publication_state=inconclusive
+          rm -f "$state_file"
+
+          if [ ! -f publication_watch.py ]; then
+            echo "publication classifier unavailable"
+          elif [ ! -s "$evidence_file" ]; then
+            echo "publication evidence unavailable"
           else
-            body=$(curl -fsS --max-time 20 \
-              "https://api.telegra.ph/getPageList?access_token=${TELEGRAPH_TOKEN}&limit=1" || true)
-            if [ -z "$body" ]; then
-              echo "Telegraph API unreachable — INCONCLUSIVE, not a failure"
+            evidence_bytes=$(wc -c < "$evidence_file")
+            if [ "$evidence_bytes" -gt 1048576 ]; then
+              echo "publication evidence oversized"
+            elif timeout 10 python3 publication_watch.py \
+              < "$evidence_file" > "$state_file" 2>/dev/null; then
+              # Byte-exact comparison rejects empty, multiline and otherwise
+              # unexpected stdout without ever printing repository output.
+              for candidate in fresh stale inconclusive; do
+                if printf '%s\n' "$candidate" | cmp -s - "$state_file"; then
+                  publication_state="$candidate"
+                  break
+                fi
+              done
             else
-              ok=$(TELEGRAPH_BODY="$body" python3 - <<'PYEOF'
-          import datetime, json, os, re, sys
-          try:
-              data = json.loads(os.environ["TELEGRAPH_BODY"])
-          except Exception:
-              print("true"); sys.exit()          # unparsable => inconclusive
-          if not data.get("ok"):
-              print("true"); sys.exit()          # API error => inconclusive
-          pages = data["result"]["pages"]
-          if not pages:
-              print("true"); sys.exit()
-          m = re.search(r"-(\d{2})-(\d{2})$", pages[0]["path"])
-          if not m:
-              print("true"); sys.exit()          # unexpected path shape
-          today = datetime.date.today()
-          month, day = int(m.group(1)), int(m.group(2))
-          last = datetime.date(today.year, month, day)
-          if last > today:                       # published in December, now January
-              last = datetime.date(today.year - 1, month, day)
-          # Time-aware, because a plain "today or yesterday" rule stays silent
-          # for a day and a half: on the morning of an outage yesterday's post is
-          # still legitimately the newest. The last slot is 19:30 МСК, so after
-          # ~21:00 МСК a missing post for TODAY is real. Before that, yesterday
-          # is fine — the gap between 19:30 and the next 10:00 is normal.
-          msk_hour = (datetime.datetime.now(datetime.timezone.utc)
-                      + datetime.timedelta(hours=3)).hour
-          days = (today - last).days
-          sys.stderr.write("last page: %s (%d days ago), MSK hour %d\n"
-                           % (last, days, msk_hour))
-          stale = days > 1 or (days == 1 and msk_hour >= 21)
-          print("false" if stale else "true")
-          PYEOF
-              )
+              echo "publication classifier failed"
             fi
           fi
-          echo "ok=$ok" >> "$GITHUB_OUTPUT"
+
+          echo "state=$publication_state" >> "$GITHUB_OUTPUT"
+          echo "publication state: $publication_state"
 
       - name: Decide
         id: verdict
+        if: ${{ always() }}
+        env:
+          SSH_OK: ${{ steps.ssh.outputs.ok }}
+          PUB_STATE: ${{ steps.pub.outputs.state }}
         run: |
-          ssh_ok='${{ steps.ssh.outputs.ok }}'
-          pub_ok='${{ steps.pub.outputs.ok }}'
-          [ -z "$pub_ok" ] && pub_ok=true   # publication check skipped
+          # A skipped/failed classifier has no output. Unknown values are also
+          # uncertainty, never evidence of either silence or recovery.
+          case "$PUB_STATE" in
+            fresh|stale|inconclusive) ;;
+            *) PUB_STATE=inconclusive ;;
+          esac
 
           # Each probe becomes its OWN verdict. They are never merged into a
           # single "down" flag again: the whole point is that the operator can
           # read the severity and know which layer to open.
-          if [ "$ssh_ok" != true ]; then
+          if [ "$SSH_OK" != true ]; then
             echo "host_down=true" >> "$GITHUB_OUTPUT"
           else
             echo "host_down=false" >> "$GITHUB_OUTPUT"
           fi
-          if [ "$pub_ok" != true ]; then
-            echo "pub_down=true" >> "$GITHUB_OUTPUT"
-          else
-            echo "pub_down=false" >> "$GITHUB_OUTPUT"
-          fi
+          echo "pub_state=$PUB_STATE" >> "$GITHUB_OUTPUT"
 
       - name: Alert or recover
         env:
           GH_TOKEN: ${{ github.token }}
-          # Mandatory: this job has no `actions/checkout`, so `gh` has no git
-          # remote to infer the repository from and every `gh issue …` call dies
-          # with «failed to run git: fatal: not a git repository». Under the
-          # step's `bash -e` that killed the whole step — verified live in run
-          # #195 (2026-08-13): the verdict was correctly DOWN, and the operator
-          # got nothing. The watchdog was able to detect an outage and unable to
-          # report one, which is the same as having no watchdog.
+          # Mandatory: checkout credentials are deliberately not persisted, so
+          # issue bookkeeping never relies on git auth or remote inference.
           GH_REPO: ${{ github.repository }}
           BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
           CHAT_ID: ${{ secrets.TELEGRAM_ADMIN_ID }}
@@ -192,7 +225,7 @@ jobs:
           # today — the strings are generated a few lines above — but the habit
           # is what keeps it true after the next edit.
           HOST_DOWN: ${{ steps.verdict.outputs.host_down }}
-          PUB_DOWN: ${{ steps.verdict.outputs.pub_down }}
+          PUB_STATE: ${{ steps.verdict.outputs.pub_state }}
         run: |
           set -u
           HOST_TITLE="🔴 Прод не отвечает"
@@ -238,6 +271,7 @@ jobs:
           resolve() {   # $1 title, $2 telegram text
             existing=$(find_issue "$1")
             if [ -z "$existing" ]; then
+              echo "no open alarm for «$1» — nothing to clear"
               return 0
             fi
             send "$2"
@@ -260,10 +294,21 @@ jobs:
           # dilute the one that matters.
           if [ "$HOST_DOWN" = true ]; then
             echo "host alarm active — publication alarm suppressed"
-          elif [ "$PUB_DOWN" = true ]; then
-            raise "$PUB_TITLE" \
-              "$(printf '[watch] 🟡 Больше суток нет публикаций\n\nСервер и SSH отвечают — с хостом всё в порядке, в консоль хостера идти незачем.\n\nСмотреть здесь: жив ли контейнер (docker ps), не пуста ли очередь (pending_articles) и не была ли единственная статья дня отменена в ревью.')" \
-              "Свежей страницы Telegra.ph нет больше суток, при этом SSH-проба проходит."
           else
-            resolve "$PUB_TITLE" "[watch] 🟢 Публикации возобновились."
+            case "$PUB_STATE" in
+              stale)
+                raise "$PUB_TITLE" \
+                  "$(printf '[watch] 🟡 Больше суток нет публикаций\n\nСервер и SSH отвечают — с хостом всё в порядке, в консоль хостера идти незачем.\n\nСмотреть здесь: жив ли контейнер (docker ps), не пуста ли очередь (pending_articles) и не была ли единственная статья дня отменена в ревью.')" \
+                  "Свежей страницы Telegra.ph нет больше суток, при этом SSH-проба проходит."
+                ;;
+              fresh)
+                resolve "$PUB_TITLE" "[watch] 🟢 Публикации возобновились."
+                ;;
+              inconclusive)
+                echo "publication state inconclusive — publication alarm unchanged"
+                ;;
+              *)
+                echo "unexpected publication state — publication alarm unchanged"
+                ;;
+            esac
           fi

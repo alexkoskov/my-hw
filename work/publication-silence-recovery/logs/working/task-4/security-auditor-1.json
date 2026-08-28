@@ -1,0 +1,27 @@
+{
+  "status": "approved",
+  "summary": {
+    "totalFindings": 0,
+    "critical": 0,
+    "major": 0,
+    "minor": 0
+  },
+  "findings": [],
+  "controlsVerified": [
+    "Official checkout is pinned to the required full commit SHA and persists no credentials.",
+    "Only the fetch step receives TELEGRAPH_ACCESS_TOKEN; checkout and repository code do not.",
+    "The token reaches curl through a private descriptor and is absent from argv, evidence, logs, and outputs.",
+    "Response evidence is capped to 1 MiB plus one sentinel byte before classification and is never logged or exported.",
+    "Classifier stdout is byte-matched against the three allowed values before reaching GITHUB_OUTPUT."
+  ],
+  "verification": [
+    {
+      "command": "venv/bin/pre-commit run --files .github/workflows/uptime.yml tests/test_uptime_workflow.py",
+      "result": "all hooks passed, including gitleaks and check-yaml"
+    },
+    {
+      "command": "git diff --check",
+      "result": "passed"
+    }
+  ]
+}

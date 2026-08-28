@@ -142,6 +142,27 @@ class _TmpDbCase(unittest.TestCase):
         return sqlite3.connect(self.db_path)
 
 
+class _ConnectionProbe:
+    """Small connection proxy for statement-count and close contracts."""
+
+    def __init__(self, connection=None, execute_error=None):
+        self.connection = connection
+        self.execute_error = execute_error
+        self.statements = []
+        self.closed = False
+
+    def execute(self, sql, parameters=()):
+        self.statements.append(sql)
+        if self.execute_error is not None:
+            raise self.execute_error
+        return self.connection.execute(sql, parameters)
+
+    def close(self):
+        self.closed = True
+        if self.connection is not None:
+            self.connection.close()
+
+
 # ---------------- Schema / migration tests ----------------
 
 class TestSchema(unittest.TestCase):
@@ -473,6 +494,61 @@ class TestListsAndFilters(_TmpDbCase):
             via_review=True,
         )
         self.assertEqual(repo.count_pending(), 1)
+
+
+class TestScheduleBacklogCounts(_TmpDbCase):
+
+    def test_partitions_all_pending_rows_mutually_exclusively(self):
+        now = datetime.now(timezone.utc)
+        elapsed = (now - timedelta(days=1)).strftime('%Y-%m-%d %H:%M:%S')
+        future = (now + timedelta(days=1)).strftime('%Y-%m-%d %H:%M:%S')
+        rows = (
+            ('http://ordinary', None, None),
+            ('http://elapsed', elapsed, None),
+            ('http://future', future, None),
+            ('http://held', elapsed, 'poster review'),
+            ('http://dual-gate', future, 'poster review'),
+        )
+        with self._conn() as conn:
+            conn.executemany(
+                "INSERT INTO pending_articles "
+                "(link, source_name, title, paragraphs, publish_after, "
+                "hold_reason) VALUES (?, 'mattel', 't', '[]', ?, ?)",
+                rows,
+            )
+            conn.commit()
+
+        probe = _ConnectionProbe(sqlite3.connect(self.db_path))
+        with patch.object(repo, '_connect', return_value=probe) as connect:
+            counts = repo.get_schedule_backlog_counts()
+
+        self.assertEqual(counts, (2, 1, 2))
+        self.assertEqual(sum(counts), len(rows))
+        connect.assert_called_once_with()
+        self.assertEqual(len(probe.statements), 1)
+        self.assertTrue(probe.statements[0].lstrip().upper().startswith('SELECT'))
+        self.assertTrue(probe.closed)
+
+    def test_empty_queue_returns_zero_partition(self):
+        counts = repo.get_schedule_backlog_counts()
+
+        self.assertEqual(counts, (0, 0, 0))
+        self.assertIs(type(counts), tuple)
+        self.assertTrue(all(type(count) is int for count in counts))
+
+    def test_sqlite_error_propagates_and_connection_closes(self):
+        error = sqlite3.OperationalError('snapshot unavailable')
+        probe = _ConnectionProbe(execute_error=error)
+
+        with patch.object(repo, '_connect', return_value=probe) as connect:
+            with self.assertRaisesRegex(
+                sqlite3.OperationalError, 'snapshot unavailable'
+            ):
+                repo.get_schedule_backlog_counts()
+
+        connect.assert_called_once_with()
+        self.assertEqual(len(probe.statements), 1)
+        self.assertTrue(probe.closed)
 
 
 # ---------------- update / mutation tests ----------------
@@ -1482,6 +1558,99 @@ class TestReviewTokenKinds(_TmpDbCase):
     def test_kinds_are_distinct(self):
         self.assertNotEqual(repo.REVIEW_TOKEN_KIND_DEDUP,
                             repo.REVIEW_TOKEN_KIND_HOLD)
+
+
+class TestApproveHoldAndConsumeToken(_TmpDbCase):
+    """Public repository boundary for the atomic E036 approval transition."""
+
+    def _seed_held(self, link, *, publish_after=None):
+        entry = _sample_entry(link=link)
+        entry['hold_reason'] = 'poster'
+        entry['publish_after'] = publish_after
+        self.assertTrue(repo.insert_pending(entry))
+
+    def _put_hold_token(self, token, link):
+        repo.put_review_token(
+            token, link, kind=repo.REVIEW_TOKEN_KIND_HOLD,
+        )
+
+    def test_returns_ready_or_deferred_and_commits_both_state_changes(self):
+        cases = (
+            ('ready', None, 'ready'),
+            ('deferred', '2099-01-01 00:00:00', 'deferred'),
+        )
+        for label, publish_after, expected in cases:
+            with self.subTest(label=label):
+                link = f'http://held/{label}'
+                token = f'tok-{label}'
+                self._seed_held(link, publish_after=publish_after)
+                self._put_hold_token(token, link)
+
+                outcome = repo.approve_hold_and_consume_token(token, link)
+
+                row = repo.get_pending(link)
+                self.assertEqual(outcome, expected)
+                self.assertIsNone(row['hold_reason'])
+                self.assertIsNone(repo.get_review_token(token))
+                publishable = [candidate['link']
+                               for candidate in repo.list_pending()]
+                if expected == 'ready':
+                    self.assertIn(link, publishable)
+                else:
+                    self.assertNotIn(link, publishable)
+
+    def test_stale_token_changes_nothing_and_remains_redeemable(self):
+        link = 'http://held/stale'
+        self._seed_held(link)
+        self._put_hold_token('tok-stale', link)
+
+        outcome = repo.approve_hold_and_consume_token(
+            'tok-stale', 'http://held/different',
+        )
+
+        self.assertEqual(outcome, 'stale')
+        self.assertEqual(repo.get_pending(link)['hold_reason'], 'poster')
+        self.assertEqual(
+            repo.get_review_token('tok-stale'),
+            (repo.REVIEW_TOKEN_KIND_HOLD, link),
+        )
+
+    def test_unavailable_target_consumes_the_terminal_token(self):
+        link = 'http://held/gone'
+        self._put_hold_token('tok-gone', link)
+
+        outcome = repo.approve_hold_and_consume_token('tok-gone', link)
+
+        self.assertEqual(outcome, 'unavailable')
+        self.assertIsNone(repo.get_review_token('tok-gone'))
+
+    def test_token_delete_failure_rolls_back_the_released_hold(self):
+        link = 'http://held/rollback'
+        token = 'tok-rollback'
+        self._seed_held(link)
+        self._put_hold_token(token, link)
+        with self._conn() as conn:
+            conn.execute(
+                "CREATE TRIGGER fail_hold_approval_token_delete "
+                "BEFORE DELETE ON bot_state "
+                "WHEN OLD.key='review_token:tok-rollback' "
+                "AND (SELECT hold_reason FROM pending_articles "
+                "WHERE link='http://held/rollback') IS NULL "
+                "BEGIN SELECT RAISE(IGNORE); END"
+            )
+            conn.commit()
+
+        with self.assertRaisesRegex(
+            sqlite3.DatabaseError,
+            'could not consume its review token',
+        ):
+            repo.approve_hold_and_consume_token(token, link)
+
+        self.assertEqual(repo.get_pending(link)['hold_reason'], 'poster')
+        self.assertEqual(
+            repo.get_review_token(token),
+            (repo.REVIEW_TOKEN_KIND_HOLD, link),
+        )
 
 
 class TestConnectBusyTimeout(_TmpDbCase):

@@ -1,0 +1,25 @@
+{
+  "status": "changes_requested",
+  "summary": {
+    "totalFindings": 2,
+    "critical": 0,
+    "major": 0,
+    "minor": 2
+  },
+  "findings": [
+    {
+      "id": "SEC-T3-2-R2",
+      "severity": "minor",
+      "title": "Early input truncation can turn oversized URL userinfo into a logged hostname",
+      "evidence": "The percent-encoding, scheme-relative handling, malformed-userinfo handling, and ordinary early bound at news_bot.py:701-754 close the round-1 field-spoofing cases. However, news_bot.py:720 truncates before URL authority parsing. For a valid `https://` URL whose `@host` delimiter lies after 2048 characters, urlparse sees the truncated userinfo as hostname and lines 737-754 log its first 200 characters. Reproduced with `https://` + 3000 `S` characters + `@example.com/path`: the result was a 200-character `https://ssss...` identifier. The same issue reproduces for a scheme-relative URL. Thus the promised URL-userinfo omission is not invariant at the new resource boundary.",
+      "recommendation": "Make oversized authority handling delimiter-aware: when a URL/network-path authority is cut before its terminator or `@`, emit a fixed bounded placeholder or safe digest instead of parsing the truncated authority as a hostname. Add full-URL and scheme-relative tests where long userinfo crosses `_REVIEW_LOG_INPUT_MAXLEN`, asserting that no userinfo prefix is emitted."
+    },
+    {
+      "id": "SEC-T3-1-R2",
+      "severity": "minor",
+      "title": "Token consumption is not verified and the rollback test fails before the hold update succeeds",
+      "evidence": "The new BEGIN IMMEDIATE per-link transaction at news_bot.py:885-947 correctly revalidates token kind/link, bounds reads to one row, and rolls ordinary SQL errors back. But the DELETE at line 940 does not verify rowcount. A `BEFORE DELETE ... RAISE(IGNORE)` trigger reproduced a committed `hold_reason=NULL` plus a still-live review token while the resolver returned success. Separately, tests/test_integration.py:4592-4618 injects failure with a BEFORE UPDATE trigger, so the UPDATE never succeeds and the test does not prove rollback of a completed hold mutation when the later token step fails.",
+      "recommendation": "Require the token DELETE cursor to report exactly one affected row and raise a fixed safe exception otherwise so the transaction rolls back. Move or supplement the fault injection at the token DELETE (for example, a BEFORE DELETE RAISE(ABORT) trigger) and assert that the already-executed hold UPDATE is rolled back together with the token state."
+    }
+  ]
+}

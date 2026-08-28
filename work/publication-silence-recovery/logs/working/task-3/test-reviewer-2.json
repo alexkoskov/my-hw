@@ -1,0 +1,40 @@
+{
+  "status": "needs_improvement",
+  "summary": "All three round-1 gaps are resolved: the timeline tests now pin the empty 10:00 SELECT and exact 15:00 release sequence, ordinary/empty/restart cases pin queue-read and sleep bounds plus the single aggregate/no-legacy-read contract, and fallback events prove planning-to-loop-to-final-telemetry order without remaining_fixed_slots. Focused and regression suites are green, but the newly added rollback test is still vacuous for the partial-commit failure it is intended to prevent; the log matrix also does not pin the new pre-normalization input-work cap.",
+  "findings": [
+    {
+      "severity": "major",
+      "category": "non_vacuousness",
+      "location": "tests/test_integration.py:4592",
+      "issue": "The hold-approval rollback test injects failure on the hold UPDATE itself, before either half of the atomic transition has succeeded, so it does not prove that a later token-consumption failure rolls the already-executed hold release back.",
+      "evidence": "The trigger at lines 4598-4603 aborts BEFORE UPDATE OF hold_reason. A non-transactional implementation that calls the existing committing clear_hold(link) and only then deletes the review token also raises at that first UPDATE, leaves both hold and token unchanged, and passes the current assertions. The regression described by SEC-T3-1 is the opposite ordering: hold release succeeds/commits and a subsequent read or token DELETE fails, leaving hold_reason NULL with a live token. This test never reaches that boundary and therefore would not distinguish the new single transaction from the old sequence of DAO calls.",
+      "proposedTest": "Move fault injection after the hold UPDATE: create a BEFORE DELETE trigger on bot_state restricted to the exact review_token:<token> key and raise ABORT there. Call real resolve_hold_callback('approve', ...), assert the exception, then assert hold_reason is still 'poster' and the same token is still live. The current transactional implementation will roll the earlier UPDATE back; a separate clear_hold commit followed by token deletion will leave hold_reason NULL and fail. Keep the existing success assertions that approval commits both the cleared hold and consumed token."
+    },
+    {
+      "severity": "minor",
+      "category": "security_coverage",
+      "location": "tests/test_integration.py:4217",
+      "issue": "The decision-log matrix pins the final 200-character field bound but not the new 2,048-character pre-normalization processing cap requested by the security review.",
+      "evidence": "The longest fixture is 400 path characters and line 4266 checks only len(identifier) <= 200. Removing raw = raw[:_REVIEW_LOG_INPUT_MAXLEN] from news_bot.py leaves every current log assertion green because the later final slice still produces a 200-character identifier. Thus the tests cover output shape, userinfo/query removal, and structured-field safety well, but do not catch unbounded per-character normalization/urlparse work on a hostile identifier.",
+      "proposedTest": "Add a focused helper test with an identifier substantially larger than 2,048 characters and wrap news_bot.unicodedata.category with a counting spy; assert no more than _REVIEW_LOG_INPUT_MAXLEN characters are normalized and the result remains at most 200 characters with no forged fields/secrets. This makes moving or deleting the early input slice fail without requiring timing assertions."
+    }
+  ],
+  "verification": [
+    {
+      "command": "venv/bin/python -m pytest tests/test_job_distributed_publish.py -k 'ReviewReleaseScheduler or ScheduleSnapshotFailure' -q",
+      "result": "10 passed, 45 deselected, 9 subtests passed"
+    },
+    {
+      "command": "venv/bin/python -m pytest tests/test_integration.py -k 'ResolveHoldCallback or ResolveDedupCallback or ReviewListener' -q",
+      "result": "40 passed, 105 deselected, 9 subtests passed"
+    },
+    {
+      "command": "venv/bin/python -m pytest tests/test_compute_fixed_slots.py tests/test_pending_articles_repo.py tests/test_job_distributed_publish.py tests/test_integration.py tests/test_distributed_schedule_integration.py -q",
+      "result": "361 passed, 114 subtests passed"
+    },
+    {
+      "command": "git diff --check",
+      "result": "passed"
+    }
+  ]
+}

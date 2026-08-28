@@ -1,0 +1,37 @@
+{
+  "status": "passed",
+  "summary": "All round-1 and round-2 test findings are closed with non-vacuous behavioral checks. The real-SQLite rollback test now suppresses token DELETE only after the trigger observes hold_reason already NULL, requires the production rowcount guard to raise, and proves rollback restores both hold and token; oversized identifiers are rejected before normalization with exact over-limit/at-limit spy assertions. The exact 10:00-empty/15:00-release timelines, ordinary/restart bounds, single aggregate/no-legacy reads, and fallback phase ordering remain fully pinned and all focused/regression suites pass.",
+  "findings": [],
+  "metrics": {
+    "coverageAssessment": "excellent",
+    "litmusTest": {
+      "checked": 12,
+      "passed": 12,
+      "failed": 0
+    },
+    "pyramidBalance": {
+      "unit": 1,
+      "integration": 11,
+      "e2e": 0,
+      "assessment": "appropriate for scheduler and real-SQLite callback state transitions"
+    }
+  },
+  "verification": [
+    {
+      "command": "venv/bin/python -m pytest tests/test_job_distributed_publish.py -k 'ReviewReleaseScheduler or ScheduleSnapshotFailure' -q",
+      "result": "10 passed, 45 deselected, 9 subtests passed"
+    },
+    {
+      "command": "venv/bin/python -m pytest tests/test_integration.py -k 'ResolveHoldCallback or ResolveDedupCallback or ReviewListener' -q",
+      "result": "41 passed, 105 deselected, 12 subtests passed"
+    },
+    {
+      "command": "venv/bin/python -m pytest tests/test_compute_fixed_slots.py tests/test_pending_articles_repo.py tests/test_job_distributed_publish.py tests/test_integration.py tests/test_distributed_schedule_integration.py -q",
+      "result": "362 passed, 117 subtests passed"
+    },
+    {
+      "command": "git diff --check",
+      "result": "passed"
+    }
+  ]
+}

@@ -1,0 +1,454 @@
+# Interview Plan for Feature Planning
+#
+# Tracks progress of adaptive discovery interview for a new feature/bug/refactoring.
+# Updated after EACH user response with scoring, values, and remaining gaps.
+#
+# Scoring: 0-100% (how well we understand this aspect)
+# Status: pending → partial → complete
+# Required: true = must reach threshold, false = cover if relevant
+
+# ============================================================================
+# Interview Metadata (Session Recovery)
+# ============================================================================
+interview_metadata:
+  started: "2026-08-25 23:02:59"  # Timestamp (YYYY-MM-DD HH:MM:SS)
+  last_updated: "2026-08-26 00:07:29"
+  status: "completed"  # not_started | in_progress | completed
+  can_resume: true
+  current_question_num: 3
+  feature_size: "M"  # S | M | L
+
+# ============================================================================
+# Conversation History (for session recovery)
+# ============================================================================
+# Preserves complete Q&A. Update after EVERY user response.
+#
+conversation_history:
+  - question_num: 1
+    timestamp: "2026-08-25 21:44:00"
+    topic: "production_incident"
+    agent_question: >-
+      Пользователь сообщил внешний [watch]-алерт о суточной тишине и попросил
+      разобраться с контейнером, очередью и возможным решением в ревью.
+    user_answer: >-
+      В Telegram пришёл [watch] 🟡 «Больше суток нет публикаций» с подсказкой
+      проверить docker ps, pending_articles и отмену единственной статьи дня.
+    summary: >-
+      Подтверждён production-инцидент: контейнер и heartbeat здоровы, но статья,
+      освобождённая кнопкой «Оставить», потеряла все оставшиеся слоты дня.
+  - question_num: 2
+    timestamp: "2026-08-25 22:56:00"
+    topic: "scope_and_process"
+    agent_question: >-
+      Исправляем scheduler/review race, покрываем watchdog временными тестами и
+      проводим всё через полный проектный flow без ручной публикации и deploy?
+    user_answer: "делай; сначала напиши план работ, потом делай по флоу"
+    summary: >-
+      Подтверждён отдельный bug-flow с TDD, review, QA и PR; необратимые live
+      действия остаются отдельным явным решением.
+  - question_num: 3
+    timestamp: "2026-08-26 00:07:29"
+    topic: "userspec_approval"
+    agent_question: >-
+      Подтвердить валидированный user-spec целиком и продолжить tech-spec,
+      задачи, реализацию, тесты, ревью и PR?
+    user_answer: "да по всем"
+    summary: >-
+      Пользователь формально одобрил весь user-spec и продолжение полного flow.
+# Format:
+# - question_num: 1
+#   timestamp: "2025-11-12 15:20:33"
+#   topic: "user_problem"
+#   agent_question: |
+#     [Full question text]
+#   user_answer: |
+#     [Full answer text]
+#   summary: "Brief summary"
+
+# ============================================================================
+# Phase 1: High-Level Feature Understanding
+# ============================================================================
+# Interview Cycle 1 scope
+phase1_feature_overview:
+
+  feature_name:
+    score: 95
+    status: "complete"
+    value: "publication-silence-recovery"
+    gaps: ""
+    required: true
+
+  feature_description:
+    score: 95
+    status: "complete"
+    value: >-
+      Исправить потерю оставшихся фиксированных слотов, когда единственная
+      статья временно скрыта publish_after и оператор снимает deferral после
+      первого slot check; одновременно сделать timebase внешнего publication
+      watch тестируемым и единым по Москве.
+    gaps: ""
+    required: true
+
+  work_type:
+    score: 100
+    status: "complete"
+    value: "bug"
+    gaps: ""
+    required: true
+
+  user_problem:
+    score: 95
+    status: "complete"
+    value: >-
+      Кнопка «Оставить — выйдет в ближайший слот» меняет строку БД, но не
+      гарантирует существование следующего slot opportunity. В результате
+      здоровый бот молчит, готовая статья лежит до следующего дня, а внешний
+      watch поднимает реальный alert.
+    gaps: ""
+    required: true
+
+  target_users:
+    score: 90
+    status: "complete"
+    value: >-
+      Оператор production-бота, принимающий решения по [E014], и подписчики,
+      которые должны получать одобренную статью в обещанный слот.
+    gaps: ""
+    required: false
+
+  success_criteria:
+    score: 90
+    status: "complete"
+    value: >-
+      В воспроизведении 10:00 E014 -> keep через секунды статья публикуется в
+      15:00, cancel никогда не публикует, silence сохраняет 24h defer, лимит
+      три публикации в день не нарушается, а watcher не дёргается на UTC/MSK
+      границах.
+    gaps: ""
+    required: true
+
+  constraints:
+    score: 90
+    status: "complete"
+    value: >-
+      Сохраняются фиксированные слоты 10:00/15:00/19:30 МСК, grace и <=3/day;
+      hold_reason и cancel semantics не меняются; no live publish, restart,
+      deploy, DB migration или новый внешний сервис внутри реализации.
+    gaps: ""
+    required: true
+
+  testing_strategy:
+    score: 90
+    status: "complete"
+    value: >-
+      Unit-тесты для pure scheduling/watch time logic и интеграционный тест
+      полного review-to-slot пути на реальной test SQLite; live E2E исключён,
+      потому что единственный Telegram channel production и пост необратим.
+    gaps: ""
+    required: true
+
+# ============================================================================
+# Phase 2: User Experience & Scenarios
+# ============================================================================
+# Interview Cycle 2 scope (together with Phase 3)
+phase2_user_experience:
+
+  user_stories:
+    score: 95
+    status: "complete"
+    value: >-
+      Оператор получает [E014], нажимает keep после уже прошедшей утренней
+      проверки, и статья выходит в следующий оставшийся фиксированный слот;
+      cancel удаляет её без публикации. Для [E036] approve действует тот же
+      scheduler-контракт, reject и молчание оставляют статью неопубликованной.
+      Внешний watch один раз поднимает реальный publication alarm и не меняет
+      состояние из-за UTC/MSK полуночи или неубедительного ответа Telegraph.
+    gaps: ""
+    required: true
+
+  acceptance_criteria:
+    score: 95
+    status: "complete"
+    value: >-
+      E014 keep после пустого 10:00 read публикует ровно один раз в 15:00;
+      E036 approve получает ту же гарантию; cancel/reject дают ноль публикаций;
+      E014 silence сохраняет 24h defer и допускает строку в первый слот после
+      expiry, E036 silence держит бессрочно; обычная очередь и план дня не
+      получают фиктивных постов; за один job остаётся не более трёх фиксированных
+      opportunities. Watch классифицирует границы 20:59/21:00, 00:00-03:00 и
+      смену года с единого московского времени, а inconclusive не считается
+      recovery.
+    gaps: ""
+    required: true
+
+  edge_cases:
+    score: 95
+    status: "complete"
+    value: >-
+      Решение между первым пустым read и 15:00; решение после 19:30; restart в
+      16:00; одновременные publish_after и hold_reason; одна обычная и одна
+      withheld строка; все withheld строки отменены после планирования; deferral
+      истекает через секунды после 10:00; пустая очередь без review backlog;
+      watcher в 20:59/21:00, 00:00/02:59/03:00 МСК, Dec/Jan rollover, leap-day,
+      пустой/битый/неожиданный Telegraph payload.
+    gaps: ""
+    required: true
+
+  error_scenarios:
+    score: 90
+    status: "complete"
+    value: >-
+      Ошибка чтения reviewable backlog логируется и не создаёт дополнительный
+      publish path; callback DB/auth/token failures сохраняют текущий fail-closed
+      контракт; restart пересчитывает только оставшиеся фиксированные времена;
+      API/JSON/path ambiguity в watch даёт inconclusive и не открывает и не
+      закрывает publication alarm; ошибка доставки Telegram остаётся известным
+      отдельным риском reliable-admin-alert-delivery.
+    gaps: ""
+    required: true
+
+  verification_strategy:
+    score: 95
+    status: "complete"
+    value: >-
+      Сначала RED integration timeline на tempfile SQLite с реальными callback
+      resolver и queue predicates, затем unit matrix чистой watch/scheduling
+      логики, релевантные suites и полный pytest. Workflow проверяется статически
+      и через тот же classifier без секретов. Live Telegram, Telegraph, restart,
+      deploy и тестовый пост не выполняются; после будущего ручного rollout
+      оператор сверяет один обычный цикл по логам и каналу.
+    gaps: ""
+    required: true
+
+  ui_ux_requirements:
+    score: 85
+    status: "complete"
+    value: >-
+      Сохраняются существующие кнопки, авторизация и terminal-status. «Ближайший
+      слот» всегда означает ближайшее ещё допустимое фиксированное время, включая
+      10:00 следующего дня после вечернего cutoff; callback не публикует сразу.
+      Watch alert сохраняет раздельные host/publication severity и не выдаёт
+      «восстановилось» без убедительного evidence.
+    gaps: ""
+    required: false
+
+  risks:
+    score: 95
+    status: "complete"
+    value: >-
+      Частичный фикс оставит гонку — проверяется полным timeline; wake slots могут
+      исказить plan/carry-over — execution opportunities отделяются от обещанных
+      публикаций; held backlog продлевает job до вечера — это bounded тремя
+      временами и нужно для обещания approve; callback-side publish создаст
+      конкуренцию и запрещён; watcher helper может разойтись с workflow — в
+      production исполняется тот же источник; checkout увеличивает supply-chain
+      поверхность — действие pin-ится и credentials не сохраняются; live E2E
+      может создать необратимый пост — исключён.
+    gaps: ""
+    required: true
+
+  technical_decisions:
+    score: 90
+    status: "complete"
+    value: >-
+      Оставляем фиксированные времена и одного publisher-а; сохраняем будущие
+      opportunities для строк, которые способен освободить timer или оператор;
+      пустая withheld-очередь пропускает текущую opportunity, а не завершает весь
+      день; E014 и E036 исправляются симметрично; operator plan не изображает
+      wake как гарантированный пост; watch получает одну тестируемую clock-based
+      классификацию. Не вводим callback publish, DB migration, новый scheduler,
+      persistent global cap, Telegraph replacement или durable alert delivery.
+    gaps: ""
+    required: false
+
+  deploy_approach:
+    score: 90
+    status: "complete"
+    value: >-
+      Изменения идут dev -> обязательный PR -> main. Watcher начинает использовать
+      исправление после merge в default branch без server deploy. Runtime bot
+      разворачивает пользователь вручную через существующий Docker Compose вне
+      окна 10:00-20:00 МСК; этот flow не выполняет merge, production rebuild или
+      restart без отдельного явного решения.
+    gaps: ""
+    required: false
+
+  manual_user_actions:
+    score: 90
+    status: "complete"
+    value: >-
+      Новые ключи, аккаунты, миграции и сервисы не нужны. После одобрения PR
+      пользователь отдельно merge-ит и позже вручную rebuild/restart-ит production
+      вне publish window; проверяет логи slot loop и первую естественную статью,
+      не создавая тестовую публикацию.
+    gaps: ""
+    required: false
+
+# ============================================================================
+# Phase 3: Integration & Technical Context
+# ============================================================================
+# Interview Cycle 2 scope (together with Phase 2)
+phase3_integration:
+
+  integration_points:
+    score: 95
+    status: "complete"
+    value: >-
+      Daily intake/job sizing и slot loop; SQLite eligibility predicates для
+      pending/deferred/held; daemon review listener и E014/E036 callbacks;
+      plan/quiet-day/recap/heartbeat observability; external GitHub Actions
+      publication probe и issue-backed alarm state.
+    gaps: ""
+    required: true
+
+  dependencies:
+    score: 90
+    status: "complete"
+    value: >-
+      Существующие Python schedule/pytz, SQLite repository, Telegram listener,
+      Telegraph page-list API и GitHub Actions/Issues. Runtime dependency и
+      внешний сервис не добавляются; workflow может использовать pinned checkout
+      только для исполнения единственного repo-owned classifier.
+    gaps: ""
+    required: false
+
+  technical_constraints:
+    score: 95
+    status: "complete"
+    value: >-
+      Только main thread публикует; review auth и token-kind gate остаются до DB
+      mutation; фиксированные 10:00/15:00/19:30 МСК и 5-minute grace сохраняются;
+      не более трёх execution opportunities на job; heartbeat остаётся после
+      bounded loop; secrets watcher-а передаются только env и не попадают helper-у
+      или fixtures; production — единственный channel без staging.
+    gaps: ""
+    required: false
+
+  data_requirements:
+    score: 95
+    status: "complete"
+    value: >-
+      Используются существующие pending_articles.publish_after/hold_reason,
+      review tokens и published_at; scheduler перед каждой retained opportunity
+      перечитывает реальную SQLite eligibility. Watch использует только newest
+      Telegraph page path и явное timezone-aware текущее время; секретный token
+      остаётся в fetch step и не хранится в classifier state.
+    gaps: ""
+    required: false
+
+  migration_needs:
+    score: 100
+    status: "complete"
+    value: >-
+      Миграция БД и преобразование существующих строк не нужны. Текущая готовая
+      E014-строка автоматически подхватится обычным scheduler после будущего
+      runtime rollout; в этом flow production row вручную не изменяется.
+    gaps: ""
+    required: false
+
+# ============================================================================
+# Phase 4: Completion
+# ============================================================================
+phase4_completion:
+  userspec_file: "work/publication-silence-recovery/user-spec.md"
+  status: "approved"  # pending | created | approved
+
+# ============================================================================
+# Decision Rules
+# ============================================================================
+decision_rules:
+
+  required_threshold: 85
+  optional_threshold: 50
+
+  # Stop criteria (BOTH must be true to exit a cycle)
+  stop_criteria:
+    - "All required items in current cycle scope score >= 85%"
+    - "Structural: every required item has non-empty value, no TBD, gaps empty or conscious limitations"
+
+  priority_order:
+    - "Required items with score < 85% (lowest score first)"
+    - "Optional items mentioned by user in context"
+    - "Other optional items if user seems knowledgeable"
+
+  question_strategy:
+    - "3-4 questions per batch about different gaps"
+    - "Run as many batches as needed — batch size is NOT cycle limit"
+    - "Propose solutions based on PK, not just ask questions"
+    - "Challenge with substance: counterexamples, code references, unexplored scenarios"
+    - "After each response: update scores, values, gaps, conversation_history, save"
+
+# ============================================================================
+# Interview Progress
+# ============================================================================
+progress:
+  current_phase: "completed"
+  questions_asked: 3
+  last_question: "Пользователь одобрил user-spec целиком: да по всем."
+  total_required_score: 94
+  total_optional_score: 91
+  completion_estimate: "100%"
+  user_detail_level: "moderate"  # brief | moderate | detailed
+
+# ============================================================================
+# Notes
+# ============================================================================
+notes: |
+  - Production trace: 2026-08-25 10:00:31 [E014] staged one deferred row;
+    slot 1/1 immediately saw list_pending() empty and broke; operator keep at
+    10:00:42 cleared publish_after after job() had already returned.
+  - At 21:44 the row was publishable with attempt_count=0; container running,
+    restart_count=0, heartbeat and quick_check healthy. No cancel/reject log.
+  - origin/main lacks 066500b while origin/dev contains it. The first 21:xx
+    alert was honest; the old mixed UTC-date/MSK-hour logic can still create a
+    false recovery at 00:00-02:59 and a duplicate alert after 03:00.
+  - Manual publication and production deploy are explicitly outside this flow.
+  - Code research found the same scheduler promise gap for [E036] approve;
+    scope now covers both operator-release paths, without changing their gate
+    semantics or publishing from the listener thread.
+  - Existing global <=3/day is not backed by a persistent slot ledger across
+    restarts. This bugfix preserves at most three fixed opportunities per job
+    and does not claim to solve the broader restart-cap invariant.
+  - Watch invalid/API responses are treated as inconclusive and must not be
+    presented as proof of recovery; durable Telegram delivery remains separate.
+  - Independent interview-completeness-checker verdict: complete/high confidence,
+    no gaps across item coverage, logic, PK alignment, code findings or testing.
+  - Validation round 1 approved with no critical findings. Follow-up fixes move
+    retained-slot/SQLite/checkout mechanics to tech-spec, make the watcher
+    expected-state matrix explicit, and treat future MM-DD as inconclusive except
+    for the bounded December-to-January rollover.
+  - Validation round 2: quality and adequacy both approved, zero critical/major
+    findings. The sole minor recommendation is to implement scheduler and watcher
+    as separate tasks/commits with independent rollback and verification gates.
+
+# ============================================================================
+# USAGE INSTRUCTIONS
+# ============================================================================
+#
+# 1. INIT: Created by init-feature-folder.sh at work/{feature}/logs/userspec/interview.yml
+#    Set metadata.started, metadata.status: in_progress
+#
+# 2. INITIAL SCORING: After user's free-form description, score ALL items
+#    Detailed 80-95%, brief 50-70%, vague 20-40%, not mentioned 0%
+#
+# 3. INTERVIEW LOOP (save after EVERY response):
+#    a) Find required items with score < 85% in current cycle scope
+#    b) Ask 3-4 questions about different gaps
+#    c) Propose solutions based on PK
+#    d) User answers
+#    e) Update: conversation_history, scores, values, gaps, metadata
+#    f) Save immediately
+#    g) Check stop criteria (score >= 85% AND structural: value filled, no TBD, gaps resolved)
+#    h) Not done → repeat. Done → next cycle.
+#
+# 4. CYCLES:
+#    Cycle 1: phase1_feature_overview items
+#    Cycle 2: phase2_user_experience + phase3_integration items
+#    Cycle 3: ALL items still below threshold (cleanup pass)
+#
+# 5. RESUME: If metadata.status is "in_progress"
+#    Load, show conversation summary, resume from current state
+#
+# 6. COMPLETION: After user approves user-spec.md
+#    Set phase4_completion.status: approved
+#    Set metadata.status: completed

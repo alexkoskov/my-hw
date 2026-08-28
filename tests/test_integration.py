@@ -4205,6 +4205,112 @@ class TestReviewListener(_IntegrationBase):
         ]
         self.assertEqual(len(decision_lines), 1, logs.output)
 
+    def test_decision_log_sanitizes_untrusted_article_identifier_and_omits_callback_token(self):
+        cases = (
+            (
+                'control-characters',
+                'https://example.com/path\r\nFORGED=1',
+                'https://example.com/',
+                ('\r', '\n'),
+            ),
+            (
+                'url-secrets',
+                'https://alice:pw@example.com/' + ('x' * 400)
+                + '?callback_token={token}#fragment',
+                'https://example.com/',
+                ('alice', 'pw', 'callback_token', 'fragment'),
+            ),
+            (
+                'scheme-relative-userinfo',
+                '//alice:pw@example.com/path?callback_token={token}#fragment',
+                '//example.com/',
+                ('alice', 'pw', 'callback_token', 'fragment'),
+            ),
+            (
+                'malformed-userinfo',
+                'alice:pw@example.com/path?callback_token={token}#fragment',
+                '//example.com/',
+                ('alice', 'pw', 'callback_token', 'fragment'),
+            ),
+            (
+                'hostless-absolute-userinfo',
+                'https://alice:pw@/path?callback_token={token}#fragment',
+                '/path',
+                ('alice', 'pw', 'callback_token', 'fragment'),
+            ),
+            (
+                'hostless-bare-userinfo',
+                'alice:pw@/path?callback_token={token}#fragment',
+                '/path',
+                ('alice', 'pw', 'callback_token', 'fragment'),
+            ),
+            (
+                'structured-fields',
+                'https://example.com/path status=FORGED action=approve',
+                'https://example.com/',
+                (' status=FORGED', ' action=approve'),
+            ),
+            (
+                'oversized-authority',
+                'https://' + ('username' * 400)
+                + ':pw@example.com/path?callback_token={token}',
+                '<oversized>',
+                ('username', 'pw', 'example.com', 'callback_token'),
+            ),
+        )
+        for index, case in enumerate(cases):
+            name, link_template, expected_prefix, forbidden_values = case
+            with self.subTest(name=name):
+                token = f'tok-log-secret-{index}'
+                untrusted_link = link_template.format(token=token)
+                _seed_pending_row(untrusted_link)
+                pending_articles_repo.put_review_token(token, untrusted_link)
+                bot = self._make_bot()
+                update = self._make_update(f'dd:c:{token}')
+
+                with patch('news_bot.Bot', return_value=bot), \
+                        patch('news_bot.TELEGRAM_ADMIN_ID', str(self.ADMIN_ID)):
+                    with self.assertLogs('news_bot', level='INFO') as logs:
+                        news_bot._handle_review_update(update)
+
+                decision_lines = [
+                    line for line in logs.output
+                    if 'operator decision' in line
+                ]
+                self.assertEqual(len(decision_lines), 1, logs.output)
+                decision = decision_lines[0]
+                match = re.search(r' link=(.*?) status=', decision)
+                self.assertIsNotNone(match, decision)
+                identifier = match.group(1)
+                self.assertLessEqual(len(identifier), 200)
+                self.assertTrue(identifier.startswith(expected_prefix))
+                self.assertEqual(len(decision.splitlines()), 1)
+                for forbidden in (*forbidden_values, token):
+                    self.assertNotIn(forbidden, decision)
+                self.assertEqual(decision.count(' action='), 1)
+                self.assertEqual(decision.count(' status='), 1)
+
+    def test_decision_log_identifier_bounds_work_before_normalization(self):
+        real_category = news_bot.unicodedata.category
+        oversized = 'x' * (news_bot._REVIEW_LOG_INPUT_MAXLEN + 1)
+        with patch('news_bot.unicodedata.category',
+                   wraps=real_category) as mock_category:
+            self.assertEqual(
+                news_bot._sanitize_review_log_identifier(oversized),
+                '<oversized>',
+            )
+        mock_category.assert_not_called()
+
+        at_limit = 'x' * news_bot._REVIEW_LOG_INPUT_MAXLEN
+        with patch('news_bot.unicodedata.category',
+                   wraps=real_category) as mock_category:
+            result = news_bot._sanitize_review_log_identifier(at_limit)
+        self.assertEqual(mock_category.call_count,
+                         news_bot._REVIEW_LOG_INPUT_MAXLEN)
+        self.assertLessEqual(
+            len(result), news_bot._REVIEW_LOG_IDENTIFIER_MAXLEN,
+        )
+
     def test_ignored_press_answers_empty_and_never_edits(self):
         link = 'https://example.com/listener-nonadmin'
         _seed_pending_row(link)
@@ -4496,6 +4602,62 @@ class TestResolveHoldCallback(_IntegrationBase):
         self.assertEqual(
             news_bot.resolve_hold_callback('approve', token, self.ADMIN_ID),
             ("⚠️ Кнопка устарела", "⚠️ Кнопка устарела"),
+        )
+
+    def test_approve_reports_a_remaining_deferral_instead_of_promising_a_slot(self):
+        link = 'https://example.com/hold-and-future-deferral'
+        self._seed_held(link)
+        self.assertTrue(pending_articles_repo.defer_publish(
+            link, '2099-01-01 00:00:00',
+        ))
+        token = self._stage_token(link)
+
+        status, answer = news_bot.resolve_hold_callback(
+            'approve', token, self.ADMIN_ID,
+        )
+
+        self.assertEqual(
+            status, '✅ Одобрено — но статья ещё отложена [E014]',
+        )
+        self.assertEqual(answer, status)
+        row = pending_articles_repo.get_pending(link)
+        self.assertIsNone(row['hold_reason'])
+        self.assertIsNotNone(row['publish_after'])
+        self.assertNotIn(
+            link, [candidate['link']
+                   for candidate in pending_articles_repo.list_pending()],
+        )
+        self.assertIsNone(pending_articles_repo.get_review_token_link(token))
+
+    def test_approve_failure_rolls_back_hold_and_token_together(self):
+        link = 'https://example.com/hold-approval-rollback'
+        self._seed_held(link)
+        token = self._stage_token(link)
+        conn = sqlite3.connect(self.db_path)
+        try:
+            conn.execute(
+                "CREATE TRIGGER fail_task3_hold_approval "
+                "BEFORE DELETE ON bot_state "
+                "WHEN OLD.key LIKE 'review_token:%' "
+                "AND (SELECT hold_reason FROM pending_articles "
+                "WHERE link='https://example.com/hold-approval-rollback') "
+                "IS NULL "
+                "BEGIN SELECT RAISE(IGNORE); END"
+            )
+            conn.commit()
+        finally:
+            conn.close()
+
+        with self.assertRaisesRegex(
+            sqlite3.DatabaseError, 'could not consume its review token',
+        ):
+            news_bot.resolve_hold_callback('approve', token, self.ADMIN_ID)
+
+        self.assertEqual(
+            pending_articles_repo.get_pending(link)['hold_reason'], 'poster',
+        )
+        self.assertEqual(
+            pending_articles_repo.get_review_token_link(token), link,
         )
 
     def test_approve_then_slot_publishes_the_article(self):

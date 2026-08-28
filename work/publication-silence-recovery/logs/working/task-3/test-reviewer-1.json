@@ -1,0 +1,30 @@
+{
+  "status": "needs_improvement",
+  "summary": "The focused scheduler, callback, and regression suites are green and the new tests use real tempfile SQLite with a publish double that moves exact rows into published_articles. Three non-vacuousness gaps remain: the release seam does not prove the required empty 10:00 read or exact 15:00 publication, the ordinary one-row regression does not reject artificial later waits, and the snapshot tests do not fully pin the single atomic success read or the final telemetry read after the loop.",
+  "findings": [
+    {
+      "severity": "major",
+      "category": "non_vacuousness",
+      "location": "tests/test_job_distributed_publish.py:1612",
+      "issue": "The E014/E036/expiry/mixed timeline tests trigger release from the first positive time.sleep call and assert only the final publication order. They do not observe that the 10:00 list_pending read was empty, nor that the released row was selected at 15:00 rather than 19:30.",
+      "evidence": "Lines 1612-1629, 1646-1663, 1725-1735, and 1756-1767 attach the state transition to time.sleep; lines 1631-1633, 1665-1667, 1737-1741, and 1769-1775 assert only end state/plan text. A mutant that calls sleep(0) before the morning SELECT would release and publish at 10:00 while these tests still pass. A mutant that skips the 15:00 read after release and publishes at 19:30 also preserves every current assertion. Both violate the primary Task 3 timeline contract.",
+      "proposedTest": "Wrap the real pending_articles_repo.list_pending in an event-recording side effect. On the first call, capture and return the real empty result, then commit the real keep/approve only after that SELECT result has been obtained. Record sleep/read/publish events and assert the exact sequence: empty 10:00 read, wait to 15:00, exact link visible and moved to published_articles once at the second read, then no duplicate at 19:30. Apply the same event seam to expiry and the mixed-row case, or at minimum assert the publisher event occurs between the 15:00 and 19:30 sleep events."
+    },
+    {
+      "severity": "major",
+      "category": "missing_coverage",
+      "location": "tests/test_job_distributed_publish.py:1811",
+      "issue": "The ordinary/empty/restart anchor does not enforce the promised bounded waiting behavior for the ordinary one-row case.",
+      "evidence": "Only the empty case asserts mock_sleep.call_count == 0 (lines 1832-1834). The ordinary and restart branches assert plan text and a publication count already fixed by line 1830; line 1838 is redundant. An implementation that publishes the ordinary row at 10:00, then incorrectly sleeps until 15:00 before discovering the queue is empty, still emits the same E008 plan and one publication and passes this test, despite the explicit requirement that an ordinary N=1 snapshot wait for no artificial later slots.",
+      "proposedTest": "For the ordinary subtest, spy on the real list_pending and assert exactly one queue read and zero sleep calls. For empty, assert zero reads and zero sleeps. For the 16:00 restart, assert exactly one read, one publish, and one sleep corresponding to 19:30 (12,600 seconds under the frozen clock). Keep the real SQLite state assertions and remove the redundant less-than-or-equal assertion."
+    },
+    {
+      "severity": "major",
+      "category": "snapshot_contract",
+      "location": "tests/test_job_distributed_publish.py:1859",
+      "issue": "The snapshot coverage proves the error fallback starts before planning, but it does not prove the success path consumes exactly one atomic aggregate without legacy category reads, and it does not prove the second count_pending call is post-loop telemetry.",
+      "evidence": "The fallback test asserts events[:2] == ['count', 'compute:1'] and total count_pending call_count == 2 (lines 1893-1896), but list/publish are absent from events. Moving the second count_pending call to immediately after compute_fixed_slots and before the slot loop would keep the test green. On successful snapshots, no test spies on get_schedule_backlog_counts or rejects count_deferred/list_held, so an extra aggregate call or a return to separate category SELECTs after the aggregate can also pass all timeline outcomes against a stable fixture.",
+      "proposedTest": "Add a success-path spy around get_schedule_backlog_counts and assert one call, while patching legacy planning reads count_deferred/list_held to raise if invoked. In the fallback test, append compute, list_pending, publish-double, and both count_pending calls to one event list and assert exact phase order: snapshot error -> planning count -> compute -> queue read -> exact DB move/publish -> final telemetry count. Also assert remaining_fixed_slots is not called on the fallback path."
+    }
+  ]
+}

@@ -1,0 +1,48 @@
+{
+  "status": "approved",
+  "checks": {
+    "completeness": "pass",
+    "edge_cases": "pass",
+    "acceptance_criteria": "pass",
+    "contradictions": "pass",
+    "template_compliance": "pass",
+    "size_check": "warning"
+  },
+  "findings": [
+    {
+      "check": "acceptance_criteria",
+      "severity": "major",
+      "issue": "Sidecar rejection однозначно задан для normal DB path (`DB|sidecar_present`), но не замкнут в bootstrap cross-matrix. Пункт 7 говорит, что sidecar-bearing DB автоматически не открывается, однако пункт 10 не повторяет sidecar среди состояний, которые permit никогда не обходит, а bootstrap AC не проверяет flag+permit при существующем journal/WAL/SHM. Четыре eligible DB shapes описывают main file/schema и сами по себе не исключают ортогонально присутствующий sidecar, поэтому test oracle для этой комбинации остаётся неявным.",
+      "location": "«Как должно работать» → Read-only DB preflight, пункт 7; «Одноразовый bootstrap/recovery», пункт 10; критерии DB и Bootstrap",
+      "fix": "Явно добавить `sidecar_present` в список bootstrap-ineligible состояний и в bootstrap acceptance matrix: даже flag+fresh permit завершается `DB|sidecar_present`, permit не расходуется, main DB и sidecar set не меняются; operator выполняет отдельный backup/recovery."
+    },
+    {
+      "check": "acceptance_criteria",
+      "severity": "major",
+      "issue": "Краевой случай с испорченным permit обязан дать точный `BOOTSTRAP|reason`, но словарь не содержит `invalid_permit` и не говорит, что malformed/non-UUID content нормализуется в `missing_permit` или другой существующий класс. При требовании exact reason два совместимых implementation/test oracle всё ещё возможны.",
+      "location": "Таблица fatal reason-class; «Краевые случаи» про испорченный permit; Bootstrap criterion",
+      "fix": "Либо добавить `invalid_permit` в BOOTSTRAP reason-class и matrix, либо явно определить, что отсутствующий, unreadable и malformed permit дают конкретные разные или один выбранный существующий reason."
+    },
+    {
+      "check": "size_check",
+      "severity": "minor",
+      "issue": "Размер L соответствует глубине и трём failure domains, но формальные warning-пороги валидатора превышены: 13 критериев приёмки и более пяти интеграционных границ.",
+      "location": "Frontmatter size: L; разделы «Как должно работать» и «Критерии приёмки»",
+      "fix": "Сохранить заявленное разбиение на отдельно зелёные и откатываемые CI, scheduler и production-startup increments с собственными acceptance gates."
+    }
+  ],
+  "interview_coverage": {
+    "covered": [
+      "Граница stabilization-пакета и исключение большого рефакторинга, off-box backup и publication crash-gap",
+      "Fail-closed production startup при неверных VPN route, config и DB с узким empty-DB override",
+      "Новая семантика недоставленного E014 сохранена как handoff в отдельный reliable-admin-alert-delivery",
+      "Unit/integration/full clean-env verification без live E2E и production deploy",
+      "Вынос stateful admin-alert delivery в отдельную follow-up задачу",
+      "Обязательный production config и закреплённые Compose-инварианты при optional review buttons",
+      "One-use bootstrap/recovery authorization вместе с ALLOW_EMPTY_PROD_DB=1 без обхода wrong path, mount или corrupt SQLite",
+      "Scheduler lifecycle: immediate job до cron registration, строгая граница 10:00 и mid-day restart recovery без persistent marker"
+    ],
+    "missing": []
+  },
+  "summary": "Критических findings нет: strict post-bootstrap recovery согласован с четырьмя eligible shapes, network criterion полностью offline, APP_MODE и DB/BOOTSTRAP fatal coverage определены, atime исключён. Draft одобрен по правилам quality-validator; перед tech-spec желательно явно замкнуть sidecar+permit cross-case и reason для malformed permit."
+}

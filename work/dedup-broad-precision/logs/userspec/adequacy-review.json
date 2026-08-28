@@ -1,0 +1,56 @@
+{
+  "status": "approved",
+  "findings": [
+    {
+      "category": "underengineering",
+      "severity": "major",
+      "issue": "NEW, introduced by the adopted flag-only cap. AC8 states that «порог автоблокировки (50 %) не достигнут» is true on the set-overlap branch and must be kept there. That is no longer true in the sub-branch the feature creates: after a subject rejection the backstop still computes similarity, and a pair at sim >= 0.50 is now downgraded to [E014] instead of blocking. The single E014 builder emits that sentence unconditionally (admin_alerts.py:869-871), so the operator would be told the 50 % threshold was NOT reached on precisely the pairs where it WAS reached. The AVP's own step 4 («при 100 % strict-overlap и отклонённой по предмету паре») walks straight into this state.",
+      "why_matters": "The capped path exists to preserve the 30-50 % net; a >=50 % hit inside it is the strongest similarity signal the system can produce and the likeliest genuine duplicate, and it arrives with a sentence asserting the opposite. That inverts the operator's reading of the button decision at the exact moment the decision matters. It is also not a free implementation detail: the backstop match dict has no `pairs` key (news_bot.py `_pair_match` vs `_set_overlap_backstop_verdict`), so the builder can distinguish broad from backstop but cannot distinguish capped-backstop from ordinary backstop — the tech-spec must be told a third state exists.",
+      "fix": "Split AC8 three ways instead of two: broad path — no threshold sentence; ordinary backstop path (sim in [0.30,0.50)) — sentence kept, it is true; capped path at sim >= 0.50 — the sentence must be replaced by one saying the threshold WAS reached and the hard block is forbidden in this branch. Add it to «Как должно работать» step 8 so the tech-spec knows the builder needs a signal for that state."
+    },
+    {
+      "category": "overengineering",
+      "severity": "major",
+      "issue": "UNRESOLVED from round 1 (not in the applied list, not rejected). The user-spec still carries tech-spec-level coordinates: «Хелпер `_seed_published` в `tests/test_integration.py` сеет кандидату заголовок-заглушку `'Existing Article'` … и вызывается 25 раз», the verification table's «python3 вызов `alert_cross_source_dupe`», and the «1970 passed, 2 skipped» baseline. (The counts are accurate — 25 call sites plus the def, literal at :1101 — which is exactly why they will drift.)",
+      "why_matters": "User-spec defines WHAT and WHY; naming the helper, the seeded literal, the call count and the builder entry point pins HOW before the tech-spec exists, and all four numbers/names go stale with any commit on dev. The substance worth keeping — that existing integration tests seed candidate titles unrelated to the injected pairs, will invert under the new rule, and are the bulkiest part of the work — survives without them.",
+      "fix": "Keep the substance, drop the coordinates: «существующие интеграционные тесты сеют кандидату заголовок, не связанный с подставляемыми парами — под новым правилом они перевернутся; их правка — самая объёмная часть работ». Move the helper name, call count, test baseline and the builder invocation into the tech-spec / verification plan (measurements.md already holds them, which is the right place)."
+    },
+    {
+      "category": "underengineering",
+      "severity": "minor",
+      "issue": "The suppressed path is underspecified in two linked ways. (a) Step 7 states an unconditional outcome — «статья идёт в очередь молча и без отсрочки» — while step 8 says the set-overlap backstop still runs on the same article and may soft-flag it, which per AC7 does defer publication by 24 h. Steps 7 and 8 therefore describe two different outcomes for the same state, resolvable only by reading AC6. (b) «Подавленное срабатывание» is never defined: it is unclear whether a subject-rejected pair that the backstop then soft-flags counts as suppressed, or only pairs that end in true silence.",
+      "why_matters": "(a) is a two-line fix in the spec but a coin flip in the tech-spec — implement step 7 literally and the backstop cap adopted this round never runs. (b) matters over time: the suppressed counter is the sole instrument for Risk 1, read monthly across a moving baseline, and a metric whose denominator is ambiguous cannot be compared month over month.",
+      "fix": "Qualify step 7: «Ни одна не прошла, `|D` не нашлось И set-overlap ничего не дал → статья идёт в очередь молча и без отсрочки». Define the counter in one sentence — суммируются пары, отклонённые по предмету, независимо от того, флагнул ли их потом backstop (or the opposite, but state which)."
+    },
+    {
+      "category": "better_alternative",
+      "severity": "minor",
+      "issue": "Partially resolved. Moving the count into the daily [E008]/[E009] ping is the right mechanism and is cheap — the funnel takes plain ints and `_funnel_int` reads a missing key as 0 (admin_alerts.py:172-183). But the funnel is counts-only by design («no untrusted title/link/error text», architecture.md:341), so the ping can answer «сколько шума срезано» and cannot answer the second half of Risk 1's mitigation, «не был ли проглочен настоящий дубль». That half still lives in a log line whose content the spec never specifies, on a host the spec itself says the operator visits «раз в никогда» (Технические решения).",
+      "why_matters": "Risk 1 (overfitting) is the spec's own biggest risk and its mitigation is stated as answering both questions. As written it answers one. A count going up or down does not identify a swallowed duplicate, and without specified fields — оба линка, оба заголовка, общая линия — even a deliberate SSH visit a month later may not be able to adjudicate.",
+      "fix": "Either specify the suppressed log line's fields (new link, candidate link, both titles, the shared line) and make the monthly review an explicit named step with an owner, or narrow Risk 1's mitigation honestly to «счётчик показывает объём среза; для разбора конкретного случая нужен заход на сервер»."
+    },
+    {
+      "category": "underengineering",
+      "severity": "minor",
+      "issue": "The multi-candidate fork is now resolved for the |D direction (step 5 + AC4, and it matches how `_pair_rule_verdict` already scans — the first |B is remembered while the scan continues, only |D stops it). The symmetric broad case has prose but no acceptance criterion: candidate A shares a broad pair that fails the subject test, candidate B shares a different broad pair that passes. Step 5's «снимает только эту пару-кандидата» implies B still flags; AC4 mentions only |D.",
+      "why_matters": "The natural wrong implementation — treat the first subject rejection as a settled 'no broad match' and stop remembering — passes every acceptance criterion as written, and the regression corpus is pairwise so it cannot detect the difference either. The result would be silent over-suppression that no instrument in the spec catches.",
+      "fix": "Add one AC: «Кандидат, отклонённый по предмету, не отменяет более позднего кандидата — общая broad-пара, прошедшая проверку предмета у другого кандидата, по-прежнему даёт [E014]»."
+    },
+    {
+      "category": "underengineering",
+      "severity": "minor",
+      "issue": "No rollback lever is named (unresolved from round 1, downgraded). DEDUP_SERIES_ENABLED gates the whole pair rule, not the new subject check, so over-suppression in prod is undone only by revert + manual deploy — which the project forbids inside 10:00-20:00 МСК. «Пользователь проверяет» still names the [E015]-spike signal without naming the action it triggers.",
+      "why_matters": "Downgraded from major because this round's design made the change monotone-safe: the broad path can only lose flags, |D is untouched, and the backstop is capped at a soft flag, so the worst outcome is a duplicate reaching the channel — which is the pre-feature status quo, not a new loss. What remains is that a 2-4 week live verdict has no pre-agreed response.",
+      "fix": "One line in «Ограничения»: rollback = revert + manual deploy outside the publish window, triggered by X (e.g. подавленных > N/нед при найденном проглоченном дубле). An env kill-switch for the subject check alone is optional, not required at this risk level."
+    },
+    {
+      "category": "sizing",
+      "severity": "minor",
+      "issue": "M is still defensible but now sits at its ceiling: this round added the backstop cap, a new funnel counter with its ping rendering, and a conditional E014 text, on top of the pre-existing corpus build (prod SSH pull, fingerprint reconstruction for two pairs), ~25 integration test fixes, and the architecture.md / project.md amendments. Scope grew while the size field stayed M.",
+      "why_matters": "The corpus is the feature's only objective proof and is data-extraction work, not code — the classic candidate for being squeezed when the test surgery overruns. Everything else in the list is small individually, which is how M-sized features quietly become L.",
+      "fix": "No re-sizing needed, but consider landing the corpus fixture as a separately-mergeable first increment: it is independently valuable (it measures the CURRENT rule and gives the new one a baseline) and it retires the headline acceptance criterion's data risk before the test surgery starts."
+    }
+  ],
+  "worst_category": "underengineering",
+  "summary": "Both round-1 criticals are closed — the multi-pair/multi-candidate semantics now match how the gate actually scans, and the corpus rebuttal holds on the facts (the surviving fingerprints are on the autoevolution/orangetrack sides, so the bulk re-fetch that Cloudflare blocks is genuinely off the path). The rule is now symmetric, order-independent, and monotone-safe: it can only weaken flags, never create an irreversible one. Remaining majors are non-blocking — the newly-created capped path emits a threshold sentence that is now false in it, and round-1's tech-spec detail leak is still unaddressed. Adequate to proceed to a tech-spec."
+}

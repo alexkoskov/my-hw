@@ -13,13 +13,17 @@ tests' fixture style).
 import os
 import sys
 import unittest
-from datetime import datetime, time
+from datetime import datetime, time, timezone
 
 import pytz
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from compute_publish_slots import DAILY_PUBLISH_TIMES, compute_fixed_slots
+from compute_publish_slots import (
+    DAILY_PUBLISH_TIMES,
+    compute_fixed_slots,
+    remaining_fixed_slots,
+)
 
 
 MSK = pytz.timezone("Europe/Moscow")
@@ -115,6 +119,106 @@ class TestComputeFixedSlots(unittest.TestCase):
         for slot in slots:
             self.assertIsNotNone(slot.tzinfo)
             self.assertEqual(slot.utcoffset(), now.utcoffset())
+
+
+class TestRemainingFixedSlots(unittest.TestCase):
+    """Contract for the uncapped fixed-time opportunity helper."""
+
+    def test_returns_all_eligible_times_for_each_day_state(self):
+        custom_times = [time(18, 0), time(11, 0), time(14, 0)]
+        custom_times_before = list(custom_times)
+        cases = (
+            ('at first slot', msk(2026, 6, 14, 10, 0), None,
+             [(10, 0), (15, 0), (19, 30)]),
+            ('midday', msk(2026, 6, 14, 12, 0), None,
+             [(15, 0), (19, 30)]),
+            ('afternoon', msk(2026, 6, 14, 16, 0), None,
+             [(19, 30)]),
+            ('after cutoff', msk(2026, 6, 14, 20, 0), None, []),
+            ('custom unsorted times', msk(2026, 6, 14, 12, 0), custom_times,
+             [(14, 0), (18, 0)]),
+            ('utc clock', datetime(2026, 6, 14, 12, tzinfo=timezone.utc),
+             None, [(15, 0), (19, 30)]),
+        )
+
+        for label, now, daily_times, expected_hm in cases:
+            with self.subTest(label=label):
+                kwargs = {} if daily_times is None else {
+                    'daily_times': daily_times,
+                }
+                slots = remaining_fixed_slots(now, **kwargs)
+
+                expected_slots = [
+                    now.replace(
+                        hour=hour, minute=minute, second=0, microsecond=0,
+                    )
+                    for hour, minute in expected_hm
+                ]
+                self.assertEqual(slots, expected_slots)
+                self.assertTrue(all(slot.date() == now.date() for slot in slots))
+                self.assertTrue(all(slot.tzinfo is not None for slot in slots))
+                self.assertTrue(
+                    all(slot.utcoffset() == now.utcoffset() for slot in slots)
+                )
+
+        self.assertEqual(custom_times, custom_times_before)
+
+    def test_grace_boundary_and_naive_clock_contract(self):
+        at_boundary = MSK.localize(datetime(2026, 6, 14, 10, 5))
+        just_after = MSK.localize(
+            datetime(2026, 6, 14, 10, 5, 0, 1)
+        )
+
+        self.assertEqual(
+            [(slot.hour, slot.minute)
+             for slot in remaining_fixed_slots(at_boundary)],
+            [(10, 0), (15, 0), (19, 30)],
+        )
+        self.assertEqual(
+            [(slot.hour, slot.minute)
+             for slot in remaining_fixed_slots(just_after)],
+            [(15, 0), (19, 30)],
+        )
+        with self.assertRaises(ValueError):
+            remaining_fixed_slots(datetime(2026, 6, 14, 10, 0))
+
+    def test_compute_fixed_slots_is_a_capped_prefix_with_unchanged_carry(self):
+        now = msk(2026, 6, 14, 12, 0)
+        opportunities = remaining_fixed_slots(now)
+
+        for n in (-2, 0, 1, 2, 5):
+            with self.subTest(n=n):
+                slots, carry = compute_fixed_slots(n, now)
+                expected_slots = [] if n <= 0 else opportunities[:n]
+                expected_carry = 0 if n <= 0 else n - len(expected_slots)
+
+                self.assertEqual(slots, expected_slots)
+                self.assertEqual(carry, expected_carry)
+
+        custom_times = [time(21, 0), time(9, 0), time(13, 0)]
+        custom_times_before = list(custom_times)
+        custom_now = msk(2026, 6, 14, 13, 7)
+        with self.subTest(custom_arguments=True):
+            slots, carry = compute_fixed_slots(
+                3,
+                custom_now,
+                daily_times=custom_times,
+                grace_minutes=10,
+            )
+            self.assertEqual(
+                slots,
+                [
+                    custom_now.replace(hour=13, minute=0),
+                    custom_now.replace(hour=21, minute=0),
+                ],
+            )
+            self.assertEqual(carry, 1)
+            self.assertEqual(custom_times, custom_times_before)
+
+        with self.subTest(empty_daily_times=True):
+            slots, carry = compute_fixed_slots(2, now, daily_times=[])
+            self.assertEqual(slots, [])
+            self.assertEqual(carry, 2)
 
 
 class TestModuleConstants(unittest.TestCase):
