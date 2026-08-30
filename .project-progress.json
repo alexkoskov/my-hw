@@ -1,0 +1,160 @@
+{
+  "schema_version": 1,
+  "project": {
+    "name": "Hot Wheels News Bot",
+    "description": "A Python news pipeline that collects Hot Wheels articles, filters and deduplicates them, queues accepted items, transcreates them into Russian, and publishes them on a fixed schedule.",
+    "status": "in_progress"
+  },
+  "milestone": {
+    "id": "dedup-broad-precision",
+    "title": "Reduce false broad-pair duplicate flags",
+    "goal": "Require a shared broad series to be present in both article titles before issuing E014, while preserving true duplicates, distinctive-pair blocking, fail-open behavior, and truthful operator diagnostics.",
+    "status": "in_progress"
+  },
+  "tasks": [
+    {
+      "id": "DBP-001",
+      "title": "Confirm the production failure mode and current code path",
+      "status": "done",
+      "weight": 3,
+      "deliverables": [
+        "work/dedup-broad-precision/code-research.md"
+      ]
+    },
+    {
+      "id": "DBP-002",
+      "title": "Approve measurable user requirements and acceptance criteria",
+      "status": "done",
+      "weight": 3,
+      "deliverables": [
+        "work/dedup-broad-precision/user-spec.md"
+      ]
+    },
+    {
+      "id": "DBP-003",
+      "title": "Bring the technical specification through the five planning validators",
+      "status": "done",
+      "weight": 5,
+      "deliverables": [
+        "work/dedup-broad-precision/tech-spec.md",
+        "work/dedup-broad-precision/logs/techspec/"
+      ]
+    },
+    {
+      "id": "DBP-004",
+      "title": "Obtain explicit user approval of the validated technical specification",
+      "status": "done",
+      "weight": 1
+    },
+    {
+      "id": "DBP-005",
+      "title": "Decompose the approved specification into atomic task files and validate them",
+      "status": "in_progress",
+      "weight": 3
+    },
+    {
+      "id": "DBP-006",
+      "title": "Build the sanitized 24-pair production regression corpus and scoring harness",
+      "status": "planned",
+      "weight": 5,
+      "blocked_by": [
+        "DBP-005",
+        "B-002"
+      ]
+    },
+    {
+      "id": "DBP-007",
+      "title": "Implement title-subject qualification, continued candidate scanning, and the set-overlap block cap",
+      "status": "planned",
+      "weight": 8,
+      "blocked_by": [
+        "DBP-006"
+      ]
+    },
+    {
+      "id": "DBP-008",
+      "title": "Integrate truthful E014 variants, bounded logs, suppression telemetry, and exact defer behavior",
+      "status": "planned",
+      "weight": 5,
+      "blocked_by": [
+        "DBP-007"
+      ]
+    },
+    {
+      "id": "DBP-009",
+      "title": "Update project knowledge for the new dedup decision flow and rollout contract",
+      "status": "planned",
+      "weight": 3,
+      "blocked_by": [
+        "DBP-008"
+      ]
+    },
+    {
+      "id": "DBP-010",
+      "title": "Run the feature-level code audit",
+      "status": "planned",
+      "weight": 2,
+      "blocked_by": [
+        "DBP-009"
+      ]
+    },
+    {
+      "id": "DBP-011",
+      "title": "Run the feature-level security audit",
+      "status": "planned",
+      "weight": 2,
+      "blocked_by": [
+        "DBP-009"
+      ]
+    },
+    {
+      "id": "DBP-012",
+      "title": "Run the feature-level test audit",
+      "status": "planned",
+      "weight": 2,
+      "blocked_by": [
+        "DBP-009"
+      ]
+    },
+    {
+      "id": "DBP-013",
+      "title": "Complete pre-deploy acceptance QA and full regression verification",
+      "status": "planned",
+      "weight": 5,
+      "blocked_by": [
+        "DBP-010",
+        "DBP-011",
+        "DBP-012"
+      ]
+    },
+    {
+      "id": "DBP-014",
+      "title": "Deploy the approved build through the manual production release flow",
+      "status": "planned",
+      "weight": 3,
+      "blocked_by": [
+        "DBP-013"
+      ]
+    },
+    {
+      "id": "DBP-015",
+      "title": "Verify live dedup precision and E015 stability during the post-deploy observation window",
+      "status": "planned",
+      "weight": 5,
+      "blocked_by": [
+        "DBP-014"
+      ]
+    }
+  ],
+  "blockers": [
+    {
+      "id": "B-002",
+      "description": "The sanitized regression fixture still requires a read-only production data export containing only public article metadata and dedup fingerprints.",
+      "status": "blocked",
+      "affects": [
+        "DBP-006"
+      ]
+    }
+  ],
+  "updated_at": "2026-08-30T15:44:42+03:00"
+}

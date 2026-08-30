@@ -1,0 +1,24 @@
+{
+  "status": "approved",
+  "summary": {
+    "totalFindings": 0,
+    "critical": 0,
+    "major": 0,
+    "minor": 0
+  },
+  "findings": [],
+  "coverage": [
+    "A01 access control: review authorization and token-kind behavior explicitly unchanged and regression-tested",
+    "A02 cryptographic failures: no cryptographic or credential-handling change",
+    "A03 injection: no dynamic SQL; untrusted log fields are bounded, single-line, and redacted",
+    "A04 insecure design: irreversible E015 is preserved and backstop downgrade is explicitly scoped",
+    "A05 security misconfiguration: existing feature switch and manual rollback remain available",
+    "A06 vulnerable components: no new dependency",
+    "A07 authentication failures: no authentication contour change",
+    "A08 data integrity: corpus schema/provenance and prohibited-field validation are required",
+    "A09 logging/monitoring: reason-aware E014, bounded suppression logs, E008/E009 count, and E016 are covered",
+    "A10 SSRF: no new network request or URL fetch is introduced"
+  ],
+  "iteration": 1,
+  "reviewed_at": "2026-08-30T14:36:46+03:00"
+}
