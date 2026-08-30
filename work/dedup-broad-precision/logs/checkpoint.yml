@@ -19,7 +19,7 @@ total_waves: 8
 #   3: in_progress
 #   4: planned
 tasks:
-  1: planned
+  1: in_progress
   2: planned
   3: planned
   4: planned

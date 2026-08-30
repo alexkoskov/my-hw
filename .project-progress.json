@@ -49,7 +49,7 @@
     {
       "id": "DBP-005",
       "title": "Decompose the approved specification into atomic task files, validate them, and obtain explicit approval",
-      "status": "in_progress",
+      "status": "done",
       "weight": 3,
       "deliverables": [
         "work/dedup-broad-precision/tasks/",
@@ -59,10 +59,9 @@
     {
       "id": "DBP-006",
       "title": "Build the sanitized 24-pair production regression corpus and scoring harness",
-      "status": "planned",
+      "status": "in_progress",
       "weight": 5,
       "blocked_by": [
-        "DBP-005",
         "B-002"
       ]
     },
@@ -160,5 +159,5 @@
       ]
     }
   ],
-  "updated_at": "2026-08-30T15:54:17+03:00"
+  "updated_at": "2026-08-30T16:07:25+03:00"
 }
