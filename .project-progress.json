@@ -48,7 +48,7 @@
     },
     {
       "id": "DBP-005",
-      "title": "Decompose the approved specification into atomic task files and validate them",
+      "title": "Decompose the approved specification into atomic task files, validate them, and obtain explicit approval",
       "status": "in_progress",
       "weight": 3,
       "deliverables": [
@@ -160,5 +160,5 @@
       ]
     }
   ],
-  "updated_at": "2026-08-30T15:53:14+03:00"
+  "updated_at": "2026-08-30T15:54:17+03:00"
 }

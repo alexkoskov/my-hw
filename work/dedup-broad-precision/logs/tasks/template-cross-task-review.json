@@ -1,0 +1,26 @@
+{
+  "validator": "task-validator",
+  "batch": [1, 2, 3, 4, 5, 6, 7, 8, 9, 10],
+  "mode": "cross-task",
+  "iteration": 1,
+  "status": "approved",
+  "findings": [],
+  "stats": {
+    "tasks_checked": 10,
+    "issues_found": 0
+  },
+  "graph": {
+    "waves": 8,
+    "parallel_wave": {
+      "wave": 5,
+      "tasks": [5, 6, 7]
+    },
+    "cycles": 0,
+    "invalid_dependencies": 0
+  },
+  "notes": [
+    "The graph is 1 -> 2 -> 3 -> 4 -> [5, 6, 7] -> 8 -> 9 -> 10; every dependency points to an earlier wave and no cycle exists.",
+    "The compiled series lexicon, candidate list, and SQLite state remain existing shared resources rather than duplicated task-owned instances; the regression corpus has one owner in Task 1 and all consumers depend on it.",
+    "Overlapping files in Tasks 2 and 3 represent sequential core-decision and operator-diagnostics outcomes, not competing same-wave implementations."
+  ]
+}
