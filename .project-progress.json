@@ -59,7 +59,7 @@
     {
       "id": "DBP-006",
       "title": "Build the sanitized 24-pair production regression corpus and scoring harness",
-      "status": "in_progress",
+      "status": "blocked",
       "weight": 5,
       "blocked_by": [
         "B-002"
@@ -152,12 +152,12 @@
   "blockers": [
     {
       "id": "B-002",
-      "description": "The sanitized regression fixture still requires a read-only production data export containing only public article metadata and dedup fingerprints.",
+      "description": "Awaiting explicit user approval for the exact read-only export of 24 pairs containing public article URLs, titles, source names, existing dedup fingerprints, and two fingerprints reconstructed through the public t-hunted parser into a temporary local JSON.",
       "status": "blocked",
       "affects": [
         "DBP-006"
       ]
     }
   ],
-  "updated_at": "2026-08-30T16:07:25+03:00"
+  "updated_at": "2026-08-30T16:13:45+03:00"
 }
