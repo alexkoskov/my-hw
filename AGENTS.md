@@ -7,23 +7,32 @@ stable/production line and `dev` is the active development line. Treat both as
 first-class project state; never inspect or update only the branch that happens
 to be checked out.
 
-Whenever the user asks to pull, sync, or update the project:
+The global `dev` -> `main` workflow and its explicit approval gate for `main`
+apply to this repository. If that global rule is missing on the current Mac,
+`docs/codex-global-AGENTS.md` is the canonical complete template; ask before
+installing it into `~/.codex/AGENTS.md`.
+
+Whenever the user asks to pull, sync, update, or push the project:
 
 1. Fetch the remote with pruning, then inspect all local and remote branches for
    newer work, including at least `main`, `dev`, `origin/main`, and `origin/dev`.
 2. Report the ahead/behind state of both local long-lived branches and the
    left/right commit counts between `origin/main` and `origin/dev`. State which
    remote branch contains the newest commit.
-3. Preserve uncommitted work and the user's checked-out branch. Update both
-   local `main` and local `dev` from their matching remote branches using
-   fast-forward-only operations when possible; do not silently merge, rebase,
-   force-update, or discard either branch.
+3. Preserve uncommitted work and the user's checked-out branch. Update local
+   `dev` using fast-forward-only operations when possible. Fetching and
+   inspecting `origin/main` is allowed, but do not move local `main` or push
+   `origin/main` without explicit approval for that specific `main` step.
 4. If `main` and `dev` have diverged, treat commits unique to each side as
    intentional until proven otherwise. Report the divergence and ask before
    merging or rebasing one long-lived branch into the other.
 5. Distinguish clearly between "the current branch is up to date" and "the
    whole project is up to date." The latter is true only after both long-lived
    branches and any newer work found on other remote branches have been checked.
+6. A request to "push" or "пуш" means sending commits to the verified GitHub
+   remote, normally `origin`, with `git push`. Local commits, merges, or branch
+   updates alone do not complete a push request. Verify the GitHub remote ref
+   after pushing.
 
 ## Move Docker-volume worktrees to macOS before continuing
 
