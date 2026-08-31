@@ -2,16 +2,2035 @@
   "schema_version": 1,
   "project": {
     "name": "my-hw-bot",
-    "description": "A production Python pipeline that collects Hot Wheels news, filters and deduplicates articles, transcreates accepted items into Russian, and publishes them on a fixed schedule.",
+    "description": "A production Python pipeline that collects Hot Wheels news, filters and deduplicates articles, transcreates accepted items into Russian, publishes them on schedule, and is being completed with the approved reliability, observability, dashboard, provider, and source roadmap.",
     "status": "in_progress"
   },
   "milestone": {
-    "id": "dedup-broad-precision-release",
-    "title": "Broad-pair dedup precision release",
-    "description": "Release and verify a production dedup rule that soft-flags a shared broad series only when it is the stated subject of both article titles, while preserving distinctive blocking, fail-open behavior, truthful operator diagnostics, and safe publication timing.",
-    "status": "blocked"
+    "id": "full-project-roadmap",
+    "title": "Complete the full my-hw-bot product roadmap",
+    "description": "Deliver the complete documented project scope: preserve and verify the production bot, fix dedup precision, close approved reliability and operator-observability gaps, add the planned product capabilities, complete reviews and tests, deploy every release safely, and verify each result in production.",
+    "status": "in_progress"
   },
   "tasks": [
+    {
+      "id": "CORE-001",
+      "title": "Bootstrap the Python bot runtime, validated configuration, and dependency management",
+      "status": "done",
+      "weight": 5,
+      "depends_on": [],
+      "blocked_by": [],
+      "deliverables": [
+        "README.md",
+        "requirements.txt"
+      ]
+    },
+    {
+      "id": "CORE-002",
+      "title": "Implement durable SQLite state for processed, pending, published, failed, and bot-state records",
+      "status": "done",
+      "weight": 8,
+      "depends_on": [],
+      "blocked_by": [],
+      "deliverables": [
+        "news_bot.py",
+        "pending_articles_repo.py"
+      ]
+    },
+    {
+      "id": "CORE-003",
+      "title": "Integrate Telegram operator alerts and public channel publishing",
+      "status": "done",
+      "weight": 5,
+      "depends_on": [],
+      "blocked_by": [],
+      "deliverables": [
+        "news_bot.py",
+        "admin_alerts.py"
+      ]
+    },
+    {
+      "id": "CORE-004",
+      "title": "Implement Telegraph article rendering and publication",
+      "status": "done",
+      "weight": 5,
+      "depends_on": [],
+      "blocked_by": [],
+      "deliverables": [
+        "telegraph_publisher.py"
+      ]
+    },
+    {
+      "id": "CORE-005",
+      "title": "Build the long-lived scheduler, daily intake tick, and fixed publication slots",
+      "status": "done",
+      "weight": 8,
+      "depends_on": [],
+      "blocked_by": [],
+      "deliverables": [
+        "news_bot.py",
+        "compute_publish_slots.py"
+      ]
+    },
+    {
+      "id": "CORE-006",
+      "title": "Establish the automated test and CI safety net",
+      "status": "done",
+      "weight": 5,
+      "depends_on": [],
+      "blocked_by": [],
+      "deliverables": [
+        "tests/",
+        ".github/workflows/"
+      ]
+    },
+    {
+      "id": "CORE-007",
+      "title": "Package the bot for repeatable container deployment",
+      "status": "done",
+      "weight": 5,
+      "depends_on": [],
+      "blocked_by": [],
+      "deliverables": [
+        "Dockerfile",
+        "deploy.sh"
+      ]
+    },
+    {
+      "id": "CORE-008",
+      "title": "Document the production architecture, operations, and recovery procedures",
+      "status": "done",
+      "weight": 3,
+      "depends_on": [],
+      "blocked_by": [],
+      "deliverables": [
+        ".claude/skills/project-knowledge/references/"
+      ]
+    },
+    {
+      "id": "APF-001",
+      "title": "Filter standalone author-promotion boilerplate from source articles",
+      "status": "done",
+      "weight": 3,
+      "depends_on": [],
+      "blocked_by": [],
+      "deliverables": [
+        "work/completed/author-plug-filter/decisions.md"
+      ]
+    },
+    {
+      "id": "APF-002",
+      "title": "Strip inline social and support plugs after transcreation",
+      "status": "done",
+      "weight": 3,
+      "depends_on": [],
+      "blocked_by": [],
+      "deliverables": [
+        "work/completed/author-plug-filter/decisions.md"
+      ]
+    },
+    {
+      "id": "APF-003",
+      "title": "Verify and close the author-plug filter against supported platforms",
+      "status": "done",
+      "weight": 2,
+      "depends_on": [],
+      "blocked_by": [],
+      "deliverables": [
+        "work/completed/author-plug-filter/decisions.md"
+      ]
+    },
+    {
+      "id": "MNS-001",
+      "title": "Build the Mattel fetcher, payload extraction, and Hot Wheels filtering",
+      "status": "done",
+      "weight": 5,
+      "depends_on": [],
+      "blocked_by": [],
+      "deliverables": [
+        "work/completed/mattel-news-source/decisions.md"
+      ]
+    },
+    {
+      "id": "MNS-002",
+      "title": "Add Mattel parser unit tests and an HTML fixture",
+      "status": "done",
+      "weight": 3,
+      "depends_on": [],
+      "blocked_by": [],
+      "deliverables": [
+        "work/completed/mattel-news-source/decisions.md"
+      ]
+    },
+    {
+      "id": "MNS-003",
+      "title": "Integrate the Mattel source into the intake job",
+      "status": "done",
+      "weight": 5,
+      "depends_on": [],
+      "blocked_by": [],
+      "deliverables": [
+        "work/completed/mattel-news-source/decisions.md"
+      ]
+    },
+    {
+      "id": "MNS-004",
+      "title": "Add the Mattel source integration test",
+      "status": "done",
+      "weight": 3,
+      "depends_on": [],
+      "blocked_by": [],
+      "deliverables": [
+        "work/completed/mattel-news-source/decisions.md"
+      ]
+    },
+    {
+      "id": "MNS-005",
+      "title": "Complete Mattel code and security audits",
+      "status": "done",
+      "weight": 1,
+      "depends_on": [],
+      "blocked_by": [],
+      "deliverables": [
+        "work/completed/mattel-news-source/decisions.md"
+      ]
+    },
+    {
+      "id": "MNS-006",
+      "title": "Complete Mattel pre-deploy QA",
+      "status": "done",
+      "weight": 2,
+      "depends_on": [],
+      "blocked_by": [],
+      "deliverables": [
+        "work/completed/mattel-news-source/decisions.md"
+      ]
+    },
+    {
+      "id": "TEL-001",
+      "title": "Implement Telegraph publishing with Instant View previews",
+      "status": "done",
+      "weight": 5,
+      "depends_on": [],
+      "blocked_by": [],
+      "deliverables": [
+        "work/completed/telegraph-pipeline/decisions.md"
+      ]
+    },
+    {
+      "id": "TEL-002",
+      "title": "Implement per-source full-article fetchers",
+      "status": "done",
+      "weight": 5,
+      "depends_on": [],
+      "blocked_by": [],
+      "deliverables": [
+        "work/completed/telegraph-pipeline/decisions.md"
+      ]
+    },
+    {
+      "id": "TEL-003",
+      "title": "Add Cloudflare-aware fetching for autoevolution",
+      "status": "done",
+      "weight": 5,
+      "depends_on": [],
+      "blocked_by": [],
+      "deliverables": [
+        "work/completed/telegraph-pipeline/decisions.md"
+      ]
+    },
+    {
+      "id": "TEL-004",
+      "title": "Lock the Telegram channel-card format",
+      "status": "done",
+      "weight": 3,
+      "depends_on": [],
+      "blocked_by": [],
+      "deliverables": [
+        "work/completed/telegraph-pipeline/decisions.md"
+      ]
+    },
+    {
+      "id": "TEL-005",
+      "title": "Align source parsers with the Telegraph rendering contract",
+      "status": "done",
+      "weight": 3,
+      "depends_on": [],
+      "blocked_by": [],
+      "deliverables": [
+        "work/completed/telegraph-pipeline/decisions.md"
+      ]
+    },
+    {
+      "id": "OPS-001",
+      "title": "Treat account-level LLM 402 responses as outages instead of article failures",
+      "status": "done",
+      "weight": 3,
+      "depends_on": [],
+      "blocked_by": [],
+      "deliverables": [
+        "work/llm-402-outage/decisions.md"
+      ]
+    },
+    {
+      "id": "OPS-002",
+      "title": "Cap consecutive outage holds so one article cannot block the queue",
+      "status": "done",
+      "weight": 3,
+      "depends_on": [],
+      "blocked_by": [],
+      "deliverables": [
+        "work/hold-cap/decisions.md"
+      ]
+    },
+    {
+      "id": "OPS-003",
+      "title": "Review and harden the promotion filter against production examples",
+      "status": "done",
+      "weight": 2,
+      "depends_on": [],
+      "blocked_by": [],
+      "deliverables": [
+        "work/promo-filter-review/README.md"
+      ]
+    },
+    {
+      "id": "OPS-004",
+      "title": "Review and harden the content gate against production examples",
+      "status": "done",
+      "weight": 2,
+      "depends_on": [],
+      "blocked_by": [],
+      "deliverables": [
+        "work/content-gate-review/README.md"
+      ]
+    },
+    {
+      "id": "OPS-005",
+      "title": "Add intake-funnel diagnostics and a pipeline watchdog",
+      "status": "done",
+      "weight": 3,
+      "depends_on": [],
+      "blocked_by": [],
+      "deliverables": [
+        "work/pipeline-diagnostic-watchdog/README.md"
+      ]
+    },
+    {
+      "id": "OPS-006",
+      "title": "Add an end-of-tick publication recap diagnostic",
+      "status": "done",
+      "weight": 3,
+      "depends_on": [],
+      "blocked_by": [],
+      "deliverables": [
+        "work/publish-recap-diagnostic/README.md"
+      ]
+    },
+    {
+      "id": "OPS-007",
+      "title": "Add an external host and publication-silence uptime workflow",
+      "status": "done",
+      "weight": 5,
+      "depends_on": [],
+      "blocked_by": [],
+      "deliverables": [
+        ".github/workflows/uptime.yml"
+      ]
+    },
+    {
+      "id": "SFP-001",
+      "title": "Build the HTML corpus and OrangeTrack formatting golden gate",
+      "status": "done",
+      "weight": 3,
+      "depends_on": [],
+      "blocked_by": [],
+      "deliverables": [
+        "work/source-formatting-parity/decisions.md"
+      ]
+    },
+    {
+      "id": "SFP-002",
+      "title": "Add the source-formatting feature flag",
+      "status": "done",
+      "weight": 2,
+      "depends_on": [],
+      "blocked_by": [],
+      "deliverables": [
+        "work/source-formatting-parity/decisions.md"
+      ]
+    },
+    {
+      "id": "SFP-003",
+      "title": "Make list items patchable in every LLM engine",
+      "status": "done",
+      "weight": 3,
+      "depends_on": [],
+      "blocked_by": [],
+      "deliverables": [
+        "work/source-formatting-parity/decisions.md"
+      ]
+    },
+    {
+      "id": "SFP-004",
+      "title": "Bound request-path formatting marker encoding",
+      "status": "done",
+      "weight": 3,
+      "depends_on": [],
+      "blocked_by": [],
+      "deliverables": [
+        "work/source-formatting-parity/decisions.md"
+      ]
+    },
+    {
+      "id": "SFP-005",
+      "title": "Extract shared DOM blocks and migrate OrangeTrack",
+      "status": "done",
+      "weight": 5,
+      "depends_on": [],
+      "blocked_by": [],
+      "deliverables": [
+        "work/source-formatting-parity/decisions.md"
+      ]
+    },
+    {
+      "id": "SFP-006",
+      "title": "Align image caps, source validation, and preview rendering",
+      "status": "done",
+      "weight": 5,
+      "depends_on": [],
+      "blocked_by": [],
+      "deliverables": [
+        "work/source-formatting-parity/decisions.md"
+      ]
+    },
+    {
+      "id": "SFP-007",
+      "title": "Emit structured formatting blocks for t-hunted",
+      "status": "done",
+      "weight": 5,
+      "depends_on": [],
+      "blocked_by": [],
+      "deliverables": [
+        "work/source-formatting-parity/decisions.md"
+      ]
+    },
+    {
+      "id": "SFP-008",
+      "title": "Add the runtime formatting-alignment guard",
+      "status": "done",
+      "weight": 3,
+      "depends_on": [],
+      "blocked_by": [],
+      "deliverables": [
+        "work/source-formatting-parity/decisions.md"
+      ]
+    },
+    {
+      "id": "SFP-009",
+      "title": "Verify the end-to-end formatting chain",
+      "status": "done",
+      "weight": 5,
+      "depends_on": [],
+      "blocked_by": [],
+      "deliverables": [
+        "work/source-formatting-parity/decisions.md"
+      ]
+    },
+    {
+      "id": "SFP-010",
+      "title": "Complete the formatting feature code audit",
+      "status": "done",
+      "weight": 1,
+      "depends_on": [],
+      "blocked_by": [],
+      "deliverables": [
+        "work/source-formatting-parity/decisions.md"
+      ]
+    },
+    {
+      "id": "SFP-011",
+      "title": "Complete the formatting feature security audit",
+      "status": "done",
+      "weight": 1,
+      "depends_on": [],
+      "blocked_by": [],
+      "deliverables": [
+        "work/source-formatting-parity/decisions.md"
+      ]
+    },
+    {
+      "id": "SFP-012",
+      "title": "Complete the formatting feature test audit",
+      "status": "done",
+      "weight": 1,
+      "depends_on": [],
+      "blocked_by": [],
+      "deliverables": [
+        "work/source-formatting-parity/decisions.md"
+      ]
+    },
+    {
+      "id": "SFP-013",
+      "title": "Complete formatting pre-deploy QA",
+      "status": "done",
+      "weight": 2,
+      "depends_on": [],
+      "blocked_by": [],
+      "deliverables": [
+        "work/source-formatting-parity/decisions.md"
+      ]
+    },
+    {
+      "id": "SFP-014",
+      "title": "Deploy source-formatting parity",
+      "status": "done",
+      "weight": 2,
+      "depends_on": [],
+      "blocked_by": [],
+      "deliverables": [
+        "work/source-formatting-parity/decisions.md"
+      ]
+    },
+    {
+      "id": "SFP-015",
+      "title": "Verify source formatting after deployment",
+      "status": "done",
+      "weight": 2,
+      "depends_on": [],
+      "blocked_by": [],
+      "deliverables": [
+        "work/source-formatting-parity/decisions.md"
+      ]
+    },
+    {
+      "id": "PSR-001",
+      "title": "Build scheduler planning primitives for same-day recovery",
+      "status": "done",
+      "weight": 3,
+      "depends_on": [],
+      "blocked_by": [],
+      "deliverables": [
+        "work/publication-silence-recovery/decisions.md"
+      ]
+    },
+    {
+      "id": "PSR-002",
+      "title": "Implement the publication-watch classifier",
+      "status": "done",
+      "weight": 3,
+      "depends_on": [],
+      "blocked_by": [],
+      "deliverables": [
+        "work/publication-silence-recovery/decisions.md"
+      ]
+    },
+    {
+      "id": "PSR-003",
+      "title": "Integrate review-release scheduling",
+      "status": "done",
+      "weight": 5,
+      "depends_on": [],
+      "blocked_by": [],
+      "deliverables": [
+        "work/publication-silence-recovery/decisions.md"
+      ]
+    },
+    {
+      "id": "PSR-004",
+      "title": "Integrate the tri-state uptime workflow",
+      "status": "done",
+      "weight": 5,
+      "depends_on": [],
+      "blocked_by": [],
+      "deliverables": [
+        "work/publication-silence-recovery/decisions.md"
+      ]
+    },
+    {
+      "id": "PSR-005",
+      "title": "Update project knowledge for silence recovery",
+      "status": "done",
+      "weight": 2,
+      "depends_on": [],
+      "blocked_by": [],
+      "deliverables": [
+        "work/publication-silence-recovery/decisions.md"
+      ]
+    },
+    {
+      "id": "PSR-006",
+      "title": "Complete the silence-recovery code audit",
+      "status": "done",
+      "weight": 1,
+      "depends_on": [],
+      "blocked_by": [],
+      "deliverables": [
+        "work/publication-silence-recovery/decisions.md"
+      ]
+    },
+    {
+      "id": "PSR-007",
+      "title": "Complete the silence-recovery security audit",
+      "status": "done",
+      "weight": 1,
+      "depends_on": [],
+      "blocked_by": [],
+      "deliverables": [
+        "work/publication-silence-recovery/decisions.md"
+      ]
+    },
+    {
+      "id": "PSR-008",
+      "title": "Complete the silence-recovery test audit",
+      "status": "done",
+      "weight": 1,
+      "depends_on": [],
+      "blocked_by": [],
+      "deliverables": [
+        "work/publication-silence-recovery/decisions.md"
+      ]
+    },
+    {
+      "id": "PSR-009",
+      "title": "Complete silence-recovery pre-deploy QA and release verification",
+      "status": "done",
+      "weight": 2,
+      "depends_on": [],
+      "blocked_by": [],
+      "deliverables": [
+        "work/publication-silence-recovery/decisions.md"
+      ]
+    },
+    {
+      "id": "HIST-CSD-01",
+      "title": "model_extractor.py + calibration fixture",
+      "status": "done",
+      "weight": 5,
+      "depends_on": [],
+      "blocked_by": [],
+      "deliverables": [
+        "work/completed/cross-source-dedup/tasks/1.md"
+      ]
+    },
+    {
+      "id": "HIST-CSD-02",
+      "title": "Schema migration + repo helpers + rate-limit helpers",
+      "status": "done",
+      "weight": 5,
+      "depends_on": [],
+      "blocked_by": [],
+      "deliverables": [
+        "work/completed/cross-source-dedup/tasks/2.md"
+      ]
+    },
+    {
+      "id": "HIST-CSD-03",
+      "title": "Admin-ping builders E014, E015, E016",
+      "status": "done",
+      "weight": 3,
+      "depends_on": [],
+      "blocked_by": [],
+      "deliverables": [
+        "work/completed/cross-source-dedup/tasks/3.md"
+      ]
+    },
+    {
+      "id": "HIST-CSD-04",
+      "title": "Wire dedup gate in news_bot.job() + integration tests",
+      "status": "done",
+      "weight": 8,
+      "depends_on": [],
+      "blocked_by": [],
+      "deliverables": [
+        "work/completed/cross-source-dedup/tasks/4.md"
+      ]
+    },
+    {
+      "id": "HIST-CSD-05",
+      "title": "backfill_fingerprints.py one-shot script",
+      "status": "done",
+      "weight": 5,
+      "depends_on": [],
+      "blocked_by": [],
+      "deliverables": [
+        "work/completed/cross-source-dedup/tasks/5.md"
+      ]
+    },
+    {
+      "id": "HIST-CSD-06",
+      "title": "Code Audit",
+      "status": "done",
+      "weight": 1,
+      "depends_on": [],
+      "blocked_by": [],
+      "deliverables": [
+        "work/completed/cross-source-dedup/tasks/6.md"
+      ]
+    },
+    {
+      "id": "HIST-CSD-07",
+      "title": "Security Audit",
+      "status": "done",
+      "weight": 1,
+      "depends_on": [],
+      "blocked_by": [],
+      "deliverables": [
+        "work/completed/cross-source-dedup/tasks/7.md"
+      ]
+    },
+    {
+      "id": "HIST-CSD-08",
+      "title": "Test Audit",
+      "status": "done",
+      "weight": 1,
+      "depends_on": [],
+      "blocked_by": [],
+      "deliverables": [
+        "work/completed/cross-source-dedup/tasks/8.md"
+      ]
+    },
+    {
+      "id": "HIST-CSD-09",
+      "title": "Pre-deploy QA",
+      "status": "done",
+      "weight": 2,
+      "depends_on": [],
+      "blocked_by": [],
+      "deliverables": [
+        "work/completed/cross-source-dedup/tasks/9.md"
+      ]
+    },
+    {
+      "id": "HIST-CSD-10",
+      "title": "Deploy",
+      "status": "done",
+      "weight": 2,
+      "depends_on": [],
+      "blocked_by": [],
+      "deliverables": [
+        "work/completed/cross-source-dedup/tasks/10.md"
+      ]
+    },
+    {
+      "id": "HIST-CSD-11",
+      "title": "Post-deploy verification",
+      "status": "done",
+      "weight": 2,
+      "depends_on": [],
+      "blocked_by": [],
+      "deliverables": [
+        "work/completed/cross-source-dedup/tasks/11.md"
+      ]
+    },
+    {
+      "id": "HIST-DMS-01",
+      "title": "Series/theme extraction + tier-tagged lexicon (`model_extractor.py`)",
+      "status": "done",
+      "weight": 5,
+      "depends_on": [],
+      "blocked_by": [],
+      "deliverables": [
+        "work/completed/dedup-model-series/tasks/1.md"
+      ]
+    },
+    {
+      "id": "HIST-DMS-02",
+      "title": "Pair-aware [E015] + broad [E014] builders (`admin_alerts.py`)",
+      "status": "done",
+      "weight": 3,
+      "depends_on": [],
+      "blocked_by": [],
+      "deliverables": [
+        "work/completed/dedup-model-series/tasks/2.md"
+      ]
+    },
+    {
+      "id": "HIST-DMS-03",
+      "title": "Калибровочная фикстура — 8 пар (реальные дубли + не-дубли)",
+      "status": "done",
+      "weight": 3,
+      "depends_on": [],
+      "blocked_by": [],
+      "deliverables": [
+        "work/completed/dedup-model-series/tasks/3.md"
+      ]
+    },
+    {
+      "id": "HIST-DMS-04",
+      "title": "Toggle + tiered gate refactor (`news_bot.py`)",
+      "status": "done",
+      "weight": 8,
+      "depends_on": [],
+      "blocked_by": [],
+      "deliverables": [
+        "work/completed/dedup-model-series/tasks/4.md"
+      ]
+    },
+    {
+      "id": "HIST-DMS-05",
+      "title": "Backfill widened re-select (`backfill_fingerprints.py`)",
+      "status": "done",
+      "weight": 5,
+      "depends_on": [],
+      "blocked_by": [],
+      "deliverables": [
+        "work/completed/dedup-model-series/tasks/5.md"
+      ]
+    },
+    {
+      "id": "HIST-DMS-06",
+      "title": "Калибровочный тест точности (pair-tier verdict) + деплой-раннбук",
+      "status": "done",
+      "weight": 3,
+      "depends_on": [],
+      "blocked_by": [],
+      "deliverables": [
+        "work/completed/dedup-model-series/tasks/6.md"
+      ]
+    },
+    {
+      "id": "HIST-DMS-07",
+      "title": "Code Audit",
+      "status": "done",
+      "weight": 1,
+      "depends_on": [],
+      "blocked_by": [],
+      "deliverables": [
+        "work/completed/dedup-model-series/tasks/7.md"
+      ]
+    },
+    {
+      "id": "HIST-DMS-08",
+      "title": "Security Audit",
+      "status": "done",
+      "weight": 1,
+      "depends_on": [],
+      "blocked_by": [],
+      "deliverables": [
+        "work/completed/dedup-model-series/tasks/8.md"
+      ]
+    },
+    {
+      "id": "HIST-DMS-09",
+      "title": "Test Audit",
+      "status": "done",
+      "weight": 1,
+      "depends_on": [],
+      "blocked_by": [],
+      "deliverables": [
+        "work/completed/dedup-model-series/tasks/9.md"
+      ]
+    },
+    {
+      "id": "HIST-DMS-10",
+      "title": "Pre-deploy QA",
+      "status": "done",
+      "weight": 2,
+      "depends_on": [],
+      "blocked_by": [],
+      "deliverables": [
+        "work/completed/dedup-model-series/tasks/10.md"
+      ]
+    },
+    {
+      "id": "HIST-DMS-11",
+      "title": "Post-deploy verification (operator-applied)",
+      "status": "done",
+      "weight": 2,
+      "depends_on": [],
+      "blocked_by": [],
+      "deliverables": [
+        "work/completed/dedup-model-series/tasks/11.md"
+      ]
+    },
+    {
+      "id": "HIST-DRB-01",
+      "title": "DB concurrency guard + review-token store",
+      "status": "done",
+      "weight": 3,
+      "depends_on": [],
+      "blocked_by": [],
+      "deliverables": [
+        "work/completed/dedup-review-buttons/tasks/1.md"
+      ]
+    },
+    {
+      "id": "HIST-DRB-02",
+      "title": "Keyboard builder + reply_markup forwarding",
+      "status": "done",
+      "weight": 3,
+      "depends_on": [],
+      "blocked_by": [],
+      "deliverables": [
+        "work/completed/dedup-review-buttons/tasks/2.md"
+      ]
+    },
+    {
+      "id": "HIST-DRB-03",
+      "title": "Attach keyboard at the E014 send site",
+      "status": "done",
+      "weight": 3,
+      "depends_on": [],
+      "blocked_by": [],
+      "deliverables": [
+        "work/completed/dedup-review-buttons/tasks/3.md"
+      ]
+    },
+    {
+      "id": "HIST-DRB-04",
+      "title": "Callback decision logic (`resolve_dedup_callback`)",
+      "status": "done",
+      "weight": 5,
+      "depends_on": [],
+      "blocked_by": [],
+      "deliverables": [
+        "work/completed/dedup-review-buttons/tasks/4.md"
+      ]
+    },
+    {
+      "id": "HIST-DRB-05",
+      "title": "Background review listener + main() wiring",
+      "status": "done",
+      "weight": 5,
+      "depends_on": [],
+      "blocked_by": [],
+      "deliverables": [
+        "work/completed/dedup-review-buttons/tasks/5.md"
+      ]
+    },
+    {
+      "id": "HIST-DRB-06",
+      "title": "Config + Project Knowledge docs",
+      "status": "done",
+      "weight": 2,
+      "depends_on": [],
+      "blocked_by": [],
+      "deliverables": [
+        "work/completed/dedup-review-buttons/tasks/6.md"
+      ]
+    },
+    {
+      "id": "HIST-DRB-07",
+      "title": "Code Audit",
+      "status": "done",
+      "weight": 1,
+      "depends_on": [],
+      "blocked_by": [],
+      "deliverables": [
+        "work/completed/dedup-review-buttons/tasks/7.md"
+      ]
+    },
+    {
+      "id": "HIST-DRB-08",
+      "title": "Security Audit",
+      "status": "done",
+      "weight": 1,
+      "depends_on": [],
+      "blocked_by": [],
+      "deliverables": [
+        "work/completed/dedup-review-buttons/tasks/8.md"
+      ]
+    },
+    {
+      "id": "HIST-DRB-09",
+      "title": "Test Audit",
+      "status": "done",
+      "weight": 1,
+      "depends_on": [],
+      "blocked_by": [],
+      "deliverables": [
+        "work/completed/dedup-review-buttons/tasks/9.md"
+      ]
+    },
+    {
+      "id": "HIST-DRB-10",
+      "title": "Pre-deploy QA",
+      "status": "done",
+      "weight": 2,
+      "depends_on": [],
+      "blocked_by": [],
+      "deliverables": [
+        "work/completed/dedup-review-buttons/tasks/10.md"
+      ]
+    },
+    {
+      "id": "HIST-DRB-11",
+      "title": "Deploy (operator-applied)",
+      "status": "done",
+      "weight": 2,
+      "depends_on": [],
+      "blocked_by": [],
+      "deliverables": [
+        "work/completed/dedup-review-buttons/tasks/11.md"
+      ]
+    },
+    {
+      "id": "HIST-DRB-12",
+      "title": "Post-deploy verification (operator-driven)",
+      "status": "done",
+      "weight": 2,
+      "depends_on": [],
+      "blocked_by": [],
+      "deliverables": [
+        "work/completed/dedup-review-buttons/tasks/12.md"
+      ]
+    },
+    {
+      "id": "HIST-LLM-01",
+      "title": "Add bot_state migration",
+      "status": "done",
+      "weight": 3,
+      "depends_on": [],
+      "blocked_by": [],
+      "deliverables": [
+        "work/completed/llm-transcreation-and-distributed-publishing/tasks/01.md"
+      ]
+    },
+    {
+      "id": "HIST-LLM-02",
+      "title": "Create `compute_publish_slots.py` + tests",
+      "status": "done",
+      "weight": 3,
+      "depends_on": [],
+      "blocked_by": [],
+      "deliverables": [
+        "work/completed/llm-transcreation-and-distributed-publishing/tasks/02.md"
+      ]
+    },
+    {
+      "id": "HIST-LLM-03",
+      "title": "Create `claude_transcreation.py` + tests",
+      "status": "done",
+      "weight": 5,
+      "depends_on": [],
+      "blocked_by": [],
+      "deliverables": [
+        "work/completed/llm-transcreation-and-distributed-publishing/tasks/03.md"
+      ]
+    },
+    {
+      "id": "HIST-LLM-04",
+      "title": "Extend the token-redaction filter for the primary LLM credential",
+      "status": "done",
+      "weight": 3,
+      "depends_on": [],
+      "blocked_by": [],
+      "deliverables": [
+        "work/completed/llm-transcreation-and-distributed-publishing/tasks/04.md"
+      ]
+    },
+    {
+      "id": "HIST-LLM-05",
+      "title": "Create `outage_state.py` + tests",
+      "status": "done",
+      "weight": 3,
+      "depends_on": [],
+      "blocked_by": [],
+      "deliverables": [
+        "work/completed/llm-transcreation-and-distributed-publishing/tasks/05.md"
+      ]
+    },
+    {
+      "id": "HIST-LLM-06",
+      "title": "Update requirements.txt + .env.example",
+      "status": "done",
+      "weight": 2,
+      "depends_on": [],
+      "blocked_by": [],
+      "deliverables": [
+        "work/completed/llm-transcreation-and-distributed-publishing/tasks/06.md"
+      ]
+    },
+    {
+      "id": "HIST-LLM-07",
+      "title": "Refactor _fallback_publish for Claude primary + Google per-article fallback",
+      "status": "done",
+      "weight": 8,
+      "depends_on": [],
+      "blocked_by": [],
+      "deliverables": [
+        "work/completed/llm-transcreation-and-distributed-publishing/tasks/07.md"
+      ]
+    },
+    {
+      "id": "HIST-LLM-08",
+      "title": "Refactor `job()` for distributed-publish loop + cron change",
+      "status": "done",
+      "weight": 8,
+      "depends_on": [],
+      "blocked_by": [],
+      "deliverables": [
+        "work/completed/llm-transcreation-and-distributed-publishing/tasks/08.md"
+      ]
+    },
+    {
+      "id": "HIST-LLM-09",
+      "title": "Delete legacy auto-publish code + env vars",
+      "status": "done",
+      "weight": 5,
+      "depends_on": [],
+      "blocked_by": [],
+      "deliverables": [
+        "work/completed/llm-transcreation-and-distributed-publishing/tasks/09.md"
+      ]
+    },
+    {
+      "id": "HIST-LLM-10",
+      "title": "Strip bureaucratic regex + 4000-char truncation from `transcreate_text`",
+      "status": "done",
+      "weight": 3,
+      "depends_on": [],
+      "blocked_by": [],
+      "deliverables": [
+        "work/completed/llm-transcreation-and-distributed-publishing/tasks/10.md"
+      ]
+    },
+    {
+      "id": "HIST-LLM-11",
+      "title": "Update integration tests for new auto-publish path",
+      "status": "done",
+      "weight": 3,
+      "depends_on": [],
+      "blocked_by": [],
+      "deliverables": [
+        "work/completed/llm-transcreation-and-distributed-publishing/tasks/11.md"
+      ]
+    },
+    {
+      "id": "HIST-LLM-12",
+      "title": "Create tests/test_distributed_schedule_integration.py",
+      "status": "done",
+      "weight": 3,
+      "depends_on": [],
+      "blocked_by": [],
+      "deliverables": [
+        "work/completed/llm-transcreation-and-distributed-publishing/tasks/12.md"
+      ]
+    },
+    {
+      "id": "HIST-LLM-13",
+      "title": "Update deploy bundle (deploy.sh + GitHub Actions + PK docs)",
+      "status": "done",
+      "weight": 5,
+      "depends_on": [],
+      "blocked_by": [],
+      "deliverables": [
+        "work/completed/llm-transcreation-and-distributed-publishing/tasks/13.md"
+      ]
+    },
+    {
+      "id": "HIST-LLM-14",
+      "title": "Code Audit",
+      "status": "done",
+      "weight": 1,
+      "depends_on": [],
+      "blocked_by": [],
+      "deliverables": [
+        "work/completed/llm-transcreation-and-distributed-publishing/tasks/14.md"
+      ]
+    },
+    {
+      "id": "HIST-LLM-15",
+      "title": "Security Audit",
+      "status": "done",
+      "weight": 1,
+      "depends_on": [],
+      "blocked_by": [],
+      "deliverables": [
+        "work/completed/llm-transcreation-and-distributed-publishing/tasks/15.md"
+      ]
+    },
+    {
+      "id": "HIST-LLM-16",
+      "title": "Test Audit",
+      "status": "done",
+      "weight": 1,
+      "depends_on": [],
+      "blocked_by": [],
+      "deliverables": [
+        "work/completed/llm-transcreation-and-distributed-publishing/tasks/16.md"
+      ]
+    },
+    {
+      "id": "HIST-LLM-17",
+      "title": "Pre-deploy QA",
+      "status": "done",
+      "weight": 2,
+      "depends_on": [],
+      "blocked_by": [],
+      "deliverables": [
+        "work/completed/llm-transcreation-and-distributed-publishing/tasks/17.md"
+      ]
+    },
+    {
+      "id": "HIST-LLM-18",
+      "title": "Deploy",
+      "status": "done",
+      "weight": 2,
+      "depends_on": [],
+      "blocked_by": [],
+      "deliverables": [
+        "work/completed/llm-transcreation-and-distributed-publishing/tasks/18.md"
+      ]
+    },
+    {
+      "id": "HIST-LLM-19",
+      "title": "Post-deploy verification",
+      "status": "done",
+      "weight": 2,
+      "depends_on": [],
+      "blocked_by": [],
+      "deliverables": [
+        "work/completed/llm-transcreation-and-distributed-publishing/tasks/19.md"
+      ]
+    },
+    {
+      "id": "HIST-MRW-01",
+      "title": "`pending_articles_repo` module",
+      "status": "done",
+      "weight": 5,
+      "depends_on": [],
+      "blocked_by": [],
+      "deliverables": [
+        "work/completed/manual-review-workflow/tasks/1.md"
+      ]
+    },
+    {
+      "id": "HIST-MRW-02",
+      "title": "`preview_renderer` module",
+      "status": "done",
+      "weight": 5,
+      "depends_on": [],
+      "blocked_by": [],
+      "deliverables": [
+        "work/completed/manual-review-workflow/tasks/2.md"
+      ]
+    },
+    {
+      "id": "HIST-MRW-03",
+      "title": "Admin-ping helper + source vocabulary + sanitize_error_message",
+      "status": "done",
+      "weight": 5,
+      "depends_on": [],
+      "blocked_by": [],
+      "deliverables": [
+        "work/completed/manual-review-workflow/tasks/3.md"
+      ]
+    },
+    {
+      "id": "HIST-MRW-04",
+      "title": "Public `preview_nodes` wrapper in `telegraph_publisher`",
+      "status": "done",
+      "weight": 5,
+      "depends_on": [],
+      "blocked_by": [],
+      "deliverables": [
+        "work/completed/manual-review-workflow/tasks/4.md"
+      ]
+    },
+    {
+      "id": "HIST-MRW-05",
+      "title": "Source registry + source_name tagging",
+      "status": "done",
+      "weight": 5,
+      "depends_on": [],
+      "blocked_by": [],
+      "deliverables": [
+        "work/completed/manual-review-workflow/tasks/5.md"
+      ]
+    },
+    {
+      "id": "HIST-MRW-06",
+      "title": "Refactor `job()` into prep-only + cron bump + delete `process_new_articles`",
+      "status": "done",
+      "weight": 8,
+      "depends_on": [],
+      "blocked_by": [],
+      "deliverables": [
+        "work/completed/manual-review-workflow/tasks/6.md"
+      ]
+    },
+    {
+      "id": "HIST-MRW-07",
+      "title": "`hw_review` CLI with `list` / `show` / `stage` / `skip` / `preview`",
+      "status": "done",
+      "weight": 8,
+      "depends_on": [],
+      "blocked_by": [],
+      "deliverables": [
+        "work/completed/manual-review-workflow/tasks/7.md"
+      ]
+    },
+    {
+      "id": "HIST-MRW-08",
+      "title": "`hw_review publish` with Telegraph-URL reuse",
+      "status": "done",
+      "weight": 5,
+      "depends_on": [],
+      "blocked_by": [],
+      "deliverables": [
+        "work/completed/manual-review-workflow/tasks/8.md"
+      ]
+    },
+    {
+      "id": "HIST-MRW-09",
+      "title": "Idle-fallback pass + hw_review take command",
+      "status": "done",
+      "weight": 5,
+      "depends_on": [],
+      "blocked_by": [],
+      "deliverables": [
+        "work/completed/manual-review-workflow/tasks/9.md"
+      ]
+    },
+    {
+      "id": "HIST-MRW-10",
+      "title": "Overflow fast-track pass + hw_review retry + failed-footer",
+      "status": "done",
+      "weight": 5,
+      "depends_on": [],
+      "blocked_by": [],
+      "deliverables": [
+        "work/completed/manual-review-workflow/tasks/10.md"
+      ]
+    },
+    {
+      "id": "HIST-MRW-11",
+      "title": "Code Audit",
+      "status": "done",
+      "weight": 1,
+      "depends_on": [],
+      "blocked_by": [],
+      "deliverables": [
+        "work/completed/manual-review-workflow/tasks/11.md"
+      ]
+    },
+    {
+      "id": "HIST-MRW-12",
+      "title": "Security Audit",
+      "status": "done",
+      "weight": 1,
+      "depends_on": [],
+      "blocked_by": [],
+      "deliverables": [
+        "work/completed/manual-review-workflow/tasks/12.md"
+      ]
+    },
+    {
+      "id": "HIST-MRW-13",
+      "title": "Test Audit",
+      "status": "done",
+      "weight": 1,
+      "depends_on": [],
+      "blocked_by": [],
+      "deliverables": [
+        "work/completed/manual-review-workflow/tasks/13.md"
+      ]
+    },
+    {
+      "id": "HIST-MRW-14",
+      "title": "Pre-deploy QA",
+      "status": "done",
+      "weight": 2,
+      "depends_on": [],
+      "blocked_by": [],
+      "deliverables": [
+        "work/completed/manual-review-workflow/tasks/14.md"
+      ]
+    },
+    {
+      "id": "HIST-MPR-01",
+      "title": "rewrite-parser",
+      "status": "done",
+      "weight": 8,
+      "depends_on": [],
+      "blocked_by": [],
+      "deliverables": [
+        "work/completed/mattel-parser-rewrite/tasks/01.md"
+      ]
+    },
+    {
+      "id": "HIST-MPR-02",
+      "title": "code-audit",
+      "status": "done",
+      "weight": 1,
+      "depends_on": [],
+      "blocked_by": [],
+      "deliverables": [
+        "work/completed/mattel-parser-rewrite/tasks/02.md"
+      ]
+    },
+    {
+      "id": "HIST-MPR-03",
+      "title": "security-audit",
+      "status": "done",
+      "weight": 1,
+      "depends_on": [],
+      "blocked_by": [],
+      "deliverables": [
+        "work/completed/mattel-parser-rewrite/tasks/03.md"
+      ]
+    },
+    {
+      "id": "HIST-MPR-04",
+      "title": "test-audit",
+      "status": "done",
+      "weight": 1,
+      "depends_on": [],
+      "blocked_by": [],
+      "deliverables": [
+        "work/completed/mattel-parser-rewrite/tasks/04.md"
+      ]
+    },
+    {
+      "id": "HIST-MPR-05",
+      "title": "pre-deploy-qa",
+      "status": "done",
+      "weight": 2,
+      "depends_on": [],
+      "blocked_by": [],
+      "deliverables": [
+        "work/completed/mattel-parser-rewrite/tasks/05.md"
+      ]
+    },
+    {
+      "id": "HIST-RSS-01",
+      "title": "Configuration loader",
+      "status": "done",
+      "weight": 2,
+      "depends_on": [],
+      "blocked_by": [],
+      "deliverables": [
+        "work/completed/multiple-rss-feeds/tasks/1.md"
+      ]
+    },
+    {
+      "id": "HIST-RSS-02",
+      "title": "Feed iteration and error isolation",
+      "status": "done",
+      "weight": 8,
+      "depends_on": [],
+      "blocked_by": [],
+      "deliverables": [
+        "work/completed/multiple-rss-feeds/tasks/2.md"
+      ]
+    },
+    {
+      "id": "HIST-RSS-03",
+      "title": "Enhanced logging",
+      "status": "done",
+      "weight": 2,
+      "depends_on": [],
+      "blocked_by": [],
+      "deliverables": [
+        "work/completed/multiple-rss-feeds/tasks/3.md"
+      ]
+    },
+    {
+      "id": "HIST-RSS-04",
+      "title": "Unit tests for new functionality",
+      "status": "done",
+      "weight": 3,
+      "depends_on": [],
+      "blocked_by": [],
+      "deliverables": [
+        "work/completed/multiple-rss-feeds/tasks/4.md"
+      ]
+    },
+    {
+      "id": "HIST-RSS-05",
+      "title": "Integration test with mock feeds",
+      "status": "done",
+      "weight": 3,
+      "depends_on": [],
+      "blocked_by": [],
+      "deliverables": [
+        "work/completed/multiple-rss-feeds/tasks/5.md"
+      ]
+    },
+    {
+      "id": "HIST-RSS-06",
+      "title": "Code Audit",
+      "status": "done",
+      "weight": 1,
+      "depends_on": [],
+      "blocked_by": [],
+      "deliverables": [
+        "work/completed/multiple-rss-feeds/tasks/6.md"
+      ]
+    },
+    {
+      "id": "HIST-RSS-07",
+      "title": "Security Audit",
+      "status": "done",
+      "weight": 1,
+      "depends_on": [],
+      "blocked_by": [],
+      "deliverables": [
+        "work/completed/multiple-rss-feeds/tasks/7.md"
+      ]
+    },
+    {
+      "id": "HIST-RSS-08",
+      "title": "Test Audit",
+      "status": "done",
+      "weight": 1,
+      "depends_on": [],
+      "blocked_by": [],
+      "deliverables": [
+        "work/completed/multiple-rss-feeds/tasks/8.md"
+      ]
+    },
+    {
+      "id": "HIST-RSS-09",
+      "title": "Pre-deploy QA",
+      "status": "done",
+      "weight": 2,
+      "depends_on": [],
+      "blocked_by": [],
+      "deliverables": [
+        "work/completed/multiple-rss-feeds/tasks/9.md"
+      ]
+    },
+    {
+      "id": "HIST-RSS-10",
+      "title": "Deploy (optional)",
+      "status": "done",
+      "weight": 2,
+      "depends_on": [],
+      "blocked_by": [],
+      "deliverables": [
+        "work/completed/multiple-rss-feeds/tasks/10.md"
+      ]
+    },
+    {
+      "id": "HIST-RSS-11",
+      "title": "Post-deploy verification (optional)",
+      "status": "done",
+      "weight": 2,
+      "depends_on": [],
+      "blocked_by": [],
+      "deliverables": [
+        "work/completed/multiple-rss-feeds/tasks/11.md"
+      ]
+    },
+    {
+      "id": "HIST-ORF-01",
+      "title": "Parser changes — `<li>`/`<ol>` + heading dispatch + `paragraphs_flat`",
+      "status": "done",
+      "weight": 5,
+      "depends_on": [],
+      "blocked_by": [],
+      "deliverables": [
+        "work/completed/orangetrack-rendering-fixes/tasks/1.md"
+      ]
+    },
+    {
+      "id": "HIST-ORF-02",
+      "title": "LLM-patch — extend `_PATCHED_TEXT_BLOCK_TYPES` with `list_item`",
+      "status": "done",
+      "weight": 3,
+      "depends_on": [],
+      "blocked_by": [],
+      "deliverables": [
+        "work/completed/orangetrack-rendering-fixes/tasks/2.md"
+      ]
+    },
+    {
+      "id": "HIST-ORF-03",
+      "title": "Publisher — link helper + bullet rendering + heading",
+      "status": "done",
+      "weight": 5,
+      "depends_on": [],
+      "blocked_by": [],
+      "deliverables": [
+        "work/completed/orangetrack-rendering-fixes/tasks/3.md"
+      ]
+    },
+    {
+      "id": "HIST-ORF-04",
+      "title": "Unit + integration tests for parser changes",
+      "status": "done",
+      "weight": 3,
+      "depends_on": [],
+      "blocked_by": [],
+      "deliverables": [
+        "work/completed/orangetrack-rendering-fixes/tasks/4.md"
+      ]
+    },
+    {
+      "id": "HIST-ORF-05",
+      "title": "Unit tests for telegraph_publisher helper",
+      "status": "done",
+      "weight": 3,
+      "depends_on": [],
+      "blocked_by": [],
+      "deliverables": [
+        "work/completed/orangetrack-rendering-fixes/tasks/5.md"
+      ]
+    },
+    {
+      "id": "HIST-ORF-06",
+      "title": "Code Audit",
+      "status": "done",
+      "weight": 1,
+      "depends_on": [],
+      "blocked_by": [],
+      "deliverables": [
+        "work/completed/orangetrack-rendering-fixes/tasks/6.md"
+      ]
+    },
+    {
+      "id": "HIST-ORF-07",
+      "title": "Security Audit",
+      "status": "done",
+      "weight": 1,
+      "depends_on": [],
+      "blocked_by": [],
+      "deliverables": [
+        "work/completed/orangetrack-rendering-fixes/tasks/7.md"
+      ]
+    },
+    {
+      "id": "HIST-ORF-08",
+      "title": "Test Audit",
+      "status": "done",
+      "weight": 1,
+      "depends_on": [],
+      "blocked_by": [],
+      "deliverables": [
+        "work/completed/orangetrack-rendering-fixes/tasks/8.md"
+      ]
+    },
+    {
+      "id": "HIST-ORF-09",
+      "title": "Pre-deploy QA",
+      "status": "done",
+      "weight": 2,
+      "depends_on": [],
+      "blocked_by": [],
+      "deliverables": [
+        "work/completed/orangetrack-rendering-fixes/tasks/9.md"
+      ]
+    },
+    {
+      "id": "HIST-ORF-10",
+      "title": "Deploy",
+      "status": "done",
+      "weight": 2,
+      "depends_on": [],
+      "blocked_by": [],
+      "deliverables": [
+        "work/completed/orangetrack-rendering-fixes/tasks/10.md"
+      ]
+    },
+    {
+      "id": "HIST-ORF-11",
+      "title": "Post-deploy verification",
+      "status": "done",
+      "weight": 2,
+      "depends_on": [],
+      "blocked_by": [],
+      "deliverables": [
+        "work/completed/orangetrack-rendering-fixes/tasks/11.md"
+      ]
+    },
+    {
+      "id": "HIST-OTS-01",
+      "title": "Create `orangetrack_source.py` parser module",
+      "status": "done",
+      "weight": 5,
+      "depends_on": [],
+      "blocked_by": [],
+      "deliverables": [
+        "work/completed/orangetrack-source/tasks/01.md"
+      ]
+    },
+    {
+      "id": "HIST-OTS-02",
+      "title": "Extend `boilerplate_filter.py` with affiliate-line patterns",
+      "status": "done",
+      "weight": 3,
+      "depends_on": [],
+      "blocked_by": [],
+      "deliverables": [
+        "work/completed/orangetrack-source/tasks/02.md"
+      ]
+    },
+    {
+      "id": "HIST-OTS-03",
+      "title": "Wire orangetrack into `news_bot.py`",
+      "status": "done",
+      "weight": 8,
+      "depends_on": [],
+      "blocked_by": [],
+      "deliverables": [
+        "work/completed/orangetrack-source/tasks/03.md"
+      ]
+    },
+    {
+      "id": "HIST-OTS-04",
+      "title": "sources registry test update",
+      "status": "done",
+      "weight": 3,
+      "depends_on": [],
+      "blocked_by": [],
+      "deliverables": [
+        "work/completed/orangetrack-source/tasks/04.md"
+      ]
+    },
+    {
+      "id": "HIST-OTS-05",
+      "title": "Deploy FILES list synchronization",
+      "status": "done",
+      "weight": 2,
+      "depends_on": [],
+      "blocked_by": [],
+      "deliverables": [
+        "work/completed/orangetrack-source/tasks/05.md"
+      ]
+    },
+    {
+      "id": "HIST-OTS-06",
+      "title": "Code Audit",
+      "status": "done",
+      "weight": 1,
+      "depends_on": [],
+      "blocked_by": [],
+      "deliverables": [
+        "work/completed/orangetrack-source/tasks/06.md"
+      ]
+    },
+    {
+      "id": "HIST-OTS-07",
+      "title": "Security Audit",
+      "status": "done",
+      "weight": 1,
+      "depends_on": [],
+      "blocked_by": [],
+      "deliverables": [
+        "work/completed/orangetrack-source/tasks/07.md"
+      ]
+    },
+    {
+      "id": "HIST-OTS-08",
+      "title": "Test Audit (Audit Wave)",
+      "status": "done",
+      "weight": 1,
+      "depends_on": [],
+      "blocked_by": [],
+      "deliverables": [
+        "work/completed/orangetrack-source/tasks/08.md"
+      ]
+    },
+    {
+      "id": "HIST-OTS-09",
+      "title": "Pre-deploy QA",
+      "status": "done",
+      "weight": 2,
+      "depends_on": [],
+      "blocked_by": [],
+      "deliverables": [
+        "work/completed/orangetrack-source/tasks/09.md"
+      ]
+    },
+    {
+      "id": "HIST-OTS-10",
+      "title": "Deploy via dev push (CI auto-fires test deploy)",
+      "status": "done",
+      "weight": 2,
+      "depends_on": [],
+      "blocked_by": [],
+      "deliverables": [
+        "work/completed/orangetrack-source/tasks/10.md"
+      ]
+    },
+    {
+      "id": "HIST-OTS-11",
+      "title": "Post-deploy verification on test channel",
+      "status": "done",
+      "weight": 2,
+      "depends_on": [],
+      "blocked_by": [],
+      "deliverables": [
+        "work/completed/orangetrack-source/tasks/11.md"
+      ]
+    },
+    {
+      "id": "HIST-PID-01",
+      "title": "Add idempotency guard to `_fallback_publish`",
+      "status": "done",
+      "weight": 5,
+      "depends_on": [],
+      "blocked_by": [],
+      "deliverables": [
+        "work/completed/publish-idempotency-fix/tasks/1.md"
+      ]
+    },
+    {
+      "id": "HIST-PID-02",
+      "title": "Make `move_to_published` idempotent on duplicate link",
+      "status": "done",
+      "weight": 5,
+      "depends_on": [],
+      "blocked_by": [],
+      "deliverables": [
+        "work/completed/publish-idempotency-fix/tasks/2.md"
+      ]
+    },
+    {
+      "id": "HIST-PID-03",
+      "title": "Add 5 unit tests for the `_fallback_publish` guard",
+      "status": "done",
+      "weight": 3,
+      "depends_on": [],
+      "blocked_by": [],
+      "deliverables": [
+        "work/completed/publish-idempotency-fix/tasks/3.md"
+      ]
+    },
+    {
+      "id": "HIST-PID-04",
+      "title": "Add 1 repository test for `move_to_published` idempotency",
+      "status": "done",
+      "weight": 3,
+      "depends_on": [],
+      "blocked_by": [],
+      "deliverables": [
+        "work/completed/publish-idempotency-fix/tasks/4.md"
+      ]
+    },
+    {
+      "id": "HIST-PID-05",
+      "title": "Add 1 integration test for slot-loop with mixed zombie + fresh rows",
+      "status": "done",
+      "weight": 3,
+      "depends_on": [],
+      "blocked_by": [],
+      "deliverables": [
+        "work/completed/publish-idempotency-fix/tasks/5.md"
+      ]
+    },
+    {
+      "id": "HIST-PID-06",
+      "title": "Code Audit",
+      "status": "done",
+      "weight": 1,
+      "depends_on": [],
+      "blocked_by": [],
+      "deliverables": [
+        "work/completed/publish-idempotency-fix/tasks/6.md"
+      ]
+    },
+    {
+      "id": "HIST-PID-07",
+      "title": "Security Audit",
+      "status": "done",
+      "weight": 1,
+      "depends_on": [],
+      "blocked_by": [],
+      "deliverables": [
+        "work/completed/publish-idempotency-fix/tasks/7.md"
+      ]
+    },
+    {
+      "id": "HIST-PID-08",
+      "title": "Test Audit",
+      "status": "done",
+      "weight": 1,
+      "depends_on": [],
+      "blocked_by": [],
+      "deliverables": [
+        "work/completed/publish-idempotency-fix/tasks/8.md"
+      ]
+    },
+    {
+      "id": "HIST-PID-09",
+      "title": "Pre-deploy QA",
+      "status": "done",
+      "weight": 2,
+      "depends_on": [],
+      "blocked_by": [],
+      "deliverables": [
+        "work/completed/publish-idempotency-fix/tasks/9.md"
+      ]
+    },
+    {
+      "id": "HIST-PID-10",
+      "title": "Deploy",
+      "status": "done",
+      "weight": 2,
+      "depends_on": [],
+      "blocked_by": [],
+      "deliverables": [
+        "work/completed/publish-idempotency-fix/tasks/10.md"
+      ]
+    },
+    {
+      "id": "HIST-PID-11",
+      "title": "Post-deploy verification",
+      "status": "done",
+      "weight": 2,
+      "depends_on": [],
+      "blocked_by": [],
+      "deliverables": [
+        "work/completed/publish-idempotency-fix/tasks/11.md"
+      ]
+    },
+    {
+      "id": "HIST-THS-01",
+      "title": "New parser module + unit tests",
+      "status": "done",
+      "weight": 8,
+      "depends_on": [],
+      "blocked_by": [],
+      "deliverables": [
+        "work/completed/t-hunted-pt-source/tasks/1.md"
+      ]
+    },
+    {
+      "id": "HIST-THS-02",
+      "title": "Admin alerts E031-E033",
+      "status": "done",
+      "weight": 3,
+      "depends_on": [],
+      "blocked_by": [],
+      "deliverables": [
+        "work/completed/t-hunted-pt-source/tasks/2.md"
+      ]
+    },
+    {
+      "id": "HIST-THS-03",
+      "title": "news_bot.py wiring (import + dispatcher + NETLOC_TO_SOURCE + SOURCE_HASHTAG_OVERRIDE + archived consumer dicts) + sources_registry test extension",
+      "status": "done",
+      "weight": 8,
+      "depends_on": [],
+      "blocked_by": [],
+      "deliverables": [
+        "work/completed/t-hunted-pt-source/tasks/3.md"
+      ]
+    },
+    {
+      "id": "HIST-THS-04",
+      "title": "Config + boilerplate (feeds.json + boilerplate_filter.py + tests)",
+      "status": "done",
+      "weight": 5,
+      "depends_on": [],
+      "blocked_by": [],
+      "deliverables": [
+        "work/completed/t-hunted-pt-source/tasks/4.md"
+      ]
+    },
+    {
+      "id": "HIST-THS-05",
+      "title": "Wiring tests (test_telegram + dispatcher unit)",
+      "status": "done",
+      "weight": 3,
+      "depends_on": [],
+      "blocked_by": [],
+      "deliverables": [
+        "work/completed/t-hunted-pt-source/tasks/5.md"
+      ]
+    },
+    {
+      "id": "HIST-THS-06",
+      "title": "Deploy plumbing (3 FILES lists) + pytest invariant test",
+      "status": "done",
+      "weight": 5,
+      "depends_on": [],
+      "blocked_by": [],
+      "deliverables": [
+        "work/completed/t-hunted-pt-source/tasks/6.md"
+      ]
+    },
+    {
+      "id": "HIST-THS-07",
+      "title": "ux-guidelines.md prompt update + structural test (widen + t-hunted block + glossary)",
+      "status": "done",
+      "weight": 5,
+      "depends_on": [],
+      "blocked_by": [],
+      "deliverables": [
+        "work/completed/t-hunted-pt-source/tasks/7.md"
+      ]
+    },
+    {
+      "id": "HIST-THS-08",
+      "title": "Integration smoke test EN+PT mixed tick",
+      "status": "done",
+      "weight": 5,
+      "depends_on": [],
+      "blocked_by": [],
+      "deliverables": [
+        "work/completed/t-hunted-pt-source/tasks/8.md"
+      ]
+    },
+    {
+      "id": "HIST-THS-09",
+      "title": "Code Audit",
+      "status": "done",
+      "weight": 1,
+      "depends_on": [],
+      "blocked_by": [],
+      "deliverables": [
+        "work/completed/t-hunted-pt-source/tasks/9.md"
+      ]
+    },
+    {
+      "id": "HIST-THS-10",
+      "title": "Security Audit",
+      "status": "done",
+      "weight": 1,
+      "depends_on": [],
+      "blocked_by": [],
+      "deliverables": [
+        "work/completed/t-hunted-pt-source/tasks/10.md"
+      ]
+    },
+    {
+      "id": "HIST-THS-11",
+      "title": "Test Audit",
+      "status": "done",
+      "weight": 1,
+      "depends_on": [],
+      "blocked_by": [],
+      "deliverables": [
+        "work/completed/t-hunted-pt-source/tasks/11.md"
+      ]
+    },
+    {
+      "id": "HIST-THS-12",
+      "title": "Pre-deploy QA",
+      "status": "done",
+      "weight": 2,
+      "depends_on": [],
+      "blocked_by": [],
+      "deliverables": [
+        "work/completed/t-hunted-pt-source/tasks/12.md"
+      ]
+    },
+    {
+      "id": "HIST-THS-13",
+      "title": "Deploy",
+      "status": "done",
+      "weight": 2,
+      "depends_on": [],
+      "blocked_by": [],
+      "deliverables": [
+        "work/completed/t-hunted-pt-source/tasks/13.md"
+      ]
+    },
+    {
+      "id": "HIST-THS-14",
+      "title": "Post-deploy verification",
+      "status": "done",
+      "weight": 5,
+      "depends_on": [],
+      "blocked_by": [],
+      "deliverables": [
+        "work/completed/t-hunted-pt-source/tasks/14.md"
+      ]
+    },
     {
       "id": "DBP-001",
       "title": "Confirm the production failure mode and current dedup path",
@@ -242,6 +2261,404 @@
       "deliverables": [
         "work/dedup-broad-precision/logs/working/post-deploy-qa-report.json"
       ]
+    },
+    {
+      "id": "STAB-001",
+      "title": "Approve stabilization-foundation requirements and repository research",
+      "description": "Define measurable requirements for hermetic CI, fail-closed production startup, database and VPN-route validation, and safe scheduler lifecycle behavior.",
+      "status": "done",
+      "weight": 3,
+      "depends_on": [],
+      "blocked_by": [],
+      "deliverables": [
+        "work/stabilization-foundation/user-spec.md",
+        "work/stabilization-foundation/code-research.md",
+        "work/stabilization-foundation/logs/userspec/adequacy-review.json",
+        "work/stabilization-foundation/logs/userspec/quality-review.json"
+      ]
+    },
+    {
+      "id": "STAB-002",
+      "title": "Complete and approve the stabilization technical design and execution plan",
+      "description": "Replace the placeholder technical specification with an implementation-ready design, acceptance mapping, atomic tasks, rollout boundaries, and rollback criteria.",
+      "status": "planned",
+      "weight": 3,
+      "depends_on": [
+        "STAB-001"
+      ],
+      "blocked_by": [],
+      "deliverables": [
+        "work/stabilization-foundation/tech-spec.md",
+        "work/stabilization-foundation/tasks/",
+        "work/stabilization-foundation/logs/execution-plan.md"
+      ]
+    },
+    {
+      "id": "STAB-003",
+      "title": "Implement hermetic CI, fail-closed startup gates, and scheduler lifecycle fixes",
+      "description": "Deliver the approved CI isolation, production configuration and storage checks, VPN-route gate, and non-overlapping startup scheduling behavior with regression tests.",
+      "status": "planned",
+      "weight": 8,
+      "depends_on": [
+        "STAB-002"
+      ],
+      "blocked_by": []
+    },
+    {
+      "id": "STAB-004",
+      "title": "Audit and accept the stabilization foundation",
+      "description": "Complete code, security, and test audits, close findings, and pass the full regression and pre-deployment acceptance suite.",
+      "status": "planned",
+      "weight": 5,
+      "depends_on": [
+        "STAB-003"
+      ],
+      "blocked_by": []
+    },
+    {
+      "id": "STAB-005",
+      "title": "Deploy and verify the stabilization foundation",
+      "description": "Release outside the protected publication window and verify fail-closed startup, storage identity, VPN routing, service health, and single-tick scheduler behavior in production.",
+      "status": "planned",
+      "weight": 3,
+      "depends_on": [
+        "STAB-004"
+      ],
+      "blocked_by": []
+    },
+    {
+      "id": "OBSV-001",
+      "title": "Approve operator-blind-spots requirements and repository research",
+      "description": "Define measurable behavior for per-source silence detection, persisted daily alert limits, and actionable reminders for held review articles.",
+      "status": "done",
+      "weight": 3,
+      "depends_on": [],
+      "blocked_by": [],
+      "deliverables": [
+        "work/operator-blind-spots/user-spec.md",
+        "work/operator-blind-spots/code-research.md",
+        "work/operator-blind-spots/logs/userspec/adequacy-review.json",
+        "work/operator-blind-spots/logs/userspec/quality-review-2.json"
+      ]
+    },
+    {
+      "id": "OBSV-002",
+      "title": "Complete and approve the operator-observability technical design and execution plan",
+      "description": "Replace the placeholder technical specification with concrete data models, button-state rules, bounded-message behavior, tests, rollout, and rollback tasks.",
+      "status": "planned",
+      "weight": 3,
+      "depends_on": [
+        "OBSV-001"
+      ],
+      "blocked_by": [],
+      "deliverables": [
+        "work/operator-blind-spots/tech-spec.md",
+        "work/operator-blind-spots/tasks/",
+        "work/operator-blind-spots/logs/execution-plan.md"
+      ]
+    },
+    {
+      "id": "OBSV-003",
+      "title": "Implement source-silence alerts and held-article reminder actions",
+      "description": "Add restart-safe per-source counters, once-daily alerts, bounded review summaries, token reuse, idempotent callbacks, and full behavioral tests.",
+      "status": "planned",
+      "weight": 8,
+      "depends_on": [
+        "OBSV-002"
+      ],
+      "blocked_by": []
+    },
+    {
+      "id": "OBSV-004",
+      "title": "Audit and accept the operator-observability feature",
+      "description": "Complete code, security, and test audits, verify message and authorization boundaries, close findings, and pass pre-deployment QA.",
+      "status": "planned",
+      "weight": 5,
+      "depends_on": [
+        "OBSV-003"
+      ],
+      "blocked_by": []
+    },
+    {
+      "id": "OBSV-005",
+      "title": "Deploy and verify operator-observability behavior",
+      "description": "Release outside the protected publication window and verify daily rate limits, live source recovery, actionable reminder callbacks, and failure isolation.",
+      "status": "planned",
+      "weight": 3,
+      "depends_on": [
+        "OBSV-004"
+      ],
+      "blocked_by": []
+    },
+    {
+      "id": "LINK-001",
+      "title": "Specify cross-article linking acceptance and safety rules",
+      "description": "Define when previously published Telegraph pages may be linked, how matches are selected, and how stale, external, or unsafe URLs are rejected.",
+      "status": "planned",
+      "weight": 3,
+      "depends_on": [],
+      "blocked_by": []
+    },
+    {
+      "id": "LINK-002",
+      "title": "Implement cross-article linking with unit and integration tests",
+      "description": "Resolve safe links from published history, add them to eligible article runs, preserve rendering bounds, and cover parser-to-Telegraph behavior.",
+      "status": "planned",
+      "weight": 5,
+      "depends_on": [
+        "LINK-001"
+      ],
+      "blocked_by": []
+    },
+    {
+      "id": "LINK-003",
+      "title": "Audit and accept cross-article linking",
+      "description": "Review correctness, URL trust boundaries, rendering safety, test quality, and full-suite regressions before release.",
+      "status": "planned",
+      "weight": 3,
+      "depends_on": [
+        "LINK-002"
+      ],
+      "blocked_by": []
+    },
+    {
+      "id": "LINK-004",
+      "title": "Deploy and verify cross-article linking",
+      "description": "Release the approved build and verify links on natural publications without breaking Telegraph rendering or channel cards.",
+      "status": "planned",
+      "weight": 2,
+      "depends_on": [
+        "LINK-003"
+      ],
+      "blocked_by": []
+    },
+    {
+      "id": "DIGEST-001",
+      "title": "Specify the persisted operator failure digest",
+      "description": "Define retention, aggregation, redaction, acknowledgement, and access behavior for a failure view outside the Telegram admin chat.",
+      "status": "planned",
+      "weight": 3,
+      "depends_on": [],
+      "blocked_by": []
+    },
+    {
+      "id": "DIGEST-002",
+      "title": "Implement persisted failure aggregation and operator access",
+      "description": "Store bounded sanitized failure records, expose an operator-readable digest, and add migration, retention, and integration tests.",
+      "status": "planned",
+      "weight": 8,
+      "depends_on": [
+        "DIGEST-001"
+      ],
+      "blocked_by": []
+    },
+    {
+      "id": "DIGEST-003",
+      "title": "Audit and accept the failure digest",
+      "description": "Complete code, privacy and security review, test audit, retention checks, redaction tests, and pre-deployment QA.",
+      "status": "planned",
+      "weight": 3,
+      "depends_on": [
+        "DIGEST-002"
+      ],
+      "blocked_by": []
+    },
+    {
+      "id": "DIGEST-004",
+      "title": "Deploy and verify the failure digest",
+      "description": "Release the approved digest and verify persistence, visibility, redaction, bounded growth, and recovery across restarts.",
+      "status": "planned",
+      "weight": 3,
+      "depends_on": [
+        "DIGEST-003"
+      ],
+      "blocked_by": []
+    },
+    {
+      "id": "TONE-001",
+      "title": "Build a per-source tone calibration baseline and acceptance rubric",
+      "description": "Create a sanitized representative sample and measurable rubric for source-specific Russian tone without storing private or credential-bearing content.",
+      "status": "planned",
+      "weight": 3,
+      "depends_on": [],
+      "blocked_by": []
+    },
+    {
+      "id": "TONE-002",
+      "title": "Calibrate per-source prompting and add regression evaluations",
+      "description": "Adjust source labels or prompt guidance where evidence shows drift and add deterministic checks for prompt routing and output constraints.",
+      "status": "planned",
+      "weight": 5,
+      "depends_on": [
+        "TONE-001"
+      ],
+      "blocked_by": []
+    },
+    {
+      "id": "TONE-003",
+      "title": "Review and accept per-source tone calibration",
+      "description": "Complete editorial, code, safety, and test review and pass the full regression and pre-deployment checks.",
+      "status": "planned",
+      "weight": 2,
+      "depends_on": [
+        "TONE-002"
+      ],
+      "blocked_by": []
+    },
+    {
+      "id": "TONE-004",
+      "title": "Deploy and verify per-source tone behavior",
+      "description": "Release prompt changes and review a bounded natural-publication sample per active source against the approved rubric.",
+      "status": "planned",
+      "weight": 2,
+      "depends_on": [
+        "TONE-003"
+      ],
+      "blocked_by": []
+    },
+    {
+      "id": "WEB-001",
+      "title": "Define the web dashboard product, authorization, and threat model",
+      "description": "Specify operator workflows, read and write boundaries, authentication, auditability, deployment topology, and acceptance criteria for configuration and monitoring.",
+      "status": "planned",
+      "weight": 5,
+      "depends_on": [
+        "DIGEST-004",
+        "OBSV-005"
+      ],
+      "blocked_by": []
+    },
+    {
+      "id": "WEB-002",
+      "title": "Implement the dashboard backend and safe project-state APIs",
+      "description": "Build authenticated read models and bounded configuration operations without exposing secrets, private endpoints, or unsafe direct database access.",
+      "status": "planned",
+      "weight": 8,
+      "depends_on": [
+        "WEB-001"
+      ],
+      "blocked_by": []
+    },
+    {
+      "id": "WEB-003",
+      "title": "Implement the dashboard interface for monitoring and configuration",
+      "description": "Build responsive operator views for health, queue state, failures, sources, configuration, and the repository progress contract.",
+      "status": "planned",
+      "weight": 8,
+      "depends_on": [
+        "WEB-002"
+      ],
+      "blocked_by": []
+    },
+    {
+      "id": "WEB-004",
+      "title": "Complete dashboard security, accessibility, code, and test audits",
+      "description": "Review authentication, authorization, secret handling, CSRF and injection boundaries, usability, accessibility, test coverage, and release readiness.",
+      "status": "planned",
+      "weight": 5,
+      "depends_on": [
+        "WEB-003"
+      ],
+      "blocked_by": []
+    },
+    {
+      "id": "WEB-005",
+      "title": "Deploy and verify the web dashboard",
+      "description": "Deploy through an approved production path and verify authentication, monitoring freshness, safe configuration changes, rollback, and post-deployment health.",
+      "status": "planned",
+      "weight": 5,
+      "depends_on": [
+        "WEB-004"
+      ],
+      "blocked_by": []
+    },
+    {
+      "id": "PROVIDER-001",
+      "title": "Select and specify additional translation providers",
+      "description": "Evaluate supported providers for quality, privacy, cost, outage semantics, and configuration compatibility, then approve acceptance criteria.",
+      "status": "planned",
+      "weight": 3,
+      "depends_on": [
+        "TONE-004"
+      ],
+      "blocked_by": []
+    },
+    {
+      "id": "PROVIDER-002",
+      "title": "Implement additional provider adapters and regression tests",
+      "description": "Add provider adapters through the existing dispatcher contract with error classification, redaction, prompt parity, and deterministic tests.",
+      "status": "planned",
+      "weight": 8,
+      "depends_on": [
+        "PROVIDER-001"
+      ],
+      "blocked_by": []
+    },
+    {
+      "id": "PROVIDER-003",
+      "title": "Audit and accept the additional providers",
+      "description": "Complete security, privacy, cost, code, and test review and pass full regression and pre-deployment QA.",
+      "status": "planned",
+      "weight": 3,
+      "depends_on": [
+        "PROVIDER-002"
+      ],
+      "blocked_by": []
+    },
+    {
+      "id": "PROVIDER-004",
+      "title": "Deploy and verify additional providers",
+      "description": "Release behind explicit configuration and verify provider selection, outage behavior, redaction, output quality, and rollback.",
+      "status": "planned",
+      "weight": 2,
+      "depends_on": [
+        "PROVIDER-003"
+      ],
+      "blocked_by": []
+    },
+    {
+      "id": "SOURCE-001",
+      "title": "Prioritize and specify additional Hot Wheels news sources",
+      "description": "Select sources by editorial value and stability and define fetch, filtering, dedup, formatting, legal, and acceptance constraints.",
+      "status": "planned",
+      "weight": 3,
+      "depends_on": [
+        "DBP-015"
+      ],
+      "blocked_by": []
+    },
+    {
+      "id": "SOURCE-002",
+      "title": "Implement additional source fetchers, parsers, and registry wiring",
+      "description": "Add bounded source adapters, configuration, content extraction, boilerplate handling, and representative fixtures.",
+      "status": "planned",
+      "weight": 8,
+      "depends_on": [
+        "SOURCE-001"
+      ],
+      "blocked_by": []
+    },
+    {
+      "id": "SOURCE-003",
+      "title": "Test, audit, and accept additional sources",
+      "description": "Complete parser and integration tests, security and network-boundary review, dedup calibration, formatting checks, and full pre-deployment QA.",
+      "status": "planned",
+      "weight": 5,
+      "depends_on": [
+        "SOURCE-002"
+      ],
+      "blocked_by": []
+    },
+    {
+      "id": "SOURCE-004",
+      "title": "Deploy and verify additional sources",
+      "description": "Roll out sources with bounded activation and verify natural intake, filtering, dedup decisions, formatting, publication quality, and rollback.",
+      "status": "planned",
+      "weight": 3,
+      "depends_on": [
+        "SOURCE-003"
+      ],
+      "blocked_by": []
     }
   ],
   "blockers": [
@@ -254,5 +2671,5 @@
       ]
     }
   ],
-  "updated_at": "2026-08-31T21:27:11+03:00"
+  "updated_at": "2026-08-31T21:53:37+03:00"
 }
