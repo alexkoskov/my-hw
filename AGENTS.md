@@ -1,5 +1,28 @@
 # Repository working agreements
 
+## Keep the website project progress current
+
+`.project-progress.json` is the source for the project progress bar on the
+website. Keep it scoped to the full current project roadmap, not only the
+feature being implemented, unless the user explicitly changes that scope.
+
+1. Update the file after every substantial roadmap task completion or status
+   change and immediately before the final work report for that change.
+2. Preserve the repository's project-progress schema: use only allowed task
+   statuses and weights, keep task dependencies and blockers resolvable, and
+   never store a manually estimated percentage. The website calculates progress
+   from completed weight divided by total weight.
+3. Set `updated_at` to the actual ISO 8601 time with timezone whenever the file
+   changes. Never add secrets, credentials, private endpoints, personal data, or
+   production-only data to the tracker.
+4. Before committing, verify JSON parsing, schema compliance, unique IDs,
+   allowed weights, dependency and blocker references, and the existence of
+   deliverables for every task marked `done`. Report the exact `done weight /
+   total weight` fraction.
+5. Commit progress updates with the project change they describe. The website
+   monitors `main`, so promote the validated progress commit through the normal
+   `dev` -> `main` workflow, retaining the explicit approval gate for `main`.
+
 ## Keep both long-lived branches current
 
 This repository has two long-lived branches with different roles: `main` is the
