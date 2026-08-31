@@ -1,1882 +1,56 @@
 {
   "schema_version": 1,
   "project": {
-    "name": "Hot Wheels News Bot",
-    "description": "A production Python news pipeline that collects Hot Wheels articles, filters and deduplicates them, queues accepted items, transcreates them into Russian, and publishes them on a fixed schedule.",
-    "status": "in_progress",
-    "progress_scope": "full_product_roadmap",
-    "task_granularity": "atomic_where_task_specs_exist_product_level_where_not_yet_decomposed"
+    "name": "my-hw-bot",
+    "description": "A production Python pipeline that collects Hot Wheels news, filters and deduplicates articles, transcreates accepted items into Russian, and publishes them on a fixed schedule.",
+    "status": "in_progress"
   },
   "milestone": {
-    "id": "product-roadmap",
-    "title": "Hot Wheels News Bot product roadmap",
-    "goal": "Operate a reliable autonomous Hot Wheels news service while completing the remaining precision, safety, observability, and product-expansion work.",
-    "status": "in_progress",
-    "current_focus": "dedup-broad-precision"
+    "id": "dedup-broad-precision-release",
+    "title": "Broad-pair dedup precision release",
+    "description": "Release and verify a production dedup rule that soft-flags a shared broad series only when it is the stated subject of both article titles, while preserving distinctive blocking, fail-open behavior, truthful operator diagnostics, and safe publication timing.",
+    "status": "blocked"
   },
   "tasks": [
     {
-      "id": "CORE-001",
-      "group": "core-platform",
-      "title": "Bootstrap the Python bot runtime, validated configuration, and dependency management",
-      "status": "done",
-      "weight": 5,
-      "deliverables": [
-        "README.md",
-        "requirements.txt"
-      ]
-    },
-    {
-      "id": "CORE-002",
-      "group": "core-platform",
-      "title": "Implement durable SQLite state for processed, pending, published, failed, and bot-state records",
-      "status": "done",
-      "weight": 8,
-      "deliverables": [
-        "news_bot.py",
-        "pending_articles_repo.py"
-      ]
-    },
-    {
-      "id": "CORE-003",
-      "group": "core-platform",
-      "title": "Integrate Telegram operator alerts and public channel publishing",
-      "status": "done",
-      "weight": 5,
-      "deliverables": [
-        "news_bot.py",
-        "admin_alerts.py"
-      ]
-    },
-    {
-      "id": "CORE-004",
-      "group": "core-platform",
-      "title": "Implement Telegraph article rendering and publication",
-      "status": "done",
-      "weight": 5,
-      "deliverables": [
-        "telegraph_publisher.py"
-      ]
-    },
-    {
-      "id": "CORE-005",
-      "group": "core-platform",
-      "title": "Build the long-lived scheduler, daily intake tick, and fixed publication slots",
-      "status": "done",
-      "weight": 8,
-      "deliverables": [
-        "news_bot.py",
-        "compute_publish_slots.py"
-      ]
-    },
-    {
-      "id": "CORE-006",
-      "group": "core-platform",
-      "title": "Establish the automated test and CI safety net",
-      "status": "done",
-      "weight": 5,
-      "deliverables": [
-        "tests/",
-        ".github/workflows/"
-      ]
-    },
-    {
-      "id": "CORE-007",
-      "group": "core-platform",
-      "title": "Package the bot for repeatable container deployment",
-      "status": "done",
-      "weight": 5,
-      "deliverables": [
-        "Dockerfile",
-        "deploy.sh"
-      ]
-    },
-    {
-      "id": "CORE-008",
-      "group": "core-platform",
-      "title": "Document the production architecture, operations, and recovery procedures",
-      "status": "done",
-      "weight": 3,
-      "deliverables": [
-        ".claude/skills/project-knowledge/references/"
-      ]
-    },
-    {
-      "id": "APF-001",
-      "group": "author-plug-filter",
-      "title": "Filter standalone author-promotion boilerplate from source articles",
-      "status": "done",
-      "weight": 3,
-      "deliverables": [
-        "work/completed/author-plug-filter/decisions.md"
-      ]
-    },
-    {
-      "id": "APF-002",
-      "group": "author-plug-filter",
-      "title": "Strip inline social and support plugs after transcreation",
-      "status": "done",
-      "weight": 3,
-      "deliverables": [
-        "work/completed/author-plug-filter/decisions.md"
-      ]
-    },
-    {
-      "id": "APF-003",
-      "group": "author-plug-filter",
-      "title": "Verify and close the author-plug filter against supported platforms",
-      "status": "done",
-      "weight": 2,
-      "deliverables": [
-        "work/completed/author-plug-filter/decisions.md"
-      ]
-    },
-    {
-      "id": "MNS-001",
-      "group": "mattel-news-source",
-      "title": "Build the Mattel fetcher, payload extraction, and Hot Wheels filtering",
-      "status": "done",
-      "weight": 5,
-      "deliverables": [
-        "work/completed/mattel-news-source/decisions.md"
-      ]
-    },
-    {
-      "id": "MNS-002",
-      "group": "mattel-news-source",
-      "title": "Add Mattel parser unit tests and an HTML fixture",
-      "status": "done",
-      "weight": 3,
-      "deliverables": [
-        "work/completed/mattel-news-source/decisions.md"
-      ]
-    },
-    {
-      "id": "MNS-003",
-      "group": "mattel-news-source",
-      "title": "Integrate the Mattel source into the intake job",
-      "status": "done",
-      "weight": 5,
-      "deliverables": [
-        "work/completed/mattel-news-source/decisions.md"
-      ]
-    },
-    {
-      "id": "MNS-004",
-      "group": "mattel-news-source",
-      "title": "Add the Mattel source integration test",
-      "status": "done",
-      "weight": 3,
-      "deliverables": [
-        "work/completed/mattel-news-source/decisions.md"
-      ]
-    },
-    {
-      "id": "MNS-005",
-      "group": "mattel-news-source",
-      "title": "Complete Mattel code and security audits",
-      "status": "done",
-      "weight": 1,
-      "deliverables": [
-        "work/completed/mattel-news-source/decisions.md"
-      ]
-    },
-    {
-      "id": "MNS-006",
-      "group": "mattel-news-source",
-      "title": "Complete Mattel pre-deploy QA",
-      "status": "done",
-      "weight": 2,
-      "deliverables": [
-        "work/completed/mattel-news-source/decisions.md"
-      ]
-    },
-    {
-      "id": "TEL-001",
-      "group": "telegraph-pipeline",
-      "title": "Implement Telegraph publishing with Instant View previews",
-      "status": "done",
-      "weight": 5,
-      "deliverables": [
-        "work/completed/telegraph-pipeline/decisions.md"
-      ]
-    },
-    {
-      "id": "TEL-002",
-      "group": "telegraph-pipeline",
-      "title": "Implement per-source full-article fetchers",
-      "status": "done",
-      "weight": 5,
-      "deliverables": [
-        "work/completed/telegraph-pipeline/decisions.md"
-      ]
-    },
-    {
-      "id": "TEL-003",
-      "group": "telegraph-pipeline",
-      "title": "Add Cloudflare-aware fetching for autoevolution",
-      "status": "done",
-      "weight": 5,
-      "deliverables": [
-        "work/completed/telegraph-pipeline/decisions.md"
-      ]
-    },
-    {
-      "id": "TEL-004",
-      "group": "telegraph-pipeline",
-      "title": "Lock the Telegram channel-card format",
-      "status": "done",
-      "weight": 3,
-      "deliverables": [
-        "work/completed/telegraph-pipeline/decisions.md"
-      ]
-    },
-    {
-      "id": "TEL-005",
-      "group": "telegraph-pipeline",
-      "title": "Align source parsers with the Telegraph rendering contract",
-      "status": "done",
-      "weight": 3,
-      "deliverables": [
-        "work/completed/telegraph-pipeline/decisions.md"
-      ]
-    },
-    {
-      "id": "OPS-001",
-      "group": "production-hardening",
-      "title": "Treat account-level LLM 402 responses as outages instead of article failures",
-      "status": "done",
-      "weight": 3,
-      "deliverables": [
-        "work/llm-402-outage/decisions.md"
-      ]
-    },
-    {
-      "id": "OPS-002",
-      "group": "production-hardening",
-      "title": "Cap consecutive outage holds so one article cannot block the queue",
-      "status": "done",
-      "weight": 3,
-      "deliverables": [
-        "work/hold-cap/decisions.md"
-      ]
-    },
-    {
-      "id": "OPS-003",
-      "group": "production-hardening",
-      "title": "Review and harden the promotion filter against production examples",
-      "status": "done",
-      "weight": 2,
-      "deliverables": [
-        "work/promo-filter-review/README.md"
-      ]
-    },
-    {
-      "id": "OPS-004",
-      "group": "production-hardening",
-      "title": "Review and harden the content gate against production examples",
-      "status": "done",
-      "weight": 2,
-      "deliverables": [
-        "work/content-gate-review/README.md"
-      ]
-    },
-    {
-      "id": "OPS-005",
-      "group": "production-observability",
-      "title": "Add intake-funnel diagnostics and a pipeline watchdog",
-      "status": "done",
-      "weight": 3,
-      "deliverables": [
-        "work/pipeline-diagnostic-watchdog/README.md"
-      ]
-    },
-    {
-      "id": "OPS-006",
-      "group": "production-observability",
-      "title": "Add an end-of-tick publication recap diagnostic",
-      "status": "done",
-      "weight": 3,
-      "deliverables": [
-        "work/publish-recap-diagnostic/README.md"
-      ]
-    },
-    {
-      "id": "OPS-007",
-      "group": "production-observability",
-      "title": "Add an external host and publication-silence uptime workflow",
-      "status": "done",
-      "weight": 5,
-      "deliverables": [
-        ".github/workflows/uptime.yml"
-      ]
-    },
-    {
-      "id": "SFP-001",
-      "group": "source-formatting-parity",
-      "title": "Build the HTML corpus and OrangeTrack formatting golden gate",
-      "status": "done",
-      "weight": 3,
-      "deliverables": [
-        "work/source-formatting-parity/decisions.md"
-      ]
-    },
-    {
-      "id": "SFP-002",
-      "group": "source-formatting-parity",
-      "title": "Add the source-formatting feature flag",
-      "status": "done",
-      "weight": 2,
-      "deliverables": [
-        "work/source-formatting-parity/decisions.md"
-      ]
-    },
-    {
-      "id": "SFP-003",
-      "group": "source-formatting-parity",
-      "title": "Make list items patchable in every LLM engine",
-      "status": "done",
-      "weight": 3,
-      "deliverables": [
-        "work/source-formatting-parity/decisions.md"
-      ]
-    },
-    {
-      "id": "SFP-004",
-      "group": "source-formatting-parity",
-      "title": "Bound request-path formatting marker encoding",
-      "status": "done",
-      "weight": 3,
-      "deliverables": [
-        "work/source-formatting-parity/decisions.md"
-      ]
-    },
-    {
-      "id": "SFP-005",
-      "group": "source-formatting-parity",
-      "title": "Extract shared DOM blocks and migrate OrangeTrack",
-      "status": "done",
-      "weight": 5,
-      "deliverables": [
-        "work/source-formatting-parity/decisions.md"
-      ]
-    },
-    {
-      "id": "SFP-006",
-      "group": "source-formatting-parity",
-      "title": "Align image caps, source validation, and preview rendering",
-      "status": "done",
-      "weight": 5,
-      "deliverables": [
-        "work/source-formatting-parity/decisions.md"
-      ]
-    },
-    {
-      "id": "SFP-007",
-      "group": "source-formatting-parity",
-      "title": "Emit structured formatting blocks for t-hunted",
-      "status": "done",
-      "weight": 5,
-      "deliverables": [
-        "work/source-formatting-parity/decisions.md"
-      ]
-    },
-    {
-      "id": "SFP-008",
-      "group": "source-formatting-parity",
-      "title": "Add the runtime formatting-alignment guard",
-      "status": "done",
-      "weight": 3,
-      "deliverables": [
-        "work/source-formatting-parity/decisions.md"
-      ]
-    },
-    {
-      "id": "SFP-009",
-      "group": "source-formatting-parity",
-      "title": "Verify the end-to-end formatting chain",
-      "status": "done",
-      "weight": 5,
-      "deliverables": [
-        "work/source-formatting-parity/decisions.md"
-      ]
-    },
-    {
-      "id": "SFP-010",
-      "group": "source-formatting-parity",
-      "title": "Complete the formatting feature code audit",
-      "status": "done",
-      "weight": 1,
-      "deliverables": [
-        "work/source-formatting-parity/decisions.md"
-      ]
-    },
-    {
-      "id": "SFP-011",
-      "group": "source-formatting-parity",
-      "title": "Complete the formatting feature security audit",
-      "status": "done",
-      "weight": 1,
-      "deliverables": [
-        "work/source-formatting-parity/decisions.md"
-      ]
-    },
-    {
-      "id": "SFP-012",
-      "group": "source-formatting-parity",
-      "title": "Complete the formatting feature test audit",
-      "status": "done",
-      "weight": 1,
-      "deliverables": [
-        "work/source-formatting-parity/decisions.md"
-      ]
-    },
-    {
-      "id": "SFP-013",
-      "group": "source-formatting-parity",
-      "title": "Complete formatting pre-deploy QA",
-      "status": "done",
-      "weight": 2,
-      "deliverables": [
-        "work/source-formatting-parity/decisions.md"
-      ]
-    },
-    {
-      "id": "SFP-014",
-      "group": "source-formatting-parity",
-      "title": "Deploy source-formatting parity",
-      "status": "done",
-      "weight": 2,
-      "deliverables": [
-        "work/source-formatting-parity/decisions.md"
-      ]
-    },
-    {
-      "id": "SFP-015",
-      "group": "source-formatting-parity",
-      "title": "Verify source formatting after deployment",
-      "status": "done",
-      "weight": 2,
-      "deliverables": [
-        "work/source-formatting-parity/decisions.md"
-      ]
-    },
-    {
-      "id": "PSR-001",
-      "group": "publication-silence-recovery",
-      "title": "Build scheduler planning primitives for same-day recovery",
-      "status": "done",
-      "weight": 3,
-      "deliverables": [
-        "work/publication-silence-recovery/decisions.md"
-      ]
-    },
-    {
-      "id": "PSR-002",
-      "group": "publication-silence-recovery",
-      "title": "Implement the publication-watch classifier",
-      "status": "done",
-      "weight": 3,
-      "deliverables": [
-        "work/publication-silence-recovery/decisions.md"
-      ]
-    },
-    {
-      "id": "PSR-003",
-      "group": "publication-silence-recovery",
-      "title": "Integrate review-release scheduling",
-      "status": "done",
-      "weight": 5,
-      "deliverables": [
-        "work/publication-silence-recovery/decisions.md"
-      ]
-    },
-    {
-      "id": "PSR-004",
-      "group": "publication-silence-recovery",
-      "title": "Integrate the tri-state uptime workflow",
-      "status": "done",
-      "weight": 5,
-      "deliverables": [
-        "work/publication-silence-recovery/decisions.md"
-      ]
-    },
-    {
-      "id": "PSR-005",
-      "group": "publication-silence-recovery",
-      "title": "Update project knowledge for silence recovery",
-      "status": "done",
-      "weight": 2,
-      "deliverables": [
-        "work/publication-silence-recovery/decisions.md"
-      ]
-    },
-    {
-      "id": "PSR-006",
-      "group": "publication-silence-recovery",
-      "title": "Complete the silence-recovery code audit",
-      "status": "done",
-      "weight": 1,
-      "deliverables": [
-        "work/publication-silence-recovery/decisions.md"
-      ]
-    },
-    {
-      "id": "PSR-007",
-      "group": "publication-silence-recovery",
-      "title": "Complete the silence-recovery security audit",
-      "status": "done",
-      "weight": 1,
-      "deliverables": [
-        "work/publication-silence-recovery/decisions.md"
-      ]
-    },
-    {
-      "id": "PSR-008",
-      "group": "publication-silence-recovery",
-      "title": "Complete the silence-recovery test audit",
-      "status": "done",
-      "weight": 1,
-      "deliverables": [
-        "work/publication-silence-recovery/decisions.md"
-      ]
-    },
-    {
-      "id": "PSR-009",
-      "group": "publication-silence-recovery",
-      "title": "Complete silence-recovery pre-deploy QA and release verification",
-      "status": "done",
-      "weight": 2,
-      "deliverables": [
-        "work/publication-silence-recovery/decisions.md"
-      ]
-    },
-    {
-      "id": "HIST-CSD-01",
-      "group": "cross-source-dedup",
-      "title": "model_extractor.py + calibration fixture",
-      "status": "done",
-      "weight": 5,
-      "deliverables": [
-        "work/completed/cross-source-dedup/tasks/1.md"
-      ]
-    },
-    {
-      "id": "HIST-CSD-02",
-      "group": "cross-source-dedup",
-      "title": "Schema migration + repo helpers + rate-limit helpers",
-      "status": "done",
-      "weight": 5,
-      "deliverables": [
-        "work/completed/cross-source-dedup/tasks/2.md"
-      ]
-    },
-    {
-      "id": "HIST-CSD-03",
-      "group": "cross-source-dedup",
-      "title": "Admin-ping builders E014, E015, E016",
-      "status": "done",
-      "weight": 3,
-      "deliverables": [
-        "work/completed/cross-source-dedup/tasks/3.md"
-      ]
-    },
-    {
-      "id": "HIST-CSD-04",
-      "group": "cross-source-dedup",
-      "title": "Wire dedup gate in news_bot.job() + integration tests",
-      "status": "done",
-      "weight": 8,
-      "deliverables": [
-        "work/completed/cross-source-dedup/tasks/4.md"
-      ]
-    },
-    {
-      "id": "HIST-CSD-05",
-      "group": "cross-source-dedup",
-      "title": "backfill_fingerprints.py one-shot script",
-      "status": "done",
-      "weight": 5,
-      "deliverables": [
-        "work/completed/cross-source-dedup/tasks/5.md"
-      ]
-    },
-    {
-      "id": "HIST-CSD-06",
-      "group": "cross-source-dedup",
-      "title": "Code Audit",
-      "status": "done",
-      "weight": 1,
-      "deliverables": [
-        "work/completed/cross-source-dedup/tasks/6.md"
-      ]
-    },
-    {
-      "id": "HIST-CSD-07",
-      "group": "cross-source-dedup",
-      "title": "Security Audit",
-      "status": "done",
-      "weight": 1,
-      "deliverables": [
-        "work/completed/cross-source-dedup/tasks/7.md"
-      ]
-    },
-    {
-      "id": "HIST-CSD-08",
-      "group": "cross-source-dedup",
-      "title": "Test Audit",
-      "status": "done",
-      "weight": 1,
-      "deliverables": [
-        "work/completed/cross-source-dedup/tasks/8.md"
-      ]
-    },
-    {
-      "id": "HIST-CSD-09",
-      "group": "cross-source-dedup",
-      "title": "Pre-deploy QA",
-      "status": "done",
-      "weight": 2,
-      "deliverables": [
-        "work/completed/cross-source-dedup/tasks/9.md"
-      ]
-    },
-    {
-      "id": "HIST-CSD-10",
-      "group": "cross-source-dedup",
-      "title": "Deploy",
-      "status": "done",
-      "weight": 2,
-      "deliverables": [
-        "work/completed/cross-source-dedup/tasks/10.md"
-      ]
-    },
-    {
-      "id": "HIST-CSD-11",
-      "group": "cross-source-dedup",
-      "title": "Post-deploy verification",
-      "status": "done",
-      "weight": 2,
-      "deliverables": [
-        "work/completed/cross-source-dedup/tasks/11.md"
-      ]
-    },
-    {
-      "id": "HIST-DMS-01",
-      "group": "dedup-model-series",
-      "title": "Series/theme extraction + tier-tagged lexicon (`model_extractor.py`)",
-      "status": "done",
-      "weight": 5,
-      "deliverables": [
-        "work/completed/dedup-model-series/tasks/1.md"
-      ]
-    },
-    {
-      "id": "HIST-DMS-02",
-      "group": "dedup-model-series",
-      "title": "Pair-aware [E015] + broad [E014] builders (`admin_alerts.py`)",
-      "status": "done",
-      "weight": 3,
-      "deliverables": [
-        "work/completed/dedup-model-series/tasks/2.md"
-      ]
-    },
-    {
-      "id": "HIST-DMS-03",
-      "group": "dedup-model-series",
-      "title": "Калибровочная фикстура — 8 пар (реальные дубли + не-дубли)",
-      "status": "done",
-      "weight": 3,
-      "deliverables": [
-        "work/completed/dedup-model-series/tasks/3.md"
-      ]
-    },
-    {
-      "id": "HIST-DMS-04",
-      "group": "dedup-model-series",
-      "title": "Toggle + tiered gate refactor (`news_bot.py`)",
-      "status": "done",
-      "weight": 8,
-      "deliverables": [
-        "work/completed/dedup-model-series/tasks/4.md"
-      ]
-    },
-    {
-      "id": "HIST-DMS-05",
-      "group": "dedup-model-series",
-      "title": "Backfill widened re-select (`backfill_fingerprints.py`)",
-      "status": "done",
-      "weight": 5,
-      "deliverables": [
-        "work/completed/dedup-model-series/tasks/5.md"
-      ]
-    },
-    {
-      "id": "HIST-DMS-06",
-      "group": "dedup-model-series",
-      "title": "Калибровочный тест точности (pair-tier verdict) + деплой-раннбук",
-      "status": "done",
-      "weight": 3,
-      "deliverables": [
-        "work/completed/dedup-model-series/tasks/6.md"
-      ]
-    },
-    {
-      "id": "HIST-DMS-07",
-      "group": "dedup-model-series",
-      "title": "Code Audit",
-      "status": "done",
-      "weight": 1,
-      "deliverables": [
-        "work/completed/dedup-model-series/tasks/7.md"
-      ]
-    },
-    {
-      "id": "HIST-DMS-08",
-      "group": "dedup-model-series",
-      "title": "Security Audit",
-      "status": "done",
-      "weight": 1,
-      "deliverables": [
-        "work/completed/dedup-model-series/tasks/8.md"
-      ]
-    },
-    {
-      "id": "HIST-DMS-09",
-      "group": "dedup-model-series",
-      "title": "Test Audit",
-      "status": "done",
-      "weight": 1,
-      "deliverables": [
-        "work/completed/dedup-model-series/tasks/9.md"
-      ]
-    },
-    {
-      "id": "HIST-DMS-10",
-      "group": "dedup-model-series",
-      "title": "Pre-deploy QA",
-      "status": "done",
-      "weight": 2,
-      "deliverables": [
-        "work/completed/dedup-model-series/tasks/10.md"
-      ]
-    },
-    {
-      "id": "HIST-DMS-11",
-      "group": "dedup-model-series",
-      "title": "Post-deploy verification (operator-applied)",
-      "status": "done",
-      "weight": 2,
-      "deliverables": [
-        "work/completed/dedup-model-series/tasks/11.md"
-      ]
-    },
-    {
-      "id": "HIST-DRB-01",
-      "group": "dedup-review-buttons",
-      "title": "DB concurrency guard + review-token store",
-      "status": "done",
-      "weight": 3,
-      "deliverables": [
-        "work/completed/dedup-review-buttons/tasks/1.md"
-      ]
-    },
-    {
-      "id": "HIST-DRB-02",
-      "group": "dedup-review-buttons",
-      "title": "Keyboard builder + reply_markup forwarding",
-      "status": "done",
-      "weight": 3,
-      "deliverables": [
-        "work/completed/dedup-review-buttons/tasks/2.md"
-      ]
-    },
-    {
-      "id": "HIST-DRB-03",
-      "group": "dedup-review-buttons",
-      "title": "Attach keyboard at the E014 send site",
-      "status": "done",
-      "weight": 3,
-      "deliverables": [
-        "work/completed/dedup-review-buttons/tasks/3.md"
-      ]
-    },
-    {
-      "id": "HIST-DRB-04",
-      "group": "dedup-review-buttons",
-      "title": "Callback decision logic (`resolve_dedup_callback`)",
-      "status": "done",
-      "weight": 5,
-      "deliverables": [
-        "work/completed/dedup-review-buttons/tasks/4.md"
-      ]
-    },
-    {
-      "id": "HIST-DRB-05",
-      "group": "dedup-review-buttons",
-      "title": "Background review listener + main() wiring",
-      "status": "done",
-      "weight": 5,
-      "deliverables": [
-        "work/completed/dedup-review-buttons/tasks/5.md"
-      ]
-    },
-    {
-      "id": "HIST-DRB-06",
-      "group": "dedup-review-buttons",
-      "title": "Config + Project Knowledge docs",
-      "status": "done",
-      "weight": 2,
-      "deliverables": [
-        "work/completed/dedup-review-buttons/tasks/6.md"
-      ]
-    },
-    {
-      "id": "HIST-DRB-07",
-      "group": "dedup-review-buttons",
-      "title": "Code Audit",
-      "status": "done",
-      "weight": 1,
-      "deliverables": [
-        "work/completed/dedup-review-buttons/tasks/7.md"
-      ]
-    },
-    {
-      "id": "HIST-DRB-08",
-      "group": "dedup-review-buttons",
-      "title": "Security Audit",
-      "status": "done",
-      "weight": 1,
-      "deliverables": [
-        "work/completed/dedup-review-buttons/tasks/8.md"
-      ]
-    },
-    {
-      "id": "HIST-DRB-09",
-      "group": "dedup-review-buttons",
-      "title": "Test Audit",
-      "status": "done",
-      "weight": 1,
-      "deliverables": [
-        "work/completed/dedup-review-buttons/tasks/9.md"
-      ]
-    },
-    {
-      "id": "HIST-DRB-10",
-      "group": "dedup-review-buttons",
-      "title": "Pre-deploy QA",
-      "status": "done",
-      "weight": 2,
-      "deliverables": [
-        "work/completed/dedup-review-buttons/tasks/10.md"
-      ]
-    },
-    {
-      "id": "HIST-DRB-11",
-      "group": "dedup-review-buttons",
-      "title": "Deploy (operator-applied)",
-      "status": "done",
-      "weight": 2,
-      "deliverables": [
-        "work/completed/dedup-review-buttons/tasks/11.md"
-      ]
-    },
-    {
-      "id": "HIST-DRB-12",
-      "group": "dedup-review-buttons",
-      "title": "Post-deploy verification (operator-driven)",
-      "status": "done",
-      "weight": 2,
-      "deliverables": [
-        "work/completed/dedup-review-buttons/tasks/12.md"
-      ]
-    },
-    {
-      "id": "HIST-LLM-01",
-      "group": "llm-transcreation-and-distributed-publishing",
-      "title": "Add bot_state migration",
-      "status": "done",
-      "weight": 3,
-      "deliverables": [
-        "work/completed/llm-transcreation-and-distributed-publishing/tasks/01.md"
-      ]
-    },
-    {
-      "id": "HIST-LLM-02",
-      "group": "llm-transcreation-and-distributed-publishing",
-      "title": "Create `compute_publish_slots.py` + tests",
-      "status": "done",
-      "weight": 3,
-      "deliverables": [
-        "work/completed/llm-transcreation-and-distributed-publishing/tasks/02.md"
-      ]
-    },
-    {
-      "id": "HIST-LLM-03",
-      "group": "llm-transcreation-and-distributed-publishing",
-      "title": "Create `claude_transcreation.py` + tests",
-      "status": "done",
-      "weight": 5,
-      "deliverables": [
-        "work/completed/llm-transcreation-and-distributed-publishing/tasks/03.md"
-      ]
-    },
-    {
-      "id": "HIST-LLM-04",
-      "group": "llm-transcreation-and-distributed-publishing",
-      "title": "Extend the token-redaction filter for the primary LLM credential",
-      "status": "done",
-      "weight": 3,
-      "deliverables": [
-        "work/completed/llm-transcreation-and-distributed-publishing/tasks/04.md"
-      ]
-    },
-    {
-      "id": "HIST-LLM-05",
-      "group": "llm-transcreation-and-distributed-publishing",
-      "title": "Create `outage_state.py` + tests",
-      "status": "done",
-      "weight": 3,
-      "deliverables": [
-        "work/completed/llm-transcreation-and-distributed-publishing/tasks/05.md"
-      ]
-    },
-    {
-      "id": "HIST-LLM-06",
-      "group": "llm-transcreation-and-distributed-publishing",
-      "title": "Update requirements.txt + .env.example",
-      "status": "done",
-      "weight": 2,
-      "deliverables": [
-        "work/completed/llm-transcreation-and-distributed-publishing/tasks/06.md"
-      ]
-    },
-    {
-      "id": "HIST-LLM-07",
-      "group": "llm-transcreation-and-distributed-publishing",
-      "title": "Refactor _fallback_publish for Claude primary + Google per-article fallback",
-      "status": "done",
-      "weight": 8,
-      "deliverables": [
-        "work/completed/llm-transcreation-and-distributed-publishing/tasks/07.md"
-      ]
-    },
-    {
-      "id": "HIST-LLM-08",
-      "group": "llm-transcreation-and-distributed-publishing",
-      "title": "Refactor `job()` for distributed-publish loop + cron change",
-      "status": "done",
-      "weight": 8,
-      "deliverables": [
-        "work/completed/llm-transcreation-and-distributed-publishing/tasks/08.md"
-      ]
-    },
-    {
-      "id": "HIST-LLM-09",
-      "group": "llm-transcreation-and-distributed-publishing",
-      "title": "Delete legacy auto-publish code + env vars",
-      "status": "done",
-      "weight": 5,
-      "deliverables": [
-        "work/completed/llm-transcreation-and-distributed-publishing/tasks/09.md"
-      ]
-    },
-    {
-      "id": "HIST-LLM-10",
-      "group": "llm-transcreation-and-distributed-publishing",
-      "title": "Strip bureaucratic regex + 4000-char truncation from `transcreate_text`",
-      "status": "done",
-      "weight": 3,
-      "deliverables": [
-        "work/completed/llm-transcreation-and-distributed-publishing/tasks/10.md"
-      ]
-    },
-    {
-      "id": "HIST-LLM-11",
-      "group": "llm-transcreation-and-distributed-publishing",
-      "title": "Update integration tests for new auto-publish path",
-      "status": "done",
-      "weight": 3,
-      "deliverables": [
-        "work/completed/llm-transcreation-and-distributed-publishing/tasks/11.md"
-      ]
-    },
-    {
-      "id": "HIST-LLM-12",
-      "group": "llm-transcreation-and-distributed-publishing",
-      "title": "Create tests/test_distributed_schedule_integration.py",
-      "status": "done",
-      "weight": 3,
-      "deliverables": [
-        "work/completed/llm-transcreation-and-distributed-publishing/tasks/12.md"
-      ]
-    },
-    {
-      "id": "HIST-LLM-13",
-      "group": "llm-transcreation-and-distributed-publishing",
-      "title": "Update deploy bundle (deploy.sh + GitHub Actions + PK docs)",
-      "status": "done",
-      "weight": 5,
-      "deliverables": [
-        "work/completed/llm-transcreation-and-distributed-publishing/tasks/13.md"
-      ]
-    },
-    {
-      "id": "HIST-LLM-14",
-      "group": "llm-transcreation-and-distributed-publishing",
-      "title": "Code Audit",
-      "status": "done",
-      "weight": 1,
-      "deliverables": [
-        "work/completed/llm-transcreation-and-distributed-publishing/tasks/14.md"
-      ]
-    },
-    {
-      "id": "HIST-LLM-15",
-      "group": "llm-transcreation-and-distributed-publishing",
-      "title": "Security Audit",
-      "status": "done",
-      "weight": 1,
-      "deliverables": [
-        "work/completed/llm-transcreation-and-distributed-publishing/tasks/15.md"
-      ]
-    },
-    {
-      "id": "HIST-LLM-16",
-      "group": "llm-transcreation-and-distributed-publishing",
-      "title": "Test Audit",
-      "status": "done",
-      "weight": 1,
-      "deliverables": [
-        "work/completed/llm-transcreation-and-distributed-publishing/tasks/16.md"
-      ]
-    },
-    {
-      "id": "HIST-LLM-17",
-      "group": "llm-transcreation-and-distributed-publishing",
-      "title": "Pre-deploy QA",
-      "status": "done",
-      "weight": 2,
-      "deliverables": [
-        "work/completed/llm-transcreation-and-distributed-publishing/tasks/17.md"
-      ]
-    },
-    {
-      "id": "HIST-LLM-18",
-      "group": "llm-transcreation-and-distributed-publishing",
-      "title": "Deploy",
-      "status": "done",
-      "weight": 2,
-      "deliverables": [
-        "work/completed/llm-transcreation-and-distributed-publishing/tasks/18.md"
-      ]
-    },
-    {
-      "id": "HIST-LLM-19",
-      "group": "llm-transcreation-and-distributed-publishing",
-      "title": "Post-deploy verification",
-      "status": "done",
-      "weight": 2,
-      "deliverables": [
-        "work/completed/llm-transcreation-and-distributed-publishing/tasks/19.md"
-      ]
-    },
-    {
-      "id": "HIST-MRW-01",
-      "group": "manual-review-workflow",
-      "title": "`pending_articles_repo` module",
-      "status": "done",
-      "weight": 5,
-      "deliverables": [
-        "work/completed/manual-review-workflow/tasks/1.md"
-      ]
-    },
-    {
-      "id": "HIST-MRW-02",
-      "group": "manual-review-workflow",
-      "title": "`preview_renderer` module",
-      "status": "done",
-      "weight": 5,
-      "deliverables": [
-        "work/completed/manual-review-workflow/tasks/2.md"
-      ]
-    },
-    {
-      "id": "HIST-MRW-03",
-      "group": "manual-review-workflow",
-      "title": "Admin-ping helper + source vocabulary + sanitize_error_message",
-      "status": "done",
-      "weight": 5,
-      "deliverables": [
-        "work/completed/manual-review-workflow/tasks/3.md"
-      ]
-    },
-    {
-      "id": "HIST-MRW-04",
-      "group": "manual-review-workflow",
-      "title": "Public `preview_nodes` wrapper in `telegraph_publisher`",
-      "status": "done",
-      "weight": 5,
-      "deliverables": [
-        "work/completed/manual-review-workflow/tasks/4.md"
-      ]
-    },
-    {
-      "id": "HIST-MRW-05",
-      "group": "manual-review-workflow",
-      "title": "Source registry + source_name tagging",
-      "status": "done",
-      "weight": 5,
-      "deliverables": [
-        "work/completed/manual-review-workflow/tasks/5.md"
-      ]
-    },
-    {
-      "id": "HIST-MRW-06",
-      "group": "manual-review-workflow",
-      "title": "Refactor `job()` into prep-only + cron bump + delete `process_new_articles`",
-      "status": "done",
-      "weight": 8,
-      "deliverables": [
-        "work/completed/manual-review-workflow/tasks/6.md"
-      ]
-    },
-    {
-      "id": "HIST-MRW-07",
-      "group": "manual-review-workflow",
-      "title": "`hw_review` CLI with `list` / `show` / `stage` / `skip` / `preview`",
-      "status": "done",
-      "weight": 8,
-      "deliverables": [
-        "work/completed/manual-review-workflow/tasks/7.md"
-      ]
-    },
-    {
-      "id": "HIST-MRW-08",
-      "group": "manual-review-workflow",
-      "title": "`hw_review publish` with Telegraph-URL reuse",
-      "status": "done",
-      "weight": 5,
-      "deliverables": [
-        "work/completed/manual-review-workflow/tasks/8.md"
-      ]
-    },
-    {
-      "id": "HIST-MRW-09",
-      "group": "manual-review-workflow",
-      "title": "Idle-fallback pass + hw_review take command",
-      "status": "done",
-      "weight": 5,
-      "deliverables": [
-        "work/completed/manual-review-workflow/tasks/9.md"
-      ]
-    },
-    {
-      "id": "HIST-MRW-10",
-      "group": "manual-review-workflow",
-      "title": "Overflow fast-track pass + hw_review retry + failed-footer",
-      "status": "done",
-      "weight": 5,
-      "deliverables": [
-        "work/completed/manual-review-workflow/tasks/10.md"
-      ]
-    },
-    {
-      "id": "HIST-MRW-11",
-      "group": "manual-review-workflow",
-      "title": "Code Audit",
-      "status": "done",
-      "weight": 1,
-      "deliverables": [
-        "work/completed/manual-review-workflow/tasks/11.md"
-      ]
-    },
-    {
-      "id": "HIST-MRW-12",
-      "group": "manual-review-workflow",
-      "title": "Security Audit",
-      "status": "done",
-      "weight": 1,
-      "deliverables": [
-        "work/completed/manual-review-workflow/tasks/12.md"
-      ]
-    },
-    {
-      "id": "HIST-MRW-13",
-      "group": "manual-review-workflow",
-      "title": "Test Audit",
-      "status": "done",
-      "weight": 1,
-      "deliverables": [
-        "work/completed/manual-review-workflow/tasks/13.md"
-      ]
-    },
-    {
-      "id": "HIST-MRW-14",
-      "group": "manual-review-workflow",
-      "title": "Pre-deploy QA",
-      "status": "done",
-      "weight": 2,
-      "deliverables": [
-        "work/completed/manual-review-workflow/tasks/14.md"
-      ]
-    },
-    {
-      "id": "HIST-MPR-01",
-      "group": "mattel-parser-rewrite",
-      "title": "rewrite-parser",
-      "status": "done",
-      "weight": 8,
-      "deliverables": [
-        "work/completed/mattel-parser-rewrite/tasks/01.md"
-      ]
-    },
-    {
-      "id": "HIST-MPR-02",
-      "group": "mattel-parser-rewrite",
-      "title": "code-audit",
-      "status": "done",
-      "weight": 1,
-      "deliverables": [
-        "work/completed/mattel-parser-rewrite/tasks/02.md"
-      ]
-    },
-    {
-      "id": "HIST-MPR-03",
-      "group": "mattel-parser-rewrite",
-      "title": "security-audit",
-      "status": "done",
-      "weight": 1,
-      "deliverables": [
-        "work/completed/mattel-parser-rewrite/tasks/03.md"
-      ]
-    },
-    {
-      "id": "HIST-MPR-04",
-      "group": "mattel-parser-rewrite",
-      "title": "test-audit",
-      "status": "done",
-      "weight": 1,
-      "deliverables": [
-        "work/completed/mattel-parser-rewrite/tasks/04.md"
-      ]
-    },
-    {
-      "id": "HIST-MPR-05",
-      "group": "mattel-parser-rewrite",
-      "title": "pre-deploy-qa",
-      "status": "done",
-      "weight": 2,
-      "deliverables": [
-        "work/completed/mattel-parser-rewrite/tasks/05.md"
-      ]
-    },
-    {
-      "id": "HIST-RSS-01",
-      "group": "multiple-rss-feeds",
-      "title": "Configuration loader",
-      "status": "done",
-      "weight": 2,
-      "deliverables": [
-        "work/completed/multiple-rss-feeds/tasks/1.md"
-      ]
-    },
-    {
-      "id": "HIST-RSS-02",
-      "group": "multiple-rss-feeds",
-      "title": "Feed iteration and error isolation",
-      "status": "done",
-      "weight": 8,
-      "deliverables": [
-        "work/completed/multiple-rss-feeds/tasks/2.md"
-      ]
-    },
-    {
-      "id": "HIST-RSS-03",
-      "group": "multiple-rss-feeds",
-      "title": "Enhanced logging",
-      "status": "done",
-      "weight": 2,
-      "deliverables": [
-        "work/completed/multiple-rss-feeds/tasks/3.md"
-      ]
-    },
-    {
-      "id": "HIST-RSS-04",
-      "group": "multiple-rss-feeds",
-      "title": "Unit tests for new functionality",
-      "status": "done",
-      "weight": 3,
-      "deliverables": [
-        "work/completed/multiple-rss-feeds/tasks/4.md"
-      ]
-    },
-    {
-      "id": "HIST-RSS-05",
-      "group": "multiple-rss-feeds",
-      "title": "Integration test with mock feeds",
-      "status": "done",
-      "weight": 3,
-      "deliverables": [
-        "work/completed/multiple-rss-feeds/tasks/5.md"
-      ]
-    },
-    {
-      "id": "HIST-RSS-06",
-      "group": "multiple-rss-feeds",
-      "title": "Code Audit",
-      "status": "done",
-      "weight": 1,
-      "deliverables": [
-        "work/completed/multiple-rss-feeds/tasks/6.md"
-      ]
-    },
-    {
-      "id": "HIST-RSS-07",
-      "group": "multiple-rss-feeds",
-      "title": "Security Audit",
-      "status": "done",
-      "weight": 1,
-      "deliverables": [
-        "work/completed/multiple-rss-feeds/tasks/7.md"
-      ]
-    },
-    {
-      "id": "HIST-RSS-08",
-      "group": "multiple-rss-feeds",
-      "title": "Test Audit",
-      "status": "done",
-      "weight": 1,
-      "deliverables": [
-        "work/completed/multiple-rss-feeds/tasks/8.md"
-      ]
-    },
-    {
-      "id": "HIST-RSS-09",
-      "group": "multiple-rss-feeds",
-      "title": "Pre-deploy QA",
-      "status": "done",
-      "weight": 2,
-      "deliverables": [
-        "work/completed/multiple-rss-feeds/tasks/9.md"
-      ]
-    },
-    {
-      "id": "HIST-RSS-10",
-      "group": "multiple-rss-feeds",
-      "title": "Deploy (optional)",
-      "status": "done",
-      "weight": 2,
-      "deliverables": [
-        "work/completed/multiple-rss-feeds/tasks/10.md"
-      ]
-    },
-    {
-      "id": "HIST-RSS-11",
-      "group": "multiple-rss-feeds",
-      "title": "Post-deploy verification (optional)",
-      "status": "done",
-      "weight": 2,
-      "deliverables": [
-        "work/completed/multiple-rss-feeds/tasks/11.md"
-      ]
-    },
-    {
-      "id": "HIST-ORF-01",
-      "group": "orangetrack-rendering-fixes",
-      "title": "Parser changes — `<li>`/`<ol>` + heading dispatch + `paragraphs_flat`",
-      "status": "done",
-      "weight": 5,
-      "deliverables": [
-        "work/completed/orangetrack-rendering-fixes/tasks/1.md"
-      ]
-    },
-    {
-      "id": "HIST-ORF-02",
-      "group": "orangetrack-rendering-fixes",
-      "title": "LLM-patch — extend `_PATCHED_TEXT_BLOCK_TYPES` with `list_item`",
-      "status": "done",
-      "weight": 3,
-      "deliverables": [
-        "work/completed/orangetrack-rendering-fixes/tasks/2.md"
-      ]
-    },
-    {
-      "id": "HIST-ORF-03",
-      "group": "orangetrack-rendering-fixes",
-      "title": "Publisher — link helper + bullet rendering + heading",
-      "status": "done",
-      "weight": 5,
-      "deliverables": [
-        "work/completed/orangetrack-rendering-fixes/tasks/3.md"
-      ]
-    },
-    {
-      "id": "HIST-ORF-04",
-      "group": "orangetrack-rendering-fixes",
-      "title": "Unit + integration tests for parser changes",
-      "status": "done",
-      "weight": 3,
-      "deliverables": [
-        "work/completed/orangetrack-rendering-fixes/tasks/4.md"
-      ]
-    },
-    {
-      "id": "HIST-ORF-05",
-      "group": "orangetrack-rendering-fixes",
-      "title": "Unit tests for telegraph_publisher helper",
-      "status": "done",
-      "weight": 3,
-      "deliverables": [
-        "work/completed/orangetrack-rendering-fixes/tasks/5.md"
-      ]
-    },
-    {
-      "id": "HIST-ORF-06",
-      "group": "orangetrack-rendering-fixes",
-      "title": "Code Audit",
-      "status": "done",
-      "weight": 1,
-      "deliverables": [
-        "work/completed/orangetrack-rendering-fixes/tasks/6.md"
-      ]
-    },
-    {
-      "id": "HIST-ORF-07",
-      "group": "orangetrack-rendering-fixes",
-      "title": "Security Audit",
-      "status": "done",
-      "weight": 1,
-      "deliverables": [
-        "work/completed/orangetrack-rendering-fixes/tasks/7.md"
-      ]
-    },
-    {
-      "id": "HIST-ORF-08",
-      "group": "orangetrack-rendering-fixes",
-      "title": "Test Audit",
-      "status": "done",
-      "weight": 1,
-      "deliverables": [
-        "work/completed/orangetrack-rendering-fixes/tasks/8.md"
-      ]
-    },
-    {
-      "id": "HIST-ORF-09",
-      "group": "orangetrack-rendering-fixes",
-      "title": "Pre-deploy QA",
-      "status": "done",
-      "weight": 2,
-      "deliverables": [
-        "work/completed/orangetrack-rendering-fixes/tasks/9.md"
-      ]
-    },
-    {
-      "id": "HIST-ORF-10",
-      "group": "orangetrack-rendering-fixes",
-      "title": "Deploy",
-      "status": "done",
-      "weight": 2,
-      "deliverables": [
-        "work/completed/orangetrack-rendering-fixes/tasks/10.md"
-      ]
-    },
-    {
-      "id": "HIST-ORF-11",
-      "group": "orangetrack-rendering-fixes",
-      "title": "Post-deploy verification",
-      "status": "done",
-      "weight": 2,
-      "deliverables": [
-        "work/completed/orangetrack-rendering-fixes/tasks/11.md"
-      ]
-    },
-    {
-      "id": "HIST-OTS-01",
-      "group": "orangetrack-source",
-      "title": "Create `orangetrack_source.py` parser module",
-      "status": "done",
-      "weight": 5,
-      "deliverables": [
-        "work/completed/orangetrack-source/tasks/01.md"
-      ]
-    },
-    {
-      "id": "HIST-OTS-02",
-      "group": "orangetrack-source",
-      "title": "Extend `boilerplate_filter.py` with affiliate-line patterns",
-      "status": "done",
-      "weight": 3,
-      "deliverables": [
-        "work/completed/orangetrack-source/tasks/02.md"
-      ]
-    },
-    {
-      "id": "HIST-OTS-03",
-      "group": "orangetrack-source",
-      "title": "Wire orangetrack into `news_bot.py`",
-      "status": "done",
-      "weight": 8,
-      "deliverables": [
-        "work/completed/orangetrack-source/tasks/03.md"
-      ]
-    },
-    {
-      "id": "HIST-OTS-04",
-      "group": "orangetrack-source",
-      "title": "sources registry test update",
-      "status": "done",
-      "weight": 3,
-      "deliverables": [
-        "work/completed/orangetrack-source/tasks/04.md"
-      ]
-    },
-    {
-      "id": "HIST-OTS-05",
-      "group": "orangetrack-source",
-      "title": "Deploy FILES list synchronization",
-      "status": "done",
-      "weight": 2,
-      "deliverables": [
-        "work/completed/orangetrack-source/tasks/05.md"
-      ]
-    },
-    {
-      "id": "HIST-OTS-06",
-      "group": "orangetrack-source",
-      "title": "Code Audit",
-      "status": "done",
-      "weight": 1,
-      "deliverables": [
-        "work/completed/orangetrack-source/tasks/06.md"
-      ]
-    },
-    {
-      "id": "HIST-OTS-07",
-      "group": "orangetrack-source",
-      "title": "Security Audit",
-      "status": "done",
-      "weight": 1,
-      "deliverables": [
-        "work/completed/orangetrack-source/tasks/07.md"
-      ]
-    },
-    {
-      "id": "HIST-OTS-08",
-      "group": "orangetrack-source",
-      "title": "Test Audit (Audit Wave)",
-      "status": "done",
-      "weight": 1,
-      "deliverables": [
-        "work/completed/orangetrack-source/tasks/08.md"
-      ]
-    },
-    {
-      "id": "HIST-OTS-09",
-      "group": "orangetrack-source",
-      "title": "Pre-deploy QA",
-      "status": "done",
-      "weight": 2,
-      "deliverables": [
-        "work/completed/orangetrack-source/tasks/09.md"
-      ]
-    },
-    {
-      "id": "HIST-OTS-10",
-      "group": "orangetrack-source",
-      "title": "Deploy via dev push (CI auto-fires test deploy)",
-      "status": "done",
-      "weight": 2,
-      "deliverables": [
-        "work/completed/orangetrack-source/tasks/10.md"
-      ]
-    },
-    {
-      "id": "HIST-OTS-11",
-      "group": "orangetrack-source",
-      "title": "Post-deploy verification on test channel",
-      "status": "done",
-      "weight": 2,
-      "deliverables": [
-        "work/completed/orangetrack-source/tasks/11.md"
-      ]
-    },
-    {
-      "id": "HIST-PID-01",
-      "group": "publish-idempotency-fix",
-      "title": "Add idempotency guard to `_fallback_publish`",
-      "status": "done",
-      "weight": 5,
-      "deliverables": [
-        "work/completed/publish-idempotency-fix/tasks/1.md"
-      ]
-    },
-    {
-      "id": "HIST-PID-02",
-      "group": "publish-idempotency-fix",
-      "title": "Make `move_to_published` idempotent on duplicate link",
-      "status": "done",
-      "weight": 5,
-      "deliverables": [
-        "work/completed/publish-idempotency-fix/tasks/2.md"
-      ]
-    },
-    {
-      "id": "HIST-PID-03",
-      "group": "publish-idempotency-fix",
-      "title": "Add 5 unit tests for the `_fallback_publish` guard",
-      "status": "done",
-      "weight": 3,
-      "deliverables": [
-        "work/completed/publish-idempotency-fix/tasks/3.md"
-      ]
-    },
-    {
-      "id": "HIST-PID-04",
-      "group": "publish-idempotency-fix",
-      "title": "Add 1 repository test for `move_to_published` idempotency",
-      "status": "done",
-      "weight": 3,
-      "deliverables": [
-        "work/completed/publish-idempotency-fix/tasks/4.md"
-      ]
-    },
-    {
-      "id": "HIST-PID-05",
-      "group": "publish-idempotency-fix",
-      "title": "Add 1 integration test for slot-loop with mixed zombie + fresh rows",
-      "status": "done",
-      "weight": 3,
-      "deliverables": [
-        "work/completed/publish-idempotency-fix/tasks/5.md"
-      ]
-    },
-    {
-      "id": "HIST-PID-06",
-      "group": "publish-idempotency-fix",
-      "title": "Code Audit",
-      "status": "done",
-      "weight": 1,
-      "deliverables": [
-        "work/completed/publish-idempotency-fix/tasks/6.md"
-      ]
-    },
-    {
-      "id": "HIST-PID-07",
-      "group": "publish-idempotency-fix",
-      "title": "Security Audit",
-      "status": "done",
-      "weight": 1,
-      "deliverables": [
-        "work/completed/publish-idempotency-fix/tasks/7.md"
-      ]
-    },
-    {
-      "id": "HIST-PID-08",
-      "group": "publish-idempotency-fix",
-      "title": "Test Audit",
-      "status": "done",
-      "weight": 1,
-      "deliverables": [
-        "work/completed/publish-idempotency-fix/tasks/8.md"
-      ]
-    },
-    {
-      "id": "HIST-PID-09",
-      "group": "publish-idempotency-fix",
-      "title": "Pre-deploy QA",
-      "status": "done",
-      "weight": 2,
-      "deliverables": [
-        "work/completed/publish-idempotency-fix/tasks/9.md"
-      ]
-    },
-    {
-      "id": "HIST-PID-10",
-      "group": "publish-idempotency-fix",
-      "title": "Deploy",
-      "status": "done",
-      "weight": 2,
-      "deliverables": [
-        "work/completed/publish-idempotency-fix/tasks/10.md"
-      ]
-    },
-    {
-      "id": "HIST-PID-11",
-      "group": "publish-idempotency-fix",
-      "title": "Post-deploy verification",
-      "status": "done",
-      "weight": 2,
-      "deliverables": [
-        "work/completed/publish-idempotency-fix/tasks/11.md"
-      ]
-    },
-    {
-      "id": "HIST-THS-01",
-      "group": "t-hunted-pt-source",
-      "title": "New parser module + unit tests",
-      "status": "done",
-      "weight": 8,
-      "deliverables": [
-        "work/completed/t-hunted-pt-source/tasks/1.md"
-      ]
-    },
-    {
-      "id": "HIST-THS-02",
-      "group": "t-hunted-pt-source",
-      "title": "Admin alerts E031-E033",
-      "status": "done",
-      "weight": 3,
-      "deliverables": [
-        "work/completed/t-hunted-pt-source/tasks/2.md"
-      ]
-    },
-    {
-      "id": "HIST-THS-03",
-      "group": "t-hunted-pt-source",
-      "title": "news_bot.py wiring (import + dispatcher + NETLOC_TO_SOURCE + SOURCE_HASHTAG_OVERRIDE + archived consumer dicts) + sources_registry test extension",
-      "status": "done",
-      "weight": 8,
-      "deliverables": [
-        "work/completed/t-hunted-pt-source/tasks/3.md"
-      ]
-    },
-    {
-      "id": "HIST-THS-04",
-      "group": "t-hunted-pt-source",
-      "title": "Config + boilerplate (feeds.json + boilerplate_filter.py + tests)",
-      "status": "done",
-      "weight": 5,
-      "deliverables": [
-        "work/completed/t-hunted-pt-source/tasks/4.md"
-      ]
-    },
-    {
-      "id": "HIST-THS-05",
-      "group": "t-hunted-pt-source",
-      "title": "Wiring tests (test_telegram + dispatcher unit)",
-      "status": "done",
-      "weight": 3,
-      "deliverables": [
-        "work/completed/t-hunted-pt-source/tasks/5.md"
-      ]
-    },
-    {
-      "id": "HIST-THS-06",
-      "group": "t-hunted-pt-source",
-      "title": "Deploy plumbing (3 FILES lists) + pytest invariant test",
-      "status": "done",
-      "weight": 5,
-      "deliverables": [
-        "work/completed/t-hunted-pt-source/tasks/6.md"
-      ]
-    },
-    {
-      "id": "HIST-THS-07",
-      "group": "t-hunted-pt-source",
-      "title": "ux-guidelines.md prompt update + structural test (widen + t-hunted block + glossary)",
-      "status": "done",
-      "weight": 5,
-      "deliverables": [
-        "work/completed/t-hunted-pt-source/tasks/7.md"
-      ]
-    },
-    {
-      "id": "HIST-THS-08",
-      "group": "t-hunted-pt-source",
-      "title": "Integration smoke test EN+PT mixed tick",
-      "status": "done",
-      "weight": 5,
-      "deliverables": [
-        "work/completed/t-hunted-pt-source/tasks/8.md"
-      ]
-    },
-    {
-      "id": "HIST-THS-09",
-      "group": "t-hunted-pt-source",
-      "title": "Code Audit",
-      "status": "done",
-      "weight": 1,
-      "deliverables": [
-        "work/completed/t-hunted-pt-source/tasks/9.md"
-      ]
-    },
-    {
-      "id": "HIST-THS-10",
-      "group": "t-hunted-pt-source",
-      "title": "Security Audit",
-      "status": "done",
-      "weight": 1,
-      "deliverables": [
-        "work/completed/t-hunted-pt-source/tasks/10.md"
-      ]
-    },
-    {
-      "id": "HIST-THS-11",
-      "group": "t-hunted-pt-source",
-      "title": "Test Audit",
-      "status": "done",
-      "weight": 1,
-      "deliverables": [
-        "work/completed/t-hunted-pt-source/tasks/11.md"
-      ]
-    },
-    {
-      "id": "HIST-THS-12",
-      "group": "t-hunted-pt-source",
-      "title": "Pre-deploy QA",
-      "status": "done",
-      "weight": 2,
-      "deliverables": [
-        "work/completed/t-hunted-pt-source/tasks/12.md"
-      ]
-    },
-    {
-      "id": "HIST-THS-13",
-      "group": "t-hunted-pt-source",
-      "title": "Deploy",
-      "status": "done",
-      "weight": 2,
-      "deliverables": [
-        "work/completed/t-hunted-pt-source/tasks/13.md"
-      ]
-    },
-    {
-      "id": "HIST-THS-14",
-      "group": "t-hunted-pt-source",
-      "title": "Post-deploy verification",
-      "status": "done",
-      "weight": 5,
-      "deliverables": [
-        "work/completed/t-hunted-pt-source/tasks/14.md"
-      ]
-    },
-    {
       "id": "DBP-001",
-      "group": "dedup-broad-precision",
-      "title": "Confirm the production failure mode and current code path",
+      "title": "Confirm the production failure mode and current dedup path",
+      "description": "Document the measured false-positive pattern, the existing pair-rule flow, available evidence, and implementation constraints.",
       "status": "done",
       "weight": 3,
+      "depends_on": [],
+      "blocked_by": [],
       "deliverables": [
-        "work/dedup-broad-precision/code-research.md"
+        "work/dedup-broad-precision/code-research.md",
+        "work/dedup-broad-precision/logs/userspec/measurements.md"
       ]
     },
     {
       "id": "DBP-002",
-      "group": "dedup-broad-precision",
-      "title": "Approve measurable user requirements and acceptance criteria",
+      "title": "Approve measurable release requirements",
+      "description": "Define and validate acceptance criteria for broad-pair precision, preserved distinctive blocking, fail-open behavior, diagnostics, and live verification.",
       "status": "done",
       "weight": 3,
+      "depends_on": [
+        "DBP-001"
+      ],
+      "blocked_by": [],
       "deliverables": [
-        "work/dedup-broad-precision/user-spec.md"
+        "work/dedup-broad-precision/user-spec.md",
+        "work/dedup-broad-precision/logs/userspec/adequacy-review.json",
+        "work/dedup-broad-precision/logs/userspec/quality-review.json"
       ]
     },
     {
       "id": "DBP-003",
-      "group": "dedup-broad-precision",
-      "title": "Bring the technical specification through the five planning validators",
+      "title": "Validate the technical design and release contract",
+      "description": "Specify the symmetric title-subject rule, continued candidate scan, capped set-overlap backstop, telemetry, tests, rollout, and rollback boundaries.",
       "status": "done",
       "weight": 5,
+      "depends_on": [
+        "DBP-002"
+      ],
+      "blocked_by": [],
       "deliverables": [
         "work/dedup-broad-precision/tech-spec.md",
         "work/dedup-broad-precision/logs/techspec/"
@@ -1884,196 +58,201 @@
     },
     {
       "id": "DBP-004",
-      "group": "dedup-broad-precision",
-      "title": "Obtain explicit user approval of the validated technical specification",
+      "title": "Approve the validated technical specification",
+      "description": "Record explicit approval of the reviewed technical specification before implementation begins.",
       "status": "done",
-      "weight": 1
+      "weight": 1,
+      "depends_on": [
+        "DBP-003"
+      ],
+      "blocked_by": [],
+      "deliverables": [
+        "work/dedup-broad-precision/tech-spec.md"
+      ]
     },
     {
       "id": "DBP-005",
-      "group": "dedup-broad-precision",
-      "title": "Decompose the approved specification into atomic task files, validate them, and obtain explicit approval",
+      "title": "Validate and approve the atomic execution plan",
+      "description": "Decompose the specification into ten ordered implementation, audit, release, and observation tasks and validate their dependencies.",
       "status": "done",
       "weight": 3,
+      "depends_on": [
+        "DBP-004"
+      ],
+      "blocked_by": [],
       "deliverables": [
         "work/dedup-broad-precision/tasks/",
-        "work/dedup-broad-precision/logs/tasks/"
+        "work/dedup-broad-precision/logs/tasks/",
+        "work/dedup-broad-precision/logs/execution-plan.md"
       ]
     },
     {
       "id": "DBP-006",
-      "group": "dedup-broad-precision",
-      "title": "Build the sanitized 24-pair production regression corpus and scoring harness",
+      "title": "Build the sanitized production regression corpus and scorer",
+      "description": "Create the 24-pair sanitized evidence corpus, stable fixture, integrity checks, and deterministic baseline scorer without operational or private data.",
       "status": "blocked",
       "weight": 5,
+      "depends_on": [
+        "DBP-005"
+      ],
       "blocked_by": [
-        "B-002"
+        "BLOCK-001"
+      ],
+      "deliverables": [
+        "work/dedup-broad-precision/corpus-raw/README.md",
+        "work/dedup-broad-precision/corpus-raw/dedup-pairs.json",
+        "tests/fixtures/dedup_broad_precision.json",
+        "tests/test_dedup_broad_precision.py"
       ]
     },
     {
       "id": "DBP-007",
-      "group": "dedup-broad-precision",
-      "title": "Implement title-subject qualification, continued candidate scanning, and the set-overlap block cap",
+      "title": "Implement subject-aware broad-pair decisions and the capped backstop",
+      "description": "Require the shared broad series in both effective titles, continue scanning later candidates, preserve distinctive precedence, and prevent subject-rejected matches from hard-blocking through set overlap.",
       "status": "planned",
       "weight": 8,
-      "blocked_by": [
+      "depends_on": [
         "DBP-006"
+      ],
+      "blocked_by": [],
+      "deliverables": [
+        "news_bot.py",
+        "tests/test_dedup_broad_precision.py",
+        "tests/test_integration.py",
+        "tests/test_model_extractor.py"
       ]
     },
     {
       "id": "DBP-008",
-      "group": "dedup-broad-precision",
-      "title": "Integrate truthful E014 variants, bounded logs, suppression telemetry, and exact defer behavior",
+      "title": "Add truthful E014 reasons, bounded logs, and suppression telemetry",
+      "description": "Implement reason-specific operator messages, safe subject-rejection diagnostics, daily suppression counts, and exact deferral only for final soft flags.",
       "status": "planned",
       "weight": 5,
-      "blocked_by": [
+      "depends_on": [
         "DBP-007"
+      ],
+      "blocked_by": [],
+      "deliverables": [
+        "news_bot.py",
+        "admin_alerts.py",
+        "tests/test_admin_alerts.py",
+        "tests/test_integration.py",
+        "tests/test_no_token_leak_in_logs.py"
       ]
     },
     {
       "id": "DBP-009",
-      "group": "dedup-broad-precision",
-      "title": "Update project knowledge for the new dedup decision flow and rollout contract",
+      "title": "Update project knowledge and rollout documentation",
+      "description": "Document the title-subject rule, non-terminal suppression path, capped backstop, telemetry semantics, deployment safeguards, and observation contract.",
       "status": "planned",
       "weight": 3,
-      "blocked_by": [
+      "depends_on": [
         "DBP-008"
+      ],
+      "blocked_by": [],
+      "deliverables": [
+        ".claude/skills/project-knowledge/references/project.md",
+        ".claude/skills/project-knowledge/references/architecture.md",
+        ".claude/skills/project-knowledge/references/patterns.md",
+        ".claude/skills/project-knowledge/references/deployment.md"
       ]
     },
     {
       "id": "DBP-010",
-      "group": "dedup-broad-precision",
-      "title": "Run the feature-level code audit",
+      "title": "Complete the feature code audit",
+      "description": "Review the final implementation, lifecycle behavior, diagnostics, tests, and documentation for correctness, clarity, and preserved dedup invariants.",
       "status": "planned",
       "weight": 2,
-      "blocked_by": [
+      "depends_on": [
         "DBP-009"
+      ],
+      "blocked_by": [],
+      "deliverables": [
+        "work/dedup-broad-precision/logs/audit/code-audit.json"
       ]
     },
     {
       "id": "DBP-011",
-      "group": "dedup-broad-precision",
-      "title": "Run the feature-level security audit",
+      "title": "Complete the feature security audit",
+      "description": "Review fail-open safety, irreversible-block protection, log redaction, corpus sanitization, malformed input handling, and unchanged review authorization.",
       "status": "planned",
       "weight": 2,
-      "blocked_by": [
+      "depends_on": [
         "DBP-009"
+      ],
+      "blocked_by": [],
+      "deliverables": [
+        "work/dedup-broad-precision/logs/audit/security-audit.json"
       ]
     },
     {
       "id": "DBP-012",
-      "group": "dedup-broad-precision",
-      "title": "Run the feature-level test audit",
+      "title": "Complete the feature test audit",
+      "description": "Review corpus integrity, behavioral assertions, boundary coverage, state verification, and regression protection for distinctive and fail-open paths.",
       "status": "planned",
       "weight": 2,
-      "blocked_by": [
+      "depends_on": [
         "DBP-009"
+      ],
+      "blocked_by": [],
+      "deliverables": [
+        "work/dedup-broad-precision/logs/audit/test-audit.json"
       ]
     },
     {
       "id": "DBP-013",
-      "group": "dedup-broad-precision",
-      "title": "Complete pre-deploy acceptance QA and full regression verification",
+      "title": "Pass pre-deployment acceptance and full regression QA",
+      "description": "Trace every release criterion to evidence, run focused and full tests, validate JSON, run scoped hooks, and block release on any failed safety condition.",
       "status": "planned",
       "weight": 5,
-      "blocked_by": [
+      "depends_on": [
         "DBP-010",
         "DBP-011",
         "DBP-012"
+      ],
+      "blocked_by": [],
+      "deliverables": [
+        "work/dedup-broad-precision/logs/working/pre-deploy-qa-report.json"
       ]
     },
     {
       "id": "DBP-014",
-      "group": "dedup-broad-precision",
-      "title": "Deploy the approved build through the manual production release flow",
+      "title": "Deploy the approved build through the manual production flow",
+      "description": "Release the verified commit outside the protected publication window, preserve a rollback target, and confirm clean service startup without forcing a tick or test article.",
       "status": "planned",
       "weight": 3,
-      "blocked_by": [
+      "depends_on": [
         "DBP-013"
+      ],
+      "blocked_by": [],
+      "deliverables": [
+        "work/dedup-broad-precision/logs/working/deploy-report.json"
       ]
     },
     {
       "id": "DBP-015",
-      "group": "dedup-broad-precision",
-      "title": "Verify live dedup precision and E015 stability during the post-deploy observation window",
+      "title": "Verify live dedup precision after deployment",
+      "description": "Observe natural dedup decisions for the approved window, classify E014 outcomes, reconcile suppression counts, and confirm no unexpected E015 or fail-open regression.",
       "status": "planned",
       "weight": 5,
-      "blocked_by": [
+      "depends_on": [
         "DBP-014"
-      ]
-    },
-    {
-      "id": "RDM-001",
-      "group": "approved-roadmap",
-      "title": "Build the stabilization foundation for hermetic CI, safe startup, and scheduler lifecycle",
-      "status": "planned",
-      "weight": 8,
+      ],
+      "blocked_by": [],
       "deliverables": [
-        "work/stabilization-foundation/user-spec.md"
+        "work/dedup-broad-precision/logs/working/post-deploy-qa-report.json"
       ]
-    },
-    {
-      "id": "RDM-002",
-      "group": "approved-roadmap",
-      "title": "Close operator blind spots for silent sources and held-article reminders",
-      "status": "planned",
-      "weight": 8,
-      "deliverables": [
-        "work/operator-blind-spots/user-spec.md"
-      ]
-    },
-    {
-      "id": "RDM-003",
-      "group": "product-backlog",
-      "title": "Add cross-article links to previously published Telegraph pages",
-      "status": "planned",
-      "weight": 3
-    },
-    {
-      "id": "RDM-004",
-      "group": "product-backlog",
-      "title": "Add a persisted operator-facing failure digest outside the admin chat",
-      "status": "planned",
-      "weight": 5
-    },
-    {
-      "id": "RDM-005",
-      "group": "product-backlog",
-      "title": "Verify and calibrate per-source LLM tone behavior",
-      "status": "planned",
-      "weight": 3
-    },
-    {
-      "id": "RDM-006",
-      "group": "future",
-      "title": "Build a web dashboard for configuration and monitoring",
-      "status": "planned",
-      "weight": 8
-    },
-    {
-      "id": "RDM-007",
-      "group": "future",
-      "title": "Add optional translation providers beyond the current LLM engines",
-      "status": "planned",
-      "weight": 5
-    },
-    {
-      "id": "RDM-008",
-      "group": "future",
-      "title": "Add further Hot Wheels news sources beyond the current source set",
-      "status": "planned",
-      "weight": 5
     }
   ],
   "blockers": [
     {
-      "id": "B-002",
-      "description": "Awaiting explicit user approval for the exact read-only export of 24 pairs containing public article URLs, titles, source names, existing dedup fingerprints, and two fingerprints reconstructed through the public t-hunted parser into a temporary local JSON.",
+      "id": "BLOCK-001",
+      "description": "The 24-pair sanitized regression corpus requires explicit authorization for a read-only export limited to public article identifiers, titles, source names, and existing dedup fingerprints.",
       "status": "blocked",
       "affects": [
         "DBP-006"
       ]
     }
   ],
-  "updated_at": "2026-08-30T17:11:22+03:00"
+  "updated_at": "2026-08-31T21:27:11+03:00"
 }
