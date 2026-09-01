@@ -2263,6 +2263,17 @@
       ]
     },
     {
+      "id": "DEBT-001",
+      "title": "Sanitize legacy dedup decision log identifiers",
+      "description": "Follow up the Task 3 security-audit residual risk: ordinary-overlap E014 and E015 logs still interpolate external article identifiers, which may expose URL credentials, query data, fragments, or forged fields. Reuse the existing bounded identifier/source sanitizers and add only focused regression assertions without changing dedup decisions, Telegram alerts, or rate limiting.",
+      "status": "planned",
+      "weight": 2,
+      "depends_on": [
+        "DBP-008"
+      ],
+      "blocked_by": []
+    },
+    {
       "id": "STAB-001",
       "title": "Approve stabilization-foundation requirements and repository research",
       "description": "Define measurable requirements for hermetic CI, fail-closed production startup, database and VPN-route validation, and safe scheduler lifecycle behavior.",
@@ -2662,5 +2673,5 @@
     }
   ],
   "blockers": [],
-  "updated_at": "2026-09-01T15:26:14+03:00"
+  "updated_at": "2026-09-01T15:56:01+03:00"
 }
