@@ -1,0 +1,42 @@
+{
+  "reviewer": "code-reviewer",
+  "round": 1,
+  "verdict": "approved",
+  "findings": [],
+  "verified_contracts": [
+    {
+      "contract": "The overview names every E014 reason and the exact suppression metric unit",
+      "evidence": "project.md distinguishes broad_subject, overlap in the [30%, 50%) interval, and overlap_capped at the >=50% boundary. It defines dedup_subject_suppressed as one unit per affected incoming article per tick, never per rejected pair or candidate and never as a drop."
+    },
+    {
+      "contract": "The architecture matches the implemented scan, selection, and backstop flow",
+      "evidence": "architecture.md documents one symmetric effective-title fallback, qualified-pair-only selection, scan-and-remember ordering, later distinctive precedence, continued candidate scanning after subject rejection, the unchanged 7-day [0.30, 0.50) / >=0.50 overlap thresholds, and the capped backstop block. These statements were checked against _pair_rule_verdict, _check_cross_source_dedup, and job in news_bot.py."
+    },
+    {
+      "contract": "Unchanged safety and operator invariants remain explicit",
+      "evidence": "The documentation preserves immediate distinctive E015, rate-limited fail-open E016 with NULL fingerprint staging, the 7-day E014 pair alert rate-limit, existing review-button grammar and 24-hour deferral, DEDUP_SERIES_ENABLED behavior, and the absence of schema or fingerprint-format changes."
+    },
+    {
+      "contract": "Project-specific implementation conventions are durable without duplicating code",
+      "evidence": "patterns.md records pure verdict logic, one effective title, scan-and-remember precedence, the 100-record suppression cap with bounded redacted fields, article-unit telemetry, and the 24-pair corpus threshold. It directs future changes to focused boundary cases rather than broad combinatorial test growth."
+    },
+    {
+      "contract": "Deployment guidance defines observational verification and safe mitigation",
+      "evidence": "deployment.md requires two to four weeks of naturally occurring production intake, classification of every E014, reconciliation of article-unit suppression totals, and monitoring for E015/E016 changes. It prohibits injected articles, test messages, forced ticks, and verification publications, and preserves both the DEDUP_SERIES_ENABLED disable path and whole-release rollback outside 10:00-20:00 MSK."
+    },
+    {
+      "contract": "Task 4 remains documentation-only and adds no operational secrets",
+      "evidence": "The feature changes only the four approved Project Knowledge files plus task, review, decision, checkpoint, and progress records. The added documentation contains no server address, private identifier, credential value, token, or new operational secret; the required term search and git diff --check pass."
+    }
+  ],
+  "residual_risks": [
+    {
+      "risk": "Live precision cannot be proven by a documentation-only task.",
+      "assessment": "Intentional. The offline corpus is the pre-deploy control; Task 10 owns the independent two-to-four-week observation of natural production traffic."
+    },
+    {
+      "risk": "Disabling DEDUP_SERIES_ENABLED restores the legacy overlap-only contour rather than retaining title-aware broad qualification.",
+      "assessment": "This is the existing rollback tradeoff and is now stated explicitly. The toggle is an incident mitigation, not an alternate steady-state precision mode."
+    }
+  ]
+}

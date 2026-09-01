@@ -2163,7 +2163,7 @@
       "id": "DBP-009",
       "title": "Update project knowledge and rollout documentation",
       "description": "Document the title-subject rule, non-terminal suppression path, capped backstop, telemetry semantics, deployment safeguards, and observation contract.",
-      "status": "planned",
+      "status": "done",
       "weight": 3,
       "depends_on": [
         "DBP-008"
@@ -2673,5 +2673,5 @@
     }
   ],
   "blockers": [],
-  "updated_at": "2026-09-01T15:56:01+03:00"
+  "updated_at": "2026-09-01T16:20:01+03:00"
 }

@@ -370,24 +370,51 @@ already ran) — verify the shape with
    safety of the dark phase.
 6. **Enable** — set `DEDUP_SERIES_ENABLED=1` (or simply **remove the override** —
    default is on) in the prod `.env`, then `docker compose up -d --build` again,
-   **outside the window**. The pair-rule is now live: a shared broad pair
-   soft-flags (`[E014]` — article still publishes + ping), a shared distinctive
-   `|D` pair hard-blocks (`[E015]`, irreversible — no manual re-publish). Watch
-   the first days of `[E014]`/`[E015]` pings for false positives.
+   **outside the window**. The pair-rule is now live: a title-qualified broad
+   pair soft-flags (`[E014]` — article still publishes after its decision window),
+   while a shared distinctive `|D` pair hard-blocks (`[E015]`, irreversible — no
+   manual re-publish). A broad comparison rejected by the title rule continues
+   through remaining candidates and the overlap backstop; full verdict ownership
+   is in architecture.md § Data Flow.
 
 > **Expected behaviour change once ON (not a regression).** A broad-tier
-> republish that the legacy backstop *used* to silently hard-block at ≥50%
-> car-overlap — e.g. a recurring **Car Culture** line re-covered by a second
-> source — now **SOFT-FLAGS and PUBLISHES** with an `[E014]` ping instead of
-> being dropped. This is intended (Decision 3 tiering: only a distinctive `|D`
-> pair may hard-block; broad `|B` pairs always publish-and-notify). The `[E014]`
-> ping IS the recovery signal — if it turns out to be a genuine dupe, the
-> operator taps **«🚫 Не публиковать»** under the ping (requires
+> comparison is no longer sufficient by itself: the shared line must be the
+> subject of both effective original titles. A qualified match emits
+> `broad_subject`; ordinary `[30%, 50%)` overlap emits `overlap`; a ≥50% backstop result
+> reached after title-subject rejection is capped to the non-destructive
+> `overlap_capped` flag. A rejected broad comparison followed by backstop pass is
+> staged silently without the dedup defer. The `[E014]` ping remains the recovery
+> signal — if it turns out to be a genuine dupe, the operator taps
+> **«🚫 Не публиковать»** under the ping (requires
 > `REVIEW_BUTTONS_ENABLED=1` — see § Feature rollout: dedup-review-buttons; with
 > the flag off there is **no** way to pull the article back, the ping is
-> informational only and the alert text says so). So expect **more visible
-> `[E014]` pings and fewer silent drops** right after enabling; that is the
-> feature working, not a false positive.
+> informational only and the alert text says so). The existing 7-day alert
+> rate-limit, callback grammar, 24 h defer for every actual flag, schema and
+> fingerprint format are unchanged.
+
+### Subject-aware precision: post-deploy observation and mitigation
+
+For the first **two to four weeks** after release, verify only against ordinary
+production intake. Classify every naturally occurring `[E014]` as a correct
+duplicate, false flag or unresolved; record its explicit reason. Reconcile each
+day's `dedup_subject_suppressed` value — one unit per affected incoming article,
+not per rejected candidate — with the bounded candidate diagnostics, and watch
+for any unexpected increase or behavior change in `[E015]` or `[E016]`. Keep the
+report to sanitized aggregate evidence; do not copy raw logs or private operator
+identifiers.
+
+**Do not inject a test article, Telegram test message, forced scheduler tick or
+publication to verify this rule.** There is one production instance and live
+publication is irreversible; the offline corpus and focused tests are the
+pre-deploy controls, while independent natural traffic is the post-deploy check.
+
+If the observation shows a safety regression, set `DEDUP_SERIES_ENABLED=0` and
+rebuild outside the protected 10:00–20:00 МСК window to disable the pair rule, or
+use the general Route A/Route B rollback below for the whole release. Treat an
+unexpected `[E015]`/`[E016]` change as a release blocker; false-flag evidence may
+instead require an extended observation window or a separately approved rule
+change. Disabling the toggle restores the legacy overlap-only contour; it does
+not migrate data, alter review-button state or rewrite fingerprints.
 
 ---
 

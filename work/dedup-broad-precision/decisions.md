@@ -109,3 +109,21 @@ Review details — in JSON files via links. QA report — in logs/working/.
 - `venv/bin/python -m pytest tests/test_integration.py -q` → 154 passed, 71 subtests passed
 - `venv/bin/python -m pytest -q` → 2112 passed, 2 skipped, 556 subtests passed
 - JSON validation, scoped pre-commit hooks, and `git diff --check` → passed
+
+## Task 4: Project Knowledge update
+
+**Status:** Done
+**Commit:** Pending (current Task 4 commit)
+**Agent:** main agent
+**Summary:** Durable project guidance now describes subject-qualified broad matching, non-terminal candidate suppression, qualified-pair selection, the unchanged overlap backstop with a capped hard-block result, all three E014 reasons, and article-unit suppression telemetry. Project-specific coding conventions and a two-to-four-week natural-traffic observation contract were added without changing code, tests, schema, toggles, review controls, or deployment automation.
+**Deviations:** None. `user-spec.md` and `tech-spec.md` remain unchanged because the accepted contract did not change.
+
+**Reviews:**
+
+*Round 1:*
+- code-reviewer: OK → [logs/working/task-4/code-reviewer-1.json](logs/working/task-4/code-reviewer-1.json)
+
+**Verification:**
+- Required-term search across the four Project Knowledge references → passed
+- Obsolete-terminal-claim search and added-line secret/private-data scan → no matches
+- JSON validation, scoped pre-commit hooks, and `git diff --check` → passed

@@ -631,6 +631,38 @@ guaranteed NOT to work.*
 - Source-level failures (Lamley, autoevolution scrape, orangetrack, t-hunted) are isolated the same way, with admin notifications on hard failures.
 - *Removed 2026-08-03: this section claimed a global `limit=3` fetch cap applied across all sources. No such constant exists in `news_bot.py` or any source module — the per-day ceiling is a publish-side property (architecture.md § Data Flow), not a fetch-side one.*
 
+### Cross-source dedup precision
+
+Subject-aware broad matching is a project-specific safety boundary, not a generic
+similarity heuristic. Changes to the dedup gate must preserve these conventions:
+
+- **Keep verdict logic pure.** `_pair_rule_verdict` returns the decision, selected
+  match and bounded subject-rejection evidence; it does not log, write SQLite or
+  send Telegram messages. `job()` owns those side effects, while the gate owns
+  the unchanged overlap backstop and its `overlap_capped` policy.
+- **Compute one effective title and use it symmetrically.** The fetched article
+  title falls back to the feed-entry title once, before fingerprinting and
+  staging. The persisted candidate title must be that same value. Broad subject
+  qualification reads titles only, never article bodies, so arrival order cannot
+  change the verdict.
+- **Scan-and-remember, do not return on the first broad comparison.** Remember the
+  first qualified broad match, continue through later candidates so `|D` keeps
+  precedence, and let a fully subject-rejected broad contour reach the existing
+  set-overlap backstop. Only a final `flag` earns `[E014]` and the 24 h defer.
+- **Bound diagnostic cardinality and untrusted text.** Keep at most one suppression
+  record per candidate and cap the returned list at 100 records within the
+  existing 30-day candidate window; render links and titles as redacted,
+  single-line, length-bounded identifiers. The daily
+  `dedup_subject_suppressed` metric counts once per affected incoming article,
+  not per pair or candidate, and never contributes to dropped totals.
+- **The production corpus is the precision oracle.** Any change to title-series
+  extraction, pair selection, tiering or backstop composition must run the
+  sanitized 24-pair regression in `tests/fixtures/dedup_broad_precision.json`:
+  all 3 labelled duplicates must flag, no case may hard-block through a broad
+  pair, and at most 1 of 21 labelled false pairs may flag. Add focused cases only
+  when a changed rule creates a new decision boundary; do not duplicate the
+  existing corpus with broad combinatorial tests.
+
 ### Operator-facing inbound path (review buttons)
 
 Until 2026-07-25 the bot only ever SENT to Telegram. `_run_review_listener` in
