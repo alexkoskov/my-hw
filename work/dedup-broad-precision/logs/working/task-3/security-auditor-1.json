@@ -1,0 +1,42 @@
+{
+  "reviewer": "security-auditor",
+  "round": 1,
+  "verdict": "approved",
+  "findings": [],
+  "verified_contracts": [
+    {
+      "contract": "Suppression diagnostics are one bounded record per rejected candidate",
+      "evidence": "news_bot._log_dedup_subject_suppression uses a fixed parameterized template; both URL identifiers are capped at 200 characters, sources at 50, titles at 160, series at 180, and the diagnostic list is capped upstream. The hostile-field regression passed."
+    },
+    {
+      "contract": "Log-injection and secret-bearing external values are sanitized before interpolation",
+      "evidence": "The suppression path removes control characters, URL userinfo, query strings, and fragments, percent-encodes ambiguous identifier characters, applies shared token/key redaction plus configured-secret replacement, and substitutes constant markers for oversized or unrepresentable values."
+    },
+    {
+      "contract": "Broad and capped E014 logs do not expose pair-overlap percentages",
+      "evidence": "Only reason=overlap uses the legacy percentage log branch. broad_subject and overlap_capped use sanitized identifiers and sources with an explicit fixed reason; the integration regressions passed."
+    },
+    {
+      "contract": "Malformed diagnostic processing remains fail-open",
+      "evidence": "Suppression logging and telemetry execute inside the existing dedup try/except boundary. A preparation, formatting, logger, match-shape, or database failure therefore follows E016 degraded mode and stages without a fingerprint rather than hard-blocking the article."
+    },
+    {
+      "contract": "Telegram review authorization, token kind, callback grammar, and pair throttling are unchanged",
+      "evidence": "The new reason fields are keyword-only alert-builder inputs. Token creation still stores REVIEW_TOKEN_KIND_DEDUP, keyboard callbacks remain dd:c:<token> and dd:k:<token>, the existing listener authorization gate is untouched, and the same link pair is marked through mark_pair_pinged. The contract regression passed."
+    },
+    {
+      "contract": "Security-focused verification is green",
+      "evidence": "pytest passed 3/3 focused tests: suppression log redaction/bounds/single-line behavior, per-candidate diagnostics with article-unit telemetry, and E014 rate-limit/review-token preservation. git diff --check also passed."
+    }
+  ],
+  "residual_risks": [
+    {
+      "risk": "Legacy ordinary-overlap E014 and E015 log branches still interpolate article identifiers directly.",
+      "assessment": "Pre-existing and unchanged by Task 3. The new broad, capped, and suppression paths are sanitized as required; hardening the legacy branches would be a separate logging-safety scope."
+    },
+    {
+      "risk": "Suppression logging is intentionally capped at the upstream maximum of 100 candidate records per incoming article.",
+      "assessment": "This bounds memory and log volume, but diagnostics beyond the cap are omitted by design. The article-level telemetry still records that suppression occurred."
+    }
+  ]
+}

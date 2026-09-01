@@ -85,3 +85,27 @@ Review details — in JSON files via links. QA report — in logs/working/.
 - `venv/bin/python -m pytest tests/test_dedup_broad_precision.py tests/test_model_extractor.py tests/test_integration.py -q` → 280 passed, 71 subtests passed
 - `venv/bin/python -m pytest tests/test_dedup_broad_precision.py -q` after the Round 3 fix → 54 passed
 - JSON validation, scoped pre-commit hooks, and `git diff --check` → passed
+
+## Task 3: E014 reasons, suppression logs, and funnel telemetry
+
+**Status:** Done
+**Commit:** Pending (current Task 3 commit)
+**Agent:** main agent
+**Summary:** E014 now renders truthful reason-specific explanations for qualified broad subjects, ordinary overlap, and title-capped overlap. Subject-rejected comparisons produce bounded redacted one-line diagnostics, while E008/E009 expose one informational suppression count per affected article without changing dropped totals, review controls, rate limiting, or E015 behavior.
+**Deviations:** None.
+
+**Reviews:**
+
+*Round 1:*
+- code-reviewer: OK → [logs/working/task-3/code-reviewer-1.json](logs/working/task-3/code-reviewer-1.json)
+- security-auditor: OK → [logs/working/task-3/security-auditor-1.json](logs/working/task-3/security-auditor-1.json)
+- test-reviewer: 4 findings → [logs/working/task-3/test-reviewer-1.json](logs/working/task-3/test-reviewer-1.json)
+
+*Round 2 (after strengthening existing tests):*
+- test-reviewer: OK → [logs/working/task-3/test-reviewer-2.json](logs/working/task-3/test-reviewer-2.json)
+
+**Verification:**
+- `venv/bin/python -m pytest tests/test_admin_alerts.py tests/test_no_token_leak_in_logs.py -q` → 192 passed, 17 subtests passed
+- `venv/bin/python -m pytest tests/test_integration.py -q` → 154 passed, 71 subtests passed
+- `venv/bin/python -m pytest -q` → 2112 passed, 2 skipped, 556 subtests passed
+- JSON validation, scoped pre-commit hooks, and `git diff --check` → passed

@@ -1,0 +1,50 @@
+{
+  "reviewer": "test-reviewer",
+  "round": 2,
+  "verdict": "approved",
+  "findings": [],
+  "verified_contracts": [
+    {
+      "contract": "All four Round 1 findings are closed",
+      "evidence": "The existing integration, funnel, and hostile-log tests were strengthened in place. Runtime reason wiring now covers broad_subject, ordinary overlap, and overlap_capped; suppression evidence and terminal-result coverage are pinned; E009 non-drop semantics are explicit; and source bounds plus useful diagnostic fields are mutation-closing. No new test functions were added."
+    },
+    {
+      "contract": "The three E014 reasons are truthful through both builder and job boundaries",
+      "evidence": "The builder matrix still pins qualified-series-only broad text, ordinary below-50 text, capped threshold-reached text, and identical action/button copy. The real ordinary-overlap job path now asserts 40% plus the below-threshold sentence, while the real capped path asserts threshold reached, missing title evidence, rejected series naming, no false 'не достигнут' sentence, no E015, and a reason=overlap_capped log without a percentage."
+    },
+    {
+      "contract": "Suppression diagnostics preserve per-candidate evidence while telemetry uses article units",
+      "evidence": "The two-candidate silent-pass integration requires exactly two log records and verifies, for each record, the candidate link/title, new link/title, and canonical 'car culture' series. The same tick requires dedup_subject_suppressed=1, dedup_block=0, E008 count 1, dropped total 0, and no E014/E015."
+    },
+    {
+      "contract": "Suppression records survive later E014/E015 outcomes without weakening distinctive precedence",
+      "evidence": "The real capped E014 path now requires one suppression record before the deferred soft flag. The existing candidate-order precedence test now makes the broad comparison subject-rejected: when it precedes the distinctive candidate, one suppression record and article count 1 are required before unchanged E015 state; when the distinctive candidate is encountered first, immediate terminal blocking correctly leaves no later suppression record."
+    },
+    {
+      "contract": "E008 and E009 keep suppression outside dropped totals for non-zero, zero, and malformed values",
+      "evidence": "The shared existing funnel test renders both formats for 3, 0, and 'NaN'. It requires the informational line only for 3, keeps E008 at 'отсеяно 0', keeps E009 at 'дубль-блок 0', and forbids an E009 dedup-collapse explanation."
+    },
+    {
+      "contract": "Suppression log safety is bounded, redacted, single-line, and diagnostically useful",
+      "evidence": "The hostile test now feeds 1000-character new/candidate source and title fields alongside URL credentials, query/fragment data, control characters, Telegram/OpenAI/GitHub-shaped secrets, and forged line breaks. It requires one line, no controls or secrets, no long source tails, a total bound, safe links, both benign title/source prefixes, and the canonical series."
+    },
+    {
+      "contract": "Review-button, callback, token, rate-limit, and E015 contracts remain protected",
+      "evidence": "Existing focused tests continue to pin dd:c:<token>/dd:k:<token>, non-empty tokens, token persistence before send, REVIEW_TOKEN_KIND_DEDUP, pair rate-limit state and actual suppression of a pre-seeded repeat alert. Distinctive and ordinary-overlap E015 integrations retain processed-state, alert rendering, no-E014/E016, and no-keyboard assertions."
+    },
+    {
+      "contract": "Focused Task 3 verification is green",
+      "evidence": "venv/bin/python -m pytest tests/test_admin_alerts.py tests/test_no_token_leak_in_logs.py tests/test_integration.py -q completed with 346 passed and 88 subtests passed in 4.66 seconds."
+    }
+  ],
+  "residual_risks": [
+    {
+      "risk": "No pre-deploy test sends a live Telegram message or exercises production logging handlers.",
+      "assessment": "Intentional and unchanged per the approved tech spec. Deterministic builders, real SQLite job integrations, and later observational post-deploy verification are the selected controls."
+    },
+    {
+      "risk": "Suppression detail remains capped at 100 candidate records per incoming article.",
+      "assessment": "Intentional bounded behavior inherited from Task 2 and already covered by its diagnostic-cap test. Candidates beyond the cap have no detailed line, while article-level telemetry still signals that suppression occurred."
+    }
+  ]
+}

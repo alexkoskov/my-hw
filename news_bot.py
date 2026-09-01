@@ -2737,6 +2737,9 @@ _DEDUP_SUPPRESSION_MAX_SERIES = 16
 _DEDUP_DIAGNOSTIC_INPUT_MAXLEN = 2048
 _DEDUP_DIAGNOSTIC_TITLE_MAXLEN = 200
 _DEDUP_DIAGNOSTIC_SOURCE_MAXLEN = 80
+_DEDUP_SUPPRESSION_LOG_TITLE_MAXLEN = 160
+_DEDUP_SUPPRESSION_LOG_SOURCE_MAXLEN = 50
+_DEDUP_SUPPRESSION_LOG_SERIES_MAXLEN = 180
 _DEDUP_DIAGNOSTIC_SECRET_RES = (
     re.compile(r'\bAKIA[0-9A-Z]{16}\b'),
     re.compile(r'\bgh[pousr]_[A-Za-z0-9]{20,}\b'),
@@ -2914,6 +2917,52 @@ def _suppression_record(row, rejected_series):
         ),
         'series': rejected_series[:_DEDUP_SUPPRESSION_MAX_SERIES],
     }
+
+
+def _log_dedup_subject_suppression(
+    *, new_link, new_title, new_source, candidate,
+):
+    """Log one bounded, redacted line for one subject-rejected candidate.
+
+    Every external field is sanitized before interpolation. The deliberately
+    compact fixed template plus per-field bounds keeps the complete record
+    bounded while preserving both article identities and titles for diagnosis.
+    """
+    item = candidate if isinstance(candidate, dict) else {}
+    raw_series = item.get('series')
+    if not isinstance(raw_series, (list, tuple)):
+        raw_series = []
+    series = _bounded_diagnostic_text(
+        ', '.join(str(value) for value in raw_series[:_DEDUP_SUPPRESSION_MAX_SERIES]),
+        _DEDUP_SUPPRESSION_LOG_SERIES_MAXLEN,
+    )
+    safe_fields = {
+        'new_link': _sanitize_review_log_identifier(new_link),
+        'new_source': _bounded_diagnostic_text(
+            new_source or 'other', _DEDUP_SUPPRESSION_LOG_SOURCE_MAXLEN,
+        ),
+        'new_title': _bounded_diagnostic_text(
+            new_title or '', _DEDUP_SUPPRESSION_LOG_TITLE_MAXLEN,
+        ),
+        'candidate_link': _sanitize_review_log_identifier(item.get('link')),
+        'candidate_source': _bounded_diagnostic_text(
+            item.get('source_name') or 'other',
+            _DEDUP_SUPPRESSION_LOG_SOURCE_MAXLEN,
+        ),
+        'candidate_title': _bounded_diagnostic_text(
+            item.get('title') or '', _DEDUP_SUPPRESSION_LOG_TITLE_MAXLEN,
+        ),
+        'series': series,
+    }
+    logger.info(
+        "[dedup-subject-suppressed] "
+        "new(link=%s source=%s title=%s) "
+        "candidate(link=%s source=%s title=%s) series=%s",
+        safe_fields['new_link'], safe_fields['new_source'],
+        safe_fields['new_title'], safe_fields['candidate_link'],
+        safe_fields['candidate_source'], safe_fields['candidate_title'],
+        safe_fields['series'],
+    )
 
 
 def _pair_rule_verdict(pairs: list, candidates: list, new_title=''):
@@ -4337,6 +4386,7 @@ def job():
         'dropped_genre': 0,       # b3: content-gate genre drop — video/event (E037)
         'held_for_review': 0,     # b3: content-gate HOLD — staged but parked (E036)
         'dropped_dedup_block': 0, # b3: cross-source hard-block (E015)
+        'dedup_subject_suppressed': 0,  # b3: articles with title-rule rejects
         'dedup_degraded': 0,      # b3: dedup crashed → degraded (E016), still attempts to stage
         'staged': 0,              # == inserted
     }
@@ -4640,11 +4690,22 @@ def job():
             dedup_conn = pending_repo._connect()
             try:
                 fp = model_extractor.extract_fingerprint(article)
-                decision, match, _suppressed_matches = (
+                decision, match, suppressed_matches = (
                     _check_cross_source_dedup(
                         effective_title, fp, dedup_conn, new_source,
                     )
                 )
+                if suppressed_matches:
+                    for suppressed in suppressed_matches:
+                        _log_dedup_subject_suppression(
+                            new_link=link,
+                            new_title=effective_title,
+                            new_source=new_source,
+                            candidate=suppressed,
+                        )
+                    # Article unit, not candidate/pair unit: several rejected
+                    # comparisons for this article still count exactly once.
+                    funnel['dedup_subject_suppressed'] += 1
 
                 if decision == 'block':
                     funnel['dropped_dedup_block'] += 1
@@ -4688,13 +4749,33 @@ def job():
                     # [E014] + match) so a dedup flag is diagnosable straight
                     # from the logs — even when the per-pair 7-day alert
                     # rate-limit (AC5) suppresses the Telegram ping.
-                    logger.info(
-                        "[E014] Cross-source soft-flag %s; matched %s "
-                        "(overlap %d%%, %s->%s)%s",
-                        link, match['link'], match['overlap_pct'],
-                        new_source, match['source_name'],
-                        "" if alerted else " (alert rate-limited)",
+                    reason = match.get('reason') or (
+                        'broad_subject' if match.get('pairs') else 'overlap'
                     )
+                    if reason == 'overlap':
+                        logger.info(
+                            "[E014] Cross-source soft-flag %s; matched %s "
+                            "(overlap %d%%, %s->%s)%s",
+                            link, match['link'], match['overlap_pct'],
+                            new_source, match['source_name'],
+                            "" if alerted else " (alert rate-limited)",
+                        )
+                    else:
+                        logger.info(
+                            "[E014] Cross-source soft-flag %s; matched %s "
+                            "(reason=%s, %s->%s)%s",
+                            _sanitize_review_log_identifier(link),
+                            _sanitize_review_log_identifier(match['link']),
+                            reason,
+                            _bounded_diagnostic_text(
+                                new_source, _DEDUP_DIAGNOSTIC_SOURCE_MAXLEN,
+                            ),
+                            _bounded_diagnostic_text(
+                                match['source_name'],
+                                _DEDUP_DIAGNOSTIC_SOURCE_MAXLEN,
+                            ),
+                            "" if alerted else " (alert rate-limited)",
+                        )
                     if alerted:
                         try:
                             # dedup-review-buttons: when the LISTENER
@@ -4734,6 +4815,10 @@ def job():
                                     n_total=match['n_total'],
                                     models=match['models'],
                                     pairs=match.get('pairs'),
+                                    reason=reason,
+                                    subject_rejected_series=match.get(
+                                        'subject_rejected_series',
+                                    ),
                                     # «Что сделать» must match what the
                                     # operator actually sees: derive it from
                                     # the SAME kb we are about to attach, not
@@ -4890,12 +4975,13 @@ def job():
     logger.info(
         "[funnel] sources=%d(failed=%d) new=%d "
         "dropped(no_article=%d,checklist=%d,promo=%d,genre=%d,dedup_block=%d,"
-        "dedup_degraded=%d) held=%d staged=%d",
+        "dedup_degraded=%d) dedup_subject_suppressed=%d held=%d staged=%d",
         funnel['sources_fetched'], funnel['sources_failed'],
         funnel['new_count'], funnel['dropped_no_article'],
         funnel['dropped_checklist'], funnel['dropped_promo'],
         funnel['dropped_genre'], funnel['dropped_dedup_block'],
-        funnel['dedup_degraded'], funnel['held_for_review'],
+        funnel['dedup_degraded'], funnel['dedup_subject_suppressed'],
+        funnel['held_for_review'],
         funnel['staged'],
     )
 

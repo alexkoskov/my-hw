@@ -1,0 +1,42 @@
+{
+  "reviewer": "code-reviewer",
+  "round": 1,
+  "verdict": "approved",
+  "findings": [],
+  "verified_contracts": [
+    {
+      "contract": "E014 renders the three decision reasons truthfully without changing its shared action contract",
+      "evidence": "admin_alerts.alert_cross_source_dupe accepts reason and subject_rejected_series as keyword-only inputs. broad_subject renders only the qualified pairs and omits the 50% claim; overlap retains the legacy below-threshold explanation; overlap_capped states that the block threshold was reached but title evidence prevented automatic blocking. The existing button labels and action block are shared across all three variants."
+    },
+    {
+      "contract": "Runtime reason wiring remains explicit and backward-compatible",
+      "evidence": "news_bot.job reads match.reason supplied by the Task 2 gate and falls back to the established payload shape only for legacy matches. The alert builder independently preserves direct legacy callers, so rounded display percentages do not choose capped behavior and existing positional arguments are unchanged."
+    },
+    {
+      "contract": "Suppression diagnostics preserve candidate units, bounds, redaction, and fail-open behavior",
+      "evidence": "job emits one fixed-template log call for every bounded suppressed-match record, sanitizes all new and candidate fields before interpolation, and performs the work inside the existing broad dedup try/except. A preparation or logging failure therefore follows E016 degraded mode rather than blocking publication."
+    },
+    {
+      "contract": "Funnel telemetry uses article units and is not counted as a drop",
+      "evidence": "dedup_subject_suppressed increments once after the per-candidate loop whenever the incoming article has at least one rejected comparison. Both E008 and E009 render the non-zero value on a separate informational segment, while the compact dropped sum and the structured dropped(...) group remain unchanged."
+    },
+    {
+      "contract": "E015, deferral, pair throttling, review-token kind, callback grammar, and keyboard order remain unchanged",
+      "evidence": "The E015 branch is untouched apart from receiving telemetry earlier in the same fail-open contour. Every final flag still gets the existing 24-hour deferral before rate-limit evaluation; token storage remains REVIEW_TOKEN_KIND_DEDUP; callbacks remain dd:c:<token> then dd:k:<token>; and mark_pair_pinged still uses the same new/existing link pair."
+    },
+    {
+      "contract": "Task 3 scope and regression verification are clean",
+      "evidence": "Only the five Task 3 implementation/test files are modified. git diff --check passed; the focused alert/security suite passed 192 tests and 17 subtests; integration passed 154 tests and 71 subtests; the full repository suite passed 2112 tests and 556 subtests with 2 documented skips."
+    }
+  ],
+  "residual_risks": [
+    {
+      "risk": "Suppression diagnostics inherit the Task 2 cap of 100 candidate records per incoming article.",
+      "assessment": "This is the approved bounded-data contract and prevents unbounded memory/log growth. If more than 100 rejected candidates exist, later candidate details are omitted while the per-article funnel signal remains present."
+    },
+    {
+      "risk": "Ordinary overlap and E015 log branches still interpolate their legacy identifiers directly.",
+      "assessment": "This behavior predates Task 3 and was not changed. The new broad, capped, and suppression branches satisfy the scoped redaction requirement; hardening legacy logs belongs to adjacent future work."
+    }
+  ]
+}

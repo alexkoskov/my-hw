@@ -1,0 +1,75 @@
+{
+  "reviewer": "test-reviewer",
+  "round": 1,
+  "verdict": "changes_requested",
+  "findings": [
+    {
+      "severity": "major",
+      "file": "tests/test_integration.py",
+      "line": 4211,
+      "title": "Runtime reason wiring is exercised only for broad_subject",
+      "evidence": "test_e014_reason_wiring_preserves_rate_limit_and_review_token_contract drives only the qualified broad-pair contour. The real capped integration test at line 1328 asserts only that one E014 exists, and the ordinary overlap integration test at line 2395 likewise asserts only E014 presence. The builder unit test proves that explicit overlap and overlap_capped inputs render correctly, but it cannot catch job() passing the wrong reason or omitting subject_rejected_series. A mutation that always forwards broad_subject from job() would keep the current builder and integration tests green while showing false operator text for capped and ordinary overlap decisions.",
+      "recommendation": "Extend real job()-level assertions for ordinary overlap and overlap_capped. For ordinary overlap, assert the rendered E014 retains the measured percentage and below-50 explanation. For capped overlap, assert the rendered E014 says the raw block threshold was reached, explicitly attributes the downgrade to missing title evidence, names the rejected canonical series, and contains neither the below-threshold sentence nor E015. Keep the existing broad case for the no-percentage branch."
+    },
+    {
+      "severity": "major",
+      "file": "tests/test_integration.py",
+      "line": 1429,
+      "title": "Suppression diagnostics are verified only on a silent-pass result and not for their required evidence fields",
+      "evidence": "test_subject_rejection_diagnostics_and_article_unit_telemetry usefully proves two candidate records versus one article counter, but it checks only candidate links, absence of '%'/'overlap', and the final count. It does not assert that each record contains the new link, both titles, and the rejected canonical series, which are the evidence promised by the user/tech specs. It also exercises only rejection followed by pass. The pure Task 2 scan tests preserve suppressed_matches before a later qualified flag or distinctive block, but no job-level test proves those returned records are actually logged and counted when the final verdict is E014 or E015. Dropping titles/series from the log template, or logging suppressions only on pass, can therefore escape this Task 3 suite.",
+      "recommendation": "Strengthen the existing two-candidate test to assert each line contains the sanitized new identity/title, its exact candidate identity/title, and 'car culture'. Add a real rejected-then-qualified E014 case and a rejected-then-distinctive E015 case (or a compact outcome matrix) that assert one log per rejected candidate, one article-unit counter, the expected terminal alert/state, and no percentage in suppression/broad logs. This closes both the 'every rejected candidate' and unchanged-E015 contracts at the job boundary."
+    },
+    {
+      "severity": "major",
+      "file": "tests/test_admin_alerts.py",
+      "line": 954,
+      "title": "The non-drop assertion protects E008 but not E009",
+      "evidence": "test_funnel_renders_subject_suppression_without_counting_a_drop renders both daily formats for 3, 0, and NaN, but its only dropped-total assertion is self.assertIn('отсеяно 0', e008). For E009 it asserts only presence/absence of the suppression marker. A mutation that adds the suppression value to E009's дубль-блок count or collapse explanation while leaving the separate marker intact would pass the current test, contrary to the explicit requirement that both E008 and E009 keep suppression outside dropped counts.",
+      "recommendation": "For the non-zero case, assert E009's complete drop breakdown remains zero (especially 'дубль-блок 0') and that no collapse note attributes the tick to dedup. Retain the E008 compact 'отсеяно 0' assertion. Also keep the zero and malformed cases so both renderers prove the informational line is conditional."
+    },
+    {
+      "severity": "minor",
+      "file": "tests/test_no_token_leak_in_logs.py",
+      "line": 261,
+      "title": "The hostile log test does not independently close source-field bounds or diagnostic usefulness",
+      "evidence": "The test covers control characters, URL credentials/query/fragment values, Telegram/OpenAI/GitHub-shaped secrets, long titles, one-record cardinality, and a total-line cap. However, candidate_source is only about 200 characters and the test never asserts its tail is truncated; removing the 50-character source cap can still leave the whole record under 1200 characters. It also asserts safe links survive but not the benign prefixes of either title or the canonical series, so a logger that replaces those diagnostic fields with constant placeholders could pass despite no longer providing enough evidence to investigate a suppression.",
+      "recommendation": "Use source values longer than the overall record budget and assert their tails are absent while safe prefixes remain. Assert the benign new-title prefix, candidate-title prefix, and canonical 'car culture' survive redaction. Keep the current secret/control/URL assertions and total bound."
+    }
+  ],
+  "verified_contracts": [
+    {
+      "contract": "E014 builder variants cover the three explicit reasons and shared action copy",
+      "evidence": "The unit test renders broad_subject, overlap, and overlap_capped, excludes rejected series from the qualified broad display, rejects false below-threshold text where inappropriate, and compares the full action block across all three variants."
+    },
+    {
+      "contract": "Candidate-versus-article telemetry unit is pinned for the silent-pass contour",
+      "evidence": "The real SQLite job integration seeds two rejected candidates, observes exactly two suppression records, and requires dedup_subject_suppressed=1 plus an E008 informational count of 1."
+    },
+    {
+      "contract": "Zero, non-zero, and malformed suppression values are rendered fail-safely",
+      "evidence": "Both E008 and E009 builders are exercised with 3, 0, and 'NaN'; only the positive value renders the informational line, while existing generic funnel tests cover non-dict fallback behavior."
+    },
+    {
+      "contract": "Review labels, callback grammar, token kind, token persistence, and pair throttle state remain protected",
+      "evidence": "The new integration test asserts dd:c:<token>/dd:k:<token>, REVIEW_TOKEN_KIND_DEDUP, and the stored pair-rate-limit marker. Existing focused tests additionally pin non-empty token order/persistence-before-send and prove a pre-seeded pair suppresses a later E014 while retaining a rate-limited log."
+    },
+    {
+      "contract": "Existing E015 behavior has substantial regression coverage",
+      "evidence": "The focused integration suite still asserts distinctive and ordinary-overlap E015 state, mark_processed side effects, matched-pair/percentage rendering, absence of E014/E016, and no keyboard on non-E014 alerts."
+    },
+    {
+      "contract": "Focused Task 3 suites are green",
+      "evidence": "venv/bin/python -m pytest tests/test_admin_alerts.py tests/test_no_token_leak_in_logs.py tests/test_integration.py -q completed with 346 passed and 88 subtests passed."
+    }
+  ],
+  "residual_risks": [
+    {
+      "risk": "No pre-deploy E2E test exercises live Telegram or production logging handlers.",
+      "assessment": "Intentional per the approved tech spec; deterministic builders, job integrations, and later observational post-deploy verification are the selected controls."
+    },
+    {
+      "risk": "Suppression diagnostics are capped at 100 candidate records per incoming article.",
+      "assessment": "Intentional bounded behavior inherited from Task 2. Tests pin the cap, but candidates beyond it have no detailed record; article-level telemetry still signals that suppression occurred."
+    }
+  ]
+}

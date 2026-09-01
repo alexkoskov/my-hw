@@ -364,6 +364,69 @@ class TestAdminAlerts(unittest.TestCase):
         self.assertIn("Что произошло", msg)
         self.assertIn("Что сделать", msg)
 
+    def test_e014_reason_variants_are_truthful(self):
+        common = {
+            "new_link": "https://autoevolution.example/p/a",
+            "existing_link": "https://t-hunted.example/p/b",
+            "new_source": "autoevolution",
+            "existing_source": "t-hunted",
+            "buttons_enabled": True,
+        }
+        messages = {
+            "broad_subject": admin_alerts.alert_cross_source_dupe(
+                **common,
+                reason="broad_subject",
+                pairs=["*|stranger things|B"],
+                # Rejected series are diagnostics for capped overlap only and
+                # must never be presented as a qualified broad match.
+                subject_rejected_series=["car culture"],
+            ),
+            "overlap": admin_alerts.alert_cross_source_dupe(
+                **common,
+                reason="overlap",
+                overlap_pct=35,
+                n_matches=2,
+                n_total=6,
+                models=["toyota 4runner", "subaru legacy gt"],
+            ),
+            "overlap_capped": admin_alerts.alert_cross_source_dupe(
+                **common,
+                reason="overlap_capped",
+                overlap_pct=100,
+                n_matches=1,
+                n_total=1,
+                models=["toyota 4runner"],
+                subject_rejected_series=["car culture"],
+            ),
+        }
+
+        broad = messages["broad_subject"]
+        self.assertIn("Совпавшая серия/тема:\nstranger things", broad)
+        self.assertNotIn("car culture", broad)
+        self.assertNotIn("50%", broad)
+        self.assertNotIn("не достигнут", broad)
+
+        overlap = messages["overlap"]
+        self.assertIn("35%", overlap)
+        self.assertIn("порог автоблокировки (50%) не достигнут", overlap)
+
+        capped = messages["overlap_capped"]
+        self.assertIn("car culture", capped)
+        self.assertIn("порог автоблокировки достигнут", capped)
+        self.assertIn("автоматической блокировки нет", capped)
+        self.assertNotIn("не достигнут", capped)
+
+        # Reason-specific copy must not change the shared operator action
+        # contract or the real keyboard labels it quotes.
+        action_blocks = {
+            reason: msg.split("Что сделать:\n", 1)[1]
+            for reason, msg in messages.items()
+        }
+        self.assertEqual(len(set(action_blocks.values())), 1)
+        for msg in messages.values():
+            self.assertIn("🚫 Не публиковать", msg)
+            self.assertIn("👍 Оставить", msg)
+
     def test_e014_buttons_enabled_advises_pressing_the_buttons(self):
         """`buttons_enabled=True` (send site: keyboard attached) — the advice
         must point at the two inline buttons, the only operator action that
@@ -887,6 +950,36 @@ class TestIntakeFunnel(unittest.TestCase):
         block = admin_alerts._format_funnel(self.DEDUP_COLLAPSE)
         self.assertIn("жанр 0", block)
         self.assertIn("Воронка", block)
+
+    def test_funnel_renders_subject_suppression_without_counting_a_drop(self):
+        slots = [datetime(2026, 5, 10, 10, 0, tzinfo=MSK)]
+        base = dict(self.BUSY)
+        base.update({
+            'dropped_no_article': 0,
+            'dropped_dedup_block': 0,
+            'sources_failed': 0,
+        })
+
+        for value, expected in ((3, True), (0, False), ("NaN", False)):
+            with self.subTest(value=value):
+                funnel = dict(base, dedup_subject_suppressed=value)
+                e008 = admin_alerts.alert_plan_of_day(
+                    2, 2, slots, 0, funnel=funnel,
+                )
+                e009 = admin_alerts.alert_quiet_day(funnel=funnel)
+                marker = "статей с подавленными тематическими сравнениями"
+                if expected:
+                    self.assertIn(f"{marker}: 3", e008)
+                    self.assertIn(f"{marker}: 3", e009)
+                else:
+                    self.assertNotIn(marker, e008)
+                    self.assertNotIn(marker, e009)
+
+                # Suppression is informational. It must not inflate the
+                # dropped total in either daily format.
+                self.assertIn("отсеяно 0", e008)
+                self.assertIn("дубль-блок 0", e009)
+                self.assertNotIn("Где схлопнулось: дубль-блок", e009)
 
     # ------------------------------------------------------------------
     # «На утверждении: N» — the held backlog line on the daily ping

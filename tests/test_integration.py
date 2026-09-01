@@ -1351,7 +1351,8 @@ class TestCrossSourceDedup(_PrepPhaseBase):
             'images': [],
         }
 
-        news_bot.job()
+        with self.assertLogs('news_bot', level='INFO') as logs:
+            news_bot.job()
 
         row = pending_articles_repo.get_pending(new_link)
         self.assertIsNotNone(row)
@@ -1366,9 +1367,26 @@ class TestCrossSourceDedup(_PrepPhaseBase):
             call.args[0] for call in mock_admin.call_args_list
             if call.args and isinstance(call.args[0], str)
         ]
-        self.assertEqual(sum('[E014]' in msg for msg in messages), 1)
+        e014 = next(msg for msg in messages if '[E014]' in msg)
+        self.assertIn('порог автоблокировки достигнут', e014)
+        self.assertIn('не заявлена в заголовках обеих статей', e014)
+        self.assertIn('автоматической блокировки нет', e014)
+        self.assertIn('car culture', e014)
+        self.assertNotIn('не достигнут', e014)
         self.assertFalse(any('[E015]' in msg or '[E016]' in msg
                              for msg in messages))
+        suppression_lines = [
+            line for line in logs.output
+            if '[dedup-subject-suppressed]' in line
+        ]
+        self.assertEqual(len(suppression_lines), 1)
+        self.assertNotIn('%', suppression_lines[0])
+        capped_logs = [
+            line for line in logs.output
+            if '[E014]' in line and 'reason=overlap_capped' in line
+        ]
+        self.assertEqual(len(capped_logs), 1)
+        self.assertNotIn('%', capped_logs[0])
 
     @patch('news_bot.fetch_full_article')
     @patch('news_bot.fetch_rss')
@@ -1420,6 +1438,93 @@ class TestCrossSourceDedup(_PrepPhaseBase):
             if call.args and isinstance(call.args[0], str)
         ]
         self.assertFalse(any('[E014]' in msg or '[E015]' in msg or '[E016]' in msg
+                             for msg in messages))
+
+    @patch('news_bot.fetch_full_article')
+    @patch('news_bot.fetch_rss')
+    @patch('news_bot.load_feeds')
+    @patch('news_bot.send_admin_notification')
+    def test_subject_rejection_diagnostics_and_article_unit_telemetry(
+        self, mock_admin, mock_load_feeds, mock_fetch_rss, mock_fetch_article,
+    ):
+        """Every rejected candidate is logged, but the funnel counts the
+        affected incoming article once and never treats it as dropped."""
+        candidate_fp = {
+            'strict': [
+                'mazda mx-5', 'nissan skyline', 'porsche 911',
+                'toyota 4runner',
+            ],
+            'brands': [],
+            'series': ['car culture'],
+            'pairs': ['toyota 4runner|car culture|B'],
+        }
+        candidate_links = [
+            'https://t-hunted.blogspot.com/2026/08/roundup-one.html',
+            'https://orangetrack.example/2026/08/roundup-two.html',
+        ]
+        self._seed_published(
+            candidate_links[0], candidate_fp, source='t-hunted',
+            title='Ten affordable cars for August',
+        )
+        self._seed_published(
+            candidate_links[1], candidate_fp, source='orangetrack',
+            title='A mixed case of ten diecast releases',
+        )
+        new_link = 'https://www.autoevolution.com/news/general-roundup.html'
+        mock_load_feeds.return_value = ['http://example.com/feed.xml']
+        mock_fetch_rss.return_value = [self._make_entry(new_link)]
+        mock_fetch_article.return_value = {
+            'title': 'General diecast roundup',
+            'subtitle': '',
+            'paragraphs': [
+                'Toyota 4Runner joins Car Culture while Ford Mustang is shown.'
+            ],
+            'images': [],
+        }
+
+        with self.assertLogs('news_bot', level='INFO') as logs:
+            news_bot.job()
+
+        suppression_lines = [
+            line for line in logs.output
+            if '[dedup-subject-suppressed]' in line
+        ]
+        self.assertEqual(len(suppression_lines), 2, suppression_lines)
+        candidate_titles = (
+            'Ten affordable cars for August',
+            'A mixed case of ten diecast releases',
+        )
+        for candidate_link, candidate_title in zip(
+            candidate_links, candidate_titles,
+        ):
+            self.assertEqual(
+                sum(candidate_link in line for line in suppression_lines), 1,
+            )
+            matching_line = next(
+                line for line in suppression_lines if candidate_link in line
+            )
+            self.assertIn(candidate_title, matching_line)
+            self.assertIn(new_link, matching_line)
+            self.assertIn('General diecast roundup', matching_line)
+            self.assertIn('car culture', matching_line)
+        self.assertFalse(any('%' in line or 'overlap' in line
+                             for line in suppression_lines))
+
+        funnel_lines = [line for line in logs.output if '[funnel]' in line]
+        self.assertEqual(len(funnel_lines), 1)
+        self.assertIn('dedup_subject_suppressed=1', funnel_lines[0])
+        self.assertIn('dedup_block=0', funnel_lines[0])
+
+        messages = [
+            call.args[0] for call in mock_admin.call_args_list
+            if call.args and isinstance(call.args[0], str)
+        ]
+        plan = next(msg for msg in messages if '[E008]' in msg)
+        self.assertIn(
+            'статей с подавленными тематическими сравнениями: 1', plan,
+        )
+        self.assertIn('отсеяно 0', plan)
+        self.assertFalse(any('[E014]' in msg or '[E015]' in msg
                              for msg in messages))
 
     @patch('news_bot.fetch_full_article')
@@ -1890,11 +1995,10 @@ class TestCrossSourceDedup(_PrepPhaseBase):
     def test_distinctive_wins_over_broad(
         self, mock_admin, mock_load_feeds, mock_fetch_rss, mock_fetch_article,
     ):
-        """|D wins over |B via scan-and-remember, independent of candidate
-        order. The new article shares a broad pair with one published row and
-        a distinctive pair with another → verdict must be BLOCK (not flag) no
-        matter which candidate the scan meets first. Asserted for BOTH seeding
-        orders."""
+        """|D wins after a subject-rejected |B comparison, independent of
+        candidate order. A rejection encountered before the distinctive match
+        is still logged/counted, while an earlier distinctive match terminates
+        immediately. Both orders must produce the same E015 state."""
         broad_seed = (
             'http://t-hunted.example/broad',
             {
@@ -1929,12 +2033,18 @@ class TestCrossSourceDedup(_PrepPhaseBase):
                 self._seed_published(
                     link, fp,
                     source='t-hunted' if 't-hunted' in link else 'lamley',
+                    title=(
+                        'General mixed diecast assortment'
+                        if link == broad_seed[0]
+                        else 'Porsche 911 K-Pop Demon Hunters release'
+                    ),
                 )
             mock_load_feeds.return_value = ['http://example.com/feed1.xml']
             mock_fetch_rss.return_value = [self._make_entry(new_link)]
             mock_fetch_article.return_value = article
 
-            news_bot.job()
+            with self.assertLogs('news_bot', level='INFO') as logs:
+                news_bot.job()
 
             self.assertEqual(
                 pending_articles_repo.count_pending(), 0,
@@ -1951,6 +2061,21 @@ class TestCrossSourceDedup(_PrepPhaseBase):
                 m = c.args[0] if c.args else ''
                 self.assertNotIn('[E014]', m)
                 self.assertNotIn('[E016]', m)
+            suppression_lines = [
+                line for line in logs.output
+                if '[dedup-subject-suppressed]' in line
+            ]
+            if order[0][0] == broad_seed[0]:
+                self.assertEqual(len(suppression_lines), 1)
+                self.assertIn(new_link, suppression_lines[0])
+                self.assertIn(broad_seed[0], suppression_lines[0])
+                self.assertIn('car culture', suppression_lines[0])
+                funnel_line = next(
+                    line for line in logs.output if '[funnel]' in line
+                )
+                self.assertIn('dedup_subject_suppressed=1', funnel_line)
+            else:
+                self.assertEqual(suppression_lines, [])
 
     @patch('news_bot.fetch_full_article')
     @patch('news_bot.fetch_rss')
@@ -2395,6 +2520,9 @@ class TestCrossSourceDedup(_PrepPhaseBase):
         ]
         self.assertEqual(len(e014_calls), 1,
                          f"expected 1 E014 ping, got: {mock_admin.call_args_list}")
+        overlap_msg = e014_calls[0].args[0]
+        self.assertIn('40%', overlap_msg)
+        self.assertIn('порог автоблокировки (50%) не достигнут', overlap_msg)
         for c in mock_admin.call_args_list:
             msg = c.args[0] if c.args else ''
             self.assertNotIn('[E015]', msg)
@@ -4128,6 +4256,62 @@ class TestDedupReviewButtons(_PrepPhaseBase):
         self.assertIn('🚫 Не публиковать', text)
         self.assertIn('👍 Оставить', text)
         self.assertNotIn('hw_review', text)
+
+    @patch('news_bot.REVIEW_BUTTONS_ENABLED', True)
+    @patch('news_bot.fetch_full_article')
+    @patch('news_bot.fetch_rss')
+    @patch('news_bot.load_feeds')
+    @patch('news_bot.send_admin_notification')
+    def test_e014_reason_wiring_preserves_rate_limit_and_review_token_contract(
+        self, mock_admin, mock_load_feeds, mock_fetch_rss, mock_fetch_article,
+    ):
+        self._seed_published(
+            'http://t-hunted.example/existing', self.SOFT_FP,
+            source='t-hunted',
+        )
+        new_link = 'http://autoevolution.example/new'
+        existing_link = 'http://t-hunted.example/existing'
+        mock_load_feeds.return_value = ['http://example.com/feed1.xml']
+        mock_fetch_rss.return_value = [self._make_entry(new_link)]
+        mock_fetch_article.return_value = dict(self.SOFT_ARTICLE)
+
+        with self.assertLogs('news_bot', level='INFO') as logs:
+            news_bot.job()
+
+        e014 = self._e014_calls(mock_admin)
+        self.assertEqual(len(e014), 1)
+        text = e014[0].args[0]
+        self.assertIn('car culture', text)
+        self.assertNotIn('50%', text)
+        self.assertNotIn('не достигнут', text)
+
+        kb = e014[0].kwargs['reply_markup']
+        callbacks = [
+            button.callback_data
+            for row in kb.inline_keyboard
+            for button in row
+        ]
+        token = callbacks[0].removeprefix('dd:c:')
+        self.assertEqual(callbacks, [f'dd:c:{token}', f'dd:k:{token}'])
+        self.assertEqual(
+            pending_articles_repo.get_review_token(token),
+            (pending_articles_repo.REVIEW_TOKEN_KIND_DEDUP, new_link),
+        )
+        conn = sqlite3.connect(self.db_path)
+        try:
+            self.assertTrue(pending_articles_repo.is_pair_rate_limited(
+                conn, new_link, existing_link,
+            ))
+        finally:
+            conn.close()
+
+        broad_logs = [
+            line for line in logs.output
+            if '[E014]' in line and 'soft-flag' in line
+        ]
+        self.assertEqual(len(broad_logs), 1)
+        self.assertNotIn('%', broad_logs[0])
+        self.assertNotIn('overlap', broad_logs[0])
 
     @patch('news_bot.REVIEW_BUTTONS_ENABLED', False)
     @patch('news_bot.fetch_full_article')

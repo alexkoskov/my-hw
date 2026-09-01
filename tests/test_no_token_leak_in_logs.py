@@ -258,6 +258,57 @@ class TestEndToEndNoTokenInCapturedLogs:
             )
 
 
+def test_dedup_suppression_log_is_bounded_redacted_and_single_line(caplog):
+    candidate = {
+        "link": (
+            "https://candidate-user:candidate-pass@example.com/archive/item"
+            "?telegram_token=" + FAKE_TOKEN + "#private\nforged"
+        ),
+        "source_name": "candidate-source\r\n" + "x" * 1000,
+        "title": (
+            "Candidate headline\nAuthorization: Bearer sk-"
+            + "A" * 80
+            + "\r\n"
+            + FAKE_TOKEN
+            + "Z" * 1000
+        ),
+        "series": ["car culture\nforged", "ghp_" + "B" * 40],
+    }
+
+    with caplog.at_level(logging.INFO, logger="news_bot"):
+        news_bot._log_dedup_subject_suppression(
+            new_link=(
+                "https://new-user:new-pass@example.net/new/item"
+                "?api_key=top-secret#private\nforged"
+            ),
+            new_title="New title\r\n" + FAKE_TOKEN + "Y" * 1000,
+            new_source="new-source\n" + "q" * 1000,
+            candidate=candidate,
+        )
+
+    records = [
+        record for record in caplog.records
+        if "[dedup-subject-suppressed]" in record.getMessage()
+    ]
+    assert len(records) == 1
+    line = records[0].getMessage()
+    assert "\n" not in line and "\r" not in line and "\t" not in line
+    assert "candidate-user" not in line and "candidate-pass" not in line
+    assert "new-user" not in line and "new-pass" not in line
+    assert "api_key" not in line and "telegram_token" not in line
+    assert "#private" not in line
+    assert FAKE_TOKEN not in line
+    assert "sk-" + "A" * 20 not in line
+    assert "ghp_" + "B" * 20 not in line
+    assert "example.com/archive/item" in line
+    assert "example.net/new/item" in line
+    assert "Candidate headline" in line and "New title" in line
+    assert "candidate-source" in line and "new-source" in line
+    assert "x" * 100 not in line and "q" * 100 not in line
+    assert "car culture" in line
+    assert len(line) <= 1200
+
+
 # ===========================================================================
 # Part 4 — Anthropic API key redaction (Decision 12, Task 4)
 # ===========================================================================

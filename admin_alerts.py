@@ -241,6 +241,9 @@ def _format_funnel(funnel: dict) -> str:
         held = _funnel_int(funnel, "held_for_review")
         block = _funnel_int(funnel, "dropped_dedup_block")
         degraded = _funnel_int(funnel, "dedup_degraded")
+        subject_suppressed = _funnel_int(
+            funnel, "dedup_subject_suppressed",
+        )
         staged = _funnel_int(funnel, "staged")
 
         lines = [
@@ -256,6 +259,13 @@ def _format_funnel(funnel: dict) -> str:
             f"• дедуп degraded (всё равно опубликованы): {degraded}",
             f"• добавлено в очередь: {staged}",
         ]
+        if subject_suppressed:
+            # Informational article-level telemetry: these articles were not
+            # dropped, so the count deliberately has its own line.
+            lines.append(
+                "• статей с подавленными тематическими сравнениями: "
+                f"{subject_suppressed}"
+            )
         if held:
             # A hold is NOT a drop — the article was staged, it is just
             # parked until the operator answers [E036]. Own line so it is
@@ -297,10 +307,19 @@ def _format_funnel_line(funnel: dict) -> str:
         # ``sources`` is the fetched-item count (len(all_entries)), not a source
         # count — label it "получено" so the compact line matches the full
         # breakdown's first bullet. ``источники-сбои`` IS a source count.
-        return (
+        line = (
             f"Приём: получено {sources} → новых {new} → "
             f"в очередь {staged} (отсеяно {dropped}{failed_part})"
         )
+        subject_suppressed = _funnel_int(
+            funnel, "dedup_subject_suppressed",
+        )
+        if subject_suppressed:
+            line += (
+                "; статей с подавленными тематическими сравнениями: "
+                f"{subject_suppressed}"
+            )
+        return line
     except Exception:
         return ""
 
@@ -808,6 +827,8 @@ def alert_cross_source_dupe(
     *,
     pairs: Optional[List[str]] = None,
     buttons_enabled: bool = False,
+    reason: Optional[str] = None,
+    subject_rejected_series: Optional[List[str]] = None,
 ) -> str:
     # Подстрока 'Похож на дубль' — substring-якорь для интеграционных
     # тестов Wave 2 и rate-limit-логики news_bot. Не менять.
@@ -820,7 +841,14 @@ def alert_cross_source_dupe(
     # `pairs=[]` трактуем как отсутствие пар (falsy → legacy-ветка). Легаси-блок
     # моделей рендерим ТОЛЬКО при реальном `overlap_pct`; если его нет — опускаем
     # блок, чтобы никогда не показать оператору `Совпадение моделей: None%`.
-    if pairs:
+    known_reasons = {"broad_subject", "overlap", "overlap_capped"}
+    if reason not in known_reasons:
+        # Backward-compatible direct callers did not pass a reason. Infer it
+        # only from the established payload shape; explicit runtime wiring
+        # always supplies one, so rounded percentages never select a branch.
+        reason = "broad_subject" if pairs else "overlap"
+
+    if reason == "broad_subject" and pairs:
         match_block = "Совпавшая серия/тема:\n" + _render_pairs_block(pairs)
     elif overlap_pct is not None:
         model_list = "\n".join(models or [])
@@ -830,6 +858,34 @@ def alert_cross_source_dupe(
         )
     else:
         match_block = ""
+
+    if reason == "overlap_capped" and subject_rejected_series:
+        rejected_block = (
+            "Серия/тема, не подтверждённая заголовками:\n"
+            + "\n".join(sorted(subject_rejected_series))
+        )
+        match_block = (
+            f"{match_block}\n{rejected_block}" if match_block
+            else rejected_block
+        )
+
+    if reason == "broad_subject":
+        happened_block = (
+            "совпавшая серия/тема заявлена в\n"
+            "заголовках обеих статей."
+        )
+    elif reason == "overlap_capped":
+        happened_block = (
+            "порог автоблокировки достигнут по\n"
+            "сходству моделей, но общая серия/тема\n"
+            "не заявлена в заголовках обеих статей,\n"
+            "поэтому автоматической блокировки нет."
+        )
+    else:
+        happened_block = (
+            "статья прошла в очередь, потому что\n"
+            "порог автоблокировки (50%) не достигнут."
+        )
     # Совет обязан совпадать с тем, что оператор реально видит под сообщением.
     # Кнопки рендерятся только при открытом гейте REVIEW_BUTTONS_ENABLED — его
     # результат приходит сюда как `buttons_enabled` с места отправки
@@ -867,8 +923,7 @@ def alert_cross_source_dupe(
         f"Источник существующей: {existing_source}\n"
         f"{match_block}\n\n"
         f"Что произошло:\n"
-        f"статья прошла в очередь, потому что\n"
-        f"порог автоблокировки (50%) не достигнут.\n"
+        f"{happened_block}\n"
         f"Публикация отложена на сутки — раньше\n"
         f"она не выйдет, время на решение есть.\n\n"
         f"{todo_block}"

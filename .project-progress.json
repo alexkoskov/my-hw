@@ -2144,7 +2144,7 @@
       "id": "DBP-008",
       "title": "Add truthful E014 reasons, bounded logs, and suppression telemetry",
       "description": "Implement reason-specific operator messages, safe subject-rejection diagnostics, daily suppression counts, and exact deferral only for final soft flags.",
-      "status": "planned",
+      "status": "done",
       "weight": 5,
       "depends_on": [
         "DBP-007"
@@ -2155,7 +2155,8 @@
         "admin_alerts.py",
         "tests/test_admin_alerts.py",
         "tests/test_integration.py",
-        "tests/test_no_token_leak_in_logs.py"
+        "tests/test_no_token_leak_in_logs.py",
+        "work/dedup-broad-precision/logs/working/task-3/"
       ]
     },
     {
@@ -2661,5 +2662,5 @@
     }
   ],
   "blockers": [],
-  "updated_at": "2026-09-01T12:03:38+03:00"
+  "updated_at": "2026-09-01T15:26:14+03:00"
 }
