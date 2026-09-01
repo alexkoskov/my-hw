@@ -1,0 +1,56 @@
+{
+  "status": "failed",
+  "summary": "The focused suites are green and the pure pair-rule tests have useful behavioral assertions, good parametrization, mixed-series coverage, and strong distinctive precedence. However, four required safety contracts are not actually pinned: the real capped/pass contours never reach job(), the claimed arrival-order test does not reverse the fallback-bearing article, verdict thresholds are not tested at their decision boundaries, and malformed/legacy coverage omits representative non-dict and missing-title rows. The corpus oracle also treats an irreversible block as a successful flag.",
+  "findings": [
+    {
+      "severity": "major",
+      "category": "missing_coverage",
+      "location": "tests/test_integration.py:1262",
+      "issue": "The lifecycle matrix patches _check_cross_source_dedup and injects prebuilt outcomes (lines 1297-1313). Its only flag has reason broad_subject, and there is no overlap_capped case. Consequently no integration test proves that a real subject rejection plus 100% overlap becomes a staged/deferred E014 instead of mark_processed()/E015, or that a real subject rejection plus backstop pass stages immediately. The unit gate test and mocked job test can both pass while their wiring is broken; the pass/flag branches also do not assert the complete processed state required by the tech spec.",
+      "recommendation": "Add two job()-level tests using real seeded fingerprints and the unmocked dedup gate. For rejected broad + 100% strict overlap, assert the row exists, publish_after is about 24 hours ahead, list_pending excludes it, is_processed(new_link) is false, exactly one E014 is rendered, and no E015/E016 appears. For rejected broad + backstop pass, assert the row exists with publish_after=None and a dict fingerprint, is immediately publishable, is_processed(new_link) is false, and no E014/E015/E016 appears. Keep a separate mocked exception case only for the enclosing E016 fail-open boundary, asserting NULL fingerprint and not-processed state."
+    },
+    {
+      "severity": "major",
+      "category": "missing_coverage",
+      "location": "tests/test_integration.py:1204",
+      "issue": "test_dedup_effective_title_is_symmetric_with_feed_fallback does not execute both arrival orders of the same fallback-bearing article pair. Both cases seed a candidate with a non-empty title and make the new article have an empty fetcher title; only the source names/URLs are swapped. It never persists the feed fallback first and then reads that same row back as the candidate, so a regression in fallback carry-through to candidate-side qualification can escape despite the test's symmetry claim.",
+      "recommendation": "Use two fixed articles A and B, with A's fetcher title empty and a distinctive feed fallback. In one subcase seed/promote B and ingest A; in the reverse subcase ingest/promote A first so its persisted fallback becomes the candidate title, then ingest B. Assert the same flag decision in both orders, the exact stored fallback for A, one deferred pending row for the second arrival, neither link processed by a soft flag, and no E015/E016."
+    },
+    {
+      "severity": "major",
+      "category": "missing_coverage",
+      "location": "tests/test_dedup_broad_precision.py:447",
+      "issue": "The capped-backstop matrix uses approximate similarities of about 0.14, 0.40, and 1.00. It never classifies exact 0.30 or exact 0.50, nor values immediately below those boundaries. tests/test_model_extractor.py:279-342 pins similarity arithmetic at 0.30/0.50 but does not call _set_overlap_backstop_verdict or the cap. Mutations such as changing >= 0.50 to > 0.50, or moving the 0.30 flag floor, therefore survive the verdict tests even though Task 2 must preserve the unchanged 30%/50% thresholds and cap the hard-block boundary.",
+      "recommendation": "Parametrize gate verdicts at raw similarity just below 0.30, exactly 0.30, just below 0.50, and exactly 0.50. With subject suppression, assert pass / overlap flag / overlap flag / overlap_capped flag respectively; at exact 0.50 without suppression assert block with reason overlap. Also assert suppressed diagnostics and subject_rejected_series so the boundary cannot be inferred from rounded overlap_pct."
+    },
+    {
+      "severity": "major",
+      "category": "missing_coverage",
+      "location": "tests/test_dedup_broad_precision.py:360",
+      "issue": "The legacy/malformed parametrization covers None, an empty dict, and a dict containing one malformed pair, but no representative non-dict persisted fingerprint such as a string/list and no realistic two-key legacy fingerprint. The title matrix covers an empty title value but never an absent title key. A mutant that skips only None, or indexes title instead of using the safe fallback, would satisfy these tests while violating the explicit malformed/non-dict, legacy, and missing-title contracts.",
+      "recommendation": "Extend the cases with 'not a dict', [], a two-key {'strict': [...], 'brands': [...]} legacy blob, and a dict without pairs but with series data. Add a candidate row with the title key omitted. Assert _pair_rule_verdict returns ('pass', None, []) without raising; add one job/gate-level legacy-row case that stages the new article without E016 so safe persistence/query handling is covered as well as the pure helper."
+    },
+    {
+      "severity": "minor",
+      "category": "anti_pattern",
+      "location": "tests/test_dedup_broad_precision.py:209",
+      "issue": "The production scorer defines every decision other than pass as 'flagged'. A broad-pair regression returning block for a corpus duplicate would still satisfy the corpus target, even though broad matches must never cause irreversible E015. The synthetic matrix currently catches the ordinary version of that mutation, but the acceptance oracle itself does not encode the safety property it reports.",
+      "recommendation": "Count flag, block, and pass separately. Require all three labelled duplicates to return exactly flag, require zero block decisions across all 24 records, and retain the at-most-one false flag assertion. Include record IDs in an assertion message so an oracle failure identifies the exact production pair."
+    }
+  ],
+  "metrics": {
+    "filesReviewed": 8,
+    "litmusTest": {
+      "checked": 15,
+      "passed": 14,
+      "failed": 1
+    },
+    "coverageAssessment": "insufficient",
+    "pyramidBalance": {
+      "unit": 9,
+      "integration": 6,
+      "e2e": 0,
+      "assessment": "healthy"
+    }
+  }
+}

@@ -1,0 +1,28 @@
+{
+  "status": "passed",
+  "summary": "All five Round 1 findings are resolved: the corpus scorer now requires exact flag decisions and forbids blocks, real job() tests exercise capped-block and silent-pass state, the fallback-bearing article is persisted and reused in the reverse arrival order, raw 0.30/0.50 boundaries and their immediate lower neighbors are classified, and malformed/non-dict/legacy fingerprints plus an absent candidate title are covered. The added result-handling failure test also proves that a failure after assigning the flag delay clears both the fingerprint and stale defer. Focused unit/corpus and integration suites pass. One minor current-task assertion is ineffective: the single-line diagnostic check inspects JSON serialization instead of the diagnostic fields. No pre-existing debt or adjacent improvement is raised by this scoped review.",
+  "findings": [
+    {
+      "severity": "minor",
+      "category": "anti_pattern",
+      "location": "tests/test_dedup_broad_precision.py:483",
+      "issue": "Current-task defect: assert \"\\n\" not in json.dumps(suppressed) cannot prove that diagnostic fields are single-line, because json.dumps escapes embedded newlines as the two characters \\\\n. The assertion passes even if a title or source_name still contains a literal newline; the surrounding secret-redaction and size assertions remain meaningful.",
+      "recommendation": "Assert directly over every emitted text field, for example that none of '\\n', '\\r', or any Unicode control-category character occurs in item['title'], item['source_name'], or item['link']. Keep the existing JSON-based secret checks and length bounds. This makes removal of the single-line normalization fail the test without changing production code or broadening scope."
+    }
+  ],
+  "metrics": {
+    "filesReviewed": 8,
+    "litmusTest": {
+      "checked": 16,
+      "passed": 15,
+      "failed": 1
+    },
+    "coverageAssessment": "adequate",
+    "pyramidBalance": {
+      "unit": 10,
+      "integration": 6,
+      "e2e": 0,
+      "assessment": "healthy"
+    }
+  }
+}

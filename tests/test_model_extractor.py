@@ -592,6 +592,23 @@ class TestExtractSeries:
     def test_car_line_car_culture(self):
         assert 'car culture' in extract_series('Car Culture Road Trip Mix')
 
+    @pytest.mark.parametrize(
+        ('title', 'expected'),
+        [
+            ('Novo lote da série Car Culture', 'car culture'),
+            (
+                'Mais fotos de dois lotes da série Team Transport',
+                'team transport',
+            ),
+            (
+                'Mais fotos do lote da série Boulevard com a inédita Enzo',
+                'boulevard',
+            ),
+        ],
+    )
+    def test_portuguese_titles_keep_canonical_line_names(self, title, expected):
+        assert expected in extract_series(title)
+
     def test_acronym_case_sensitive_no_prose_collision(self):
         # Lowercase prose acronyms must NOT match (case-sensitive pass).
         assert extract_series('he said sth about the rlc meeting today') == []

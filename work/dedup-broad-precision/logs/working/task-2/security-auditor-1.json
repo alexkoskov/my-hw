@@ -1,0 +1,31 @@
+{
+  "status": "approved",
+  "summary": {
+    "totalFindings": 2,
+    "critical": 0,
+    "major": 2,
+    "minor": 0
+  },
+  "findings": [
+    {
+      "severity": "major",
+      "category": "A08: Software and Data Integrity Failures",
+      "title": "Persisted fingerprint shape is trusted before dedup safety decisions",
+      "description": "The pair rule treats every dictionary fingerprint as valid and immediately iterates `cand_fp.get('pairs') or []`. A persisted JSON object with a scalar `pairs` value such as an integer raises TypeError at the comprehension and sends the whole article through E016 degraded mode instead of silently skipping the bad candidate. Conversely, a structurally incomplete fingerprint containing only a valid-looking shared `|D` pair reaches the immediate `block` return even when `strict`, `series`, and the rest of the fingerprint schema are absent or inconsistent. The current malformed-data test covers only None, an empty dictionary, and a list containing one malformed string, so neither unsafe case is pinned.",
+      "location": "news_bot.py:2810",
+      "impact": "One corrupted recent SQLite row can repeatedly disable both dedup rules for affected intake, causing new articles to be staged with null fingerprints; a crafted or partially corrupted distinctive pair can instead drive E015, mark a valid new link processed, and irreversibly discard it without coherent persisted evidence.",
+      "recommendation": "Validate each candidate fingerprint as a coherent runtime schema before either rule uses it. Require `pairs`, `strict`, `brands`, and `series` to have supported list-of-string shapes, reject oversized or nested values, and require every pair's model/series components to agree with the fingerprint fields before a `|D` pair can block. Skip the entire malformed candidate without raising. Add tests for scalar/boolean `pairs`, malformed `strict`/`series`, incomplete fingerprints carrying a syntactically valid distinctive pair, and malformed SQLite TEXT/BLOB title values.",
+      "cwe": "CWE-20"
+    },
+    {
+      "severity": "major",
+      "category": "A09: Security Logging and Monitoring Failures",
+      "title": "Suppression diagnostics retain raw and unbounded external fields",
+      "description": "Each rejected broad candidate is appended to `suppressed_matches` with `row.link`, `row.source_name`, and `row.title` copied verbatim. No length cap, control-character normalization, URL userinfo/query stripping, secret redaction, or record-count bound is applied, even though Task 2 requires bounded internal suppression diagnostics and these records are the designed input to the later operator logging step. The 30-day candidate queries also have no row limit, so the diagnostic list itself is not bounded.",
+      "location": "news_bot.py:2850",
+      "impact": "When the diagnostics are emitted as designed, an external title or link can forge multiline log entries, expose URL credentials/query tokens or secret-shaped title text, and inflate log or memory use. Keeping the unsafe raw payload at the producer boundary makes accidental leakage likely even if the current Task 2 caller discards the list.",
+      "recommendation": "Return a security-safe diagnostic projection: keep raw titles only for subject matching, but sanitize diagnostic titles into bounded one-line redacted text; reuse the existing URL-identifier sanitizer for links; normalize or allowlist source names; cap series/value lengths and the number of diagnostic records while preserving an explicit truncated count if needed. Add malicious control-character, credential-bearing URL, secret-shaped title, oversized-field, and excessive-candidate tests before any logger consumes this structure.",
+      "cwe": "CWE-117"
+    }
+  ]
+}

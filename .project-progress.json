@@ -2109,14 +2109,12 @@
       "id": "DBP-006",
       "title": "Build the sanitized production regression corpus and scorer",
       "description": "Create the 24-pair sanitized evidence corpus, stable fixture, integrity checks, and deterministic baseline scorer without operational or private data.",
-      "status": "blocked",
+      "status": "done",
       "weight": 5,
       "depends_on": [
         "DBP-005"
       ],
-      "blocked_by": [
-        "BLOCK-001"
-      ],
+      "blocked_by": [],
       "deliverables": [
         "work/dedup-broad-precision/corpus-raw/README.md",
         "work/dedup-broad-precision/corpus-raw/dedup-pairs.json",
@@ -2128,7 +2126,7 @@
       "id": "DBP-007",
       "title": "Implement subject-aware broad-pair decisions and the capped backstop",
       "description": "Require the shared broad series in both effective titles, continue scanning later candidates, preserve distinctive precedence, and prevent subject-rejected matches from hard-blocking through set overlap.",
-      "status": "planned",
+      "status": "done",
       "weight": 8,
       "depends_on": [
         "DBP-006"
@@ -2138,7 +2136,8 @@
         "news_bot.py",
         "tests/test_dedup_broad_precision.py",
         "tests/test_integration.py",
-        "tests/test_model_extractor.py"
+        "tests/test_model_extractor.py",
+        "work/dedup-broad-precision/logs/working/task-2/"
       ]
     },
     {
@@ -2661,15 +2660,6 @@
       "blocked_by": []
     }
   ],
-  "blockers": [
-    {
-      "id": "BLOCK-001",
-      "description": "The 24-pair sanitized regression corpus requires explicit authorization for a read-only export limited to public article identifiers, titles, source names, and existing dedup fingerprints.",
-      "status": "blocked",
-      "affects": [
-        "DBP-006"
-      ]
-    }
-  ],
-  "updated_at": "2026-08-31T21:53:37+03:00"
+  "blockers": [],
+  "updated_at": "2026-09-01T12:03:38+03:00"
 }

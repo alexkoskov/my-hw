@@ -1,0 +1,51 @@
+{
+  "status": "approved",
+  "summary": {
+    "totalFindings": 4,
+    "critical": 0,
+    "major": 3,
+    "minor": 1
+  },
+  "findings": [
+    {
+      "severity": "major",
+      "category": "A08: Software and Data Integrity Failures",
+      "title": "Raw production evidence bypasses every integrity and leakage check",
+      "description": "The integrity test loads only tests/fixtures/dedup_broad_precision.json. It never parses or validates work/dedup-broad-precision/corpus-raw/dedup-pairs.json, even though that file is the direct production export and the README's minimization claim applies to it. It also does not prove that the fixture is the documented deterministic derivation of the raw evidence. The two current payloads match after removing fixture-only IDs and baseline metadata, but a later accidental or malicious raw-export change containing extra fields, credentials, operator identifiers, or deployment coordinates would leave this test green.",
+      "location": "tests/test_dedup_broad_precision.py:20",
+      "impact": "Sensitive production data can be committed in the highest-risk artifact while CI continues to certify the sanitized fixture, defeating the corpus's primary privacy guarantee and leaving unaudited evidence drift.",
+      "recommendation": "Add the raw-evidence path and a shared strict validator for both schemas. Validate the raw file directly, then assert that a deterministic transformation which adds only prod-NNN IDs and current_rule_expected produces the fixture byte-for-byte or structurally. Keep the raw schema's exact-key checks separate from the fixture-only metadata checks.",
+      "cwe": "CWE-200"
+    },
+    {
+      "severity": "major",
+      "category": "A08: Software and Data Integrity Failures",
+      "title": "Fingerprint values accept credential and connection-string payloads",
+      "description": "Fingerprint validation checks only that each value is a non-empty, sorted string. The secret detector recognizes three narrow shapes (sk- keys, Telegram-style bot tokens, and private-key headers), so common credentials and endpoints such as AWS access-key IDs, GitHub tokens, JWTs, high-entropy/base64 secrets, and credential-bearing database URIs are accepted. In-memory mutation checks confirmed that a synthetic AWS access-key-shaped ID and postgresql://alice:s3cr3t@db.internal:5432/prod both pass test_production_corpus_integrity. The current corpus did not contain a detected secret, but the automated control does not enforce the documented no-credentials/no-server-data contract.",
+      "location": "tests/test_dedup_broad_precision.py:42",
+      "impact": "A production fingerprint export containing an unexpected secret-shaped value or operational endpoint can be copied into both evidence files and committed without failing the integrity suite.",
+      "recommendation": "Prefer positive fingerprint grammar validation over an ever-growing secret denylist: validate strict/brands/series as bounded canonical token shapes; split every pair into exactly model, canonical series, and B/D tier; require pair components to agree with the fingerprint fields, allowing only the documented '*' theme form. Reject URI, email, control-character, and high-entropy opaque values in fingerprint fields, and supplement this with the repository's standard secret scanner for the complete artifacts.",
+      "cwe": "CWE-798"
+    },
+    {
+      "severity": "major",
+      "category": "A08: Software and Data Integrity Failures",
+      "title": "URL validation permits internal server coordinates and arbitrary source origins",
+      "description": "The public_id check requires HTTPS, a hostname, no userinfo, and no query or fragment, but it does not reject explicit ports, IP literals, localhost/private/link-local addresses, internal hostnames, or a hostname inconsistent with source_name. An in-memory mutation to https://10.0.0.5:8443/private passed the integrity test. Current corpus URLs use only the expected public source hosts with no explicit ports, userinfo, query, or fragment, but the test does not satisfy the acceptance requirement to reject server coordinates.",
+      "location": "tests/test_dedup_broad_precision.py:123",
+      "impact": "Private deployment topology or operator-only endpoints can be preserved as supposedly public identifiers and committed in the production-derived corpus.",
+      "recommendation": "Bind each source_name to an exact allowlisted public hostname, normalize the hostname before comparison, require parsed.port to be None (or exactly the policy-approved default), and reject IP literals plus localhost, private, loopback, link-local, reserved, and internal-name forms. Retain the existing userinfo/query/fragment assertions.",
+      "cwe": "CWE-200"
+    },
+    {
+      "severity": "minor",
+      "category": "A08: Software and Data Integrity Failures",
+      "title": "Missing committed fixture silently disables the corpus security checks",
+      "description": "The module-level skipif marks both the integrity and scorer tests skipped when the fixture is absent. That was useful before the approved export existed, but once Task 1 materializes the required fixture, deletion or packaging omission should be a failure rather than a successful skipped test run.",
+      "location": "tests/test_dedup_broad_precision.py:21",
+      "impact": "CI can appear green while all corpus minimization, secret, URL, label-count, and baseline controls are inactive.",
+      "recommendation": "Remove the temporary skip marker now that the fixture is committed, or replace it with an explicit existence assertion that fails the suite with a clear message.",
+      "cwe": "CWE-353"
+    }
+  ]
+}

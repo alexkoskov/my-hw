@@ -1,0 +1,56 @@
+{
+  "status": "failed",
+  "summary": "Both tests contain meaningful behavioral assertions, invoke the real production pair rule, and pass deterministically offline, but the regression oracle is not adequately protected: the fixture may disappear as a successful skip, the raw evidence is unvalidated, and material label, fingerprint, and secret-shaped mutations remain green.",
+  "findings": [
+    {
+      "severity": "major",
+      "category": "anti_pattern",
+      "location": "tests/test_dedup_broad_precision.py:21",
+      "issue": "A module-wide skip treats a missing production corpus as success. Deleting the core fixture produces two skipped tests instead of a failure, so the required regression oracle can silently vanish.",
+      "recommendation": "Remove the skip now that Task 1 requires the committed fixture. Let the fixture read fail, or add an explicit test asserting _FIXTURE.is_file(), so deleting or misplacing the corpus fails the suite."
+    },
+    {
+      "severity": "major",
+      "category": "missing_coverage",
+      "location": "tests/test_dedup_broad_precision.py:49",
+      "issue": "The integrity test loads only tests/fixtures/dedup_broad_precision.json. The raw evidence artifact is never schema- or secret-validated, and no assertion proves that the fixture is the documented deterministic derivation of that evidence.",
+      "recommendation": "Load both JSON artifacts, apply the same article/fingerprint/privacy validator to both, assert the raw top-level and pair schemas, and assert that the fixture equals the raw corpus after only adding sequential prod-NNN IDs and the frozen current_rule_expected object."
+    },
+    {
+      "severity": "major",
+      "category": "missing_coverage",
+      "location": "tests/test_dedup_broad_precision.py:100",
+      "issue": "Only aggregate label counts are pinned. Swapping prod-001 and prod-003 between dupe and not_a_dupe keeps the 3/21 counts and current baseline unchanged, so both tests still pass while the acceptance oracle's ground truth is corrupted.",
+      "recommendation": "Pin the reviewed label assignment independently, for example assert that the duplicate IDs are exactly {prod-003, prod-023, prod-024} and all remaining IDs are not_a_dupe; also verify that those assignments match the raw evidence during fixture derivation."
+    },
+    {
+      "severity": "major",
+      "category": "missing_coverage",
+      "location": "tests/test_dedup_broad_precision.py:135",
+      "issue": "Fingerprint validation checks only list type, sorting, uniqueness, and non-empty strings. A malformed pair key such as \"malformed\" is accepted, despite Task 1 explicitly requiring malformed fingerprints to fail and the production rule interpreting pair suffixes as decision tiers.",
+      "recommendation": "Validate every pair as exactly three non-empty pipe-delimited components with an allowed B or D tier, and add parametrized negative cases for missing components, extra components, empty model/series values, and unknown tiers. Keep the scorer assertion against the real production function."
+    },
+    {
+      "severity": "major",
+      "category": "missing_coverage",
+      "location": "tests/test_dedup_broad_precision.py:42",
+      "issue": "Secret and deployment-coordinate detection is too narrow. The validator accepts an AWS-style AKIA credential in a title and accepts https://10.0.0.1/export as a public_id; it likewise has no robust coverage for other token families or raw numeric chat/operator identifiers. Exact unexpected-field checks are strong but do not protect allowed string fields from these values.",
+      "recommendation": "Extract a pure corpus validator and add parametrized rejection canaries for supported credential/token families, private/loopback/link-local IP or localhost URLs, credential-bearing URLs, and known chat/operator ID shapes. Allowlist the public article hostnames for each source, and run these checks over both raw and derived artifacts."
+    }
+  ],
+  "metrics": {
+    "filesReviewed": 7,
+    "litmusTest": {
+      "checked": 2,
+      "passed": 2,
+      "failed": 0
+    },
+    "coverageAssessment": "insufficient",
+    "pyramidBalance": {
+      "unit": 2,
+      "integration": 0,
+      "e2e": 0,
+      "assessment": "healthy"
+    }
+  }
+}

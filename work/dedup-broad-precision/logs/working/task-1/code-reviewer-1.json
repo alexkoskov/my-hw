@@ -1,0 +1,41 @@
+{
+  "status": "changes_required",
+  "summary": "The checked-in artifacts currently contain the required 24 records, derive cleanly from the raw evidence, and the focused scorer passes against the real production pair rule. However, the integrity suite does not enforce that derivation or validate several acceptance-critical safety and fingerprint-shape constraints, so the regression oracle can drift or accept invalid evidence without failing.",
+  "criticalIssues": [],
+  "suggestions": [
+    {
+      "file": "tests/test_dedup_broad_precision.py",
+      "line": 20,
+      "severity": "major",
+      "category": "maintainability",
+      "suggestion": "The tests load only the stable fixture; they never load or validate `corpus-raw/dedup-pairs.json`, and they never assert that adding sequential IDs plus the frozen baseline to the raw records produces the fixture. The two files match today, but either artifact can drift independently or the raw evidence can acquire unexpected/private fields while the suite remains green.",
+      "benefit": "Validating the raw artifact with the same schema/sanitization checks and asserting a semantic raw-to-fixture transformation makes provenance reproducible and preserves cross-file consistency as required by Task 1.",
+      "optional": false
+    },
+    {
+      "file": "tests/test_dedup_broad_precision.py",
+      "line": 42,
+      "severity": "major",
+      "category": "best-practices",
+      "suggestion": "The prohibited-value checks do not actually reject server coordinates or many credential shapes. For example, `public_id` can be an HTTPS URL whose host is an IP address, and secret-shaped values such as provider/API credentials outside the three listed regexes can be placed in titles or fingerprints and still pass; the test also does not verify that each source name maps to its public source hostname.",
+      "benefit": "Explicit IP/host allow-list validation and reuse of the repository's comprehensive secret-shape controls would satisfy the corpus sanitization acceptance criterion and prevent operational data from being committed under an otherwise allowed field.",
+      "optional": false
+    },
+    {
+      "file": "tests/test_dedup_broad_precision.py",
+      "line": 135,
+      "severity": "major",
+      "category": "best-practices",
+      "suggestion": "Fingerprint values are checked only as sorted non-empty strings. The integrity test accepts malformed pair keys with missing/extra separators, empty model or series segments, or an unknown tier suffix; because the production scorer intersects arbitrary strings and treats every shared non-`|D` value as broad, identical malformed keys can still produce a passing baseline.",
+      "benefit": "Checking the production `model|series|tier` grammar (three components, non-empty model/series, tier exactly `B` or `D`, with only the supported `*` model exception) ensures the oracle represents supported persisted fingerprints and catches corrupt evidence deterministically.",
+      "optional": false
+    }
+  ],
+  "metrics": {
+    "filesReviewed": 4,
+    "criticalIssuesCount": 0,
+    "majorIssuesCount": 3,
+    "minorIssuesCount": 0,
+    "testCoverageAssessment": "insufficient"
+  }
+}

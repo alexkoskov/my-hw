@@ -1097,8 +1097,13 @@ class TestCrossSourceDedup(_PrepPhaseBase):
         self.notify_patcher.start()
         super().tearDown()
 
-    def _seed_published(self, link, fingerprint, source='autoevolution',
-                        title='Existing Article'):
+    def _seed_published(
+        self,
+        link,
+        fingerprint,
+        source='autoevolution',
+        title='Existing Car Culture and K-Pop Demon Hunters Article',
+    ):
         """Insert a pending row with ``model_fingerprint`` then promote it
         to ``published_articles`` so ``list_recent_published_fingerprints``
         sees it. Mirrors the production pending→published path.
@@ -1177,6 +1182,431 @@ class TestCrossSourceDedup(_PrepPhaseBase):
             conn.commit()
         finally:
             conn.close()
+
+    @patch('news_bot.fetch_full_article')
+    @patch('news_bot.fetch_rss')
+    @patch('news_bot.load_feeds')
+    @patch('news_bot.send_admin_notification')
+    def test_dedup_effective_title_is_symmetric_with_feed_fallback(
+        self, mock_admin, mock_load_feeds, mock_fetch_rss, mock_fetch_article,
+    ):
+        """An empty fetcher title uses and persists the same feed title.
+
+        Run both arrival orders of the same pair.  In the reverse order the
+        fallback-bearing article is ingested and promoted first, so the second
+        decision must qualify against the exact fallback title read from DB.
+        """
+        shared_fp = {
+            'strict': ['toyota supra'],
+            'brands': ['toyota'],
+            'series': ['car culture'],
+            'pairs': ['toyota supra|car culture|B'],
+        }
+        fallback_link = (
+            'https://www.autoevolution.com/news/car-culture-fallback.html'
+        )
+        regular_link = (
+            'https://t-hunted.blogspot.com/2026/08/car-culture-regular.html'
+        )
+        fallback_title = 'Toyota Supra Car Culture feed fallback'
+        regular_title = 'Toyota Supra Car Culture regular coverage'
+        fallback_article = {
+            'title': '',
+            'subtitle': '',
+            'paragraphs': ['Toyota Supra joins the Car Culture line.'],
+            'images': [],
+        }
+        regular_article = {
+            'title': regular_title,
+            'subtitle': '',
+            'paragraphs': ['Toyota Supra joins the Car Culture line.'],
+            'images': [],
+        }
+        mock_load_feeds.return_value = ['http://example.com/feed.xml']
+
+        # B already exists; A arrives with an empty fetched title.
+        self._reset_tables()
+        self._seed_published(
+            regular_link,
+            shared_fp,
+            source='t-hunted',
+            title=regular_title,
+        )
+        mock_fetch_rss.return_value = [
+            self._make_entry(fallback_link, title=fallback_title),
+        ]
+        mock_fetch_article.return_value = fallback_article
+
+        news_bot.job()
+
+        fallback_row = pending_articles_repo.get_pending(fallback_link)
+        self.assertIsNotNone(fallback_row)
+        self.assertEqual(fallback_row['title'], fallback_title)
+        self.assertIsNotNone(fallback_row['publish_after'])
+        self.assertNotIn(
+            fallback_link,
+            {row['link'] for row in pending_articles_repo.list_pending()},
+        )
+        self.assertFalse(news_bot.is_processed(fallback_link))
+        first_messages = [
+            call.args[0] for call in mock_admin.call_args_list
+            if call.args and isinstance(call.args[0], str)
+        ]
+        self.assertEqual(sum('[E014]' in msg for msg in first_messages), 1)
+        self.assertFalse(any('[E015]' in msg or '[E016]' in msg
+                             for msg in first_messages))
+
+        # Reverse order: ingest A first so its feed fallback is what the
+        # candidate query later reads; then ingest B against that stored row.
+        self._reset_tables()
+        mock_admin.reset_mock()
+        mock_fetch_rss.return_value = [
+            self._make_entry(fallback_link, title=fallback_title),
+        ]
+        mock_fetch_article.return_value = fallback_article
+
+        news_bot.job()
+
+        first_row = pending_articles_repo.get_pending(fallback_link)
+        self.assertIsNotNone(first_row)
+        self.assertEqual(first_row['title'], fallback_title)
+        self.assertIsNone(first_row['publish_after'])
+        pending_articles_repo.update_staged(
+            fallback_link,
+            ru_title='RU ' + fallback_title,
+            ru_subtitle='',
+            ru_paragraphs=['Тело.'],
+            ru_blocks=None,
+        )
+        pending_articles_repo.move_to_published(
+            fallback_link,
+            telegraph_url='https://telegra.ph/fallback',
+            telegraph_path='fallback',
+            via_review=False,
+        )
+        conn = sqlite3.connect(self.db_path)
+        try:
+            stored_title = conn.execute(
+                'SELECT title FROM published_articles WHERE link = ?',
+                (fallback_link,),
+            ).fetchone()[0]
+        finally:
+            conn.close()
+        self.assertEqual(stored_title, fallback_title)
+
+        mock_admin.reset_mock()
+        mock_fetch_rss.return_value = [
+            self._make_entry(regular_link, title=regular_title),
+        ]
+        mock_fetch_article.return_value = regular_article
+
+        news_bot.job()
+
+        regular_row = pending_articles_repo.get_pending(regular_link)
+        self.assertIsNotNone(regular_row)
+        self.assertIsNotNone(regular_row['publish_after'])
+        self.assertNotIn(
+            regular_link,
+            {row['link'] for row in pending_articles_repo.list_pending()},
+        )
+        # The candidate is processed because this test deliberately promoted
+        # it to published; the soft-flagged second arrival must remain unpinned.
+        self.assertTrue(news_bot.is_processed(fallback_link))
+        self.assertFalse(news_bot.is_processed(regular_link))
+        reverse_messages = [
+            call.args[0] for call in mock_admin.call_args_list
+            if call.args and isinstance(call.args[0], str)
+        ]
+        self.assertEqual(sum('[E014]' in msg for msg in reverse_messages), 1)
+        self.assertFalse(any('[E015]' in msg or '[E016]' in msg
+                             for msg in reverse_messages))
+
+    @patch('news_bot.fetch_full_article')
+    @patch('news_bot.fetch_rss')
+    @patch('news_bot.load_feeds')
+    @patch('news_bot.send_admin_notification')
+    def test_subject_rejection_caps_real_backstop_block_in_job(
+        self, mock_admin, mock_load_feeds, mock_fetch_rss, mock_fetch_article,
+    ):
+        """A real 100% backstop block becomes deferred E014 after rejection."""
+        candidate_fp = {
+            'strict': ['toyota 4runner'],
+            'brands': ['toyota'],
+            'series': ['car culture'],
+            'pairs': ['toyota 4runner|car culture|B'],
+        }
+        self._seed_published(
+            'https://t-hunted.blogspot.com/2026/08/existing-roundup.html',
+            candidate_fp,
+            source='t-hunted',
+            title='Ten affordable cars for August',
+        )
+        new_link = 'https://www.autoevolution.com/news/general-roundup.html'
+        mock_load_feeds.return_value = ['http://example.com/feed.xml']
+        mock_fetch_rss.return_value = [self._make_entry(new_link)]
+        mock_fetch_article.return_value = {
+            'title': 'General diecast roundup',
+            'subtitle': '',
+            'paragraphs': ['Toyota 4Runner joins the Car Culture line.'],
+            'images': [],
+        }
+
+        news_bot.job()
+
+        row = pending_articles_repo.get_pending(new_link)
+        self.assertIsNotNone(row)
+        self.assertIsInstance(row['model_fingerprint'], dict)
+        self.assertIsNotNone(row['publish_after'])
+        self.assertNotIn(
+            new_link,
+            {item['link'] for item in pending_articles_repo.list_pending()},
+        )
+        self.assertFalse(news_bot.is_processed(new_link))
+        messages = [
+            call.args[0] for call in mock_admin.call_args_list
+            if call.args and isinstance(call.args[0], str)
+        ]
+        self.assertEqual(sum('[E014]' in msg for msg in messages), 1)
+        self.assertFalse(any('[E015]' in msg or '[E016]' in msg
+                             for msg in messages))
+
+    @patch('news_bot.fetch_full_article')
+    @patch('news_bot.fetch_rss')
+    @patch('news_bot.load_feeds')
+    @patch('news_bot.send_admin_notification')
+    def test_subject_rejection_with_real_backstop_pass_stages_immediately(
+        self, mock_admin, mock_load_feeds, mock_fetch_rss, mock_fetch_article,
+    ):
+        """A rejected broad pair plus sub-30% overlap remains a silent pass."""
+        self._seed_published(
+            'https://t-hunted.blogspot.com/2026/08/existing-roundup.html',
+            {
+                'strict': [
+                    'mazda mx-5', 'nissan skyline', 'porsche 911',
+                    'toyota 4runner',
+                ],
+                'brands': [],
+                'series': ['car culture'],
+                'pairs': ['toyota 4runner|car culture|B'],
+            },
+            source='t-hunted',
+            title='Ten affordable cars for August',
+        )
+        new_link = 'https://www.autoevolution.com/news/general-roundup.html'
+        mock_load_feeds.return_value = ['http://example.com/feed.xml']
+        mock_fetch_rss.return_value = [self._make_entry(new_link)]
+        mock_fetch_article.return_value = {
+            'title': 'General diecast roundup',
+            'subtitle': '',
+            'paragraphs': [
+                'Toyota 4Runner joins Car Culture while Ford Mustang is shown.'
+            ],
+            'images': [],
+        }
+
+        news_bot.job()
+
+        row = pending_articles_repo.get_pending(new_link)
+        self.assertIsNotNone(row)
+        self.assertIsInstance(row['model_fingerprint'], dict)
+        self.assertIsNone(row['publish_after'])
+        self.assertIn(
+            new_link,
+            {item['link'] for item in pending_articles_repo.list_pending()},
+        )
+        self.assertFalse(news_bot.is_processed(new_link))
+        messages = [
+            call.args[0] for call in mock_admin.call_args_list
+            if call.args and isinstance(call.args[0], str)
+        ]
+        self.assertFalse(any('[E014]' in msg or '[E015]' in msg or '[E016]' in msg
+                             for msg in messages))
+
+    @patch('news_bot.fetch_full_article')
+    @patch('news_bot.fetch_rss')
+    @patch('news_bot.load_feeds')
+    @patch('news_bot.send_admin_notification')
+    def test_legacy_candidate_row_stages_without_degraded_mode(
+        self, mock_admin, mock_load_feeds, mock_fetch_rss, mock_fetch_article,
+    ):
+        """A real two-key legacy fingerprint is safe at the job boundary."""
+        self._seed_published(
+            'https://t-hunted.blogspot.com/2026/08/legacy.html',
+            {'strict': ['porsche 911'], 'brands': ['porsche']},
+            source='t-hunted',
+            title='Legacy candidate',
+        )
+        new_link = 'https://www.autoevolution.com/news/new-mainline.html'
+        mock_load_feeds.return_value = ['http://example.com/feed.xml']
+        mock_fetch_rss.return_value = [self._make_entry(new_link)]
+        mock_fetch_article.return_value = {
+            'title': 'Toyota 4Runner joins the mainline',
+            'subtitle': '',
+            'paragraphs': ['A Toyota 4Runner casting arrives.'],
+            'images': [],
+        }
+
+        news_bot.job()
+
+        row = pending_articles_repo.get_pending(new_link)
+        self.assertIsNotNone(row)
+        self.assertIsInstance(row['model_fingerprint'], dict)
+        self.assertIsNone(row['publish_after'])
+        self.assertFalse(news_bot.is_processed(new_link))
+        messages = [
+            call.args[0] for call in mock_admin.call_args_list
+            if call.args and isinstance(call.args[0], str)
+        ]
+        self.assertFalse(any('[E016]' in msg for msg in messages))
+
+    @patch('news_bot.fetch_full_article')
+    @patch('news_bot.fetch_rss')
+    @patch('news_bot.load_feeds')
+    @patch('news_bot.send_admin_notification')
+    @patch('news_bot._check_cross_source_dedup')
+    def test_dedup_final_decision_controls_deferral_and_fail_open(
+        self,
+        mock_check,
+        mock_admin,
+        mock_load_feeds,
+        mock_fetch_rss,
+        mock_fetch_article,
+    ):
+        """Only final flags defer; pass, block and exception keep their state."""
+        broad_match = {
+            'link': 'https://t-hunted.blogspot.com/existing',
+            'source_name': 't-hunted',
+            'models': ['toyota 4runner|car culture|B'],
+            'pairs': ['toyota 4runner|car culture|B'],
+            'overlap_pct': 50,
+            'n_matches': 1,
+            'n_total': 2,
+            'reason': 'broad_subject',
+        }
+        distinctive_match = {
+            'link': 'https://t-hunted.blogspot.com/distinctive',
+            'source_name': 't-hunted',
+            'models': ['toyota 4runner|k-pop demon hunters|D'],
+            'pairs': ['toyota 4runner|k-pop demon hunters|D'],
+            'overlap_pct': 50,
+            'n_matches': 1,
+            'n_total': 2,
+        }
+        suppressed = [{
+            'link': 'https://t-hunted.blogspot.com/suppressed',
+            'source_name': 't-hunted',
+            'title': 'Unrelated roundup',
+            'series': ['car culture'],
+        }]
+        cases = [
+            ('flag', ('flag', broad_match, [])),
+            ('pass', ('pass', None, suppressed)),
+            ('block', ('block', distinctive_match, [])),
+            ('error', RuntimeError('title qualification failed')),
+        ]
+
+        for case_name, outcome in cases:
+            with self.subTest(case=case_name):
+                self._reset_tables()
+                mock_admin.reset_mock()
+                mock_check.reset_mock()
+                mock_check.side_effect = None
+                if isinstance(outcome, Exception):
+                    mock_check.side_effect = outcome
+                else:
+                    mock_check.return_value = outcome
+
+                link = f'http://autoevolution.example/{case_name}'
+                mock_load_feeds.return_value = ['http://example.com/feed.xml']
+                mock_fetch_rss.return_value = [
+                    self._make_entry(link, title='Car Culture decision case'),
+                ]
+                mock_fetch_article.return_value = {
+                    'title': 'Toyota 4Runner Car Culture decision case',
+                    'subtitle': '',
+                    'paragraphs': ['Toyota 4Runner joins Car Culture.'],
+                    'images': [],
+                }
+
+                news_bot.job()
+
+                row = pending_articles_repo.get_pending(link)
+                messages = [
+                    call.args[0] for call in mock_admin.call_args_list
+                    if call.args and isinstance(call.args[0], str)
+                ]
+                if case_name == 'flag':
+                    self.assertIsNotNone(row)
+                    self.assertIsNotNone(row['publish_after'])
+                    self.assertTrue(any('[E014]' in msg for msg in messages))
+                elif case_name == 'pass':
+                    self.assertIsNotNone(row)
+                    self.assertIsNone(row['publish_after'])
+                    self.assertIsInstance(row['model_fingerprint'], dict)
+                    self.assertFalse(any('[E01' in msg for msg in messages))
+                elif case_name == 'block':
+                    self.assertIsNone(row)
+                    self.assertTrue(news_bot.is_processed(link))
+                    self.assertTrue(any('[E015]' in msg for msg in messages))
+                else:
+                    self.assertIsNotNone(row)
+                    self.assertIsNone(row['model_fingerprint'])
+                    self.assertIsNone(row['publish_after'])
+                    self.assertTrue(any('[E016]' in msg for msg in messages))
+
+    @patch('news_bot.fetch_full_article')
+    @patch('news_bot.fetch_rss')
+    @patch('news_bot.load_feeds')
+    @patch('news_bot.send_admin_notification')
+    def test_flag_result_handling_failure_clears_the_defer(
+        self, mock_admin, mock_load_feeds, mock_fetch_rss, mock_fetch_article,
+    ):
+        """An exception after the flag timestamp is assigned is fail-open."""
+        match = {
+            'link': 'https://t-hunted.blogspot.com/existing',
+            'source_name': 't-hunted',
+            'models': ['toyota 4runner|car culture|B'],
+            'pairs': ['toyota 4runner|car culture|B'],
+            'overlap_pct': 50,
+            'n_matches': 1,
+            'n_total': 2,
+            'reason': 'broad_subject',
+        }
+        new_link = 'https://www.autoevolution.com/news/fail-open.html'
+        mock_load_feeds.return_value = ['http://example.com/feed.xml']
+        mock_fetch_rss.return_value = [self._make_entry(new_link)]
+        mock_fetch_article.return_value = {
+            'title': 'Toyota 4Runner Car Culture release',
+            'subtitle': '',
+            'paragraphs': ['Toyota 4Runner joins Car Culture.'],
+            'images': [],
+        }
+
+        with (
+            patch.object(
+                news_bot,
+                '_check_cross_source_dedup',
+                return_value=('flag', match, []),
+            ),
+            patch.object(
+                news_bot.pending_repo,
+                'is_pair_rate_limited',
+                side_effect=RuntimeError('rate-limit state failed'),
+            ),
+        ):
+            news_bot.job()
+
+        row = pending_articles_repo.get_pending(new_link)
+        self.assertIsNotNone(row)
+        self.assertIsNone(row['model_fingerprint'])
+        self.assertIsNone(row['publish_after'])
+        self.assertFalse(news_bot.is_processed(new_link))
+        messages = [
+            call.args[0] for call in mock_admin.call_args_list
+            if call.args and isinstance(call.args[0], str)
+        ]
+        self.assertEqual(sum('[E016]' in msg for msg in messages), 1)
+        self.assertFalse(any('[E015]' in msg for msg in messages))
 
     @patch('news_bot.fetch_full_article')
     @patch('news_bot.fetch_rss')

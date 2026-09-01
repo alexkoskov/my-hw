@@ -2725,6 +2725,28 @@ _DEDUP_PAIR_WINDOW_DAYS = 30
 #: 30-day fetch derived in Python (no second SQL round-trip).
 _DEDUP_BACKSTOP_WINDOW_DAYS = 7
 
+# Persisted fingerprints and article metadata are untrusted historical input.
+# These bounds sit above current production maxima (the pair cartesian product
+# is below 300) while preventing a corrupt row from growing one gate decision
+# or its diagnostics without limit.
+_DEDUP_FINGERPRINT_MAX_ITEMS = 512
+_DEDUP_FINGERPRINT_VALUE_MAXLEN = 220
+_DEDUP_PAIR_COMPONENT_MAXLEN = 100
+_DEDUP_SUPPRESSION_MAX_RECORDS = 100
+_DEDUP_SUPPRESSION_MAX_SERIES = 16
+_DEDUP_DIAGNOSTIC_INPUT_MAXLEN = 2048
+_DEDUP_DIAGNOSTIC_TITLE_MAXLEN = 200
+_DEDUP_DIAGNOSTIC_SOURCE_MAXLEN = 80
+_DEDUP_DIAGNOSTIC_SECRET_RES = (
+    re.compile(r'\bAKIA[0-9A-Z]{16}\b'),
+    re.compile(r'\bgh[pousr]_[A-Za-z0-9]{20,}\b'),
+    re.compile(
+        r'\beyJ[A-Za-z0-9_-]{10,}\.'
+        r'[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}\b'
+    ),
+    re.compile(r'(?<!\d)-100\d{7,12}(?!\d)'),
+)
+
 
 def _fetch_dedup_candidates(conn: sqlite3.Connection) -> list:
     """Single 30-day candidate fetch (pending + published) shared by BOTH
@@ -2766,42 +2788,174 @@ def _pair_match(row: dict, shared_pairs: list, n_total: int) -> dict:
     }
 
 
-def _pair_rule_verdict(pairs: list, candidates: list):
-    """Rule 1 body — the tiered series/theme pair rule over already-fetched
-    ``candidates`` (30-day pending + published, NO same-source skip).
+def _parse_pair_key(pair):
+    """Return ``(model, series, tier)`` for a well-formed pair key.
 
-    Scan-and-remember: the first shared distinctive (``|D``) pair hard-blocks
-    and stops the scan; the first shared broad (``|B``) pair is remembered as
-    a soft flag but the scan CONTINUES so a later ``|D`` still wins. Returns
-    ``('block', match)`` / ``('flag', match)`` when a shared pair fires, or
-    ``('pass', None)`` when no candidate shares a pair (the gate then falls
-    through to the empty short-circuit + set-overlap backstop). Candidates
-    with a ``None``/non-dict fingerprint are skipped silently.
+    Historical fingerprints are external persisted input.  Treat malformed
+    values as absent instead of letting them participate in either a broad or
+    distinctive verdict.
     """
-    new_pairs = set(pairs)
-    flag_match = None
-    for row in candidates:
-        cand_fp = row.get('model_fingerprint')
-        if not isinstance(cand_fp, dict):
-            # NULL / pre-feature / malformed row — skip silently.
+    if not isinstance(pair, str):
+        return None
+    if len(pair) > _DEDUP_FINGERPRINT_VALUE_MAXLEN:
+        return None
+    parts = pair.split('|')
+    if len(parts) != 3:
+        return None
+    model, series, tier = parts
+    if not model or not series or tier not in {'B', 'D'}:
+        return None
+    if (len(model) > _DEDUP_PAIR_COMPONENT_MAXLEN
+            or len(series) > _DEDUP_PAIR_COMPONENT_MAXLEN):
+        return None
+    return (model, series, tier)
+
+
+def _fingerprint_collections(fingerprint):
+    """Return bounded list fields for a safe legacy/current fingerprint."""
+    if not isinstance(fingerprint, dict):
+        return None
+    collections = {}
+    for key in ('strict', 'brands', 'series', 'pairs'):
+        values = fingerprint.get(key, [])
+        if not isinstance(values, list):
+            return None
+        if len(values) > _DEDUP_FINGERPRINT_MAX_ITEMS:
+            return None
+        if any(
+            not isinstance(value, str)
+            or not value
+            or len(value) > _DEDUP_FINGERPRINT_VALUE_MAXLEN
+            for value in values
+        ):
+            return None
+        collections[key] = values
+    return collections
+
+
+def _valid_pair_map(values, *, strict=None, series=None):
+    """Parse bounded pair lists, optionally enforcing fingerprint coherence."""
+    if not isinstance(values, list) or len(values) > _DEDUP_FINGERPRINT_MAX_ITEMS:
+        return {}
+    parsed_pairs = {}
+    for pair in values:
+        parsed = _parse_pair_key(pair)
+        if parsed is None:
             continue
-        cand_pairs = set(cand_fp.get('pairs') or [])
-        shared = new_pairs & cand_pairs
+        model, series_name, _tier = parsed
+        if strict is not None and model != '*' and model not in strict:
+            continue
+        if series is not None and series_name not in series:
+            continue
+        parsed_pairs[pair] = parsed
+    return parsed_pairs
+
+
+def _candidate_pair_map(fingerprint):
+    """Return coherent candidate pairs, or ``None`` for an unsafe shape."""
+    collections = _fingerprint_collections(fingerprint)
+    if collections is None:
+        return None
+    return _valid_pair_map(
+        collections['pairs'],
+        strict=set(collections['strict']),
+        series=set(collections['series']),
+    )
+
+
+def _qualify_broad_pairs(shared, pair_map, new_subject_series, title):
+    """Split shared broad pairs into title-qualified pairs and series rejects."""
+    broad = sorted(pair for pair in shared if pair_map[pair][2] == 'B')
+    candidate_subject_series = set(model_extractor.extract_series(title or ''))
+    qualified = [
+        pair for pair in broad
+        if pair_map[pair][1] in new_subject_series
+        and pair_map[pair][1] in candidate_subject_series
+    ]
+    rejected = sorted({
+        pair_map[pair][1] for pair in broad if pair not in qualified
+    })
+    return qualified, rejected
+
+
+def _bounded_diagnostic_text(value, maxlen):
+    """Return redacted, one-line external text with a strict size bound."""
+    try:
+        raw = '' if value is None else str(value)
+        if len(raw) > _DEDUP_DIAGNOSTIC_INPUT_MAXLEN:
+            return '<oversized>'
+        safe = ''.join(
+            ' ' if unicodedata.category(char).startswith('C') else char
+            for char in raw
+        )
+        safe = ' '.join(safe.split())
+        safe = _redact_text(safe)
+        for pattern in _DEDUP_DIAGNOSTIC_SECRET_RES:
+            safe = pattern.sub('***', safe)
+        for name in _SECRET_ENV_NAMES:
+            secret = os.getenv(name)
+            if secret and secret.strip():
+                safe = safe.replace(secret, '[REDACTED]')
+        safe = safe.strip() or '<unknown>'
+        return safe if len(safe) <= maxlen else safe[:maxlen - 1] + '…'
+    except Exception:
+        return '<unavailable>'
+
+
+def _suppression_record(row, rejected_series):
+    """Build the bounded diagnostic projection for one rejected candidate."""
+    return {
+        'link': _sanitize_review_log_identifier(row.get('link')),
+        'source_name': _bounded_diagnostic_text(
+            row.get('source_name') or 'other', _DEDUP_DIAGNOSTIC_SOURCE_MAXLEN,
+        ),
+        'title': _bounded_diagnostic_text(
+            row.get('title') or '', _DEDUP_DIAGNOSTIC_TITLE_MAXLEN,
+        ),
+        'series': rejected_series[:_DEDUP_SUPPRESSION_MAX_SERIES],
+    }
+
+
+def _pair_rule_verdict(pairs: list, candidates: list, new_title=''):
+    """Apply distinctive precedence and title-qualify shared broad pairs.
+
+    Returns ``(decision, match, suppressed_matches)``; rejected broad
+    candidates never terminate the scan.
+    """
+    new_pairs = _valid_pair_map(pairs)
+    new_subject_series = set(model_extractor.extract_series(new_title or ''))
+    flag_match = None
+    suppressed_matches = []
+    for row in candidates:
+        if not isinstance(row, dict):
+            continue
+        cand_pairs = _candidate_pair_map(row.get('model_fingerprint'))
+        if cand_pairs is None:
+            continue
+        shared = set(new_pairs) & set(cand_pairs)
         if not shared:
             continue
-        shared_sorted = sorted(shared)
-        n_total = len(new_pairs | cand_pairs)
-        if any(p.endswith('|D') for p in shared):
-            # Distinctive → hard block. Stop scanning: a |D verdict can
-            # never be improved on, and a remembered |B must not survive.
-            return ('block', _pair_match(row, shared_sorted, n_total))
-        if flag_match is None:
-            # First broad match — remember but KEEP scanning so a later
-            # |D from another candidate can still win over this |B.
-            flag_match = _pair_match(row, shared_sorted, n_total)
+        distinctive = sorted(
+            pair for pair in shared if new_pairs[pair][2] == 'D'
+        )
+        n_total = len(set(new_pairs) | set(cand_pairs))
+        if distinctive:
+            return (
+                'block', _pair_match(row, sorted(shared), n_total),
+                suppressed_matches,
+            )
+        qualified, rejected_series = _qualify_broad_pairs(
+            shared, new_pairs, new_subject_series, row.get('title'),
+        )
+        if (rejected_series
+                and len(suppressed_matches) < _DEDUP_SUPPRESSION_MAX_RECORDS):
+            suppressed_matches.append(_suppression_record(row, rejected_series))
+        if qualified and flag_match is None:
+            flag_match = _pair_match(row, qualified, n_total)
+            flag_match['reason'] = 'broad_subject'
     if flag_match is not None:
-        return ('flag', flag_match)
-    return ('pass', None)
+        return ('flag', flag_match, suppressed_matches)
+    return ('pass', None, suppressed_matches)
 
 
 def _set_overlap_backstop_verdict(fingerprint, strict: list,
@@ -2822,6 +2976,8 @@ def _set_overlap_backstop_verdict(fingerprint, strict: list,
     best_sim = 0.0
     best_row = None
     for row in candidates:
+        if not isinstance(row, dict):
+            continue
         ts = row.get('fetched_at') or row.get('published_at')
         if not ts or str(ts) < cutoff:
             # Outside the backstop's 7-day window (or undatable) — the legacy
@@ -2832,9 +2988,9 @@ def _set_overlap_backstop_verdict(fingerprint, strict: list,
             # (Decision 9 reversed 2026-06-14).
             continue
         cand_fp = row.get('model_fingerprint')
-        if not isinstance(cand_fp, dict):
-            # NULL (pre-feature) or malformed row — skip silently. The
-            # backfill script (Task 5) populates these going forward.
+        if _fingerprint_collections(cand_fp) is None:
+            # NULL, unsupported, oversized, or malformed historical row —
+            # skip silently instead of degrading the whole incoming article.
             continue
         sim = model_extractor.similarity(fingerprint, cand_fp)
         if sim > best_sim:
@@ -2864,7 +3020,7 @@ def _set_overlap_backstop_verdict(fingerprint, strict: list,
     return ('flag', match)
 
 
-def _check_cross_source_dedup(article: dict, fingerprint: dict,
+def _check_cross_source_dedup(effective_title: str, fingerprint: dict,
                               conn: sqlite3.Connection, new_source=None):
     """Decide block / flag / pass for ``fingerprint`` against recent rows.
 
@@ -2877,20 +3033,24 @@ def _check_cross_source_dedup(article: dict, fingerprint: dict,
          skip — a distinctive (``|D``) shared pair means the SAME casting +
          franchise even from the same outlet ("more photos"), so it blocks
          any-source. Scan-and-remember: the first shared ``|D`` pair hard-blocks
-         and stops the scan; a shared broad (``|B``) pair is only remembered as
-         a soft flag and the scan CONTINUES so a later ``|D`` still wins. Both a
-         ``block`` and a ``flag`` verdict are TERMINAL — the backstop does NOT
-         run, so an article can never earn two verdicts / two admin pings in
-         one tick.
+         and stops the scan; a shared broad (``|B``) pair becomes a soft flag
+         only when its series is extracted from BOTH effective titles. The scan
+         CONTINUES after qualified and rejected broad comparisons so a later
+         ``|D`` still wins. A qualified ``block`` or ``flag`` is TERMINAL; a
+         subject rejection falls through to the backstop.
       2. **Set-overlap backstop** (legacy ≥50% block / ``[0.30,0.50)`` flag,
          7-day window, CROSS-SOURCE ONLY). Reached only when the pair rule did
-         not fire (toggle off, no ``pairs``, or no shared pair). Unchanged
+         not fire (toggle off, no ``pairs``, no shared pair, or only
+         subject-rejected broad pairs). Its comparison and thresholds remain
+         unchanged; only a hard block reached after subject rejection is
+         capped to a soft flag at this outer gate. Otherwise unchanged
          behaviour — including the same-source skip (Decision 9 reversed
          2026-06-14: within-source republishes don't happen; comparing them
          only yields false positives). The 7-day subset is derived in Python
          from the single 30-day fetch (no second SQL round-trip).
 
-    Returns ``('block', match)`` / ``('flag', match)`` / ``('pass', None)``.
+    Returns ``(decision, match, suppressed_matches)``. ``decision`` is one of
+    ``block`` / ``flag`` / ``pass``.
     ``match`` carries ``link`` / ``source_name`` / ``models`` / ``overlap_pct``
     / ``n_matches`` / ``n_total`` (+ ``pairs`` for pair-rule verdicts) — the
     keys the E015/E014 builders read.
@@ -2908,15 +3068,18 @@ def _check_cross_source_dedup(article: dict, fingerprint: dict,
 
     # Lazy single 30-day fetch, reused by whichever rule needs it.
     candidates = None
+    suppressed_matches = []
 
     # ---- Rule 1: tiered pair rule (30-day window, ANY source) ----
     if DEDUP_SERIES_ENABLED and pairs:
         candidates = _fetch_dedup_candidates(conn)
-        decision, match = _pair_rule_verdict(pairs, candidates)
+        decision, match, suppressed_matches = _pair_rule_verdict(
+            pairs, candidates, effective_title,
+        )
         if decision != 'pass':
             # block / flag are TERMINAL — the backstop never runs, so an
             # article can never earn two verdicts / two admin pings per tick.
-            return (decision, match)
+            return (decision, match, suppressed_matches)
 
     # ---- Empty short-circuit (AC8, re-gated to strict AND series) ----
     # Reached only AFTER the pair scan above has run (or been skipped). The
@@ -2933,14 +3096,26 @@ def _check_cross_source_dedup(article: dict, fingerprint: dict,
     # a daily cron, left alone deliberately rather than adding a second
     # short-circuit that would fork the AC8 contract.
     if not strict and not series:
-        return ('pass', None)
+        return ('pass', None, suppressed_matches)
 
     # ---- Rule 2: set-overlap backstop (7-day subset, CROSS-SOURCE ONLY) ----
     # Reached only on a pair-rule pass. Reuses the single 30-day fetch.
     if candidates is None:
         candidates = _fetch_dedup_candidates(conn)
-    return _set_overlap_backstop_verdict(fingerprint, strict, candidates,
-                                         new_source)
+    decision, match = _set_overlap_backstop_verdict(
+        fingerprint, strict, candidates, new_source,
+    )
+    if match is not None:
+        match['reason'] = 'overlap'
+    if decision == 'block' and suppressed_matches:
+        decision = 'flag'
+        match['reason'] = 'overlap_capped'
+        match['subject_rejected_series'] = sorted({
+            series_name
+            for item in suppressed_matches
+            for series_name in item['series']
+        })
+    return (decision, match, suppressed_matches)
 
 
 def filter_new_entries(entries):
@@ -4262,6 +4437,11 @@ def job():
                 )
             continue
 
+        # One original-language title is the shared subject boundary for the
+        # dedup gate and every persistence path below.  Hoisting the feed
+        # fallback here keeps verdicts symmetric regardless of source order.
+        effective_title = article.get('title') or entry.get('title') or ''
+
         # Fetched fine — the streak, if any, was transient. Clearing here is
         # what makes `attempts` mean "in a row".
         try:
@@ -4314,14 +4494,14 @@ def job():
             )
             mark_processed(
                 link,
-                article.get('title') or entry.get('title') or '',
+                effective_title,
                 entry.get('published') or entry.get('pub_date') or '',
             )
             try:
                 send_admin_notification(
                     admin_alerts.alert_promo_blocked(
                         link,
-                        article.get('title') or entry.get('title') or '',
+                        effective_title,
                         promo_markers,
                     )
                 )
@@ -4412,15 +4592,14 @@ def job():
                     # would be re-fetched and re-alerted every daily tick.
                     mark_processed(
                         link,
-                        article.get('title') or entry.get('title') or '',
+                        effective_title,
                         entry.get('published') or entry.get('pub_date') or '',
                     )
                     try:
                         send_admin_notification(
                             admin_alerts.alert_genre_blocked(
                                 link,
-                                article.get('title')
-                                or entry.get('title') or '',
+                                effective_title,
                                 verdict.genre,
                                 verdict.markers,
                             )
@@ -4461,8 +4640,10 @@ def job():
             dedup_conn = pending_repo._connect()
             try:
                 fp = model_extractor.extract_fingerprint(article)
-                decision, match = _check_cross_source_dedup(
-                    article, fp, dedup_conn, new_source,
+                decision, match, _suppressed_matches = (
+                    _check_cross_source_dedup(
+                        effective_title, fp, dedup_conn, new_source,
+                    )
                 )
 
                 if decision == 'block':
@@ -4474,7 +4655,7 @@ def job():
                     )
                     mark_processed(
                         link,
-                        article.get('title') or entry.get('title') or '',
+                        effective_title,
                         entry.get('published') or entry.get('pub_date') or '',
                     )
                     try:
@@ -4612,12 +4793,17 @@ def job():
                     "dedup degraded-mode rate-limit bookkeeping failed",
                 )
             fp = None
+            # A failure can happen after the flag branch assigned its delay
+            # (for example during rate-limit bookkeeping). Degraded mode is a
+            # true fail-open: a result that did not finish cannot retain a
+            # stale 24-hour deferral.
+            dedup_defer_until = None
 
         row = {
             'link': link,
             'source_name': entry.get('source_name') or _resolve_source_name(link),
             'feed_url': entry.get('feed_url'),
-            'title': article.get('title') or entry.get('title') or '',
+            'title': effective_title,
             'subtitle': article.get('subtitle') or '',
             'paragraphs': article.get('paragraphs') or [],
             'images': article.get('images') or [],
@@ -4674,8 +4860,7 @@ def job():
                         send_admin_notification(
                             admin_alerts.alert_held_for_review(
                                 link,
-                                article.get('title')
-                                or entry.get('title') or '',
+                                effective_title,
                                 hold_markers,
                                 # Why the operator is being asked — poster
                                 # dump vs suspected video review.

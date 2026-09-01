@@ -1,0 +1,50 @@
+{
+  "status": "changes_required",
+  "summary": "The title-aware broad contour, capped backstop, and effective-title plumbing are largely aligned with Task 2, and the focused tests exercise the intended happy paths. Four major issues remain: distinctive E015 payload semantics changed, degraded-mode handling can retain a false deferral, suppression diagnostics are unbounded, and the core pair-rule function exceeds the mandatory size limit.",
+  "criticalIssues": [],
+  "suggestions": [
+    {
+      "file": "news_bot.py",
+      "line": 2832,
+      "severity": "major",
+      "category": "best-practices",
+      "suggestion": "The distinctive branch now builds its E015 match from `distinctive` only. Before Task 2 it built the match from every shared pair, so a candidate sharing one `|D` and one `|B` pair now reports fewer pairs/models and a different `overlap_pct` even though the approved contract says distinctive E015 behavior must remain unchanged.",
+      "benefit": "Build a distinctive verdict with the full sorted `shared` set, while restricting only broad E014 matches to the title-qualified subset; this preserves the existing irreversible-block diagnostics and overlap payload without weakening the new broad rule.",
+      "optional": false
+    },
+    {
+      "file": "news_bot.py",
+      "line": 4699,
+      "severity": "major",
+      "category": "best-practices",
+      "suggestion": "The degraded-mode handler clears `fp` but does not clear `dedup_defer_until`. If result handling raises after the flag branch sets the 24-hour timestamp (for example in `is_pair_rate_limited`, `mark_pair_pinged`, or `commit`), the article is staged with a null fingerprint and E016 but remains deferred for a day, violating fail-open publication and the invariant that only a successfully completed final `flag` decision defers.",
+      "benefit": "Reset `dedup_defer_until` to `None` together with `fp` in the outer dedup exception path, and add a result-handling failure case after the timestamp assignment so E016 degraded mode is proven immediately publishable.",
+      "optional": false
+    },
+    {
+      "file": "news_bot.py",
+      "line": 2851,
+      "severity": "major",
+      "category": "best-practices",
+      "suggestion": "Suppression records copy the candidate's raw `link`, `source_name`, full `title`, and complete rejected-series list, and the function appends one record for every rejected candidate without any field or collection cap. This does not satisfy Task 2's explicit requirement for bounded internal suppression diagnostics and leaves later consumers holding attacker/source-controlled, potentially unbounded data.",
+      "benefit": "Apply named maximum lengths/counts when constructing the internal records (including an overall diagnostic-record cap) while preserving one-record-per-candidate semantics; Task 3 can then add redaction and one-line log formatting on top of an already bounded contract.",
+      "optional": false
+    },
+    {
+      "file": "news_bot.py",
+      "line": 2787,
+      "severity": "major",
+      "category": "readability",
+      "suggestion": "`_pair_rule_verdict()` spans 78 physical lines (through line 2864), exceeding the reviewer's automatic major threshold for functions over 50 lines. It currently combines pair normalization, title extraction, precedence, candidate qualification, match construction, and diagnostic assembly in one loop.",
+      "benefit": "Extract pair normalization and per-candidate broad qualification/diagnostic construction into small pure helpers, leaving `_pair_rule_verdict()` responsible only for scan-and-remember precedence; this makes the E015 and E014 invariants easier to audit independently.",
+      "optional": false
+    }
+  ],
+  "metrics": {
+    "filesReviewed": 4,
+    "criticalIssuesCount": 0,
+    "majorIssuesCount": 4,
+    "minorIssuesCount": 0,
+    "testCoverageAssessment": "insufficient"
+  }
+}
