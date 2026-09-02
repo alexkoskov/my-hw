@@ -3,9 +3,10 @@
 # host systemd unit. news.db lives on a mounted /data volume (DB_FILE=/data/news.db).
 FROM python:3.13-slim
 
-# tzdata → correct log timestamps for TZ=Europe/Moscow; ca-certificates → TLS.
+# tzdata → correct log timestamps for TZ=Europe/Moscow; ca-certificates → TLS;
+# iproute2 → set the container's VPN default route before Python starts.
 RUN apt-get update \
-    && apt-get install -y --no-install-recommends tzdata ca-certificates \
+    && apt-get install -y --no-install-recommends tzdata ca-certificates iproute2 \
     && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /app

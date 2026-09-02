@@ -9,9 +9,9 @@ Deployment process, infrastructure, and production operations for AI agents.
 > `hw-news-bot` on the Moscow VPS `45.90.216.165` (repo `/root/hw-news`, tracking
 > **`main`**; cutover 2026-07-06). Egress routes through the shared `shared-vpn`
 > gateway (sing-box VLESS, `172.28.0.2` on the external `vpnnet` network) so the RU
-> host reaches Telegram — same pattern as the colocated intake-bot. Compose
-> (`docker-compose.yml`): `news-bot` + a `route-setup` sidecar that points the
-> default route at the gateway. State lives on a host bind-mount (`./data:/data`):
+> host reaches Telegram. Compose runs one `news-bot` container; before starting
+> Python it points its own default route at the VPN gateway. State lives on a
+> host bind-mount (`./data:/data`):
 > `.env` (secrets, hand-managed on the host) + `data/news.db`
 > (`DB_FILE=/data/news.db`).
 >
@@ -53,7 +53,7 @@ Deployment process, infrastructure, and production operations for AI agents.
 |---|---|
 | Сервер | Москва `45.90.216.165` (Firstbyte) |
 | Вход | `ssh root@45.90.216.165` — **root, по паролю** (пароль в менеджере паролей) |
-| Как запущен | Docker-контейнер **`hw-news-bot`** (+ sidecar `route-setup`) |
+| Как запущен | Один Docker-контейнер **`hw-news-bot`** |
 | Папка | `/root/hw-news` |
 | Ветка | `main` |
 | `.env` | `/root/hw-news/.env` — **правится только руками** |
@@ -166,7 +166,7 @@ the Status callout for the runbooks.*
 **Production — MANUAL, no CI:** the only way code reaches prod is the operator
 running the command below; it may run at any time:
 
-`ssh root@45.90.216.165 "cd /root/hw-news && git pull && docker compose up -d --build"`
+`ssh root@45.90.216.165 "cd /root/hw-news && git pull && docker compose up -d --build --remove-orphans"`
 
 `git push` to any branch triggers `ci.yml` (pytest) only. Both deploy workflows are
 disarmed (`deploy.yml:30`, `deploy_test.yml:26` — `if: false`) and target a host that
@@ -233,7 +233,7 @@ in the repo ships regardless. The manifest matters only if the SCP path is reviv
 a future host — keep it in sync when adding a first-party import, but do not treat the
 test as a guard rail.
 
-**Restarting the bot:** `docker compose up -d --build` in `/root/hw-news` rebuilds the
+**Restarting the bot:** `docker compose up -d --build --remove-orphans` in `/root/hw-news` rebuilds the
 image and recreates the container; code changes go live immediately rather than
 waiting for the next 10:00 МСК tick. There is **no privileged step** — the operator is
 `root` on the host, there is no `hwbot` user, no `systemd` unit and no `sudoers` rule
