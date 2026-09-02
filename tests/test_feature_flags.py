@@ -137,17 +137,15 @@ class TestEnvExampleDocumentsTheFlag(unittest.TestCase):
         ).read()
         self.assertIn("SOURCE_FORMATTING_ENABLED", text)
 
-    def test_env_example_warns_about_the_restart_window(self):
-        """The flag only applies on restart, and restarts are forbidden
-        10:00–20:00 МСК — an operator reaching for it mid-incident must
-        learn that from the file, not from the outcome."""
+    def test_env_example_documents_restart_and_anytime_deploy(self):
+        """The flag applies on restart, which is allowed at any time."""
         text = open(
             os.path.join(_REPO_ROOT, ".env.example"), encoding="utf-8"
         ).read()
         block = text[text.index("SOURCE_FORMATTING_ENABLED") - 700:]
         block = block[: block.index("SOURCE_FORMATTING_ENABLED=") + 40]
-        self.assertIn("10:00", block)
         self.assertIn("restart", block.lower())
+        self.assertIn("allowed at any time", block.lower())
 
 
 class TestOrangetrackIsNotGatedByTheFlag(_ReloadIsolation):
