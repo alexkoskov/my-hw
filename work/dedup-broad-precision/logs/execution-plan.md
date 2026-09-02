@@ -65,7 +65,7 @@
 - **Skill:** deploy-pipeline
 - **Reviewers:** code-reviewer, security-auditor, deploy-reviewer
 - **Verify-smoke:** bounded container status/startup-log checks, without a forced tick or test article
-- **Verify-user:** approve the production release outside the protected publication window
+- **Verify-user:** explicitly approve the production release; time of day does not gate deployment
 
 ## Wave 8: Live observation
 

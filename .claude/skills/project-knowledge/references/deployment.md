@@ -16,8 +16,8 @@ Deployment process, infrastructure, and production operations for AI agents.
 > (`DB_FILE=/data/news.db`).
 >
 > **⚠️ There is exactly ONE instance and it is production. No test bot, no
-> staging, no test channel.** Deploy is **manual** and must run **outside the
-> 10:00–20:00 МСК publish window**. Both GitHub-Actions deploy workflows are
+> staging, no test channel.** Deploy is **manual** and may run **at any time**;
+> a restart immediately replans the remaining publication opportunities. Both GitHub-Actions deploy workflows are
 > disarmed: `.github/workflows/deploy.yml:30` and
 > `.github/workflows/deploy_test.yml:26` are `if: false`; a push to `dev`/`main`
 > runs `ci.yml` (pytest) only and never touches a server. Everything operational
@@ -61,7 +61,7 @@ Deployment process, infrastructure, and production operations for AI agents.
 | Логи | `ssh root@45.90.216.165 "docker logs hw-news-bot --tail 200"` |
 | Канал | `-1004027529994` (боевой) |
 | INSTANCE_LABEL | `prod` |
-| Деплой | **только руками, ВНЕ окна 10:00–20:00 МСК**: `ssh root@45.90.216.165 "cd /root/hw-news && git pull && docker compose up -d --build"` |
+| Деплой | **только руками, в любое время**: `ssh root@45.90.216.165 "cd /root/hw-news && git pull && docker compose up -d --build"` |
 | Бэкап БД | cron 05:00 МСК → `/root/hw-news/backups` (TODO: копия вне хоста) |
 | Watchdog | host cron 01:00 МСК → `docker exec hw-news-bot /bin/bash /app/watchdog.sh` |
 
@@ -133,7 +133,7 @@ reproducible image + isolated egress routing without changing the bot code.
 - `HEARTBEAT_FILE` — heartbeat marker path (`news_bot.py:4526`). The prod container sets `/data/last_tick.ts` via `docker-compose.yml:34` (persistent + readable by the `docker exec` watchdog). Default `~/.cache/news_bot/last_tick.ts`.
 - `ANTHROPIC_API_KEY` / `ANTHROPIC_MODEL` (model default `claude-haiku-4-5`, `claude_transcreation.py:380`) — alternate engine, **not used in production**. Only relevant if `LLM_PROVIDER` is repointed at `claude`. The API key is **sensitive** and is additionally redacted from logs by `_TokenRedactingFilter` (pattern `sk-ant-[A-Za-z0-9_=.-]{16,}`). `OPENAI_API_KEY` / `OPENAI_MODEL` and `GEMINI_API_KEY` / `GEMINI_MODEL` are the same story for the other two engines.
 
-**How env reaches prod:** `docker-compose.yml` (`env_file: .env` + `environment: HEARTBEAT_FILE`). The prod `.env` is **hand-edited on the Moscow host** — nothing writes it, and no CI touches it. Changing any variable therefore means: edit `/root/hw-news/.env` by hand, then rebuild (`docker compose up -d --build`) outside the publish window. The archived `hw_review.py` would read a local `.env` if revived (dormant).
+**How env reaches prod:** `docker-compose.yml` (`env_file: .env` + `environment: HEARTBEAT_FILE`). The prod `.env` is **hand-edited on the Moscow host** — nothing writes it, and no CI touches it. Changing any variable therefore means: edit `/root/hw-news/.env` by hand, then rebuild (`docker compose up -d --build`) at any time. The archived `hw_review.py` would read a local `.env` if revived (dormant).
 
 ---
 
@@ -151,7 +151,7 @@ truth, not repeated here.
   publications. Plan every rollout so it can be undone (see § Rollback Procedure).
 - **`dev` is not a deploy target.** `git push origin dev` runs `ci.yml` (pytest) and
   nothing else. Promotion is a merge into `main`, then a manual rebuild on the host,
-  outside the publish window.
+  which may run at any time.
 - **`INSTANCE_LABEL=prod` still prefixes every admin ping**, so a ping without the
   prefix means someone is running the bot outside the container (local dev) — worth
   noticing.
@@ -164,7 +164,7 @@ the Status callout for the runbooks.*
 ## Deployment Triggers
 
 **Production — MANUAL, no CI:** the only way code reaches prod is the operator
-running, outside the 10:00–20:00 МСК window:
+running the command below; it may run at any time:
 
 `ssh root@45.90.216.165 "cd /root/hw-news && git pull && docker compose up -d --build"`
 
@@ -220,7 +220,7 @@ Two things about that manifest that the array itself does not say:
   **current Docker path** the file arrives inside the repo checkout at its normal
   subdir path and the fallback never fires. Practical consequence:
   **editing the prompt is a production behaviour change and needs a rebuild** —
-  outside the publish window, like any restart. Prompt-only edits ship no code, so
+  allowed at any time, like any restart. Prompt-only edits ship no code, so
   there is nothing to verify beyond reading the next few publications; LLM output
   cannot be asserted by tests.
 
@@ -252,25 +252,15 @@ Daily tick at **10:00 МСК** via `schedule.every().day.at("10:00", tz=pytz.tim
 
 **Restart-safe by design:** `schedule` runs in-process, so a container restart kills the in-flight `job()`. But `main()` re-runs `job()` immediately on boot, which recomputes the publishable plan and conditional opportunities from a fresh backlog snapshot and today's still-eligible times. Already-published times are dropped by grace, and already-published rows are skipped by the idempotency guard. Verified live on the 2026-07-06 mid-window cutover.
 
-### ⛔ The no-deploy window: 10:00–20:00 МСК
+### Deployment timing: allowed at any time
 
-**Never rebuild or restart the container between 10:00 and 20:00 МСК.** Not a style
-rule — a mechanism:
-
-- The whole day's schedule lives inside the process (`schedule`, in-memory). A
-  container restart destroys it.
-- `main()` calls `job()` **immediately** on start (`news_bot.py:4645`, right after the
-  in-process schedule registration at `:4641`), so the bot does not wait for the
-  next 10:00 — it
-  re-plans the day from `now` and publishes into whatever is left of the window.
-- The result is a rebuild silently re-shaping today's publications: slots already
-  passed are dropped by the 5-minute grace, remaining ones fire on a compressed
-  timeline. Nothing crashes and nothing double-posts (idempotency holds), which is
-  precisely why the effect is easy to miss.
-
-Deploy before 10:00 or after 20:00 МСК. **The host clock is UTC**, so 10:00–20:00 МСК
-= **07:00–17:00 on the host** — check with `date` on the server, not the wall clock in
-Moscow, when scripting anything.
+An explicitly authorized manual rebuild or restart may run at any time; there is no
+clock-based deployment gate. The operational effect remains important: the schedule
+lives in process memory, and `main()` calls `job()` immediately after startup, so a
+restart recreates the day's plan from the current time. Passed slots remain excluded
+by the five-minute grace and idempotency prevents duplicate publication. Record this
+effect in the deployment report, but do not delay an authorized deployment because of
+the clock.
 
 ---
 
@@ -279,7 +269,7 @@ Moscow, when scripting anything.
 - [ ] `python3 -m pytest tests/ -q` green locally. This is the ONLY pre-prod gate — there is no staging to catch what it misses.
 - [ ] Merged into **`main`** (prod deploys from `main`, never from `dev`).
 - [ ] Note the current prod commit **before** deploying, so a rollback has a target: `ssh root@45.90.216.165 "cd /root/hw-news && git rev-parse --short HEAD"`.
-- [ ] Clock check — outside the 10:00–20:00 МСК window (see § Scheduling → The no-deploy window).
+- [ ] Deployment is explicitly authorized; time of day is informational, not a gate.
 - [ ] Deploy: `ssh root@45.90.216.165 "cd /root/hw-news && git pull && docker compose up -d --build"`.
 - [ ] Post-deploy logs: `ssh root@45.90.216.165 "docker logs hw-news-bot --tail 200"` — clean boot, no `[E018]` DB-guard ping, `[E008]` plan-of-day sent.
 - [ ] `news.db` present on the mounted volume (`/root/hw-news/data/news.db`). A fresh instance auto-creates it via `init_db()`; the schema is idempotent (see `tests/test_migration.py`).
@@ -301,10 +291,9 @@ only prepares them.**
 superseded note below).** Keep the sequence as the template for the next gated
 feature and as the record of why it was staged this way; do not re-run it.
 
-> **⚠️ Everything here runs OUTSIDE the 10:00–20:00 МСК publish window.** Each
-> `docker compose up -d --build` restarts the container and resets the
-> in-process daily schedule (`compute_fixed_slots`, slots 10:00 / 15:00 / **19:30**).
-> The Moscow host is on UTC.
+> These steps may run at any time. Each `docker compose up -d --build` restarts
+> the container and recreates the in-process daily schedule (`compute_fixed_slots`,
+> slots 10:00 / 15:00 / **19:30**) from the current time.
 
 **Why the warm-up is load-bearing:** the dedup gate looks back only **7 days**
 through `pending_articles` + `published_articles` fingerprints. The Moscow prod
@@ -346,7 +335,7 @@ already ran) — verify the shape with
 `sqlite3 .../news.db "SELECT model_fingerprint FROM published_articles WHERE model_fingerprint IS NOT NULL ORDER BY rowid DESC LIMIT 3"`
 (two-key blobs = normal → proceed; four-key with `series`/`pairs` = investigate).
 
-### Staged rollout (strictly outside the window)
+### Staged rollout
 
 1. **Pre-check** — run the `SELECT COUNT(*)` above; confirm `0` / no-such-column.
 2. **Dark deploy** — in the **hand-managed prod `.env`** on the host add
@@ -369,8 +358,8 @@ already ran) — verify the shape with
    ping. The pair-rule is still OFF, so no hard block can land — that is the
    safety of the dark phase.
 6. **Enable** — set `DEDUP_SERIES_ENABLED=1` (or simply **remove the override** —
-   default is on) in the prod `.env`, then `docker compose up -d --build` again,
-   **outside the window**. The pair-rule is now live: a title-qualified broad
+   default is on) in the prod `.env`, then `docker compose up -d --build` again.
+   The pair-rule is now live: a title-qualified broad
    pair soft-flags (`[E014]` — article still publishes after its decision window),
    while a shared distinctive `|D` pair hard-blocks (`[E015]`, irreversible — no
    manual re-publish). A broad comparison rejected by the title rule continues
@@ -409,7 +398,7 @@ publication is irreversible; the offline corpus and focused tests are the
 pre-deploy controls, while independent natural traffic is the post-deploy check.
 
 If the observation shows a safety regression, set `DEDUP_SERIES_ENABLED=0` and
-rebuild outside the protected 10:00–20:00 МСК window to disable the pair rule, or
+rebuild at any time to disable the pair rule, or
 use the general Route A/Route B rollback below for the whole release. Treat an
 unexpected `[E015]`/`[E016]` change as a release blocker; false-flag evidence may
 instead require an extended observation window or a separately approved rule
@@ -437,9 +426,9 @@ rebuild or on a new host — not something to run again now.
 > anywhere (a local run against the prod token, a future staging box), only ONE of
 > them may have this flag on.
 
-> **⚠️ Rebuild OUTSIDE the 10:00–20:00 МСК publish window.**
-> `docker compose up -d --build` restarts the container and resets the in-process
-> daily schedule (slots 10:00 / 15:00 / **19:30**). The Moscow host is on UTC.
+> Rebuilds may run at any time. `docker compose up -d --build` restarts the
+> container and recreates the in-process daily schedule (slots 10:00 / 15:00 /
+> **19:30**) from the current time.
 
 ### Enable (prod, Moscow host)
 
@@ -447,7 +436,7 @@ rebuild or on a new host — not something to run again now.
    `TELEGRAM_ADMIN_ID` (personal chat_id, not `@username`). Non-numeric →
    fail-closed: the listener refuses to start and logs a startup warning.
 2. **Set the flag** — in the hand-managed prod `.env` add `REVIEW_BUTTONS_ENABLED=1`.
-3. **Rebuild** — outside the window: `ssh root@45.90.216.165 "cd /root/hw-news && git pull && docker compose up -d --build"`.
+3. **Rebuild** — at any time: `ssh root@45.90.216.165 "cd /root/hw-news && git pull && docker compose up -d --build"`.
 4. **Verify the listener** — `ssh root@45.90.216.165 "docker logs hw-news-bot --tail 200"`
    must show the startup line **«review listener active»**. Missing line = gate closed
    (flag off or non-numeric admin id) — check the `.env`.
@@ -462,7 +451,7 @@ rebuild or on a new host — not something to run again now.
 ### Disable / rollback
 
 Remove the `REVIEW_BUTTONS_ENABLED=1` line from the prod `.env` (default is off)
-and rebuild outside the window. Buttons stop rendering and the listener does not
+and rebuild at any time. Buttons stop rendering and the listener does not
 start; already-sent buttons become inert (stale tokens are harmless).
 
 ---
@@ -480,7 +469,7 @@ the fix permanent. Doing A then B is normal.
 ### Route A — put a known-good commit on prod (fastest, no push needed)
 
 Find the commit prod should go back to (the previous deploy's SHA, noted in the
-Pre-Deploy Checklist, or from `git log`), then, **outside the 10:00–20:00 МСК window**:
+Pre-Deploy Checklist, or from `git log`), then run at any time:
 
 `ssh root@45.90.216.165 "cd /root/hw-news && git fetch && git checkout <good-sha> && docker compose up -d --build"`
 
@@ -512,7 +501,7 @@ a non-merge commit is an error, so check first with
 means it is not.
 
 Then redeploy the host as in Route A (`git checkout main` if it was detached, else
-`git pull`) plus `docker compose up -d --build`, outside the window.
+`git pull`) plus `docker compose up -d --build` at any time.
 
 **Known trap after reverting a merge:** git now considers the branch already merged, so
 simply re-merging `dev` later will **not** bring the reverted work back. When the fix
@@ -623,7 +612,7 @@ GitHub outage also removes this external observer.
   bot container.
 - **Runtime scheduler:** merging code does not deploy the bot. Scheduler changes reach
   the single production container only after promotion to `main` and a separate
-  operator-run `git pull` plus Docker rebuild outside 10:00–20:00 МСК. Roll them back
+  operator-run `git pull` plus Docker rebuild, allowed at any time. Roll them back
   with Route A or Route B above and rebuild the container. A runtime rollback does not
   change the GitHub watcher, and a watcher revert does not change runtime code.
 
@@ -685,7 +674,7 @@ cheaper-but-still-strong-RU transcreation (Claude judged too costly for this hob
 bot). The **code default stays `openai/gpt-5.4-mini`** (`openrouter_transcreation.py:80`);
 the prod override lives only in the hand-managed `.env`, not in the repo, so a fresh
 checkout run anywhere else uses gpt-5.4-mini. To change the model: edit the `.env` line
-on the host and rebuild, outside the window. Reverting is one line.
+on the host and rebuild at any time. Reverting is one line.
 
 The dispatcher (`llm_transcreation.py`) picks an engine from `LLM_PROVIDER` when set —
 prod pins `openrouter`, so key-presence order never applies there. With `LLM_PROVIDER`
@@ -707,7 +696,7 @@ Variant B+ second-pass adds ~$0.005 per long autoevolution article (when `blocks
 **Sonnet 4.6 override:** ~$15/month for higher quality — but production is not on the
 Anthropic engine at all, so switching means setting **both** `LLM_PROVIDER=claude` and
 `ANTHROPIC_MODEL=claude-sonnet-4-6` (plus `ANTHROPIC_API_KEY`) by hand in the prod
-`.env`, then rebuilding outside the window. The repo `vars` route described here
+`.env`, then rebuilding at any time. The repo `vars` route described here
 before is dead — no workflow writes the server `.env` any more.
 
 **Sanity threshold.** The hard ceiling is `MAX_DAILY_POSTS = 3` (`news_bot.py:172`) —

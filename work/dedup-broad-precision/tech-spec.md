@@ -223,7 +223,7 @@ The implementation starts by materializing and integrity-checking the sanitized 
 
 Before release, the agent runs the focused dedup suites, the full repository suite, JSON validation for the corpus and `.project-progress.json`, scoped pre-commit hooks for changed files, and `git diff --check`. The QA report maps every user and technical acceptance criterion to a concrete assertion/result. No local verification reads secrets or performs a live publish.
 
-Deployment is a separate final task after explicit approval and green CI. The operator performs the established manual release outside the protected publication window, verifies a clean container start, and can disable the existing dedup-series switch or roll back the release if E016/E015 behavior changes unexpectedly. Post-deploy verification classifies naturally occurring E014 alerts and compares the daily suppression count with detailed bounded logs during the approved observation window.
+Deployment is a separate final task after explicit approval and green CI. The operator performs the established manual release at any time, verifies a clean container start, and can disable the existing dedup-series switch or roll back the release if E016/E015 behavior changes unexpectedly. A restart immediately replans remaining publication opportunities, but time of day is not a deployment gate. Post-deploy verification classifies naturally occurring E014 alerts and compares the daily suppression count with detailed bounded logs during the approved observation window.
 
 ### Tools required
 
@@ -349,7 +349,7 @@ None.
 - **Skill:** deploy-pipeline
 - **Reviewers:** code-reviewer, security-auditor, deploy-reviewer
 - **Verify-smoke:** `docker compose ps --status running` -> the news service is running; `docker compose logs --tail=200 news-bot` -> clean startup with no E016/schema/startup regression
-- **Verify-user:** confirm the release is executed outside the protected publication window and authorize rollback if startup verification fails
+- **Verify-user:** explicitly authorize the release and authorize rollback if startup verification fails
 - **Files to modify:** `work/dedup-broad-precision/logs/working/deploy-report.json` (new; sanitized outcome and commit metadata only, no raw logs or configuration values)
 - **Files to read:** `.claude/skills/project-knowledge/references/deployment.md`, `work/dedup-broad-precision/tech-spec.md`, `work/dedup-broad-precision/logs/working/pre-deploy-qa-report.json`
 

@@ -20,8 +20,8 @@ Usage (operator, from a laptop — the bot is NOT restarted or interrupted)::
     ssh root@45.90.216.165 "cd /root/hw-news && git pull && python3 scripts/prod_check.py"
 
 `git pull` only updates the checkout on disk; the running container keeps serving
-the already-built image, so this does NOT deploy anything and is safe inside the
-10:00-20:00 МСК publishing window.
+the already-built image, so this does NOT deploy anything. Manual deployment and
+container restarts are also allowed at any time by operator decision.
 
 The DB path defaults to the host-side bind mount (`./data/news.db` relative to the
 repo). Inside the container pass ``--db /data/news.db``. Anything unexpected is
@@ -249,7 +249,7 @@ def check_dedup(conn: sqlite3.Connection, rep: Report) -> None:
         rep.add(WARN, "за 7 дней нет публикаций — судить о прогреве нельзя")
     elif recent_fp == 0:
         rep.add(BAD, "окно дедупа ПУСТОЕ — сравнивать не с чем, дубли пройдут насквозь")
-        rep.note("лечение: backfill_fingerprints.py --days 30, вне окна 10:00-20:00 МСК")
+        rep.note("лечение: backfill_fingerprints.py --days 30; перезапуск разрешён в любое время")
     elif recent_fp < recent * 0.5:
         rep.add(WARN, f"прогрет частично ({recent_fp}/{recent}) — часть статей без отпечатка")
     else:

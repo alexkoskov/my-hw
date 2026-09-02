@@ -31,6 +31,11 @@ This is a mandatory execution constraint, not a suggestion. The process itself i
 - Correct: add crash-safe database writes and their focused verification.
 - Wrong: use that request to refactor the worker, redesign the mailer, modernize unrelated docs, or create follow-up audits without approval.
 
+## Production deployment timing
+
+- An explicitly authorized manual production deployment or container restart may run at any time. Time of day is informational and must not block the operation.
+- A restart recreates the in-process daily schedule and immediately replans the remaining publication opportunities. Preserve the database volume and runtime configuration, record the rollback commit, and verify a clean start, but do not impose a clock-based deployment gate.
+
 ## Keep the website project progress current
 
 `.project-progress.json` is the source for the project progress bar on the

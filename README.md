@@ -82,7 +82,7 @@ With production credentials in `.env` that publishes to the real channel.
 Production is a Docker container on the Moscow host and is deployed manually
 by the operator — see
 [deployment.md](.claude/skills/project-knowledge/references/deployment.md) for
-the redeploy command, the forbidden deploy window, logs and monitoring. Do not
+the redeploy command, restart scheduling effect, logs and monitoring. Do not
 follow any systemd/cron instructions found in older notes.
 
 ## Where things are documented

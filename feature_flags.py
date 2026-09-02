@@ -1,11 +1,9 @@
 """Kill switch for the source-formatting parity feature (user-spec AC11).
 
-WHY THE FLAG EXISTS. Deploys are forbidden inside the publication window
-10:00–20:00 МСК — restarting the container resets the single in-process
-daily schedule (slots 10:00 / 15:00 / 19:30). Without a switch, broken
-markup would ride every remaining slot of the day and could only be undone
-by a code change, i.e. in the evening. The flag hands the operator a way
-back to flat text with one environment variable.
+WHY THE FLAG EXISTS. The flag hands the operator a fast way back to flat text
+with one environment variable if broken markup reaches production. Applying a
+change requires a container restart, which is allowed at any time and recreates
+the single in-process daily schedule (slots 10:00 / 15:00 / 19:30).
 
 WHAT "OFF" MEANS. Flat text: paragraphs travel and publish without inline
 emphasis. It is NOT a byte-for-byte return to today's output — the measured
@@ -15,10 +13,9 @@ WordPress litter being cleaned up, i.e. an improvement.
 DEFAULT IS ON. Operator's decision of 2026-07-30, taken deliberately
 AGAINST the security review, which argued for opt-in (default OFF). The
 reviewer's case is preserved in tech-spec § Risks: a pre-deploy E2E is
-impossible, Decision 3b swallows failures silently, and applying the flag
-needs a restart that the publication day forbids — so the switch cannot
-deliver the mitigation it is credited with. The trade-off was accepted with
-that argument on the table. Do not flip this default without a new decision.
+impossible and Decision 3b swallows failures silently. The trade-off was
+accepted with that argument on the table. Do not flip this default without a
+new decision.
 
 READ ONCE, AT IMPORT. Changing the value requires restarting the process.
 
