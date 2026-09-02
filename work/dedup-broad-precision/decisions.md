@@ -127,3 +127,19 @@ Review details — in JSON files via links. QA report — in logs/working/.
 - Required-term search across the four Project Knowledge references → passed
 - Obsolete-terminal-claim search and added-line secret/private-data scan → no matches
 - JSON validation, scoped pre-commit hooks, and `git diff --check` → passed
+
+## Task 9: Manual production deployment
+
+**Status:** Done
+**Commit:** 8dc916c741bddd1c797e6877399b1ec2615a453d
+**Agent:** main agent
+**Summary:** Deployed the subject-aware dedup build from `main` by fast-forward and Docker rebuild while preserving the existing database volume and runtime configuration. Both services are running; the plan-of-day and review-listener startup signals are present, with no E016, E018, duplicate-poller, startup, or schema errors in the bounded check.
+**Deviations:** The original separate Tasks 5–8 were removed from the active roadmap under the mandatory minimum-scope rule. Existing task-level reviews and the green final `main` CI run were reused; deployment timing was not treated as a gate per the operator's updated rule.
+
+**Reviews:**
+
+- No new review round; existing completed review evidence was reused.
+
+**Verification:**
+- [deploy report](logs/working/deploy-report.json) → deployed commit, preserved state, and bounded startup checks recorded
+- GitHub `main` CI for the deployed commit → passed

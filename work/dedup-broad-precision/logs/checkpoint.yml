@@ -9,7 +9,7 @@ feature_dir: work/dedup-broad-precision
 execution_plan: work/dedup-broad-precision/logs/execution-plan.md
 team_name: dedup-broad-precision
 
-last_completed_wave: 4
+last_completed_wave: 7
 total_waves: 8
 
 # Format: task_number: status (planned | in_progress | done)
@@ -23,11 +23,7 @@ tasks:
   2: done
   3: done
   4: done
-  5: planned
-  6: planned
-  7: planned
-  8: planned
-  9: planned
+  9: done
   10: planned
 
-next_wave: 5
+next_wave: 8

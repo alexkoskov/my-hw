@@ -1,0 +1,29 @@
+{
+  "schema_version": 1,
+  "feature": "dedup-broad-precision",
+  "status": "deployed",
+  "deployed_at": "2026-09-02T12:12:04+03:00",
+  "deployed_commit": "8dc916c741bddd1c797e6877399b1ec2615a453d",
+  "rollback_commit": "3ad8fe346a9ad71aed23b3a16ce1f97379ab788d",
+  "source_branch": "main",
+  "verification": {
+    "main_ci": "passed",
+    "update_mode": "fast_forward",
+    "database_volume": "preserved",
+    "container_state": "running",
+    "container_restart_count": 0,
+    "route_sidecar_state": "running",
+    "plan_of_day_observed": true,
+    "review_listener_active": true,
+    "dedup_fail_open_alerts": 0,
+    "database_guard_alerts": 0,
+    "duplicate_poller_errors": 0,
+    "startup_or_schema_errors": 0
+  },
+  "test_injection": false,
+  "rollback_required": false,
+  "notes": [
+    "Deployment timing was not used as a gate under the operator-approved anytime policy.",
+    "The restart recreated the in-process schedule and immediately replanned remaining publication opportunities."
+  ]
+}

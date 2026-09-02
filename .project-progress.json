@@ -2177,71 +2177,13 @@
       ]
     },
     {
-      "id": "DBP-010",
-      "title": "Complete the feature code audit",
-      "description": "Review the final implementation, lifecycle behavior, diagnostics, tests, and documentation for correctness, clarity, and preserved dedup invariants.",
-      "status": "planned",
-      "weight": 2,
-      "depends_on": [
-        "DBP-009"
-      ],
-      "blocked_by": [],
-      "deliverables": [
-        "work/dedup-broad-precision/logs/audit/code-audit.json"
-      ]
-    },
-    {
-      "id": "DBP-011",
-      "title": "Complete the feature security audit",
-      "description": "Review fail-open safety, irreversible-block protection, log redaction, corpus sanitization, malformed input handling, and unchanged review authorization.",
-      "status": "planned",
-      "weight": 2,
-      "depends_on": [
-        "DBP-009"
-      ],
-      "blocked_by": [],
-      "deliverables": [
-        "work/dedup-broad-precision/logs/audit/security-audit.json"
-      ]
-    },
-    {
-      "id": "DBP-012",
-      "title": "Complete the feature test audit",
-      "description": "Review corpus integrity, behavioral assertions, boundary coverage, state verification, and regression protection for distinctive and fail-open paths.",
-      "status": "planned",
-      "weight": 2,
-      "depends_on": [
-        "DBP-009"
-      ],
-      "blocked_by": [],
-      "deliverables": [
-        "work/dedup-broad-precision/logs/audit/test-audit.json"
-      ]
-    },
-    {
-      "id": "DBP-013",
-      "title": "Pass pre-deployment acceptance and full regression QA",
-      "description": "Trace every release criterion to evidence, run focused and full tests, validate JSON, run scoped hooks, and block release on any failed safety condition.",
-      "status": "planned",
-      "weight": 5,
-      "depends_on": [
-        "DBP-010",
-        "DBP-011",
-        "DBP-012"
-      ],
-      "blocked_by": [],
-      "deliverables": [
-        "work/dedup-broad-precision/logs/working/pre-deploy-qa-report.json"
-      ]
-    },
-    {
       "id": "DBP-014",
       "title": "Deploy the approved build through the manual production flow",
-      "description": "Release the verified commit outside the protected publication window, preserve a rollback target, and confirm clean service startup without forcing a tick or test article.",
-      "status": "planned",
+      "description": "Release the verified commit through the authorized manual flow, preserve the database/configuration and rollback target, and confirm clean service startup without forcing a tick or test article.",
+      "status": "done",
       "weight": 3,
       "depends_on": [
-        "DBP-013"
+        "DBP-009"
       ],
       "blocked_by": [],
       "deliverables": [
@@ -2673,5 +2615,5 @@
     }
   ],
   "blockers": [],
-  "updated_at": "2026-09-01T16:20:01+03:00"
+  "updated_at": "2026-09-02T12:12:04+03:00"
 }
