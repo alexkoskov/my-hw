@@ -69,12 +69,9 @@ Currently users have to regularly check multiple sites, translate articles thems
 - **External uptime watch** (2026-07-31) — `.github/workflows/uptime.yml`, a GitHub-Actions-hosted probe running roughly every 30 min. It exists because `watchdog.sh` runs ON the prod host and is silent by construction when the host itself stops serving. Operational detail (what it probes, its known limits, the secrets it needs) belongs in deployment.md.
 - **Author-plug-filter** (2026-05-04) — variant A (5 patterns in `boilerplate_filter.py` for standalone author plugs) + variant B (`_strip_plugs` / `_strip_plugs_in_blocks` in `news_bot.py`, called from `_fallback_publish` post-translation) for inline plugs. 10 platforms covered (instagram/twitter/x/tiktok/youtube/facebook/reddit/patreon/discord/linktree). Single commit `695b201`. See `work/completed/author-plug-filter/`.
 
-**Near-term enhancements (Planned)**
-- Cross-article linking (`runs[].href` → our own Telegraph URLs when already published)
-- Production observability beyond admin pings — the **uptime** half shipped 2026-07-31 (see Delivered → External uptime watch), and per-tick failures are already reported by the [E034] publish recap ping (`admin_alerts.alert_publish_recap`, shipped 2026-07-15). What is still missing: any failure view OUTSIDE the admin chat (a persisted/aggregated digest an operator can read after the fact).
-- Per-source tone calibration verification — `_build_user_message` already passes `source_name` to the LLM, and `ux-guidelines.md` already carries the per-source notes block (Autoevolution / Lamley / Mattel tone dials). What's not verified: whether the production LLM actually applies the right dial per article. Spot-check a sample of recent publishes per source against the prompt's per-source notes; if drift exists, tighten the prompt (e.g. by labelling the source-name field more explicitly: `source_brand_voice: "autoevolution_blog"`).
+**Approved remaining work**
+- Verify the deployed dedup correction on natural production decisions.
+- Apply the remaining minimum production safety fixes as one compact change: hermetic CI, fail-closed configuration/database preflight, and non-overlapping startup scheduling.
+- Add one bounded daily reminder with working buttons for articles still held for operator review.
 
-**Future ideas (Backlog)**
-- Web dashboard for configuration and monitoring
-- Extended translation options (DeepL, Yandex.Translate)
-- Support for additional news sources beyond the current four
+Cross-article linking, a separate failure digest, a web dashboard, extra translation providers, extra news sources, and a separate tone-calibration project were removed from the active roadmap on 2026-09-02: the existing bot already covers the underlying operational needs, and no concrete user outcome justified those additional systems.

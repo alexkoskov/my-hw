@@ -2,13 +2,13 @@
   "schema_version": 1,
   "project": {
     "name": "my-hw-bot",
-    "description": "A production Python pipeline that collects Hot Wheels news, filters and deduplicates articles, transcreates accepted items into Russian, publishes them on schedule, and is being completed with the approved reliability, observability, dashboard, provider, and source roadmap.",
+    "description": "A production Python pipeline that collects Hot Wheels news, filters and deduplicates articles, transcreates accepted items into Russian, and publishes them on schedule.",
     "status": "in_progress"
   },
   "milestone": {
     "id": "full-project-roadmap",
-    "title": "Complete the full my-hw-bot product roadmap",
-    "description": "Deliver the complete documented project scope: preserve and verify the production bot, fix dedup precision, close approved reliability and operator-observability gaps, add the planned product capabilities, complete reviews and tests, deploy every release safely, and verify each result in production.",
+    "title": "Complete the approved minimum-sufficient roadmap",
+    "description": "Verify the deployed dedup correction, close the remaining concrete startup and CI safety gaps, and restore access to held articles whose original operator message was missed.",
     "status": "in_progress"
   },
   "tasks": [
@@ -2205,17 +2205,6 @@
       ]
     },
     {
-      "id": "DEBT-001",
-      "title": "Sanitize legacy dedup decision log identifiers",
-      "description": "Follow up the Task 3 security-audit residual risk: ordinary-overlap E014 and E015 logs still interpolate external article identifiers, which may expose URL credentials, query data, fragments, or forged fields. Reuse the existing bounded identifier/source sanitizers and add only focused regression assertions without changing dedup decisions, Telegram alerts, or rate limiting.",
-      "status": "planned",
-      "weight": 2,
-      "depends_on": [
-        "DBP-008"
-      ],
-      "blocked_by": []
-    },
-    {
       "id": "STAB-001",
       "title": "Approve stabilization-foundation requirements and repository research",
       "description": "Define measurable requirements for hermetic CI, fail-closed production startup, database and VPN-route validation, and safe scheduler lifecycle behavior.",
@@ -2232,52 +2221,19 @@
     },
     {
       "id": "STAB-002",
-      "title": "Complete and approve the stabilization technical design and execution plan",
-      "description": "Replace the placeholder technical specification with an implementation-ready design, acceptance mapping, atomic tasks, rollout boundaries, and rollback criteria.",
+      "title": "Apply the remaining minimum production safety fixes",
+      "description": "In one compact implementation, isolate CI from developer credentials and live network access, make production configuration and database preflight fail closed before external calls, prevent the immediate startup job from overlapping the scheduled tick, and verify only the affected paths before deployment.",
       "status": "planned",
-      "weight": 3,
+      "weight": 8,
       "depends_on": [
         "STAB-001"
       ],
       "blocked_by": [],
       "deliverables": [
-        "work/stabilization-foundation/tech-spec.md",
-        "work/stabilization-foundation/tasks/",
-        "work/stabilization-foundation/logs/execution-plan.md"
+        ".github/workflows/ci.yml",
+        "news_bot.py",
+        "tests/"
       ]
-    },
-    {
-      "id": "STAB-003",
-      "title": "Implement hermetic CI, fail-closed startup gates, and scheduler lifecycle fixes",
-      "description": "Deliver the approved CI isolation, production configuration and storage checks, VPN-route gate, and non-overlapping startup scheduling behavior with regression tests.",
-      "status": "planned",
-      "weight": 8,
-      "depends_on": [
-        "STAB-002"
-      ],
-      "blocked_by": []
-    },
-    {
-      "id": "STAB-004",
-      "title": "Audit and accept the stabilization foundation",
-      "description": "Complete code, security, and test audits, close findings, and pass the full regression and pre-deployment acceptance suite.",
-      "status": "planned",
-      "weight": 5,
-      "depends_on": [
-        "STAB-003"
-      ],
-      "blocked_by": []
-    },
-    {
-      "id": "STAB-005",
-      "title": "Deploy and verify the stabilization foundation",
-      "description": "Release outside the protected publication window and verify fail-closed startup, storage identity, VPN routing, service health, and single-tick scheduler behavior in production.",
-      "status": "planned",
-      "weight": 3,
-      "depends_on": [
-        "STAB-004"
-      ],
-      "blocked_by": []
     },
     {
       "id": "OBSV-001",
@@ -2296,8 +2252,8 @@
     },
     {
       "id": "OBSV-002",
-      "title": "Complete and approve the operator-observability technical design and execution plan",
-      "description": "Replace the placeholder technical specification with concrete data models, button-state rules, bounded-message behavior, tests, rollout, and rollback tasks.",
+      "title": "Add one daily actionable reminder for held articles",
+      "description": "Reuse the existing E036 hold records, tokens, and callbacks to send one bounded daily reminder while held articles need a decision, so a missed original message no longer requires manual database editing.",
       "status": "planned",
       "weight": 3,
       "depends_on": [
@@ -2305,315 +2261,13 @@
       ],
       "blocked_by": [],
       "deliverables": [
-        "work/operator-blind-spots/tech-spec.md",
-        "work/operator-blind-spots/tasks/",
-        "work/operator-blind-spots/logs/execution-plan.md"
+        "news_bot.py",
+        "admin_alerts.py",
+        "pending_articles_repo.py",
+        "tests/"
       ]
-    },
-    {
-      "id": "OBSV-003",
-      "title": "Implement source-silence alerts and held-article reminder actions",
-      "description": "Add restart-safe per-source counters, once-daily alerts, bounded review summaries, token reuse, idempotent callbacks, and full behavioral tests.",
-      "status": "planned",
-      "weight": 8,
-      "depends_on": [
-        "OBSV-002"
-      ],
-      "blocked_by": []
-    },
-    {
-      "id": "OBSV-004",
-      "title": "Audit and accept the operator-observability feature",
-      "description": "Complete code, security, and test audits, verify message and authorization boundaries, close findings, and pass pre-deployment QA.",
-      "status": "planned",
-      "weight": 5,
-      "depends_on": [
-        "OBSV-003"
-      ],
-      "blocked_by": []
-    },
-    {
-      "id": "OBSV-005",
-      "title": "Deploy and verify operator-observability behavior",
-      "description": "Release outside the protected publication window and verify daily rate limits, live source recovery, actionable reminder callbacks, and failure isolation.",
-      "status": "planned",
-      "weight": 3,
-      "depends_on": [
-        "OBSV-004"
-      ],
-      "blocked_by": []
-    },
-    {
-      "id": "LINK-001",
-      "title": "Specify cross-article linking acceptance and safety rules",
-      "description": "Define when previously published Telegraph pages may be linked, how matches are selected, and how stale, external, or unsafe URLs are rejected.",
-      "status": "planned",
-      "weight": 3,
-      "depends_on": [],
-      "blocked_by": []
-    },
-    {
-      "id": "LINK-002",
-      "title": "Implement cross-article linking with unit and integration tests",
-      "description": "Resolve safe links from published history, add them to eligible article runs, preserve rendering bounds, and cover parser-to-Telegraph behavior.",
-      "status": "planned",
-      "weight": 5,
-      "depends_on": [
-        "LINK-001"
-      ],
-      "blocked_by": []
-    },
-    {
-      "id": "LINK-003",
-      "title": "Audit and accept cross-article linking",
-      "description": "Review correctness, URL trust boundaries, rendering safety, test quality, and full-suite regressions before release.",
-      "status": "planned",
-      "weight": 3,
-      "depends_on": [
-        "LINK-002"
-      ],
-      "blocked_by": []
-    },
-    {
-      "id": "LINK-004",
-      "title": "Deploy and verify cross-article linking",
-      "description": "Release the approved build and verify links on natural publications without breaking Telegraph rendering or channel cards.",
-      "status": "planned",
-      "weight": 2,
-      "depends_on": [
-        "LINK-003"
-      ],
-      "blocked_by": []
-    },
-    {
-      "id": "DIGEST-001",
-      "title": "Specify the persisted operator failure digest",
-      "description": "Define retention, aggregation, redaction, acknowledgement, and access behavior for a failure view outside the Telegram admin chat.",
-      "status": "planned",
-      "weight": 3,
-      "depends_on": [],
-      "blocked_by": []
-    },
-    {
-      "id": "DIGEST-002",
-      "title": "Implement persisted failure aggregation and operator access",
-      "description": "Store bounded sanitized failure records, expose an operator-readable digest, and add migration, retention, and integration tests.",
-      "status": "planned",
-      "weight": 8,
-      "depends_on": [
-        "DIGEST-001"
-      ],
-      "blocked_by": []
-    },
-    {
-      "id": "DIGEST-003",
-      "title": "Audit and accept the failure digest",
-      "description": "Complete code, privacy and security review, test audit, retention checks, redaction tests, and pre-deployment QA.",
-      "status": "planned",
-      "weight": 3,
-      "depends_on": [
-        "DIGEST-002"
-      ],
-      "blocked_by": []
-    },
-    {
-      "id": "DIGEST-004",
-      "title": "Deploy and verify the failure digest",
-      "description": "Release the approved digest and verify persistence, visibility, redaction, bounded growth, and recovery across restarts.",
-      "status": "planned",
-      "weight": 3,
-      "depends_on": [
-        "DIGEST-003"
-      ],
-      "blocked_by": []
-    },
-    {
-      "id": "TONE-001",
-      "title": "Build a per-source tone calibration baseline and acceptance rubric",
-      "description": "Create a sanitized representative sample and measurable rubric for source-specific Russian tone without storing private or credential-bearing content.",
-      "status": "planned",
-      "weight": 3,
-      "depends_on": [],
-      "blocked_by": []
-    },
-    {
-      "id": "TONE-002",
-      "title": "Calibrate per-source prompting and add regression evaluations",
-      "description": "Adjust source labels or prompt guidance where evidence shows drift and add deterministic checks for prompt routing and output constraints.",
-      "status": "planned",
-      "weight": 5,
-      "depends_on": [
-        "TONE-001"
-      ],
-      "blocked_by": []
-    },
-    {
-      "id": "TONE-003",
-      "title": "Review and accept per-source tone calibration",
-      "description": "Complete editorial, code, safety, and test review and pass the full regression and pre-deployment checks.",
-      "status": "planned",
-      "weight": 2,
-      "depends_on": [
-        "TONE-002"
-      ],
-      "blocked_by": []
-    },
-    {
-      "id": "TONE-004",
-      "title": "Deploy and verify per-source tone behavior",
-      "description": "Release prompt changes and review a bounded natural-publication sample per active source against the approved rubric.",
-      "status": "planned",
-      "weight": 2,
-      "depends_on": [
-        "TONE-003"
-      ],
-      "blocked_by": []
-    },
-    {
-      "id": "WEB-001",
-      "title": "Define the web dashboard product, authorization, and threat model",
-      "description": "Specify operator workflows, read and write boundaries, authentication, auditability, deployment topology, and acceptance criteria for configuration and monitoring.",
-      "status": "planned",
-      "weight": 5,
-      "depends_on": [
-        "DIGEST-004",
-        "OBSV-005"
-      ],
-      "blocked_by": []
-    },
-    {
-      "id": "WEB-002",
-      "title": "Implement the dashboard backend and safe project-state APIs",
-      "description": "Build authenticated read models and bounded configuration operations without exposing secrets, private endpoints, or unsafe direct database access.",
-      "status": "planned",
-      "weight": 8,
-      "depends_on": [
-        "WEB-001"
-      ],
-      "blocked_by": []
-    },
-    {
-      "id": "WEB-003",
-      "title": "Implement the dashboard interface for monitoring and configuration",
-      "description": "Build responsive operator views for health, queue state, failures, sources, configuration, and the repository progress contract.",
-      "status": "planned",
-      "weight": 8,
-      "depends_on": [
-        "WEB-002"
-      ],
-      "blocked_by": []
-    },
-    {
-      "id": "WEB-004",
-      "title": "Complete dashboard security, accessibility, code, and test audits",
-      "description": "Review authentication, authorization, secret handling, CSRF and injection boundaries, usability, accessibility, test coverage, and release readiness.",
-      "status": "planned",
-      "weight": 5,
-      "depends_on": [
-        "WEB-003"
-      ],
-      "blocked_by": []
-    },
-    {
-      "id": "WEB-005",
-      "title": "Deploy and verify the web dashboard",
-      "description": "Deploy through an approved production path and verify authentication, monitoring freshness, safe configuration changes, rollback, and post-deployment health.",
-      "status": "planned",
-      "weight": 5,
-      "depends_on": [
-        "WEB-004"
-      ],
-      "blocked_by": []
-    },
-    {
-      "id": "PROVIDER-001",
-      "title": "Select and specify additional translation providers",
-      "description": "Evaluate supported providers for quality, privacy, cost, outage semantics, and configuration compatibility, then approve acceptance criteria.",
-      "status": "planned",
-      "weight": 3,
-      "depends_on": [
-        "TONE-004"
-      ],
-      "blocked_by": []
-    },
-    {
-      "id": "PROVIDER-002",
-      "title": "Implement additional provider adapters and regression tests",
-      "description": "Add provider adapters through the existing dispatcher contract with error classification, redaction, prompt parity, and deterministic tests.",
-      "status": "planned",
-      "weight": 8,
-      "depends_on": [
-        "PROVIDER-001"
-      ],
-      "blocked_by": []
-    },
-    {
-      "id": "PROVIDER-003",
-      "title": "Audit and accept the additional providers",
-      "description": "Complete security, privacy, cost, code, and test review and pass full regression and pre-deployment QA.",
-      "status": "planned",
-      "weight": 3,
-      "depends_on": [
-        "PROVIDER-002"
-      ],
-      "blocked_by": []
-    },
-    {
-      "id": "PROVIDER-004",
-      "title": "Deploy and verify additional providers",
-      "description": "Release behind explicit configuration and verify provider selection, outage behavior, redaction, output quality, and rollback.",
-      "status": "planned",
-      "weight": 2,
-      "depends_on": [
-        "PROVIDER-003"
-      ],
-      "blocked_by": []
-    },
-    {
-      "id": "SOURCE-001",
-      "title": "Prioritize and specify additional Hot Wheels news sources",
-      "description": "Select sources by editorial value and stability and define fetch, filtering, dedup, formatting, legal, and acceptance constraints.",
-      "status": "planned",
-      "weight": 3,
-      "depends_on": [
-        "DBP-015"
-      ],
-      "blocked_by": []
-    },
-    {
-      "id": "SOURCE-002",
-      "title": "Implement additional source fetchers, parsers, and registry wiring",
-      "description": "Add bounded source adapters, configuration, content extraction, boilerplate handling, and representative fixtures.",
-      "status": "planned",
-      "weight": 8,
-      "depends_on": [
-        "SOURCE-001"
-      ],
-      "blocked_by": []
-    },
-    {
-      "id": "SOURCE-003",
-      "title": "Test, audit, and accept additional sources",
-      "description": "Complete parser and integration tests, security and network-boundary review, dedup calibration, formatting checks, and full pre-deployment QA.",
-      "status": "planned",
-      "weight": 5,
-      "depends_on": [
-        "SOURCE-002"
-      ],
-      "blocked_by": []
-    },
-    {
-      "id": "SOURCE-004",
-      "title": "Deploy and verify additional sources",
-      "description": "Roll out sources with bounded activation and verify natural intake, filtering, dedup decisions, formatting, publication quality, and rollback.",
-      "status": "planned",
-      "weight": 3,
-      "depends_on": [
-        "SOURCE-003"
-      ],
-      "blocked_by": []
     }
   ],
   "blockers": [],
-  "updated_at": "2026-09-02T12:12:04+03:00"
+  "updated_at": "2026-09-02T17:44:21+03:00"
 }
