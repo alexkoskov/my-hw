@@ -2193,7 +2193,7 @@
     {
       "id": "DBP-015",
       "title": "Verify live dedup precision after deployment",
-      "description": "Two production false positives were classified and corrected locally; redeploy the verified rule, then confirm subsequent natural E014/E015 decisions and fail-open behavior.",
+      "description": "The corrected dedup rule is deployed on production; confirm subsequent natural E014/E015 decisions and fail-open behavior before closing observation.",
       "status": "in_progress",
       "weight": 5,
       "depends_on": [
@@ -2269,5 +2269,5 @@
     }
   ],
   "blockers": [],
-  "updated_at": "2026-09-09T14:55:01+03:00"
+  "updated_at": "2026-09-09T15:06:11+03:00"
 }

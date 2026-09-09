@@ -2,9 +2,9 @@
   "schema_version": 1,
   "feature": "dedup-broad-precision",
   "status": "deployed",
-  "deployed_at": "2026-09-02T12:12:04+03:00",
-  "deployed_commit": "8dc916c741bddd1c797e6877399b1ec2615a453d",
-  "rollback_commit": "3ad8fe346a9ad71aed23b3a16ce1f97379ab788d",
+  "deployed_at": "2026-09-09T15:05:13+03:00",
+  "deployed_commit": "5de7cfc936536d78276e76acc433e352e2c4fe50",
+  "rollback_commit": "6ad44d256d7e728276042116be1b6e767d40be5e",
   "source_branch": "main",
   "verification": {
     "main_ci": "passed",
@@ -12,7 +12,7 @@
     "database_volume": "preserved",
     "container_state": "running",
     "container_restart_count": 0,
-    "route_sidecar_state": "running",
+    "container_count": 1,
     "plan_of_day_observed": true,
     "review_listener_active": true,
     "dedup_fail_open_alerts": 0,
@@ -24,6 +24,7 @@
   "rollback_required": false,
   "notes": [
     "Deployment timing was not used as a gate under the operator-approved anytime policy.",
-    "The restart recreated the in-process schedule and immediately replanned remaining publication opportunities."
+    "The restart recreated the in-process schedule and immediately replanned remaining publication opportunities.",
+    "The startup tick completed with no dedup block, degraded-mode, database, schema, or duplicate-poller errors."
   ]
 }
