@@ -2866,14 +2866,42 @@ def _candidate_pair_map(fingerprint):
     )
 
 
-def _qualify_broad_pairs(shared, pair_map, new_subject_series, title):
+def _title_dedup_subject(title):
+    """Return concrete models and series explicitly present in a title."""
+    if not isinstance(title, str):
+        return set(), set()
+    fingerprint = model_extractor.extract_fingerprint({'title': title})
+    return set(fingerprint['strict']), set(fingerprint['series'])
+
+
+def _titles_have_conflicting_years(left, right):
+    """True when both titles name explicit, disjoint publication years."""
+    if not isinstance(left, str) or not isinstance(right, str):
+        return False
+    year_re = re.compile(r'\b(?:19|20)\d{2}\b')
+    left_years = set(year_re.findall(left))
+    right_years = set(year_re.findall(right))
+    return bool(left_years and right_years and left_years.isdisjoint(right_years))
+
+
+def _title_mentions_model(title, model):
+    """Return whether a canonical concrete model is named in the title."""
+    if not isinstance(title, str) or not isinstance(model, str):
+        return False
+    pattern = rf'(?<![a-z0-9]){re.escape(model.casefold())}(?![a-z0-9])'
+    return re.search(pattern, title.casefold()) is not None
+
+
+def _qualify_broad_pairs(shared, pair_map, new_subject, candidate_subject):
     """Split shared broad pairs into title-qualified pairs and series rejects."""
+    _new_models, new_series = new_subject
+    _candidate_models, candidate_series = candidate_subject
     broad = sorted(pair for pair in shared if pair_map[pair][2] == 'B')
-    candidate_subject_series = set(model_extractor.extract_series(title or ''))
     qualified = [
         pair for pair in broad
-        if pair_map[pair][1] in new_subject_series
-        and pair_map[pair][1] in candidate_subject_series
+        if pair_map[pair][0] != '*'
+        and pair_map[pair][1] in new_series
+        and pair_map[pair][1] in candidate_series
     ]
     rejected = sorted({
         pair_map[pair][1] for pair in broad if pair not in qualified
@@ -2965,18 +2993,24 @@ def _log_dedup_subject_suppression(
     )
 
 
-def _pair_rule_verdict(pairs: list, candidates: list, new_title=''):
-    """Apply distinctive precedence and title-qualify shared broad pairs.
+def _pair_rule_verdict(pairs: list, candidates: list, new_title='',
+                       new_source=None):
+    """Apply cross-source, title-qualified pair matching.
 
     Returns ``(decision, match, suppressed_matches)``; rejected broad
     candidates never terminate the scan.
     """
     new_pairs = _valid_pair_map(pairs)
-    new_subject_series = set(model_extractor.extract_series(new_title or ''))
+    new_subject = _title_dedup_subject(new_title)
     flag_match = None
     suppressed_matches = []
     for row in candidates:
         if not isinstance(row, dict):
+            continue
+        if new_source and row.get('source_name') == new_source:
+            continue
+        candidate_title = row.get('title')
+        if _titles_have_conflicting_years(new_title, candidate_title):
             continue
         cand_pairs = _candidate_pair_map(row.get('model_fingerprint'))
         if cand_pairs is None:
@@ -2984,8 +3018,15 @@ def _pair_rule_verdict(pairs: list, candidates: list, new_title=''):
         shared = set(new_pairs) & set(cand_pairs)
         if not shared:
             continue
+        candidate_subject = _title_dedup_subject(candidate_title)
         distinctive = sorted(
-            pair for pair in shared if new_pairs[pair][2] == 'D'
+            pair for pair in shared
+            if new_pairs[pair][2] == 'D'
+            and new_pairs[pair][0] != '*'
+            and _title_mentions_model(new_title, new_pairs[pair][0])
+            and _title_mentions_model(candidate_title, new_pairs[pair][0])
+            and new_pairs[pair][1] in new_subject[1]
+            and new_pairs[pair][1] in candidate_subject[1]
         )
         n_total = len(set(new_pairs) | set(cand_pairs))
         if distinctive:
@@ -2994,7 +3035,7 @@ def _pair_rule_verdict(pairs: list, candidates: list, new_title=''):
                 suppressed_matches,
             )
         qualified, rejected_series = _qualify_broad_pairs(
-            shared, new_pairs, new_subject_series, row.get('title'),
+            shared, new_pairs, new_subject, candidate_subject,
         )
         if (rejected_series
                 and len(suppressed_matches) < _DEDUP_SUPPRESSION_MAX_RECORDS):
@@ -3007,8 +3048,18 @@ def _pair_rule_verdict(pairs: list, candidates: list, new_title=''):
     return ('pass', None, suppressed_matches)
 
 
+def _strict_overlap_similarity(left, right):
+    """Jaccard similarity for concrete model tokens only."""
+    left_set = set(left)
+    right_set = set(right)
+    if not left_set or not right_set:
+        return 0.0
+    return len(left_set & right_set) / len(left_set | right_set)
+
+
 def _set_overlap_backstop_verdict(fingerprint, strict: list,
-                                  candidates: list, new_source):
+                                  candidates: list, new_source,
+                                  new_title=''):
     """Rule 2 body — the legacy set-overlap backstop (≥0.50 block /
     ``[0.30, 0.50)`` flag), CROSS-SOURCE ONLY, over the 7-day subset of the
     single 30-day ``candidates`` fetch (subset derived here in Python — no
@@ -3036,12 +3087,15 @@ def _set_overlap_backstop_verdict(fingerprint, strict: list,
             # Same-source candidate — never deduped by the backstop
             # (Decision 9 reversed 2026-06-14).
             continue
+        if _titles_have_conflicting_years(new_title, row.get('title')):
+            continue
         cand_fp = row.get('model_fingerprint')
-        if _fingerprint_collections(cand_fp) is None:
+        cand_collections = _fingerprint_collections(cand_fp)
+        if cand_collections is None:
             # NULL, unsupported, oversized, or malformed historical row —
             # skip silently instead of degrading the whole incoming article.
             continue
-        sim = model_extractor.similarity(fingerprint, cand_fp)
+        sim = _strict_overlap_similarity(strict, cand_collections['strict'])
         if sim > best_sim:
             best_sim = sim
             best_row = row
@@ -3064,7 +3118,12 @@ def _set_overlap_backstop_verdict(fingerprint, strict: list,
         'n_total': len(union),
     }
 
-    if best_sim >= _DEDUP_BLOCK_THRESHOLD:
+    shared_title_models = {
+        model for model in shared
+        if _title_mentions_model(new_title, model)
+        and _title_mentions_model(best_row.get('title'), model)
+    }
+    if best_sim >= _DEDUP_BLOCK_THRESHOLD and shared_title_models:
         return ('block', match)
     return ('flag', match)
 
@@ -3078,21 +3137,22 @@ def _check_cross_source_dedup(effective_title: str, fingerprint: dict,
 
       1. **Tiered pair rule** (series/theme, dedup-model-series feature; only
          when ``news_bot.DEDUP_SERIES_ENABLED`` and the article has ``pairs``).
-         Scans ALL 30-day candidates (pending + published) with NO same-source
-         skip — a distinctive (``|D``) shared pair means the SAME casting +
-         franchise even from the same outlet ("more photos"), so it blocks
-         any-source. Scan-and-remember: the first shared ``|D`` pair hard-blocks
-         and stops the scan; a shared broad (``|B``) pair becomes a soft flag
-         only when its series is extracted from BOTH effective titles. The scan
+         Scans CROSS-SOURCE 30-day candidates (pending + published). A shared
+         broad pair is eligible only when it names a concrete model and its
+         series is present in both titles; conflicting explicit years are
+         skipped. Scan-and-
+         remember: the first qualified ``|D`` pair hard-blocks and stops the
+         scan; a qualified broad (``|B``) pair becomes a soft flag. The scan
          CONTINUES after qualified and rejected broad comparisons so a later
          ``|D`` still wins. A qualified ``block`` or ``flag`` is TERMINAL; a
          subject rejection falls through to the backstop.
       2. **Set-overlap backstop** (legacy ≥50% block / ``[0.30,0.50)`` flag,
          7-day window, CROSS-SOURCE ONLY). Reached only when the pair rule did
          not fire (toggle off, no ``pairs``, no shared pair, or only
-         subject-rejected broad pairs). Its comparison and thresholds remain
-         unchanged; only a hard block reached after subject rejection is
-         capped to a soft flag at this outer gate. Otherwise unchanged
+         subject-rejected broad pairs). It compares concrete-model sets only;
+         brand-only overlap cannot trigger a verdict. A hard block additionally
+         requires a shared model in both titles; a hard block reached after
+         subject rejection is capped to a soft flag at this outer gate. Otherwise unchanged
          behaviour — including the same-source skip (Decision 9 reversed
          2026-06-14: within-source republishes don't happen; comparing them
          only yields false positives). The 7-day subset is derived in Python
@@ -3119,11 +3179,11 @@ def _check_cross_source_dedup(effective_title: str, fingerprint: dict,
     candidates = None
     suppressed_matches = []
 
-    # ---- Rule 1: tiered pair rule (30-day window, ANY source) ----
+    # ---- Rule 1: tiered pair rule (30-day window, CROSS-SOURCE ONLY) ----
     if DEDUP_SERIES_ENABLED and pairs:
         candidates = _fetch_dedup_candidates(conn)
         decision, match, suppressed_matches = _pair_rule_verdict(
-            pairs, candidates, effective_title,
+            pairs, candidates, effective_title, new_source,
         )
         if decision != 'pass':
             # block / flag are TERMINAL — the backstop never runs, so an
@@ -3152,7 +3212,7 @@ def _check_cross_source_dedup(effective_title: str, fingerprint: dict,
     if candidates is None:
         candidates = _fetch_dedup_candidates(conn)
     decision, match = _set_overlap_backstop_verdict(
-        fingerprint, strict, candidates, new_source,
+        fingerprint, strict, candidates, new_source, effective_title,
     )
     if match is not None:
         match['reason'] = 'overlap'

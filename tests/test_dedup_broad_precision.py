@@ -207,6 +207,7 @@ def _score_current_pair_rule(corpus: dict) -> tuple[Counter, dict[str, str]]:
                 "model_fingerprint": candidate["fingerprint"],
             }],
             new["title"],
+            new["source_name"],
         )
         score[f"{record['label']}_{decision}"] += 1
         decisions[record["id"]] = decision
@@ -343,7 +344,7 @@ def _pair_candidate(link, title, pairs, *, source="t-hunted"):
         ),
     ],
 )
-def test_broad_pair_requires_series_in_both_titles(
+def test_broad_pair_requires_concrete_model_and_series_in_both_titles(
     new_title,
     candidate_title,
     pairs,
@@ -442,14 +443,15 @@ def test_distinctive_verdict_preserves_the_full_shared_pair_payload():
     pairs = [_DISTINCTIVE_PAIR, _RLC_PAIR]
     candidate = _pair_candidate(
         "https://candidate.example/distinctive",
-        "K-Pop Demon Hunters RLC release",
+        "Porsche 911 K-Pop Demon Hunters RLC release",
         pairs,
     )
 
     decision, match, suppressed = news_bot._pair_rule_verdict(
         pairs,
         [candidate],
-        "K-Pop Demon Hunters RLC release",
+        "Porsche 911 K-Pop Demon Hunters RLC release",
+        "autoevolution",
     )
 
     assert decision == "block"
@@ -554,7 +556,7 @@ def test_pair_scan_preserves_later_stronger_verdicts(
         ),
         "distinctive": _pair_candidate(
             "https://candidate.example/distinctive",
-            "Unrelated title",
+            "Porsche 911 K-Pop Demon Hunters release",
             [_DISTINCTIVE_PAIR],
         ),
     }
@@ -562,7 +564,7 @@ def test_pair_scan_preserves_later_stronger_verdicts(
     decision, match, suppressed = news_bot._pair_rule_verdict(
         [_CAR_CULTURE_PAIR, _DISTINCTIVE_PAIR],
         [candidates[name] for name in candidate_order],
-        "Car Culture roundup",
+        "Porsche 911 K-Pop Demon Hunters Car Culture roundup",
     )
 
     assert decision == expected_decision
@@ -596,7 +598,7 @@ def _gate_fingerprint(strict, *, pairs=(_GATE_CAR_CULTURE_PAIR,)):
             [_GATE_CAR_CULTURE_PAIR],
             "t-hunted",
             "flag",
-            "overlap_capped",
+            "overlap",
             True,
         ),
         (
@@ -624,7 +626,7 @@ def _gate_fingerprint(strict, *, pairs=(_GATE_CAR_CULTURE_PAIR,)):
             "autoevolution",
             "pass",
             None,
-            True,
+            False,
         ),
         (
             ["toyota 4runner", "subaru legacy gt"],
@@ -650,7 +652,10 @@ def test_subject_rejection_caps_only_backstop_block(
     candidate = {
         "link": "https://candidate.example/article",
         "source_name": candidate_source,
-        "title": "Ten affordable cars",
+        "title": (
+            "Toyota 4Runner roundup"
+            if not candidate_pairs else "Ten affordable cars"
+        ),
         "published_at": datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S"),
         "model_fingerprint": _gate_fingerprint(
             candidate_strict,
@@ -660,7 +665,10 @@ def test_subject_rejection_caps_only_backstop_block(
 
     with patch.object(news_bot, "_fetch_dedup_candidates", return_value=[candidate]):
         decision, match, suppressed = news_bot._check_cross_source_dedup(
-            "Unrelated roundup",
+            (
+                "Toyota 4Runner roundup"
+                if not candidate_pairs else "Unrelated roundup"
+            ),
             fingerprint,
             object(),
             new_source="autoevolution",
@@ -702,7 +710,7 @@ def test_backstop_threshold_boundaries_and_subject_cap(
     candidate = {
         "link": "https://candidate.example/boundary",
         "source_name": "t-hunted",
-        "title": "General diecast roundup",
+        "title": "Toyota 4Runner general diecast roundup",
         "published_at": datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S"),
         "model_fingerprint": _gate_fingerprint(
             ["toyota 4runner", "mazda mx-5", "porsche 911"],
@@ -713,13 +721,13 @@ def test_backstop_threshold_boundaries_and_subject_cap(
     with (
         patch.object(news_bot, "_fetch_dedup_candidates", return_value=[candidate]),
         patch.object(
-            news_bot.model_extractor,
-            "similarity",
+            news_bot,
+            "_strict_overlap_similarity",
             return_value=raw_similarity,
         ),
     ):
         decision, match, suppressed = news_bot._check_cross_source_dedup(
-            "General diecast roundup",
+            "Toyota 4Runner general diecast roundup",
             fingerprint,
             object(),
             new_source="autoevolution",
@@ -732,6 +740,72 @@ def test_backstop_threshold_boundaries_and_subject_cap(
         assert match["subject_rejected_series"] == ["car culture"]
     else:
         assert "subject_rejected_series" not in (match or {})
+
+
+@pytest.mark.parametrize(
+    ("candidate_source", "candidate_title"),
+    [
+        ("autoevolution", "2026 Hot Wheels Boulevard: Ferrari F40 returns"),
+        ("t-hunted", "2027 Hot Wheels Boulevard: Ferrari F40 returns"),
+    ],
+)
+def test_pair_rule_skips_same_source_and_conflicting_years(
+    candidate_source,
+    candidate_title,
+):
+    pair = "ferrari f40|boulevard|B"
+    candidate = _pair_candidate(
+        "https://candidate.example/f40",
+        candidate_title,
+        [pair],
+        source=candidate_source,
+    )
+
+    decision, match, suppressed = news_bot._pair_rule_verdict(
+        [pair],
+        [candidate],
+        "2026 Hot Wheels Boulevard: Ferrari F40 arrives",
+        "autoevolution",
+    )
+
+    assert (decision, match, suppressed) == ("pass", None, [])
+
+
+def test_backstop_ignores_brand_only_overlap():
+    now = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S")
+    new_fingerprint = {
+        "strict": ["ford possuem", "nissan ou"],
+        "brands": [
+            "ferrari", "ford", "honda", "mini", "nissan", "porsche",
+            "toyota", "volkswagen", "volvo",
+        ],
+        "series": [],
+        "pairs": [],
+    }
+    candidate = {
+        "link": "https://candidate.example/silver-series",
+        "source_name": "autoevolution",
+        "title": "Hot Wheels Unboxing: 10 Silver Series Cars",
+        "published_at": now,
+        "model_fingerprint": {
+            "strict": ["ferrari f40", "ford mustang", "nissan skyline"],
+            "brands": [
+                "ferrari", "ford", "honda", "mini", "nissan", "porsche",
+                "toyota", "volkswagen", "audi", "bmw", "mazda", "subaru",
+                "dodge", "jeep", "mercedes",
+            ],
+            "series": [],
+            "pairs": [],
+        },
+    }
+
+    assert news_bot._set_overlap_backstop_verdict(
+        new_fingerprint,
+        new_fingerprint["strict"],
+        [candidate],
+        "t-hunted",
+        "Como Montar uma Coleção Temática de Hot Wheels",
+    ) == ("pass", None)
 
 
 @pytest.mark.parametrize(

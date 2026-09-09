@@ -1733,6 +1733,7 @@ class TestCrossSourceDedup(_PrepPhaseBase):
                 'pairs': ['porsche 911|k-pop demon hunters|D'],
             },
             source='t-hunted',
+            title='Porsche 911 K-Pop Demon Hunters release',
         )
 
         mock_load_feeds.return_value = ['http://example.com/feed1.xml']
@@ -1805,6 +1806,7 @@ class TestCrossSourceDedup(_PrepPhaseBase):
                 'pairs': ['porsche 911|k-pop demon hunters|D'],
             },
             source='t-hunted',
+            title='Porsche 911 K-Pop Demon Hunters release',
         )
         mock_load_feeds.return_value = ['http://example.com/feed1.xml']
         mock_fetch_rss.return_value = [
@@ -2099,6 +2101,7 @@ class TestCrossSourceDedup(_PrepPhaseBase):
                           'toyota 4runner|team transport|B'],
             },
             source='t-hunted',
+            title='Toyota 4Runner and Subaru Legacy GT Team Transport',
         )
 
         new_link = 'http://autoevolution.example/new'
@@ -2107,7 +2110,7 @@ class TestCrossSourceDedup(_PrepPhaseBase):
         # Same two cars, but a DIFFERENT series ('car culture') → no shared
         # pair, so the pair rule passes; strict/brands overlap is 100%.
         mock_fetch_article.return_value = {
-            'title': 'New drop.',
+            'title': 'Toyota 4Runner and Subaru Legacy GT drop',
             'subtitle': '',
             'paragraphs': [
                 'Toyota 4Runner spotted.',
@@ -2175,7 +2178,7 @@ class TestCrossSourceDedup(_PrepPhaseBase):
                   'toyota 4runner|team transport|B'],
     }
     _BACKSTOP_NEW_ARTICLE = {
-        'title': 'New drop.',
+        'title': 'Toyota 4Runner and Subaru Legacy GT drop',
         'subtitle': '',
         # Same two cars, but a DIFFERENT series ('car culture') → no shared
         # pair (pair rule passes); 100% strict overlap (backstop would block).
@@ -2206,6 +2209,7 @@ class TestCrossSourceDedup(_PrepPhaseBase):
             'http://t-hunted.example/existing',
             dict(self._BACKSTOP_SEED_FP),
             source='t-hunted',
+            title='Toyota 4Runner and Subaru Legacy GT Team Transport',
         )
         # Age the candidate to 10 days ago — inside 30d (pair fetch still sees
         # it) but outside the backstop's 7d subset.
@@ -2257,6 +2261,7 @@ class TestCrossSourceDedup(_PrepPhaseBase):
             'http://t-hunted.example/existing',
             dict(self._BACKSTOP_SEED_FP),
             source='t-hunted',
+            title='Toyota 4Runner and Subaru Legacy GT Team Transport',
         )
         # Age the candidate to 3 days ago — comfortably inside the 7-day window.
         self._set_published_at(seed_link, "datetime('now','-3 days')")
@@ -2359,6 +2364,7 @@ class TestCrossSourceDedup(_PrepPhaseBase):
             'http://t-hunted.example/existing',
             existing_fp,
             source='t-hunted',
+            title='Toyota 4Runner and Subaru Legacy GT comparison',
         )
 
         mock_load_feeds.return_value = ['http://example.com/feed1.xml']
@@ -2665,15 +2671,10 @@ class TestCrossSourceDedup(_PrepPhaseBase):
     @patch('news_bot.fetch_rss')
     @patch('news_bot.load_feeds')
     @patch('news_bot.send_admin_notification')
-    def test_within_source_distinctive_pair_blocks(
+    def test_within_source_distinctive_pair_publishes(
         self, mock_admin, mock_load_feeds, mock_fetch_rss, mock_fetch_article,
     ):
-        """The tiered pair rule is ANY-source (unlike the backstop): a shared
-        DISTINCTIVE pair means the SAME casting + franchise, so a same-source
-        "more photos" repost is a real duplicate. Guards against reverting the
-        any-source pair scan back into a cross-source-only skip. New article
-        shares ``porsche 911|k-pop demon hunters|D`` with a same-source
-        published row → hard block, exactly one E015."""
+        """Same-source semantic matches do not dedup distinct article URLs."""
         self._seed_published(
             'http://autoevolution.example/existing',
             {
@@ -2698,8 +2699,7 @@ class TestCrossSourceDedup(_PrepPhaseBase):
 
         news_bot.job()
 
-        # Hard-blocked despite being same-source (pair rule is any-source).
-        self.assertEqual(pending_articles_repo.count_pending(), 0)
+        self.assertEqual(pending_articles_repo.count_pending(), 1)
         conn = sqlite3.connect(self.db_path)
         try:
             processed = {
@@ -2708,16 +2708,13 @@ class TestCrossSourceDedup(_PrepPhaseBase):
             }
         finally:
             conn.close()
-        self.assertIn(new_link, processed)
+        self.assertNotIn(new_link, processed)
 
         e015_calls = [
             c for c in mock_admin.call_args_list
             if '[E015]' in (c.args[0] if c.args else '')
         ]
-        self.assertEqual(len(e015_calls), 1)
-        # Rendered via the pair-rule builder path (matched-pairs block), not
-        # the legacy overlap-percent block.
-        self.assertIn('Совпавшие пары', e015_calls[0].args[0])
+        self.assertEqual(len(e015_calls), 0)
         for c in mock_admin.call_args_list:
             msg = c.args[0] if c.args else ''
             self.assertNotIn('[E014]', msg)
@@ -3007,19 +3004,19 @@ class TestCrossSourceDedup(_PrepPhaseBase):
         """
         self._seed_published(
             'http://t-hunted.example/existing',
-            {'strict': [], 'brands': [],
-             'series': ['k-pop demon hunters'],
-             'pairs': ['*|k-pop demon hunters|B']},
+            {'strict': ['toyota supra'], 'brands': ['toyota'],
+             'series': ['car culture'],
+             'pairs': ['toyota supra|car culture|B']},
             source='t-hunted',
+            title='Toyota Supra joins Car Culture',
         )
         new_link = 'http://autoevolution.example/new'
         mock_load_feeds.return_value = ['http://example.com/feed1.xml']
         mock_fetch_rss.return_value = [self._make_entry(new_link)]
         mock_fetch_article.return_value = {
-            'title': 'K-Pop Demon Hunters joins the Hot Wheels lineup',
+            'title': 'Toyota Supra joins the Hot Wheels Car Culture lineup',
             'subtitle': '',
-            'paragraphs': ['The K-Pop Demon Hunters tie-in is here.',
-                           'No specific casting was announced.'],
+            'paragraphs': ['The Toyota Supra release is here.'],
             'images': [],
         }
 
@@ -3072,20 +3069,10 @@ class TestCrossSourceDedup(_PrepPhaseBase):
     @patch('news_bot.fetch_rss')
     @patch('news_bot.load_feeds')
     @patch('news_bot.send_admin_notification')
-    def test_theme_only_pop_culture_flags_no_model(
+    def test_theme_only_pop_culture_does_not_flag_without_model(
         self, mock_admin, mock_load_feeds, mock_fetch_rss, mock_fetch_article,
     ):
-        """AC4 + AC8 — a REAL pop-culture theme-only article (no recognisable
-        car model → empty ``strict`` with a non-empty ``series``/``pairs``
-        produced by the ACTUAL ``extract_fingerprint``, theme-only key
-        ``*|k-pop demon hunters|B``) shares its theme-only pair with a prior
-        published row → soft-flag: the article PUBLISHES with exactly one E014
-        naming the matched theme, no E015/E016. Exercises the
-        pop-culture-no-model path end-to-end through REAL extraction — the
-        exact case the empty-fp re-gate exists to let through (the extractor
-        genuinely emits ``strict=[]`` here, so this is a reachable scenario,
-        not a synthetic fixture). The re-gate LINE itself is pinned by the
-        companion ``test_theme_only_pop_culture_not_short_circuited``."""
+        """A broad theme without a concrete model is not dedup evidence."""
         # Prior published theme-only row from another source, no car model.
         self._seed_published(
             'http://t-hunted.example/existing',
@@ -3116,26 +3103,14 @@ class TestCrossSourceDedup(_PrepPhaseBase):
 
         news_bot.job()
 
-        # Soft flag → article still publishes.
-        # Soft flag DEFERS publication by 24h (2026-07-28): the row is
-        # staged but withheld from the publishable queue, so the «🚫 Не
-        # публиковать» button has a real window. It had none before —
-        # on 2026-07-28 the [E014] ping and the publish landed seven
-        # seconds apart. Silence still PUBLISHES: the row reappears on
-        # its own once the delay elapses (see test_deferred_row_*).
-        self.assertEqual(pending_articles_repo.count_pending(), 0)
-        self.assertEqual(pending_articles_repo.list_pending(), [])
+        self.assertEqual(pending_articles_repo.count_pending(), 1)
         self.assertIsNotNone(pending_articles_repo.get_pending(new_link))
 
         e014_calls = [
             c for c in mock_admin.call_args_list
             if '[E014]' in (c.args[0] if c.args else '')
         ]
-        self.assertEqual(
-            len(e014_calls), 1,
-            f"expected exactly one E014, got: {mock_admin.call_args_list}",
-        )
-        self.assertIn('k-pop demon hunters', e014_calls[0].args[0])
+        self.assertEqual(len(e014_calls), 0)
         for c in mock_admin.call_args_list:
             m = c.args[0] if c.args else ''
             self.assertNotIn('[E015]', m)

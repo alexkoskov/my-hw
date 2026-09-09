@@ -2193,8 +2193,8 @@
     {
       "id": "DBP-015",
       "title": "Verify live dedup precision after deployment",
-      "description": "Observe natural dedup decisions for the approved window, classify E014 outcomes, reconcile suppression counts, and confirm no unexpected E015 or fail-open regression.",
-      "status": "planned",
+      "description": "Two production false positives were classified and corrected locally; redeploy the verified rule, then confirm subsequent natural E014/E015 decisions and fail-open behavior.",
+      "status": "in_progress",
       "weight": 5,
       "depends_on": [
         "DBP-014"
@@ -2269,5 +2269,5 @@
     }
   ],
   "blockers": [],
-  "updated_at": "2026-09-02T17:44:21+03:00"
+  "updated_at": "2026-09-09T14:55:01+03:00"
 }

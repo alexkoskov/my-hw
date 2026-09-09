@@ -1,0 +1,29 @@
+{
+  "schema_version": 1,
+  "feature": "dedup-broad-precision",
+  "status": "correction_verified_locally",
+  "updated_at": "2026-09-09T14:55:01+03:00",
+  "production_findings": [
+    {
+      "decision": "E014",
+      "classification": "false_positive",
+      "cause": "same-source broad-pair match between articles with conflicting explicit years"
+    },
+    {
+      "decision": "E015",
+      "classification": "false_positive",
+      "cause": "brand-only Jaccard reached the hard-block threshold without a shared concrete model"
+    }
+  ],
+  "correction": [
+    "semantic dedup now skips same-source candidates and conflicting explicit years",
+    "broad pairs require a concrete model and the shared series in both titles",
+    "the overlap backstop now scores concrete models only",
+    "hard blocks require a shared concrete model named in both titles"
+  ],
+  "verification": {
+    "command_scope": "direct dedup tests plus five affected integration scenarios",
+    "result": "64 passed",
+    "production_redeploy_pending": true
+  }
+}
