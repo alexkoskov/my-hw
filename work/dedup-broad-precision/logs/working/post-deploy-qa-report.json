@@ -1,8 +1,8 @@
 {
   "schema_version": 1,
   "feature": "dedup-broad-precision",
-  "status": "redeployed_observation_pending",
-  "updated_at": "2026-09-09T15:06:11+03:00",
+  "status": "observation_in_progress",
+  "updated_at": "2026-09-17T14:16:13+03:00",
   "production_findings": [
     {
       "decision": "E014",
@@ -27,5 +27,37 @@
     "production_redeploy_pending": false,
     "deployed_commit": "5de7cfc936536d78276e76acc433e352e2c4fe50",
     "startup_tick": "completed without E015, E016, or dedup degraded decisions"
+  },
+  "observation": {
+    "window_start": "2026-09-09T15:05:13+03:00",
+    "checked_through": "2026-09-17T10:01:00+03:00",
+    "natural_e014_decisions": 1,
+    "unexpected_e015": 0,
+    "unexpected_e016": 0,
+    "dedup_degraded_ticks": 0,
+    "subject_rejected_articles": 2,
+    "candidate_diagnostic_records": 9,
+    "suppression_reconciliation": [
+      {
+        "date": "2026-09-10",
+        "article_units": 1,
+        "candidate_records": 2
+      },
+      {
+        "date": "2026-09-17",
+        "article_units": 1,
+        "candidate_records": 7
+      }
+    ],
+    "e014_classification": [
+      {
+        "date": "2026-09-10",
+        "new_title": "Uma inédita F40 chase na série Car Culture em 2027!",
+        "candidate_title": "2027 Hot Wheels Car Culture Preview: Mountain Drifters Are Back!",
+        "classification": "unresolved",
+        "reason": "operator classification required"
+      }
+    ],
+    "verdict": "continue_observation"
   }
 }
