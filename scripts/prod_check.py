@@ -17,7 +17,7 @@ mid-publish is safe.
 
 Usage (operator, from a laptop — the bot is NOT restarted or interrupted)::
 
-    ssh root@45.90.216.165 "cd /root/hw-news && git pull && python3 scripts/prod_check.py"
+    ssh root@45.90.216.165 "cd /opt/hw-news && git pull && python3 scripts/prod_check.py"
 
 `git pull` only updates the checkout on disk; the running container keeps serving
 the already-built image, so this does NOT deploy anything. Manual deployment and
@@ -272,7 +272,7 @@ def check_heartbeat(rep: Report, path: str | None) -> None:
         # bind-mount paths is what makes this check work at all — it printed a
         # useless "пропуск" on the first real run (2026-08-03).
         for candidate in ("data/last_tick.ts", "/data/last_tick.ts",
-                          "/root/hw-news/data/last_tick.ts"):
+                          "/opt/hw-news/data/last_tick.ts"):
             if os.path.exists(candidate):
                 path = candidate
                 rep.note(f"HEARTBEAT_FILE не задан — взят примонтированный {candidate}")
@@ -303,7 +303,7 @@ def main() -> int:
 
     if not os.path.exists(args.db):
         print(f"База не найдена: {args.db}", file=sys.stderr)
-        print("Подсказка: на хосте запускать из /root/hw-news, иначе указать --db", file=sys.stderr)
+        print("Подсказка: на хосте запускать из /opt/hw-news, иначе указать --db", file=sys.stderr)
         return 2
 
     rep = Report()
