@@ -5,8 +5,8 @@ Deployment process, infrastructure, and production operations for AI agents.
 
 ---
 
-> **Status (2026-08-03):** production is a **single** Docker container
-> `hw-news-bot` on the Moscow VPS `45.90.216.165` (repo `/root/hw-news`, tracking
+> **Status (paths verified 2026-09-30):** production is a **single** Docker container
+> `hw-news-bot` on the Moscow VPS `45.90.216.165` (repo `/opt/hw-news`, tracking
 > **`main`**; cutover 2026-07-06). Egress routes through the shared `shared-vpn`
 > gateway (sing-box VLESS, `172.28.0.2` on the external `vpnnet` network) so the RU
 > host reaches Telegram. Compose runs one `news-bot` container; before starting
@@ -40,7 +40,16 @@ Deployment process, infrastructure, and production operations for AI agents.
 
 ## Серверная шпаргалка (все данные бота — не искать заново)
 
-> Обновлено 2026-07-25. Секретов здесь нет и быть не должно: токены/пароли — в
+> **Перенос подтверждён 2026-09-30:** Docker Compose у работающего
+> `hw-news-bot` указывает `/opt/hw-news/docker-compose.yml`, рабочий каталог —
+> `/opt/hw-news`, bind-mount — `/opt/hw-news/data:/data`. Проверены наличие
+> `.env`, `data/news.db`, `data/last_tick.ts`, `backups/` и путь backup cron.
+> Старая папка `/root/hw-news` всё ещё существует, но контейнер её не использует.
+> Не применять к ней команды обслуживания. Старые пути в датированных отчётах,
+> завершённых задачах и журналах `work/` описывают прошлые операции; для текущих
+> команд использовать эту шпаргалку.
+
+> Пути и cron проверены 2026-09-30. Секретов здесь нет и быть не должно: токены/пароли — в
 > менеджере паролей оператора и в серверном `.env` (не коммитится).
 >
 > **Бот теперь ОДИН — прод.** NL-сервер `148.135.207.54` (DeluxHost) **больше
@@ -54,15 +63,15 @@ Deployment process, infrastructure, and production operations for AI agents.
 | Сервер | Москва `45.90.216.165` (Firstbyte) |
 | Вход | `ssh root@45.90.216.165` — **root, по паролю** (пароль в менеджере паролей) |
 | Как запущен | Один Docker-контейнер **`hw-news-bot`** |
-| Папка | `/root/hw-news` |
+| Папка | `/opt/hw-news` |
 | Ветка | `main` |
-| `.env` | `/root/hw-news/.env` — **правится только руками** |
-| База | `/root/hw-news/data/news.db` (в контейнере `/data/news.db`) |
+| `.env` | `/opt/hw-news/.env` — **правится только руками** |
+| База | `/opt/hw-news/data/news.db` (в контейнере `/data/news.db`) |
 | Логи | `ssh root@45.90.216.165 "docker logs hw-news-bot --tail 200"` |
 | Канал | `-1004027529994` (боевой) |
 | INSTANCE_LABEL | `prod` |
-| Деплой | **только руками, в любое время**: `ssh root@45.90.216.165 "cd /root/hw-news && git pull && docker compose up -d --build"` |
-| Бэкап БД | cron 05:00 МСК → `/root/hw-news/backups` (TODO: копия вне хоста) |
+| Деплой | **только руками, в любое время**: `ssh root@45.90.216.165 "cd /opt/hw-news && git pull && docker compose up -d --build"` |
+| Бэкап БД | cron 05:00 МСК → `/opt/hw-news/backups` (TODO: копия вне хоста) |
 | Watchdog | host cron 01:00 МСК → `docker exec hw-news-bot /bin/bash /app/watchdog.sh` |
 
 **Ключевые факты:** числовой Telegram-id оператора — **`8481233034`**
@@ -99,7 +108,7 @@ reproducible image + isolated egress routing without changing the bot code.
 
 ## Access Information
 
-**SSH Access:** `ssh root@45.90.216.165` (Moscow VPS, password auth) — the only host. Repo/deploy dir: `/root/hw-news`; state on `/root/hw-news/data`. This is the sole SSH target in the project; the old NL address `148.135.207.54` now answers with a stranger's sshd (see Серверная шпаргалка).
+**SSH Access:** `ssh root@45.90.216.165` (Moscow VPS, password auth) — the only host. Repo/deploy dir: `/opt/hw-news`; state on `/opt/hw-news/data`. This is the sole SSH target in the project; the old NL address `148.135.207.54` now answers with a stranger's sshd (see Серверная шпаргалка).
 
 > Operator runs all server-side ops (SSH, deploy, restart); Claude prepares the commands.
 
@@ -133,7 +142,7 @@ reproducible image + isolated egress routing without changing the bot code.
 - `HEARTBEAT_FILE` — heartbeat marker path (`news_bot.py:4526`). The prod container sets `/data/last_tick.ts` via `docker-compose.yml:34` (persistent + readable by the `docker exec` watchdog). Default `~/.cache/news_bot/last_tick.ts`.
 - `ANTHROPIC_API_KEY` / `ANTHROPIC_MODEL` (model default `claude-haiku-4-5`, `claude_transcreation.py:380`) — alternate engine, **not used in production**. Only relevant if `LLM_PROVIDER` is repointed at `claude`. The API key is **sensitive** and is additionally redacted from logs by `_TokenRedactingFilter` (pattern `sk-ant-[A-Za-z0-9_=.-]{16,}`). `OPENAI_API_KEY` / `OPENAI_MODEL` and `GEMINI_API_KEY` / `GEMINI_MODEL` are the same story for the other two engines.
 
-**How env reaches prod:** `docker-compose.yml` (`env_file: .env` + `environment: HEARTBEAT_FILE`). The prod `.env` is **hand-edited on the Moscow host** — nothing writes it, and no CI touches it. Changing any variable therefore means: edit `/root/hw-news/.env` by hand, then rebuild (`docker compose up -d --build`) at any time. The archived `hw_review.py` would read a local `.env` if revived (dormant).
+**How env reaches prod:** `docker-compose.yml` (`env_file: .env` + `environment: HEARTBEAT_FILE`). The prod `.env` is **hand-edited on the Moscow host** — nothing writes it, and no CI touches it. Changing any variable therefore means: edit `/opt/hw-news/.env` by hand, then rebuild (`docker compose up -d --build`) at any time. The archived `hw_review.py` would read a local `.env` if revived (dormant).
 
 ---
 
@@ -166,7 +175,7 @@ the Status callout for the runbooks.*
 **Production — MANUAL, no CI:** the only way code reaches prod is the operator
 running the command below; it may run at any time:
 
-`ssh root@45.90.216.165 "cd /root/hw-news && git pull && docker compose up -d --build --remove-orphans"`
+`ssh root@45.90.216.165 "cd /opt/hw-news && git pull && docker compose up -d --build --remove-orphans"`
 
 `git push` to any branch triggers `ci.yml` (pytest) only. Both deploy workflows are
 disarmed (`deploy.yml:30`, `deploy_test.yml:26` — `if: false`) and target a host that
@@ -233,7 +242,7 @@ in the repo ships regardless. The manifest matters only if the SCP path is reviv
 a future host — keep it in sync when adding a first-party import, but do not treat the
 test as a guard rail.
 
-**Restarting the bot:** `docker compose up -d --build --remove-orphans` in `/root/hw-news` rebuilds the
+**Restarting the bot:** `docker compose up -d --build --remove-orphans` in `/opt/hw-news` rebuilds the
 image and recreates the container; code changes go live immediately rather than
 waiting for the next 10:00 МСК tick. There is **no privileged step** — the operator is
 `root` on the host, there is no `hwbot` user, no `systemd` unit and no `sudoers` rule
@@ -268,11 +277,11 @@ the clock.
 
 - [ ] `python3 -m pytest tests/ -q` green locally. This is the ONLY pre-prod gate — there is no staging to catch what it misses.
 - [ ] Merged into **`main`** (prod deploys from `main`, never from `dev`).
-- [ ] Note the current prod commit **before** deploying, so a rollback has a target: `ssh root@45.90.216.165 "cd /root/hw-news && git rev-parse --short HEAD"`.
+- [ ] Note the current prod commit **before** deploying, so a rollback has a target: `ssh root@45.90.216.165 "cd /opt/hw-news && git rev-parse --short HEAD"`.
 - [ ] Deployment is explicitly authorized; time of day is informational, not a gate.
-- [ ] Deploy: `ssh root@45.90.216.165 "cd /root/hw-news && git pull && docker compose up -d --build"`.
+- [ ] Deploy: `ssh root@45.90.216.165 "cd /opt/hw-news && git pull && docker compose up -d --build"`.
 - [ ] Post-deploy logs: `ssh root@45.90.216.165 "docker logs hw-news-bot --tail 200"` — clean boot, no `[E018]` DB-guard ping, `[E008]` plan-of-day sent.
-- [ ] `news.db` present on the mounted volume (`/root/hw-news/data/news.db`). A fresh instance auto-creates it via `init_db()`; the schema is idempotent (see `tests/test_migration.py`).
+- [ ] `news.db` present on the mounted volume (`/opt/hw-news/data/news.db`). A fresh instance auto-creates it via `init_db()`; the schema is idempotent (see `tests/test_migration.py`).
 
 The prod `.env` (hand-managed, never rewritten by anything) carries `TELEGRAM_BOT_TOKEN`, `TELEGRAM_CHANNEL_ID`, `TELEGRAM_ADMIN_ID`, `TELEGRAPH_ACCESS_TOKEN`, `OPENROUTER_API_KEY`, `LLM_PROVIDER=openrouter`, `OPENROUTER_MODEL`, `INSTANCE_LABEL=prod`, `TZ=Europe/Moscow`, `REVIEW_BUTTONS_ENABLED=1` and **`DB_FILE=/data/news.db`**; compose injects `HEARTBEAT_FILE`.
 
@@ -321,7 +330,7 @@ match on before the pair-rule goes live.
 
 Confirm the base is cold — one line, from the operator's own machine:
 
-`ssh root@45.90.216.165 "sqlite3 /root/hw-news/data/news.db \"SELECT COUNT(*) FROM published_articles WHERE model_fingerprint IS NOT NULL\""`
+`ssh root@45.90.216.165 "sqlite3 /opt/hw-news/data/news.db \"SELECT COUNT(*) FROM published_articles WHERE model_fingerprint IS NOT NULL\""`
 
 **Correction (2026-07-20 — the original "expect 0" was wrong).** A SMALL
 non-zero count is NORMAL, not a surprise: cross-source-dedup has been live on
@@ -344,10 +353,10 @@ already ran) — verify the shape with
    `0/false/no/off` disable it), so it takes effect on the next rebuild. With it
    off the gate runs only the legacy set-overlap backstop — the new pair-rule is
    inert and **cannot hard-block**.
-3. **Build & restart** — `ssh root@45.90.216.165 "cd /root/hw-news && git pull && docker compose up -d --build"`.
+3. **Build & restart** — `ssh root@45.90.216.165 "cd /opt/hw-news && git pull && docker compose up -d --build"`.
    `init_db()` adds the `model_fingerprint` column if the snapshot lacked it
    (idempotent).
-4. **Warm-up backfill** — `ssh root@45.90.216.165 "cd /root/hw-news && docker compose exec -T news-bot python3 backfill_fingerprints.py --days 30"`
+4. **Warm-up backfill** — `ssh root@45.90.216.165 "cd /opt/hw-news && docker compose exec -T news-bot python3 backfill_fingerprints.py --days 30"`
    (inherits `DB_FILE=/data/news.db` from the container env). Idempotent
    (re-runnable; only touches rows missing the `$.pairs` key), supports
    `--dry-run` for a no-write dress rehearsal, and `--days` is clamped to
@@ -436,7 +445,7 @@ rebuild or on a new host — not something to run again now.
    `TELEGRAM_ADMIN_ID` (personal chat_id, not `@username`). Non-numeric →
    fail-closed: the listener refuses to start and logs a startup warning.
 2. **Set the flag** — in the hand-managed prod `.env` add `REVIEW_BUTTONS_ENABLED=1`.
-3. **Rebuild** — at any time: `ssh root@45.90.216.165 "cd /root/hw-news && git pull && docker compose up -d --build"`.
+3. **Rebuild** — at any time: `ssh root@45.90.216.165 "cd /opt/hw-news && git pull && docker compose up -d --build"`.
 4. **Verify the listener** — `ssh root@45.90.216.165 "docker logs hw-news-bot --tail 200"`
    must show the startup line **«review listener active»**. Missing line = gate closed
    (flag off or non-numeric admin id) — check the `.env`.
@@ -471,14 +480,14 @@ the fix permanent. Doing A then B is normal.
 Find the commit prod should go back to (the previous deploy's SHA, noted in the
 Pre-Deploy Checklist, or from `git log`), then run at any time:
 
-`ssh root@45.90.216.165 "cd /root/hw-news && git fetch && git checkout <good-sha> && docker compose up -d --build"`
+`ssh root@45.90.216.165 "cd /opt/hw-news && git fetch && git checkout <good-sha> && docker compose up -d --build"`
 
 This leaves the checkout in **detached HEAD** — a normal state meaning "sitting on a
 specific commit instead of following a branch". The container does not care; nothing
 else on the host does either. Verify with `docker logs hw-news-bot --tail 200`. When
 the fix has landed on `main`, return the host to the branch:
 
-`ssh root@45.90.216.165 "cd /root/hw-news && git checkout main && git pull && docker compose up -d --build"`
+`ssh root@45.90.216.165 "cd /opt/hw-news && git checkout main && git pull && docker compose up -d --build"`
 
 ~3–4 min including the image build.
 
@@ -511,7 +520,7 @@ fresh branch — do not expect a plain re-merge to restore it.
 ### DB rollback
 
 Restore `news.db` from a backup (see § Backups): stop the container, replace
-`/root/hw-news/data/news.db`, start it. Losing or truncating this file makes the bot
+`/opt/hw-news/data/news.db`, start it. Losing or truncating this file makes the bot
 re-publish months of backlog — treat it as the most dangerous object on the host.
 
 ---
@@ -647,13 +656,13 @@ empty-DB guard and 7-day rotation. The cron is installed once on the host (NOT
 deploy-managed); requires the `sqlite3` CLI on the host.
 
 - **Prod (Moscow host):** backs up the bind-mount DB directly on the host (`.backup`
-  stays consistent while the container writes). Installed 2026-07-07 at `0 2 * * *`
+  stays consistent while the container writes). Installed 2026-07-07; paths rechecked 2026-09-30, schedule `0 2 * * *`
   (host UTC = 05:00 МСК, before the 10:00 tick):
-  `DB_FILE=/root/hw-news/data/news.db BACKUP_DIR=/root/hw-news/backups /bin/bash /root/hw-news/scripts/backup_db.sh`.
-  **TODO: copy `/root/hw-news/backups` OFF-box** (single-host copies only, so far).
+  `DB_FILE=/opt/hw-news/data/news.db BACKUP_DIR=/opt/hw-news/backups /bin/bash /opt/hw-news/scripts/backup_db.sh`.
+  **TODO: copy `/opt/hw-news/backups` OFF-box** (single-host copies only, so far).
 
 **Restore (prod):** stop the container, replace the DB on the mounted volume, start it —
-`docker compose stop news-bot; cp /root/hw-news/backups/news_<DATE>.db /root/hw-news/data/news.db; docker compose up -d`.
+`cd /opt/hw-news && docker compose stop news-bot && cp /opt/hw-news/backups/news_<DATE>.db /opt/hw-news/data/news.db && docker compose up -d`.
 
 **Manual merge** (e.g. recovering history from a different machine's `news.db` after migration):
 ```sql
@@ -710,7 +719,7 @@ it would not trip on a genuine runaway.* A day materially above the 3-call budge
 means the slot cap is being bypassed or a call is looping on retry: read
 `ssh root@45.90.216.165 "docker logs hw-news-bot | grep input_tokens | tail -20"` for
 repeated calls on the same article, and
-`ssh root@45.90.216.165 "sqlite3 /root/hw-news/data/news.db 'SELECT COUNT(*) FROM pending_articles'"`
+`ssh root@45.90.216.165 "sqlite3 /opt/hw-news/data/news.db 'SELECT COUNT(*) FROM pending_articles'"`
 for a flooded queue — though the AC20 admin warning at `len(pending) > 50` should have
 fired first.
 

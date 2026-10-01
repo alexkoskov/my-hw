@@ -79,6 +79,9 @@ pytest                 # test suite lives in tests/
 Careful: `news_bot.py` runs a tick immediately at startup (news_bot.py:4645).
 With production credentials in `.env` that publishes to the real channel.
 
+Production runs from **`/opt/hw-news`** on the Moscow host (path verified
+2026-09-30); its database is `/opt/hw-news/data/news.db`.
+
 Production is a Docker container on the Moscow host and is deployed manually
 by the operator — see
 [deployment.md](.claude/skills/project-knowledge/references/deployment.md) for

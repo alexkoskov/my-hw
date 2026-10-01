@@ -45,7 +45,7 @@ size: L
 
 #### Идентичность volume
 
-4. Compose подключает документированный production-каталог `/root/hw-news/data` к `/data` и обязан отказать, а не автоматически создать отсутствующий host-каталог. До первого rollout оператор один раз создаёт на существующем volume identity marker `/data/.hw-news-volume-id`; его ожидаемое non-secret значение закреплено Compose.
+4. Compose подключает документированный production-каталог `/opt/hw-news/data` к `/data` и обязан отказать, а не автоматически создать отсутствующий host-каталог. До первого rollout оператор один раз создаёт на существующем volume identity marker `/data/.hw-news-volume-id`; его ожидаемое non-secret значение закреплено Compose.
 5. До доступа к БД процесс проверяет отдельную запись mount для `/data`, совпадение identity marker и то, что `/data/news.db` либо отсутствует, либо является обычным файлом без symlink-escape. Флаг bootstrap не обходит эту проверку.
 
 #### Локальная config-валидация
@@ -109,7 +109,7 @@ size: L
 - [ ] Полный suite проходит без dotenv и production secrets внутри transport-independent egress boundary; Python HTTP, native `curl_cffi` и subprocess red controls получают локальную deny-ошибку до DNS/TCP, а test-owned sentinel снаружи фиксирует ноль запросов.
 - [ ] Regression-набор dotenv/import, Telegraph token и OpenRouter job path проходит standalone, file-level, в двух противоположных порядках и full-suite без state leakage.
 - [ ] Python не запускается до default route через `172.28.0.2`; route mismatch/timeout дают `ROUTE` + точный safe reason-class, ненулевой exit и no direct fallback.
-- [ ] Static Compose contract содержит `APP_MODE=production`, три pinned invariants, absolute `/root/hw-news/data` → `/data`, запрет auto-create и pinned volume ID; missing/wrong mount или identity marker дают `VOLUME` failure даже с flag+permit.
+- [ ] Static Compose contract содержит `APP_MODE=production`, три pinned invariants, absolute `/opt/hw-news/data` → `/data`, запрет auto-create и pinned volume ID; missing/wrong mount или identity marker дают `VOLUME` failure даже с flag+permit.
 - [ ] Mode/config matrix покрывает production, local, test, unset, unknown и partial-prod состояния; разрешённые provider/channel формы принимаются, missing/mismatched provider-key-model, nonnumeric admin и implicit model отклоняются, а dormant provider credentials не влияют на выбор. Fatal event содержит `CONFIG` + exact reason/field, но не значения.
 - [ ] End-to-end DB matrix покрывает populated bot DB, absent/zero-byte DB, no-table SQLite, all-empty bot schema, partial/foreign schema, empty ledger с другим state, sidecars, corrupt, unreadable, nonregular, symlink и failed integrity. Только populated DB без bootstrap controls проходит normal path; каждый reject даёт nonzero exit, сохраняет named filesystem attributes и ровно один earliest-gate event: nonregular/symlink/path — `VOLUME`, corrupt/sidecar/schema/unsafe-empty — `DB`, eligible empty state без authorization — `BOOTSTRAP`.
 - [ ] Bootstrap проходит только для четырёх eligible shapes с flag + fresh UUID permit. No-controls/flag-only/permit-only, malformed/replayed permit, populated DB controls и concurrent claims дают свой exact `BOOTSTRAP|reason`/одного победителя; wrong mount/config/corrupt/sidecar DB сохраняет более ранний `VOLUME|CONFIG|DB` reason. Permit при любом pre-claim reject не расходуется и его UUID не логируется.
@@ -146,7 +146,7 @@ size: L
 
 ## Риски
 
-- **Fail-closed остановит первый rollout, если volume marker не подготовлен.** Митигация: одноразовый pre-deploy шаг на существующем `/root/hw-news/data`, проверка marker до rebuild и точный `VOLUME` reason без автоматического создания каталога.
+- **Fail-closed остановит первый rollout, если volume marker не подготовлен.** Митигация: одноразовый pre-deploy шаг на существующем `/opt/hw-news/data`, проверка marker до rebuild и точный `VOLUME` reason без автоматического создания каталога.
 - **Постоянно выставленный override превратится в скрытый fail-open.** Митигация: флаг без fresh permit бесполезен, повтор authorization отвергается, а populated DB с bootstrap controls намеренно не стартует.
 - **Quiet bootstrap оставит ledger пустым и другой application state непустым.** Митигация: generic permit намеренно не обходит такое состояние; перед restart оператор делает backup и data-aware restore/cleanup, а fresh permit применяется только после возврата к одной из четырёх eligible shapes.
 - **Route barrier создаст restart loop при поломке VPN.** Митигация: bounded wait, точный safe reason и отсутствие direct fallback; исправляется VPN, а не обходится защита.
@@ -180,7 +180,7 @@ size: L
 
 Реализация проходит dev → PR → main только после зелёного безусловного CI. Production deploy остаётся ручным и выполняется пользователем вне окна публикаций 10:00–20:00 МСК; текущая задача его не выполняет.
 
-Перед первым rollout этой защиты оператор один раз создаёт identity marker в существующем `/root/hw-news/data` с ожидаемым Compose ID и проверяет, что текущая populated DB проходит read-only preflight. Для обычных последующих upgrade permit и `ALLOW_EMPTY_PROD_DB` отсутствуют.
+Перед первым rollout этой защиты оператор один раз создаёт identity marker в существующем `/opt/hw-news/data` с ожидаемым Compose ID и проверяет, что текущая populated DB проходит read-only preflight. Для обычных последующих upgrade permit и `ALLOW_EMPTY_PROD_DB` отсутствуют.
 
 Настоящий empty bootstrap/recovery требует fresh UUID permit на volume и `ALLOW_EMPTY_PROD_DB=1` при recreation контейнера. После запуска оператор убеждается, что authorization consumed, а до следующего рестарта — что `processed_news` стала nonempty. Если ledger пуста, fresh permit достаточен только пока DB всё ещё соответствует одной из четырёх eligible shapes; при partial schema или другом state оператор сначала делает backup и осознанный restore/cleanup. Простое редактирование `.env` без recreation уже созданный container не меняет.
 
@@ -200,6 +200,6 @@ size: L
 
 ### Пользователь проверяет
 
-- Перед первым будущим rollout создать и сверить volume identity marker на существующем `/root/hw-news/data`; затем убедиться, что `/data/news.db` populated и bootstrap controls отсутствуют.
+- Перед первым будущим rollout создать и сверить volume identity marker на существующем `/opt/hw-news/data`; затем убедиться, что `/data/news.db` populated и bootstrap controls отсутствуют.
 - После ручного rebuild/restart вне 10:00–20:00 МСК проверить startup events в порядке `ROUTE` → `VOLUME` → `CONFIG` → `DB`, затем ровно один immediate job; в логах нет значений секретов.
 - При настоящем empty bootstrap создать fresh permit, recreate container с `ALLOW_EMPTY_PROD_DB=1`, проверить consumed state и первую `processed_news` row; если до restart появился только другой state, сначала backup + data-aware restore/cleanup. Live Telegram-кнопки этой задачей не проверяются.

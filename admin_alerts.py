@@ -106,7 +106,7 @@ def alert_prod_db_guard(warnings: list[str]) -> str:
         f"ПУСТОЙ или временной базой (не на смонтированном /data). Тогда бот "
         f"перезальёт канал старыми статьями.\n\n"
         f"Что сделать СРОЧНО: проверь на сервере, что в .env есть строка "
-        f"DB_FILE=/data/news.db и что /root/hw-news/data/news.db на месте и не "
+        f"DB_FILE=/data/news.db и что /opt/hw-news/data/news.db на месте и не "
         f"пустой. При сомнении останови контейнер (docker compose stop), пока "
         f"не разберёшься — чтобы не залить канал."
     )

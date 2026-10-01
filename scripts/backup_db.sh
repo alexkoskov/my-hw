@@ -11,8 +11,8 @@
 #
 # Moscow Docker host (prod) — back up the bind-mount source directly on the
 # HOST (``sqlite3 .backup`` is consistent even while the container writes):
-#   (crontab -l 2>/dev/null; echo '0 2 * * * DB_FILE=/root/hw-news/data/news.db BACKUP_DIR=/root/hw-news/backups /root/hw-news/scripts/backup_db.sh') | crontab -
-#   # then copy /root/hw-news/backups OFF-box periodically (rsync/scp to another host).
+#   (crontab -l 2>/dev/null; echo '0 2 * * * DB_FILE=/opt/hw-news/data/news.db BACKUP_DIR=/opt/hw-news/backups /opt/hw-news/scripts/backup_db.sh') | crontab -
+#   # then copy /opt/hw-news/backups OFF-box periodically (rsync/scp to another host).
 #
 # Runs before the 10:00 МСК tick so the backup captures the previous day's
 # final state. Uses ``sqlite3 .backup`` (not ``cp``) for an atomic, consistent
