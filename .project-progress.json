@@ -2304,8 +2304,27 @@
         ".agents/skills/ecc-flow/SKILL.md",
         ".agents/skills/project-knowledge/references/patterns.md"
       ]
+    },
+    {
+      "id": "FIX-DEDUP-CI-001",
+      "title": "Correct high-overlap dedup alert reasons and restore hard-block keyboard coverage",
+      "description": "Preserve the title-cap reason without changing dedup verdicts or raw thresholds, explain high-score manual-review outcomes accurately, and use a title-qualified hard-block fixture. Focused checks and the full local test suite passed without failures.",
+      "status": "done",
+      "weight": 3,
+      "depends_on": [
+        "MAINT-CODEX-001"
+      ],
+      "blocked_by": [],
+      "deliverables": [
+        "news_bot.py",
+        "admin_alerts.py",
+        "tests/test_integration.py",
+        "tests/test_admin_alerts.py",
+        "tests/test_dedup_broad_precision.py",
+        "work/HANDOFF.md"
+      ]
     }
   ],
   "blockers": [],
-  "updated_at": "2026-10-14T16:33:12+03:00"
+  "updated_at": "2026-10-14T17:03:16+03:00"
 }

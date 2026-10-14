@@ -5,24 +5,26 @@ Read this file first to resume. Record ownership is described in [the work index
 
 ## Where work stopped
 
-- **Latest owner request:** publish the completed Codex migration and continuation
-  records through [PR #42](https://github.com/alexkoskov/my-hw/pull/42) (`dev` → `main`).
-  The owner explicitly authorized push, PR creation, and merge; deployment was not requested.
-- **Last coding work:** the Codex migration is complete locally; shared skills,
-  project knowledge, role configs, and runtime prompt packaging were checked.
-  Details: [migration evidence](SESSION-2026-10-14.md).
-- **Git:** work continues on `dev`; validated content commit `601a4b3` includes
-  the previous remote Codex history and the local migration. It was pushed to
-  GitHub. Later edits record publication metadata only. PR #42 is the authoritative
-  source for its merge status and final `main` revision; inspect current Git refs
-  rather than inferring transport state from a dated journal.
+- **Latest owner request:** fix both known dedup CI failures, then finish
+  [PR #42](https://github.com/alexkoskov/my-hw/pull/42) (`dev` → `main`). Push,
+  PR creation, and merge after green CI are authorized; deployment is not requested.
+- **Last coding work:** Codex migration and continuation records are complete.
+  Dedup flags now preserve the actual high-score/title-cap reason; the mixed
+  keyboard test uses a title-qualified hard-block candidate. Thresholds and
+  block/flag/pass decisions remain unchanged.
+- **Git:** work continues on `dev`. The original migration was validated at
+  `601a4b3`; the follow-up dedup correction and its checks are recorded below.
+  PR #42 is authoritative for merge status and the final `main` revision.
+  Inspect current Git refs instead of inferring publication from a dated journal.
 - **Production:** the last recorded deployment was 2026-10-01 at `cda27b7`,
   documented in [the previous deployment record](SESSION-2026-09-17.md).
   Production was not inspected in this chat; that record is not a live health check.
 
 ## Exact next step
 
-The migration and documentation work are complete; this publication request adds no new coding task.
+Check PR #42 first: if open, finish the already-authorized merge only after its
+latest test job succeeds; if merged, align `dev`/`main` refs and continue the
+selected product work. No additional product implementation was selected.
 The active product item is **DBP-015**: obtain the owner's classification of the
 2026-09-10 E014 article pair in the [post-deploy report](dedup-broad-precision/logs/working/post-deploy-qa-report.json),
 then continue its existing natural-observation plan. Evidence is checked only
@@ -35,14 +37,20 @@ newly approved next wave. Follow the owner's selected task and existing approval
 
 ## Verification and limits
 
-- Last full suite, 2026-10-14: **2122 passed, 2 skipped, 2 failed; 556 subtests passed**.
-  Both failures reproduce on the unmodified base; exact names and scope are in
-  [the migration evidence](SESSION-2026-10-14.md#verification).
-- Final Docker image: imports and four prompt loaders passed. Native Codex in a
-  disposable container discovered seven skills and loaded seven trusted role configs.
-- Later edits affect documentation only; the recorded code checks remain relevant
-  while their code/dependency inputs are unchanged. Documentation links and
-  continuation-rule consistency were checked for this request.
+- Last full suite, 2026-10-14: **2128 passed, 2 skipped; 556 subtests passed**.
+  Focused dedup, review-button, alert, and precision checks: **226 passed,
+  21 subtests passed**, including the existing 24-pair production regression corpus.
+- The earlier two baseline failures are fixed. A high-overlap flag now distinguishes
+  missing common models in titles from rejected series qualification. The hard-block
+  keyboard scenario names the actual shared model/series; its E015/no-buttons
+  assertions remain. Four threshold/title cases guard the new reason metadata.
+- Earlier packaging evidence remains in [the migration record](SESSION-2026-10-14.md):
+  Docker imports/four prompt loaders and seven native Codex skills/role configs
+  passed. The dedup correction does not change packaging; no new image or production
+  deployment was performed for this correction.
+- Current CI and the final publication outcome are linked from PR #42. Reuse checks
+  only while their relevant inputs are unchanged; metadata-only edits do not
+  invalidate the recorded local code checks.
 - Managed system storage remains read-only; shared configuration and skill aliases
   are described in [Codex setup](../docs/codex-setup.md).
 - Roadmap statuses and weighted progress belong to [the tracker](../.project-progress.json).
@@ -59,3 +67,7 @@ newly approved next wave. Follow the owner's selected task and existing approval
   opened [PR #42](https://github.com/alexkoskov/my-hw/pull/42). All configured
   pre-commit hooks passed. Product work remains DBP-015; PR status records the
   final promotion outcome. No production deployment was requested.
+- **2026-10-14:** Owner declined merging with the two known CI failures and
+  requested their repair first. Corrected the E014 cap explanation and stale
+  hard-block fixture; preserved dedup verdicts and thresholds. Local full suite:
+  2128 passed, 2 skipped. Continue the authorized PR #42 merge after green CI.

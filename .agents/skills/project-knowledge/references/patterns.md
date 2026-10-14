@@ -649,6 +649,11 @@ similarity heuristic. Changes to the dedup gate must preserve these conventions:
   first qualified broad match, continue through later candidates so `|D` keeps
   precedence, and let a fully subject-rejected broad contour reach the existing
   set-overlap backstop. Only a final `flag` earns `[E014]` and the 24 h defer.
+- **Preserve the actual reason for a high-score flag.** The backstop marks a raw
+  ≥50% score without a shared model in both titles as `overlap_title_capped`.
+  The gate retains that reason, or uses `overlap_capped` when a broad-series
+  subject rejection also applies. Neither result changes the verdict or the
+  threshold; the operator must not be told that a displayed 100% is below 50%.
 - **Bound diagnostic cardinality and untrusted text.** Keep at most one suppression
   record per candidate and cap the returned list at 100 records within the
   existing 30-day candidate window; render links and titles as redacted,

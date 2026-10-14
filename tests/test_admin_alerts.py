@@ -398,6 +398,14 @@ class TestAdminAlerts(unittest.TestCase):
                 models=["toyota 4runner"],
                 subject_rejected_series=["car culture"],
             ),
+            "overlap_title_capped": admin_alerts.alert_cross_source_dupe(
+                **common,
+                reason="overlap_title_capped",
+                overlap_pct=100,
+                n_matches=1,
+                n_total=1,
+                models=["toyota 4runner"],
+            ),
         }
 
         broad = messages["broad_subject"]
@@ -415,6 +423,14 @@ class TestAdminAlerts(unittest.TestCase):
         self.assertIn("порог автоблокировки достигнут", capped)
         self.assertIn("автоматической блокировки нет", capped)
         self.assertNotIn("не достигнут", capped)
+
+        title_capped = messages["overlap_title_capped"]
+        self.assertIn("100%", title_capped)
+        self.assertIn("порог автоблокировки достигнут", title_capped)
+        self.assertIn("не названа в заголовках обеих статей", title_capped)
+        self.assertIn("автоматической блокировки нет", title_capped)
+        self.assertNotIn("не достигнут", title_capped)
+        self.assertNotIn("серия/тема", title_capped)
 
         # Reason-specific copy must not change the shared operator action
         # contract or the real keyboard labels it quotes.
