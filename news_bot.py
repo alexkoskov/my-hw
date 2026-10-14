@@ -3123,8 +3123,12 @@ def _set_overlap_backstop_verdict(fingerprint, strict: list,
         if _title_mentions_model(new_title, model)
         and _title_mentions_model(best_row.get('title'), model)
     }
-    if best_sim >= _DEDUP_BLOCK_THRESHOLD and shared_title_models:
-        return ('block', match)
+    if best_sim >= _DEDUP_BLOCK_THRESHOLD:
+        if shared_title_models:
+            return ('block', match)
+        # The score reached the block threshold, but title qualification
+        # keeps this a flag. Preserve that reason for the operator alert.
+        match['reason'] = 'overlap_title_capped'
     return ('flag', match)
 
 
@@ -3215,8 +3219,11 @@ def _check_cross_source_dedup(effective_title: str, fingerprint: dict,
         fingerprint, strict, candidates, new_source, effective_title,
     )
     if match is not None:
-        match['reason'] = 'overlap'
-    if decision == 'block' and suppressed_matches:
+        match.setdefault('reason', 'overlap')
+    if suppressed_matches and (
+        decision == 'block'
+        or (match is not None and match.get('reason') == 'overlap_title_capped')
+    ):
         decision = 'flag'
         match['reason'] = 'overlap_capped'
         match['subject_rejected_series'] = sorted({

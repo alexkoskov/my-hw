@@ -841,7 +841,9 @@ def alert_cross_source_dupe(
     # `pairs=[]` трактуем как отсутствие пар (falsy → legacy-ветка). Легаси-блок
     # моделей рендерим ТОЛЬКО при реальном `overlap_pct`; если его нет — опускаем
     # блок, чтобы никогда не показать оператору `Совпадение моделей: None%`.
-    known_reasons = {"broad_subject", "overlap", "overlap_capped"}
+    known_reasons = {
+        "broad_subject", "overlap", "overlap_capped", "overlap_title_capped",
+    }
     if reason not in known_reasons:
         # Backward-compatible direct callers did not pass a reason. Infer it
         # only from the established payload shape; explicit runtime wiring
@@ -879,6 +881,13 @@ def alert_cross_source_dupe(
             "порог автоблокировки достигнут по\n"
             "сходству моделей, но общая серия/тема\n"
             "не заявлена в заголовках обеих статей,\n"
+            "поэтому автоматической блокировки нет."
+        )
+    elif reason == "overlap_title_capped":
+        happened_block = (
+            "порог автоблокировки достигнут по\n"
+            "сходству моделей, но общая модель\n"
+            "не названа в заголовках обеих статей,\n"
             "поэтому автоматической блокировки нет."
         )
     else:

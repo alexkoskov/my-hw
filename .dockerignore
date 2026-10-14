@@ -1,5 +1,17 @@
 .git
 .github
+.agents
+.codex
+.codex-config-backups
+.ecc-backups
+AGENTS.md
+README.md
+.project-progress.json
+.pre-commit-config.yaml
+requirements-dev.txt
+docs
+venv
+.venv
 tests
 work
 logs
@@ -19,4 +31,8 @@ news.db
 data/
 .env
 .env.*
-# keep .claude/ — it holds ux-guidelines.md (the LLM system prompt loaded at runtime)
+# Operator-only tools; the production worker uses the automatic LLM pipeline.
+hw_review.py
+preview_renderer.py
+scripts/link_codex_skills.py
+# Keep prompts/ — ux-guidelines.md is loaded by every LLM engine at runtime.

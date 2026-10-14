@@ -14,8 +14,8 @@ WORKDIR /app
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
-# Copy the app (see .dockerignore — keeps .claude/ for the ux-guidelines.md
-# system prompt; excludes .git, tests, *.db, .env, etc.).
+# Copy the app and prompts/; .dockerignore excludes agent configuration,
+# documentation, operator-only tools, tests, databases, and local credentials.
 COPY . .
 
 CMD ["python3", "news_bot.py"]

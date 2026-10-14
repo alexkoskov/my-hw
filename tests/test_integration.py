@@ -4394,7 +4394,7 @@ class TestDedupReviewButtons(_PrepPhaseBase):
         )
         self._seed_published(
             'http://t-hunted.example/existing-block', self.BLOCK_FP,
-            source='t-hunted', title='Existing Block Article',
+            source='t-hunted', title=self.BLOCK_ARTICLE['title'],
         )
         soft_link = 'http://autoevolution.example/soft'
         block_link = 'http://autoevolution.example/block'

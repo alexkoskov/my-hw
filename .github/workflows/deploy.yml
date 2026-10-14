@@ -114,7 +114,7 @@ jobs:
         # Operator-side files (hw_review.py, preview_renderer.py) are
         # intentionally excluded.
         # Special case — ux-guidelines.md: lives in subdir
-        # .claude/skills/project-knowledge/references/ in the repo but `scp`
+        # prompts/ in the repo but `scp`
         # (without -r) flattens subdirs, so it lands at
         # $DEPLOY_PATH/ux-guidelines.md on the server. Decision 8 of the
         # llm-transcreation tech-spec covers this: _load_prompt tries the
@@ -147,7 +147,7 @@ jobs:
             "feeds.json"
             "requirements.txt"
             ".env.example"
-            ".claude/skills/project-knowledge/references/ux-guidelines.md"
+            "prompts/ux-guidelines.md"
           )
           for file in "${FILES[@]}"; do
             if [[ ! -f "$file" ]]; then

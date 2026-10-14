@@ -112,7 +112,7 @@ _BLOCK_KEYS_BY_TYPE = {
 
 
 # Workflow-enforcement reminder: the translator for the manual-review pipeline
-# is the operator's Claude Code session — there is no LLM API call. Discovered
+# is the operator's Codex session — there is no LLM API call. Discovered
 # during live QA: a test publish shipped without the transcreation system
 # prompt because nothing in the CLI referenced the guide. Surfaced here in the
 # two operator-facing chokepoints:
@@ -124,7 +124,7 @@ _BLOCK_KEYS_BY_TYPE = {
 # one-glance sanity-check of what persona the translator should adopt.
 _STAGE_GUIDE_REMINDER = (
     "💡 Before `stage N`: load "
-    ".claude/skills/project-knowledge/references/ux-guidelines.md\n"
+    "prompts/ux-guidelines.md\n"
     "   Role: ведущий редактор/локализатор · транскреация · 2-3 alt titles."
 )
 
@@ -357,7 +357,7 @@ def _validate_stage_payload(parsed) -> None:
 
 def cmd_stage(args: argparse.Namespace) -> int:
     # Step 0: workflow-enforcement reminder — emit BEFORE stdin read so the
-    # operator (Claude Code session in live QA) sees the guide path even if
+    # operator (Codex session in live QA) sees the guide path even if
     # stage aborts on a validation error. Stderr keeps stdout clean for any
     # scripted consumer that pipes through `stage`.
     _err(_STAGE_GUIDE_REMINDER)

@@ -1,0 +1,4 @@
+sandbox_mode = "read-only"
+developer_instructions = """
+Check only the changed documentation and the source facts it claims. Find contradictions, stale commands, broken paths, ambiguous approval gates, and claims unsupported by code or authoritative sources. Keep wording preferences separate from correctness. Do not edit files or request unrelated documentation expansion.
+"""

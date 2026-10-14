@@ -598,7 +598,7 @@ def _gate_fingerprint(strict, *, pairs=(_GATE_CAR_CULTURE_PAIR,)):
             [_GATE_CAR_CULTURE_PAIR],
             "t-hunted",
             "flag",
-            "overlap",
+            "overlap_capped",
             True,
         ),
         (
@@ -769,6 +769,41 @@ def test_pair_rule_skips_same_source_and_conflicting_years(
     )
 
     assert (decision, match, suppressed) == ("pass", None, [])
+
+
+@pytest.mark.parametrize(
+    ("similarity", "new_title", "candidate_title", "decision", "reason"),
+    [
+        (0.499999, "General roundup", "Ten cars", "flag", "overlap"),
+        (0.50, "Toyota 4Runner", "Ten cars", "flag", "overlap_title_capped"),
+        (0.50, "General roundup", "Toyota 4Runner", "flag", "overlap_title_capped"),
+        (0.50, "Toyota 4Runner", "Toyota 4Runner", "block", "overlap"),
+    ],
+)
+def test_backstop_reports_title_cap_without_changing_thresholds(
+    similarity, new_title, candidate_title, decision, reason,
+):
+    fingerprint = _gate_fingerprint(["toyota 4runner"], pairs=[])
+    candidate = {
+        "link": "https://candidate.example/title-cap",
+        "source_name": "t-hunted",
+        "title": candidate_title,
+        "published_at": datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S"),
+        "model_fingerprint": fingerprint,
+    }
+    with (
+        patch.object(news_bot, "_fetch_dedup_candidates", return_value=[candidate]),
+        patch.object(news_bot, "_strict_overlap_similarity", return_value=similarity),
+    ):
+        actual_decision, match, suppressed = news_bot._check_cross_source_dedup(
+            new_title, fingerprint, object(), new_source="autoevolution",
+        )
+
+    assert actual_decision == decision
+    assert match["reason"] == reason
+    assert suppressed == []
+    if similarity == 0.499999:
+        assert match["overlap_pct"] == 50  # Rounded display must not select the reason.
 
 
 def test_backstop_ignores_brand_only_overlap():

@@ -1,6 +1,6 @@
 """Structural assertions on ``ux-guidelines.md`` for the t-hunted PT source.
 
-The file at ``.claude/skills/project-knowledge/references/ux-guidelines.md``
+The file at ``prompts/ux-guidelines.md``
 is the runtime system-prompt every LLM transcreation engine loads at runtime
 (see ``_llm_common._build_system_prompt``). The feature ``t-hunted-pt-source``
 makes three edits to it:
@@ -30,10 +30,7 @@ from pathlib import Path
 REPO_ROOT = Path(__file__).resolve().parent.parent
 UX_GUIDELINES = (
     REPO_ROOT
-    / ".claude"
-    / "skills"
-    / "project-knowledge"
-    / "references"
+    / "prompts"
     / "ux-guidelines.md"
 )
 
