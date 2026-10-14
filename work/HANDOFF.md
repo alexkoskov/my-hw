@@ -5,21 +5,24 @@ Read this file first to resume. Record ownership is described in [the work index
 
 ## Where work stopped
 
-- **Current request:** simplify documentation and continuation records. The
-  persistent handoff and startup/update rules replace mandatory daily journals.
+- **Latest owner request:** publish the completed Codex migration and continuation
+  records through [PR #42](https://github.com/alexkoskov/my-hw/pull/42) (`dev` → `main`).
+  The owner explicitly authorized push, PR creation, and merge; deployment was not requested.
 - **Last coding work:** the Codex migration is complete locally; shared skills,
   project knowledge, role configs, and runtime prompt packaging were checked.
   Details: [migration evidence](SESSION-2026-10-14.md).
-- **Git:** branch `work`, base `14e40d262de99bdb8026500104a20d184337d28d`.
-  The migration and documentation changes are uncommitted. No commit, push, or
-  deployment was performed in this chat. Inspect current Git state before acting.
+- **Git:** work continues on `dev`; validated content commit `601a4b3` includes
+  the previous remote Codex history and the local migration. It was pushed to
+  GitHub. Later edits record publication metadata only. PR #42 is the authoritative
+  source for its merge status and final `main` revision; inspect current Git refs
+  rather than inferring transport state from a dated journal.
 - **Production:** the last recorded deployment was 2026-10-01 at `cda27b7`,
   documented in [the previous deployment record](SESSION-2026-09-17.md).
   Production was not inspected in this chat; that record is not a live health check.
 
 ## Exact next step
 
-Documentation work is complete; no new coding task was selected by this request.
+The migration and documentation work are complete; this publication request adds no new coding task.
 The active product item is **DBP-015**: obtain the owner's classification of the
 2026-09-10 E014 article pair in the [post-deploy report](dedup-broad-precision/logs/working/post-deploy-qa-report.json),
 then continue its existing natural-observation plan. Evidence is checked only
@@ -52,3 +55,7 @@ newly approved next wave. Follow the owner's selected task and existing approval
 - **2026-10-14:** Owner requested one reliable continuation point. Added this
   persistent snapshot and work index; replaced daily-session creation with
   updates at substantive outcomes and pauses. Historical records retained.
+- **2026-10-14:** Pushed validated Codex and documentation changes to `dev` and
+  opened [PR #42](https://github.com/alexkoskov/my-hw/pull/42). All configured
+  pre-commit hooks passed. Product work remains DBP-015; PR status records the
+  final promotion outcome. No production deployment was requested.
