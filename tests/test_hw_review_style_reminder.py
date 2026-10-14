@@ -33,7 +33,7 @@ import pending_articles_repo as repo
 import hw_review
 
 
-GUIDE_PATH = '.claude/skills/project-knowledge/references/ux-guidelines.md'
+GUIDE_PATH = 'prompts/ux-guidelines.md'
 
 
 def _sample_entry(link='http://example.com/a', title='Example',

@@ -1,0 +1,46 @@
+version: 1
+selection:
+  procedure:
+    - Resolve the role to one profile.
+    - Inspect models and override modes advertised by the current Codex runtime.
+    - Select the first advertised active candidate for that profile.
+    - Pass model and reasoning_effort explicitly only when the runtime permits that override with the chosen context mode.
+    - If an override requires a context-isolated spawn, provide the bounded task context explicitly.
+    - If no candidate is available or an isolated spawn would lose necessary context, omit both and inherit from the parent.
+    - Never spawn an evaluation candidate.
+  unknown_role: inherit
+  orchestrator: inherit
+
+profiles:
+  fast:
+    candidates: [gpt-5.6-terra, gpt-5.6-sol]
+    reasoning_effort: medium
+  builder:
+    candidates: [gpt-5.6-terra, gpt-5.6-sol]
+    reasoning_effort: high
+  critical:
+    candidates: [gpt-5.6-sol, gpt-5.6-terra]
+    reasoning_effort: high
+  adversarial:
+    candidates: [gpt-5.6-sol, gpt-5.6-terra]
+    reasoning_effort: xhigh
+  inherit:
+    candidates: []
+
+roles:
+  code-researcher: fast
+  documentation-reviewer: fast
+  general-purpose: builder
+  code-reviewer: critical
+  test-reviewer: critical
+  security-auditor: adversarial
+  reality-checker: adversarial
+
+evaluation_candidates:
+  critical: [gpt-6-astra]
+  adversarial: [gpt-6-astra]
+promotion_requirements:
+  - Runtime advertises the model.
+  - Representative evaluations compare quality, latency, and cost.
+  - The owner explicitly approves promotion.
+  - Only then is the model moved into an active candidates list.

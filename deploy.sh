@@ -35,12 +35,12 @@ DEPLOY_PATH="${DEPLOY_PATH:-/home/user/bot}"
 #     Task 7 of source-formatting-parity. Shipped with the module rather than
 #     "later" because this exact class of omission once cost 38 consecutive
 #     ModuleNotFoundError crashes (work/completed/t-hunted-pt-source).
-#   - Operator's Claude Code session only (NOT deployed): hw_review.py and
+#   - Operator's Codex session only (NOT deployed): hw_review.py and
 #     preview_renderer.py — the manual-review-workflow CLI tools the operator
 #     runs locally to approve/publish queued articles. They don't run on the
 #     server.
 #   - Special case — ux-guidelines.md: lives at
-#     .claude/skills/project-knowledge/references/ux-guidelines.md in the repo
+#     prompts/ux-guidelines.md in the repo
 #     but `scp` (called below WITHOUT -r) flattens subdirs, so on the server
 #     the file lands at $DEPLOY_PATH/ux-guidelines.md (flat). Decision 8 of
 #     the llm-transcreation tech-spec covers this: claude_transcreation
@@ -74,7 +74,7 @@ FILES=(
     "feeds.json"
     "requirements.txt"
     ".env.example"
-    ".claude/skills/project-knowledge/references/ux-guidelines.md"
+    "prompts/ux-guidelines.md"
 )
 
 echo "Deploying to $SSH_HOST:$DEPLOY_PATH"

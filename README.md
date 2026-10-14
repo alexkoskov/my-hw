@@ -7,7 +7,11 @@ preview to a Telegram channel.
 
 This file is the cold-start orientation only. Everything operational —
 deployment, env vars, monitoring, cost — lives in
-`.claude/skills/project-knowledge/references/`.
+`.agents/skills/project-knowledge/references/`.
+
+To continue work, start with [the current handoff](work/HANDOFF.md).
+It records where work stopped, the next action, checks, and blockers.
+[The work index](work/README.md) explains which records to open next.
 
 ## Sources
 
@@ -39,7 +43,7 @@ rationale is at news_bot.py:3599-3606.
 3. Each article is transcreated by an LLM. `llm_transcreation.py` is a
    dispatcher over four engines (OpenAI / Anthropic / Gemini / OpenRouter);
    **production runs OpenRouter** (`LLM_PROVIDER=openrouter`). The system
-   prompt is `.claude/skills/project-knowledge/references/ux-guidelines.md`.
+   prompt is `prompts/ux-guidelines.md`.
 4. The translated body is published to Telegra.ph
    (`telegraph_publisher.py`), then the channel card is posted to Telegram.
    The Telegra.ph URL is persisted before the Telegram send, so a retry never
@@ -70,7 +74,7 @@ re-made — and not re-alerted — on every tick.
 
 ```bash
 python3 -m venv venv && source venv/bin/activate
-pip install -r requirements.txt
+pip install -r requirements.txt -r requirements-dev.txt
 cp .env.example .env   # then fill in the values, see the comments there
 python news_bot.py     # runs one tick immediately, then schedules 10:00 МСК
 pytest                 # test suite lives in tests/
@@ -84,7 +88,7 @@ Production runs from **`/opt/hw-news`** on the Moscow host (path verified
 
 Production is a Docker container on the Moscow host and is deployed manually
 by the operator — see
-[deployment.md](.claude/skills/project-knowledge/references/deployment.md) for
+[deployment.md](.agents/skills/project-knowledge/references/deployment.md) for
 the redeploy command, restart scheduling effect, logs and monitoring. Do not
 follow any systemd/cron instructions found in older notes.
 
@@ -92,13 +96,31 @@ follow any systemd/cron instructions found in older notes.
 
 | File | Contains |
 |------|----------|
-| `.claude/skills/project-knowledge/references/project.md` | What the project is, key features, roadmap |
-| `.claude/skills/project-knowledge/references/architecture.md` | Tech stack, module map, data model |
-| `.claude/skills/project-knowledge/references/patterns.md` | Project-specific code patterns, git workflow, business rules |
-| `.claude/skills/project-knowledge/references/deployment.md` | Server, env vars, deploy, monitoring, cost |
-| `.claude/skills/project-knowledge/references/ux-guidelines.md` | The transcreation prompt (style contract for Russian output) |
+| `.agents/skills/project-knowledge/references/project.md` | What the project is, key features, roadmap |
+| `.agents/skills/project-knowledge/references/architecture.md` | Tech stack, module map, data model |
+| `.agents/skills/project-knowledge/references/patterns.md` | Project-specific code patterns, git workflow, business rules |
+| `.agents/skills/project-knowledge/references/deployment.md` | Server, env vars, deploy, monitoring, cost |
+| `prompts/ux-guidelines.md` | The transcreation prompt (style contract for Russian output) |
 | `.env.example` | The environment variables the code reads, with defaults |
-| `work/` | Per-feature folders (user-spec / tech-spec / decisions) and dated `SESSION-*.md` logs |
+| `work/HANDOFF.md` | Current work, exact next action, verification, and blockers |
+| `work/README.md` | Record ownership, active work links, and historical evidence |
+| `work/<feature>/` | Feature requirements, decisions, and detailed verification |
+| `AGENTS.md` | Project-specific Codex rules and the ECC router |
+| `docs/codex-setup.md` | Global configuration, skill locations, and environment limits |
+
+## Working with Codex
+
+Global instructions and the five shared skills come from
+[`alexkoskov/codex-global-config`](https://github.com/alexkoskov/codex-global-config).
+Install them once per environment; project `AGENTS.md` adds only local rules.
+In the managed cloud workspace, shared instructions are inherited from
+`/workspace/AGENTS.md` and base skills are stored in `/workspace/.agents/skills/`.
+
+Project skills live in `.agents/skills/`; optional native role configurations are
+registered in `.codex/config.toml`. The runtime prompt in `prompts/` is independent
+of Codex skills. See [the setup guide](docs/codex-setup.md) for local installation
+and the read-only cloud restrictions. Start a new Codex session after setup to
+reload the instruction and skill catalog.
 
 ---
 

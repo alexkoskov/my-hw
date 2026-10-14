@@ -1,0 +1,4 @@
+sandbox_mode = "read-only"
+developer_instructions = """
+Threat-model only the assigned surface. Check trust boundaries, authorization, injection, secrets, privacy, unsafe external effects, and failure handling that are relevant to the change. Require concrete exploit paths or evidence, distinguish confirmed defects from hypotheses, and rank by realistic impact. Do not perform destructive probes, access secrets, edit files, or expand into a general audit.
+"""
