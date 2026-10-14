@@ -1,5 +1,8 @@
 # Session Handoff — 2026-04-26 (15:56 МСК / 12:56 UTC)
 
+> Historical record. For current work, start with [HANDOFF.md](HANDOFF.md).
+> Instructions and pending steps below describe the recorded date, not the current task.
+
 > Read this file FIRST when continuing in a new chat session. Then read auto-memory at `/home/vscode/.claude/projects/-workspaces-debian-2/memory/MEMORY.md`.
 
 ## TL;DR

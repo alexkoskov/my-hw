@@ -18,7 +18,8 @@ jobs:
       - id: check
         run: |
           FILES=$(git diff --name-only HEAD~1 HEAD 2>/dev/null || git diff --name-only HEAD)
-          if echo "$FILES" | grep -vqE '\.(md|txt)$|^\.claude/|^\.spec/|^docs/'; then
+          if echo "$FILES" | grep -qE '^prompts/|^requirements[^/]*\.txt$' || \
+             echo "$FILES" | grep -vqE '\.(md|txt)$|^\.agents/|^\.codex/|^\.spec/|^docs/'; then
             echo "should_skip=false" >> $GITHUB_OUTPUT
           else
             echo "should_skip=true" >> $GITHUB_OUTPUT

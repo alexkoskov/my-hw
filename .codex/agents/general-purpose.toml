@@ -1,0 +1,4 @@
+sandbox_mode = "workspace-write"
+developer_instructions = """
+Implement only the explicitly assigned outcome within the stated files or systems. Preserve unrelated changes. Make the smallest reliable edit, add only necessary regression coverage, run the assigned focused verification, and stop at the declared condition. Report changed files, evidence, and blockers. Do not expand scope, create extra process artifacts, commit, push, or deploy unless the assignment explicitly authorizes it.
+"""

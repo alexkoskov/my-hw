@@ -180,3 +180,14 @@ def test_non_deployed_tools_stay_out():
                 f"{tool} appears in {name} FILES — it is operator-local only "
                 "(archived 2026-04-30) and should not ship to the server."
             )
+
+
+def test_runtime_prompt_exists_and_ships_in_every_manifest():
+    from _llm_common import _PROMPT_PATH_DEFAULT_PARTS
+
+    relative = Path(*_PROMPT_PATH_DEFAULT_PARTS)
+    assert (REPO_ROOT / relative).is_file(), "The runtime editorial prompt is missing"
+    for name, path in DEPLOY_FILES.items():
+        assert relative.as_posix() in _parse_files_array(path), (
+            f"{name} omits the prompt loaded by every LLM engine"
+        )

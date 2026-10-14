@@ -118,7 +118,7 @@ jobs:
             "feeds.json"
             "requirements.txt"
             ".env.example"
-            ".claude/skills/project-knowledge/references/ux-guidelines.md"
+            "prompts/ux-guidelines.md"
           )
           for file in "${FILES[@]}"; do
             if [[ ! -f "$file" ]]; then

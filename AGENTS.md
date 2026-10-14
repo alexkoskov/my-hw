@@ -1,141 +1,70 @@
-# Global Codex working agreements
+# Hot Wheels News Bot — project agreements
 
-Defaults; runtime instructions, current user requests, and specific project rules prevail.
-Surface material conflicts without silently expanding scope.
+Global Codex agreements are inherited from the environment or user configuration;
+keep this file limited to project facts, constraints, and overrides.
 
-## Proportional execution
+## Orientation and checks
 
-Простые задачи выполняй сразу и без расширения объёма. Делай только необходимые проверки. Не повторяй завершённые проверки без новой причины. Мелкие согласования собирай в блок, затем обновляй документы одним проходом.
+- Start new or resumed work with `work/HANDOFF.md`, then inspect the current
+  branch, `HEAD`, and working-tree status. Follow its links to the selected work
+  item; search more widely only for a missing fact, changed revision, or contradiction.
+- `work/README.md` maps records to their purpose. Read `README.md` for initial
+  orientation and `.agents/skills/project-knowledge/SKILL.md` only for relevant
+  durable project facts. Do not reread the whole project to recover the last step.
+- The runtime editorial prompt is `prompts/ux-guidelines.md`. Keep it available
+  to all four LLM engines and in every deployment manifest; it is application
+  data, independent of the coding agent's skills.
+- Install dependencies with `pip install -r requirements.txt -r requirements-dev.txt`.
+  Run tests with `python -m pytest tests/ -q`. The prepared cloud interpreter is
+  `/workspace/.venvs/my-hw/bin/python` when available.
+- `python news_bot.py` runs a publishing tick immediately. Use isolated test
+  databases and mocked services for verification; do not run it with production
+  credentials merely to check the installation.
+- Preserve captured HTML fixtures and archived `work/` evidence. Scope any
+  pre-commit checks to changed files; do not reformat source captures.
 
-- Deliver the smallest reliable result, then stop. Simple tasks: state the action. Complex
-  or ambiguous tasks: define outcome, boundaries, checks, and completion criteria.
-- Read relevant instructions/files/dependencies; reuse unless changed, missing, or freshness
-  required. Follow repository conventions; preserve unrelated changes without cleaning,
-  reformatting, stashing, discarding, or committing them.
-- Keep work in this session; create/fork/handoff/delegate to another chat only when explicitly
-  requested. In-session subagents still require the authorization below.
-- Unrequested process/agents/refactors/dependencies/audits/artifacts require necessity for
-  the approved result or explicit authorization; relevance alone is insufficient. Findings
-  do not authorize unrelated fixes. Explain minimum expansion required by safety or integrity.
-- Verify proportionately to changed behavior/risk. Reuse checks; repeat only for relevant
-  changes, failures, or new evidence. Batch agreements/artifact updates; identify actual
-  versions, recorded decisions, and pending updates at delivery. Sufficient scope/evidence
-  needs no duplicate specs/tasks/reviews for skill or method compliance.
+## Git and production policy
 
-## Evidence and decisions
+- `dev` is the development line; `main` is the stable production line.
+  Promote `dev` to `main` through a GitHub pull request with green CI and
+  release notes. Moving or publishing `main` requires authorization.
+- Production deployment is manual; both automated deploy workflows remain
+  disabled. After an authorized successful deployment, tag the deployed `main`
+  revision as `prod-YYYY-MM-DD` (use a suffix for a second deployment that day).
+- An authorized manual deployment or container restart may run at any time.
+  A restart replans the remaining daily publication slots. Preserve the database
+  volume and runtime configuration, record the rollback revision, and verify startup.
+- When updating a repository that exists only in a Docker volume on macOS,
+  follow the host-migration procedure in `docs/codex-setup.md`. It does not apply
+  to this Linux cloud workspace.
 
-Separate facts/hypotheses/interpretations/speculation/proposals; never claim unperformed
-inspection/execution/publication/verification. Prefer primary/current sources; verify material
-version/API/legal/price-dependent claims against authoritative documentation. For consequential
-uncertainty, seek disconfirmation; state unknowns, impact, resolution, bounded assumptions.
-Verify important results in their consumption channel when formatting/integration/environment
-matters. Corrections/accepted decisions outrank drafts; retain reasons. Persist rules only
-with confirmation/repeated evidence, reason, and applicability. Challenge material unsupported
-assumptions with evidence/checks. Make informed low-risk assumptions; ask only about material
-choices/missing authorization, without reconfirming authorized actions.
+## Project progress and records
 
-## Communication
+- `.project-progress.json` covers the full approved project roadmap. Update it
+  after substantial completed work, status changes, or moved deliverables;
+  preserve history, dependencies, blockers, and the existing schema.
+- Use allowed statuses and weights; set `updated_at` to the actual ISO timestamp
+  with timezone. Validate JSON, unique IDs, references, and completed deliverables.
+  Report progress as completed weight divided by total weight, never an estimate.
+- The website reads `main`; updating this file does not authorize promotion.
+- `work/HANDOFF.md` is the single current continuation record. Before ending or
+  handing off substantive work, update its snapshot once: outcome, active item,
+  exact next action and its approval state, code/publication/deployment state,
+  checks with scope and limits, blockers, and links to evidence. Update it at a
+  meaningful pause or before context loss when needed, not after every command.
+- Append one short dated history entry per substantive outcome in that same
+  file. Keep its current snapshot concise. Detailed decisions and verification
+  belong in the existing work item's records; link them instead of copying them.
+- Dated `SESSION-*`, old handoffs, audits, and checkpoints are historical
+  evidence. Do not create a new session file by default or treat an old
+  `next_wave` or draft template as the current task or approval.
+- Reuse recorded checks when their relevant inputs are unchanged. Reading,
+  explanations, and status-only requests need no record update unless they
+  establish a decision or change the project's actual state.
 
-Russian by default; code/artifacts follow repository language. Lead with the outcome; use plain,
-user-appropriate language and terms/analogies only when useful. Match length to need; omit
-internal deliberation/repetition. Urgency: safest usable result first. Final reports stand alone:
-completed work, checks, blockers, separate proposals.
+## ECC routing
 
-## Stalls
-
-Diagnose failures; retry with new evidence/different approach. Before retrying a blocking
-failure, briefly state the revised hypothesis, disconfirming evidence, changed approach,
-and stop condition.
-Threshold: two consecutive failures on one blocker without new evidence, or ten minutes on a
-narrow correction without verified intermediate result. Stop mutations/external retries;
-preserve user work, safely isolate/remove only your failed experiments. Continue only with
-evidence for one bounded, different check; otherwise report blocker/next decision. Third
-live/external attempt requires a visible checkpoint and any authorization required for that action. Measurably progressing
-tests/builds/downloads/delegation are not stalls; keep the user informed.
-
-## Safety
-
-No secrets in chat; use secret stores, ignored .env files, or CI secrets. External writes,
-messages, purchases, deployment, production changes, destruction require concrete authorization
-(current request may supply it); reads/approved implementation need no reconfirmation. Resolve
-destructive targets exactly; prefer recovery; no unresolved broad paths/globs/environment
-variables. Preserve significant facts' provenance; no public-trace personal dossiers without
-authorized purpose and applicable lawful basis. Report unresolved vulnerabilities privately
-through the repository security channel when available; do not publish exploit details.
-
-## Handoff
-
-Reuse one persistent project/work-item handoff. Update it only for an actual handoff, a user
-request, or a project requirement; ordinary tasks do not automatically require an update.
-When updating, append dated state, verified decisions, questions, and next steps; retain
-history and a findable current summary. Separate proposals/decisions; no new file per session.
-
-## Git and GitHub
-
-- Project branch/release policy prevails; do not normalize an explicit alternative workflow.
-  Otherwise use dev -> main and finish completed pull/push/synchronization on dev. GitHub is
-  durable truth when configured; report blocked or unauthorized publication as pending.
-- Before default pull/push/synchronization, fetch all remotes with --prune; inspect worktree,
-  exact remote, tracking refs, dev/main ancestry and ahead/behind. Require a clean worktree
-  before integration/ref movement; commit only intended changes before transport. Compare
-  ancestry, not timestamps. Reuse valid checks unless content/integration or evidence changed.
-- Before the first default pull/push/commit/synchronization, establish local dev and main after
-  fetching and inspecting the complete local/remote graph. Seed missing main from the
-  authoritative remote default or established stable branch; seed missing dev from main.
-  Ask on ambiguous seeds; preserve other branches and unique commits. Creating missing local
-  refs does not authorize publishing them: origin/dev only on push, origin/main only with approval.
-- Explicit authorization is required for force-push, history rewriting, branch deletion/recreation,
-  work discard, and updating an existing stable/production ref or publishing main, unless the
-  current request already names and approves that step. Preserve divergent unique histories;
-  explain and ask before choosing integration. Never reset merely to match branches.
-- Keep one logical outcome per commit. Inspect staged changes for secrets, private data,
-  unrelated files, and generated artifacts; do not bypass hooks.
-
-### Default push
-
-1. Push means actual transport to the intended GitHub remote; a local commit is insufficient.
-   A transport request does not authorize content changes. Ensure intended changes are on dev;
-   safely include main history missing from dev, asking on divergence or ambiguous integration.
-2. Push dev to origin/dev and verify the actual remote ref against the intended commit.
-3. If main synchronization remains pending, ask for that step's approval; reuse consent already
-   covering it. With approval, integrate dev into main (prefer fast-forward), check changed
-   integration only, publish main, and align dev when needed. Verify intended local/remote
-   dev/main refs. Without approval, report main pending. Finish on dev.
-
-### Default pull
-
-1. Pull means updating from fetched history, not merely fetching. Compare local/remote dev/main
-   ancestry and ahead/behind: equal -> update tracking state; containment -> update the working
-   dev branch from the containing newer history; divergence -> preserve both and ask.
-2. Report which history was newer, what changed locally, and other remote-ref updates. If dev/main
-   synchronization remains pending, ask; updating existing main or publishing it needs approval.
-3. With approval, preserve histories, integrate into the lagging branch, check changed integration,
-   publish only authorized refs, verify intended synchronization, and finish on dev. Stop if
-   unrelated worktree changes make the update ambiguous; preserve them.
-
-### Default deploy
-
-Unless project release policy differs, publish the approved revision to main, then deploy that
-exact main revision to production. If publishing main fails, stop before deployment.
-
-## Skills and subagents
-
-User instructions outrank skills; no unrelated work/effects are authorized. No narrow-task
-delegation. Authorized/useful delegation: bounded roles/context/completion criteria. Root/unlisted
-roles inherit session model/effort. Listed roles: first active advertised candidate; pass
-model/effort only when the runtime permits the chosen context mode. If overrides require an
-isolated spawn, supply its bounded context explicitly; inherit when necessary context would
-be lost or no candidate is available. No evaluation-only candidates. A project model policy
-replaces the global routing table; do not combine their role lists.
-Use available grilling when asked to stress-test a plan or when a consequential owner decision
-blocks the outcome. Clear approved plans and researchable facts need no interview.
-
-| Profile and roles | Candidate order | Effort |
-| --- | --- | --- |
-| fast: code-researcher, documentation-reviewer, skill-checker | gpt-5.6-terra, gpt-5.6-sol | medium |
-| builder: general-purpose, task-creator | gpt-5.6-terra, gpt-5.6-sol | high |
-| critical: code-reviewer, completeness-validator, deploy-reviewer, infrastructure-reviewer, pre-deploy-qa, post-deploy-qa, prompt-reviewer, task-validator, tech-spec-validator, test-reviewer, spec-quality validators | gpt-5.6-sol, gpt-5.6-terra | high |
-| adversarial: reality-checker, security-auditor, skeptic, userspec-adequacy-validator | gpt-5.6-sol, gpt-5.6-terra | xhigh |
-
-Keep gpt-6-astra out until runtime availability, representative quality/latency/cost evaluations,
-and explicit owner approval justify changing the candidate list.
+For substantial, unclear, or risky work, durable planning, releases, or continuing
+an existing work item, read `.agents/skills/ecc-flow/SKILL.md` and only its relevant
+references. This selects the project's workflow; common authorization, scope,
+evidence, and delegation rules remain in the inherited global agreements.

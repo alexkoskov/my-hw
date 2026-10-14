@@ -1,0 +1,30 @@
+# Project-specific Codex roles. Model selection follows ecc-flow/model-policy.yaml.
+# Root sessions keep their existing runtime model and permissions.
+
+[agents.code-researcher]
+description = "Read-only investigator for locating implementation paths, contracts, and evidence before a bounded change."
+config_file = "agents/code-researcher.toml"
+
+[agents.code-reviewer]
+description = "Risk-focused reviewer for correctness, compatibility, maintainability, and regression defects in a defined diff."
+config_file = "agents/code-reviewer.toml"
+
+[agents.documentation-reviewer]
+description = "Fast read-only checker for accuracy and consistency of changed instructions, specifications, and project knowledge."
+config_file = "agents/documentation-reviewer.toml"
+
+[agents.general-purpose]
+description = "Bounded implementer for an approved, independently editable outcome."
+config_file = "agents/general-purpose.toml"
+
+[agents.reality-checker]
+description = "Adversarial validator for claims, acceptance evidence, and hidden assumptions on high-consequence work."
+config_file = "agents/reality-checker.toml"
+
+[agents.security-auditor]
+description = "Adversarial read-only reviewer for changes that cross authentication, authorization, secrets, untrusted input, data, or external-service boundaries."
+config_file = "agents/security-auditor.toml"
+
+[agents.test-reviewer]
+description = "Read-only reviewer for behavioral coverage, regression value, determinism, and test design on a defined change."
+config_file = "agents/test-reviewer.toml"

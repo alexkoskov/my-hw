@@ -11,12 +11,20 @@ secrets/
 *apikey*
 *secret*
 
-# Local settings (not shared)
-.claude/settings.local.json
+# Installer recovery copies (local only)
+.codex-config-backups/
+.ecc-backups/
+# Shared skill aliases are provisioned per environment, never vendored.
+/.agents/skills/decision-quality
+/.agents/skills/grilling
+/.agents/skills/integration-reliability
+/.agents/skills/project-progress
+/.agents/skills/test-quality
 
 # Dependencies
 node_modules/
 venv/
+.venv/
 __pycache__/
 *.pyc
 
@@ -51,6 +59,7 @@ news.db-journal
 /logs/
 
 # Test coverage
+.pytest_cache/
 coverage/
 .coverage
 htmlcov/

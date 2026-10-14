@@ -103,7 +103,7 @@
       "depends_on": [],
       "blocked_by": [],
       "deliverables": [
-        ".claude/skills/project-knowledge/references/"
+        ".agents/skills/project-knowledge/references/"
       ]
     },
     {
@@ -2170,10 +2170,10 @@
       ],
       "blocked_by": [],
       "deliverables": [
-        ".claude/skills/project-knowledge/references/project.md",
-        ".claude/skills/project-knowledge/references/architecture.md",
-        ".claude/skills/project-knowledge/references/patterns.md",
-        ".claude/skills/project-knowledge/references/deployment.md"
+        ".agents/skills/project-knowledge/references/project.md",
+        ".agents/skills/project-knowledge/references/architecture.md",
+        ".agents/skills/project-knowledge/references/patterns.md",
+        ".agents/skills/project-knowledge/references/deployment.md"
       ]
     },
     {
@@ -2266,8 +2266,46 @@
         "pending_articles_repo.py",
         "tests/"
       ]
+    },
+    {
+      "id": "MAINT-CODEX-001",
+      "title": "Migrate project tooling to Codex and isolate the runtime editorial prompt",
+      "description": "Use shared global instructions and skills, preserve project knowledge in native Codex skills, replace the obsolete Claude toolkit, and verify prompt loading, deployment manifests, the container image, and native skill discovery. Two unchanged integration failures were reproduced on the baseline revision.",
+      "status": "done",
+      "weight": 3,
+      "depends_on": [],
+      "blocked_by": [],
+      "deliverables": [
+        "AGENTS.md",
+        ".agents/skills/ecc-flow/",
+        ".agents/skills/project-knowledge/",
+        ".codex/config.toml",
+        "prompts/ux-guidelines.md",
+        "scripts/link_codex_skills.py",
+        "tests/test_prompt_packaging.py",
+        "docs/codex-setup.md",
+        "work/SESSION-2026-10-14.md"
+      ]
+    },
+    {
+      "id": "MAINT-DOCS-001",
+      "title": "Create one persistent continuation record and clarify documentation ownership",
+      "description": "Route resumed work through the current handoff and linked evidence, replace mandatory daily session files with meaningful updates to the same snapshot, preserve historical records, and record the current verified project state.",
+      "status": "done",
+      "weight": 2,
+      "depends_on": [
+        "MAINT-CODEX-001"
+      ],
+      "blocked_by": [],
+      "deliverables": [
+        "work/HANDOFF.md",
+        "work/README.md",
+        "AGENTS.md",
+        ".agents/skills/ecc-flow/SKILL.md",
+        ".agents/skills/project-knowledge/references/patterns.md"
+      ]
     }
   ],
   "blockers": [],
-  "updated_at": "2026-09-17T14:16:13+03:00"
+  "updated_at": "2026-10-14T16:33:12+03:00"
 }

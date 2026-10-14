@@ -154,7 +154,7 @@ def _is_account_level_status(exc: BaseException) -> bool:
 #: as the default to ``_load_prompt``; see Decision 8 (flat-path fallback) in
 #: each engine's own ``_load_prompt`` for the deploy-time layout.
 _PROMPT_PATH_DEFAULT_PARTS = (
-    ".claude", "skills", "project-knowledge", "references", "ux-guidelines.md",
+    "prompts", "ux-guidelines.md",
 )
 
 #: Allowed title emoji prefixes (per ux-guidelines.md + patterns.md).
