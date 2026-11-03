@@ -19,5 +19,11 @@ jobs:
         run: |
           pip install -r requirements.txt
           if [ -f requirements-dev.txt ]; then pip install -r requirements-dev.txt; fi
+      - name: Install deployment test tools
+        run: |
+          if ! command -v age >/dev/null; then
+            sudo apt-get update -qq
+            sudo apt-get install -y --no-install-recommends age
+          fi
       - name: Run tests
         run: python -m pytest tests/ -v

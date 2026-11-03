@@ -5,36 +5,33 @@ Read this file first to resume. Record ownership is described in [the work index
 
 ## Where work stopped
 
-- **Latest owner request:** push the completed hardening changes to GitHub,
-  open a PR into `main`, and merge. Push, PR and merge after green CI are
-  authorized; production deployment is not requested. Implementation and the
-  [revised plan](project-hardening/plan.md) are complete.
+- **Latest owner request:** enable automatic production deployment from GitHub.
+  The owner already authorized deployment, then selected the automatic route.
+  A main-CI-gated Docker workflow and checkpointed host/runner controllers are
+  implemented; publish through a green-CI dev→main PR and inspect the first run.
 - **Last coding work:** runtime/LLM rendering, retry persistence, deadlines,
   callbacks, log redaction, data/DOM/model extraction, bounded source fetching,
   rootless worker startup, persistent-state safety, monitoring delivery, CI and
   current documentation are corrected. Detailed checks and limits are in
   [verification](project-hardening/verification.md).
-- **Git:** seven scoped implementation/documentation commits were pushed to
-  `dev` at `ecdaea4`. [PR #48](https://github.com/alexkoskov/my-hw/pull/48)
-  targets `main`; its current head, checks and merge status are authoritative.
-  The publication metadata follow-up changes no tested runtime content.
-  Inspect current refs rather than inferring the final revision from this record.
-  GitHub repository settings remain unchanged.
-- **Production:** not inspected or changed. The last historical deployment
-  record remains 2026-10-01 at `cda27b7`; it is not a live health check. The new
-  image was built and tested only in the managed local Docker environment.
+- **Git:** PR #48 is merged. The automatic-deployment changes are local on `dev`
+  over synchronized `323c7c4` dev/main refs. Publication and first workflow run
+  remain pending; GitHub PR/workflow state records the final transport outcome.
+- **Production:** not accessed or changed in this task. GitHub runners require
+  dedicated `PROD_SSH_PRIVATE_KEY` and verified `PROD_SSH_KNOWN_HOSTS` for Moscow;
+  availability is unverified. Missing configuration must fail before SSH. The
+  [deployment record](project-hardening/deployment.md) owns the new verification,
+  setup requirements and rollback details. Historical records are not live health.
 
 ## Exact next step
 
-Check [PR #48](https://github.com/alexkoskov/my-hw/pull/48): if it is still open,
-finish the already-authorized merge only after the latest head's actual test job
-passes; if merged, align local/remote `dev` and `main` and follow the owner's
-selected next task. This PR is the durable record of the final publication.
-
-Before a separately authorized production rollout, inspect and migrate only
-exact persistent state paths to uid/gid 10001 using the
-[deployment runbook](../.agents/skills/project-knowledge/references/deployment.md).
-Do not bypass startup refusal with an empty database. Deployment is not authorized.
+Finish the verified automatic-deployment changes, push `dev`, open/merge the PR
+only after its actual test job passes, align dev/main, then inspect push-CI and
+`Deploy production` for exact main. No additional publication/deployment consent
+is needed for this requested outcome. If dedicated GitHub secrets are missing,
+leave the production task incomplete and direct the owner to the existing
+[one-time setup](../.agents/skills/project-knowledge/references/deployment.md#one-time-github-ssh-setup).
+Do not substitute old NL credentials or initialize an empty database.
 
 The existing product item **DBP-015** still needs the owner's classification of
 its 2026-09-10 E014 pair in the [post-deploy report](dedup-broad-precision/logs/working/post-deploy-qa-report.json),
@@ -44,6 +41,9 @@ larger items. Follow the owner's selected work rather than old checkpoints.
 
 ## Verification and limits
 
+- Automatic deployment local suite: **2316 passed, 3 skipped, 566 subtests
+  passed**. Real backup encryption and offline rollback/gate tests passed;
+  actionlint and Bash syntax passed. Live SSH/deployment is still unverified.
 - Full local suite on the final runtime: **2276 passed, 3 skipped;
   566 subtests passed**. Two source skips are pre-existing; the third requires
   host SQLite CLI, whose actual shell backup/restore passed in a QA container.
@@ -93,3 +93,16 @@ larger items. Follow the owner's selected work rather than old checkpoints.
   All commit hooks passed. Runtime/image hashes still match the recorded
   verification; finish promotion after the latest-head test job passes.
   PR status records the final merge outcome. No production deployment requested.
+
+- **2026-11-03:** Owner authorized production deployment of merged PR #48.
+  Confirmed approved main and prepared a private archive of the verified image.
+  Environment has no TCP grants or SSH authentication, so no server access or
+  production mutation occurred. Owner requested setup guidance; resume from
+  [deployment record](project-hardening/deployment.md) after protected access is configured.
+
+- **2026-11-03:** Owner requested GitHub automatic deployment. Replaced the
+  retired production SCP workflow with exact-main/CI-gated Docker deployment,
+  encrypted off-host backups, inspected ownership migration and image/config
+  rollback preserving publication history. Local suite 2316 passed/3 skipped;
+  publication and first actual workflow outcome remain pending in the
+  [deployment record](project-hardening/deployment.md).

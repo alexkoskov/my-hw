@@ -28,9 +28,15 @@ keep this file limited to project facts, constraints, and overrides.
 - `dev` is the development line; `main` is the stable production line.
   Promote `dev` to `main` through a GitHub pull request with green CI and
   release notes. Moving or publishing `main` requires authorization.
-- Production deployment is manual; both automated deploy workflows remain
-  disabled. After an authorized successful deployment, tag the deployed `main`
-  revision as `prod-YYYY-MM-DD` (use a suffix for a second deployment that day).
+- Production deployment is automatic after the actual CI test job succeeds for
+  a push to `main`. `.github/workflows/deploy.yml` deploys that exact current
+  main SHA to the Moscow Docker host; `dev`, pull requests and the retired test
+  deploy do not deploy. The owner enabled this policy on 2026-11-03.
+- The deploy workflow requires dedicated `PROD_SSH_PRIVATE_KEY` and
+  `PROD_SSH_KNOWN_HOSTS`; never substitute the retired NL `SSH_*` credentials.
+  Missing configuration must fail before server access. Manual dispatch also
+  requires successful CI for current `main`. Preserve checkpoints/rollback and
+  tag a successful deployment as `prod-YYYY-MM-DD` (suffix on repeated days).
 - An authorized manual deployment or container restart may run at any time.
   A restart replans the remaining daily publication slots. Preserve the database
   volume and runtime configuration, record the rollback revision, and verify startup.

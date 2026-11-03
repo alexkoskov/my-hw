@@ -36,3 +36,7 @@ hw_review.py
 preview_renderer.py
 scripts/link_codex_skills.py
 # Keep prompts/ — ux-guidelines.md is loaded by every LLM engine at runtime.
+
+# Deployment controllers run on Actions/the host, not inside the bot.
+scripts/deploy_production.py
+scripts/deploy_actions.sh
