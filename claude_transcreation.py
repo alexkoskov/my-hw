@@ -442,9 +442,9 @@ def transcreate_via_claude(
     parsed["title"] = _apply_emoji_safety_net(parsed["title"])
     parsed["paragraphs"] = _truncate_paragraphs(parsed["paragraphs"])
 
-    # Variant B fallback: if model didn't return matching blocks, use
-    # the article's original EN blocks for structural completeness.
-    if expected_block_count and not parsed.get("blocks"):
+    # Structure belongs to the source, not the response (whose envelope omits
+    # blocks). Even matching-length model blocks can lose media or body text.
+    if expected_block_count:
         parsed["blocks"] = _patch_text_with_ru_paragraphs(
             blocks_in, parsed["paragraphs"],
         )
