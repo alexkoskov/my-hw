@@ -558,7 +558,9 @@ class TestVariantBPlus(unittest.TestCase):
         article_with_blocks = dict(SAMPLE_ARTICLE)
         article_with_blocks["blocks"] = [
             {"type": "image", "src": "https://x/a.jpg", "caption": "Hot Wheels GT-R"},
+            {"type": "paragraph", "text": SAMPLE_ARTICLE["paragraphs"][0]},
             {"type": "image", "src": "https://x/b.jpg", "caption": "Bugatti reveal"},
+            {"type": "paragraph", "text": SAMPLE_ARTICLE["paragraphs"][1]},
         ]
         # Main response: paragraphs OK, blocks=null
         main_payload = json.loads(SAMPLE_VALID_JSON)
@@ -575,8 +577,10 @@ class TestVariantBPlus(unittest.TestCase):
                 article_with_blocks, client=client,
             )
         self.assertEqual(client.chat.completions.create.call_count, 2)
-        self.assertEqual(len(result["blocks"]), 2)
-        self.assertEqual(result["blocks"][1]["caption"], "Релиз Bugatti")
+        self.assertEqual(len(result["blocks"]), 4)
+        self.assertEqual(result["blocks"][2]["caption"], "Релиз Bugatti")
+        self.assertEqual(result["blocks"][1]["text"], main_payload["paragraphs"][0])
+        self.assertEqual(result["blocks"][3]["text"], main_payload["paragraphs"][1])
         # src URLs preserved
         self.assertEqual(result["blocks"][0]["src"], "https://x/a.jpg")
 

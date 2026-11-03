@@ -1,0 +1,1 @@
+{"gid": 10001, "ledger_rows": 1, "prompt_readable": true, "route_change_denied": true, "route_retained": "default via 172.30.247.1 dev eth0", "status": {"CapBnd": "0000000000000000", "CapEff": "0000000000000000", "NoNewPrivs": "1"}, "uid": 10001}

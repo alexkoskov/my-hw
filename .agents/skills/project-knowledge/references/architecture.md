@@ -14,8 +14,7 @@ Technical architecture overview for AI agents. Helps agents understand HOW the s
 **Database:** SQLite (`news.db`; path via `DB_FILE`, prod = `/data/news.db` on a mounted volume)
 - **Why:** Lightweight, file‑based, zero‑configuration; suits the simple duplicate‑tracking requirement.
 
-**Runtime:** Python 3.8+
-- **Why:** Wide library support, ease of scripting, and compatibility with required packages.
+**Runtime:** Python 3.13 in Docker and CI; use the project dependencies for local checks.
 
 ---
 
@@ -26,17 +25,17 @@ does in detail, read its docstring; this tree only says where to look.
 
 ```
 my-hw/
-├── news_bot.py              # Entry point + orchestrator (~220 KB, the bulk of the project).
-│                              main() (:4555) arms one daily 10:00 МСК tick (:4641); job() runs
+├── news_bot.py              # Entry point + orchestrator.
+│                              main() arms one daily 10:00 МСК tick; job() runs
 │                              the crash-loop guard, fetch, the intake gates (relevance,
 │                              checklist, promo [E035], content gate [E036]/[E037], cross-source
 │                              dedup), staging, the plan-of-day ping and the publish loop.
 │                              Also owns: SOURCES registry, NETLOC_TO_SOURCE / SOURCE_EMOJI /
-│                              SOURCE_LABEL / SOURCE_HASHTAG_OVERRIDE (:2841-2906), secret
-│                              redaction (:336-380), _strip_plugs (:1285), the inbound review
-│                              listener, and the DORMANT Google-path transcreate_text (:2740).
+│                              SOURCE_LABEL / SOURCE_HASHTAG_OVERRIDE, secret redaction,
+│                              _strip_plugs, the inbound review listener, and the DORMANT
+│                              Google-path transcreate_text.
 ├── llm_transcreation.py     # LLM dispatcher — selects ONE of the four engines below at import.
-│                              THE startup-critical translator module: news_bot.py:77 imports it
+│                              THE startup-critical translator module: news_bot imports it
 │                              as `claude_transcreation`, so that alias no longer means the
 │                              Anthropic engine. See § External Integrations.
 ├── _llm_common.py           # Provider-agnostic core shared by all four engines: system-prompt
@@ -75,6 +74,7 @@ my-hw/
 ├── backfill_fingerprints.py # One-shot/top-up backfill of `model_fingerprint` on historical
 │                              rows. Operator-run, not part of the tick.
 ├── telegraph_publisher.py   # Telegra.ph API client + public preview_nodes() node-tree builder
+├── http_fetch.py           # Bounded article body reads and redirect rejection; backend-specific timeouts
 ├── publication_watch.py    # Stdlib-only tri-state classifier/CLI for bounded Telegra.ph
 │                              evidence; used by the external uptime workflow, not the bot runtime.
 ├── autoevolution_source.py  # autoevolution.com — RSS + Cloudflare-bypass scrape (curl_cffi)
@@ -90,9 +90,10 @@ my-hw/
 ├── preview_renderer.py      # Local HTML preview builder (CSP + tag/URL allowlists).
 │                              Archived 2026-04-30 — used only by the dormant hw_review flow.
 ├── feeds.json               # RSS URLs — 4 entries: 2 autoevolution + lamley + t-hunted.
-│                              `load_feeds()` reads at most the first 5 (news_bot.py:297).
+│                              `news_bot.load_feed_urls` validates the configured list.
 ├── Dockerfile               # Production runtime image
-├── docker-compose.yml       # Prod service + VPN route sidecar + ./data bind-mount — deployment.md
+├── docker-compose.yml       # Prod service + shared VPN gateway settings + ./data bind-mount
+├── scripts/container_entrypoint.sh # Route bootstrap, state permissions and non-root worker startup
 ├── watchdog.sh              # ON-HOST stuck-bot watchdog (host cron → `docker exec`)
 ├── deploy.sh                # Historical scp bundle deploy — superseded, see below
 ├── requirements.txt / requirements-dev.txt
@@ -102,8 +103,7 @@ my-hw/
 ├── .github/workflows/       # ci.yml (pytest on push/PR to main+dev); uptime.yml (external
 │                              SSH + tri-state publication watchdog, every 30 min);
 │                              deploy.yml + deploy_test.yml — both DISARMED (`if: false`)
-├── tests/                   # pytest suite — 1626 tests across 47 files (2026-08-03; 1628 before
-│                            # test_deploy_files_invariant.py was rewritten 6 shallow → 4 real tests)
+├── tests/                   # pytest suite; actual counts/results are recorded with checked revisions
 ├── scripts/ archive/ logs/  # Helper scripts, retired code, local run logs
 ├── work/
 │   ├── HANDOFF.md           # Current continuation snapshot and short outcome history
@@ -148,10 +148,9 @@ on the `./data` bind-mount.
 **Critical packages:**
 
 - `feedparser` – Parses RSS feeds to extract article entries.
-- `requests` – Generic HTTP for the Telegra.ph API and for every source
-  except autoevolution (lamley, orangetrack, t-hunted).
-- `curl_cffi` – Chrome-impersonating HTTP client for autoevolution
-  (bypasses Cloudflare's `HTTP 403` on plain `requests`).
+- `requests` – Generic HTTP for the Telegra.ph API and Requests-based source paths.
+- `curl_cffi` – Chrome-impersonating HTTP client for autoevolution and Lamley's
+  production HTML path; plain Requests cannot reliably satisfy their anti-bot checks.
 - `beautifulsoup4` – Extracts title, body, images, and inline links from HTML.
 - `deep-translator` – Google Translate engine wrapped by `transcreate_text`
   in `news_bot.py`. **DORMANT since the 2026-06-11 hold-and-wait change** —
@@ -194,7 +193,7 @@ This is the single most important runtime dependency: no LLM, no posts.
 
 - **Shape.** `llm_transcreation.py` is a dispatcher that picks exactly ONE engine
   at import time and re-exports its public API (`transcreate_via_claude`,
-  `health_check`, `is_outage_error`, `is_per_article_error`). `news_bot.py:77`
+  `health_check`, `is_outage_error`, `is_per_article_error`). `news_bot.py`
   imports it as `import llm_transcreation as claude_transcreation` — the alias is
   backward compatibility for the bound name in the code and in tests, NOT a
   statement about which provider runs. **`llm_transcreation.py` is the
@@ -205,7 +204,7 @@ This is the single most important runtime dependency: no LLM, no posts.
   exception classification, the API call. Everything provider-agnostic —
   prompt build, JSON envelope, response parsing/validation, safety nets — lives
   once in `_llm_common.py`; adding a fifth engine is documented in its docstring.
-- **Selection order** (`_select_engine`, llm_transcreation.py:1-30): explicit
+- **Selection order** (`_select_engine`, llm_transcreation.py): explicit
   `LLM_PROVIDER` wins; otherwise auto-select by API-key presence in the order
   `OPENAI_API_KEY` → `ANTHROPIC_API_KEY` → `GEMINI_API_KEY` → `OPENROUTER_API_KEY`;
   with no key at all it falls back to `claude` so the startup health check fails
@@ -213,7 +212,7 @@ This is the single most important runtime dependency: no LLM, no posts.
 - **Production runs OpenRouter.** Prod pins `LLM_PROVIDER=openrouter` explicitly
   so key presence does not decide (OpenRouter is LAST in the auto-order — relying
   on auto-selection here would be fragile). Default model
-  `openai/gpt-5.4-mini` (`_DEFAULT_MODEL`, openrouter_transcreation.py:80),
+  `openai/gpt-5.4-mini` (`_DEFAULT_MODEL`, openrouter_transcreation.py),
   override via `OPENROUTER_MODEL`. Per-engine model overrides: `ANTHROPIC_MODEL`
   (default `claude-haiku-4-5`), `OPENAI_MODEL`, `GEMINI_MODEL`. `.env.example`
   documents every knob including the `[E019]` low-balance alert.
@@ -240,9 +239,10 @@ This is the single most important runtime dependency: no LLM, no posts.
   the row to the queue head.*
 - **Auth:** one env var per provider (see above). All five secret shapes the bot
   can hold — Telegram bot token, OpenRouter, Anthropic, OpenAI, Gemini — are
-  scrubbed from logs by `_TokenRedactingFilter` and from admin pings by the
-  shared `_redact_text`; the patterns and their **order contract** (specific
-  prefixes must match before the broad OpenAI `sk-…`) live at news_bot.py:336-380.
+  scrubbed from final formatted handler output, including exception/stack text,
+  and from admin pings. Exact configured values cover opaque secrets as well as
+  known patterns; the pattern **order contract** (specific prefixes before the
+  broad OpenAI `sk-…`) lives in `news_bot._redact_text`.
   Anyone adding a sixth provider must read that ordering note before adding a
   pattern.
 
@@ -266,15 +266,15 @@ This is the single most important runtime dependency: no LLM, no posts.
 - **Auth method:** Bot token (`TELEGRAM_BOT_TOKEN`) and channel ID
   (`TELEGRAM_CHANNEL_ID`); admin chat id in `TELEGRAM_ADMIN_ID`. All stored
   as environment variables. `TELEGRAM_ADMIN_ID` must be the NUMERIC chat id:
-  it falls back to the placeholder `'@sunny413x'` (news_bot.py:106), which the
+  it falls back to the placeholder `'@sunny413x'` (news_bot.py), which the
   Bot API cannot resolve for a private chat — the bot then starts and sends no
   admin pings at all — and the review-button listener fail-closes on any
   non-numeric value. `.env.example` spells out the failure mode.
 
 **News sources.** Three are live, one is disabled. All are unauthenticated. The
-registry that decides which fetchers run is `news_bot.SOURCES` (news_bot.py:3607);
+registry that decides which fetchers run is `news_bot.SOURCES` (news_bot.py);
 the netloc→`source_name` map, the ping emoji/label vocabulary and the channel
-hashtag override map are at news_bot.py:2841-2906. Adding a source means touching
+hashtag override map are at news_bot.py. Adding a source means touching
 all of them plus `feeds.json` — see patterns.md for the recipe.
 
 **autoevolution.com (behind Cloudflare)** — primary RSS source + full article
@@ -286,7 +286,8 @@ Full body arrives in the RSS `<content:encoded>`; a bounded-streaming page GET i
 the fallback. Fetched via its own entry in `SOURCES` (not via `feeds.json`).
 `source_name` = `orangetrack`.
 
-**lamleygroup.com** — enthusiast blog. Plain `requests` + BeautifulSoup on
+**lamleygroup.com** — enthusiast blog. Chrome-impersonating `curl_cffi` by
+default, with an injectable Requests-compatible transport; BeautifulSoup parses
 `.entry-content`. `source_name` = `lamley`.
 
 **t-hunted.blogspot.com** — Blogger-hosted, **Portuguese-language**. The Atom feed
@@ -298,7 +299,7 @@ contain a dash). Being PT-language and enthusiast-run, this source generates mos
 of the intake-gate incidents narrated below.
 
 **corporate.mattel.com — DISABLED 2026-05-24.** Commented out of `SOURCES`
-(news_bot.py:3609) with the reason at news_bot.py:3599-3606: Mattel moved to
+(news_bot.py) with the reason at news_bot.py: Mattel moved to
 Astro/Netlify, article bodies now render client-side and are unreachable from any
 JSON endpoint (the listing API returns handle/title/date/thumbnail only). Restoring
 it would need a headless browser, and across its whole life the source yielded zero
@@ -308,6 +309,19 @@ Router) and its tests are kept on disk, and `mattel` remains in `NETLOC_TO_SOURC
 for historical rows. Do not debug "no Mattel posts" as a parser bug.
 
 ---
+
+### Article download boundaries
+
+The autoevolution, Lamley, t-hunted and retained Mattel HTML adapters use
+`http_fetch.bounded_get` to reject redirects and bound
+response accumulation before parsing. A redirected address is not trusted just
+because the original hostname passed the source allowlist. The cffi path uses a
+bounded callback under libcurl's request timeout instead of its streaming queue.
+The Requests path requests identity encoding, rejects unexpected compression and
+uses bounded raw reads, an inactivity timeout and a body deadline. This is not a
+strict whole-HTTP deadline for trickled headers or chunk framing; keep that limit
+distinct from the byte cap. Source-specific retry, notifier and anti-bot behavior
+remain owned by each adapter.
 
 ## Data Flow
 
@@ -319,9 +333,16 @@ Below, each stage says what it does, what it emits into the intake funnel, which
 
 ### Cron prep + distributed-publish phase — `news_bot.job()` daily at 10:00 МСК
 
+Before this phase, production startup validates the expected existing database
+and processed-news ledger before `init_db` or external API calls. The runtime
+must supply its Telegraph token. The container entrypoint drops Python to uid/gid
+10001; writable database, sidecars, heartbeat and singleton lock live on `/data`.
+See deployment.md § Container startup and first non-root rollout for the existing-
+volume prerequisite; local verification is not proof of production migration.
+
 1. **Crash-loop guard.** Read `MAX(published_at)` from `published_articles`. If `now - last_published < MIN_INTERVAL_MINUTES (90)`, sleep until that gap elapses before continuing. Protects the channel from burst posting under Docker rapid-restart loops.
-2. **Fetch** all sources via the `SOURCES` registry; each entry gets `source_name` via `_resolve_source_name(link)` → netloc → one of `autoevolution` / `orangetrack` / `lamley` / `t-hunted` / `mattel` (historical) / `other` on a miss (news_bot.py:2841). Each parser applies `boilerplate_filter` and the image policy before returning.
-3. **Dedup + relevance.** Filter against `processed_news` AND `pending_articles` (no re-fetch of seen links). Also drop sibling-brand articles via `_is_hot_wheels_relevant` (news_bot.py:1530) — the channel is Hot-Wheels-only, and feeds cross-tag sibling diecast brands under "Hot Wheels". It is source-agnostic and label-driven: a six-step decision ladder over four lexicons, ending in "broad-diecast source with no HW signal → reject". The ladder and the lexicons are documented in its docstring; the rules for extending it are in patterns.md. After `fetch_full_article` runs, drop bare-checklist posts via `_is_text_only_checklist` (title contains whole-word "checklist" AND paragraph body < 500 chars — typical orangetrack list-of-cars-with-no-prose pattern).
+2. **Fetch** all sources via the `SOURCES` registry; each entry gets `source_name` via `_resolve_source_name(link)` → netloc → one of `autoevolution` / `orangetrack` / `lamley` / `t-hunted` / `mattel` (historical) / `other` on a miss (news_bot.py). Each parser applies `boilerplate_filter` and the image policy before returning.
+3. **Dedup + relevance.** Filter against `processed_news` AND `pending_articles` (no re-fetch of seen links). Also drop sibling-brand articles via `_is_hot_wheels_relevant` (news_bot.py) — the channel is Hot-Wheels-only, and feeds cross-tag sibling diecast brands under "Hot Wheels". It is source-agnostic and label-driven: a six-step decision ladder over four lexicons, ending in "broad-diecast source with no HW signal → reject". The ladder and the lexicons are documented in its docstring; the rules for extending it are in patterns.md. After `fetch_full_article` runs, drop bare-checklist posts via `_is_text_only_checklist` (title contains whole-word "checklist" AND paragraph body < 500 chars — typical orangetrack list-of-cars-with-no-prose pattern).
    - **Promo/ad filter (2026-07-25, `[E035]`)** — `_is_promo_article(entry, article)`, run right after the checklist drop and BEFORE the dedup gate. Scans title + URL slug + the first 8 paragraphs for promo markers in three tiers (SELLER-voice / CTA-DIRECT / CTA-OFFER) and blocks on a combination, never on a single word; the marker lists and the exact thresholds are in news_bot.py with the reasoning inline. **The principle behind the thresholds:** an ad tells the reader to act, journalism does not — seller voice alone is not enough (interviews quote shop owners in the first person) and a CTA alone is not enough (retail news reports offers factually). On a hit: `funnel['dropped_promo']`, `[E035]` log + `admin_alerts.alert_promo_blocked` ping, `mark_processed` pin (E015 precedent — no daily re-fetch/re-alert), `continue`. The article never reaches `pending_articles`, so a dropped ad costs zero LLM tokens. Fail-open: a crash treats the article as not-promo rather than killing the tick. Prod incident that prompted it: t-hunted published a pure store ad («…na loja Universo Hot Wheels») and the bot translated + posted it.
    - **Content gate (2026-07-25, `[E036]` HOLD / `[E037]` DROP)** — three genres the operator does not want auto-published: poster/catalog/packaging posts, video reviews, event announcements. Two detectors, `_hold_for_review_reason` and `_is_rejected_genre`, both **subject-anchored**: they read the title + URL slug ONLY, never the body (slugs are generated from the title, so they add no independent false-positive surface but survive a truncated feed title). Marker lists, the video branches (`video_lead` / `video_np` / `video_signals`), the event two-signal rule and the per-marker rationale are all in news_bot.py — that is where they get amended when a false positive shows up, and `work/content-gate-review/` holds the two review rounds. What is policy rather than implementation:
      - **Branch → action is a lookup, held in one place.** The detectors report only WHICH rule fired; `_GENRE_BRANCH_ACTION` maps a branch to `'drop'` or `'hold'` and `job()` obeys it. Operator decision 2026-07-25 — «очевидные резать, спорные спрашивать»: `video_lead` (`Vídeo:` / `Watch:` + separator) and `event` (event name AND organisational word) **drop**; `video_np` and `video_signals` **hold**.
@@ -338,37 +359,39 @@ Below, each stage says what it does, what it emits into the intake funnel, which
      - The gate remains controlled by `DEDUP_SERIES_ENABLED` (default ON), uses the existing per-link-pair 7-day `[E014]` alert rate-limit and review-button grammar, and introduces no schema or fingerprint-format change. It remains fail-open: any crash in extraction, comparison, diagnostics or backstop handling → rate-limited `[E016]` + the article stages with `model_fingerprint=NULL`.
      - **A soft-flagged article is DEFERRED 24h** (`_DEDUP_DEFER_HOURS`, 2026-07-28): staged with a future `pending_articles.publish_after`, which hides it from `list_pending`/`count_pending` exactly like `hold_reason` — so it buys no slot it cannot fill — and it then publishes by itself when the stamp elapses. **Silence means PUBLISH here**; the delay exists only so the `[E014]` cancel button has a usable window. Before it, intake and the first slot both ran at 10:00: on 2026-07-28 the ping went out at 10:00:10, the article published at 10:00:17, and the operator's cancel at 10:14 got «Уже опубликовано, отменить нельзя». The defer is set regardless of the alert rate-limit — the rate-limit protects the operator's notifications, not the article. Contrast with the content gate's `hold_reason`, which never expires: «нет ответа = не публикуем» there, «нет ответа = публикуем» here.
      - **Tier polarity is fail-safe:** `|D` requires a lexicon-tagged-`distinctive` series AND a concrete model; anything untagged/unknown defaults to broad (`_SERIES_DEFAULT_TIER`), so a new franchise can never silently hard-block.
-       - **Round-up rule for tagging a series (2026-07-28):** a series that can turn up in listicle / round-up coverage CANNOT be `distinctive`. A round-up names many castings, so any one of them can collide with a programme mentioned in passing — and `|D` is an irreversible hard block. **Super Treasure Hunt and Red Line Club were retagged `broad`** on 2026-07-28 after a false `[E015]` dropped a t-hunted RLC Audi Quattro post against an autoevolution «10 affordable cars» round-up that merely listed an Audi Sport and mentioned Red Line Club in passing (`audi sport|red line club|D` on both sides). Both are continuously-shipping Hot Wheels programmes, not one-off franchises. `distinctive` is for one-off franchises/events only — see the tier table and its incident note in model_extractor.py:138-172. Broad ⇒ soft flag ⇒ the operator decides, and nothing is dropped irreversibly.
+       - **Round-up rule for tagging a series (2026-07-28):** a series that can turn up in listicle / round-up coverage CANNOT be `distinctive`. A round-up names many castings, so any one of them can collide with a programme mentioned in passing — and `|D` is an irreversible hard block. **Super Treasure Hunt and Red Line Club were retagged `broad`** on 2026-07-28 after a false `[E015]` dropped a t-hunted RLC Audi Quattro post against an autoevolution «10 affordable cars» round-up that merely listed an Audi Sport and mentioned Red Line Club in passing (`audi sport|red line club|D` on both sides). Both are continuously-shipping Hot Wheels programmes, not one-off franchises. `distinctive` is for one-off franchises/events only — see the tier table and its incident note in model_extractor.py. Broad ⇒ soft flag ⇒ the operator decides, and nothing is dropped irreversibly.
      - **Theme-only keys (`"*|<series>|B"`, no concrete model) — franchises/events ONLY, since 2026-07-28.** A broad recurrent line (pop culture, car culture, boulevard, zamac, monster trucks, team transport) or a recurring release program (`_RECURRING_PROGRAMS`: super treasure hunt, red line club) yields NO key without a model. Prod incident: a t-hunted «lote da série Pop Culture» post (Lotus → brand-only token) and an autoevolution «Super Treasure Hunt … Is a Lincoln» article (Lincoln is outside the brand lexicon) both degraded to `*|pop culture|B` and false-flagged each other — and autoevolution's «pop culture» was ordinary prose, not a line name. Extraction is unchanged (`series` still lists both); only MATCHING narrowed. Side effect: an article can now reach the backstop with non-empty `series` but EMPTY `pairs`, which is a guaranteed no-op there (`similarity()` = 0.0 on empty `strict`).
 4. **Insert** accepted entries into `pending_articles` via `pending_articles_repo.insert_pending` (JSON-serialised paragraphs/images/blocks, plus `hold_reason` when the content gate held the article). Staged rows from prior days remain in the queue as carry-over. On a held insert, `[E036]` is sent AFTER the row is committed (so the button token can never point at a missing row); the ping is best-effort but the hold is not — a send/mint failure leaves the article parked and visible in the daily «На утверждении» line.
 5. **Snapshot and schedule — THE production scheduler.** One `get_schedule_backlog_counts()` read returns the atomic tuple `(publishable, deferred, held)`. The categories are mutually exclusive and exhaustive for `pending_articles`: a non-NULL `hold_reason` always makes a row held (even when `publish_after` is in the future); among rows without a hold, a future `publish_after` is deferred and a NULL or elapsed value is publishable. This is a query over the existing table, not a schema change.
    - `compute_fixed_slots(publishable, now_msk)` produces `planned_slots` and publishable `carry_over` for the operator-facing plan. Only rows that can publish at planning time buy planned slots. Operator pacing remains **10:00 / 15:00 / 19:30 МСК**, at most one post per fixed time and therefore at most **3 posts/day**.
    - `remaining_fixed_slots(now_msk)` is the single source of today's still-eligible fixed times. If the snapshot contains any deferred or held rows, the job retains all of those times as bounded `execution_slots`; times beyond `planned_slots` are conditional release opportunities, not promised posts and not carry-over. They let a callback or elapsed `publish_after` release work between fixed times without creating a fourth time or a second publisher.
-   - A fixed time stays eligible for `grace_minutes` (default 5) after its wall-clock time, because the 10:00 tick reaches planning seconds-to-minutes after 10:00:00. **The grace must stay small** — a restart well after a fixed time must not re-fire it. This is the mechanical reason redeploys are forbidden inside the publishing window.
+   - A fixed time stays eligible for `grace_minutes` (default 5) after its wall-clock time, because the 10:00 tick reaches planning seconds-to-minutes after 10:00:00. **The grace must stay small** — a restart well after a fixed time must not re-fire it. Authorized restarts may run at any time; deployment.md owns that policy and explains replanning.
    - If the aggregate read fails, the job falls back to one publishable `count_pending()` read and deliberately retains no release opportunities: degraded planning must not guess hidden queue state.
    - **The dynamic even-spread `compute_publish_slots` is DORMANT** — superseded 2026-06-13 and retained only for its unit tests. Editing it changes nothing in production.
 6. **Admin ping** (per tick, always fires — operator heartbeat) to `TELEGRAM_ADMIN_ID`. Busy day → `admin_alerts.alert_plan_of_day(inserted, publishable_count, planned_slots, carry_over)` (`[E008]` schedule); quiet day (`publishable_count == 0 and inserted == 0`) → `alert_quiet_day()` (`[E009]` «Бот сработал, новых статей нет»). Deferred and held counts are separate informational lines, never additions to `planned_slots`. The backlog warning also uses publishable count only.
    - **Intake-funnel diagnostic (pipeline-diagnostic-watchdog, 2026-07-13):** step (b) accumulates a per-tick funnel of plain-int counters (`sources_fetched`/`sources_failed` → `new_count` → `dropped_no_article`/`checklist`/`promo`/`genre`/`dedup_block`, `dedup_degraded`, `dedup_subject_suppressed`, `held_for_review` → `staged`), emitted as one `[funnel]` log line and rendered into the tick ping. `dedup_subject_suppressed` increments ONCE per incoming article for which at least one candidate broad comparison failed title-subject qualification, regardless of the number of rejected pairs or candidates; bounded per-candidate log lines retain the detail. It is informational, never enters «отсеяно» or `dedup_block`, and may coexist with a later `[E014]` or `[E015]` result for that article. `[E009]` shows WHERE intake collapsed («Где схлопнулось: …») instead of a flat line; `[E008]` gets a compact intake summary. Counts only (no untrusted title/link/error text), fail-safe — degrades to the legacy line on any error and can never break the tick. Scope = intake/staging; translation/post happen later in the publish loop (step 7), so the funnel shows those as `—`.
    - **Held backlog line (content-gate, 2026-07-25):** both `[E008]` and `[E009]` take a keyword-only `held_count` (`len(list_held())`) and render «На утверждении: N». Held rows are absent from «Всего в очереди» and never buy `planned_slots`; their presence only retains conditional release opportunities. `[E036]` has no timer or reminder by design — this line is the ONLY place a forgotten hold ever resurfaces, which is why it is on the quiet-day ping too. Distinct from the funnel's `held_for_review`, which counts THIS tick's holds and is deliberately excluded from the «отсеяно» sum — a hold is a deferred decision, not a drop.
 7. **Publish loop.** For each time in `execution_slots`:
-   - The window-end guard prevents any publication after 20:00 МСК.
+   - Actual-clock checks prevent starting a new Telegraph or Telegram send at/after 20:00 МСК. A request already in flight may finish later; bookkeeping for a successfully sent teaser may still complete.
    - `time.sleep((slot - now).total_seconds())` until slot arrives.
    - Read `list_pending()` afresh at that time; today's freshly-fetched batch comes first (in fetch order), then carry-over oldest-first. A row released after planning can therefore become visible without any callback publishing it directly.
    - If the fresh read is empty, continue only when the initial snapshot retained release opportunities; this preserves later chances for a timed deferral or operator decision. With no withheld backlog, empty means the ordinary plan is exhausted and the loop stops. An empty release check is neither a planned post nor a publish outcome and does not enter the recap.
    - Review callbacks are state-only: dedup «keep» clears the timed deferral but can leave a content hold; hold «approve» atomically clears that hold and consumes its token but can leave a future deferral; either reject/cancel removes the row. They never call the publisher. A gate released after the final 19:30 opportunity waits until the next day's scheduler run.
    - **Idempotency guard (publish-idempotency-fix, 2026-05-07):** at the very top of `_fallback_publish`, BEFORE any side effect, check `pending_articles_repo.get_published(link)`. If non-`None`, the pending row is a zombie (some prior `move_to_published` left an inconsistent state, or fetch loop re-staged a published link). Log INFO with `[idempotency-guard]` tag, send admin-ping `«⚠️ Пропущен дубль публикации»`, call `skip_pending(link)` (atomic `INSERT OR IGNORE → processed_news` + `DELETE → pending_articles`), return `True`. Slot loop treats as success — no `attempt_count` strike, no `move_to_failed`. If `skip_pending` itself raises (DB-level), log ERROR + send a second admin-ping `«⚠️ Не удалось снять зомби-строку»` and STILL return `True` (subscriber-visible duplicate prevention is the primary contract).
-   - Call `_fallback_publish` via `_publish_with_retries` (LLM-only — no Google branch since 2026-06-11). The wrapper returns `'published' | 'held' | 'failed'`.
+   - Call `_fallback_publish` via `_publish_with_retries` (LLM-only — no Google branch since 2026-06-11). The wrapper returns `'published' | 'held' | 'failed' | 'deferred'`.
+   - Persist the cleaned RU stage before creating a Telegraph page. Retries and restarts reuse that translation and any saved page URL; moving through failed/retry preserves both. A lost response from an external API still prevents an exactly-once guarantee.
    - **Bold survives the LLM as literal `**…**` markers, and must never reach Telegra.ph.** Inline formatting is carried in each block's `runs` metadata (see § Data Model). Before the request, `_llm_common._encode_format_markers` (:128) rewrites the runs into `**bold**` inside the paragraph text so the model keeps the emphasis while translating; at patch time `_decode_format_markers` (:187) turns the markers back into RU runs, and `telegraph_publisher._decode_bold_markers` (:201) is the render-time backstop that also strips unbalanced markers (`_STRAY_MARKER_RE`). Both fixes are 2026-07-28; the invariant is in the commit title — *"decode `**bold**` markers at render — never publish them"*. Any change to the paragraph-patching path must preserve it, or raw `**` leaks into a published page. `_render_paragraph_with_runs`' `str.find` fallback now only handles runs the LLM did not preserve. Rendering rules: patterns.md.
-   - **Service text is stripped at THREE granularities** — mixing them up is a documented recurring bug (commit 5bbc9d4, 2026-07-29, after three operator reports on three consecutive t-hunted articles): whole ARTICLE = `_is_promo_article` `[E035]` (step 3); whole PARAGRAPH = `boilerplate_filter`, `^`-anchored and length-bounded; single SENTENCE = `_strip_plugs` / `_strip_plugs_in_blocks` (news_bot.py:1285-1322), applied here to the RU title, subtitle, paragraphs and blocks — author social plugs, cross-promo CTAs and dangling page-layout pointers («в видео ниже», «на фото выше»). **Before adding a fourth `^`-anchored paragraph pattern, check whether the offending text is a sentence inside a paragraph** — that was the wrong instinct each of the three times. Pattern-writing rules: patterns.md.
+   - **Service text is stripped at THREE granularities** — mixing them up is a documented recurring bug (commit 5bbc9d4, 2026-07-29, after three operator reports on three consecutive t-hunted articles): whole ARTICLE = `_is_promo_article` `[E035]` (step 3); whole PARAGRAPH = `boilerplate_filter`, `^`-anchored and length-bounded; single SENTENCE = `_strip_plugs` / `_strip_plugs_in_blocks` (news_bot.py), applied here to the RU title, subtitle, paragraphs and blocks — author social plugs, cross-promo CTAs and dangling page-layout pointers («в видео ниже», «на фото выше»). **Before adding a fourth `^`-anchored paragraph pattern, check whether the offending text is a sentence inside a paragraph** — that was the wrong instinct each of the three times. Pattern-writing rules: patterns.md.
    - `'held'` — `ClaudeOutageError` (API-level outage): `_fallback_publish` already HELD the article (nothing published) and advanced the operator-ping state machine. NOT retried (holding is desired; a retry would re-translate). Do NOT count a publish and do NOT strike — the row stays at the queue head and the next slot/day retries the LLM. Continue to next slot.
    - `'failed'` — per-article LLM failure (`ClaudeTranscreationError`) strikes IMMEDIATELY (deterministic, no retry); a transient publish-side error (Telegra.ph/Telegram/repo network timeout) is retried in-slot up to `PUBLISH_RETRY_ATTEMPTS`×`PUBLISH_RETRY_DELAY_SECONDS` (4×10 min, in-slot-retry 2026-06-17) so a one-off blip doesn't cost the slot until the next day. Either way, once `'failed'` the slot loop runs the standard 3-strike counter → `move_to_failed` (exactly one strike per slot, not per retry).
+   - `'deferred'` — the actual publication deadline closed. Preserve completed stages and leave the article for a later eligible slot; do not increment attempts or outage holds.
    - **Publish recap (publish-recap-diagnostic, 2026-07-15):** after the slot loop, `job()` tallies the outcomes (`published`/`held`/`failed`/`moved_to_failed` + a capped, de-duped list of `(link, sanitized reason)` for failures) and sends `admin_alerts.alert_publish_recap` → `[E034]` — 🟢 `опубликовано N/N` when all published, else 🟡 with held («Claude недоступна») + the failed reasons («снято после 3 промахов»). Surfaces `failed`-article reasons that were previously log-only (the intake funnel + this recap together cover the whole pipeline's "where + why"). Sent only when publishing was attempted (skips quiet ticks). Reasons double-scrubbed (`sanitize_error_message` + `_redact_text`), plain-text, fail-safe (runs after all publishing — cannot affect posts).
 
 ### Inbound review path — `_run_review_listener()` (prod-only, gated by `REVIEW_BUTTONS_ENABLED`)
 
 **The project's first inbound Telegram path** (dedup-review-buttons feature, 2026-07). Until this feature the bot was strictly send-only; now the `[E014]` «Похож на дубль» admin ping carries two inline buttons — «🚫 Не публиковать» / «👍 Оставить» — and a background listener receives the operator's press. Since the content gate (2026-07-25) a **second** keyboard rides the same path: `[E036]` «На утверждение» with «✅ Опубликовать» / «🚫 Не публиковать» (see below).
 
-- **Send side.** Only two alerts ever carry a keyboard: `[E014]` (dedup soft-flag) and `[E036]` (content-gate hold). Each mints `token = secrets.token_urlsafe(9)`, persists `review_token:<token> → <kind>|<link>` in `bot_state` (see § Data Model) and attaches the keyboard from `admin_alerts`. The alert's «Что сделать» text is derived from the SAME keyboard object that is attached, so it can never promise a button that was not rendered; with buttons off it says there is no action available on this instance — the archived `hw_review.py` CLI is not deployed and must never be advertised in an alert.
+- **Send side.** Only two alerts carry keyboards: `[E014]` (dedup soft-flag) and `[E036]` (content-gate hold). Commit the pending row before minting/persisting its review token or sending a button, so an immediate callback can resolve the row. E014 acknowledges its alert rate-limit only after confirmed delivery. The alert's «Что сделать» text derives from the same keyboard being sent; with buttons off it must not promise an action or advertise the undeployed archived CLI.
 - **Listen side.** `main()` starts `_run_review_listener()` as a **daemon thread** beside the blocking `schedule`/publish loop; it opens its own `Bot` and long-polls `get_updates(offset, timeout=30, allowed_updates=['callback_query'])`. Each press goes through a state-only resolver (`resolve_dedup_callback` / `resolve_hold_callback`); the thread then edits the message and answers the callback. Outcomes: cancel/reject → `skip_pending`; keep → clear the dedup deferral while preserving any content hold; approve → atomically clear the content hold and consume its token while preserving any future deferral. None of these paths publishes. Already-published, missing-row and stale-token outcomes are reported honestly, and a listener error can never kill the publish loop.
 - **Two grammars, deliberately different prefixes** — `dd:<c|k>:<token>` for `[E014]`, `hd:<a|r>:<token>` for `[E036]`. A shared prefix would route an approve press into the dedup resolver, which would answer «устарела» and quietly lose the decision. Prefix separation alone is NOT sufficient: the prefix says which BUTTON was pressed, not which keyboard minted the TOKEN — so each resolver also verifies the stored token `kind` (audit SEC-CG-2; the two exploitable directions are written up in § Data Model under `review_token:`). Dispatch calls the two resolvers by name rather than through a lookup table: a table captures function objects at import time and would silently defeat `patch('news_bot.resolve_dedup_callback')` in tests.
 - **Doing nothing needs no branch.** An unpressed hold simply stays out of `list_pending` forever. Both `[E036]` text variants say outright that no answer means the article is NEVER published — a two-button prompt otherwise reads as "it goes out unless I stop it".
@@ -377,11 +400,11 @@ Below, each stage says what it does, what it emits into the intake funnel, which
 
 ### Manual review loop — `hw_review.py` (archived 2026-04-30)
 
-> **Status:** dormant since 2026-04-30, when the operator declared the auto path production-ready. `hw_review.py` + `preview_renderer.py` + their tests are preserved verbatim and still work if revived for a single article: `list → show → stage → preview → publish` (plus `skip` / `take` / `retry`), with `ux-guidelines.md` loaded into the operator's Codex session as the translation prompt. `publish` is idempotent per Decision 9 (Telegra.ph page persisted BEFORE the Telegram send, so a retry never creates a second page). Full walkthrough: `hw_review.py`'s own command docstrings and `work/completed/manual-review-workflow/`. The CLI reads `list_pending`, so it does not show content-gate-held rows — accepted, it is not deployed.
+> **Status:** dormant since 2026-04-30, when the operator declared the auto path production-ready. `hw_review.py` + `preview_renderer.py` + their tests are preserved verbatim and still work if revived for a single article: `list → show → stage → preview → publish` (plus `skip` / `take` / `retry`), with `ux-guidelines.md` loaded into the operator's Codex session as the translation prompt. `publish` reuses a saved Telegra.ph URL before retrying Telegram; loss of an external response still prevents an exactly-once guarantee. Full walkthrough: `hw_review.py`'s own command docstrings and `work/completed/manual-review-workflow/`. The CLI reads `list_pending`, so it does not show content-gate-held rows — accepted, it is not deployed.
 
 ### Channel post output (identical for all paths)
 
-- Message body: `#{source_hashtag}` per `_source_hashtag` (news_bot.py:2806) — `#autoevolution`, `#lamleygroup`, `#orangetrackdiecast`, `#thunted` (override; the default TLD-strip would say `#blogspot`), `#mattel` historically. Single-line, byte-identical regardless of which translation engine produced the RU text (Decision 14). Holds even if the archived manual path is revived.
+- Message body: `#{source_hashtag}` per `_source_hashtag` (news_bot.py) — `#autoevolution`, `#lamleygroup`, `#orangetrackdiecast`, `#thunted` (override; the default TLD-strip would say `#blogspot`), `#mattel` historically. Single-line, byte-identical regardless of which translation engine produced the RU text (Decision 14). Holds even if the archived manual path is revived.
 - `LinkPreviewOptions(url=telegraph_url, show_above_text=True)` triggers Instant View card.
 - Telegra.ph page: hero figure + italic subtitle with `💬 «…»` + bold lead + body blocks (paragraphs, images, iframes) + `Источник:` footer.
 - The `↳ автоперевод` marker is no longer emitted. Since the 2026-06-11 hold-and-wait change there is no Google-fallback publish branch, so `_fallback_publish` always passes `auto_marker=False` and every published page is LLM-translated without a marker. The `auto_marker` kwarg on `telegraph_publisher.publish_article` is retained but always False from the cron path. See `patterns.md` § "Channel post format" for wiring.
@@ -418,6 +441,7 @@ Below, each stage says what it does, what it emits into the intake funnel, which
 
 **failed_articles** — dead letter after 3 failed publish attempts
 - `link` PK, `title`, `last_error`, `attempt_count`, `failed_at`
+- Preserves the EN body, page URL/path, `model_fingerprint` and RU stage fields across `move_to_failed` / `retry_from_failed`. Additive nullable columns keep older rows readable; missing historical data is not silently bulk-backfilled.
 
 **bot_state** — small key/value store for cross-tick state (added by llm-transcreation feature)
 - `key` (TEXT PRIMARY KEY), `value` (TEXT)
@@ -448,7 +472,7 @@ first run) and the LLM provider keys (`OPENROUTER_API_KEY` in prod;
 engines) are stored in `.env` — never committed. The `.env` file is
 git-ignored. None of these are persisted to the database. Every one of those
 key shapes is scrubbed from logs and from admin pings — patterns and their
-match-ordering contract at news_bot.py:336-380 (§ External Integrations).
+match-ordering contract at news_bot.py (§ External Integrations).
 
 ---
 

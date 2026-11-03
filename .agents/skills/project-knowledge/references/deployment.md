@@ -5,15 +5,17 @@ Deployment process, infrastructure, and production operations for AI agents.
 
 ---
 
-> **Status (paths verified 2026-09-30):** production is a **single** Docker container
+> **Recorded topology (paths verified 2026-09-30):** production is a **single** Docker container
 > `hw-news-bot` on the Moscow VPS `45.90.216.165` (repo `/opt/hw-news`, tracking
 > **`main`**; cutover 2026-07-06). Egress routes through the shared `shared-vpn`
 > gateway (sing-box VLESS, `172.28.0.2` on the external `vpnnet` network) so the RU
 > host reaches Telegram. Compose runs one `news-bot` container; before starting
-> Python it points its own default route at the VPN gateway. State lives on a
-> host bind-mount (`./data:/data`):
-> `.env` (secrets, hand-managed on the host) + `data/news.db`
-> (`DB_FILE=/data/news.db`).
+> Python it points its own default route at the VPN gateway. Persistent state
+> lives on the host bind-mount `./data:/data`, including `data/news.db`.
+> Secrets stay in the separate, hand-managed host `.env` and are injected at
+> runtime. This runbook describes the current checkout; actual deployed revision,
+> verification and rollout prerequisites belong in `work/HANDOFF.md` and its
+> linked evidence. Local image checks do not establish live production health.
 >
 > **⚠️ There is exactly ONE instance and it is production. No test bot, no
 > staging, no test channel.** Deploy is **manual** and may run **at any time**;
@@ -104,13 +106,50 @@ state on the `./data:/data` bind-mount.
 **Why:** the RU host reaches Telegram only through the VPN, and Docker gives a
 reproducible image + isolated egress routing without changing the bot code.
 
+### Container startup and first non-root rollout
+
+`scripts/container_entrypoint.sh` checks state access as uid/gid **10001** before
+changing the route. It then installs `VPN_GATEWAY` as the default route and drops
+all worker capabilities with `NoNewPrivs=1` before starting the command. Compose
+still grants `NET_ADMIN` to this short root bootstrap; Python does not retain it.
+Application files and the prompt remain root-owned and readable. Writable state
+belongs on `/data`, and the worker's private home is `/home/bot`.
+
+The first authorized rollout of this startup contract requires an existing
+production ledger with compatible permissions. A root-owned legacy volume is
+**not migrated automatically**: incompatible state causes startup to refuse
+before the app or external API calls run.
+
+During that separately authorized rollout:
+
+1. Record the current deployed revision and take a consistent SQLite backup;
+   preserve an off-host recovery copy. Stop the bot before changing state ownership.
+2. Inspect `/opt/hw-news/data` and the exact existing state paths: `news.db`,
+   SQLite `news.db-wal`, `news.db-shm`, `news.db-journal` sidecars when present,
+   `last_tick.ts` and `.news_bot.lock`. Resolve unexpected symlinks or owners
+   before proceeding.
+3. Make the data directory and those existing files writable by uid/gid 10001,
+   with traversal on the directory and private file permissions. Scope any
+   ownership change to those inspected paths; do not use recursive chown,
+   broad globs or `chmod 777`. Keep code and the host `.env` outside this change.
+4. Supply `TELEGRAPH_ACCESS_TOKEN` through the runtime environment. Compose pins
+   `INSTANCE_LABEL=prod`, `DB_FILE=/data/news.db`, the heartbeat and lock paths.
+   Do not remove these settings or initialize an empty ledger to bypass a refusal.
+5. Recreate the container at the approved revision and verify the actual worker
+   uid/capabilities, route, database/lock access, startup logs and preserved ledger.
+
+These are rollout prerequisites, not evidence that production ownership has
+already changed. Reverting only the image may also require restoring compatible
+state permissions; include that in the recorded rollback procedure.
+
 ---
 
 ## Access Information
 
 **SSH Access:** `ssh root@45.90.216.165` (Moscow VPS, password auth) — the only host. Repo/deploy dir: `/opt/hw-news`; state on `/opt/hw-news/data`. This is the sole SSH target in the project; the old NL address `148.135.207.54` now answers with a stranger's sshd (see Серверная шпаргалка).
 
-> Operator runs all server-side ops (SSH, deploy, restart); Claude prepares the commands.
+> Server-side operations (SSH changes, deploy, restart) require explicit
+> authorization. Codex may prepare or execute commands within that authorized scope.
 
 **Credentials:** in the operator's password manager. The bot secrets live only in the server's `.env` (never committed).
 
@@ -124,25 +163,32 @@ reproducible image + isolated egress routing without changing the bot code.
 
 - `TELEGRAM_BOT_TOKEN` — bot token from BotFather. Sensitive — never echo/log. Code suppresses `httpx`/`httpcore` INFO to prevent URL-path leak.
 - `TELEGRAM_CHANNEL_ID` — numeric channel id; prod = `-1004027529994` (see Серверная шпаргалка). A `@username` form also works for public channels.
-- `TELEGRAM_ADMIN_ID` — personal Telegram **numeric** chat_id for admin pings (daily schedule, outage protocol, backlog warning, error digests). The operator must `/start` the bot once for DMs to work. ⚠️ Leaving it unset does not fail loudly: the code falls back to the placeholder `'@sunny413x'` (`news_bot.py:106`), which the Bot API cannot resolve to a private chat — pings are attempted and silently lost, and the review-button listener fail-closes on the non-numeric value.
-- `TELEGRAPH_ACCESS_TOKEN` — auto-created by `telegraph_publisher.ensure_access_token` on first run and persisted to `.env` (`telegraph_publisher.py:32`). Also needed as a **GitHub secret** by the uptime watchdog — see § Deployment Triggers → GitHub Secrets.
-- `OPENROUTER_API_KEY` — the LLM key production actually runs on. Alias `OPEN_ROUTER_API_KEY` is accepted (`openrouter_transcreation.py:83`, `_API_KEY_ENV_VARS`). **Sensitive** — never echo/log/commit; redacted from stored errors and admin pings via `news_bot._SECRET_ENV_NAMES` (`news_bot.py:229-236`). Without a working LLM key the first API call fails → 2-ping outage protocol → posts are HELD (hold-and-wait, 2026-06-11), nothing published until it recovers.
-- `TZ=Europe/Moscow` — process timezone. The daily tick fires at 10:00 МСК via `pytz`-aware `schedule.every().day.at("10:00", tz=...)` (`news_bot.py:4641`), so it's correct regardless of `TZ`. But `os.getenv('TZ')` is checked at startup (Decision 14 health check #2, `news_bot.py:4604`) — if it doesn't equal `'Europe/Moscow'`, the bot sends an admin warning ping ("log timestamps may show non-MSK times"). Note: the Moscow **host** is on UTC; only the container is MSK.
+- `TELEGRAM_ADMIN_ID` — personal Telegram **numeric** chat_id for admin pings (daily schedule, outage protocol, backlog warning, error digests). The operator must `/start` the bot once for DMs to work. ⚠️ Leaving it unset does not fail loudly: the code falls back to the placeholder `'@sunny413x'` (`news_bot.py`), which the Bot API cannot resolve to a private chat — pings are attempted and silently lost, and the review-button listener fail-closes on the non-numeric value.
+- `TELEGRAPH_ACCESS_TOKEN` — must be supplied in production; startup preflight refuses a missing token before any API call. Local development may create and privately persist a token through `telegraph_publisher.ensure_access_token`. Also needed as a **GitHub secret** by the uptime watchdog — see § Deployment Triggers → GitHub Secrets.
+- `OPENROUTER_API_KEY` — the LLM key production actually runs on. Alias `OPEN_ROUTER_API_KEY` is accepted (`openrouter_transcreation.py`, `_API_KEY_ENV_VARS`). **Sensitive** — never echo/log/commit; redacted from stored errors and admin pings via `news_bot._SECRET_ENV_NAMES` (`news_bot.py`). Without a working LLM key the first API call fails → 2-ping outage protocol → posts are HELD (hold-and-wait, 2026-06-11), nothing published until it recovers.
+- `TZ=Europe/Moscow` — process timezone. The daily tick fires at 10:00 МСК via `pytz`-aware `schedule.every().day.at("10:00", tz=...)` (`news_bot.py`), so it's correct regardless of `TZ`. But `os.getenv('TZ')` is checked at startup (Decision 14 health check #2, `news_bot.py`) — if it doesn't equal `'Europe/Moscow'`, the bot sends an admin warning ping ("log timestamps may show non-MSK times"). Note: the Moscow **host** is on UTC; only the container is MSK.
 
 **Optional (tunable defaults):**
 
-- `LLM_PROVIDER` — pins the engine (`openai` | `claude` | `gemini` | `openrouter`); read at `llm_transcreation.py:70`. **Prod sets `openrouter`.** Unset/blank → auto-selection by key presence, in the order **openai → claude → gemini → openrouter** (`llm_transcreation._auto_select_by_key_presence`, `llm_transcreation.py:46-62`) — so dropping any other engine's key into the prod `.env` would silently move production off OpenRouter if the pin were ever removed.
-- `OPENROUTER_MODEL` — model spec, `provider/model` form. Code default `openai/gpt-5.4-mini` (`openrouter_transcreation.py:80`); **prod overrides it in the hand-managed `.env`** — see § Cost Monitoring for the current value and the reasoning.
+- `LLM_PROVIDER` — pins the engine (`openai` | `claude` | `gemini` | `openrouter`); read at `llm_transcreation.py`. **Prod sets `openrouter`.** Unset/blank → auto-selection by key presence, in the order **openai → claude → gemini → openrouter** (`llm_transcreation._auto_select_by_key_presence`, `llm_transcreation.py`) — so dropping any other engine's key into the prod `.env` would silently move production off OpenRouter if the pin were ever removed.
+- `OPENROUTER_MODEL` — model spec, `provider/model` form. Code default `openai/gpt-5.4-mini` (`openrouter_transcreation.py`); **prod overrides it in the hand-managed `.env`** — see § Cost Monitoring for the current value and the reasoning.
 - `OPENROUTER_BASE_URL` — OpenRouter API base; only for pointing at a proxy. Documented in `.env.example`.
-- `OPENROUTER_MIN_BALANCE_USD` — threshold for the `[E019]` low-balance admin ping (`news_bot.py:1458`).
-- `DEDUP_SERIES_ENABLED` — series/theme pair-rule in the dedup gate. **Default ON** (unset/blank → enabled; only `0/false/no/off` disable it, `news_bot.py:134-136`). See § Feature rollout: `dedup-model-series`.
-- `REVIEW_BUTTONS_ENABLED` — review buttons under the `[E014]` dedup ping. **Default OFF** — only an explicit on-word (`1/true/yes/on`) enables it (`news_bot.py:149-151`); prod sets `=1`. Fail-closed double gate: flag + non-empty `TELEGRAM_BOT_TOKEN` + **numeric** `TELEGRAM_ADMIN_ID` enables BOTH the background `get_updates` listener AND keyboard rendering at the `[E014]` send site — an instance that can't listen renders no buttons. Only one process may poll a given bot token (a second poller gets HTTP 409); with a single instance there is nothing to conflict with, but the flag remains the feature's off-switch. See § Feature rollout: dedup-review-buttons.
-- `INSTANCE_LABEL` — short label prepended by `send_admin_notification` to every admin-bound message (`news_bot.py:109`). Empty/unset → no prefix. Prod = `prod`; also drives the startup DB re-flood guard below.
-- `DB_FILE` — SQLite path (`news_bot.py:120`). **The prod container MUST set `DB_FILE=/data/news.db`** so state lands on the mounted volume, not the ephemeral image layer. Default `"news.db"` (relative) is the local-dev behaviour. A prod instance with a relative `DB_FILE` or an empty `processed_news` triggers a startup `[E018]` admin ping (re-flood guard).
-- `HEARTBEAT_FILE` — heartbeat marker path (`news_bot.py:4526`). The prod container sets `/data/last_tick.ts` via `docker-compose.yml:34` (persistent + readable by the `docker exec` watchdog). Default `~/.cache/news_bot/last_tick.ts`.
-- `ANTHROPIC_API_KEY` / `ANTHROPIC_MODEL` (model default `claude-haiku-4-5`, `claude_transcreation.py:380`) — alternate engine, **not used in production**. Only relevant if `LLM_PROVIDER` is repointed at `claude`. The API key is **sensitive** and is additionally redacted from logs by `_TokenRedactingFilter` (pattern `sk-ant-[A-Za-z0-9_=.-]{16,}`). `OPENAI_API_KEY` / `OPENAI_MODEL` and `GEMINI_API_KEY` / `GEMINI_MODEL` are the same story for the other two engines.
+- `OPENROUTER_MIN_BALANCE_USD` — threshold for the `[E019]` low-balance admin ping (`news_bot.py`).
+- `DEDUP_SERIES_ENABLED` — series/theme pair-rule in the dedup gate. **Default ON** (unset/blank → enabled; only `0/false/no/off` disable it, `news_bot.py`). See § Feature rollout: `dedup-model-series`.
+- `REVIEW_BUTTONS_ENABLED` — review buttons under the `[E014]` dedup ping. **Default OFF** — only an explicit on-word (`1/true/yes/on`) enables it (`news_bot.py`); prod sets `=1`. Fail-closed double gate: flag + non-empty `TELEGRAM_BOT_TOKEN` + **numeric** `TELEGRAM_ADMIN_ID` enables BOTH the background `get_updates` listener AND keyboard rendering at the `[E014]` send site — an instance that can't listen renders no buttons. Only one process may poll a given bot token (a second poller gets HTTP 409); with a single instance there is nothing to conflict with, but the flag remains the feature's off-switch. See § Feature rollout: dedup-review-buttons.
+- `INSTANCE_LABEL` — short label prepended by `send_admin_notification` to every admin-bound message (`news_bot.py`). Empty/unset → no prefix. Prod = `prod`; also drives the startup DB re-flood guard below.
+- `DB_FILE` — SQLite path. Production Compose pins `/data/news.db` on the mounted volume; `"news.db"` remains the local-dev default. Production startup requires the expected existing valid SQLite database, a nonempty `processed_news` ledger and writable database/parent directory **before** `init_db`, token provisioning, LLM checks or `job`. A missing, empty or unexpected database is a startup error, not an invitation to create new state.
+- `NEWS_BOT_LOCK_FILE` — singleton lock. Production Compose pins `/data/.news_bot.lock`; local development defaults to `.news_bot.lock` beside `news_bot.py`.
+- `HEARTBEAT_FILE` — heartbeat marker path (`news_bot.py`). The prod container sets `/data/last_tick.ts` via `docker-compose.yml:34` (persistent + readable by the `docker exec` watchdog). Default `~/.cache/news_bot/last_tick.ts`.
+- `ANTHROPIC_API_KEY` / `ANTHROPIC_MODEL` (model default `claude-haiku-4-5`, `claude_transcreation.py`) — alternate engine, **not used in production**. Only relevant if `LLM_PROVIDER` is repointed at `claude`. The API key is **sensitive** and is additionally redacted from logs by `_TokenRedactingFilter` (pattern `sk-ant-[A-Za-z0-9_=.-]{16,}`). `OPENAI_API_KEY` / `OPENAI_MODEL` and `GEMINI_API_KEY` / `GEMINI_MODEL` are the same story for the other two engines.
 
-**How env reaches prod:** `docker-compose.yml` (`env_file: .env` + `environment: HEARTBEAT_FILE`). The prod `.env` is **hand-edited on the Moscow host** — nothing writes it, and no CI touches it. Changing any variable therefore means: edit `/opt/hw-news/.env` by hand, then rebuild (`docker compose up -d --build`) at any time. The archived `hw_review.py` would read a local `.env` if revived (dormant).
+**How env reaches prod:** `docker-compose.yml` loads `env_file: .env` and pins the
+production database, label, heartbeat and lock settings under `environment`.
+Those Compose values take precedence over `.env`; do not change them to bypass
+preflight. Keep `/opt/hw-news/.env` private (`chmod 600`), hand-managed and outside
+the image. Apply authorized configuration changes by rebuilding/recreating the
+container; no CI edits production secrets. The archived `hw_review.py` would read
+a local `.env` if revived.
 
 ---
 
@@ -192,8 +238,9 @@ evidence or notification path without changing the independent SSH verdict (see
   classifier or alert bookkeeping. Missing token, API failure or unusable evidence
   yields publication `inconclusive`; it is never treated as healthy recovery.
 - `TELEGRAM_BOT_TOKEN` — used to send the outage/recovery message.
-- `TELEGRAM_ADMIN_ID` — numeric chat id the message goes to. With either of the last
-  two unset, the Telegram send is skipped and only GitHub issue state is updated.
+- `TELEGRAM_ADMIN_ID` — numeric chat id the message goes to. Missing either of
+  the last two values is a delivery failure; do not mark an alert or recovery
+  delivered until the Bot API confirms success.
 
 The prod IP the watchdog probes is **not** a secret — it is hardcoded as `PROD_HOST`
 in the workflow.
@@ -203,19 +250,20 @@ delete them when convenient:* `SSH_HOST`, `SSH_USER`, `DEPLOY_PATH`,
 `DEPLOY_PATH_TEST`, `SSH_PRIVATE_KEY`, `ANTHROPIC_API_KEY`, and the repo `vars`
 `ANTHROPIC_MODEL` / `TZ`.
 
-**`deploy.sh` (SCP path) — not used today.** It predates Docker and copies a file list
-to a server over `scp`. It stays in the repo as the machine-readable deploy manifest
-(see "Files deployed" below) and as the bootstrap route if a new non-Docker host is
-ever stood up. It does NOT touch `.env`.
+**`deploy.sh` (SCP path) — disarmed legacy entry point.** It predates Docker and
+does not update the running production container. Its `FILES` array remains a
+machine-readable historical manifest; invoking the script is not a production
+deployment. Restoring a non-Docker deployment requires a separate design.
 
 **Files deployed — do not maintain a second copy here.** The manifest is the `FILES`
-array in [deploy.sh](../../../../deploy.sh) (25 entries as of 2026-08-03): `news_bot.py`
+array in [deploy.sh](../../../../deploy.sh): `news_bot.py`
 plus every first-party module it imports at startup, plus `feeds.json`,
 `requirements.txt`, `.env.example`, `watchdog.sh` and the LLM system prompt. Read it
 there; any enumeration in prose goes stale within a month. The same
 array is duplicated in `.github/workflows/deploy.yml` and
 `.github/workflows/deploy_test.yml` (three copies, currently identical), but both
-workflows are disarmed, so `deploy.sh` is the live one.
+workflows and the SCP entry point are disarmed. Production packaging is the
+Dockerfile plus `.dockerignore`.
 
 Two things about that manifest that the array itself does not say:
 
@@ -229,24 +277,27 @@ Two things about that manifest that the array itself does not say:
   **current Docker path** the file arrives inside the repo checkout at its normal
   subdir path and the fallback never fires. Practical consequence:
   **editing the prompt is a production behaviour change and needs a rebuild** —
-  allowed at any time, like any restart. Prompt-only edits ship no code, so
-  there is nothing to verify beyond reading the next few publications; LLM output
-  cannot be asserted by tests.
+  allowed at any time, like any restart. Before publication, run the existing
+  offline structure and packaging checks:
+  `python -m pytest tests/test_ux_guidelines_structure.py tests/test_prompt_packaging.py -q`.
+  They verify editorial contracts and runtime availability; they cannot prove the
+  semantic quality of every generated article. Significant prompt changes also
+  need a bounded output evaluation before using the real channel as feedback.
 
-**How strong is the invariant, really?** Weaker than it looks, in both directions.
-`tests/test_deploy_files_invariant.py` does not compare the three arrays — it asserts
-that two hardcoded strings (`"t_hunted_source.py"`, `"watchdog.sh"`) appear in each
-file, so a newly added module passes CI unnoticed. And prod does not depend on the
-manifest at all: the image is built with `COPY . .` (`Dockerfile:18`), so everything
-in the repo ships regardless. The manifest matters only if the SCP path is revived for
-a future host — keep it in sync when adding a first-party import, but do not treat the
-test as a guard rail.
+**Manifest guard and its boundary.** `tests/test_deploy_files_invariant.py`
+compares the three arrays, derives the transitive first-party import closure
+through AST analysis and checks that runtime modules are included. Keep it green
+when adding a module. This protects the retained SCP manifests; it does not
+prove final Docker contents, dependency versions or startup. Verify those in an
+isolated image using the actual entrypoint, including prompt loading, excluded
+credentials/backups, non-root permissions and persistent fixture state.
 
 **Restarting the bot:** `docker compose up -d --build --remove-orphans` in `/opt/hw-news` rebuilds the
 image and recreates the container; code changes go live immediately rather than
-waiting for the next 10:00 МСК tick. There is **no privileged step** — the operator is
-`root` on the host, there is no `hwbot` user, no `systemd` unit and no `sudoers` rule
-anywhere in the current setup. (Until 2026-07-25 the NL host used a narrowly scoped
+waiting for the next 10:00 МСК tick. The operator is `root` on the host; the
+container's entrypoint performs the route bootstrap, then starts Python as uid/gid
+10001 with capabilities cleared. There is no host `hwbot` user, `systemd` unit or
+`sudoers` deployment rule. (Until 2026-07-25 the NL host used a narrowly scoped
 `/etc/sudoers.d/news_bot` rule for `systemctl restart`, hardened 2026-07-07 after an
 S2 privilege-escalation review; the record is in `work/AUDIT-2026-07-07.md:38-39` and
 `:117`. Nothing from it applies to the Docker host.)
@@ -275,15 +326,18 @@ the clock.
 
 ## Pre-Deploy Checklist
 
-- [ ] `python3 -m pytest tests/ -q` green locally. This is the ONLY pre-prod gate — there is no staging to catch what it misses.
+- [ ] Relevant regressions and `python -m pytest tests/ -q` pass for the approved revision. There is no staging; record the scope and limits of these checks.
+- [ ] For packaging/startup changes, build and probe the actual image entrypoint with synthetic credentials and fixture state: prompt/imports, uid/capabilities, route, persistent ledger, excluded backups/secrets and resolved dependencies. Never launch the publishing loop as an installation check.
 - [ ] Merged into **`main`** (prod deploys from `main`, never from `dev`).
 - [ ] Note the current prod commit **before** deploying, so a rollback has a target: `ssh root@45.90.216.165 "cd /opt/hw-news && git rev-parse --short HEAD"`.
 - [ ] Deployment is explicitly authorized; time of day is informational, not a gate.
 - [ ] Deploy: `ssh root@45.90.216.165 "cd /opt/hw-news && git pull && docker compose up -d --build"`.
-- [ ] Post-deploy logs: `ssh root@45.90.216.165 "docker logs hw-news-bot --tail 200"` — clean boot, no `[E018]` DB-guard ping, `[E008]` plan-of-day sent.
-- [ ] `news.db` present on the mounted volume (`/opt/hw-news/data/news.db`). A fresh instance auto-creates it via `init_db()`; the schema is idempotent (see `tests/test_migration.py`).
+- [ ] Existing ledger and volume ownership satisfy § Container startup and first non-root rollout; the host `.env` supplies the Telegraph token. Production must not create a replacement empty database.
+- [ ] Post-deploy logs: `ssh root@45.90.216.165 "docker logs hw-news-bot --tail 200"` — clean preflight/startup and `[E008]` plan-of-day sent. Verify the worker uid/capabilities and that the existing ledger remains on the mounted volume.
 
-The prod `.env` (hand-managed, never rewritten by anything) carries `TELEGRAM_BOT_TOKEN`, `TELEGRAM_CHANNEL_ID`, `TELEGRAM_ADMIN_ID`, `TELEGRAPH_ACCESS_TOKEN`, `OPENROUTER_API_KEY`, `LLM_PROVIDER=openrouter`, `OPENROUTER_MODEL`, `INSTANCE_LABEL=prod`, `TZ=Europe/Moscow`, `REVIEW_BUTTONS_ENABLED=1` and **`DB_FILE=/data/news.db`**; compose injects `HEARTBEAT_FILE`.
+The prod `.env` supplies the Telegram/Telegraph/LLM credentials, provider/model
+selection, timezone and review flag. Compose pins the production label, database,
+heartbeat, singleton lock and VPN gateway. See § Environment Variables for ownership.
 
 ---
 
@@ -293,8 +347,8 @@ One-time staged rollout for the tiered series/theme pair-rule (the layer that
 hard-blocks cross-source pop-culture dupes — K-Pop Demon Hunters, Stranger
 Things, Top Gun). This is a **feature-specific procedure on top of** the general
 Pre-Deploy Checklist above — do not skip that; this only adds the cold-DB
-warm-up + dark-deploy sequence. **Operator applies all server commands; Claude
-only prepares them.**
+warm-up + dark-deploy sequence. Server-side execution requires authorization;
+Codex may prepare the commands within that scope.
 
 **This rollout already happened (2026-07-20, self-warm instead of backfill — see the
 superseded note below).** Keep the sequence as the template for the next gated
@@ -356,7 +410,7 @@ already ran) — verify the shape with
 3. **Build & restart** — `ssh root@45.90.216.165 "cd /opt/hw-news && git pull && docker compose up -d --build"`.
    `init_db()` adds the `model_fingerprint` column if the snapshot lacked it
    (idempotent).
-4. **Warm-up backfill** — `ssh root@45.90.216.165 "cd /opt/hw-news && docker compose exec -T news-bot python3 backfill_fingerprints.py --days 30"`
+4. **Warm-up backfill** — `ssh root@45.90.216.165 "cd /opt/hw-news && docker compose exec -T --user 10001:10001 news-bot python3 backfill_fingerprints.py --days 30"`
    (inherits `DB_FILE=/data/news.db` from the container env). Idempotent
    (re-runnable; only touches rows missing the `$.pairs` key), supports
    `--dry-run` for a no-write dress rehearsal, and `--days` is clamped to
@@ -422,7 +476,7 @@ Enables the inline «🚫 Не публиковать» / «👍 Оставит�
 «Похож на дубль» admin ping + the background listener that receives the presses
 (the bot's first inbound Telegram path — see architecture.md § Inbound review
 path). This is a **feature-specific procedure on top of** the general Pre-Deploy
-Checklist. **Operator applies all server commands; Claude only prepares them.**
+Checklist. Server-side execution requires authorization; Codex may prepare the commands within that scope.
 No deploy FILES changes — the feature lives entirely in already-deployed files.
 
 **Already applied on prod** (`REVIEW_BUTTONS_ENABLED=1`, per the Серверная
@@ -532,7 +586,12 @@ re-publish months of backlog — treat it as the most dangerous object on the ho
 **Where:** stdout, read with `ssh root@45.90.216.165 "docker logs hw-news-bot --tail 200"` (json-file driver, 10 MB × 3 rotation — roughly the last few days).
 **Format:** Plain text with timestamps (`%(asctime)s - %(name)s - %(levelname)s - %(message)s`), in MSK.
 
-**Secret hygiene:** `httpx` and `httpcore` loggers are forced to `WARNING` at startup (see `news_bot._configure_third_party_logging`) because their INFO-level records include full URLs — and Telegram Bot API puts the bot token directly in the URL path (`/bot<TOKEN>/sendMessage`). Without the suppression, every send would leak the token into journal. Regression test: `tests/test_no_token_leak_in_logs.py`.
+**Secret hygiene:** HTTP-client INFO logs are suppressed because they include
+request URLs and Telegram embeds the bot token in the path. Handler output is
+also redacted after formatting, covering traceback chains, cached exception text
+and stack information as well as exact configured secret values. Keep this
+protection when adding handlers; message-only filtering is insufficient.
+Regression coverage lives in `tests/test_no_token_leak_in_logs.py`.
 
 ### Error Tracking
 
@@ -552,6 +611,10 @@ prod = `/data/last_tick.ts` on the mounted volume, default `~/.cache/news_bot/la
 (prod 2026-06-08 feedparser hang) that `Restart=on-failure` / `restart: unless-stopped`
 cannot — a hung process stays running, so nothing restarts it, but the heartbeat goes stale.
 `watchdog.sh` reads config from a colocated `.env` if present, else from the environment.
+The image explicitly supplies `curl`; a missing configuration, failed transport
+or unsuccessful Bot API result produces a nonzero exit status, not a successful
+health report. `scripts/prod_check.py` also reports a missing heartbeat as an
+incomplete/warning check even when other observations look healthy.
 
 Host cron runs it via `docker exec` (config inherited from the container's env;
 heartbeat on `/data`). Installed 2026-07-07 at `0 22 * * *` (host UTC = 01:00 МСК):
@@ -573,8 +636,9 @@ independent signals:
    check: during the 2026-07-31 outage port 22 accepted connections while sshd never
    answered.
 2. **Publication signal:** bounded Telegra.ph API evidence is classified as `fresh`,
-   `stale` or `inconclusive`. This measures the bot's externally visible outcome; the
-   private channel's public web stub is not usable evidence.
+   `stale` or `inconclusive`. This measures Telegra.ph page freshness; it does not
+   prove that the Telegram card was delivered. The private channel's public web
+   stub is not usable evidence.
 
 **Immutable source and secret boundaries.** The checkout action is pinned to a full
 commit SHA and explicitly resolves `github.event.repository.default_branch`, with a
@@ -594,19 +658,20 @@ ambiguous, future-dated, missing, oversized or failed evidence is inconclusive. 
 workflow also normalizes a skipped, failed, timed-out or unexpectedly noisy classifier
 to inconclusive without printing repository-controlled output.
 
-**State transitions.** With the host up, `stale` opens the separate «🟡 Прод не
-публикует» issue/alarm, `fresh` closes an existing one, and `inconclusive`
-leaves either open or closed state unchanged. A missing secret, checkout failure, API
-failure, malformed response or classifier failure therefore cannot manufacture a
-recovery. The SSH verdict remains available in every case. When the host is down, the
-host alarm is handled normally and all publication transitions are suppressed because
-host failure already explains the silence.
+**State transitions.** With the host up, `stale` requests the separate «🟡 Прод не
+публикует» alarm and `fresh` requests recovery; `inconclusive` leaves state unchanged.
+The issue marker changes only after Telegram confirms delivery. Missing Telegraph
+evidence, checkout/API/classifier failure cannot manufacture recovery; failed
+Telegram delivery leaves the transition retryable. The SSH verdict remains
+independent. Host-down suppresses publication transitions because host failure
+already explains the silence.
 
 **Alert dedup:** each signal has its own open GitHub issue as durable state: «🔴 Прод
 не отвечает» for the host and «🟡 Прод не публикует» for publication
-silence. Each sends one Telegram message on opening and one on recovery, with silence
-between runs. Closing an issue by hand while its failure remains causes the next
-conclusive run to alert again.
+silence. Successful alert delivery creates its marker; successful recovery closes
+it. Transport errors, missing delivery secrets and HTTP 200 with `ok:false` must
+not acknowledge delivery. Subsequent runs retry until confirmed success. Closing
+an issue by hand while its failure remains causes the next conclusive run to alert again.
 
 **Cadence and limits:** `cron: */30` is best-effort and may slip by 5–15 minutes.
 GitHub disables scheduled workflows after 60 days without repository activity, and a
@@ -680,7 +745,7 @@ Production runs the auto-publish path through **OpenRouter** (`LLM_PROVIDER=open
 **Prod model (2026-07-20): `google/gemini-2.5-flash`** — hand-set in the prod `.env`
 (`OPENROUTER_MODEL=google/gemini-2.5-flash`), switched from `openai/gpt-5.4-mini` for a
 cheaper-but-still-strong-RU transcreation (Claude judged too costly for this hobby-volume
-bot). The **code default stays `openai/gpt-5.4-mini`** (`openrouter_transcreation.py:80`);
+bot). The **code default stays `openai/gpt-5.4-mini`** (`openrouter_transcreation.py`);
 the prod override lives only in the hand-managed `.env`, not in the repo, so a fresh
 checkout run anywhere else uses gpt-5.4-mini. To change the model: edit the `.env` line
 on the host and rebuild at any time. Reverting is one line.
@@ -688,7 +753,7 @@ on the host and rebuild at any time. Reverting is one line.
 The dispatcher (`llm_transcreation.py`) picks an engine from `LLM_PROVIDER` when set —
 prod pins `openrouter`, so key-presence order never applies there. With `LLM_PROVIDER`
 unset it falls back to key presence in the order **openai → claude → gemini →
-openrouter** (`llm_transcreation.py:46-62`); note that is *not* Anthropic-first, and
+openrouter** (`llm_transcreation.py`); note that is *not* Anthropic-first, and
 adding an unrelated key to the prod `.env` would move production off OpenRouter if the
 pin were ever dropped.
 
@@ -708,7 +773,7 @@ Anthropic engine at all, so switching means setting **both** `LLM_PROVIDER=claud
 `.env`, then rebuilding at any time. The repo `vars` route described here
 before is dead — no workflow writes the server `.env` any more.
 
-**Sanity threshold.** The hard ceiling is `MAX_DAILY_POSTS = 3` (`news_bot.py:172`) —
+**Sanity threshold.** The hard ceiling is `MAX_DAILY_POSTS = 3` (`news_bot.py`) —
 one publication per fixed slot — so a normal day is **at most 3 calls**, measured at
 6.7k–7.7k input and 0.3k–1.6k output tokens each: on the order of **25k input tokens a
 day**, i.e. cents per month at gemini-2.5-flash rates. Check
@@ -725,6 +790,6 @@ fired first.
 
 **Per-call observability** (AC19): every LLM call logs `model`, `input_tokens`,
 `output_tokens` and latency at INFO (for the production engine,
-`openrouter_transcreation.py:453-461`). Read today's calls with:
+`openrouter_transcreation.py`). Read today's calls with:
 
 `ssh root@45.90.216.165 "docker logs hw-news-bot --since 24h | grep input_tokens"`

@@ -84,6 +84,56 @@ class TestEnsureAccessToken:
         assert "FOO=bar" in contents
         assert "BAZ=qux" in contents
 
+    def test_failed_persistence_does_not_claim_token_was_stored(self, monkeypatch, caplog):
+        monkeypatch.delenv(tp.ENV_TOKEN_KEY, raising=False)
+        session = MagicMock()
+        session.post.return_value = _make_response(
+            {"ok": True, "result": {"access_token": "opaque-fake-token"}}
+        )
+        with patch.object(tp, "_save_token_to_env", side_effect=OSError("opaque-fake-token")):
+            with caplog.at_level(logging.INFO, logger=tp.__name__):
+                assert tp.ensure_access_token(session=session) == "opaque-fake-token"
+        assert "token stored" not in caplog.text
+        assert "opaque-fake-token" not in caplog.text
+
+
+class TestPrivateEnvPersistence:
+    @pytest.mark.parametrize("existing", [False, True])
+    def test_file_is_private_even_under_permissive_umask(self, tmp_path, existing):
+        env_file = tmp_path / ".env"
+        if existing:
+            env_file.write_text("# Keep comment\nOTHER=value")
+            env_file.chmod(0o644)
+        old_umask = os.umask(0)
+        try:
+            tp._save_token_to_env(str(env_file), "private-fake-token")
+        finally:
+            os.umask(old_umask)
+        assert env_file.stat().st_mode & 0o777 == 0o600
+        assert f"{tp.ENV_TOKEN_KEY}=private-fake-token\n" in env_file.read_text()
+        if existing:
+            assert "# Keep comment\nOTHER=value\n" in env_file.read_text()
+
+    @pytest.mark.parametrize("failed_operation", ["fsync", "replace"])
+    def test_failed_atomic_write_preserves_old_file_and_removes_temp(self, tmp_path, failed_operation):
+        env_file = tmp_path / ".env"
+        env_file.write_text("OTHER=preserve\n")
+        with patch.object(tp.os, failed_operation, side_effect=OSError("write failed")):
+            with pytest.raises(OSError):
+                tp._save_token_to_env(str(env_file), "private-fake-token")
+        assert env_file.read_text() == "OTHER=preserve\n"
+        assert list(tmp_path.iterdir()) == [env_file]
+
+    def test_symlink_is_refused_without_touching_its_target(self, tmp_path):
+        original = tmp_path / "original"
+        original.write_text("OTHER=preserve\n")
+        env_file = tmp_path / ".env"
+        env_file.symlink_to(original)
+        with pytest.raises(OSError):
+            tp._save_token_to_env(str(env_file), "private-fake-token")
+        assert original.read_text() == "OTHER=preserve\n"
+        assert env_file.is_symlink()
+
 
 class TestBuildContent:
     def test_hero_image_first(self):

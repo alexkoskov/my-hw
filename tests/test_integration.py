@@ -6335,6 +6335,8 @@ class _FormattingChainBase(_IntegrationBase):
     @staticmethod
     def _http_response(html):
         response = MagicMock()
+        response.status_code = 200
+        response.headers = {}
         response.text = html
         response.content = html.encode('utf-8')
         response.raise_for_status.return_value = None

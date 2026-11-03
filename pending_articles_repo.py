@@ -161,7 +161,8 @@ CREATE TABLE IF NOT EXISTS fetch_failures (
 # (empty-but-present). See tech-spec §9.13.
 _PENDING_JSON_COLS = ('paragraphs', 'images', 'blocks', 'ru_paragraphs', 'ru_blocks',
                       'model_fingerprint')
-_FAILED_JSON_COLS = ('paragraphs', 'images', 'blocks')
+_FAILED_JSON_COLS = ('paragraphs', 'images', 'blocks', 'ru_paragraphs', 'ru_blocks',
+                     'model_fingerprint')
 # JSON columns on ``published_articles``. Currently only the dedup
 # fingerprint added in the 2026-06-XX migration (Decision 11).
 _PUBLISHED_JSON_COLS = ('model_fingerprint',)
@@ -312,6 +313,18 @@ _COLUMN_MIGRATIONS = (
      "ALTER TABLE failed_articles ADD COLUMN telegraph_url TEXT"),
     ('failed_articles', 'telegraph_path',
      "ALTER TABLE failed_articles ADD COLUMN telegraph_path TEXT"),
+    # Keep the translated stage and intake fingerprint across dead-letter
+    # recovery. NULL leaves older failed rows readable and retryable.
+    ('failed_articles', 'model_fingerprint',
+     "ALTER TABLE failed_articles ADD COLUMN model_fingerprint TEXT"),
+    ('failed_articles', 'ru_title',
+     "ALTER TABLE failed_articles ADD COLUMN ru_title TEXT"),
+    ('failed_articles', 'ru_subtitle',
+     "ALTER TABLE failed_articles ADD COLUMN ru_subtitle TEXT"),
+    ('failed_articles', 'ru_paragraphs',
+     "ALTER TABLE failed_articles ADD COLUMN ru_paragraphs TEXT"),
+    ('failed_articles', 'ru_blocks',
+     "ALTER TABLE failed_articles ADD COLUMN ru_blocks TEXT"),
     # 2026-06-XX (cross-source-dedup, Decision 11): model fingerprint JSON
     # on both pending and published.
     ('pending_articles', 'model_fingerprint',
@@ -1361,17 +1374,16 @@ def move_to_published(link: str, telegraph_url: str, telegraph_path: str,
 
 def move_to_failed(link: str, last_error: Optional[str]) -> None:
     """Move a pending row into ``failed_articles`` and DELETE from pending,
-    atomically. EN fields + (if set) ``telegraph_url`` / ``telegraph_path``
-    are preserved on failed so ``retry_from_failed`` can re-queue without
-    re-fetching AND without creating a second Telegraph page (Decision 9
-    idempotency holds across the failed/retry boundary).
+    atomically. Preserve EN, translated stage, fingerprint and any Telegraph
+    URL so recovery need not refetch, retranslate or create another page.
     """
     conn = _connect()
     try:
         src = conn.execute(
             "SELECT title, source_name, paragraphs, images, blocks, "
             "       subtitle, pub_date, feed_url, fetched_at, "
-            "       telegraph_url, telegraph_path "
+            "       telegraph_url, telegraph_path, model_fingerprint, "
+            "       ru_title, ru_subtitle, ru_paragraphs, ru_blocks "
             "FROM pending_articles WHERE link=?",
             (link,),
         ).fetchone()
@@ -1379,18 +1391,21 @@ def move_to_failed(link: str, last_error: Optional[str]) -> None:
             return
         (title, source_name, paragraphs, images, blocks, subtitle,
          pub_date, feed_url, fetched_at,
-         telegraph_url, telegraph_path) = src
+         telegraph_url, telegraph_path, model_fingerprint,
+         ru_title, ru_subtitle, ru_paragraphs, ru_blocks) = src
 
         conn.execute(
             "INSERT INTO failed_articles "
             "(link, title, source_name, paragraphs, images, blocks, "
             " subtitle, pub_date, feed_url, last_error, original_fetched_at, "
-            " telegraph_url, telegraph_path) "
-            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            " telegraph_url, telegraph_path, model_fingerprint, "
+            " ru_title, ru_subtitle, ru_paragraphs, ru_blocks) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
             (
                 link, title, source_name, paragraphs, images, blocks,
                 subtitle or '', pub_date, feed_url, last_error, fetched_at,
-                telegraph_url, telegraph_path,
+                telegraph_url, telegraph_path, model_fingerprint,
+                ru_title, ru_subtitle, ru_paragraphs, ru_blocks,
             ),
         )
         conn.execute(
@@ -1474,9 +1489,10 @@ def clear_hold(link: str) -> bool:
 def retry_from_failed(link: str) -> bool:
     """Re-queue a failed row.
 
-    Creates a fresh pending row (``attempt_count=0``, all ``ru_*`` NULL,
-    ``fetched_at=CURRENT_TIMESTAMP``, no ``notified_at`` / ``telegraph_*`` /
-    ``last_error``) and DELETEs the failed row — one transaction.
+    Reset attempts and scheduling timestamps, preserving cached RU fields,
+    fingerprint and Telegraph URL/path. Recover a missing legacy fingerprint
+    from the saved source article only; never rewrite an existing fingerprint.
+    Delete the failed row in the same transaction.
 
     Returns ``False`` and leaves state untouched if the failed row is
     missing OR if a pending row for the same link already exists (defensive
@@ -1496,14 +1512,25 @@ def retry_from_failed(link: str) -> bool:
         src = conn.execute(
             "SELECT title, source_name, paragraphs, images, blocks, "
             "       subtitle, pub_date, feed_url, "
-            "       telegraph_url, telegraph_path "
+            "       telegraph_url, telegraph_path, model_fingerprint, "
+            "       ru_title, ru_subtitle, ru_paragraphs, ru_blocks "
             "FROM failed_articles WHERE link=?",
             (link,),
         ).fetchone()
         if src is None:
             return False
         (title, source_name, paragraphs, images, blocks, subtitle,
-         pub_date, feed_url, telegraph_url, telegraph_path) = src
+         pub_date, feed_url, telegraph_url, telegraph_path, model_fingerprint,
+         ru_title, ru_subtitle, ru_paragraphs, ru_blocks) = src
+
+        if model_fingerprint is None:
+            import model_extractor
+
+            model_fingerprint = _dumps(model_extractor.extract_fingerprint({
+                'title': title,
+                'subtitle': subtitle,
+                'paragraphs': _loads_or_none(paragraphs) or [],
+            }))
 
         # INSERT pending with explicit resets. `subtitle` may be NULL on legacy
         # failed rows — coerce to ''. JSON fields are already TEXT, passed
@@ -1515,12 +1542,15 @@ def retry_from_failed(link: str) -> bool:
             "INSERT INTO pending_articles "
             "(link, source_name, feed_url, title, subtitle, paragraphs, "
             " images, blocks, fetched_at, attempt_count, pub_date, "
-            " telegraph_url, telegraph_path) "
-            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP, 0, ?, ?, ?)",
+            " telegraph_url, telegraph_path, model_fingerprint, "
+            " ru_title, ru_subtitle, ru_paragraphs, ru_blocks) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP, 0, ?, ?, ?, "
+            "?, ?, ?, ?, ?)",
             (
                 link, source_name, feed_url, title, subtitle or '',
                 paragraphs, images, blocks, pub_date,
-                telegraph_url, telegraph_path,
+                telegraph_url, telegraph_path, model_fingerprint,
+                ru_title, ru_subtitle, ru_paragraphs, ru_blocks,
             ),
         )
         conn.execute(

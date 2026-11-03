@@ -11,7 +11,7 @@ and a 12:00 cron that no longer exists. This script replaces the database half o
 those checks with something that works against the CURRENT setup (Docker on the
 Moscow host, DB on a bind mount).
 
-It is deliberately READ-ONLY: it opens SQLite in immutable mode, never writes,
+It is deliberately READ-ONLY: it opens SQLite in read-only mode, never writes,
 never touches the network, and never prints a secret. Running it while the bot is
 mid-publish is safe.
 
@@ -70,7 +70,7 @@ class Report:
 
 
 def _connect(path: str) -> sqlite3.Connection:
-    """Open read-only. `immutable=1` guarantees we cannot disturb the live writer."""
+    """Open read-only while respecting a live writer's WAL state."""
     uri = f"file:{os.path.abspath(path)}?mode=ro"
     conn = sqlite3.connect(uri, uri=True, timeout=5)
     conn.row_factory = sqlite3.Row
@@ -278,8 +278,8 @@ def check_heartbeat(rep: Report, path: str | None) -> None:
                 rep.note(f"HEARTBEAT_FILE не задан — взят примонтированный {candidate}")
                 break
     if not path:
-        rep.note("файл пульса не найден ни по одному известному пути — "
-                 "проверить `docker exec hw-news-bot ls -l /data/last_tick.ts`")
+        rep.add(WARN, "пульс не проверен: файл не найден ни по одному известному пути — "
+                "проверить `docker exec hw-news-bot ls -l /data/last_tick.ts`")
         return
     if not os.path.exists(path):
         rep.add(WARN, f"файла пульса нет: {path} — тик ещё ни разу не отмечался")

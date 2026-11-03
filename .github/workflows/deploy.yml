@@ -135,6 +135,7 @@ jobs:
             "openrouter_transcreation.py"
             "llm_transcreation.py"
             "_llm_common.py"
+            "http_fetch.py"
             "compute_publish_slots.py"
             "outage_state.py"
             "admin_alerts.py"

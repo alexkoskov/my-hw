@@ -1,0 +1,14 @@
+[
+  {
+    "case": "legacy_root_owned",
+    "exit_code": 1,
+    "worker_started": false,
+    "reason": "[startup] production database must be readable and writable by uid/gid 10001"
+  },
+  {
+    "case": "missing_database",
+    "exit_code": 1,
+    "worker_started": false,
+    "reason": "[startup] production database is missing or empty; restore the existing ledger"
+  }
+]

@@ -386,9 +386,9 @@ def transcreate_via_claude(  # name kept for backward compat
     parsed["title"] = _apply_emoji_safety_net(parsed["title"])
     parsed["paragraphs"] = _truncate_paragraphs(parsed["paragraphs"])
 
-    # Variant B fallback: if model didn't return matching blocks, use
-    # the article's original EN blocks for structural completeness.
-    if expected_block_count and not parsed.get("blocks"):
+    # Always preserve source structure; unsolicited model blocks are not an
+    # authoritative description of the article's text or gallery.
+    if expected_block_count:
         parsed["blocks"] = _patch_text_with_ru_paragraphs(
             blocks_in, parsed["paragraphs"],
         )

@@ -49,16 +49,14 @@ logger = logging.getLogger(__name__)
 class ClaudeTranscreationError(Exception):
     """Per-article LLM failure (refusal, malformed JSON, schema mismatch).
 
-    Caller falls back to Google Translate for THIS article only;
-    outage state machine NOT advanced.
+    Caller records an article attempt; the outage state is not advanced.
     """
 
 
 class ClaudeOutageError(Exception):
     """API-level LLM failure (network, 429, 5xx, auth, quota).
 
-    Caller advances outage state machine (admin pings, 2h grace,
-    then global Google fallback).
+    Caller advances the outage state machine and keeps the article queued.
     """
 
 
@@ -136,7 +134,9 @@ def _classify_error_envelope(code, message: str, provider: str) -> Exception:
         f"{provider} returned an error envelope in a 200 response: "
         f"code={code} {message}".strip()
     )
-    if code in _ACCOUNT_LEVEL_STATUS_CODES:
+    if (code in _ACCOUNT_LEVEL_STATUS_CODES
+            or code in {401, 403, 404, 409, 429}
+            or isinstance(code, int) and 500 <= code < 600):
         return ClaudeOutageError(text)
     return ClaudeTranscreationError(text)
 
@@ -465,12 +465,23 @@ def _parse_response(
             f"{engine_name} response 'paragraphs' must be a list of strings"
         )
     if len(paragraphs) != expected_paragraph_count:
-        # Soften: accept the LLM's paragraph segmentation — Telegraph renders
-        # <p> nodes without a structural 1:1 mapping requirement.
+        # Flat articles can render any segmentation. Structured articles need
+        # one translation per source text block; otherwise positional patching
+        # either leaves EN text or drops extra RU paragraphs.
+        thin_gallery = expected_paragraph_count == 1 and not paragraphs
+        if expected_block_count and not thin_gallery:
+            raise ClaudeTranscreationError(
+                f"{engine_name} structured response paragraph count diverges: "
+                f"expected {expected_paragraph_count}, got {len(paragraphs)}"
+            )
         log.warning(
             "%s response paragraph count diverges: "
             "expected %d, got %d; accepting LLM-chosen segmentation",
             engine_name, expected_paragraph_count, len(paragraphs),
+        )
+    if expected_block_count and any(not paragraph.strip() for paragraph in paragraphs):
+        raise ClaudeTranscreationError(
+            f"{engine_name} structured response contains an empty paragraph"
         )
 
     # Sanity floor: total translated content must be at least 30 chars —
@@ -499,7 +510,8 @@ def _parse_response(
 
     blocks = parsed.get("blocks")
     if expected_block_count is not None:
-        if not isinstance(blocks, list) or len(blocks) != expected_block_count:
+        if (not isinstance(blocks, list) or len(blocks) != expected_block_count
+                or not all(isinstance(block, dict) for block in blocks)):
             log.warning(
                 "%s response 'blocks' length diverges: expected %d, got %s; "
                 "caller will fall back to original EN blocks for structure",
@@ -507,7 +519,11 @@ def _parse_response(
                 expected_block_count,
                 len(blocks) if isinstance(blocks, list) else type(blocks).__name__,
             )
-            parsed["blocks"] = None
+            blocks = None
+    elif blocks is not None:
+        # The response envelope excludes blocks. With no authoritative source
+        # structure, an unsolicited field must not hide translated paragraphs.
+        blocks = None
 
     return {
         "title": title,
@@ -590,7 +606,31 @@ def _patch_text_with_ru_paragraphs(blocks_in: list, ru_paragraphs: list) -> list
     """
     if not isinstance(blocks_in, list) or not blocks_in:
         return blocks_in
-    paragraphs_iter = iter(ru_paragraphs or [])
+    text_count = sum(
+        isinstance(block, dict) and block.get("type") in _PATCHED_TEXT_BLOCK_TYPES
+        for block in blocks_in
+    )
+    paragraphs = list(ru_paragraphs or [])
+    if text_count == 1 and not paragraphs:
+        # Accepted short-gallery policy: the lone intro may be boilerplate.
+        # Drop its EN placeholder while keeping the complete visual payload.
+        media = any(
+            isinstance(block, dict) and block.get("type") in {"image", "video"}
+            for block in blocks_in
+        )
+        if media:
+            return [dict(block) if isinstance(block, dict) else block
+                    for block in blocks_in
+                    if not isinstance(block, dict)
+                    or block.get("type") not in _PATCHED_TEXT_BLOCK_TYPES]
+    if len(paragraphs) != text_count or any(
+        not isinstance(paragraph, str) or not paragraph.strip() for paragraph in paragraphs
+    ):
+        raise ClaudeTranscreationError(
+            "Structured translation cannot be aligned with source text blocks "
+            f"(expected {text_count} non-empty paragraphs, got {len(paragraphs)})"
+        )
+    paragraphs_iter = iter(paragraphs)
     result = []
     for block in blocks_in:
         if not isinstance(block, dict):
@@ -598,20 +638,13 @@ def _patch_text_with_ru_paragraphs(blocks_in: list, ru_paragraphs: list) -> list
             continue
         new_block = dict(block)
         if block.get("type") in _PATCHED_TEXT_BLOCK_TYPES:
-            try:
-                ru = next(paragraphs_iter)
-                if isinstance(ru, str) and ru.strip():
-                    clean_text, new_runs = _decode_format_markers(ru)
-                    new_block["text"] = clean_text
-                    # Replace EN-text runs with RU-text runs (or drop the
-                    # field entirely when no markers came back, so the
-                    # renderer skips the whole format machinery).
-                    if new_runs:
-                        new_block["runs"] = new_runs
-                    elif "runs" in new_block:
-                        del new_block["runs"]
-            except StopIteration:
-                pass
+            ru = next(paragraphs_iter)
+            clean_text, new_runs = _decode_format_markers(ru)
+            new_block["text"] = clean_text
+            if new_runs:
+                new_block["runs"] = new_runs
+            else:
+                new_block.pop("runs", None)
         result.append(new_block)
     return result
 

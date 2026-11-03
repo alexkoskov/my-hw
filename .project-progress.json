@@ -2323,8 +2323,106 @@
         "tests/test_dedup_broad_precision.py",
         "work/HANDOFF.md"
       ]
+    },
+    {
+      "id": "HARDEN-001",
+      "title": "Correct publication retries, deadlines, review callbacks, startup and secret-safe logs",
+      "status": "done",
+      "weight": 8,
+      "depends_on": [],
+      "blocked_by": [],
+      "deliverables": [
+        "news_bot.py",
+        "tests/test_runtime_hardening.py"
+      ]
+    },
+    {
+      "id": "HARDEN-002",
+      "title": "Protect structured LLM output and private atomic Telegraph token persistence",
+      "status": "done",
+      "weight": 5,
+      "depends_on": [],
+      "blocked_by": [],
+      "deliverables": [
+        "_llm_common.py",
+        "telegraph_publisher.py",
+        "tests/test_llm_common.py"
+      ]
+    },
+    {
+      "id": "HARDEN-003",
+      "title": "Preserve retry data and correct model extraction and DOM fidelity",
+      "status": "done",
+      "weight": 5,
+      "depends_on": [],
+      "blocked_by": [],
+      "deliverables": [
+        "pending_articles_repo.py",
+        "model_extractor.py",
+        "dom_blocks.py",
+        "tests/"
+      ]
+    },
+    {
+      "id": "HARDEN-004",
+      "title": "Bound source fetching and update vulnerable Requests dependency",
+      "status": "done",
+      "weight": 5,
+      "depends_on": [],
+      "blocked_by": [],
+      "deliverables": [
+        "http_fetch.py",
+        "requirements.txt",
+        "tests/test_http_fetch.py"
+      ]
+    },
+    {
+      "id": "HARDEN-005",
+      "title": "Harden container privileges, state isolation, CI and alert delivery",
+      "status": "done",
+      "weight": 5,
+      "depends_on": [],
+      "blocked_by": [],
+      "deliverables": [
+        "Dockerfile",
+        "docker-compose.yml",
+        ".github/workflows/uptime.yml",
+        "tests/test_operations_hardening.py"
+      ]
+    },
+    {
+      "id": "HARDEN-006",
+      "title": "Reconcile current operational and Codex documentation",
+      "status": "done",
+      "weight": 3,
+      "depends_on": [],
+      "blocked_by": [],
+      "deliverables": [
+        "work/README.md",
+        ".agents/skills/project-knowledge/references/",
+        "docs/codex-setup.md"
+      ]
+    },
+    {
+      "id": "HARDEN-007",
+      "title": "Verify integrated remediation and final container evidence",
+      "status": "done",
+      "weight": 3,
+      "depends_on": [
+        "HARDEN-001",
+        "HARDEN-002",
+        "HARDEN-003",
+        "HARDEN-004",
+        "HARDEN-005",
+        "HARDEN-006"
+      ],
+      "blocked_by": [],
+      "deliverables": [
+        "work/project-hardening/plan.md",
+        "work/project-hardening/logs/"
+      ]
     }
   ],
   "blockers": [],
-  "updated_at": "2026-10-14T17:03:16+03:00"
+  "updated_at": "2026-11-03T18:16:41+03:00"
 }

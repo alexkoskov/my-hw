@@ -99,8 +99,8 @@ here. What matters for writing code against this layer:
   two further passes run on LLM output *after* the engine returns, in
   `news_bot.py` (see § "Service-text stripping — three granularities"):
   `_strip_plugs` over `ru_title` / `ru_subtitle` / `ru_paragraphs`
-  (`news_bot.py:3207-3213`) and the RU-side boilerplate filter right below it
-  (`news_bot.py:3214-3216`). So when a bad translation reaches the channel there
+  (`news_bot.py`) and the RU-side boilerplate filter right below it
+  (`news_bot.py`). So when a bad translation reaches the channel there
   are two levers, and picking the wrong one wastes a release: **wording, tone and
   terminology** are the prompt's job (`ux-guidelines.md`); **service text and
   promo tails** are the regex layer's. Corrected 2026-08-03 — this bullet
@@ -108,7 +108,7 @@ here. What matters for writing code against this layer:
   output, which would have sent anyone debugging a promo-tail leak to the prompt.
 - **NOT a post-pass on LLM output: the HW glossary.** The 15-pattern
   `hw_glossary` dict (`сборка гаража` → `гаражный проект` etc.) is a local
-  variable inside `news_bot.transcreate_text` (news_bot.py:2763) and only ever
+  variable inside `news_bot.transcreate_text` (news_bot.py) and only ever
   corrects **Google Translate** output. `transcreate_text` itself is DORMANT
   since the 2026-06-11 hold-and-wait change — the publish path no longer calls
   it, per-article LLM failures strike out and API-level outages HOLD the
@@ -211,7 +211,7 @@ time, look at the LEVEL the existing filters work at, not for another line.**
   `_strip_plugs` and drops matching `ru_paragraphs` and `ru_blocks` of type
   `paragraph`/`lead`/`heading`/`list_item`.
 
-**Sentence level — `_strip_plugs` (news_bot.py:1285).** Removes one sentence and
+**Sentence level — `_strip_plugs` (news_bot.py).** Removes one sentence and
 leaves the paragraph standing. Covers author social plugs (parenthesised
 `@handle`, RU/EN "подписывайтесь / follow me on …"), cross-promo CTAs
 ("Нажмите здесь …", "Вы можете посмотреть всё, что мы публиковали … по этой
@@ -316,7 +316,7 @@ Operator preference: pure Russian, no English mixing in operational pings.
 ### Channel post format (locked 2026-04-21, auto-marker relocated 2026-04-27, `#news` tag added 2026-04-24)
 - **Channel teaser is byte-identical for every path** — single-line `#<source> #news` (e.g. `#autoevolution #news`, `#lamleygroup #news`). The source hashtag is derived from the source URL's second-level domain by `news_bot._source_hashtag`, with a `SOURCE_HASHTAG_OVERRIDE` map for outlets where that yields the hoster instead of the brand (`t-hunted.blogspot.com` → `#thunted`, dash-stripped because Telegram hashtags accept only `[a-zA-Z0-9_]`); the trailing `#news` is a static tag hardcoded in `send_telegraph_teaser` (NOT derived from source) so subscribers can filter the channel by topic. Decision 14 (manual-review-workflow tech-spec) holds at the visible-feed level: subscribers see no difference between auto-LLM publishes and the dormant manual path (if revived). Edge case: when `_source_hashtag` returns the bare `#` (unknown / malformed `source_url`), `send_telegraph_teaser` falls back to the legacy bare hashtag and skips the `#news` append — emitting a lone `#news` would lose source attribution without compensating value.
 - **Telegra.ph article body — `↳ автоперевод` marker is no longer emitted (since the 2026-06-11 hold-and-wait change).** It was originally a manual-vs-auto path differentiator, then a Google-fallback quality warning. With the Google-fallback publish branch gone, `_fallback_publish` always calls `publish_article(..., auto_marker=False)` — every published page is LLM-translated and carries no marker. The `auto_marker` kwarg is retained on `publish_article` but is dead from the cron path.
-- **One `send_message` call, no `send_photo`.** Text = the hashtag line; the Telegra.ph page is surfaced via `LinkPreviewOptions(url=telegraph_url, show_above_text=True, prefer_large_media=True)` (`send_telegraph_teaser`, news_bot.py:2950). Telegram renders a full-width Instant View card above the hashtag, carrying domain label, title, excerpt, hero image and the ⚡ INSTANT VIEW button; the raw URL stays hidden inside the options. A separate `send_photo` was dropped — it duplicated the IV image without adding value once `prefer_large_media` started working again.
+- **One `send_message` call, no `send_photo`.** Text = the hashtag line; the Telegra.ph page is surfaced via `LinkPreviewOptions(url=telegraph_url, show_above_text=True, prefer_large_media=True)` (`send_telegraph_teaser`, news_bot.py). Telegram renders a full-width Instant View card above the hashtag, carrying domain label, title, excerpt, hero image and the ⚡ INSTANT VIEW button; the raw URL stays hidden inside the options. A separate `send_photo` was dropped — it duplicated the IV image without adding value once `prefer_large_media` started working again.
 - **`prefer_large_media=True` has a history.** It was reverted once because it killed the IV button on iOS, then re-enabled 2026-04-30 after an iOS field test confirmed the regression no longer reproduces with the `show_above_text` layout. If the IV-button regression ever returns: drop **just that flag**, not the layout.
 - **Rationale for the relocation (2026-04-27):** the original two-line teaser (commit `cc4cc8c`) added subscriber-facing noise to the channel feed. Moving the marker INTO the article keeps the feed clean (Decision 14 byte-equality preserved) while still letting operators and curious readers diagnose path inside the article — the marker sits right above the source link where attribution context naturally lives.
 - Wiring: `telegraph_publisher.publish_article(..., auto_marker: bool = False)` controls the node insertion. Since 2026-06-11 `_fallback_publish` always passes `auto_marker=False` (no Google-fallback branch remains), so the node is never inserted from the cron path. `hw_review.cmd_publish` never passes the flag → defaults False (path is archived anyway). `send_telegraph_teaser` no longer accepts `auto_marker` (single-line only). Full spec: `work/completed/telegraph-pipeline/post-format.md`.
@@ -353,9 +353,9 @@ The auto-publish path is the cron-side route that lands articles in the channel 
 - **Output validation.** Every engine caps the response at `_DEFAULT_MAX_TOKENS = 30000` (Decision 13 — bounds the cost-amplification surface from prompt-injection in source article bodies; the value was raised from 8000, confirmed intentional by the operator 2026-08-03). The response contract itself — what raises `ClaudeTranscreationError` (a per-article strike) and what is only warned about — is enforced in one place, `_llm_common._parse_response`; read it there rather than trusting a copy in this file. Its rules have been softened at least twice by real incidents, so a restatement here rots fast.
 
 - **Token redaction (3-layer defense, Decision 12).** Do NOT enumerate the key shapes here — they live in news_bot.py (`_BOT_TOKEN_RE`, `_OPENROUTER_KEY_RE`, `_ANTHROPIC_KEY_RE`, `_OPENAI_KEY_RE`, `_GEMINI_KEY_RE`, `_PROXY_CRED_RE`) and now cover Telegram, all four LLM providers, and proxy credentials. `_PROXY_CRED_RE` (2026-08-04) is the odd one out: it matches `scheme://user:pass@host` — the one secret shape no key pattern can catch — and replaces only the userinfo, keeping `host:port` because that half is the diagnostic. It runs FIRST and is order-independent of the rest (no `sk-…`/`AIza…` shape can sit inside a userinfo field). Relevant because prod egress runs through a non-RU VPN gateway and 407 (proxy auth) is now explicitly classified, i.e. a proxy failure is on a path that reaches the journal. `*_PROXY` env names (both cases) are also in `_SECRET_ENV_NAMES`. **Pattern order is a contract:** the prefix-specific `sk-or-…` and `sk-ant-…` patterns must be scrubbed BEFORE the broader OpenAI `sk-…` pattern, or the broad one wins on an already-replaced substring — see the `_redact_text` docstring. Adding a fifth provider therefore means adding a pattern **and** placing it correctly in that order. The three layers:
-  1. `_TokenRedactingFilter` regex on Python's logging pipeline (covers the SDK's own `logger.exception(...)` calls — the filter is attached to `anthropic`, `anthropic._client`, `anthropic._base_client` loggers at import time).
-  2. `_SECRET_ENV_NAMES` (news_bot.py:229) — every provider key name (`ANTHROPIC_API_KEY`, `GEMINI_API_KEY`, `OPENAI_API_KEY`, `OPENROUTER_API_KEY` + alias) plus the Telegram/Telegraph ones, so any env-var-value verbatim replace path strips them.
-  3. `_redact_text(text)` pure helper — used by both the logging filter AND `send_admin_notification` so admin-ping payloads (which travel OUTSIDE Python's logging machinery) are also redacted. The admin-ping template uses `type(exc).__name__` not `str(exc)` for user-visible messages on outage paths; full exception text only goes to redacted logs.
+  1. Final formatted handler output is scrubbed, including `logger.exception` chains, cached `exc_text` and `stack_info`; filtering the message alone does not cover traceback rendering. Additional handlers must retain this protection.
+  2. `_SECRET_ENV_NAMES` lists provider, Telegram/Telegraph and proxy variables; nonempty configured values are also removed verbatim, so opaque tokens are protected even when they match no key pattern.
+  3. `_redact_text(text)` also protects admin-ping payloads outside logging. Outage templates use `type(exc).__name__` rather than raw exception text. Full useful tracebacks may remain in redacted logs; sanitization failure must not fall back to the unsanitized string.
 
 ### Balance monitoring — two ceilings, not one (2026-08-13)
 
@@ -382,7 +382,7 @@ Per-model breakdown needs a provisioning key; the ordinary key gets 403 on
 
 ### Sibling-brand relevance filter
 
-`_is_hot_wheels_relevant(entry)` (news_bot.py:1530) runs at fetch time, before
+`_is_hot_wheels_relevant(entry)` (news_bot.py) runs at fetch time, before
 a row enters `pending_articles`. The channel is Hot Wheels-only and several
 feeds carry other diecast brands: autoevolution cross-tags them under
 `tag-Hot+Wheels+News.xml`, t-hunted covers the whole hobby.
@@ -519,7 +519,7 @@ Different source parsers take different paths to image URLs. Each is tuned to ma
 ### Mattel source — DISABLED 2026-05-24 (2026-04-25 RSC parser retained)
 
 **Not a live source.** `_fetch_mattel_entries` is commented out of the `SOURCES`
-registry (news_bot.py:3599-3611; the commented-out entry is :3609). Reason, per
+registry (`news_bot.SOURCES`). Reason, per
 the comment block just above it:
 corporate.mattel.com moved to Astro/Netlify, the article body is rendered
 client-side from a JS bundle and is unreachable via any JSON endpoint (the
@@ -555,7 +555,7 @@ survive here:
   body_html, body_chunks, truncate)` — they anchor on the same semantic markers
   the parser reads, so builder and parser fail together if Mattel changes
   format. That coupling is the point; keep it if the fixtures are ever rebuilt.
-- **Anti-drift smoke tests** (`tests/test_mattel_news_source.py:610-629`) parse
+- **Anti-drift smoke tests** (`tests/test_mattel_news_source.py`) parse
   `/tmp/mattel_news.html` and `/tmp/mattel_article.html` if the operator captures
   them live first, and `pytest.skip` otherwise — so a fresh capture turns them on
   without any code change. This is the only mechanism that would catch a Mattel
@@ -612,14 +612,16 @@ guaranteed NOT to work.*
 - Container restart mid-window: `news_bot.main()` triggers `job()` immediately (existing pattern). Crash-loop guard kicks in if needed. The operator plan and any conditional release opportunities are recomputed from a fresh atomic backlog snapshot and the fixed times still eligible that day — no migration of old slots. Already-published rows are skipped via Decision 9 idempotency from manual-review-workflow (telegraph_url presence).
 - The script runs indefinitely (`while True: schedule.run_pending(); time.sleep(60)`) when started interactively.
 - **Prod is the only instance:** a Docker container (`restart: unless-stopped`) on the Moscow VPS. There is no staging and no test bot — see deployment.md. *Corrected 2026-08-03: this line claimed a test instance ran as a `systemd` service on the NL server; NL was decommissioned 2026-07-25.* The in-process `schedule` loop is the design — Docker only restarts on process exit, so the alive-but-stuck class is caught by `watchdog.sh` instead (deployment.md § Health Checks).
-- **Consequence for deploys:** a restart resets the single in-process daily schedule, so redeploys must land OUTSIDE the publishing window. Rule and procedure: deployment.md.
+- **Consequence for deploys:** a restart replans the remaining daily opportunities.
+  An authorized rebuild or restart may run at any time; deployment policy and
+  the operational procedure are in deployment.md § Deployment timing.
 
 ### Logging
 - Logging is configured at INFO level, with timestamps and module names.
 - Critical steps (new entries found, translation, Telegraph publish,
   channel post) are logged at INFO, errors at ERROR.
 - **Per-LLM-call observability** (AC19): every transcreation call logs the model, `input_tokens`, `output_tokens` and `latency_ms` at INFO, prefixed with the engine name, so the operator can cross-check the provider's console without extra instrumentation. These are also the numbers to measure against before anyone proposes shortening the prompt to save tokens.
-- **Token redaction** — full design in § "Auto-publish path → Token redaction" above. One line only here: it covers Telegram plus all four LLM providers, and the pattern list lives in code (news_bot.py:330-380), not in this file.
+- **Token redaction** — full design in § "Auto-publish path → Token redaction" above. One line only here: it covers Telegram plus all four LLM providers, and the pattern list lives in code (news_bot.py), not in this file.
 
 ### Multiple RSS Feeds Configuration
 - Feed URLs are read from `feeds.json` (JSON array of up to 5 strings) or fall back to the default RSS URL.
@@ -756,8 +758,8 @@ the tick with no clue to the cause.
 
 ### Branch Structure
 
-- **`main`** – what production runs. Only merge from `dev` after verification. Deployment is **manual**: the operator pulls and rebuilds on the server (procedure and the publishing-window restriction are in deployment.md). Both GitHub Actions deploy workflows are disarmed (`if: false`).
-- **`dev`** – active development, default branch. All feature branches are merged here. There is no staging environment to deploy to.
+- **`main`** – stable code eligible for production. Only merge from `dev` after verification. Deployment is **manual** and separately authorized; timing and procedure are in deployment.md. Both GitHub Actions deploy workflows are disarmed (`if: false`).
+- **`dev`** – active development line; feature branches integrate here. GitHub's default branch is `main`. There is no staging environment to deploy to.
 
 ### Promotion `dev` → `main` — always a PR (operator decision 2026-08-03)
 
@@ -770,11 +772,10 @@ the last place to read what you are about to put on production *before* you ssh 
 and rebuild. A bare local merge skips that read.
 
 - The PR body is the release note — what changed and what to watch after deploy.
-- Green CI on the PR is the gate. Watch the `check-skip` caveat above: a docs-only
-  PR shows a green check without having run the suite.
+- Green CI on the PR is the gate; verify that the test job actually ran.
 - Merging the PR does **not** deploy anything (both deploy workflows are
-  disarmed), so the 10:00–20:00 МСК window does not restrict the merge — only the
-  rebuild on the host.
+  disarmed). Authorized rebuilds may run at any time; see deployment.md for
+  the restart's scheduling effect.
 
 ### Release tags (operator decision 2026-08-03)
 
@@ -800,16 +801,14 @@ tag; that is correct and is the whole point.
 *Rewritten 2026-08-03 — the previous text said there were no automated tests and
 no secret scanning. Both have existed for a long time; that text predates them.*
 
-- **On commit:** pre-commit hooks run automatically (see below). Run the suite
-  yourself before pushing: `python3 -m pytest -q` (1626 tests as of 2026-08-03,
-  a few seconds to collect).
+- **On commit:** installed pre-commit hooks run automatically (see below).
+  Run the relevant checks before pushing; the full suite command is
+  `python -m pytest tests/ -q`. Record its actual result with the tested revision.
 - **On push / PR to `dev` or `main`:** `.github/workflows/ci.yml` installs
   `requirements.txt` + `requirements-dev.txt` on Python 3.13 and runs
-  `python -m pytest tests/ -v`. Note the `check-skip` job: a change touching only
-  `*.md`, `*.txt`, `.agents/`, `.codex/`, `.spec/` or `docs/` (except `prompts/` and dependency manifests) skips the test job entirely —
-  so a green check on a docs-only PR does not mean the suite ran.
-- **On merge to `main`:** green CI is the gate, plus the deploy-window rule from
-  deployment.md. Verify production env vars separately — CI does not see them.
+  `python -m pytest tests/ -v`; there is no docs-only skip.
+- **On merge to `main`:** green CI is the gate. Verify production configuration
+  separately — CI does not see the production environment or authorize deployment.
 
 ### Security & Quality Gates
 
@@ -831,15 +830,16 @@ no secret scanning. Both have existed for a long time; that text predates them.*
   extending that exclusion first; verify with `sha256sum` after the hooks run, not
   before. Note `check-yaml` already carries its own `^work/.*/logs/` exclusion for
   a related reason — agent-produced artifacts are records, not configuration.
-- **`git commit --no-verify` is not a normal workflow step.** If a hook blocks a
-  commit, fix the finding; bypassing must be explained in the commit message.
+- **Do not bypass commit hooks.** If a hook blocks a commit, fix the finding.
 - **`pre-commit run --all-files` rewrites unrelated files.** It reformats archived
   `work/` documents and `.agents/` skill files that no one is editing, and those
   edits land unstaged in the working tree. Run it scoped —
-  `pre-commit run --files <changed files>` — or `git checkout -- .` afterwards to
-  drop the collateral before committing.
-- **Pre-push:** no automated code review — review is a human/agent step (see the
-  `code-reviewing` skill).
+  `pre-commit run --files <changed files>`. Inspect any unintended diff against
+  the original worktree state and resolve it individually; never discard the
+  whole worktree to clean up a check.
+- **Pre-push:** review is a human/agent step when the change warrants it. The
+  existing Codex `code-reviewer` role contract is registered in `.codex/config.toml`;
+  using it requires authorization under the session's delegation rules.
 
 ### Continuation records (owner decision 2026-10-14)
 

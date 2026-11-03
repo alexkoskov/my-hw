@@ -31,6 +31,7 @@ def _make_response(text="", status_code=200, raise_exc=None):
     resp.text = text
     resp.content = text.encode("utf-8") if text else b""
     resp.status_code = status_code
+    resp.headers = {}
     if raise_exc is not None:
         resp.raise_for_status.side_effect = raise_exc
     else:

@@ -530,13 +530,10 @@ def transcreate_via_claude(  # name kept for backward compat
     parsed["title"] = _apply_emoji_safety_net(parsed["title"])
     parsed["paragraphs"] = _truncate_paragraphs(parsed["paragraphs"])
 
-    # Variant B: if the model didn't return matching blocks (the
-    # ``_parse_response`` softener nulled them out for us), fall back
-    # to the article's original EN blocks so galleries / videos /
-    # image structure survive on the Telegraph page. autoevolution_source
-    # already runs ``filter_blocks`` on these so no ad / social-share
-    # content leaks through.
-    if expected_block_count and not parsed.get("blocks"):
+    # Source blocks are authoritative even when an unsolicited response has
+    # the same count: the output envelope does not ask the model for structure.
+    # Rebuilding prevents hallucinated blocks from dropping body text/media.
+    if expected_block_count:
         # Variant B: substitute the original EN blocks, but FIRST patch
         # paragraph/lead/heading text with the RU translations the main
         # call already produced — so the article body is always Russian
