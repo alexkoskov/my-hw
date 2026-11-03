@@ -18,11 +18,11 @@ Deployment process, infrastructure, and production operations for AI agents.
 > linked evidence. Local image checks do not establish live production health.
 >
 > **⚠️ There is exactly ONE instance and it is production. No test bot, no
-> staging, no test channel.** Deploy is **manual** and may run **at any time**;
-> a restart immediately replans the remaining publication opportunities. Both GitHub-Actions deploy workflows are
-> disarmed: `.github/workflows/deploy.yml:30` and
-> `.github/workflows/deploy_test.yml:26` are `if: false`; a push to `dev`/`main`
-> runs `ci.yml` (pytest) only and never touches a server. Everything operational
+> staging, no test channel.** The owner enabled automatic production deployment
+> on 2026-11-03: successful push CI on `main` triggers the Docker deployment
+> workflow for that exact current main SHA. `dev` and PR checks do not deploy;
+> the retired test deploy remains disabled. Deploy/restart may run at any time
+> and immediately replans remaining publication opportunities. Everything operational
 > lives in the **Серверная шпаргалка** immediately below — read that first.
 >
 > **History (reference only — NOT runnable).** Prod used to be a `systemd` unit
@@ -72,7 +72,7 @@ Deployment process, infrastructure, and production operations for AI agents.
 | Логи | `ssh root@45.90.216.165 "docker logs hw-news-bot --tail 200"` |
 | Канал | `-1004027529994` (боевой) |
 | INSTANCE_LABEL | `prod` |
-| Деплой | **только руками, в любое время**: `ssh root@45.90.216.165 "cd /opt/hw-news && git pull && docker compose up -d --build"` |
+| Деплой | GitHub Actions `Deploy production` после зелёного push-CI на текущем `main`; см. Deployment Triggers. Без PROD SSH-секретов выкладка блокируется до обращения к серверу. |
 | Бэкап БД | cron 05:00 МСК → `/opt/hw-news/backups` (TODO: копия вне хоста) |
 | Watchdog | host cron 01:00 МСК → `docker exec hw-news-bot /bin/bash /app/watchdog.sh` |
 
@@ -84,14 +84,14 @@ VPN-шлюз `shared-vpn` (Москва без VPN не достаёт Telegram)
 МСК — только внутри контейнера.
 
 **⚠️ Грабли:**
-- Оба GitHub-workflow деплоя **обезврежены**: `deploy.yml` (2026-07-07) и
-  `deploy_test.yml` (2026-07-25, NL списан). Пуш в `dev`/`main` гоняет ТОЛЬКО
-  тесты (ci.yml); на сервера CI не ходит. Прод обновляется только руками.
+- Старый SCP/systemd deploy заменён Docker-сценарием `deploy.yml` для Москвы.
+  `deploy_test.yml` остаётся отключённым; NL-сервер не используется.
+  Старые `SSH_*` не применяются в новом production workflow.
 - Тестировать «на живом» негде — staging нет. Проверка фич: pytest локально +
   аккуратная первая раскатка на прод с готовым откатом.
 - В GitHub-секретах остались реквизиты мёртвого NL (`SSH_HOST`,
-  `DEPLOY_PATH*`, `SSH_PRIVATE_KEY`) — использоваться не могут (workflows
-  выключены); при случае почистить.
+  `DEPLOY_PATH*`, `SSH_PRIVATE_KEY`) — новый production workflow их не читает,
+  старый test workflow выключен; очистка секретов — отдельная задача.
 
 ---
 
@@ -116,9 +116,10 @@ Application files and the prompt remain root-owned and readable. Writable state
 belongs on `/data`, and the worker's private home is `/home/bot`.
 
 The first authorized rollout of this startup contract requires an existing
-production ledger with compatible permissions. A root-owned legacy volume is
-**not migrated automatically**: incompatible state causes startup to refuse
-before the app or external API calls run.
+production ledger with compatible permissions. The entrypoint does not migrate
+a root-owned legacy volume: incompatible state causes startup to refuse before
+the app or external API calls run. The authorized deployment controller performs
+the inspected, checkpointed ownership migration described below.
 
 During that separately authorized rollout:
 
@@ -205,8 +206,8 @@ truth, not repeated here.
   locally; verification after prod is reading `docker logs hw-news-bot` and the next
   publications. Plan every rollout so it can be undone (see § Rollback Procedure).
 - **`dev` is not a deploy target.** `git push origin dev` runs `ci.yml` (pytest) and
-  nothing else. Promotion is a merge into `main`, then a manual rebuild on the host,
-  which may run at any time.
+  nothing else. Promotion is a merge into `main`; its successful push CI then
+  triggers the current production deployment workflow.
 - **`INSTANCE_LABEL=prod` still prefixes every admin ping**, so a ping without the
   prefix means someone is running the bot outside the container (local dev) — worth
   noticing.
@@ -218,15 +219,69 @@ the Status callout for the runbooks.*
 
 ## Deployment Triggers
 
-**Production — MANUAL, no CI:** the only way code reaches prod is the operator
-running the command below; it may run at any time:
+**Production — automatic after CI on main.** `.github/workflows/deploy.yml`
+listens for completed `CI` runs. It accepts only a successful **push** run from
+this repository's `main`, verifies the actual `test` job/`Run tests` step and
+checks that the SHA is still current main. PRs, forks, dev and stale queued
+revisions cannot deploy. Manual dispatch also requires current main and green CI.
+One deployment runs at a time; an active rollout is not cancelled by a new push.
 
-`ssh root@45.90.216.165 "cd /opt/hw-news && git pull && docker compose up -d --build --remove-orphans"`
+The workflow builds that revision's labeled Docker image and performs offline
+import/prompt/uid/capability checks. It transfers the image and an exact source
+Git bundle over pinned-host SSH, preserving the existing server `.env`. The
+host helper refuses dirty/divergent checkouts, unexpected state mounts and
+missing/empty ledgers, takes a consistent backup, stops only this bot, migrates
+only inspected state paths to uid/gid 10001, fast-forwards main and recreates
+without rebuilding. Failed startup restores the previous image/Compose and
+ownership; it never blindly restores an older database over new publication
+history. Private checkpoints remain in `/opt/hw-news-deployments/`.
 
-`git push` to any branch triggers `ci.yml` (pytest) only. Both deploy workflows are
-disarmed (`deploy.yml:30`, `deploy_test.yml:26` — `if: false`) and target a host that
-no longer exists; they are kept as the skeleton for a future Docker-targeted CI, which
-remains a TODO.
+The runner saves encrypted off-host backups as Actions artifacts (14 days).
+Encryption uses the public half of the dedicated deployment SSH key; retain
+its private half for the entire backup-retention period even after rotation.
+Only `.db.age` files and sanitized JSON are uploaded, never plaintext DB or `.env`.
+After a successful rollout a separate minimally privileged job creates an
+immutable `prod-YYYY-MM-DD` tag (SHA suffix for another revision that day).
+
+### One-time GitHub SSH setup
+
+Two dedicated secrets are required in repository Settings → Secrets and variables
+→ Actions (or the `production` environment):
+
+- `PROD_SSH_PRIVATE_KEY`: the complete unencrypted OpenSSH private key of a
+  **dedicated** root deployment identity authorized on `45.90.216.165`. Supported
+  backup recipient types are Ed25519 or RSA. Never paste this key into chat.
+- `PROD_SSH_KNOWN_HOSTS`: a verified known_hosts entry for `45.90.216.165`.
+  Obtain the server's public host key/fingerprint through a trusted provider
+  console or an already trusted SSH session. Blind `ssh-keyscan` is not identity
+  verification; the workflow does not learn/accept keys dynamically.
+
+For a new identity, on the operator's trusted computer:
+
+```sh
+ssh-keygen -t ed25519 -N '' -f ~/.ssh/my-hw-github-actions -C my-hw-github-actions
+ssh-copy-id -i ~/.ssh/my-hw-github-actions.pub root@45.90.216.165
+```
+
+Authenticate that one-time key installation in the normal SSH terminal. Add the
+private file to the protected GitHub secret, not the repository. From the trusted
+server console/session, the public host-key entry can be prepared with:
+
+```sh
+awk '{print "45.90.216.165 " $1 " " $2}' /etc/ssh/ssh_host_ed25519_key.pub
+```
+
+Review/verify the host fingerprint before saving that line in the known-hosts
+secret. These are operator access-setup instructions; no root password or key
+was retrieved, rotated or installed by this code change. Missing secrets fail
+before contacting the host. The current Codex environment does not need direct
+TCP access for the GitHub runner deployment path.
+
+For retries use Actions → Deploy production → Run workflow on `main`; a main
+revision without an actual successful CI test job is rejected. A healthy already
+current revision is recognized without restarting it. Check the workflow and
+sanitized result artifact for the actual outcome; publishing this configuration
+alone does not prove that SSH credentials are provisioned or production updated.
 
 **GitHub Secrets** (Settings → Secrets and variables → Actions):
 
@@ -245,8 +300,8 @@ evidence or notification path without changing the independent SSH verdict (see
 The prod IP the watchdog probes is **not** a secret — it is hardcoded as `PROD_HOST`
 in the workflow.
 
-*Dead — left over from the NL deploy workflows, unusable while those are `if: false`;
-delete them when convenient:* `SSH_HOST`, `SSH_USER`, `DEPLOY_PATH`,
+*Legacy — left over from the retired NL deploy; not consumed by production.
+The test workflow remains disabled. Cleanup is separate:* `SSH_HOST`, `SSH_USER`, `DEPLOY_PATH`,
 `DEPLOY_PATH_TEST`, `SSH_PRIVATE_KEY`, `ANTHROPIC_API_KEY`, and the repo `vars`
 `ANTHROPIC_MODEL` / `TZ`.
 
@@ -260,9 +315,9 @@ array in [deploy.sh](../../../../deploy.sh): `news_bot.py`
 plus every first-party module it imports at startup, plus `feeds.json`,
 `requirements.txt`, `.env.example`, `watchdog.sh` and the LLM system prompt. Read it
 there; any enumeration in prose goes stale within a month. The same
-array is duplicated in `.github/workflows/deploy.yml` and
-`.github/workflows/deploy_test.yml` (three copies, currently identical), but both
-workflows and the SCP entry point are disarmed. Production packaging is the
+array is also retained in the disabled `.github/workflows/deploy_test.yml`.
+These two legacy arrays remain consistency-checked. Current production deploys
+a complete image through `.github/workflows/deploy.yml`; packaging is the
 Dockerfile plus `.dockerignore`.
 
 Two things about that manifest that the array itself does not say:
@@ -285,7 +340,7 @@ Two things about that manifest that the array itself does not say:
   need a bounded output evaluation before using the real channel as feedback.
 
 **Manifest guard and its boundary.** `tests/test_deploy_files_invariant.py`
-compares the three arrays, derives the transitive first-party import closure
+compares the two retained legacy arrays, derives the transitive first-party import closure
 through AST analysis and checks that runtime modules are included. Keep it green
 when adding a module. This protects the retained SCP manifests; it does not
 prove final Docker contents, dependency versions or startup. Verify those in an
@@ -330,8 +385,8 @@ the clock.
 - [ ] For packaging/startup changes, build and probe the actual image entrypoint with synthetic credentials and fixture state: prompt/imports, uid/capabilities, route, persistent ledger, excluded backups/secrets and resolved dependencies. Never launch the publishing loop as an installation check.
 - [ ] Merged into **`main`** (prod deploys from `main`, never from `dev`).
 - [ ] Note the current prod commit **before** deploying, so a rollback has a target: `ssh root@45.90.216.165 "cd /opt/hw-news && git rev-parse --short HEAD"`.
-- [ ] Deployment is explicitly authorized; time of day is informational, not a gate.
-- [ ] Deploy: `ssh root@45.90.216.165 "cd /opt/hw-news && git pull && docker compose up -d --build"`.
+- [ ] Deployment follows the owner-authorized automatic main-CI policy, or a separately authorized manual recovery; time of day is informational, not a gate.
+- [ ] Inspect the `Deploy production` run for the exact main SHA; use its checkpoint and encrypted backup artifacts. Do not bypass it with an unprepared `git pull && compose up` during the first rootless rollout.
 - [ ] Existing ledger and volume ownership satisfy § Container startup and first non-root rollout; the host `.env` supplies the Telegraph token. Production must not create a replacement empty database.
 - [ ] Post-deploy logs: `ssh root@45.90.216.165 "docker logs hw-news-bot --tail 200"` — clean preflight/startup and `[E008]` plan-of-day sent. Verify the worker uid/capabilities and that the existing ledger remains on the mounted volume.
 

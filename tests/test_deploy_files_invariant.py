@@ -1,38 +1,8 @@
-"""Invariant: every first-party module `news_bot.py` needs at runtime must appear
-in ALL THREE deploy FILES arrays (`deploy.sh`, `deploy.yml`, `deploy_test.yml`).
+"""Runtime import closure in the two disabled historical SCP manifests.
 
-Missing one causes an ImportError on the next tick on the server, with no CI
-signal at deploy time — the workflow's own `if [[ ! -f "$file" ]]` check only
-fires for files missing LOCALLY, not for files missing from the FILES array.
-Tech-spec Risk R7.
-
-Rewritten 2026-08-03
---------------------
-The previous version asserted that two hardcoded strings (`"t_hunted_source.py"`
-and `"watchdog.sh"`) appeared in each file — nothing more. Its docstring claimed
-to enforce the invariant for "every new first-party module", but a newly added
-module passed CI unnoticed, which is exactly the regression R7 describes. The
-2026-08-03 documentation audit found deployment.md repeating the docstring's
-claim, so the false assurance had already spread.
-
-This version derives the requirement instead of hardcoding it:
-
-* the **transitive** import closure of `news_bot.py` over repo-root modules
-  (transitive, not direct — a module imported only by `telegraph_publisher` is
-  just as fatal at import time), and
-* set equality across the three arrays, so they cannot drift apart.
-
-Deliberately one-directional on membership: FILES may legitimately contain more
-than the closure — standalone scripts (`backfill_fingerprints.py`, `watchdog.sh`)
-and data (`feeds.json`, `requirements.txt`, `.env.example`, the ux-guidelines
-system prompt) ship without being imported. The failure mode being guarded is a
-module MISSING from FILES, never an extra entry.
-
-Scope note: prod does not actually depend on these arrays today — the image is
-built with `COPY . .` (`Dockerfile:18`), so everything ships regardless, and both
-GitHub Actions deploy workflows are disarmed (`if: false`). The manifest matters
-if the scp path is ever revived, and as documentation of what the runtime needs.
-That is why this is a cheap consistency test and not a deployment gate.
+Production deploys a complete Docker image; the executable release gate and
+transaction tests live in test_production_deploy.py. Keep the remaining legacy
+arrays consistent without pretending that they verify current image contents.
 """
 
 from __future__ import annotations
@@ -45,7 +15,6 @@ REPO_ROOT = Path(__file__).resolve().parent.parent
 
 DEPLOY_FILES = {
     "deploy.sh": REPO_ROOT / "deploy.sh",
-    "deploy.yml": REPO_ROOT / ".github" / "workflows" / "deploy.yml",
     "deploy_test.yml": REPO_ROOT / ".github" / "workflows" / "deploy_test.yml",
 }
 
@@ -57,7 +26,7 @@ def _parse_files_array(path: Path) -> set[str]:
     """Extract the quoted entries of the `FILES=( ... )` array.
 
     The double-quoted form is identical in the bash array and inside the YAML
-    `run: |` block, so one parser fits all three files.
+    `run: |` block, so one parser fits both files.
     """
     text = path.read_text(encoding="utf-8")
     match = re.search(r"FILES=\((.*?)\n\s*\)", text, re.S)
@@ -104,8 +73,8 @@ def _runtime_closure() -> set[str]:
     return seen
 
 
-def test_all_three_manifests_are_identical():
-    """The three arrays must not drift — that drift is the historical R7 bug."""
+def test_retained_manifests_are_identical():
+    """Retained legacy manifests must not drift."""
     arrays = {name: _parse_files_array(path) for name, path in DEPLOY_FILES.items()}
     reference_name, reference = next(iter(arrays.items()))
     for name, entries in arrays.items():
@@ -127,7 +96,7 @@ def test_every_runtime_module_is_in_every_manifest():
         missing = sorted(required - entries)
         assert not missing, (
             f"{name} FILES array is missing {missing} — news_bot would ImportError "
-            "on the next tick with no CI signal (Risk R7). Add them to all three "
+            "on the next tick with no CI signal (Risk R7). Add them to both retained "
             "manifests."
         )
 
@@ -140,8 +109,8 @@ def test_feature_flags_is_in_every_manifest():
     source-formatting-parity wires it into ``t_hunted_source`` (which IS in
     the closure, pinned by ``test_closure_covers_the_known_runtime_modules``).
     Until then the entry rests solely on
-    ``test_all_three_manifests_are_identical`` — and that one catches only
-    DIVERGENCE between manifests: forgetting the module in all three at once
+    ``test_retained_manifests_are_identical`` — and that one catches only
+    DIVERGENCE between manifests: forgetting the module in both at once
     slips through.
 
     After Task 7 this becomes a duplicate safety net. Leave it: an explicit

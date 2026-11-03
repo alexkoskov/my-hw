@@ -2421,8 +2421,26 @@
         "work/project-hardening/plan.md",
         "work/project-hardening/logs/"
       ]
+    },
+    {
+      "id": "DEPLOY-AUTO-001",
+      "title": "Enable and verify exact-main GitHub production deployment with recovery checkpoints",
+      "status": "in_progress",
+      "weight": 8,
+      "depends_on": [
+        "HARDEN-007"
+      ],
+      "blocked_by": [],
+      "deliverables": [
+        ".github/workflows/deploy.yml",
+        "scripts/deploy_production.py",
+        "scripts/deploy_actions.sh",
+        "tests/test_production_deploy.py",
+        "tests/test_deploy_transport.py",
+        "work/project-hardening/deployment.md"
+      ]
     }
   ],
   "blockers": [],
-  "updated_at": "2026-11-03T18:16:41+03:00"
+  "updated_at": "2026-11-03T16:40:53+00:00"
 }

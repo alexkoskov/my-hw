@@ -1,264 +1,151 @@
-name: Deploy
+name: Deploy production
 
-# ⚠️ DEPRECATED / DISARMED 2026-07-07 — DO NOT USE AS-IS.
-# This workflow deploys via scp + `sudo systemctl restart news_bot.service` to
-# the OLD Netherlands VPS (secrets.SSH_HOST). Prod moved to a Docker container
-# on the Moscow VPS (45.90.216.165) on 2026-07-06, and the NL news_bot service
-# was stopped + disabled. Re-running this would scp to NL and `restart` →
-# REVIVE the decommissioned NL bot → double-post to the prod channel.
-#
-# The auto-trigger (`workflow_run` after CI on `main`) is REMOVED so a push to
-# `main` no longer fires a deploy. The job below is also hard-guarded `if: false`
-# so even a manual dispatch is a no-op.
-# TODO: replace with a Docker-targeted deploy (git pull + `docker compose up -d
-# --build` over SSH to the Moscow host; repoint SSH_HOST/secrets) before re-enabling.
 on:
+  workflow_run:
+    workflows: [CI]
+    types: [completed]
+    branches: [main]
   workflow_dispatch:
 
-# One deploy at a time. If a second push lands while a deploy is running,
-# the newer one waits and replaces the queued one (we always ship the freshest).
+permissions:
+  contents: read
+  actions: read
+
 concurrency:
   group: deploy-prod
   cancel-in-progress: false
 
 jobs:
-  deploy:
-    # DISARMED 2026-07-07: hard-off. This deploy targets the OLD NL host and
-    # would revive the decommissioned prod bot. Even a manual dispatch is a
-    # no-op until the workflow is rewritten for the Docker/Moscow host (see
-    # header). Flip back to the real condition only after that rewrite.
-    if: false
-
+  select:
+    if: >-
+      (github.event_name == 'workflow_run' &&
+       github.event.workflow_run.conclusion == 'success' &&
+       github.event.workflow_run.event == 'push' &&
+       github.event.workflow_run.head_branch == 'main' &&
+       github.event.workflow_run.head_repository.full_name == github.repository) ||
+      (github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main')
     runs-on: ubuntu-latest
-
+    outputs:
+      deploy: ${{ steps.gate.outputs.deploy }}
+      sha: ${{ steps.gate.outputs.sha }}
     steps:
-      # Explicit ref — for symmetry with deploy_test.yml. Prod-side this
-      # is currently a no-op (main = default branch, so checkout already
-      # picks up main), but the explicit form documents the intent and
-      # protects against a future default-branch change.
-      - name: Checkout
-        uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
-          ref: ${{ github.event.workflow_run.head_sha || github.ref }}
-
-      - name: Verify required secrets
+          ref: ${{ github.event.workflow_run.head_sha || github.sha }}
+          persist-credentials: false
+      - name: Verify exact main revision and successful test job
+        id: gate
         env:
-          SSH_HOST: ${{ secrets.SSH_HOST }}
-          SSH_USER: ${{ secrets.SSH_USER }}
-          DEPLOY_PATH: ${{ secrets.DEPLOY_PATH }}
-          SSH_PRIVATE_KEY: ${{ secrets.SSH_PRIVATE_KEY }}
-          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
-          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
-          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
-          OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}
-          OPEN_ROUTER_API_KEY: ${{ secrets.OPEN_ROUTER_API_KEY }}
+          GH_TOKEN: ${{ github.token }}
+        run: python3 scripts/deploy_production.py gate
+
+  deploy:
+    needs: select
+    if: needs.select.outputs.deploy == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    environment: production
+    outputs:
+      sha: ${{ needs.select.outputs.sha }}
+    env:
+      DEPLOY_SHA: ${{ needs.select.outputs.sha }}
+      PROD_HOST: 45.90.216.165
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          ref: ${{ needs.select.outputs.sha }}
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Configure production SSH identity
+        env:
+          PROD_SSH_PRIVATE_KEY: ${{ secrets.PROD_SSH_PRIVATE_KEY }}
+          PROD_SSH_KNOWN_HOSTS: ${{ secrets.PROD_SSH_KNOWN_HOSTS }}
         run: |
-          # SSH-related secrets are unconditionally required: without them
-          # the deploy step has nothing to push to.
-          for var in SSH_HOST SSH_USER DEPLOY_PATH SSH_PRIVATE_KEY; do
-            if [[ -z "${!var}" ]]; then
-              echo "::error::Missing required secret: $var"
-              echo "::error::Configure secrets in repo Settings → Secrets and variables → Actions."
-              exit 1
-            fi
-          done
-          # At least ONE LLM key must be set so news_bot can transcreate.
-          # The dispatcher (llm_transcreation.py) auto-selects an engine by
-          # key presence in priority order: openai → claude → gemini → openrouter.
-          # OPEN_ROUTER_API_KEY (with underscore) is accepted as alias for
-          # OPENROUTER_API_KEY so a typo in repo secrets still engages the
-          # OpenRouter engine.
-          # Override per-deploy via repo var LLM_PROVIDER if you have multiple.
-          if [[ -z "$ANTHROPIC_API_KEY" && -z "$OPENAI_API_KEY" && -z "$GEMINI_API_KEY" && -z "$OPENROUTER_API_KEY" && -z "$OPEN_ROUTER_API_KEY" ]]; then
-            echo "::error::No LLM API key set. Add at least one of:"
-            echo "::error::  ANTHROPIC_API_KEY, OPENAI_API_KEY, GEMINI_API_KEY,"
-            echo "::error::  OPENROUTER_API_KEY (or OPEN_ROUTER_API_KEY alias)"
-            echo "::error::in repo Settings → Secrets and variables → Actions."
+          set -euo pipefail
+          if [ -z "$PROD_SSH_PRIVATE_KEY" ] || [ -z "$PROD_SSH_KNOWN_HOSTS" ]; then
+            echo '::error::Configure PROD_SSH_PRIVATE_KEY and PROD_SSH_KNOWN_HOSTS for the Moscow production host. Legacy SSH_* secrets are not used.'
             exit 1
           fi
-          # Optional non-secret values handled with defaults below:
-          # LLM_PROVIDER, ANTHROPIC_MODEL, OPENAI_MODEL, GEMINI_MODEL,
-          # OPENROUTER_MODEL, TZ. Better stored as repo `vars` since they
-          # aren't sensitive.
-          echo "All required secrets present."
-
-      - name: Set up SSH agent
-        uses: webfactory/ssh-agent@v0.9.0
+          umask 077
+          mkdir -p "$RUNNER_TEMP/prod-ssh"
+          printf '%s\n' "$PROD_SSH_PRIVATE_KEY" > "$RUNNER_TEMP/prod-ssh/key"
+          printf '%s\n' "$PROD_SSH_KNOWN_HOSTS" > "$RUNNER_TEMP/prod-ssh/known_hosts"
+          ssh-keygen -y -P '' -f "$RUNNER_TEMP/prod-ssh/key" > "$RUNNER_TEMP/prod-ssh/recipient"
+          grep -qE '^(ssh-ed25519|ssh-rsa) ' "$RUNNER_TEMP/prod-ssh/recipient"
+          ssh-keygen -F "$PROD_HOST" -f "$RUNNER_TEMP/prod-ssh/known_hosts" >/dev/null
+          sudo apt-get update -qq
+          sudo apt-get install -y --no-install-recommends age
+      - name: Build and check the tested image
+        run: |
+          set -euo pipefail
+          docker build --label "org.opencontainers.image.revision=$DEPLOY_SHA" -t "hw-news-bot:$DEPLOY_SHA" .
+          docker run --rm --network none "hw-news-bot:$DEPLOY_SHA" python3 -c '
+          import importlib, os, pathlib
+          assert os.getuid() == 10001
+          state = dict(line.split(":", 1) for line in pathlib.Path("/proc/self/status").read_text().splitlines() if ":" in line)
+          assert all(int(state[k].strip(), 16) == 0 for k in ("CapEff", "CapPrm", "CapInh", "CapAmb", "CapBnd"))
+          assert state["NoNewPrivs"].strip() == "1"
+          import news_bot, http_fetch, pending_articles_repo, model_extractor, dom_blocks
+          for name in ("claude_transcreation", "gemini_transcreation", "openai_transcreation", "openrouter_transcreation"):
+              assert importlib.import_module(name)._load_prompt()
+          assert not list(pathlib.Path("/app").rglob("*.db"))
+          '
+          docker run --rm --network none "hw-news-bot:$DEPLOY_SHA" python3 -m pip check
+          docker save "hw-news-bot:$DEPLOY_SHA" | gzip -1 > "$RUNNER_TEMP/image.tar.gz"
+          git tag "deploy-build-$DEPLOY_SHA" "$DEPLOY_SHA"
+          git bundle create "$RUNNER_TEMP/source.bundle" "refs/tags/deploy-build-$DEPLOY_SHA"
+      - name: Prepare recovery checkpoint and encrypted off-host backup
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: bash scripts/deploy_actions.sh prepare
+      - name: Preserve encrypted pre-cutover backup
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
-          ssh-private-key: ${{ secrets.SSH_PRIVATE_KEY }}
-
-      - name: Add host to known_hosts
+          name: production-backup-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/before.db.age
+          if-no-files-found: error
+          retention-days: 14
+      - name: Deploy and verify the exact revision
         env:
-          SSH_HOST: ${{ secrets.SSH_HOST }}
-        run: |
-          mkdir -p ~/.ssh
-          chmod 700 ~/.ssh
-          ssh-keyscan -H "$SSH_HOST" > /tmp/known_hosts.new
-          if [[ ! -s /tmp/known_hosts.new ]]; then
-            echo "::error::ssh-keyscan produced no host keys for $SSH_HOST — check DNS, network reachability, or the SSH_HOST secret value."
-            exit 1
-          fi
-          cat /tmp/known_hosts.new >> ~/.ssh/known_hosts
-          chmod 644 ~/.ssh/known_hosts
+          GH_TOKEN: ${{ github.token }}
+        run: bash scripts/deploy_actions.sh activate
+      - name: Preserve encrypted cutover backup
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: production-cutover-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/cutover.db.age
+          if-no-files-found: ignore
+          retention-days: 14
+      - name: Preserve sanitized deployment evidence
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: production-result-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/production-result.json
+          if-no-files-found: ignore
+          retention-days: 30
+      - name: Remove incoming archives and runner credentials
+        if: always()
+        run: bash scripts/deploy_actions.sh cleanup
 
-      - name: Copy files to server
-        env:
-          SSH_HOST: ${{ secrets.SSH_HOST }}
-          SSH_USER: ${{ secrets.SSH_USER }}
-          DEPLOY_PATH: ${{ secrets.DEPLOY_PATH }}
-        # FILES list mirrors deploy.sh BYTE-FOR-BYTE — keep both in sync if
-        # you add a new cron-path module. INVARIANT: every new first-party
-        # import added to news_bot.py MUST appear in BOTH FILES arrays.
-        # Otherwise news_bot will crash with ImportError on the next cron
-        # tick on the server with no CI signal beforehand.
-        # Operator-side files (hw_review.py, preview_renderer.py) are
-        # intentionally excluded.
-        # Special case — ux-guidelines.md: lives in subdir
-        # prompts/ in the repo but `scp`
-        # (without -r) flattens subdirs, so it lands at
-        # $DEPLOY_PATH/ux-guidelines.md on the server. Decision 8 of the
-        # llm-transcreation tech-spec covers this: _load_prompt tries the
-        # subdir path first and falls back to flat filename.
+  record:
+    needs: [select, deploy]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    env:
+      GH_TOKEN: ${{ github.token }}
+      DEPLOY_SHA: ${{ needs.select.outputs.sha }}
+    steps:
+      - name: Tag the successfully deployed revision
         run: |
-          FILES=(
-            "news_bot.py"
-            "autoevolution_source.py"
-            "mattel_news_source.py"
-            "lamley_source.py"
-            "orangetrack_source.py"
-            "t_hunted_source.py"
-            "telegraph_publisher.py"
-            "pending_articles_repo.py"
-            "claude_transcreation.py"
-            "gemini_transcreation.py"
-            "openai_transcreation.py"
-            "openrouter_transcreation.py"
-            "llm_transcreation.py"
-            "_llm_common.py"
-            "http_fetch.py"
-            "compute_publish_slots.py"
-            "outage_state.py"
-            "admin_alerts.py"
-            "boilerplate_filter.py"
-            "feature_flags.py"
-            "dom_blocks.py"
-            "model_extractor.py"
-            "backfill_fingerprints.py"
-            "watchdog.sh"
-            "feeds.json"
-            "requirements.txt"
-            ".env.example"
-            "prompts/ux-guidelines.md"
-          )
-          for file in "${FILES[@]}"; do
-            if [[ ! -f "$file" ]]; then
-              echo "::error::$file not found in repo root"
-              exit 1
-            fi
-          done
-          echo "Copying ${#FILES[@]} files to $SSH_USER@$SSH_HOST:$DEPLOY_PATH/"
-          scp -o StrictHostKeyChecking=yes "${FILES[@]}" "$SSH_USER@$SSH_HOST:$DEPLOY_PATH/"
-
-      - name: Write runtime env vars to server .env
-        env:
-          SSH_HOST: ${{ secrets.SSH_HOST }}
-          SSH_USER: ${{ secrets.SSH_USER }}
-          DEPLOY_PATH: ${{ secrets.DEPLOY_PATH }}
-          # Secrets/vars passed via `env:` so GitHub Actions auto-redacts them
-          # in workflow logs. NEVER pass them on the ssh command line — they
-          # would appear in `ps -ef` on the runner. ANTHROPIC_MODEL and TZ
-          # fall back to documented defaults when the repo `vars` are unset.
-          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
-          ANTHROPIC_MODEL: ${{ vars.ANTHROPIC_MODEL || 'claude-haiku-4-5' }}
-          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
-          GEMINI_MODEL: ${{ vars.GEMINI_MODEL || 'gemini-2.5-flash-lite' }}
-          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
-          OPENAI_MODEL: ${{ vars.OPENAI_MODEL || 'gpt-4o-mini' }}
-          OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_API_KEY || secrets.OPEN_ROUTER_API_KEY }}
-          OPENROUTER_MODEL: ${{ vars.OPENROUTER_MODEL || 'openai/gpt-5.4-mini' }}
-          LLM_PROVIDER: ${{ vars.LLM_PROVIDER }}
-          TZ: ${{ vars.TZ || 'Europe/Moscow' }}
-        # Idempotent .env update on the server: strip any existing lines
-        # with the managed keys, then append the current values.
-        #
-        # Secret-handling discipline (hardened 2026-04-30 vs CWE-78):
-        #   - Values are interpolated into the remote script via
-        #     ``printf '%q'`` on the runner — bash's own shell-escape
-        #     primitive. A value containing ``'`` / ``\\`` / ``\\n``
-        #     gets converted to a literal that bash on remote parses
-        #     back to the original byte-for-byte; the value cannot
-        #     escape its quoting and inject shell.
-        #   - Values never appear on the SSH command line — only the
-        #     literal ``bash -s`` token does. Nothing sensitive in
-        #     ``ps -ef`` on the runner or remote.
-        #   - GitHub Actions auto-redacts secret values in workflow
-        #     logs as defence in depth.
-        run: |
-          ssh -o StrictHostKeyChecking=yes "$SSH_USER@$SSH_HOST" 'bash -s' <<EOF
-          set -e
-          DEPLOY_PATH=$(printf '%q' "$DEPLOY_PATH")
-          ANTHROPIC_API_KEY=$(printf '%q' "$ANTHROPIC_API_KEY")
-          ANTHROPIC_MODEL=$(printf '%q' "$ANTHROPIC_MODEL")
-          GEMINI_API_KEY=$(printf '%q' "$GEMINI_API_KEY")
-          GEMINI_MODEL=$(printf '%q' "$GEMINI_MODEL")
-          OPENAI_API_KEY=$(printf '%q' "$OPENAI_API_KEY")
-          OPENAI_MODEL=$(printf '%q' "$OPENAI_MODEL")
-          OPENROUTER_API_KEY=$(printf '%q' "$OPENROUTER_API_KEY")
-          OPENROUTER_MODEL=$(printf '%q' "$OPENROUTER_MODEL")
-          LLM_PROVIDER=$(printf '%q' "$LLM_PROVIDER")
-          TZ_VALUE=$(printf '%q' "$TZ")
-          cd "\$DEPLOY_PATH"
-          touch .env
-          chmod 600 .env
-          # Strip stale entries for the managed keys, keep everything
-          # else byte-for-byte. \`|| true\` covers the empty-file edge case.
-          grep -v -E '^(ANTHROPIC_API_KEY|ANTHROPIC_MODEL|GEMINI_API_KEY|GEMINI_MODEL|OPENAI_API_KEY|OPENAI_MODEL|OPENROUTER_API_KEY|OPEN_ROUTER_API_KEY|OPENROUTER_MODEL|LLM_PROVIDER|TZ)=' .env > .env.tmp || true
-          # 600 BEFORE writing secrets — close the TOCTOU window.
-          chmod 600 .env.tmp
-          {
-            [ -n "\$ANTHROPIC_API_KEY" ] && printf 'ANTHROPIC_API_KEY=%s\n' "\$ANTHROPIC_API_KEY"
-            printf 'ANTHROPIC_MODEL=%s\n' "\$ANTHROPIC_MODEL"
-            [ -n "\$GEMINI_API_KEY" ] && printf 'GEMINI_API_KEY=%s\n' "\$GEMINI_API_KEY"
-            printf 'GEMINI_MODEL=%s\n' "\$GEMINI_MODEL"
-            [ -n "\$OPENAI_API_KEY" ] && printf 'OPENAI_API_KEY=%s\n' "\$OPENAI_API_KEY"
-            printf 'OPENAI_MODEL=%s\n' "\$OPENAI_MODEL"
-            [ -n "\$OPENROUTER_API_KEY" ] && printf 'OPENROUTER_API_KEY=%s\n' "\$OPENROUTER_API_KEY"
-            printf 'OPENROUTER_MODEL=%s\n' "\$OPENROUTER_MODEL"
-            [ -n "\$LLM_PROVIDER" ] && printf 'LLM_PROVIDER=%s\n' "\$LLM_PROVIDER"
-            printf 'TZ=%s\n' "\$TZ_VALUE"
-          } >> .env.tmp
-          mv .env.tmp .env
-          EOF
-
-      - name: Install Python dependencies on server
-        env:
-          SSH_HOST: ${{ secrets.SSH_HOST }}
-          SSH_USER: ${{ secrets.SSH_USER }}
-          DEPLOY_PATH: ${{ secrets.DEPLOY_PATH }}
-        run: |
-          ssh -o StrictHostKeyChecking=yes "$SSH_USER@$SSH_HOST" \
-            "set -e; cd '$DEPLOY_PATH' && python3 -m pip install --user --break-system-packages -r requirements.txt" \
-            || { echo "::error::pip install failed on server — SSH into $SSH_USER@$SSH_HOST to inspect ~/.local and ~/.cache/pip/log."; exit 1; }
-
-      - name: Restart news_bot service on server
-        env:
-          SSH_HOST: ${{ secrets.SSH_HOST }}
-          SSH_USER: ${{ secrets.SSH_USER }}
-        # Relies on the sudoers rule configured on the server in
-        # /etc/sudoers.d/news_bot:
-        #   <user> ALL=(ALL) NOPASSWD: /usr/bin/systemctl restart news_bot.service, ...
-        # so this works without a TTY or password prompt. If the rule is
-        # missing or has wrong perms (must be 0440), this step will fail
-        # with a "terminal is required to read password" error — fix the
-        # sudoers file on the server, not here.
-        run: |
-          ssh -o StrictHostKeyChecking=yes "$SSH_USER@$SSH_HOST" \
-            "sudo /usr/bin/systemctl restart news_bot.service" \
-            || { echo "::error::Service restart failed — check /etc/sudoers.d/news_bot exists with mode 0440 and includes 'NOPASSWD: /usr/bin/systemctl restart news_bot.service'."; exit 1; }
-          echo "::notice::news_bot.service restarted — running on the new code."
-
-      - name: Deploy summary
-        run: |
-          echo "::notice::Deploy complete. news_bot.service was restarted; the new code is live now."
-          echo "::notice::Verify: ssh \$SSH_USER@\$SSH_HOST and run: journalctl -u news_bot.service -n 20"
-          echo "::notice::Rollback: locally run 'git revert HEAD && git push origin main' — this workflow will redeploy the parent commit."
+          set -euo pipefail
+          tag="prod-$(TZ=Europe/Moscow date +%F)"
+          current=$(gh api "repos/$GITHUB_REPOSITORY/commits/$tag" --jq '.sha' 2>/dev/null || true)
+          if [ "$current" = "$DEPLOY_SHA" ]; then exit 0; fi
+          if [ -n "$current" ]; then tag="$tag-${DEPLOY_SHA:0:7}"; fi
+          current=$(gh api "repos/$GITHUB_REPOSITORY/commits/$tag" --jq '.sha' 2>/dev/null || true)
+          if [ "$current" = "$DEPLOY_SHA" ]; then exit 0; fi
+          if [ -n "$current" ]; then echo '::error::Deployment tag already names another revision'; exit 1; fi
+          gh api --method POST "repos/$GITHUB_REPOSITORY/git/refs" -f "ref=refs/tags/$tag" -f "sha=$DEPLOY_SHA" >/dev/null

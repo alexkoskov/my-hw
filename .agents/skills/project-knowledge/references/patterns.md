@@ -758,7 +758,7 @@ the tick with no clue to the cause.
 
 ### Branch Structure
 
-- **`main`** – stable code eligible for production. Only merge from `dev` after verification. Deployment is **manual** and separately authorized; timing and procedure are in deployment.md. Both GitHub Actions deploy workflows are disarmed (`if: false`).
+- **`main`** – stable code eligible for production. Only merge from `dev` after verification. Successful push CI on current main triggers the owner-authorized production Docker workflow; setup, timing and recovery are in deployment.md. The retired test deploy stays disabled.
 - **`dev`** – active development line; feature branches integrate here. GitHub's default branch is `main`. There is no staging environment to deploy to.
 
 ### Promotion `dev` → `main` — always a PR (operator decision 2026-08-03)
@@ -767,15 +767,15 @@ Until 2026-08-03 promotion alternated between GitHub PR merges and bare local
 `Merge branch 'dev'` commits with no description, so half the releases had no
 record of what went out. **One way now: open a PR from `dev` to `main`.**
 
-The reason is operational, not aesthetic: deployment is manual, so the PR page is
-the last place to read what you are about to put on production *before* you ssh in
-and rebuild. A bare local merge skips that read.
+The PR page is the release note before the post-merge CI/deployment pipeline.
+Preserve it so the exact production revision and its intended changes remain
+reviewable.
 
 - The PR body is the release note — what changed and what to watch after deploy.
 - Green CI on the PR is the gate; verify that the test job actually ran.
-- Merging the PR does **not** deploy anything (both deploy workflows are
-  disarmed). Authorized rebuilds may run at any time; see deployment.md for
-  the restart's scheduling effect.
+- After merge, the main push's actual CI test job must succeed before automatic
+  deployment can run. Missing production SSH secrets fail before server access.
+  See deployment.md for restart scheduling and rollout/rollback checks.
 
 ### Release tags (operator decision 2026-08-03)
 

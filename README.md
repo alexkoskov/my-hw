@@ -88,8 +88,9 @@ With production credentials in `.env` that publishes to the real channel.
 Production runs from **`/opt/hw-news`** on the Moscow host (path verified
 2026-09-30); its database is `/opt/hw-news/data/news.db`.
 
-Production is a Docker container on the Moscow host and is deployed manually
-by the operator — see
+Production is a Docker container on the Moscow host. Successful push CI on
+current `main` triggers the production deploy workflow when its dedicated SSH
+secrets are configured — see
 [deployment.md](.agents/skills/project-knowledge/references/deployment.md) for
 the redeploy command, restart scheduling effect, logs and monitoring. Do not
 follow any systemd/cron instructions found in older notes.
