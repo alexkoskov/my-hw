@@ -35,6 +35,7 @@ gate inside it would strip orangetrack's blocks when the flag is off, which
 is a regression on a working source and an AC10 violation.
 """
 
+import copy
 import re
 import urllib.parse
 from typing import Dict, List, Optional
@@ -283,44 +284,29 @@ def runs_from_tag(tag, *, has_color_class=_no_color_class) -> List[Dict]:
                 buf.append(str(child))
                 continue
             name = getattr(child, "name", None)
+            if name == "br":
+                buf.append(" ")
+                continue
             if name == "a":
                 href = safe_href(child.get("href"))
-                # Recurse into anchor children to capture nested <strong>/etc.
-                # and emit a single run per anchor; if an inner format applies,
-                # we attach it to the run alongside the href.
+                # Emit one anchor run with its source whitespace and ambient
+                # formats. Inner anchor formatting is not part of this policy.
                 inner_buf: List[str] = []
-                inner_fmts: List[str] = []
 
                 def collect(el):
                     inner_name = getattr(el, "name", None)
                     if isinstance(el, str):
                         inner_buf.append(str(el))
                         return
-                    fmt = _INLINE_FORMAT_TAGS.get(inner_name)
-                    color_fmt = "bold" if has_color_class(el) else None
-                    pushed = []
-                    if fmt:
-                        inner_fmts.append(fmt)
-                        pushed.append(fmt)
-                    if color_fmt and color_fmt not in inner_fmts:
-                        inner_fmts.append(color_fmt)
-                        pushed.append(color_fmt)
+                    if inner_name == "br":
+                        inner_buf.append(" ")
+                        return
                     for sub in getattr(el, "children", []):
                         collect(sub)
-                    for _ in pushed:
-                        inner_fmts.pop()
 
                 for sub in child.children:
                     collect(sub)
-                link_text = "".join(inner_buf).strip()
-                # Re-derive a deduped format list (collect could push the same
-                # format twice across siblings — keep first occurrence order).
-                seen_inner: List[str] = []
-                for f in current_formats():
-                    seen_inner.append(f)
-                # Note: anchor inner formats only matter if anchor itself or
-                # ancestors are formatted. We use the OUTER fmt_stack to attach
-                # ambient formatting to anchors (e.g., paragraph-wide <strong>).
+                link_text = "".join(inner_buf)
                 if href and link_text:
                     flush()
                     run: Dict = {"text": link_text, "href": href}
@@ -539,14 +525,7 @@ class BlockBuilder:
             self._append_text_block(text, runs)
             return
 
-        segments: List[List] = [[]]
-        for child in p_tag.children:
-            if getattr(child, "name", None) == "br":
-                segments.append([])
-            else:
-                segments[-1].append(child)
-
-        for seg_children in segments:
+        for seg_children in _split_children_at_breaks(p_tag):
             if not seg_children:
                 continue
             seg_html = "".join(str(c) for c in seg_children)
@@ -713,6 +692,30 @@ class BlockBuilder:
             # recurse so the inner <p>/<figure>/<iframe>/<li> get walked.
             if name not in self.HANDLED_TAGS:
                 self.walk(child)
+
+
+def _split_children_at_breaks(tag):
+    """Split at nested ``br`` tags while retaining enclosing inline markup.
+
+    Clone only branches that cross a break; never extract nodes from the
+    source DOM, which a parser may still need for its flat-text projection.
+    """
+    segments = [[]]
+    for child in tag.children:
+        if getattr(child, "name", None) == "br":
+            segments.append([])
+        elif getattr(child, "name", None) and child.find("br"):
+            for index, fragment in enumerate(_split_children_at_breaks(child)):
+                if index:
+                    segments.append([])
+                shell = type(child)(name=child.name, attrs=dict(child.attrs),
+                                    namespace=child.namespace, prefix=child.prefix)
+                for item in fragment:
+                    shell.append(copy.copy(item))
+                segments[-1].append(shell)
+        else:
+            segments[-1].append(child)
+    return segments
 
 
 def _parse_fragment(html: str):

@@ -301,7 +301,9 @@ def _theme_only_eligible(canonical: str, tier: str) -> bool:
 # AMC ship strictly uppercase; Lotus must be capitalised — prose
 # "lotus position" must NOT match.
 _MODEL_AFTER_BRAND_RE = re.compile(
-    r'\b'
+    # Look ahead so a following brand remains discoverable even if it was
+    # consumed as the previous match's model/model_extra before filtering.
+    r'(?=\b'
     r'(?:(?:19|20)\d{2}\s{1,3})?'
     r'(?P<brand>'
     # Multi-word brands first (ordering matters within alternation when
@@ -315,7 +317,8 @@ _MODEL_AFTER_BRAND_RE = re.compile(
     r'toyota|volkswagen|vw'
     r')'
     r'(?:[\s\-]{1,3}(?P<model>[A-Za-z0-9][A-Za-z0-9\-]{1,24})'
-    r'(?P<model_extra>(?:\s{1,2}[A-Za-z0-9][A-Za-z0-9\-]{0,24}){0,2}))?',
+    r'(?P<model_extra>(?:\s{1,2}[A-Za-z0-9][A-Za-z0-9\-]{0,24}){0,2}))?'
+    r')',
     re.IGNORECASE,
 )
 

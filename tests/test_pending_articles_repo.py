@@ -92,6 +92,11 @@ EXPECTED_FAILED = {
     # ``retry_from_failed`` doesn't create an orphan Telegraph page.
     'telegraph_url':       {'type': 'TEXT',      'notnull': 0, 'dflt_value': None,                'pk': 0},
     'telegraph_path':      {'type': 'TEXT',      'notnull': 0, 'dflt_value': None,                'pk': 0},
+    'model_fingerprint':   {'type': 'TEXT',      'notnull': 0, 'dflt_value': None,                'pk': 0},
+    'ru_title':            {'type': 'TEXT',      'notnull': 0, 'dflt_value': None,                'pk': 0},
+    'ru_subtitle':         {'type': 'TEXT',      'notnull': 0, 'dflt_value': None,                'pk': 0},
+    'ru_paragraphs':       {'type': 'TEXT',      'notnull': 0, 'dflt_value': None,                'pk': 0},
+    'ru_blocks':           {'type': 'TEXT',      'notnull': 0, 'dflt_value': None,                'pk': 0},
 }
 
 
