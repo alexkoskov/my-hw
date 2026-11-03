@@ -18,6 +18,7 @@ import json
 import logging
 import os
 import re
+import tempfile
 from typing import List, Optional
 from urllib.parse import urlparse
 
@@ -61,10 +62,17 @@ def create_account(
 
 
 def _save_token_to_env(env_path: str, token: str) -> None:
-    """Append or update TELEGRAPH_ACCESS_TOKEN in the .env file."""
+    """Atomically update a private .env file without following a symlink."""
+    env_path = os.path.abspath(env_path)
+    if os.path.islink(env_path):
+        raise OSError("Refusing to replace a symlinked environment file")
     lines: List[str] = []
-    if os.path.exists(env_path):
-        with open(env_path) as f:
+    try:
+        source_fd = os.open(env_path, os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0))
+    except FileNotFoundError:
+        pass
+    else:
+        with os.fdopen(source_fd, encoding="utf-8") as f:
             lines = f.readlines()
     updated = False
     for i, line in enumerate(lines):
@@ -76,8 +84,23 @@ def _save_token_to_env(env_path: str, token: str) -> None:
         if lines and not lines[-1].endswith("\n"):
             lines.append("\n")
         lines.append(f"{ENV_TOKEN_KEY}={token}\n")
-    with open(env_path, "w") as f:
-        f.writelines(lines)
+    fd, temporary_path = tempfile.mkstemp(
+        prefix=".telegraph-env-", dir=os.path.dirname(env_path),
+    )
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as f:
+            os.fchmod(f.fileno(), 0o600)
+            f.writelines(lines)
+            f.flush()
+            os.fsync(f.fileno())
+        if os.path.islink(env_path):
+            raise OSError("Refusing to replace a symlinked environment file")
+        os.replace(temporary_path, env_path)
+    finally:
+        try:
+            os.unlink(temporary_path)
+        except FileNotFoundError:
+            pass
 
 
 def ensure_access_token(
@@ -93,8 +116,15 @@ def ensure_access_token(
     try:
         _save_token_to_env(env_path, token)
     except OSError as exc:
-        logger.warning("Could not persist Telegraph token to %s: %s", env_path, exc)
-    logger.info("Created new Telegraph account; token stored in %s", env_path)
+        # An exception may echo a token or other .env content. Keep the cause's
+        # type for diagnosis, but never log its raw message.
+        logger.warning(
+            "Created new Telegraph account, but token could not be persisted "
+            "(%s); configure TELEGRAPH_ACCESS_TOKEN in the runtime environment",
+            type(exc).__name__,
+        )
+    else:
+        logger.info("Created new Telegraph account; token stored in %s", env_path)
     return token
 
 
