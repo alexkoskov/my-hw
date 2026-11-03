@@ -29,6 +29,7 @@ except ImportError:
 from bs4 import BeautifulSoup
 
 from boilerplate_filter import filter_blocks, filter_boilerplate, is_boilerplate
+from http_fetch import bounded_get
 
 logger = logging.getLogger(__name__)
 
@@ -41,6 +42,7 @@ YOUTUBE_ID_RE = re.compile(
 )
 VIMEO_ID_RE = re.compile(r"vimeo\.com/(\d+)")
 REQUEST_TIMEOUT = 20
+MAX_RESPONSE_SIZE = 5 * 1024 * 1024
 MAX_IMAGES = 10
 
 #: Browser profile ``curl_cffi`` impersonates. Autoevolution's Cloudflare rules
@@ -186,8 +188,8 @@ def _get_session(refresh: bool = False) -> "curl_requests.Session":
                 pass
         _session = curl_requests.Session(impersonate=_IMPERSONATE_PROFILE)
         try:
-            _session.get(_WARMUP_URL, timeout=REQUEST_TIMEOUT,
-                         allow_redirects=False)
+            bounded_get(_session, _WARMUP_URL, timeout=REQUEST_TIMEOUT,
+                        max_bytes=MAX_RESPONSE_SIZE, curl=True)
         except Exception as exc:
             # Warm-up is an optimisation, not a precondition. An unreachable
             # home page must not cost the tick its articles — the session is
@@ -240,8 +242,8 @@ def _fetch_through_session(link: str) -> Optional[object]:
             # (CWE-918). orangetrack and mattel already set it; this fetcher
             # was the last one that did not. Verified 2026-08-12 that neither
             # the home page nor article pages redirect, so nothing is lost.
-            response = session.get(link, timeout=REQUEST_TIMEOUT,
-                                   allow_redirects=False)
+            response = bounded_get(session, link, timeout=REQUEST_TIMEOUT,
+                                   max_bytes=MAX_RESPONSE_SIZE, curl=True)
         except Exception as exc:
             # Drop the session before giving up. Sharing one connection across
             # a tick means a transport-level failure (reset peer, dead socket)

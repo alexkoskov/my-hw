@@ -101,6 +101,7 @@ class TestMattelIntegration(unittest.TestCase):
 
     def _make_response(self, text="", raise_exc=None):
         resp = MagicMock(spec=requests.Response)
+        resp.status_code = 200
         resp.text = text
         resp.raise_for_status.side_effect = raise_exc
         if raise_exc is None:

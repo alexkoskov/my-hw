@@ -25,6 +25,7 @@ from bs4 import BeautifulSoup
 
 from boilerplate_filter import filter_boilerplate
 import admin_alerts
+from http_fetch import FetchTooLarge, bounded_get
 
 logger = logging.getLogger(__name__)
 
@@ -322,7 +323,8 @@ def fetch_lamley_article(
         # unexpected kwarg.
         if http is _cffi_requests:
             kwargs["impersonate"] = "chrome131"
-        return http.get(link, **kwargs)
+        return bounded_get(http, link, max_bytes=MAX_RESPONSE_SIZE,
+                           curl=http is _cffi_requests, **kwargs)
 
     # Soft client-side throttle BEFORE the first attempt so a tight call
     # loop doesn't hammer Lamley's WordPress.
@@ -340,11 +342,9 @@ def fetch_lamley_article(
             time.sleep(retry_s)
             response = _do_fetch()
         response.raise_for_status()
-        if len(response.content) > MAX_RESPONSE_SIZE:
-            _notify(notifier, admin_alerts.alert_lamley_article_too_large(
-                len(response.content)
-            ))
-            return None
+    except FetchTooLarge as exc:
+        _notify(notifier, admin_alerts.alert_lamley_article_too_large(exc.size))
+        return None
     except _HTTP_STATUS_ERRORS as exc:
         # 4xx/5xx from raise_for_status(). Read the status from the RESPONSE we
         # already hold (not exc.response) — works regardless of which HTTP

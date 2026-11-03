@@ -31,6 +31,7 @@ import time
 from typing import Callable, Dict, Iterator, List, Optional, Tuple
 
 import requests
+from http_fetch import FetchTooLarge, bounded_get
 from bs4 import BeautifulSoup
 
 from boilerplate_filter import filter_boilerplate
@@ -400,19 +401,19 @@ def fetch_mattel_news(
     """
     http = session or requests
     try:
-        response = http.get(
+        response = bounded_get(
+            http,
             url,
+            max_bytes=MAX_RESPONSE_SIZE,
             headers={"User-Agent": USER_AGENT},
             timeout=REQUEST_TIMEOUT,
             allow_redirects=False,  # Decision 8 control 6
         )
         response.raise_for_status()
-        # Enforce size guard BEFORE any regex/JSON parsing (Decision 8).
-        if len(response.content) > MAX_RESPONSE_SIZE:
-            raise MattelNewsError(
-                f"response too large: {len(response.content)} bytes"
-            )
         raw_entries = _extract_listing_entries(response.text)
+    except FetchTooLarge as exc:
+        _notify(notifier, admin_alerts.alert_mattel_news_generic(str(exc)))
+        return []
     except requests.RequestException as exc:
         # Sanitised: type only, no str(exc) (Decision 8 control 5).
         _notify(notifier, admin_alerts.alert_mattel_news_http_error(
@@ -468,18 +469,21 @@ def fetch_mattel_article(
 
     http = session or requests
     try:
-        response = http.get(
+        response = bounded_get(
+            http,
             link,
+            max_bytes=MAX_RESPONSE_SIZE,
             headers={"User-Agent": USER_AGENT},
             timeout=REQUEST_TIMEOUT,
             allow_redirects=False,  # Decision 8 control 6
         )
         response.raise_for_status()
-        if len(response.content) > MAX_RESPONSE_SIZE:
-            raise MattelNewsError(
-                f"response too large: {len(response.content)} bytes"
-            )
         entry, concat = _extract_article_entry(response.text, link)
+    except FetchTooLarge as exc:
+        _notify(notifier, admin_alerts.alert_mattel_article_fetch_error(
+            link, str(exc),
+        ))
+        return None
     except requests.RequestException as exc:
         _notify(notifier, admin_alerts.alert_mattel_article_fetch_error(
             link, type(exc).__name__

@@ -35,6 +35,7 @@ import admin_alerts
 import dom_blocks
 import feature_flags
 from boilerplate_filter import filter_blocks
+from http_fetch import FetchTooLarge, bounded_get
 
 logger = logging.getLogger(__name__)
 
@@ -205,25 +206,21 @@ def fetch_t_hunted_article(
 
     session = session or requests.Session()
     try:
-        response = session.get(
+        response = bounded_get(
+            session,
             link,
+            max_bytes=_MAX_BYTES,
             timeout=_TIMEOUT_SECONDS,
             headers={'User-Agent': _USER_AGENT},
         )
         response.raise_for_status()
+    except FetchTooLarge as exc:
+        logger.warning("t-hunted: %s — dropping %s", exc, link)
+        return None
     except requests.RequestException as exc:
         _notify(
             notifier,
             admin_alerts.alert_t_hunted_fetch_error(link, str(exc)),
-        )
-        return None
-
-    if len(response.content) > _MAX_BYTES:
-        # Defensive WARN (no admin alert by design — Blogger doesn't
-        # serve oversize bodies; this is a DOS / DOM-exploit gate).
-        logger.warning(
-            "t-hunted: response body too large (%d bytes) — dropping %s",
-            len(response.content), link,
         )
         return None
 
