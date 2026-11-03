@@ -478,8 +478,7 @@ _PROXY_CRED_RE = re.compile(
 
 
 def _redact_text(text):
-    """Scrub Telegram-bot-token, Anthropic, OpenAI, OpenRouter, and Gemini
-    API-key shapes from a string.
+    """Scrub exact configured secrets and known credential shapes.
 
     Single source of truth for redaction — used by both the logging filter
     and ``send_admin_notification`` (the admin-notify path lives outside
@@ -496,14 +495,18 @@ def _redact_text(text):
         input.  Matches the silent-fallback invariant of
         ``_TokenRedactingFilter.filter`` which returns ``True`` even on
         internal error.
-      * Never raises.  Any internal failure returns the input as-is
-        (best-effort coerced to string).
+      * Never raises. Internal failures return a safe placeholder rather
+        than the original potentially secret-bearing text.
     """
     if text is None:
         return ""
     try:
         if not isinstance(text, str):
             text = str(text)
+        for name in _SECRET_ENV_NAMES:
+            value = os.getenv(name)
+            if value and value.strip():
+                text = text.replace(value, "***")
         text = _PROXY_CRED_RE.sub(r"\1***:***@", text)
         text = _BOT_TOKEN_RE.sub("***", text)
         text = _OPENROUTER_KEY_RE.sub("***", text)
@@ -512,11 +515,21 @@ def _redact_text(text):
         text = _GEMINI_KEY_RE.sub("***", text)
         return text
     except Exception:
-        # Defensive: never let redaction break the caller.
+        return "<redaction failed>"
+
+
+class _RedactingFormatter(logging.Formatter):
+    """Scrub the final output, including formatter-added exception details."""
+
+    def __init__(self, delegate=None):
+        super().__init__()
+        self.delegate = delegate or logging.Formatter()
+
+    def format(self, record):
         try:
-            return text if isinstance(text, str) else str(text)
+            return _redact_text(self.delegate.format(record))
         except Exception:
-            return ""
+            return "<log formatting failed>"
 
 
 class _TokenRedactingFilter(logging.Filter):
@@ -539,12 +552,23 @@ class _TokenRedactingFilter(logging.Filter):
             # re-format and reintroduce a raw token from ``record.args``.
             rendered = record.getMessage()
             scrubbed = _redact_text(rendered)
-            if scrubbed != rendered:
-                record.msg = scrubbed
-                record.args = None
+            record.msg = scrubbed
+            record.args = None
+            # Materialize once so plain formatters on additional handlers
+            # cannot append a raw exception after the message was scrubbed.
+            if record.exc_info and not record.exc_text:
+                record.exc_text = logging.Formatter().formatException(
+                    record.exc_info,
+                )
+            if record.exc_text:
+                record.exc_text = _redact_text(record.exc_text)
+            record.exc_info = None
+            if record.stack_info:
+                record.stack_info = _redact_text(record.stack_info)
         except Exception:
-            # Never let the filter break logging.
-            pass
+            record.msg = "<log redaction failed>"
+            record.args = None
+            record.exc_info = record.exc_text = record.stack_info = None
         return True
 
 
@@ -564,6 +588,8 @@ logging.getLogger().addFilter(_TOKEN_FILTER)
 # haven't named explicitly below (Decision 12 hardening).
 for _root_handler in logging.getLogger().handlers:
     _root_handler.addFilter(_TOKEN_FILTER)
+    if not isinstance(_root_handler.formatter, _RedactingFormatter):
+        _root_handler.setFormatter(_RedactingFormatter(_root_handler.formatter))
 for _noisy in ("httpx", "httpcore", "urllib3", "requests"):
     logging.getLogger(_noisy).addFilter(_TOKEN_FILTER)
 # LLM SDK families — each uses its own logger hierarchy and may emit
@@ -964,6 +990,7 @@ def resolve_hold_callback(action, token, from_user_id):
 
 
 logger = logging.getLogger(__name__)
+logger.addFilter(_TOKEN_FILTER)
 
 
 # ---------------------------------------------------------------------------
@@ -1690,6 +1717,44 @@ def _prod_db_guard():
             f"{sanitize_error_message(db_err)}"
         )
     return warnings
+
+
+class ProductionStartupError(RuntimeError):
+    """Unsafe production state; startup must stop before creating or publishing."""
+
+
+_PROD_DB_PATH = "/data/news.db"
+
+
+def _production_preflight():
+    """Validate the existing production ledger without creating a database."""
+    if INSTANCE_LABEL.strip().lower() != "prod":
+        return
+    path = os.path.abspath(DB_FILE)
+    if path != _PROD_DB_PATH:
+        raise ProductionStartupError("production DB_FILE must be /data/news.db")
+    if not os.path.isfile(path) or os.path.getsize(path) == 0:
+        raise ProductionStartupError("production ledger is missing or empty; restore it before startup")
+    if not os.access(path, os.R_OK | os.W_OK) or not os.access(
+        os.path.dirname(path), os.W_OK | os.X_OK,
+    ):
+        raise ProductionStartupError("production database and state directory must be writable by the worker")
+    try:
+        conn = sqlite3.connect(
+            "file:" + quote(path, safe="/") + "?mode=ro", uri=True,
+        )
+        try:
+            if conn.execute("PRAGMA quick_check").fetchone() != ("ok",):
+                raise ProductionStartupError("production database integrity check failed")
+            # Validate the ledger columns as well as its anti-repost history.
+            if conn.execute("SELECT link, title, pub_date FROM processed_news LIMIT 1").fetchone() is None:
+                raise ProductionStartupError("production processed_news ledger is empty; restore the existing history")
+        finally:
+            conn.close()
+    except sqlite3.Error as exc:
+        raise ProductionStartupError("production database is invalid or lacks the processed_news ledger") from exc
+    if not os.getenv("TELEGRAPH_ACCESS_TOKEN", "").strip():
+        raise ProductionStartupError("production TELEGRAPH_ACCESS_TOKEN must be supplied in the environment")
 
 
 def _maybe_alert_openrouter_balance():
@@ -2889,7 +2954,10 @@ def _title_mentions_model(title, model):
     if not isinstance(title, str) or not isinstance(model, str):
         return False
     pattern = rf'(?<![a-z0-9]){re.escape(model.casefold())}(?![a-z0-9])'
-    return re.search(pattern, title.casefold()) is not None
+    if re.search(pattern, title.casefold()) is not None:
+        return True
+    title_models, _series = _title_dedup_subject(title)
+    return model.casefold() in title_models
 
 
 def _qualify_broad_pairs(shared, pair_map, new_subject, candidate_subject):
@@ -3730,6 +3798,17 @@ def _maybe_record_recovery():
             )
 
 
+class PublishWindowClosed(RuntimeError):
+    """A later slot must resume this article without charging a failure."""
+
+
+def _ensure_publish_window(row):
+    deadline = row.get("_publish_deadline")
+    if deadline is not None and not row.get("_teaser_sent"):
+        if datetime.now(MSK_TZ) >= deadline:
+            raise PublishWindowClosed("publication window is closed; resume at a later eligible slot")
+
+
 def _fallback_publish(row, via_review=False):
     """Auto-publish a pending row, translating via the LLM (Claude) only.
     On an API-level LLM outage the article is HELD (re-raises
@@ -3751,10 +3830,9 @@ def _fallback_publish(row, via_review=False):
     Returns
     -------
     bool
-        ``True`` on success. Re-raises ``ClaudeOutageError`` after a
-        successful degraded-mode publish so ``job()`` can advance its
-        outage-aware slot loop. Other exceptions propagate to the
-        caller so ``attempt_count`` can be bumped.
+        ``True`` on success or an idempotent/cancelled no-op. An LLM outage
+        propagates without publishing. ``PublishWindowClosed`` defers the
+        saved state without a strike; other failures propagate to the caller.
     """
     link = row['link']
 
@@ -3791,153 +3869,167 @@ def _fallback_publish(row, via_review=False):
             )
         return True
 
-    # Step 1: EN → RU translation. The LLM (Claude via
-    # ``claude_transcreation``) is the ONLY translation path. When it is
-    # unavailable we HOLD the article rather than auto-publish a low-quality
-    # Google machine translation (operator decision 2026-06-11): the row
-    # stays in ``pending_articles`` and the next slot/day retries the LLM
-    # until it recovers. Recovery is auto-detected on the first success.
-    #
-    # The classifier inside ``claude_transcreation`` turns SDK exceptions
-    # into ``ClaudeTranscreationError`` (per-article hiccup) or
-    # ``ClaudeOutageError`` (API-level outage) — handled distinctly below.
-    try:
-        claude_result = transcreate_via_claude(row)
-        ru_title = claude_result.get('title') or ''
-        ru_subtitle = claude_result.get('subtitle') or ''
-        ru_paragraphs = list(claude_result.get('paragraphs') or [])
-        ru_blocks = claude_result.get('blocks')
-        # Healthy LLM call → close any active outage and emit the recovery
-        # ping. Idempotent: a cheap read-only probe when no outage is active.
-        _maybe_record_recovery()
-    except ClaudeTranscreationError as exc:
-        # Per-article hiccup (refusal, malformed JSON, schema drift): the
-        # LLM is UP, it just choked on THIS article. Re-raise so the slot
-        # loop bumps attempt_count; after 3 strikes the row moves to
-        # ``failed_articles`` so one bad article cannot wedge the queue
-        # head forever. No Google fallback.
-        logger.warning(
-            f"[fallback] Claude per-article failure for {link}: "
-            f"{type(exc).__name__}: {sanitize_error_message(exc)} "
-            f"— slot strike (next slot retries this row)"
-        )
-        raise
-    except ClaudeOutageError as exc:
-        # API-level outage (402 / 429 / 5xx / auth / network). Advance the
-        # 2-ping/2h notification state machine so the operator is kept
-        # informed, then HOLD: re-raise WITHOUT publishing. The row stays
-        # in pending; the slot loop (``job()``) catches this, does NOT
-        # strike, and the next slot retries the LLM. No Google fallback —
-        # we wait for the LLM rather than ship a machine translation.
+    _ensure_publish_window(row)
+    cached_translation = (
+        isinstance(row.get('ru_title'), str) and bool(row['ru_title'].strip())
+        and isinstance(row.get('ru_paragraphs'), list)
+    )
+    if cached_translation:
+        ru_title = row['ru_title']
+        ru_subtitle = row.get('ru_subtitle') or ''
+        ru_paragraphs = list(row['ru_paragraphs'])
+        ru_blocks = row.get('ru_blocks')
+    else:
+        # Step 1: EN → RU translation. The LLM (Claude via
+        # ``claude_transcreation``) is the ONLY translation path. When it is
+        # unavailable we HOLD the article rather than auto-publish a low-quality
+        # Google machine translation (operator decision 2026-06-11): the row
+        # stays in ``pending_articles`` and the next slot/day retries the LLM
+        # until it recovers. Recovery is auto-detected on the first success.
         #
-        # The CAUSE is logged here on purpose. A held row never reaches
-        # ``increment_attempt`` (no ``last_error`` written) and never enters
-        # the [E034] recap — both are 'failed'-branch only — so the [E010]/
-        # [E011]/[E012] pings are the operator's ONLY other signal, and those
-        # are generic «LLM недоступна». Without this line an out-of-credits
-        # 402 and a dead network look identical in the journal — which has
-        # already cost one wrong diagnosis (2026-06-10: E011 fired, every
-        # external check was green, and the real cause was server-side DNS
-        # loss found only in the logs).
-        logger.warning(
-            f"[hold] LLM outage for {link}: {type(exc).__name__}: "
-            f"{sanitize_error_message(exc)} — holding article, will retry "
-            f"when the LLM recovers (no Google fallback)."
-        )
+        # The classifier inside ``claude_transcreation`` turns SDK exceptions
+        # into ``ClaudeTranscreationError`` (per-article hiccup) or
+        # ``ClaudeOutageError`` (API-level outage) — handled distinctly below.
         try:
-            # tz-aware UTC: outage_state rejects naive datetimes (the
-            # 1h/2h thresholds must be unambiguous).
-            event = outage_state.record_outage_event(
-                datetime.now(timezone.utc),
+            claude_result = transcreate_via_claude(row)
+            ru_title = claude_result.get('title') or ''
+            ru_subtitle = claude_result.get('subtitle') or ''
+            ru_paragraphs = list(claude_result.get('paragraphs') or [])
+            ru_blocks = claude_result.get('blocks')
+            # Healthy LLM call → close any active outage and emit the recovery
+            # ping. Idempotent: a cheap read-only probe when no outage is active.
+            _maybe_record_recovery()
+        except ClaudeTranscreationError as exc:
+            # Per-article hiccup (refusal, malformed JSON, schema drift): the
+            # LLM is UP, it just choked on THIS article. Re-raise so the slot
+            # loop bumps attempt_count; after 3 strikes the row moves to
+            # ``failed_articles`` so one bad article cannot wedge the queue
+            # head forever. No Google fallback.
+            logger.warning(
+                f"[fallback] Claude per-article failure for {link}: "
+                f"{type(exc).__name__}: {sanitize_error_message(exc)} "
+                f"— slot strike (next slot retries this row)"
             )
-            for ping_text in event.get('pings_to_send') or []:
-                try:
-                    send_admin_notification(ping_text)
-                except Exception as notify_err:
-                    logger.error(
-                        f"[hold] outage admin-ping send failed: "
-                        f"{sanitize_error_message(notify_err)}"
-                    )
-        except Exception as state_err:
-            # A state-machine update failure must not change the outcome —
-            # we still re-raise to hold the article. Log and continue.
-            logger.error(
-                f"[hold] outage_state.record_outage_event failed for "
-                f"{link}: {sanitize_error_message(state_err)}"
+            raise
+        except ClaudeOutageError as exc:
+            # API-level outage (402 / 429 / 5xx / auth / network). Advance the
+            # 2-ping/2h notification state machine so the operator is kept
+            # informed, then HOLD: re-raise WITHOUT publishing. The row stays
+            # in pending; the slot loop (``job()``) catches this, does NOT
+            # strike, and the next slot retries the LLM. No Google fallback —
+            # we wait for the LLM rather than ship a machine translation.
+            #
+            # The CAUSE is logged here on purpose. A held row never reaches
+            # ``increment_attempt`` (no ``last_error`` written) and never enters
+            # the [E034] recap — both are 'failed'-branch only — so the [E010]/
+            # [E011]/[E012] pings are the operator's ONLY other signal, and those
+            # are generic «LLM недоступна». Without this line an out-of-credits
+            # 402 and a dead network look identical in the journal — which has
+            # already cost one wrong diagnosis (2026-06-10: E011 fired, every
+            # external check was green, and the real cause was server-side DNS
+            # loss found only in the logs).
+            logger.warning(
+                f"[hold] LLM outage for {link}: {type(exc).__name__}: "
+                f"{sanitize_error_message(exc)} — holding article, will retry "
+                f"when the LLM recovers (no Google fallback)."
             )
-        raise
-
-    # Step 1b: strip author social-media plugs from RU output. Reaching
-    # here means the LLM translated successfully (outage/per-article paths
-    # already re-raised above). Wrapped in try/except: a regex bug must not
-    # block publish (publish-something > publish-nothing). Per-fragment INFO
-    # log so the operator can spot false positives via journalctl.
-    try:
-        original_pieces = (
-            [ru_title or '', ru_subtitle or '']
-            + list(ru_paragraphs or [])
-            + [
-                str(b.get('text') or '') + '|' + str(b.get('caption') or '')
-                for b in (ru_blocks or [])
-                if isinstance(b, dict)
-            ]
-        )
-        ru_title = _strip_plugs(ru_title)
-        ru_subtitle = _strip_plugs(ru_subtitle)
-        if ru_paragraphs:
-            ru_paragraphs = [
-                p for p in (_strip_plugs(p) for p in ru_paragraphs)
-                if isinstance(p, str) and p.strip()
-            ]
-            # RU-side boilerplate filter (defense-in-depth, 2026-05-08).
-            # Catches affiliate / promo lines that the EN-side parser
-            # filter (orangetrack_source.py → boilerplate_filter) missed
-            # because the EN variant didn't match a known pattern but the
-            # RU translation matches an explicit RU pattern. Drop empty
-            # paragraphs after the filter; if all RU paragraphs were
-            # boilerplate the article still has title + RU subtitle, so
-            # downstream rendering does not crash on empty list.
-            ru_paragraphs = [
-                p for p in ru_paragraphs if not is_boilerplate(p)
-            ]
-        ru_blocks = _strip_plugs_in_blocks(ru_blocks)
-        if isinstance(ru_blocks, list):
-            ru_blocks = [
-                b for b in ru_blocks
-                if not (
-                    isinstance(b, dict)
-                    and b.get('type') in ('paragraph', 'lead', 'heading', 'list_item')
-                    and isinstance(b.get('text'), str)
-                    and is_boilerplate(b['text'])
+            try:
+                # tz-aware UTC: outage_state rejects naive datetimes (the
+                # 1h/2h thresholds must be unambiguous).
+                event = outage_state.record_outage_event(
+                    datetime.now(timezone.utc),
                 )
-            ]
-        cleaned_pieces = (
-            [ru_title or '', ru_subtitle or '']
-            + list(ru_paragraphs or [])
-            + [
-                str(b.get('text') or '') + '|' + str(b.get('caption') or '')
-                for b in (ru_blocks or [])
-                if isinstance(b, dict)
-            ]
-        )
-        if original_pieces != cleaned_pieces:
-            logger.info(
-                f"[author_plug] stripped from {link!r} "
-                f"(via_review={via_review})"
-            )
-    except Exception as plug_err:
-        logger.error(
-            f"[author_plug] strip failed for {link}: "
-            f"{sanitize_error_message(plug_err)} — using original RU"
-        )
+                for ping_text in event.get('pings_to_send') or []:
+                    try:
+                        send_admin_notification(ping_text)
+                    except Exception as notify_err:
+                        logger.error(
+                            f"[hold] outage admin-ping send failed: "
+                            f"{sanitize_error_message(notify_err)}"
+                        )
+            except Exception as state_err:
+                # A state-machine update failure must not change the outcome —
+                # we still re-raise to hold the article. Log and continue.
+                logger.error(
+                    f"[hold] outage_state.record_outage_event failed for "
+                    f"{link}: {sanitize_error_message(state_err)}"
+                )
+            raise
 
-    # Step 2: Telegraph — reuse saved URL per Decision 9 idempotency.
-    # Done BEFORE persisting RU so a Telegraph failure keeps
-    # ``ru_paragraphs IS NULL`` on the pending row — the next slot
-    # in the distributed-publish loop will pull it again and the
-    # attempt loop can retry. Once Telegraph succeeds the URL is written via
-    # ``mark_telegraph_published`` (a dedicated txn) so a Telegram
-    # teaser failure still preserves the URL for operator retry.
+        # Step 1b: strip author social-media plugs from RU output. Reaching
+        # here means the LLM translated successfully (outage/per-article paths
+        # already re-raised above). Wrapped in try/except: a regex bug must not
+        # block publish (publish-something > publish-nothing). Per-fragment INFO
+        # log so the operator can spot false positives via journalctl.
+        try:
+            original_pieces = (
+                [ru_title or '', ru_subtitle or '']
+                + list(ru_paragraphs or [])
+                + [
+                    str(b.get('text') or '') + '|' + str(b.get('caption') or '')
+                    for b in (ru_blocks or [])
+                    if isinstance(b, dict)
+                ]
+            )
+            ru_title = _strip_plugs(ru_title)
+            ru_subtitle = _strip_plugs(ru_subtitle)
+            if ru_paragraphs:
+                ru_paragraphs = [
+                    p for p in (_strip_plugs(p) for p in ru_paragraphs)
+                    if isinstance(p, str) and p.strip()
+                ]
+                # RU-side boilerplate filter (defense-in-depth, 2026-05-08).
+                # Catches affiliate / promo lines that the EN-side parser
+                # filter (orangetrack_source.py → boilerplate_filter) missed
+                # because the EN variant didn't match a known pattern but the
+                # RU translation matches an explicit RU pattern. Drop empty
+                # paragraphs after the filter; if all RU paragraphs were
+                # boilerplate the article still has title + RU subtitle, so
+                # downstream rendering does not crash on empty list.
+                ru_paragraphs = [
+                    p for p in ru_paragraphs if not is_boilerplate(p)
+                ]
+            ru_blocks = _strip_plugs_in_blocks(ru_blocks)
+            if isinstance(ru_blocks, list):
+                ru_blocks = [
+                    b for b in ru_blocks
+                    if not (
+                        isinstance(b, dict)
+                        and b.get('type') in ('paragraph', 'lead', 'heading', 'list_item')
+                        and isinstance(b.get('text'), str)
+                        and is_boilerplate(b['text'])
+                    )
+                ]
+            cleaned_pieces = (
+                [ru_title or '', ru_subtitle or '']
+                + list(ru_paragraphs or [])
+                + [
+                    str(b.get('text') or '') + '|' + str(b.get('caption') or '')
+                    for b in (ru_blocks or [])
+                    if isinstance(b, dict)
+                ]
+            )
+            if original_pieces != cleaned_pieces:
+                logger.info(
+                    f"[author_plug] stripped from {link!r} "
+                    f"(via_review={via_review})"
+                )
+        except Exception as plug_err:
+            logger.error(
+                f"[author_plug] strip failed for {link}: "
+                f"{sanitize_error_message(plug_err)} — using original RU"
+            )
+
+        # Persist the exact cleaned translation before creating a page. A
+        # transient page/send failure must not buy another LLM translation.
+        pending_repo.update_staged(
+            link, ru_title or '', ru_subtitle or '', ru_paragraphs, ru_blocks,
+        )
+        row.update(ru_title=ru_title or '', ru_subtitle=ru_subtitle or '',
+                   ru_paragraphs=ru_paragraphs, ru_blocks=ru_blocks)
+
+    _ensure_publish_window(row)
+    # Reuse a previously created page; its content matches the staged RU.
     telegraph_url = row.get('telegraph_url')
     telegraph_path = row.get('telegraph_path')
     if telegraph_url:
@@ -3980,21 +4072,6 @@ def _fallback_publish(row, via_review=False):
         # fetches the page (see ``TELEGRAPH_CACHE_WARMUP_SECONDS`` docstring).
         time.sleep(TELEGRAPH_CACHE_WARMUP_SECONDS)
 
-    # Step 3: persist RU fields. Required for the ``published_articles``
-    # NOT NULL ``ru_title`` copy inside ``move_to_published``. Writes
-    # here (rather than before Telegraph) keep the row retry-eligible
-    # for the next slot on a pure Telegraph failure. On a Telegram-teaser
-    # failure the RU fields ARE persisted — that's the correct end
-    # state: the operator-driven ``hw_review publish`` retry skips
-    # Telegraph (URL cached) and skips transcreation (RU cached).
-    pending_repo.update_staged(
-        link,
-        ru_title or '',
-        ru_subtitle or '',
-        ru_paragraphs,
-        ru_blocks,
-    )
-
     # Step 4: Telegram teaser. False-return → raise so caller bumps
     # attempt_count. (Exceptions from ``send_telegraph_teaser`` propagate
     # naturally — the helper already catches TelegramError internally and
@@ -4030,6 +4107,7 @@ def _fallback_publish(row, via_review=False):
                 f"the Telegram teaser; no channel post, no strike"
             )
             return True
+        _ensure_publish_window(row)
         ok = send_telegraph_teaser(telegraph_url, link)
         if not ok:
             raise RuntimeError(
@@ -4328,20 +4406,24 @@ def _publish_with_retries(row, idx, n_slots):
     * ``'published'`` — published OK (possibly after a retry). ``last_error`` None.
     * ``'held'``      — ``ClaudeOutageError``: LLM unavailable, article HELD.
                         Caller must NOT strike. Not retried (see below).
+    * ``'deferred'``  — the actual publication window closed; no strike/hold.
     * ``'failed'``    — exhausted ``PUBLISH_RETRY_ATTEMPTS`` retries on a
                         transient publish error. ``last_error`` carries the
                         last exception; caller runs the 3-strike path.
 
     An LLM outage is deliberately NOT retried here: holding is the desired
-    behaviour, and a retry would re-translate and waste tokens. Only
-    publish-side failures (Telegra.ph / Telegram / repo errors) are retried.
+    behaviour. Only publish-side failures (Telegra.ph / Telegram / repo
+    errors) are retried, reusing the saved translation and page state.
     """
     link = row.get('link')
     attempts_left = PUBLISH_RETRY_ATTEMPTS
     while True:
         try:
+            _ensure_publish_window(row)
             _fallback_publish(row, via_review=False)
             return 'published', None
+        except PublishWindowClosed as exc:
+            return 'deferred', exc
         except ClaudeOutageError as exc:
             # The exception is handed back, not dropped: the slot loop needs
             # the cause for the [E038] ping when this row hits ``HOLD_CAP``.
@@ -4360,6 +4442,10 @@ def _publish_with_retries(row, idx, n_slots):
             if attempts_left <= 0:
                 return 'failed', exc
             attempts_left -= 1
+            deadline = row.get('_publish_deadline')
+            if deadline is not None and not row.get('_teaser_sent'):
+                if datetime.now(MSK_TZ) + timedelta(seconds=PUBLISH_RETRY_DELAY_SECONDS) >= deadline:
+                    return 'deferred', PublishWindowClosed('retry would start after publication deadline')
             logger.warning(
                 f"[slot {idx}/{n_slots}] publish failed for {link}: "
                 f"{sanitize_error_message(exc)} — retrying in "
@@ -4367,6 +4453,51 @@ def _publish_with_retries(row, idx, n_slots):
                 f"(then {attempts_left} more)"
             )
             time.sleep(PUBLISH_RETRY_DELAY_SECONDS)
+
+
+def _send_staged_dedup_alert(link, new_source, match, reason):
+    """Issue E014 only after staging; acknowledge only confirmed delivery."""
+    token = None
+    delivered = False
+    try:
+        kb = None
+        if _review_listener_enabled():
+            token = secrets.token_urlsafe(9)
+            pending_repo.put_review_token(
+                token, link, kind=pending_repo.REVIEW_TOKEN_KIND_DEDUP,
+            )
+            kb = admin_alerts.build_dedup_review_keyboard(token)
+        sent = send_admin_notification(
+            admin_alerts.alert_cross_source_dupe(
+                new_link=link, existing_link=match['link'],
+                new_source=new_source, existing_source=match['source_name'],
+                overlap_pct=match['overlap_pct'],
+                n_matches=match['n_matches'], n_total=match['n_total'],
+                models=match['models'], pairs=match.get('pairs'),
+                reason=reason,
+                subject_rejected_series=match.get('subject_rejected_series'),
+                buttons_enabled=kb is not None,
+            ), reply_markup=kb,
+        )
+        if not sent:
+            return False
+        delivered = True
+        conn = pending_repo._connect()
+        try:
+            pending_repo.mark_pair_pinged(conn, link, match['link'])
+            conn.commit()
+        finally:
+            conn.close()
+        return True
+    except Exception as exc:
+        logger.error("Failed to send/acknowledge E014 notification: %s", sanitize_error_message(exc))
+        return False
+    finally:
+        if token is not None and not delivered:
+            try:
+                pending_repo.delete_review_token(token)
+            except Exception as exc:
+                logger.error("Failed to clean undelivered E014 token: %s", sanitize_error_message(exc))
 
 
 def job():
@@ -4752,6 +4883,7 @@ def job():
         # Set by the soft-flag branch below; reaches the row dict so the
         # article is staged but withheld from the queue for a day.
         dedup_defer_until = None
+        dedup_alert = None
         new_source = entry.get('source_name') or _resolve_source_name(link)
         try:
             dedup_conn = pending_repo._connect()
@@ -4844,68 +4976,7 @@ def job():
                             "" if alerted else " (alert rate-limited)",
                         )
                     if alerted:
-                        try:
-                            # dedup-review-buttons: when the LISTENER
-                            # gate is open (flag + bot token + numeric
-                            # admin — audit SEC-A8-1: same effective
-                            # gate as the listener, so we never mint
-                            # tokens / render buttons nothing will ever
-                            # serve), mint a short token, persist
-                            # token→link BEFORE the send (a button press
-                            # must never race an unwritten token), and
-                            # attach the two-button review keyboard.
-                            # Gate closed → kb stays None and the call
-                            # is identical to the pre-feature behaviour.
-                            # Mint/put live INSIDE this try so a
-                            # storage/build fault logs as a failed E014
-                            # ping instead of breaking the "dedup never
-                            # blocks publishing" contract.
-                            kb = None
-                            if _review_listener_enabled():
-                                token = secrets.token_urlsafe(9)
-                                pending_repo.put_review_token(
-                                    token, link,
-                                    kind=pending_repo.
-                                    REVIEW_TOKEN_KIND_DEDUP,
-                                )
-                                kb = admin_alerts.build_dedup_review_keyboard(
-                                    token,
-                                )
-                            send_admin_notification(
-                                admin_alerts.alert_cross_source_dupe(
-                                    new_link=link,
-                                    existing_link=match['link'],
-                                    new_source=new_source,
-                                    existing_source=match['source_name'],
-                                    overlap_pct=match['overlap_pct'],
-                                    n_matches=match['n_matches'],
-                                    n_total=match['n_total'],
-                                    models=match['models'],
-                                    pairs=match.get('pairs'),
-                                    reason=reason,
-                                    subject_rejected_series=match.get(
-                                        'subject_rejected_series',
-                                    ),
-                                    # «Что сделать» must match what the
-                                    # operator actually sees: derive it from
-                                    # the SAME kb we are about to attach, not
-                                    # from a second flag read — so the advice
-                                    # can never promise buttons that are not
-                                    # rendered (gate closed, or the mint above
-                                    # left kb None).
-                                    buttons_enabled=kb is not None,
-                                ),
-                                reply_markup=kb,
-                            )
-                        except Exception as notify_err:
-                            logger.error(
-                                "Failed to send E014 notification: %s",
-                                notify_err,
-                            )
-                        pending_repo.mark_pair_pinged(
-                            dedup_conn, link, match['link'],
-                        )
-                        dedup_conn.commit()
+                        dedup_alert = (new_source, dict(match), reason)
                 # 'pass' → nothing to do; fp falls through into row.
             finally:
                 dedup_conn.close()
@@ -4950,6 +5021,7 @@ def job():
             # true fail-open: a result that did not finish cannot retain a
             # stale 24-hour deferral.
             dedup_defer_until = None
+            dedup_alert = None
 
         row = {
             'link': link,
@@ -4980,7 +5052,9 @@ def job():
         try:
             if pending_repo.insert_pending(row):
                 inserted += 1
-                if hold_markers:
+                if dedup_alert is not None:
+                    _send_staged_dedup_alert(link, *dedup_alert)
+                if hold_markers and pending_repo.get_pending(link) is not None:
                     # HELD: ask the operator. Sent only AFTER the row is
                     # committed, so the token can never point at a row
                     # that does not exist. Best-effort like every other
@@ -5176,8 +5250,11 @@ def job():
     #     the LLM until recovery.
     #   * Other Exception → 3-strikes flow.
     # ------------------------------------------------------------------
-    window_end_dt = datetime.combine(
-        now_msk.date(), WINDOW_END_TIME, tzinfo=MSK_TZ,
+    # Keep the localized UTC offset; assigning a pytz zone directly to
+    # datetime.combine would select its historical +02:30 LMT offset.
+    window_end_dt = now_msk.replace(
+        hour=WINDOW_END_TIME.hour, minute=WINDOW_END_TIME.minute,
+        second=0, microsecond=0,
     )
     # Per-slot outcome counters for the end-of-tick PUBLISH RECAP ([E034],
     # companion to the E008/E009 intake funnel). All plain ints — increment-only
@@ -5226,11 +5303,15 @@ def job():
         logger.info(
             f"[slot {idx}/{len(execution_slots)}] publishing row {link}"
         )
+        row['_publish_deadline'] = window_end_dt
         outcome, err = _publish_with_retries(
             row, idx, len(execution_slots),
         )
         if outcome == 'published':
             published_count += 1
+        elif outcome == 'deferred':
+            logger.info("[slot %s/%s] publication window closed; queued state retained", idx, len(execution_slots))
+            break
         elif outcome == 'held':
             held_outcome_count += 1
             # LLM outage — ``_fallback_publish`` HELD this article (nothing
@@ -5530,6 +5611,7 @@ def main():
     1.2.1`` accepts ``pytz.BaseTzInfo`` or an IANA name string but NOT
     ``zoneinfo.ZoneInfo`` — see TDD anchor in Task 8.
     """
+    _production_preflight()
     init_db()
     telegraph_publisher.ensure_access_token()
     logger.info("News bot started.")
@@ -5608,9 +5690,8 @@ def main():
         schedule.run_pending()
         time.sleep(60)
 
-_LOCK_FILE_PATH = os.path.join(
-    os.path.dirname(os.path.abspath(__file__)),
-    ".news_bot.lock",
+_LOCK_FILE_PATH = os.getenv("NEWS_BOT_LOCK_FILE", "").strip() or os.path.join(
+    os.path.dirname(os.path.abspath(__file__)), ".news_bot.lock",
 )
 # Module-level reference keeps the file descriptor alive for the process
 # lifetime. The kernel releases the flock on fd close (clean exit, SIGTERM,
@@ -5618,7 +5699,7 @@ _LOCK_FILE_PATH = os.path.join(
 _singleton_lock_fd = None
 
 
-def _acquire_singleton_lock(lock_path=_LOCK_FILE_PATH):
+def _acquire_singleton_lock(lock_path=None):
     """Hold an exclusive flock to refuse a second concurrent start.
 
     Prod incident 2026-06-08: a manual restart sequence (nohup, then
@@ -5628,17 +5709,17 @@ def _acquire_singleton_lock(lock_path=_LOCK_FILE_PATH):
     publishes. Kernel-held ``flock`` makes a second start fail-fast
     with a clear log line instead of silently doubling up.
 
-    Per-deploy isolation: lock file is colocated with ``news_bot.py``,
-    so ``/home/hwbot/bot/.news_bot.lock`` and
-    ``/home/hwbot/bot_test/.news_bot.lock`` are distinct files — prod
-    and test never conflict.
+    Local defaults are colocated with ``news_bot.py``. Production uses
+    ``NEWS_BOT_LOCK_FILE`` on the shared state mount, so recreated or
+    concurrent containers contend for the same lock without writable code.
 
     On lock-conflict: log ERROR and exit with code 1. Operator sees the
     log line; no admin ping (the existing instance is already alive and
     will fire its own ping at the next scheduled tick).
     """
     global _singleton_lock_fd
-    _singleton_lock_fd = open(lock_path, "w")
+    lock_path = _LOCK_FILE_PATH if lock_path is None else lock_path
+    _singleton_lock_fd = open(lock_path, "a+")
     try:
         fcntl.flock(_singleton_lock_fd.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
     except (BlockingIOError, OSError) as exc:
@@ -5650,6 +5731,8 @@ def _acquire_singleton_lock(lock_path=_LOCK_FILE_PATH):
         _singleton_lock_fd.close()
         _singleton_lock_fd = None
         sys.exit(1)
+    _singleton_lock_fd.seek(0)
+    _singleton_lock_fd.truncate()
     _singleton_lock_fd.write(f"{os.getpid()}\n")
     _singleton_lock_fd.flush()
     logger.info(f"[singleton-lock] acquired {lock_path!r}")
