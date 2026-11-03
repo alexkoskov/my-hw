@@ -5,29 +5,36 @@ Read this file first to resume. Record ownership is described in [the work index
 
 ## Where work stopped
 
-- **Latest owner request:** verify the remaining Docker/dependency/privilege
-  findings; prepare a remediation plan, have agents criticize it, revise it,
-  then implement. The [revised plan](project-hardening/plan.md) is complete locally.
+- **Latest owner request:** push the completed hardening changes to GitHub,
+  open a PR into `main`, and merge. Push, PR and merge after green CI are
+  authorized; production deployment is not requested. Implementation and the
+  [revised plan](project-hardening/plan.md) are complete.
 - **Last coding work:** runtime/LLM rendering, retry persistence, deadlines,
   callbacks, log redaction, data/DOM/model extraction, bounded source fetching,
   rootless worker startup, persistent-state safety, monitoring delivery, CI and
   current documentation are corrected. Detailed checks and limits are in
   [verification](project-hardening/verification.md).
-- **Git:** active branch `dev`, base `b2cecbe` (merged PR #42). The new hardening
-  changes are **uncommitted and unpublished** in the working tree. No commit,
-  push, PR, merge or GitHub settings change was performed for this batch.
+- **Git:** seven scoped implementation/documentation commits were pushed to
+  `dev` at `ecdaea4`. [PR #48](https://github.com/alexkoskov/my-hw/pull/48)
+  targets `main`; its current head, checks and merge status are authoritative.
+  The publication metadata follow-up changes no tested runtime content.
+  Inspect current refs rather than inferring the final revision from this record.
+  GitHub repository settings remain unchanged.
 - **Production:** not inspected or changed. The last historical deployment
   record remains 2026-10-01 at `cda27b7`; it is not a live health check. The new
   image was built and tested only in the managed local Docker environment.
 
 ## Exact next step
 
-Review the local hardening diff and select publication/release work only when
-requested. Before a later authorized production rollout, inspect and migrate
-only the exact persistent state paths to uid/gid 10001 using the
+Check [PR #48](https://github.com/alexkoskov/my-hw/pull/48): if it is still open,
+finish the already-authorized merge only after the latest head's actual test job
+passes; if merged, align local/remote `dev` and `main` and follow the owner's
+selected next task. This PR is the durable record of the final publication.
+
+Before a separately authorized production rollout, inspect and migrate only
+exact persistent state paths to uid/gid 10001 using the
 [deployment runbook](../.agents/skills/project-knowledge/references/deployment.md).
-Do not bypass the startup guard with an empty database. No new promotion or
-production deployment is authorized by the completed local implementation.
+Do not bypass startup refusal with an empty database. Deployment is not authorized.
 
 The existing product item **DBP-015** still needs the owner's classification of
 its 2026-09-10 E014 pair in the [post-deploy report](dedup-broad-precision/logs/working/post-deploy-qa-report.json),
@@ -80,3 +87,9 @@ larger items. Follow the owner's selected work rather than old checkpoints.
   state exclusions, backup/restore, dependency audit and native Codex checks
   recorded in [verification](project-hardening/verification.md). Changes remain
   uncommitted on `dev`; no publishing or production work performed.
+
+- **2026-11-03:** Owner authorized push, PR into `main` and merge. Pushed seven
+  scoped commits at `ecdaea4` and opened [PR #48](https://github.com/alexkoskov/my-hw/pull/48).
+  All commit hooks passed. Runtime/image hashes still match the recorded
+  verification; finish promotion after the latest-head test job passes.
+  PR status records the final merge outcome. No production deployment requested.

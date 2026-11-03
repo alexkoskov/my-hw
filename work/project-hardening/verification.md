@@ -1,6 +1,8 @@
 # Hardening verification — 2026-11-03
 
-Scope: local working tree based on `b2cecbedaf5082882c49694db201ffc7ec608d23`.
+Scope: hardening implementation based on `b2cecbedaf5082882c49694db201ffc7ec608d23`,
+first published on `dev` at `ecdaea4` in [PR #48](https://github.com/alexkoskov/my-hw/pull/48).
+The PR records the latest publication head, CI and final merge outcome.
 Production and GitHub repository settings were not changed. The runtime-source
 hashes in [verified-source-hashes.json](logs/verified-source-hashes.json) match
 the files used for the final image. The editorial prompt is byte-identical to

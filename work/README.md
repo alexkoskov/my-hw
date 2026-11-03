@@ -27,7 +27,7 @@ selected action. These links do not create another task list or approval gate.
 | DBP-015 — dedup observation | [Post-deploy report](dedup-broad-precision/logs/working/post-deploy-qa-report.json) | Observation checked through 2026-09-17; one E014 classification unresolved |
 | STAB-002 — minimum startup/CI safety fixes | [Approved requirements](stabilization-foundation/user-spec.md) | Remaining implementation is planned; the tech-spec and checkpoint are scaffolds |
 | OBSV-002 — reminder for held articles | [Approved requirements](operator-blind-spots/user-spec.md) | Remaining implementation is planned; the tech-spec and checkpoint are scaffolds |
-| Project hardening — complete locally | [Revised remediation plan](project-hardening/plan.md) | Verified implementation is uncommitted on `dev`; publication and deployment are separate |
+| Project hardening — published for promotion | [PR #48](https://github.com/alexkoskov/my-hw/pull/48) and [revised plan](project-hardening/plan.md) | Implementation is pushed; PR records final merge status. Production deployment is separate |
 
 Codex migration and the two dedup CI corrections were published through
 [PR #42](https://github.com/alexkoskov/my-hw/pull/42), merged on 2026-10-14.

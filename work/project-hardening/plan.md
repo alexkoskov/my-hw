@@ -7,8 +7,10 @@ revision: 2
 
 Owner request, 2026-11-03: verify the Docker-context, privilege and resolved-
 dependency findings; write a remediation plan; have agents challenge it; revise
-it and begin implementation. This authorizes local implementation and isolated
-verification, not production mutation, publishing, merge, or GitHub settings.
+it and begin implementation. That request authorized local implementation and
+isolated verification. The subsequent owner request explicitly authorizes push,
+PR into `main` and merge after green CI. Production mutation and GitHub settings
+remain outside this work.
 
 Baseline: `b2cecbedaf5082882c49694db201ffc7ec608d23`; `dev` and `main` matched.
 No unrelated working-tree changes were present. The existing STAB/OBSV roadmap
@@ -130,10 +132,13 @@ large transport/process frameworks. They are not prerequisites for these fixes.
 
 ## Execution outcome — 2026-11-03
 
-All six work packages and integrated acceptance are complete locally on `dev`.
-Six implementers worked inside non-overlapping file boundaries after the three
-plan critics; root integrated and checked the result. No commit, push, PR,
-GitHub-settings change, production mutation or deployment was performed.
+All six work packages and integrated acceptance are complete. Six implementers
+worked inside non-overlapping file boundaries after the three plan critics;
+root integrated and checked the result. Following the owner's publication
+request, seven scoped commits were pushed at `ecdaea4` and
+[PR #48](https://github.com/alexkoskov/my-hw/pull/48) opened into `main`.
+Its current head, CI and merge status record the final promotion outcome.
+GitHub settings, production state and deployment remain unchanged.
 
 - Full integrated suite: **2276 passed, 3 skipped, 566 subtests passed**.
   Initial integration exposed two Mattel fixtures lacking a real HTTP status;
