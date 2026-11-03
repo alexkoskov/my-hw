@@ -21,22 +21,27 @@ services:
     image: hw-news-bot:latest
     container_name: hw-news-bot
     restart: unless-stopped
-    # NET_ADMIN is needed only to replace this container's default route before
-    # Python starts. No ports published — the bot is outbound-only.
+    # The entrypoint uses NET_ADMIN only for the startup route, then drops uid
+    # and every capability before running Python. No ports are published.
     cap_add:
       - NET_ADMIN
-    command: ["sh", "-c", "ip route replace default via 172.28.0.2 && echo 'default route -> 172.28.0.2 (shared VPN gateway)' && exec python3 news_bot.py"]
+    security_opt:
+      - no-new-privileges:true
     networks:
       - vpnnet
     env_file:
       - .env
     environment:
+      - INSTANCE_LABEL=prod
+      - DB_FILE=/data/news.db
+      - NEWS_BOT_LOCK_FILE=/data/.news_bot.lock
+      - VPN_GATEWAY=172.28.0.2
       # Heartbeat marker on the mounted volume (B5) — persistent across restarts
       # and readable by `docker exec hw-news-bot /app/watchdog.sh` (host cron).
       - HEARTBEAT_FILE=/data/last_tick.ts
     volumes:
-      # Persistent DB (DB_FILE=/data/news.db in .env) + heartbeat. Survives
-      # container recreation on redeploy — do NOT bake news.db into the image.
+      # Existing state must be writable by uid/gid 10001. The entrypoint refuses
+      # incompatible legacy permissions instead of recursively changing owners.
       - ./data:/data
     logging:
       driver: json-file

@@ -15,22 +15,22 @@ venv
 tests
 work
 logs
-__pycache__
-*.pyc
-*.pyo
+**/__pycache__
+**/*.pyc
+**/*.pyo
 .pytest_cache
-*.db
-news.db
-# `*.db` matches only at the top level, so the live database sitting in the
-# bind-mount source (`/opt/hw-news/data/news.db` on prod — INSIDE the build
-# context) was copied into every image: 1.2 MB of stale production data at
-# /app/data/news.db, dated whenever the image was last built. Harmless today
-# because DB_FILE is the absolute /data/news.db from the mounted volume, but it
-# is a loaded gun — anything that ever resolved the DB relatively would read a
-# week-old copy and the channel would be reposted from it.
-data/
-.env
-.env.*
+# State and secrets must stay out even when a host stores nested backups inside
+# the checkout/build context. Single-star root patterns do not cover that case.
+**/*.db
+**/*.db-*
+**/*.sqlite
+**/*.sqlite-*
+**/*.sqlite3
+**/*.sqlite3-*
+**/data
+**/backups
+**/.env
+**/.env.*
 # Operator-only tools; the production worker uses the automatic LLM pipeline.
 hw_review.py
 preview_renderer.py

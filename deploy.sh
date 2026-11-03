@@ -1,8 +1,12 @@
 #!/bin/bash
-# Deployment script for Hot Wheels News Bot
-# Copies necessary files to the production server via SCP.
+# Historical SCP manifest; production uses the Docker deployment runbook.
 
 set -e
+
+echo "Legacy SCP deployment is disabled. Use the current Docker runbook in .agents/skills/project-knowledge/references/deployment.md." >&2
+exit 1
+
+# Unreachable historical manifest retained for import-closure consistency.
 
 # Configuration (override with environment variables)
 SSH_HOST="${SSH_HOST:-user@example.com}"
@@ -62,6 +66,7 @@ FILES=(
     "openrouter_transcreation.py"
     "llm_transcreation.py"
     "_llm_common.py"
+    "http_fetch.py"
     "compute_publish_slots.py"
     "outage_state.py"
     "admin_alerts.py"

@@ -230,18 +230,29 @@ jobs:
           set -u
           HOST_TITLE="🔴 Прод не отвечает"
           PUB_TITLE="🟡 Прод не публикует"
+          delivery_failed=0
 
           send() {
             if [ -z "${BOT_TOKEN:-}" ] || [ -z "${CHAT_ID:-}" ]; then
-              echo "TELEGRAM_BOT_TOKEN / TELEGRAM_ADMIN_ID not set — skipping Telegram, issue state still updated"
-              return 0
+              echo "Telegram credentials missing — delivery not acknowledged"
+              return 1
             fi
-            # --data-urlencode keeps the body out of the URL, so the token is
-            # never written into a log line alongside message text.
-            curl -fsS --max-time 20 \
+            local response_file
+            response_file=$(mktemp "${RUNNER_TEMP:-/tmp}/uptime-send.XXXXXX") || return 1
+            if ! curl -fsS --max-time 20 \
               "https://api.telegram.org/bot${BOT_TOKEN}/sendMessage" \
               -d "chat_id=${CHAT_ID}" \
-              --data-urlencode "text=$1" >/dev/null || echo "Telegram send failed"
+              --data-urlencode "text=$1" -o "$response_file" 2>/dev/null; then
+              rm -f "$response_file"
+              echo "Telegram transport failed — delivery not acknowledged"
+              return 1
+            fi
+            if ! jq -e 'type == "object" and .ok == true' "$response_file" >/dev/null 2>&1; then
+              rm -f "$response_file"
+              echo "Telegram rejected delivery"
+              return 1
+            fi
+            rm -f "$response_file"
           }
 
           # Open-issue lookup per alarm. The two titles share no distinctive
@@ -263,7 +274,11 @@ jobs:
               echo "already alerted (issue #$existing) — staying silent"
               return 0
             fi
-            send "$2"
+            if ! send "$2"; then
+              delivery_failed=1
+              echo "alarm delivery pending — no dedup marker written"
+              return 0
+            fi
             gh issue create --title "$1" --body "$3" >/dev/null \
               || echo "issue create failed — alert was already sent; dedup degraded to one message per run"
           }
@@ -274,7 +289,11 @@ jobs:
               echo "no open alarm for «$1» — nothing to clear"
               return 0
             fi
-            send "$2"
+            if ! send "$2"; then
+              delivery_failed=1
+              echo "recovery delivery pending — alarm marker retained"
+              return 0
+            fi
             gh issue close "$existing" --comment "Проверка снова проходит." >/dev/null \
               || echo "issue close failed — recovery message was already sent"
           }
@@ -312,3 +331,4 @@ jobs:
                 ;;
             esac
           fi
+          test "$delivery_failed" -eq 0

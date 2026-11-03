@@ -65,11 +65,31 @@ else
     msg="${LABEL_PREFIX}🚨 [E099] news_bot last tick ${hours}h ago — service hung, dead, or never fired today"
 fi
 
-curl -fsS --max-time 20 \
+response_file=$(mktemp)
+trap 'rm -f "$response_file"' EXIT
+if ! curl -fsS --max-time 20 \
     "https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/sendMessage" \
     --data-urlencode "chat_id=${TELEGRAM_ADMIN_ID}" \
     --data-urlencode "text=${msg}" \
-    -o /dev/null \
-    || echo "[watchdog] curl to Telegram failed (exit $?)" >&2
+    -o "$response_file" 2>/dev/null; then
+    echo "[watchdog] Telegram transport failed" >&2
+    exit 1
+fi
+if ! python3 - "$response_file" <<'PY'
+import json
+import sys
+
+try:
+    with open(sys.argv[1]) as response:
+        payload = json.load(response)
+    ok = isinstance(payload, dict) and payload.get('ok') is True
+except (OSError, ValueError):
+    ok = False
+raise SystemExit(0 if ok else 1)
+PY
+then
+    echo "[watchdog] Telegram did not confirm delivery" >&2
+    exit 1
+fi
 
 exit 0
