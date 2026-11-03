@@ -22,11 +22,12 @@ which applies to projects beneath `/workspace`. It was updated using the
 package's `./install.sh --project /workspace --agents-only`; the installer
 retained the previous file in `/workspace/.codex-config-backups/`.
 
-The five base skills are already provisioned in `/workspace/.agents/skills/`;
-every packaged file matched the GitHub revision above. Keep them shared rather
-than checking copies into each repository. Native Codex discovers repository
-skills within the Git root, so this checkout uses ignored symbolic links to the
-shared files. Recreate them after a fresh checkout with:
+The managed instance must provision the five base skills in
+`/workspace/.agents/skills/`. Every packaged file matched the GitHub revision
+above during the 2026-10-14 migration; that record does not establish readiness
+in a fresh environment. Keep the skills shared rather than checking copies into
+each repository. This checkout uses ignored symbolic links for repository
+discovery. Verify the sources and recreate the aliases after a fresh checkout with:
 
 ```sh
 python scripts/link_codex_skills.py /workspace/.agents/skills
@@ -38,9 +39,10 @@ globally and these cloud aliases are unnecessary. Environment provisioning must 
 these shared skills on a new managed instance; a project checkout cannot write
 the read-only global directories.
 
-The downloaded package is at `/workspace/.local/share/codex-global-config/`.
-It is a source checkout, not another active instruction layer. No persistent
-managed-environment configuration was changed by this repository migration.
+The migration used a source checkout at
+`/workspace/.local/share/codex-global-config/`; a fresh environment may not retain
+it. That checkout is not another active instruction layer. No persistent managed-
+environment configuration was changed by the repository migration.
 
 ## Project-specific Codex files
 
@@ -63,8 +65,8 @@ Codex settings and developer instructions.
 
 Native Codex loads project configuration only for trusted projects. Review and
 trust this repository through the normal Codex prompt on a writable workstation.
-Skills still load for an untrusted project. In this managed session, native
-app-server startup is constrained by read-only runtime storage. The same Codex
+Skills still load for an untrusted project. During the 2026-10-14 migration, native
+app-server startup was constrained by read-only runtime storage. The same Codex
 binary was checked in an isolated container with writable state storage: its
 `skills/list` request discovered all seven skills without loading errors, including
 the five shared paths reached through the project aliases. That check does not

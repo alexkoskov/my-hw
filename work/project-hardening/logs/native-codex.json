@@ -1,0 +1,27 @@
+{
+  "code_turns_started": 0,
+  "native_skills": [
+    "decision-quality",
+    "ecc-flow",
+    "grilling",
+    "imagegen",
+    "integration-reliability",
+    "openai-docs",
+    "plugin-creator",
+    "project-knowledge",
+    "project-progress",
+    "review-agent",
+    "skill-creator",
+    "skill-installer",
+    "test-quality"
+  ],
+  "configured_project_roles": [
+    "code-researcher",
+    "code-reviewer",
+    "documentation-reviewer",
+    "general-purpose",
+    "reality-checker",
+    "security-auditor",
+    "test-reviewer"
+  ]
+}
