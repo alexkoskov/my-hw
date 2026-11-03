@@ -8,30 +8,34 @@ Read this file first to resume. Record ownership is described in [the work index
 - **Latest owner request:** enable automatic production deployment from GitHub.
   The owner already authorized deployment, then selected the automatic route.
   A main-CI-gated Docker workflow and checkpointed host/runner controllers are
-  implemented; publish through a green-CI dev→main PR and inspect the first run.
+  published through merged PR #49. The first automatic workflow reached its
+  credential guard and stopped before SSH. Enable the dedicated GitHub secrets.
 - **Last coding work:** runtime/LLM rendering, retry persistence, deadlines,
   callbacks, log redaction, data/DOM/model extraction, bounded source fetching,
   rootless worker startup, persistent-state safety, monitoring delivery, CI and
   current documentation are corrected. Detailed checks and limits are in
   [verification](project-hardening/verification.md).
-- **Git:** PR #48 is merged. The automatic-deployment changes are local on `dev`
-  over synchronized `323c7c4` dev/main refs. Publication and first workflow run
-  remain pending; GitHub PR/workflow state records the final transport outcome.
+- **Git:** [PR #49](https://github.com/alexkoskov/my-hw/pull/49) merged as
+  `e43c2b33a1b97314dbbeeee7084c7a072644f0c2`; local/remote dev/main were verified
+  synchronized there. This factual closeout is published on `dev` only; the
+  executable automation is already on main. No status-only production rollout.
 - **Production:** not accessed or changed in this task. GitHub runners require
   dedicated `PROD_SSH_PRIVATE_KEY` and verified `PROD_SSH_KNOWN_HOSTS` for Moscow;
-  availability is unverified. Missing configuration must fail before SSH. The
+  the first workflow confirmed the complete pair was unavailable. It failed
+  before SSH; production is unchanged. The
   [deployment record](project-hardening/deployment.md) owns the new verification,
   setup requirements and rollback details. Historical records are not live health.
 
 ## Exact next step
 
-Finish the verified automatic-deployment changes, push `dev`, open/merge the PR
-only after its actual test job passes, align dev/main, then inspect push-CI and
-`Deploy production` for exact main. No additional publication/deployment consent
-is needed for this requested outcome. If dedicated GitHub secrets are missing,
-leave the production task incomplete and direct the owner to the existing
+The operator must install/configure the dedicated SSH identity and verified
+host-key entry in GitHub, following the existing
 [one-time setup](../.agents/skills/project-knowledge/references/deployment.md#one-time-github-ssh-setup).
-Do not substitute old NL credentials or initialize an empty database.
+Then rerun failed deployment run `41677472275` or manually dispatch production on
+current green-CI main. Publishing/production deployment remain authorized for
+this requested outcome. Do not retry before configuration changes, substitute
+old NL credentials or initialize an empty database. Run/job evidence is in the
+[deployment record](project-hardening/deployment.md).
 
 The existing product item **DBP-015** still needs the owner's classification of
 its 2026-09-10 E014 pair in the [post-deploy report](dedup-broad-precision/logs/working/post-deploy-qa-report.json),
@@ -43,7 +47,9 @@ larger items. Follow the owner's selected work rather than old checkpoints.
 
 - Automatic deployment local suite: **2316 passed, 3 skipped, 566 subtests
   passed**. Real backup encryption and offline rollback/gate tests passed;
-  actionlint and Bash syntax passed. Live SSH/deployment is still unverified.
+  actionlint and Bash syntax passed. PR CI: 2317 passed/2 skipped/566 subtests;
+  main push CI passed. The real deployment gate passed; SSH/deploy were skipped
+  due to unavailable dedicated secrets, so no live health claim is possible.
 - Full local suite on the final runtime: **2276 passed, 3 skipped;
   566 subtests passed**. Two source skips are pre-existing; the third requires
   host SQLite CLI, whose actual shell backup/restore passed in a QA container.
@@ -104,5 +110,8 @@ larger items. Follow the owner's selected work rather than old checkpoints.
   retired production SCP workflow with exact-main/CI-gated Docker deployment,
   encrypted off-host backups, inspected ownership migration and image/config
   rollback preserving publication history. Local suite 2316 passed/3 skipped;
-  publication and first actual workflow outcome remain pending in the
+  PR #49 merged after green CI. The first automatic workflow `41677472275`
+  confirmed its exact-main gate, then failed before SSH because the complete
+  dedicated secret pair was unavailable. Runtime is unchanged; status and exact
+  credential-setup next action are in the
   [deployment record](project-hardening/deployment.md).
