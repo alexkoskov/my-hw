@@ -36,6 +36,13 @@ def transport(tmp_path):
             import json,os,pathlib,sys
             with open(os.environ['CALL_LOG'],'a') as out:out.write(json.dumps(sys.argv[1:])+'\\n')
             if 'prepare' in sys.argv:
+                fault=os.getenv('PREPARE_FAIL')
+                if fault:
+                    if fault=='json':
+                        print(json.dumps({'status':'failed','reason':'production checkout has local changes',
+                                          'private_metadata':'opaque-private-fixture'}))
+                    else:print('untrusted opaque-private-fixture')
+                    raise SystemExit(1)
                 print(json.dumps({'status':'prepared','sha':os.environ['DEPLOY_SHA']}))
             elif 'activate' in sys.argv:
                 failed=os.getenv('ACTIVATE_FAIL')=='1'
@@ -104,6 +111,23 @@ def test_stale_main_never_contacts_server(transport):
     env["CURRENT_MAIN"] = "c" * 40
     assert run("prepare", env).returncode != 0
     assert not Path(env["CALL_LOG"]).exists()
+
+
+@pytest.mark.parametrize('fault,reason', [
+    ('json', 'production checkout has local changes'),
+    ('invalid', 'SSH preparation failed without a structured host result'),
+])
+def test_preparation_failure_reports_only_safe_reason_and_preserves_evidence(transport, fault, reason):
+    runner, _, env = transport
+    env['PREPARE_FAIL'] = fault
+    failed = run('prepare', env)
+    assert failed.returncode != 0
+    result = json.loads((runner / 'production-result.json').read_text())
+    assert result == {'status': 'failed', 'reason': reason}
+    assert reason in failed.stdout
+    assert 'opaque-private-fixture' not in failed.stdout + failed.stderr
+    assert not (runner / 'before.db.age').exists()
+    assert len(Path(env['CALL_LOG']).read_text().splitlines()) == 1
 
 
 def test_remote_failure_retains_encrypted_recovery_without_reporting_success(transport):
