@@ -33,12 +33,14 @@ def command(args, *, input_text=None):
     return result.stdout
 
 
-def ensure_marker(data):
+def ensure_marker(data, *, inspect_only=False):
     """Publish complete content atomically without overwriting another identity."""
     if data.is_symlink() or not data.is_dir():
         raise ReadinessError('invalid_data_directory')
     marker = data / '.hw-news-volume-id'
     created = False
+    if inspect_only and not os.path.lexists(marker):
+        raise ReadinessError('marker_missing')
     if not os.path.lexists(marker):
         fd, name = tempfile.mkstemp(prefix='.hw-news-volume-id.', dir=data)
         try:
@@ -64,10 +66,13 @@ def ensure_marker(data):
             raise ReadinessError('marker_changed')
         if info.st_size > 128 or os.read(fd, 128).strip() != VOLUME_ID.encode():
             raise ReadinessError('marker_identity_mismatch')
-        os.fchmod(fd, 0o444)
-        os.fsync(fd)
+        if not inspect_only:
+            os.fchmod(fd, 0o444)
+            os.fsync(fd)
     finally:
         os.close(fd)
+    if inspect_only:
+        return 'verified_existing'
     fd = os.open(data, os.O_RDONLY | os.O_DIRECTORY)
     try:
         os.fsync(fd)
@@ -77,7 +82,7 @@ def ensure_marker(data):
 
 
 PROBE = r'''
-import json,os,sqlite3,sys,time
+import ast,json,os,re,sqlite3,sys,time
 try:
     payload=json.load(sys.stdin)
     assert os.getuid()==os.getgid()==10001
@@ -112,6 +117,40 @@ try:
     except namespace['StartupError'] as error:
         result['configuration']={'status':'attention_required','gate':error.gate,
                                  'reason':error.reason,'field':error.field}
+    # Evaluate only the deployed dispatcher's two environment-only helpers.
+    # No engine import, health check, API request, or application entrypoint.
+    dispatcher=ast.parse(namespace['Path']('/app/llm_transcreation.py').read_text())
+    functions=[node for node in dispatcher.body if isinstance(node,ast.FunctionDef)
+               and node.name in ('_has_key','_auto_select_by_key_presence')]
+    scope={'os':os}
+    exec(compile(ast.Module(body=functions,type_ignores=[]),'<deployed-dispatcher>','exec'),scope)
+    provider=os.getenv('LLM_PROVIDER','').strip().lower()
+    prefixes={'claude':'ANTHROPIC','openai':'OPENAI','gemini':'GEMINI','openrouter':'OPENROUTER'}
+    if provider not in prefixes:provider=scope['_auto_select_by_key_presence']()
+    assert provider in prefixes
+    engine=ast.parse(namespace['Path']('/app/'+provider+'_transcreation.py').read_text())
+    default=next(ast.literal_eval(node.value) for node in engine.body
+                 if isinstance(node,ast.Assign) and any(isinstance(t,ast.Name) and
+                 t.id=='_DEFAULT_MODEL' for t in node.targets))
+    model_field=prefixes[provider]+'_MODEL'
+    model=os.getenv(model_field,default)
+    safe_model=(bool(re.fullmatch(r'[A-Za-z0-9][A-Za-z0-9._/:+-]{0,199}',model))
+                and not model.startswith(('sk-','sk_','ghp_','github_pat_','AIza','xoxb-')))
+    credentials=[value for key,value in dict(os.environ,**env).items() if value and
+                 any(word in key.upper() for word in ('TOKEN','API_KEY','SECRET','PASSWORD'))]
+    safe_model=safe_model and not any(value in model for value in credentials)
+    result['current_effective']={'provider':provider,'model':model if safe_model else '<withheld>'}
+    result['current_choice_missing_fields']=[key for key in ('LLM_PROVIDER',model_field) if not env.get(key,'').strip()]
+    proposed=dict(env)
+    if not proposed.get('LLM_PROVIDER','').strip():proposed['LLM_PROVIDER']=provider
+    if not proposed.get(model_field,'').strip() and safe_model:proposed[model_field]=model
+    result['configuration_with_current_choice_explicit']={'status':'ready'}
+    try:
+        namespace['config'](proposed)
+        namespace['bootstrap'](proposed,namespace['Path']('/data'),'populated')
+    except namespace['StartupError'] as error:
+        result['configuration_with_current_choice_explicit']={
+            'status':'attention_required','gate':error.gate,'reason':error.reason,'field':error.field}
     required=['TELEGRAM_BOT_TOKEN','TELEGRAM_CHANNEL_ID','TELEGRAM_ADMIN_ID',
               'TELEGRAPH_ACCESS_TOKEN','LLM_PROVIDER']
     prefixes={'claude':'ANTHROPIC','openai':'OPENAI','gemini':'GEMINI','openrouter':'OPENROUTER'}
@@ -191,9 +230,9 @@ def run_host(payload):
     current=inspect_live(expected)
     if current['Id']!=live['Id'] or current['RestartCount']!=live['RestartCount']:
         raise ReadinessError('production_container_changed')
-    marker=ensure_marker(data)
+    marker=ensure_marker(data,inspect_only=payload.get('inspect_only',False))
     command(['docker','exec','--user','10001:10001',CONTAINER,'python3','-c',
-             "from pathlib import Path; assert Path('/data/.hw-news-volume-id').read_text() == " + repr(VOLUME_ID+'\n')])
+             "from pathlib import Path; assert Path('/data/.hw-news-volume-id').read_text().strip() == " + repr(VOLUME_ID)])
     if (database.stat().st_dev,database.stat().st_ino)!=original_db:
         raise ReadinessError('database_identity_changed')
     if fingerprint(APP/'.env')!=original_env:
@@ -207,7 +246,11 @@ def run_host(payload):
                 private_environment_permissions='private' if private_environment else 'attention_required',
                 marker=marker,marker_readable_by_worker=True,production_revision=expected,
                 database=details['database'],configuration=details['configuration'],
-                missing_fields=details['missing_fields'],database_replaced=False,
+                missing_fields=details['missing_fields'],
+                current_effective=details.get('current_effective'),
+                current_choice_missing_fields=details.get('current_choice_missing_fields'),
+                configuration_with_current_choice_explicit=details.get('configuration_with_current_choice_explicit'),
+                database_replaced=False,
                 env_file_changed=False,bot_restarted=False)
 
 
@@ -222,9 +265,9 @@ def remote_main(payload):
     return 0 if result['status']=='ready' else 1
 
 
-def emit(expected):
+def emit(expected, *, inspect_only=False):
     root=Path(__file__).resolve().parents[1]
-    payload=dict(expected_revision=expected,contract=(root/'startup_safety.py').read_text(),
+    payload=dict(expected_revision=expected,inspect_only=inspect_only,contract=(root/'startup_safety.py').read_text(),
                  compose=(root/'.github/ops/production-compose.yml').read_text())
     source=Path(__file__).read_text().split('\nif __name__ ==',1)[0]
     return source+'\nraise SystemExit(remote_main('+repr(payload)+'))\n'
@@ -233,4 +276,6 @@ def emit(expected):
 if __name__ == '__main__':
     parser=argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--emit',required=True,metavar='EXPECTED_PRODUCTION_SHA')
-    print(emit(parser.parse_args().emit))
+    parser.add_argument('--inspect-only',action='store_true')
+    args=parser.parse_args()
+    print(emit(args.emit,inspect_only=args.inspect_only))

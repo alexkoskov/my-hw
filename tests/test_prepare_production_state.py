@@ -130,3 +130,20 @@ def test_existing_environment_permissions_are_reported_without_modification(host
     assert report['private_environment_permissions']=='attention_required'
     assert report['status']=='attention_required'
     assert env.stat().st_mode & 0o777 == 0o644
+
+
+def test_inspection_never_creates_a_missing_marker(data):
+    before=sorted(p.name for p in data.iterdir())
+    with pytest.raises(prep.ReadinessError,match='marker_missing'):
+        prep.ensure_marker(data,inspect_only=True)
+    assert sorted(p.name for p in data.iterdir())==before
+
+
+def test_inspection_preserves_marker_permissions_and_metadata(data):
+    marker=data/'.hw-news-volume-id';marker.write_text(prep.VOLUME_ID+'\n')
+    marker.chmod(0o644)
+    before=marker.stat()
+    assert prep.ensure_marker(data,inspect_only=True)=='verified_existing'
+    after=marker.stat()
+    assert (before.st_ino,before.st_mode,before.st_mtime_ns,before.st_ctime_ns)==(
+        after.st_ino,after.st_mode,after.st_mtime_ns,after.st_ctime_ns)
