@@ -163,17 +163,43 @@ finally:pathlib.Path(name).unlink(missing_ok=True)
     return ledger(target)
 
 
-def inspect_live():
-    data = APP / "data"
-    if APP.is_symlink() or data.is_symlink() or not (APP / ".git").is_dir():
-        raise DeployError("unexpected production checkout or state path")
+def check_worktree():
+    """Bootstrap exact state exclusions on pre-automation production checkouts.
+
+    Only the two known untracked state directories may precede this change.
+    Keep all tracked changes and unrelated untracked paths as release blockers.
+    """
+    status = command(["git", "status", "--porcelain", "-z", "--untracked-files=normal"], cwd=APP)
+    if any(row not in ("?? data/", "?? backups/") for row in status.split("\0") if row):
+        raise DeployError("production checkout has local changes")
+    if command(["git", "ls-files", "--", "data", "backups"], cwd=APP).strip():
+        raise DeployError("production state directories must not be tracked")
+    info = APP / ".git/info"
+    exclude = info / "exclude"
+    if info.is_symlink() or exclude.is_symlink():
+        raise DeployError("Git local exclusions must not be symlinks")
+    info.mkdir(exist_ok=True)
+    existing = exclude.read_bytes() if exclude.exists() else b""
+    missing = [p for p in (b"/data/", b"/backups/") if p not in existing.splitlines()]
+    if missing:
+        with exclude.open("ab") as output:
+            if existing and not existing.endswith(b"\n"):
+                output.write(b"\n")
+            output.write(b"\n".join(missing) + b"\n")
     if command(["git", "status", "--porcelain"], cwd=APP).strip():
         raise DeployError("production checkout has local changes")
+
+
+def inspect_live():
+    data = APP / "data"
+    if APP.is_symlink() or data.is_symlink() or (APP / ".git").is_symlink() or not (APP / ".git").is_dir():
+        raise DeployError("unexpected production checkout or state path")
     if command(["git", "branch", "--show-current"], cwd=APP).strip() != "main":
         raise DeployError("production checkout must be on main")
     origin = command(["git", "remote", "get-url", "origin"], cwd=APP).strip()
     if origin not in (f"https://github.com/{REPOSITORY}.git", f"git@github.com:{REPOSITORY}.git"):
         raise DeployError("production checkout has an unexpected origin")
+    check_worktree()
     if not (APP / ".env").is_file() or (APP / ".env").is_symlink():
         raise DeployError("existing private runtime environment is required")
     states = {}

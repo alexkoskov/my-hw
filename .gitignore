@@ -46,6 +46,8 @@ out/
 Thumbs.db
 
 # Local SQLite database (per-machine; prod/test instances each maintain their own)
+/data/
+/backups/
 news.db
 news.db-wal
 news.db-shm

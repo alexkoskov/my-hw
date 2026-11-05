@@ -106,6 +106,71 @@ def test_command_failure_does_not_echo_credentials(monkeypatch):
 
 
 @pytest.fixture
+def legacy_checkout(tmp_path, monkeypatch):
+    app = tmp_path / 'checkout'
+    app.mkdir()
+    subprocess.run(['git', 'init', '-q', str(app)], check=True)
+    (app / 'worker.py').write_text('original source\n')
+    subprocess.run(['git', '-C', str(app), 'add', 'worker.py'], check=True)
+    subprocess.run(['git', '-C', str(app), '-c', 'user.name=Deployment test',
+                    '-c', 'user.email=deployment@example.invalid', 'commit', '-qm', 'baseline'], check=True)
+    for name in ('data', 'backups'):
+        (app / name).mkdir()
+        (app / name / 'history.db').write_bytes(b'existing database bytes')
+    exclude = app / '.git/info/exclude'
+    exclude.write_bytes(b'# Preserve operator rules\n/operator-local')
+    monkeypatch.setattr(deploy, 'APP', app)
+    return app, exclude
+
+
+def test_legacy_runtime_dirs_are_excluded_without_changing_state(legacy_checkout):
+    app, exclude = legacy_checkout
+    snapshots = {p: (p.read_bytes(), p.stat().st_mode) for p in app.glob('*/history.db')}
+    deploy.check_worktree()
+    expected = b'# Preserve operator rules\n/operator-local\n/data/\n/backups/\n'
+    assert exclude.read_bytes() == expected
+    assert subprocess.check_output(['git', '-C', str(app), 'status', '--porcelain']) == b''
+    assert all((p.read_bytes(), p.stat().st_mode) == saved for p, saved in snapshots.items())
+    deploy.check_worktree()
+    assert exclude.read_bytes() == expected
+
+
+@pytest.mark.parametrize('change', ['tracked', 'untracked', 'nested_state', 'tracked_state', 'state_symlink'])
+def test_state_exclusions_do_not_hide_other_changes(legacy_checkout, change):
+    app, exclude = legacy_checkout
+    if change == 'tracked':
+        (app / 'worker.py').write_text('operator changes\n')
+    elif change == 'untracked':
+        (app / 'operator.txt').write_text('operator work\n')
+    elif change == 'nested_state':
+        (app / 'nested/data').mkdir(parents=True)
+        (app / 'nested/data/item').touch()
+    elif change == 'tracked_state':
+        subprocess.run(['git', '-C', str(app), 'add', 'data/history.db'], check=True)
+        subprocess.run(['git', '-C', str(app), '-c', 'user.name=Deployment test',
+                        '-c', 'user.email=deployment@example.invalid', 'commit', '-qm', 'tracked state'], check=True)
+    else:
+        (app / 'backups/history.db').unlink()
+        (app / 'backups').rmdir()
+        (app / 'backups').symlink_to(app / 'data', target_is_directory=True)
+    prior = exclude.read_bytes()
+    with pytest.raises(deploy.DeployError):
+        deploy.check_worktree()
+    assert exclude.read_bytes() == prior
+
+
+def test_local_exclude_symlink_is_not_followed(legacy_checkout, tmp_path):
+    app, exclude = legacy_checkout
+    outside = tmp_path / 'outside-metadata'
+    outside.write_bytes(b'preserve me')
+    exclude.unlink()
+    exclude.symlink_to(outside)
+    with pytest.raises(deploy.DeployError, match='symlinks'):
+        deploy.check_worktree()
+    assert outside.read_bytes() == b'preserve me'
+
+
+@pytest.fixture
 def transaction(tmp_path, monkeypatch):
     app = tmp_path / "app"
     data = app / "data"
