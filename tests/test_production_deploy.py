@@ -18,6 +18,12 @@ deploy = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(deploy)
 SHA = "a" * 40
 IMAGE = "sha256:" + "b" * 64
+IMAGE_INFO = {'Id': IMAGE, 'Os': 'linux', 'Architecture': 'amd64',
+              'RootFS': {'Type': 'layers', 'Layers': ['sha256:' + 'f' * 64]},
+              'Config': {'Labels': {'org.opencontainers.image.revision': SHA},
+                         'Entrypoint': ['/app/scripts/container_entrypoint.sh'],
+                         'Cmd': ['python3', 'news_bot.py'], 'Env': ['PYTHONUNBUFFERED=1']}}
+IDENTITY = deploy.image_identity(IMAGE_INFO)
 
 
 def event(**changes):
@@ -103,6 +109,7 @@ def test_command_failure_does_not_echo_credentials(monkeypatch):
     with pytest.raises(deploy.DeployError) as caught:
         deploy.command(["docker", "run"])
     assert "opaque-secret" not in str(caught.value)
+    assert "docker run operation failed" in str(caught.value)
 
 
 @pytest.fixture
@@ -199,7 +206,7 @@ def transaction(tmp_path, monkeypatch):
     def command(args, **kwargs):
         calls.append(args)
         if args[:3] == ["docker", "image", "inspect"]:
-            return json.dumps([{"Id": IMAGE, "Config": {"Labels": {"org.opencontainers.image.revision": SHA}}}])
+            return json.dumps([IMAGE_INFO])
         if args[:3] == ["git", "rev-parse", "FETCH_HEAD"]: return SHA
         if "config" in args and "--format" in args:
             return json.dumps({"services": {"news-bot": {
@@ -220,7 +227,7 @@ def transaction(tmp_path, monkeypatch):
 
 def test_success_preserves_ledger_and_env_and_uses_no_build(transaction):
     app, stage, ih, bh, calls, owners = transaction
-    result = deploy.activate(SHA, stage, IMAGE, ih, bh)
+    result = deploy.activate(SHA, stage, IDENTITY, ih, bh)
     assert result["status"] == "deployed"
     assert deploy.ledger(app / "data/news.db") == 1
     assert (app / ".env").read_text() == "PRIVATE_SETTING=untouched\n"
@@ -230,6 +237,69 @@ def test_success_preserves_ledger_and_env_and_uses_no_build(transaction):
     assert all(uid == gid == 10001 for _, uid, gid in owners)
 
 
+def test_identity_handles_store_ids_and_empty_api_defaults():
+    imported = copy.deepcopy(IMAGE_INFO)
+    imported['Id'] = 'sha256:' + 'd' * 64
+    imported['Config'].update(User='', Volumes=None, ExposedPorts={}, Tty=False)
+    imported['Variant'] = ''
+    assert deploy.image_identity(imported) == IDENTITY
+
+
+def test_imported_image_uses_host_native_id_after_content_verification(transaction, monkeypatch):
+    _, stage, ih, bh, calls, _ = transaction
+    native = 'sha256:' + 'd' * 64
+    original = deploy.command
+    def command(args, **kwargs):
+        result = original(args, **kwargs)
+        if args[:3] == ['docker', 'image', 'inspect']:
+            image = copy.deepcopy(IMAGE_INFO)
+            image['Id'] = native
+            return json.dumps([image])
+        return result
+    monkeypatch.setattr(deploy, 'command', command)
+    assert deploy.activate(SHA, stage, IDENTITY, ih, bh)['image'] == native
+    assert ['docker', 'tag', native, 'hw-news-bot:latest'] in calls
+    assert any(c[:2] == ['docker', 'run'] and native in c for c in calls)
+
+
+@pytest.mark.parametrize('tamper', ['layer', 'command', 'entrypoint', 'environment',
+                                   'user', 'working_dir', 'revision', 'platform', 'missing_metadata'])
+def test_imported_image_content_tampering_refuses_before_worker_stop(transaction, monkeypatch, tamper):
+    _, stage, ih, bh, calls, owners = transaction
+    original = deploy.command
+    def command(args, **kwargs):
+        result = original(args, **kwargs)
+        if args[:3] == ['docker', 'image', 'inspect']:
+            image = copy.deepcopy(IMAGE_INFO)
+            if tamper == 'layer': image['RootFS']['Layers'] = ['sha256:' + 'e' * 64]
+            if tamper == 'command': image['Config']['Cmd'] = ['unexpected']
+            if tamper == 'entrypoint': image['Config']['Entrypoint'] = ['/unexpected']
+            if tamper == 'environment': image['Config']['Env'] = ['DIFFERENT=1']
+            if tamper == 'user': image['Config']['User'] = 'other'
+            if tamper == 'working_dir': image['Config']['WorkingDir'] = '/other'
+            if tamper == 'revision': image['Config']['Labels']['org.opencontainers.image.revision'] = 'e' * 40
+            if tamper == 'platform': image['Architecture'] = 'arm64'
+            if tamper == 'missing_metadata': del image['RootFS']
+            return json.dumps([image])
+        return result
+    monkeypatch.setattr(deploy, 'command', command)
+    with pytest.raises(deploy.DeployError):
+        deploy.activate(SHA, stage, IDENTITY, ih, bh)
+    assert not any(c[:2] == ['docker', 'stop'] for c in calls)
+    assert not owners
+
+
+def test_identity_cli_runs_without_host_mutation(monkeypatch, capsys):
+    monkeypatch.setattr(deploy.sys, 'argv', ['deploy_production.py', 'image-identity', 'hw-news-bot:' + SHA])
+    monkeypatch.setattr(deploy.os, 'geteuid', lambda: 10001)
+    def inspect(args, **_kwargs):
+        assert args == ['docker', 'image', 'inspect', 'hw-news-bot:' + SHA]
+        return json.dumps([IMAGE_INFO])
+    monkeypatch.setattr(deploy, 'command', inspect)
+    deploy.main()
+    assert capsys.readouterr().out.strip() == IDENTITY
+
+
 def test_failed_candidate_preflight_never_stops_old_worker(transaction, monkeypatch):
     _, stage, ih, bh, calls, _ = transaction
     original = deploy.command
@@ -237,7 +307,7 @@ def test_failed_candidate_preflight_never_stops_old_worker(transaction, monkeypa
         if args[:2] == ["docker", "run"]: raise deploy.DeployError("candidate rejected")
         return original(args, **kwargs)
     monkeypatch.setattr(deploy, "command", command)
-    with pytest.raises(deploy.DeployError): deploy.activate(SHA, stage, IMAGE, ih, bh)
+    with pytest.raises(deploy.DeployError): deploy.activate(SHA, stage, IDENTITY, ih, bh)
     assert not any(c[:2] == ["docker", "stop"] for c in calls)
 
 
@@ -248,7 +318,7 @@ def test_failed_startup_rolls_back_image_without_restoring_old_database(transact
             conn.execute("INSERT INTO processed_news VALUES ('new-confirmed-post')")
         raise deploy.DeployError("startup verification failed")
     monkeypatch.setattr(deploy, "verify_worker", failed_start)
-    with pytest.raises(deploy.DeployError): deploy.activate(SHA, stage, IMAGE, ih, bh)
+    with pytest.raises(deploy.DeployError): deploy.activate(SHA, stage, IDENTITY, ih, bh)
     assert json.loads((stage / "checkpoint.json").read_text())["phase"] == "rolled_back"
     assert deploy.ledger(app / "data/news.db") == 2
     assert any(str(stage / "rollback-compose.yml") in c and "--no-build" in c for c in calls)
@@ -257,12 +327,12 @@ def test_failed_startup_rolls_back_image_without_restoring_old_database(transact
 
 def test_changed_production_or_corrupt_upload_never_stops_worker(transaction, monkeypatch):
     _, stage, ih, bh, calls, _ = transaction
-    with pytest.raises(deploy.DeployError): deploy.activate(SHA, stage, IMAGE, "0" * 64, bh)
+    with pytest.raises(deploy.DeployError): deploy.activate(SHA, stage, IDENTITY, "0" * 64, bh)
     assert not any(c[:2] == ["docker", "stop"] for c in calls)
     snapshot = json.loads((stage / "checkpoint.json").read_text())
     snapshot["old_image"] = "someone-else-deployed"
     monkeypatch.setattr(deploy, "inspect_live", lambda: snapshot)
-    with pytest.raises(deploy.DeployError): deploy.activate(SHA, stage, IMAGE, ih, bh)
+    with pytest.raises(deploy.DeployError): deploy.activate(SHA, stage, IDENTITY, ih, bh)
 
 
 def test_rollback_restores_worker_access_to_new_state_files(transaction, monkeypatch):
@@ -275,7 +345,7 @@ def test_rollback_restores_worker_access_to_new_state_files(transaction, monkeyp
         created.touch()
         raise deploy.DeployError("candidate failed")
     monkeypatch.setattr(deploy, "verify_worker", failed_start)
-    with pytest.raises(deploy.DeployError): deploy.activate(SHA, stage, IMAGE, ih, bh)
+    with pytest.raises(deploy.DeployError): deploy.activate(SHA, stage, IDENTITY, ih, bh)
     assert (created, 10001, 10001) in owners
     assert created.stat().st_mode & 0o777 == 0o600
 
@@ -299,7 +369,7 @@ def test_invalid_candidate_compose_is_rejected_before_cutover(transaction, monke
             return json.dumps(document)
         return result
     monkeypatch.setattr(deploy, "command", command)
-    with pytest.raises(deploy.DeployError): deploy.activate(SHA, stage, IMAGE, ih, bh)
+    with pytest.raises(deploy.DeployError): deploy.activate(SHA, stage, IDENTITY, ih, bh)
     assert not any(c[:2] == ["docker", "stop"] for c in calls)
 
 
@@ -307,7 +377,7 @@ def test_failed_rollback_is_reported_honestly(transaction, monkeypatch):
     _, stage, ih, bh, _, _ = transaction
     monkeypatch.setattr(deploy, "verify_worker", lambda *_a, **_k: (_ for _ in ()).throw(deploy.DeployError("bad startup")))
     monkeypatch.setattr(deploy, "verify_rollback", lambda *_a, **_k: (_ for _ in ()).throw(deploy.DeployError("bad recovery")))
-    with pytest.raises(deploy.DeployError): deploy.activate(SHA, stage, IMAGE, ih, bh)
+    with pytest.raises(deploy.DeployError): deploy.activate(SHA, stage, IDENTITY, ih, bh)
     assert json.loads((stage / "checkpoint.json").read_text())["phase"] == "rollback_failed"
 
 

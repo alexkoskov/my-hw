@@ -28,22 +28,18 @@ current_main() {
 copy_backup() {
   local name=$1
   [[ $name == before || $name == cutover ]]
-  scp "${ssh_options[@]}" "root@$PROD_HOST:$stage/$name.db" "$RUNNER_TEMP/$name.db"
-  age -R "$recipient" -o "$RUNNER_TEMP/$name.db.age" "$RUNNER_TEMP/$name.db"
+  scp "${ssh_options[@]}" "root@$PROD_HOST:$stage/$name.db" "$RUNNER_TEMP/$name.db" || return
+  age -R "$recipient" -o "$RUNNER_TEMP/$name.db.age" "$RUNNER_TEMP/$name.db" || return
   # Verify that the operator's same private SSH key can recover this artifact.
-  age -d -i "$identity" "$RUNNER_TEMP/$name.db.age" | cmp - "$RUNNER_TEMP/$name.db"
+  age -d -i "$identity" "$RUNNER_TEMP/$name.db.age" | cmp - "$RUNNER_TEMP/$name.db" || return
   rm -f -- "$RUNNER_TEMP/$name.db"
 }
 
-case ${1:-} in
-  prepare)
-    current_main || { echo 'A newer main exists; this release will not deploy.' >&2; exit 1; }
-    if ! remote prepare "$release" > "$RUNNER_TEMP/production-prepared.json"; then
-      # The host helper emits sanitized failure JSON. Preserve it in the
-      # existing result artifact and report the reason instead of just exit 1.
-      python3 - "$RUNNER_TEMP/production-prepared.json" "$RUNNER_TEMP/production-result.json" <<'PY'
+report_failure() {
+  # Both remote phases emit the same sanitized status/reason contract.
+  python3 - "$1" "$RUNNER_TEMP/production-result.json" "$2" <<'PY'
 import json,pathlib,sys
-reason = 'SSH preparation failed without a structured host result'
+reason = f'SSH {sys.argv[3]} failed without a structured host result'
 try:
     data = json.loads(pathlib.Path(sys.argv[1]).read_text())
     if isinstance(data, dict) and data.get('status') == 'failed' and isinstance(data.get('reason'), str):
@@ -54,6 +50,13 @@ result = json.dumps({'status': 'failed', 'reason': reason})
 pathlib.Path(sys.argv[2]).write_text(result + '\n')
 print(result)
 PY
+}
+
+case ${1:-} in
+  prepare)
+    current_main || { echo 'A newer main exists; this release will not deploy.' >&2; exit 1; }
+    if ! remote prepare "$release" > "$RUNNER_TEMP/production-prepared.json"; then
+      report_failure "$RUNNER_TEMP/production-prepared.json" preparation
       exit 1
     fi
     python3 -c 'import json,sys; d=json.load(open(sys.argv[1])); assert d["status"] in ("prepared","already_deployed") and d["sha"]==sys.argv[2]' "$RUNNER_TEMP/production-prepared.json" "$DEPLOY_SHA"
@@ -67,10 +70,11 @@ PY
       exit 0
     fi
     scp "${ssh_options[@]}" "$RUNNER_TEMP/image.tar.gz" "$RUNNER_TEMP/source.bundle" "root@$PROD_HOST:$stage/"
-    image_id=$(docker image inspect --format '{{.Id}}' "hw-news-bot:$DEPLOY_SHA")
+    content_identity=$(python3 scripts/deploy_production.py image-identity "hw-news-bot:$DEPLOY_SHA")
     image_hash=$(sha256sum "$RUNNER_TEMP/image.tar.gz" | cut -d ' ' -f 1)
     bundle_hash=$(sha256sum "$RUNNER_TEMP/source.bundle" | cut -d ' ' -f 1)
-    if ! remote activate "$release" "$image_id" "$image_hash" "$bundle_hash" > "$RUNNER_TEMP/production-result.json"; then
+    if ! remote activate "$release" "$content_identity" "$image_hash" "$bundle_hash" > "$RUNNER_TEMP/production-result.json"; then
+      report_failure "$RUNNER_TEMP/production-result.json" activation
       copy_backup cutover || true
       exit 1
     fi
