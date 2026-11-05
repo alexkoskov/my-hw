@@ -141,8 +141,6 @@ def inspect_live(expected):
         raise ReadinessError('existing_database_required')
     if not (APP / '.env').is_file():
         raise ReadinessError('private_environment_required')
-    if (APP / '.env').stat().st_mode & 0o077:
-        raise ReadinessError('private_environment_permissions')
     if command(['git','-C',str(APP),'branch','--show-current']).strip() != 'main':
         raise ReadinessError('unexpected_production_branch')
     if command(['git','-C',str(APP),'rev-parse','HEAD']).strip() != expected:
@@ -203,7 +201,10 @@ def run_host(payload):
     final=inspect_live(expected)
     if final['Id']!=live['Id'] or final['RestartCount']!=live['RestartCount']:
         raise ReadinessError('production_container_changed')
-    return dict(status='ready' if details['configuration']['status']=='ready' else 'attention_required',
+    private_environment = not (APP/'.env').stat().st_mode & 0o077
+    ready = details['configuration']['status']=='ready' and private_environment
+    return dict(status='ready' if ready else 'attention_required',
+                private_environment_permissions='private' if private_environment else 'attention_required',
                 marker=marker,marker_readable_by_worker=True,production_revision=expected,
                 database=details['database'],configuration=details['configuration'],
                 missing_fields=details['missing_fields'],database_replaced=False,

@@ -61,6 +61,7 @@ def test_missing_directory_is_never_created(tmp_path):
 def host(data,monkeypatch):
     app=data.parent
     (app/'.env').write_text('private file must be preserved\n')
+    (app/'.env').chmod(0o600)
     monkeypatch.setattr(prep,'APP',app)
     live={'Id':'original','RestartCount':0}
     monkeypatch.setattr(prep,'inspect_live',MagicMock(return_value=live))
@@ -119,3 +120,13 @@ def test_emitted_program_is_valid_python_and_has_no_local_secret_values(monkeypa
     compile(source,'remote-readiness','exec')
     assert 'local-private-value' not in source
     assert 'remote_main(' in source
+
+
+def test_existing_environment_permissions_are_reported_without_modification(host,data):
+    payload,_,_=host
+    env=data.parent/'.env';env.chmod(0o644)
+    report=prep.run_host(payload)
+    assert report['marker']=='created'
+    assert report['private_environment_permissions']=='attention_required'
+    assert report['status']=='attention_required'
+    assert env.stat().st_mode & 0o777 == 0o644
