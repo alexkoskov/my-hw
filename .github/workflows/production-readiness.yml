@@ -1,0 +1,52 @@
+name: Prepare production volume identity
+
+on:
+  push:
+    branches: [ops/production-readiness-20261105]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: deploy-prod
+  cancel-in-progress: false
+
+jobs:
+  prepare:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    environment: production
+    env:
+      PROD_HOST: 45.90.216.165
+      EXPECTED_PROD_SHA: 77f82f611b81d30b8aba8db667cf35fd85a5f4e6
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          persist-credentials: false
+      - name: Prepare identity and verify private runtime configuration
+        env:
+          PROD_SSH_PRIVATE_KEY: ${{ secrets.PROD_SSH_PRIVATE_KEY }}
+          PROD_SSH_KNOWN_HOSTS: ${{ secrets.PROD_SSH_KNOWN_HOSTS }}
+        run: |
+          set -euo pipefail
+          test -n "$PROD_SSH_PRIVATE_KEY"
+          test -n "$PROD_SSH_KNOWN_HOSTS"
+          umask 077
+          mkdir -p "$RUNNER_TEMP/prod-readiness"
+          printf '%s\n' "$PROD_SSH_PRIVATE_KEY" > "$RUNNER_TEMP/prod-readiness/key"
+          printf '%s\n' "$PROD_SSH_KNOWN_HOSTS" > "$RUNNER_TEMP/prod-readiness/known_hosts"
+          ssh-keygen -F "$PROD_HOST" -f "$RUNNER_TEMP/prod-readiness/known_hosts" >/dev/null
+          python3 scripts/prepare_production_state.py --emit "$EXPECTED_PROD_SHA" > "$RUNNER_TEMP/prod-readiness/check.py"
+          ssh -F /dev/null -i "$RUNNER_TEMP/prod-readiness/key" \
+            -o IdentitiesOnly=yes -o BatchMode=yes -o StrictHostKeyChecking=yes \
+            -o UserKnownHostsFile="$RUNNER_TEMP/prod-readiness/known_hosts" \
+            -o ConnectTimeout=15 -o ServerAliveInterval=15 -o ServerAliveCountMax=2 \
+            -o ForwardAgent=no -o ClearAllForwardings=yes \
+            root@"$PROD_HOST" python3 - < "$RUNNER_TEMP/prod-readiness/check.py"
+      - name: Remove runner identity
+        if: always()
+        run: |
+          set -eu
+          rm -f -- "${RUNNER_TEMP:?}/prod-readiness/key" \
+            "$RUNNER_TEMP/prod-readiness/known_hosts" "$RUNNER_TEMP/prod-readiness/check.py"
+          if [ -d "$RUNNER_TEMP/prod-readiness" ]; then rmdir "$RUNNER_TEMP/prod-readiness"; fi

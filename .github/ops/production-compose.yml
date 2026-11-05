@@ -1,0 +1,57 @@
+# Hot Wheels news bot — production runtime, routed through the SHARED VPN gateway
+# (Telegram/Telegra.ph are filtered from the RU host). The single app container
+# joins the external `vpnnet` bridge, points its default route at the sing-box
+# gateway (172.28.0.2), and only then starts Python.
+#
+# Files placed alongside this compose on the host (NOT in git — host-side):
+#   .env          bot secrets (copied from the old NL server) + DB_FILE=/data/news.db
+#   ./data/news.db   persistent DB copied from the old server (anti-spam: keeps
+#                    processed_news so the channel isn't flooded with old posts)
+#
+# Prereq: the shared-vpn stack (/root/shared-vpn) must be UP first — it owns
+# `vpnnet` and the gateway container at 172.28.0.2.
+
+networks:
+  vpnnet:
+    external: true
+
+services:
+  news-bot:
+    build: .
+    image: hw-news-bot:latest
+    container_name: hw-news-bot
+    restart: unless-stopped
+    # The entrypoint uses NET_ADMIN only for the startup route, then drops uid
+    # and every capability before running Python. No ports are published.
+    cap_add:
+      - NET_ADMIN
+    security_opt:
+      - no-new-privileges:true
+    networks:
+      - vpnnet
+    env_file:
+      - .env
+    environment:
+      - APP_MODE=production
+      - TZ=Europe/Moscow
+      - PROD_VOLUME_ID=my-hw-moscow-production-v1
+      - INSTANCE_LABEL=prod
+      - DB_FILE=/data/news.db
+      - NEWS_BOT_LOCK_FILE=/data/.news_bot.lock
+      - VPN_GATEWAY=172.28.0.2
+      # Heartbeat marker on the mounted volume (B5) — persistent across restarts
+      # and readable by `docker exec hw-news-bot /app/watchdog.sh` (host cron).
+      - HEARTBEAT_FILE=/data/last_tick.ts
+    volumes:
+      # Existing state must be writable by uid/gid 10001. The entrypoint refuses
+      # incompatible legacy permissions instead of recursively changing owners.
+      - type: bind
+        source: /opt/hw-news/data
+        target: /data
+        bind:
+          create_host_path: false
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
