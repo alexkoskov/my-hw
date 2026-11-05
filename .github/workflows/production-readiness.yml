@@ -36,7 +36,7 @@ jobs:
           printf '%s\n' "$PROD_SSH_PRIVATE_KEY" > "$RUNNER_TEMP/prod-readiness/key"
           printf '%s\n' "$PROD_SSH_KNOWN_HOSTS" > "$RUNNER_TEMP/prod-readiness/known_hosts"
           ssh-keygen -F "$PROD_HOST" -f "$RUNNER_TEMP/prod-readiness/known_hosts" >/dev/null
-          python3 scripts/prepare_production_state.py --inspect-only --emit "$EXPECTED_PROD_SHA" > "$RUNNER_TEMP/prod-readiness/check.py"
+          python3 scripts/prepare_production_state.py --inspect-only --apply-approved-config --emit "$EXPECTED_PROD_SHA" > "$RUNNER_TEMP/prod-readiness/check.py"
           ssh -F /dev/null -i "$RUNNER_TEMP/prod-readiness/key" \
             -o IdentitiesOnly=yes -o BatchMode=yes -o StrictHostKeyChecking=yes \
             -o UserKnownHostsFile="$RUNNER_TEMP/prod-readiness/known_hosts" \

@@ -147,3 +147,64 @@ def test_inspection_preserves_marker_permissions_and_metadata(data):
     after=marker.stat()
     assert (before.st_ino,before.st_mode,before.st_mtime_ns,before.st_ctime_ns)==(
         after.st_ino,after.st_mode,after.st_mtime_ns,after.st_ctime_ns)
+
+
+def test_approved_provider_install_preserves_all_original_bytes_and_values(tmp_path):
+    from dotenv import dotenv_values
+    env=tmp_path/'.env'
+    raw=b'SECRET_KEY="first\nsecond"\nOPENROUTER_MODEL=google/gemini-2.5-flash\n'
+    env.write_bytes(raw);env.chmod(0o644)
+    def inspect(path):return dict(dotenv_values(path or env))
+    def verify():
+        assert inspect(None)['LLM_PROVIDER']=='openrouter'
+        assert env.stat().st_mode & 0o777==0o600
+        return {'status':'ready'}
+    changed,result=prep.install_provider(tmp_path,inspect,verify)
+    assert changed and result['status']=='ready'
+    assert env.read_bytes()==raw+b'LLM_PROVIDER=openrouter\n'
+    assert sorted(p.name for p in tmp_path.iterdir())==['.env']
+
+
+def test_provider_install_rolls_back_original_inode_on_failed_verification(tmp_path):
+    from dotenv import dotenv_values
+    env=tmp_path/'.env';env.write_bytes(b'KEY=private-placeholder\n');env.chmod(0o644)
+    before=env.stat().st_ino,env.read_bytes()
+    def inspect(path):return dict(dotenv_values(path or env))
+    def fail():raise prep.ReadinessError('synthetic_postcheck_failure')
+    with pytest.raises(prep.ReadinessError,match='synthetic_postcheck_failure'):
+        prep.install_provider(tmp_path,inspect,fail)
+    assert (env.stat().st_ino,env.read_bytes())==before
+    assert env.stat().st_mode & 0o777==0o600
+    assert sorted(p.name for p in tmp_path.iterdir())==['.env']
+
+
+def test_candidate_secret_change_is_rejected_before_replacing_environment(tmp_path):
+    env=tmp_path/'.env';env.write_text('KEY=original\n');env.chmod(0o644)
+    before=env.stat().st_ino,env.read_bytes()
+    def inspect(path):
+        return {'KEY':'tampered','LLM_PROVIDER':'openrouter'} if path else {'KEY':'original'}
+    with pytest.raises(prep.ReadinessError,match='unapproved_environment_change'):
+        prep.install_provider(tmp_path,inspect,lambda: {'status':'ready'})
+    assert (env.stat().st_ino,env.read_bytes())==before
+    assert env.stat().st_mode & 0o777==0o644
+    assert sorted(p.name for p in tmp_path.iterdir())==['.env']
+
+
+def test_existing_explicit_provider_only_hardens_permissions(tmp_path):
+    from dotenv import dotenv_values
+    env=tmp_path/'.env';env.write_text('LLM_PROVIDER=openrouter\nKEY=original\n');env.chmod(0o644)
+    before=env.stat().st_ino,env.read_bytes()
+    changed,_=prep.install_provider(tmp_path,lambda path:dict(dotenv_values(path or env)),
+                                    lambda: {'status':'ready'})
+    assert changed is False
+    assert (env.stat().st_ino,env.read_bytes())==before
+    assert env.stat().st_mode & 0o777==0o600
+
+
+def test_changed_current_model_refuses_approved_edit(host,monkeypatch):
+    payload,_,_=host
+    monkeypatch.setattr(prep,'run_host',lambda _: {'current_effective':{'provider':'openrouter','model':'other'}})
+    install=MagicMock();monkeypatch.setattr(prep,'install_provider',install)
+    with pytest.raises(prep.ReadinessError,match='current_model_changed'):
+        prep.apply_approved_config(payload)
+    install.assert_not_called()
