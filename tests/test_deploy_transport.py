@@ -47,7 +47,9 @@ def transport(tmp_path):
             elif 'activate' in sys.argv:
                 failed=os.getenv('ACTIVATE_FAIL')=='1'
                 print(json.dumps({'status':'failed' if failed else 'deployed',
-                                  'sha':os.environ['DEPLOY_SHA'],'image':os.environ['TEST_IMAGE']}))
+                                  'sha':os.environ['DEPLOY_SHA'],'image':os.environ['TEST_IMAGE'],
+                                  'reason':'image identity does not match the tested revision',
+                                  'private_metadata':'opaque-private-fixture'}))
                 raise SystemExit(1 if failed else 0)
             else:print(json.dumps({'status':'cleaned'}))
         """,
@@ -58,8 +60,10 @@ def transport(tmp_path):
                 target.write_bytes(b'private synthetic database bytes')
         """,
         "docker": """
-            import os
-            print(os.environ['TEST_IMAGE'])
+            import json,os
+            print(json.dumps([{'Id':os.environ['TEST_IMAGE'], 'Os':'linux','Architecture':'amd64',
+                  'RootFS':{'Type':'layers','Layers':['sha256:'+'f'*64]},
+                  'Config':{'Labels':{'org.opencontainers.image.revision':os.environ['DEPLOY_SHA']}}}]))
         """,
         "gh": """
             import os
@@ -134,8 +138,12 @@ def test_remote_failure_retains_encrypted_recovery_without_reporting_success(tra
     runner, _, env = transport
     assert run("prepare", env).returncode == 0
     env["ACTIVATE_FAIL"] = "1"
-    assert run("activate", env).returncode != 0
-    assert json.loads((runner / "production-result.json").read_text())["status"] == "failed"
+    failed = run("activate", env)
+    assert failed.returncode != 0
+    assert json.loads((runner / "production-result.json").read_text()) == {
+        'status':'failed', 'reason':'image identity does not match the tested revision'}
+    assert 'image identity does not match the tested revision' in failed.stdout
+    assert 'opaque-private-fixture' not in failed.stdout + failed.stderr
     assert (runner / "cutover.db.age").exists()
 
 

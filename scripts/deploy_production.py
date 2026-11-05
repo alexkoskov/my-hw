@@ -52,7 +52,8 @@ def command(args, *, cwd=None, input_data=None):
     if result.returncode:
         # Docker/SSH errors can contain environment-file values. Never relay
         # arbitrary command output into Actions logs or checkpoint metadata.
-        raise DeployError(f"{args[0]} operation failed (exit {result.returncode})")
+        operation = " ".join(args[:2])
+        raise DeployError(f"{operation} operation failed (exit {result.returncode})")
     return result.stdout
 
 
@@ -367,7 +368,34 @@ print(json.dumps({'preserved':bool(actual) and expected.issubset(actual) and ok}
     raise DeployError("worker startup verification timed out")
 
 
-def activate(sha, stage, image_id, image_hash, bundle_hash):
+def image_identity(image):
+    """Bind runtime config and layer DiffIDs across Docker image stores.
+
+    Classic Docker exposes the config digest as Id; containerd-backed Docker
+    can expose its target manifest/index digest instead. Those local handles
+    are useful for run/tag/inspect on that daemon, but are not portable IDs.
+    """
+    config = image.get("Config")
+    rootfs = image.get("RootFS") or {}
+    layers = rootfs.get("Layers")
+    if (not isinstance(config, dict) or rootfs.get("Type") != "layers"
+            or not isinstance(layers, list) or not layers
+            or not all(isinstance(layer, str) and re.fullmatch(r"sha256:[a-f0-9]{64}", layer) for layer in layers)
+            or not image.get("Os") or not image.get("Architecture")):
+        raise DeployError("image execution metadata is incomplete")
+    # Older API responses include empty/default config fields that newer APIs
+    # omit. Preserve every non-default field, nested object and ordered list.
+    config = {key: value for key, value in config.items()
+              if value is not None and value is not False
+              and value != "" and value != [] and value != {}}
+    content = {"schema": 1, "config": config, "layers": layers,
+               "os": image["Os"], "architecture": image["Architecture"],
+               "variant": image.get("Variant") or ""}
+    encoded = json.dumps(content, sort_keys=True, separators=(",", ":")).encode()
+    return "sha256:" + hashlib.sha256(encoded).hexdigest()
+
+
+def activate(sha, stage, expected_identity, image_hash, bundle_hash):
     state = json.loads((stage / "checkpoint.json").read_text())
     live = inspect_live()
     if state["sha"] != sha or any(live[k] != state[k] for k in ("old_head", "old_image", "old_container")):
@@ -381,8 +409,13 @@ def activate(sha, stage, image_id, image_hash, bundle_hash):
             raise DeployError("uploaded release checksum mismatch")
     command(["docker", "load", "--input", str(stage / "image.tar.gz")])
     candidate = json.loads(command(["docker", "image", "inspect", f"hw-news-bot:{sha}"]))[0]
-    if candidate["Id"] != image_id or candidate["Config"].get("Labels", {}).get("org.opencontainers.image.revision") != sha:
-        raise DeployError("image identity does not match the tested revision")
+    if candidate.get("Config", {}).get("Labels", {}).get("org.opencontainers.image.revision") != sha:
+        raise DeployError("image revision label does not match the tested revision")
+    actual_identity = image_identity(candidate)
+    if actual_identity != expected_identity:
+        raise DeployError(f"image content identity mismatch: expected {expected_identity}, found {actual_identity}")
+    # From this point use only this host's native image handle.
+    image_id = candidate["Id"]
     command(["git", "fetch", "--no-tags", str(stage / "source.bundle"), f"refs/tags/deploy-build-{sha}"], cwd=APP)
     if command(["git", "rev-parse", "FETCH_HEAD"], cwd=APP).strip() != sha:
         raise DeployError("source bundle revision mismatch")
@@ -451,6 +484,12 @@ def main():
             output.write(f"sha={result['sha']}\ndeploy={str(result['deploy']).lower()}\n")
         print(json.dumps(result))
         return
+    if len(sys.argv) == 3 and sys.argv[1] == "image-identity":
+        if not re.fullmatch(r"hw-news-bot:[a-f0-9]{40}", sys.argv[2]):
+            raise DeployError("invalid tested image reference")
+        inspected = json.loads(command(["docker", "image", "inspect", sys.argv[2]]))[0]
+        print(image_identity(inspected))
+        return
     if len(sys.argv) < 3 or not re.fullmatch(r"[0-9a-f]{40}-[0-9]+-[0-9]+", sys.argv[2]):
         raise DeployError("invalid release identifier")
     mode, release = sys.argv[1:3]
@@ -464,10 +503,10 @@ def main():
         if mode == "prepare":
             result = prepare(sha, stage)
         elif mode == "activate" and len(sys.argv) == 6:
-            image_id, image_hash, bundle_hash = sys.argv[3:]
-            if not re.fullmatch(r"sha256:[a-f0-9]{64}", image_id) or not all(re.fullmatch(r"[a-f0-9]{64}", h) for h in (image_hash, bundle_hash)):
+            expected_identity, image_hash, bundle_hash = sys.argv[3:]
+            if not re.fullmatch(r"sha256:[a-f0-9]{64}", expected_identity) or not all(re.fullmatch(r"[a-f0-9]{64}", h) for h in (image_hash, bundle_hash)):
                 raise DeployError("invalid release identity")
-            result = activate(sha, stage, image_id, image_hash, bundle_hash)
+            result = activate(sha, stage, expected_identity, image_hash, bundle_hash)
         elif mode == "cleanup":
             for name in ("image.tar.gz", "source.bundle"):
                 (stage / name).unlink(missing_ok=True)
