@@ -115,3 +115,36 @@ not performed.
 - STAB-002, OBSV-002 and DBP-015 keep their original remaining acceptance.
   No deployment, promotion, GitHub protection changes, new reminders, broad
   history cleanup or unmeasured indexing/caching refactor occurred.
+
+## Telegram preview incident — resolved observation, 2026-11-03
+
+The owner initially supplied a screenshot of the 19:30 T-Hunted post showing
+only `#thunted #news`. The sender puts the article URL in preview options; an
+offline mock confirmed that send success alone does not verify card rendering.
+A local candidate with a separate article link passed 125 focused tests and
+26 subtests, but was never committed, published or deployed.
+
+The owner subsequently confirmed that the card loaded and supplied a second
+screenshot showing the title, excerpt, hero image and INSTANT VIEW button above
+the same tags. This establishes delayed preview display in this incident, not
+permanent loss of the post. The exact Telegram/cache/client layer and delay
+length were not measured; full article contents were not inspected.
+
+The unapproved format-change candidate and its tests were removed. Runtime and
+Telegram tests match the previously verified HEAD exactly. Existing post format
+is retained; no separate link, repost, live message edit or production change
+was made. No additional incident task remains on the approved roadmap. Keep
+this observation here rather than reopening the incident on a future resume.
+
+## Production follow-up — completed 2026-11-05
+
+The release corrections in PRs #50–53 passed their actual CI test jobs. Final
+suite: 2343 passed, 2 skipped, 566 subtests; focused deployment checks: 67 passed
+plus five tag shell cases. Exact main 77f82f6 deployed successfully in workflow
+42016189442, including actual rootless worker, route/capabilities, startup and
+prior ledger verification. Automatic production tag and both encrypted backups
+were verified through GitHub APIs/logs. The complete current release/image/
+artifact/rollback evidence is in
+[the deployment record](deployment.md#successful-automatic-production-release--2026-11-05).
+The older local-image IDs and source-hash manifests above remain historical;
+they are not the production image ID for this later release.

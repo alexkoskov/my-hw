@@ -2425,7 +2425,7 @@
     {
       "id": "DEPLOY-AUTO-001",
       "title": "Enable and verify exact-main GitHub production deployment with recovery checkpoints",
-      "status": "in_progress",
+      "status": "done",
       "weight": 8,
       "depends_on": [
         "HARDEN-007"
@@ -2437,11 +2437,13 @@
         "scripts/deploy_actions.sh",
         "tests/test_production_deploy.py",
         "tests/test_deploy_transport.py",
-        "work/project-hardening/deployment.md"
+        "work/project-hardening/deployment.md",
+        ".gitignore",
+        "tests/test_production_tag.py"
       ],
-      "description": "Automation merged via PR #49 and main CI passed. First automatic run 41677472275 passed exact-main selection but stopped before SSH: the complete dedicated PROD_SSH_PRIVATE_KEY / PROD_SSH_KNOWN_HOSTS pair is unavailable. Operator setup is required before retry; actual production rollout remains unverified. See work/project-hardening/deployment.md."
+      "description": "Completed 2026-11-05: main 77f82f6 deployed by fully green run 42016189442, with actual rootless startup/ledger verification, encrypted before/cutover backup artifacts and automatic prod-2026-11-05-77f82f6 tag. PRs #50-53 fixed preparation diagnostics, legacy state exclusions, Docker 29 portable image identity and tag error handling. Final CI: 2343 passed, 2 skipped. Evidence: work/project-hardening/deployment.md."
     }
   ],
   "blockers": [],
-  "updated_at": "2026-11-03T16:47:41+00:00"
+  "updated_at": "2026-11-05T14:15:29+03:00"
 }
