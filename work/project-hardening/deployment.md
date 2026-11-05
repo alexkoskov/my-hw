@@ -1,7 +1,7 @@
 # Production deployment and automation
 
-Current status: **automatic deployment implemented locally; publication and first
-run pending**. On 2026-11-03 the owner authorized production deployment and then
+Current status: **automation published; production blocked before SSH by missing
+dedicated secret configuration**. On 2026-11-03 the owner authorized production deployment and then
 requested automatic deployment. This covers publishing the required workflow
 through a green-CI dev→main PR and its normal deployment of current main.
 No production access or successful rollout has been established yet.
@@ -45,10 +45,34 @@ Verification before publication:
   passed. The local pip layer used a temporary mounted proxy CA, absent from
   the image; normal Actions builds use the committed Dockerfile unchanged.
 
-Publication/rollout evidence: pending. The workflow result, deployment artifact
-and immutable production tag are authoritative; a green PR alone does not mean
-the application was deployed. Do not mark DEPLOY-AUTO-001 done until the actual
-production workflow succeeds.
+Publication and actual first-run evidence:
+
+- [PR #49](https://github.com/alexkoskov/my-hw/pull/49) merged as
+  `e43c2b33a1b97314dbbeeee7084c7a072644f0c2`. Implementation head was
+  `9d03be926cda399ee492cc20f0166dccd891e897`; actual PR test job
+  `126059571451` passed **2317 tests, 2 skips, 566 subtests**.
+- [Main push CI](https://github.com/alexkoskov/my-hw/actions/runs/41677231236)
+  completed successfully; its actual `Run tests` step passed.
+- [First automatic deployment](https://github.com/alexkoskov/my-hw/actions/runs/41677472275)
+  was triggered by that CI. `select` passed the exact-main/actual-test gate.
+  Deploy job `126061961230` failed at `Configure production SSH identity`:
+  the complete pair `PROD_SSH_PRIVATE_KEY`/`PROD_SSH_KNOWN_HOSTS` was unavailable.
+  The guard does not establish whether one or both values are missing.
+- Build, prepare/SSH, cutover and startup verification were all skipped. No
+  production access, database change, restart or production tag occurred.
+
+**Next action:** the operator installs a dedicated public key on Moscow and adds
+the private key plus verified host-key entry to GitHub Actions secrets using the
+existing runbook. After that change, rerun the failed deployment job or dispatch
+`Deploy production` on current main. No repeated attempt is useful before the
+configuration changes. Direct SSH access from this Codex environment is not
+required for the GitHub runner path. Do not send credentials through chat.
+
+The workflow result, deployment artifact and immutable production tag are
+authoritative. DEPLOY-AUTO-001 remains in progress until an actual rollout and
+post-start verification succeed. This final status update is published on dev;
+the production automation itself is already on main, so a status-only main
+promotion is unnecessary while credentials are blocked.
 
 ## Earlier manual release preparation (retained, superseded by automation)
 

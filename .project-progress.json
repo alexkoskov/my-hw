@@ -2438,9 +2438,10 @@
         "tests/test_production_deploy.py",
         "tests/test_deploy_transport.py",
         "work/project-hardening/deployment.md"
-      ]
+      ],
+      "description": "Automation merged via PR #49 and main CI passed. First automatic run 41677472275 passed exact-main selection but stopped before SSH: the complete dedicated PROD_SSH_PRIVATE_KEY / PROD_SSH_KNOWN_HOSTS pair is unavailable. Operator setup is required before retry; actual production rollout remains unverified. See work/project-hardening/deployment.md."
     }
   ],
   "blockers": [],
-  "updated_at": "2026-11-03T16:40:53+00:00"
+  "updated_at": "2026-11-03T16:47:41+00:00"
 }

@@ -38,7 +38,24 @@ copy_backup() {
 case ${1:-} in
   prepare)
     current_main || { echo 'A newer main exists; this release will not deploy.' >&2; exit 1; }
-    remote prepare "$release" > "$RUNNER_TEMP/production-prepared.json"
+    if ! remote prepare "$release" > "$RUNNER_TEMP/production-prepared.json"; then
+      # The host helper emits sanitized failure JSON. Preserve it in the
+      # existing result artifact and report the reason instead of just exit 1.
+      python3 - "$RUNNER_TEMP/production-prepared.json" "$RUNNER_TEMP/production-result.json" <<'PY'
+import json,pathlib,sys
+reason = 'SSH preparation failed without a structured host result'
+try:
+    data = json.loads(pathlib.Path(sys.argv[1]).read_text())
+    if isinstance(data, dict) and data.get('status') == 'failed' and isinstance(data.get('reason'), str):
+        reason = data['reason'][:500]
+except (OSError, ValueError):
+    pass
+result = json.dumps({'status': 'failed', 'reason': reason})
+pathlib.Path(sys.argv[2]).write_text(result + '\n')
+print(result)
+PY
+      exit 1
+    fi
     python3 -c 'import json,sys; d=json.load(open(sys.argv[1])); assert d["status"] in ("prepared","already_deployed") and d["sha"]==sys.argv[2]' "$RUNNER_TEMP/production-prepared.json" "$DEPLOY_SHA"
     copy_backup before
     ;;
